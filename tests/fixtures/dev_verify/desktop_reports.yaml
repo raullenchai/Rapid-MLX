@@ -33,7 +33,7 @@
 
 - issue: 2378
   title: >-
-    Desktop bug(mac): failed photo attachments poison subsequent chat turns
+    bug(mac): failed photo attachments poison subsequent chat turns
   area: Chat window (asking, answering, tools, formatting)
   expected_journeys: [chat-multimodal-attachments]
 

@@ -61,9 +61,10 @@ Issue areas yield **candidate** journeys — an issue-form choice localizes the
 report, it does not prove a cause. Areas without full automated coverage
 declare `coverage gaps` in the plan (for example, DMG code-signature
 validation and latency measurement have no automated journey). The documented
-handling for such an area: reproduce manually (the fake-sidecar runbook in
-`apps/rapid-mac/scripts/walkthrough.sh` drives the same personas), record the
-manual evidence path in the PR, and never let the area's candidates imply the
+handling for such an area: reproduce manually against the built app (the GUI
+harness's fake-sidecar personas in `apps/rapid-mac/scripts/fake-rapid-mlx.sh`
+keep that reproduction deterministic and weight-free), record the manual
+evidence path in the PR, and never let the area's candidates imply the
 gap is covered.
 
 ## Evidence

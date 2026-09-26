@@ -339,6 +339,63 @@ def test_gui_journey_agrees_with_harness_result_json(tmp_path: Path, monkeypatch
     )
 
 
+def test_blocked_build_gates_journeys_even_when_a_stale_app_exists(
+    tmp_path: Path, monkeypatch
+):
+    """--build plus no swift toolchain plus an old binary on disk must never
+    produce green journey evidence against that stale binary."""
+    stale_app = tmp_path / "Stale.app"
+    stale_app.mkdir()
+    monkeypatch.setattr(dev_verify, "GUI_APP", str(stale_app))
+    monkeypatch.setattr(
+        dev_verify.shutil,
+        "which",
+        lambda name: None if name in ("swift", "xcodebuild") else "/usr/bin/jq",
+    )
+    out = tmp_path / "j"
+    writes_pass = (
+        'mkdir -p "$RAPID_GUI_GOLDEN_OUT" && '
+        'printf \'{"status":"pass","flow":"f"}\' '
+        '> "$RAPID_GUI_GOLDEN_OUT/result.json"'
+    )
+    checks = [
+        Check(
+            id="desktop:build-app",
+            kind="build-app",
+            command="true",
+            why="synthetic",
+        ),
+        Check(
+            id="journey:settings-persistence",
+            kind="gui-journey",
+            command=writes_pass,
+            why="synthetic",
+            env={"RAPID_GUI_GOLDEN_OUT": str(out), **dev_verify.TELEMETRY_NEUTRAL_ENV},
+        ),
+    ]
+    execute_checks(checks, tmp_path / "evidence")
+    assert checks[0].status == "blocked"
+    assert checks[1].status == "blocked"
+    assert "stale" in checks[1].blocked_reason
+
+
+def test_malformed_manifest_is_a_clean_usage_error(tmp_path: Path, monkeypatch):
+    def broken_manifest():
+        raise yaml.YAMLError("scan error")
+
+    monkeypatch.setattr(dev_verify, "journey_index", broken_manifest)
+    rc = dev_verify.main(
+        ["--journey", "settings-persistence", "--out", str(tmp_path / "e")]
+    )
+    assert rc == 2
+
+
+def test_explicit_swift_journey_is_recorded_in_result_input(tmp_path: Path):
+    plan = plan_for(journey=["message-actions"])
+    payload = dev_verify.result_payload(plan, tmp_path, "a" * 40, "", "", "plan")
+    assert payload["input"]["explicit_journeys"] == ["message-actions"]
+
+
 def test_result_artifacts_include_the_check_log(tmp_path: Path):
     checks, _ = _run_plan_with_commands(
         tmp_path,

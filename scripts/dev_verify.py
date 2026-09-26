@@ -269,6 +269,7 @@ class Plan:
     input_mode: str
     paths: list[str] = field(default_factory=list)
     evidence_dir: Path = Path(".")
+    explicit_journeys: list[str] = field(default_factory=list)
 
 
 # --------------------------------------------------------------------------
@@ -714,6 +715,7 @@ def build_plan(args: argparse.Namespace, evidence_dir: Path | None = None) -> Pl
         ),
         paths=paths,
         evidence_dir=evidence_dir,
+        explicit_journeys=explicit_journeys,
     )
     return plan
 
@@ -766,9 +768,9 @@ def execute_checks(
     """
     logs = log_dir or (evidence_dir / "logs")
     logs.mkdir(parents=True, exist_ok=True)
-    build_failed = False
+    build_not_verified = False
     for check in checks:
-        if check.kind == "gui-journey" and build_failed:
+        if check.kind == "gui-journey" and build_not_verified:
             check.status = "blocked"
             check.blocked_reason = (
                 "app build did not verify in this run; refusing to record"
@@ -779,6 +781,11 @@ def execute_checks(
         if blocked:
             check.status = "blocked"
             check.blocked_reason = blocked
+            if check.kind == "build-app":
+                # A build the caller asked for but that could not run leaves
+                # whatever binary is on disk unverified — same hazard as a
+                # failing build.
+                build_not_verified = True
             continue
         if check.kind == "gui-journey":
             out_dir = Path(check.env["RAPID_GUI_GOLDEN_OUT"])
@@ -812,7 +819,7 @@ def execute_checks(
         if check.exit_code != 0:
             check.status = "fail"
             if check.kind == "build-app":
-                build_failed = True
+                build_not_verified = True
             continue
         if check.kind == "gui-journey":
             status, detail = parse_journey_result(
@@ -823,8 +830,11 @@ def execute_checks(
                 check.blocked_reason = detail
         else:
             check.status = "pass"
+        # A blocked build (for example no swift toolchain) is just as stale
+        # as a failed one: the caller asked for THIS head's app, so journeys
+        # must not proceed on whatever binary happens to be on disk.
         if check.kind == "build-app" and check.status != "pass":
-            build_failed = True
+            build_not_verified = True
 
 
 def _mark_interrupted(plan: Plan, reason: str = "interrupted before running") -> None:
@@ -864,11 +874,7 @@ def result_payload(
             "mode": plan.input_mode,
             "area": plan.area,
             "paths": plan.paths,
-            "explicit_journeys": [
-                c.id.removeprefix("journey:")
-                for c in plan.checks
-                if c.id.startswith("journey:")
-            ],
+            "explicit_journeys": plan.explicit_journeys,
         },
         "lanes": plan.lanes,
         "selection": {
@@ -1008,7 +1014,16 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         plan = build_plan(args)
-    except RuntimeError as exc:
+    except (
+        RuntimeError,
+        ValueError,
+        AssertionError,
+        OSError,
+        yaml.YAMLError,
+    ) as exc:
+        # A malformed manifest or unreadable repo state is a usage error too:
+        # the agent gets a clean, actionable message, never a traceback that
+        # could be misread as a verification result.
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
