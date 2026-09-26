@@ -74,7 +74,9 @@ def _serve_ns(port: int) -> types.SimpleNamespace:
     the heavy serve prologue (model download, version check) is
     bypassed; we only need the host/port/listen_fd fields the
     dispatcher reads."""
-    return types.SimpleNamespace(host="127.0.0.1", port=port, listen_fd=None)
+    return types.SimpleNamespace(
+        host="127.0.0.1", port=port, listen_fd=None, _port_explicit=True
+    )
 
 
 def _claim_exact_loopback_port(stack: ExitStack, port: int) -> None:
@@ -786,7 +788,9 @@ def test_run_uvicorn_listen_fd_eaddrinuse_uses_fd_specific_message(monkeypatch, 
 
     monkeypatch.setattr(uvicorn, "run", _raise_eaddrinuse)
 
-    ns = types.SimpleNamespace(host="127.0.0.1", port=8000, listen_fd=11)
+    ns = types.SimpleNamespace(
+        host="127.0.0.1", port=8000, listen_fd=11, _port_explicit=None
+    )
     with pytest.raises(SystemExit) as excinfo:
         cli._run_uvicorn(object(), ns, "error")
 

@@ -47,6 +47,27 @@ def test_every_run_uvicorn_call_declares_port_explicit() -> None:
     assert missing == [], f"run_uvicorn calls omit port_explicit: {missing}"
 
 
+def test_port_explicit_never_uses_getattr_fallback() -> None:
+    root = Path(__file__).resolve().parents[1]
+    offenders: list[str] = []
+    for path in (root / "rapid_mlx").rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "getattr"
+                and len(node.args) >= 2
+                and isinstance(node.args[0], ast.Name)
+                and node.args[0].id == "args"
+                and isinstance(node.args[1], ast.Constant)
+                and node.args[1].value == "_port_explicit"
+            ):
+                continue
+            offenders.append(f"{path.relative_to(root)}:{node.lineno}")
+    assert offenders == [], f"_port_explicit getattr fallbacks remain: {offenders}"
+
+
 async def _asgi_app(scope, receive, send):
     if scope["type"] == "lifespan":
         while True:
@@ -302,7 +323,12 @@ def test_cli_host_port_and_inherited_fd_register_shared_callback(
         calls.append(kwargs)
 
     monkeypatch.setattr("rapid_mlx._uvicorn.run_uvicorn", fake_run)
-    args = SimpleNamespace(host="127.0.0.1", port=8000, listen_fd=listen_fd)
+    args = SimpleNamespace(
+        host="127.0.0.1",
+        port=8000,
+        listen_fd=listen_fd,
+        _port_explicit=False if listen_fd is None else None,
+    )
     cli._run_uvicorn(object(), args, "error")
 
     if listen_fd is None:
@@ -323,7 +349,9 @@ def test_cli_preserves_non_bind_oserror(monkeypatch):
         raise error
 
     monkeypatch.setattr("rapid_mlx._uvicorn.run_uvicorn", fail_before_bind)
-    args = SimpleNamespace(host="127.0.0.1", port=80, listen_fd=None)
+    args = SimpleNamespace(
+        host="127.0.0.1", port=80, listen_fd=None, _port_explicit=True
+    )
 
     with pytest.raises(OSError) as raised:
         cli._run_uvicorn(object(), args, "error")
@@ -344,7 +372,9 @@ def test_cli_preserves_already_reported_uvicorn_exit(monkeypatch):
         "_port_is_busy",
         lambda *_args: pytest.fail("reported bind failures must not be probed twice"),
     )
-    args = SimpleNamespace(host="127.0.0.1", port=8000, listen_fd=None)
+    args = SimpleNamespace(
+        host="127.0.0.1", port=8000, listen_fd=None, _port_explicit=True
+    )
 
     with pytest.raises(SystemExit) as raised:
         cli._run_uvicorn(object(), args, "error")

@@ -3538,7 +3538,9 @@ def _capture_start_failures(func):
 def _build_parser() -> argparse.ArgumentParser:
     """Build the parser for the standalone ``python -m rapid_mlx.server`` CLI."""
 
-    parser = argparse.ArgumentParser(
+    from .cli import _PortContextArgumentParser
+
+    parser = _PortContextArgumentParser(
         description="Rapid-MLX OpenAI-compatible server for LLM and MLLM inference",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
@@ -3875,7 +3877,6 @@ def main():
     set_optional_runtime_assume_yes(False)
     parser = _build_parser()
     args = parser.parse_args()
-    args._port_explicit = args.port is not None
     _standalone_start_model = args.model
     set_optional_runtime_assume_yes(args.yes)
 

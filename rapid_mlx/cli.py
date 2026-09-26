@@ -55,6 +55,31 @@ _hub_guidance_rendered = False
 _hub_guidance_lock = threading.Lock()
 
 
+def _set_port_explicit_from_argv(
+    args: argparse.Namespace, raw_argv: list[str] | tuple[str, ...] | None
+) -> argparse.Namespace:
+    """Stamp bind-port provenance on every parsed server namespace."""
+    if not hasattr(args, "port"):
+        return args
+    argv = list(sys.argv[1:] if raw_argv is None else raw_argv)
+    option_argv = argv[: argv.index("--")] if "--" in argv else argv
+    if getattr(args, "listen_fd", None) is not None:
+        args._port_explicit = None
+    else:
+        args._port_explicit = any(
+            token == "--port" or token.startswith("--port=") for token in option_argv
+        )
+    return args
+
+
+class _PortContextArgumentParser(argparse.ArgumentParser):
+    """Argument parser that records the effective bind-port provenance."""
+
+    def parse_args(self, args=None, namespace=None):
+        parsed = super().parse_args(args, namespace)
+        return _set_port_explicit_from_argv(parsed, args)
+
+
 def _run_optional_runtime_guard(
     guard: Callable[..., None],
     *args,
@@ -752,7 +777,7 @@ def _run_uvicorn(app, args, log_level: str) -> None:
                 log_level=log_level,
                 timeout_keep_alive=30,
                 on_server_accepting=print_ready_banner,
-                port_explicit=getattr(args, "_port_explicit", None),
+                port_explicit=args._port_explicit,
             )
     except OSError as exc:
         # Direct EADDRINUSE — older uvicorn, ``--listen-fd`` mode bind
@@ -3488,7 +3513,7 @@ def _serve_native_mtp_if_requested(
         pair=pair,
         host=args.host,
         port=_resolved_serve_port(args),
-        port_explicit=getattr(args, "_port_explicit", None),
+        port_explicit=args._port_explicit,
         served_model_name=args.served_model_name or alias_name,
         default_max_tokens=effective_max_tokens,
         cors_origins=cors_origins,
@@ -3591,7 +3616,7 @@ def _serve_companion_dspark_if_requested(
         artifacts=getattr(args, "_companion_dspark_artifacts", None),
         host=args.host,
         port=args.port,
-        port_explicit=getattr(args, "_port_explicit", None),
+        port_explicit=args._port_explicit,
         served_model_name=args.served_model_name or alias_name,
         default_max_tokens=effective_max_tokens,
         cors_origins=cors_origins,
@@ -4506,13 +4531,12 @@ def system_one_command(args) -> None:
         port=args.port,
         log_level=args.log_level.lower(),
         timeout_keep_alive=30,
-        port_explicit=getattr(args, "_port_explicit", None),
+        port_explicit=args._port_explicit,
     )
 
 
 def serve_command(args):
     """Start the OpenAI-compatible server."""
-    args._port_explicit = getattr(args, "port", None) is not None
     import logging
     import os
     import sys
@@ -5635,7 +5659,7 @@ def serve_command(args):
         run_v41_server(
             host=args.host,
             port=_resolved_serve_port(args),
-            port_explicit=getattr(args, "_port_explicit", None),
+            port_explicit=args._port_explicit,
             served_model_name=(
                 args.served_model_name
                 or getattr(args, "_original_alias", None)
@@ -5714,7 +5738,7 @@ def serve_command(args):
             drafter_revision=_drafter_revision,
             host=args.host,
             port=_resolved_serve_port(args),
-            port_explicit=getattr(args, "_port_explicit", None),
+            port_explicit=args._port_explicit,
             served_model_name=args.served_model_name or _alias_name,
             default_max_tokens=effective_max_tokens,
             cors_origins=cors_origins,
@@ -6295,7 +6319,7 @@ def serve_command(args):
             or _profile.ddtree_tree_budget,
             host=args.host,
             port=_resolved_serve_port(args),
-            port_explicit=getattr(args, "_port_explicit", None),
+            port_explicit=args._port_explicit,
             served_model_name=args.served_model_name or _alias_name,
             default_max_tokens=args.max_tokens,
             cors_origins=cors_origins,
@@ -12741,7 +12765,7 @@ def build_parser() -> argparse.ArgumentParser:
     of scraping source or help text)."""
     _version = _resolve_cli_version()
 
-    parser = argparse.ArgumentParser(
+    parser = _PortContextArgumentParser(
         description="Rapid-MLX: AI inference for Apple Silicon",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
