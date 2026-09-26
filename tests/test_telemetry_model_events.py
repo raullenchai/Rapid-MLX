@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import errno
 import http.client
 import json
@@ -10,6 +11,7 @@ import sys
 import threading
 import urllib.error
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -363,21 +365,23 @@ def test_serve_error_class_terminates_on_cycles(error_class):
 
 
 @pytest.mark.parametrize(
-    ("outer_class", "inner_class"),
+    ("outer_class", "inner_class", "expected"),
     [
-        ("insufficient_memory", "corrupt_weights"),
-        ("download_failed", "insufficient_memory"),
-        ("unsupported_architecture", "download_failed"),
-        ("corrupt_weights", "unsupported_architecture"),
+        ("insufficient_memory", "corrupt_weights", "insufficient_memory"),
+        ("download_failed", "insufficient_memory", "download_failed"),
+        ("unsupported_architecture", "download_failed", "download_failed"),
+        ("corrupt_weights", "unsupported_architecture", "corrupt_weights"),
     ],
 )
-def test_serve_error_class_outermost_match_wins(outer_class, inner_class):
+def test_serve_error_class_typed_precedence_then_outermost(
+    outer_class, inner_class, expected
+):
     outer = _serve_exception(outer_class)
     middle = RuntimeError("second loader wrapper")
     outer.__cause__ = middle
     middle.__cause__ = _serve_exception(inner_class)
 
-    assert model_events.serve_error_class(outer) == outer_class
+    assert model_events.serve_error_class(outer) == expected
 
 
 @pytest.mark.parametrize("exc", [KeyboardInterrupt(), SystemExit(), GeneratorExit()])
@@ -457,10 +461,41 @@ def test_typed_quantization_beats_memory_wording():
     assert model_events.serve_error_class(outer) == "quantization_mismatch"
 
 
+@pytest.mark.parametrize(
+    "failure_type", [InvalidModelConfig, IncompatibleWeights, QuantizationMismatch]
+)
+def test_value_error_load_failures_remain_value_error_compatible(failure_type):
+    failure = failure_type("load failed")
+
+    with pytest.raises(ValueError) as raised:
+        raise failure
+
+    assert raised.value is failure
+
+
 def test_could_not_allocate_is_not_a_generic_oom_marker():
     exc = RuntimeError("plugin could not allocate tokenizer ID 7")
 
     assert model_events.serve_error_class(exc) == "other"
+
+
+def test_typed_download_failure_beats_memory_wording():
+    outer = RuntimeError("scoped_pymalloc(): could not allocate 4096 bytes")
+    outer.__cause__ = FileNotFoundError("missing shard")
+
+    assert model_events.serve_error_class(outer) == "download_failed"
+
+
+def test_typed_hub_failure_beats_memory_wording():
+    from huggingface_hub.errors import HfHubHTTPError
+
+    response = httpx.Response(
+        503, request=httpx.Request("GET", "https://huggingface.co/org/model")
+    )
+    outer = RuntimeError("scoped_pymalloc(): could not allocate 4096 bytes")
+    outer.__cause__ = HfHubHTTPError("unavailable", response=response)
+
+    assert model_events.serve_error_class(outer) == "download_failed"
 
 
 def test_invalid_config_boundary_is_classified(tmp_path, monkeypatch):
@@ -587,6 +622,23 @@ def test_typed_model_boundaries_preserve_existing_failure(boundary, failure):
     assert raised.value is failure
 
 
+@pytest.mark.parametrize(
+    "boundary", [typed_weight_boundary, typed_quantization_boundary]
+)
+def test_model_boundaries_do_not_swallow_optional_runtime(boundary):
+    failure = OptionalRuntimeMissing(
+        extra="vision",
+        install_hint="pip install 'rapid-mlx[vision]'",
+        detail="mlx-vlm unavailable",
+        status="absent",
+    )
+
+    with pytest.raises(OptionalRuntimeMissing) as raised, boundary():
+        raise failure
+
+    assert raised.value is failure
+
+
 def test_weight_load_boundary_is_classified():
     class ShapeCheckingModel:
         def load_weights(self, weights, *, strict):
@@ -636,6 +688,265 @@ def test_quantization_boundary_is_classified():
     )
 
 
+def _fp8_config(tmp_path):
+    model_path = tmp_path / "fp8"
+    model_path.mkdir()
+    (model_path / "config.json").write_text(
+        '{"model_type":"synthetic","quantization_config":'
+        '{"quant_method":"fp8","fmt":"e4m3","scale_fmt":"ue8m0",'
+        '"weight_block_size":[128,128]}}',
+        encoding="utf-8",
+    )
+    return model_path
+
+
+def _install_fp8_skeleton(monkeypatch, fp8_repack, model):
+    class ModelArgs:
+        @classmethod
+        def from_dict(cls, _config):
+            return cls()
+
+    monkeypatch.setattr(
+        fp8_repack.importlib,
+        "import_module",
+        lambda _name: SimpleNamespace(Model=model, ModelArgs=ModelArgs),
+    )
+    monkeypatch.setattr(fp8_repack, "_open_shards", lambda _path: ({}, {}))
+
+
+def test_fp8_direct_quantize_valueerror_is_typed(tmp_path, monkeypatch):
+    pytest.importorskip("mlx.core")
+    from rapid_mlx import fp8_repack
+
+    model_path = _fp8_config(tmp_path)
+
+    class Model:
+        def __init__(self, _args):
+            pass
+
+    _install_fp8_skeleton(monkeypatch, fp8_repack, Model)
+
+    def fail_quantize(*_args, **_kwargs):
+        raise ValueError("Invalid quantization mode 'mxfp8'")
+
+    monkeypatch.setattr(fp8_repack.nn, "quantize", fail_quantize)
+
+    with pytest.raises(QuantizationMismatch):
+        fp8_repack.load_fp8_model_online(model_path)
+
+
+def test_fp8_direct_load_weights_valueerror_is_typed(tmp_path, monkeypatch):
+    mx = pytest.importorskip("mlx.core")
+    nn = pytest.importorskip("mlx.nn")
+    from rapid_mlx import fp8_repack
+
+    model_path = _fp8_config(tmp_path)
+
+    class Model(nn.Module):
+        def __init__(self, _args):
+            super().__init__()
+            self.weight = mx.zeros((8, 8))
+
+    _install_fp8_skeleton(monkeypatch, fp8_repack, Model)
+    monkeypatch.setattr(fp8_repack.nn, "quantize", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(IncompatibleWeights):
+        fp8_repack.load_fp8_model_online(model_path)
+
+
+def test_fp8_lm_head_quantize_valueerror_is_typed(tmp_path, monkeypatch):
+    nn = pytest.importorskip("mlx.nn")
+    from rapid_mlx import fp8_repack
+
+    model_path = _fp8_config(tmp_path)
+
+    class Model:
+        def __init__(self, _args):
+            self.lm_head = nn.Linear(8, 8)
+
+        def load_weights(self, _weights, *, strict):
+            assert strict is True
+
+        def parameters(self):
+            return []
+
+        def eval(self):
+            return self
+
+    _install_fp8_skeleton(monkeypatch, fp8_repack, Model)
+    calls = 0
+
+    def quantize(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise ValueError("lm_head affine quantization is incompatible")
+
+    monkeypatch.setattr(fp8_repack.nn, "quantize", quantize)
+    monkeypatch.setenv("RAPID_MLX_FP8_LM_HEAD_AFFINE8", "1")
+
+    with pytest.raises(QuantizationMismatch):
+        fp8_repack.load_fp8_model_online(model_path)
+
+
+def test_qwen4_ple_direct_load_model_valueerror_is_typed(tmp_path, monkeypatch):
+    mx = pytest.importorskip("mlx.core")
+    nn = pytest.importorskip("mlx.nn")
+    from mlx_lm import utils as mlx_lm_utils
+
+    from rapid_mlx.models import qwen4_ple_nvme
+
+    model_path = tmp_path / "model"
+    sidecar_path = tmp_path / "sidecar"
+    model_path.mkdir()
+    sidecar_path.mkdir()
+    monkeypatch.setattr(qwen4_ple_nvme, "validate_artifact", lambda *_args: None)
+
+    @contextmanager
+    def bound(_path):
+        yield
+
+    monkeypatch.setattr(qwen4_ple_nvme, "_bound_load_source", bound)
+
+    def fail_load_model(*_args, **_kwargs):
+        class BrokenModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.weight = mx.zeros((8, 8))
+
+        BrokenModel().load_weights([], strict=True)
+
+    monkeypatch.setattr(mlx_lm_utils, "load_model", fail_load_model)
+
+    with pytest.raises(IncompatibleWeights):
+        qwen4_ple_nvme.load_file_backed_qwen4(model_path, sidecar_path)
+
+
+def test_prism_direct_load_weights_valueerror_is_typed(tmp_path, monkeypatch):
+    mx = pytest.importorskip("mlx.core")
+    nn = pytest.importorskip("mlx.nn")
+    from mlx_vlm import utils as mlx_vlm_utils
+    from mlx_vlm.models import qwen3_5
+
+    from rapid_mlx.models import prism_hadamard_qwen35 as prism
+
+    class ModelConfig:
+        @classmethod
+        def from_dict(cls, _config):
+            return cls()
+
+    class Model(nn.Module):
+        def __init__(self, _config):
+            super().__init__()
+            self.language_model = object()
+            self.weight = mx.zeros((8, 8))
+
+    monkeypatch.setattr(qwen3_5, "Model", Model)
+    monkeypatch.setattr(qwen3_5, "ModelConfig", ModelConfig)
+    monkeypatch.setattr(mlx_vlm_utils, "get_model_path", lambda _path: tmp_path)
+    monkeypatch.setattr(prism, "_install_packed", lambda *_args: None)
+    monkeypatch.setattr(prism.mx, "load", lambda _path: {})
+    config = {
+        "schema_version": 2,
+        "model_type": "prism_hadamard_qwen35",
+        "base_model_type": "qwen3_5",
+        "tensor_namespace": "mlx-vlm-qwen3_5",
+        "gdn_activation_layout": "grouped",
+        "components": {"text": True, "vision": True, "mtp": False},
+        "quantization": {"bits": 2, "group_size": 128, "mode": "affine"},
+    }
+
+    with pytest.raises(IncompatibleWeights):
+        prism.load(tmp_path, config)
+
+
+def test_direct_per_model_loaders_do_not_bypass_typed_boundaries():
+    package_root = Path(__file__).parents[1] / "rapid_mlx"
+    boundary_helper_module = "model_load_errors.py"
+    offenders = []
+
+    class LoadBoundaryVisitor(ast.NodeVisitor):
+        def __init__(self, relative_path):
+            self.relative_path = relative_path
+            self.functions = []
+            self.boundary_depth = 0
+
+        def visit_FunctionDef(self, node):
+            self.functions.append(node.name)
+            self.generic_visit(node)
+            self.functions.pop()
+
+        def visit_AsyncFunctionDef(self, node):  # noqa: N802 - ast API
+            self.visit_FunctionDef(node)
+
+        def visit_With(self, node):
+            guarded = any(
+                isinstance(item.context_expr, ast.Call)
+                and (
+                    (
+                        isinstance(item.context_expr.func, ast.Name)
+                        and item.context_expr.func.id == "typed_mlx_load_boundaries"
+                    )
+                    or (
+                        isinstance(item.context_expr.func, ast.Attribute)
+                        and item.context_expr.func.attr == "typed_mlx_load_boundaries"
+                    )
+                )
+                for item in node.items
+            )
+            self.boundary_depth += int(guarded)
+            self.generic_visit(node)
+            self.boundary_depth -= int(guarded)
+
+        def visit_AsyncWith(self, node):  # noqa: N802 - ast API
+            self.visit_With(node)
+
+        def visit_Call(self, node):
+            kind = None
+            if (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "load_weights"
+            ):
+                kind = "load_weights"
+            elif (isinstance(node.func, ast.Name) and node.func.id == "quantize") or (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "quantize"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "nn"
+            ):
+                kind = "quantize"
+            elif (isinstance(node.func, ast.Name) and node.func.id == "load_model") or (
+                isinstance(node.func, ast.Attribute) and node.func.attr == "load_model"
+            ):
+                kind = "load_model"
+
+            if kind and self.functions and not self.boundary_depth:
+                offenders.append(f"{self.relative_path}:{node.lineno} ({kind})")
+            self.generic_visit(node)
+
+    for source_path in package_root.rglob("*.py"):
+        relative_path = source_path.relative_to(package_root).as_posix()
+        model_relative_path = relative_path.removeprefix("models/")
+        is_direct_loader_module = relative_path == "fp8_repack.py" or (
+            relative_path.startswith("models/")
+            and (
+                "/" not in model_relative_path
+                or model_relative_path.endswith("/load.py")
+            )
+        )
+        if relative_path == boundary_helper_module or not is_direct_loader_module:
+            continue
+        tree = ast.parse(
+            source_path.read_text(encoding="utf-8"), filename=relative_path
+        )
+        LoadBoundaryVisitor(relative_path).visit(tree)
+
+    assert not offenders, (
+        "direct per-model loaders must use the shared typed MLX load boundary: "
+        + ", ".join(offenders)
+    )
+
+
 def test_generic_model_loader_types_quantization_boundary(tmp_path, monkeypatch):
     model_dir = tmp_path / "bad-quantization"
     model_dir.mkdir()
@@ -682,6 +993,25 @@ def test_generic_model_loader_preserves_unclassified_value_error(tmp_path):
         load_model_checked(loader, model_dir)
 
     assert model_events.serve_error_class(raised.value) == "unsupported_architecture"
+
+
+def test_traceback_name_does_not_relabel_unrelated_runtime(tmp_path):
+    model_dir = tmp_path / "remote-model-hook"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text(
+        json.dumps({"model_type": "synthetic"}), encoding="utf-8"
+    )
+
+    def loader(_model_path):
+        def load_weights():
+            raise RuntimeError("remote model hook crashed")
+
+        load_weights()
+
+    with pytest.raises(RuntimeError) as raised:
+        load_model_checked(loader, model_dir)
+
+    assert type(raised.value) is RuntimeError
 
 
 def test_generic_eager_loader_separates_tokenizer_boundary(tmp_path, monkeypatch):
