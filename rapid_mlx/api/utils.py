@@ -1653,6 +1653,22 @@ def vision_alias_memory_need_gb(alias: str, profile) -> float | None:
     return raw * _UNMEASURED_WORKING_SET_FACTOR / float(1 << 30)
 
 
+# Aliases Rapid Desktop hides from its model picker as broken for text chat
+# (apps/rapid-mac/Sources/Rapid/Server/ModelPickerVisibility.swift:66,
+# ``knownBrokenForTextChat``; evidence in #1367: the gemma-4-e2b family scores
+# 0/6 golden on both lanes). Never suggest one; a test pins this set to the
+# Swift source so the two cannot drift.
+DESKTOP_HIDDEN_BROKEN_ALIASES = frozenset(
+    {
+        "gemma-4-e2b-4bit",
+        "gemma-4-e2b-6bit",
+        "gemma-4-e2b-8bit",
+        "gemma-4-e2b-assistant",
+        "ministral-3b-4bit",
+    }
+)
+
+
 def _is_sidecar_drafter(profile) -> bool:
     """Gemma 4 ``*-assistant`` checkpoints are speculative-decoding drafters
     (``gemma4_assistant``, a few hundred MB), not standalone chat models."""
@@ -1677,7 +1693,7 @@ def fitting_vision_alias(
     """Pick the catalog vision alias that best fits ``ram_gb`` of memory.
 
     Deterministic: among non-experimental ``text``-modality aliases that accept
-    image input and are not sidecar drafters, whose vision/model memory floors are at most ``ram_gb`` and
+    image input, are not sidecar drafters or hidden by Desktop as broken, whose vision/model memory floors are at most ``ram_gb`` and
     whose estimated working set stays within the suggestion band, return the
     one with the largest working set (alias name breaks ties). Hybrid-backbone
     aliases are skipped when the installed vision runtime cannot serve them,
@@ -1692,7 +1708,8 @@ def fitting_vision_alias(
     for alias in sorted(list_builtin_aliases()):
         profile = resolve_profile(alias)
         if (
-            profile is None
+            alias in DESKTOP_HIDDEN_BROKEN_ALIASES
+            or profile is None
             or not profile.supports_image_input
             or profile.is_text_only
             or profile.experimental
@@ -1780,8 +1797,8 @@ def text_lane_image_guidance(
         if profile is not None and profile.is_text_only:
             return f"Its catalog entry pins it to text-only serving. {_suggest()}"
         return (
-            "Text-only serving was forced with --no-mllm (--text-only); restart "
-            "without that flag for image input."
+            "This server was started on the text-only lane (e.g. with "
+            "--no-mllm / --text-only); restart without it for image input."
         )
     if reason == "text_lane_speculative_decode":
         return (

@@ -22,6 +22,7 @@ import rapid_mlx.api.utils as api_utils
 import rapid_mlx.server as server
 from rapid_mlx.api.utils import (
     BANNER_TEXT_LANE_REASONS,
+    DESKTOP_HIDDEN_BROKEN_ALIASES,
     UnsupportedContentBlockError,
     fitting_vision_alias,
     public_model_label,
@@ -155,12 +156,18 @@ def test_hybrid_runtime_unsupported_reuses_the_vision_install_hint():
     assert "'rapid-mlx[vision]'" in message
 
 
-def test_forced_text_lane_names_the_flag():
+_FORCED_TEXT = (
+    "This server was started on the text-only lane (e.g. with "
+    "--no-mllm / --text-only); restart without it for image input."
+)
+
+
+def test_forced_text_lane_is_worded_neutrally():
+    """The engine cannot tell --no-mllm from other forced-text causes (e.g. a
+    residency load), so the copy names the flag as an example, not a fact."""
     message = _chat_image_error("text_lane_forced")
-    assert message == (
-        f"{_BASE} Text-only serving was forced with --no-mllm (--text-only); "
-        "restart without that flag for image input."
-    )
+    assert message == f"{_BASE} {_FORCED_TEXT}"
+    assert "was forced with" not in message
 
 
 def test_catalog_text_only_pin_suggests_a_vision_alias():
@@ -265,7 +272,7 @@ def test_responses_route_carries_the_same_guidance():
     body = response.json()
     error = body.get("detail", body)["error"]
     assert error["code"] == "image_input_unsupported"
-    assert error["message"].endswith("restart without that flag for image input.")
+    assert error["message"].endswith(_FORCED_TEXT)
 
 
 def _anthropic_image(client):
@@ -299,9 +306,7 @@ def test_anthropic_route_appends_guidance_and_keeps_400():
     response = _anthropic_image(client)
     assert response.status_code == 400, response.text
     assert response.json()["detail"] == (
-        "Model 'qwen3.5-4b-4bit' does not support image inputs. Text-only "
-        "serving was forced with --no-mllm (--text-only); restart without that "
-        "flag for image input."
+        f"Model 'qwen3.5-4b-4bit' does not support image inputs. {_FORCED_TEXT}"
     )
 
 
@@ -436,6 +441,63 @@ def test_fitting_alias_is_deterministic_and_picks_the_largest_fit(monkeypatch):
     assert fitting_vision_alias(0, hybrid_runtime_ok=True) is None
     assert fitting_vision_alias(1, hybrid_runtime_ok=True) is None
     assert vision_alias_memory_need_gb("measured", profiles["measured"]) == 2.0
+
+
+_RAM_SWEEP = [n / 2 for n in range(1, 1025)]  # 0.5 GB .. 512 GB
+
+
+def test_desktop_hidden_list_matches_the_swift_source():
+    import re
+    from pathlib import Path
+
+    swift = (
+        Path(__file__).resolve().parents[1]
+        / "apps/rapid-mac/Sources/Rapid/Server/ModelPickerVisibility.swift"
+    ).read_text()
+    block = re.search(
+        r"static let knownBrokenForTextChat: Set<String> = \[(.*?)\]", swift, re.S
+    )
+    assert block is not None
+    assert frozenset(re.findall(r'"([^"]+)"', block.group(1))) == (
+        DESKTOP_HIDDEN_BROKEN_ALIASES
+    )
+
+
+@pytest.mark.parametrize("hybrid_runtime_ok", [True, False])
+def test_desktop_hidden_family_is_never_suggested(hybrid_runtime_ok):
+    suggested = {
+        fitting_vision_alias(ram, hybrid_runtime_ok=hybrid_runtime_ok)
+        for ram in _RAM_SWEEP
+    }
+    assert suggested.isdisjoint(DESKTOP_HIDDEN_BROKEN_ALIASES)
+    assert not any(a and a.startswith("gemma-4-e2b") for a in suggested)
+
+
+def test_catalog_assistant_drafters_are_never_suggested():
+    drafters = {
+        alias
+        for alias in list_builtin_aliases()
+        if "-assistant" in resolve_profile(alias).hf_path.lower()
+        and resolve_profile(alias).supports_image_input
+    }
+    # The current catalog ships Gemma 4 sidecar drafters; pin that they exist
+    # so this test cannot pass vacuously, and that none is ever suggested.
+    assert {"gemma-4-e4b-assistant", "gemma-4-31b-assistant"} <= drafters
+    for hybrid_runtime_ok in (True, False):
+        for ram in _RAM_SWEEP:
+            alias = fitting_vision_alias(ram, hybrid_runtime_ok=hybrid_runtime_ok)
+            assert alias not in drafters
+
+
+def test_no_fit_is_said_plainly(monkeypatch):
+    monkeypatch.setattr(api_utils, "fitting_vision_alias", lambda *a, **k: None)
+    guidance = text_lane_image_guidance(
+        "qwen3.5-4b-4bit", "vision_memory_insufficient", ram_gb=8
+    )
+    assert guidance == (
+        "Vision for this model needs at least 32 GB of RAM; this Mac has 8 GB, "
+        "so it started text-only. No catalog vision model fits this Mac's memory."
+    )
 
 
 def test_every_suggestion_is_a_real_catalog_alias():
