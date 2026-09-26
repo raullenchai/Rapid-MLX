@@ -492,10 +492,7 @@ def _claim_serve_failure_key(
     def accepted() -> bool:
         nonlocal decision
         if decision is None:
-            try:
-                decision = would_accept is None or would_accept() is True
-            except Exception:
-                decision = False
+            decision = would_accept is None or would_accept() is True
         return decision
 
     def enqueue_accepted() -> bool:
@@ -556,10 +553,7 @@ def _claim_serve_failure_key(
         except Exception:
             should_enqueue = True
     finally:
-        try:
-            os.close(dir_fd)
-        except OSError:
-            pass
+        os.close(dir_fd)
     return enqueue_accepted() if should_enqueue else False
 
 

@@ -1388,6 +1388,15 @@ def test_serve_failure_claim_nonfinite_clock_and_lock_contention_fail_open(
 ):
     key = ("model", "llm", "other", "")
     assert model_events._claim_serve_failure_key(key, now=float("nan")) is True
+    assert (
+        model_events._claim_serve_failure_key(
+            key,
+            now=float("nan"),
+            would_accept=lambda: False,
+            on_claim=lambda: pytest.fail("rejected event reached enqueue"),
+        )
+        is False
+    )
     monkeypatch.setattr(
         model_events.fcntl,
         "flock",
