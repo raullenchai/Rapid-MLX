@@ -543,11 +543,14 @@ def emit_model_serve_failed(
         _serve_failure_claimed = True
     if not track_module._upload_allowed():
         return
+    model = props.get("model")
+    served_type = props.get("model_type")
+    extra = props.get("extra")
     key = (
-        str(props.get("model") or ""),
-        str(props.get("model_type") or ""),
+        model if isinstance(model, str) else "",
+        served_type if isinstance(served_type, str) else "",
         error_class,
-        str(props.get("extra") or ""),
+        extra if isinstance(extra, str) else "",
     )
     if not _claim_serve_failure_key(key):
         return

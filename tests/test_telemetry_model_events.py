@@ -1336,6 +1336,43 @@ def test_serve_failure_recent_file_is_private_and_evicts_oldest(monkeypatch, tmp
     assert path.stat().st_mode & 0o777 == 0o600
 
 
+def test_serve_failure_recent_reader_rejects_oversize_and_non_mapping(
+    monkeypatch, tmp_path
+):
+    path = tmp_path / "serve-failed-recent.json"
+    path.write_text("[]", encoding="utf-8")
+    assert model_events._read_serve_failed_recent(path) == {}
+
+    monkeypatch.setattr(model_events, "_SERVE_FAILED_MAX_BYTES", 1)
+    assert model_events._read_serve_failed_recent(path) == {}
+
+
+def test_serve_failure_recent_reader_bounds_file_growth(monkeypatch, tmp_path):
+    path = tmp_path / "serve-failed-recent.json"
+    path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(model_events, "_SERVE_FAILED_MAX_BYTES", 1)
+    monkeypatch.setattr(
+        model_events.os,
+        "fstat",
+        lambda _fd: SimpleNamespace(st_mode=0o100600, st_size=0),
+    )
+
+    assert model_events._read_serve_failed_recent(path) == {}
+
+
+def test_serve_failure_claim_nonfinite_clock_and_lock_contention_fail_open(
+    monkeypatch,
+):
+    key = ("model", "llm", "other", "")
+    assert model_events._claim_serve_failure_key(key, now=float("nan")) is True
+    monkeypatch.setattr(
+        model_events.fcntl,
+        "flock",
+        lambda *_args: (_ for _ in ()).throw(BlockingIOError()),
+    )
+    assert model_events._claim_serve_failure_key(key, now=1000.0) is True
+
+
 def test_opted_out_serve_failure_writes_no_dedupe_file(monkeypatch, tmp_path):
     monkeypatch.setattr(consent_runtime, "upload_allowed", lambda: False)
     monkeypatch.setattr(
