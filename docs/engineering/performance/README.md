@@ -6,6 +6,7 @@ summary statistics, and limitations.
 
 ## Reports
 
+- [Semantic action protocol browser CUA POC](2026-09-25-cua-semantic-action-protocol.md)
 - [Qwen3.5-9B + GUI-Actor-Verifier browser POC](2026-09-25-gui-actor-verifier-cua-poc.md)
 - [System One CLM-8B server dogfood](2026-09-24-system-one-clm-dogfood.md)
 - [System One Laya server dogfood](2026-09-24-system-one-laya-dogfood.md)

@@ -21,6 +21,13 @@
 - GLM's four redundant search-field clicks exposed an action/state-contract
   failure: a screenshot cannot reliably report keyboard focus, `type` carries
   no semantic target, and reflection therefore reinforced an unnecessary retry.
+- The semantic protocol now exposes current target IDs, atomic fill+submit,
+  structured postconditions, target-derived click candidates, and adaptive
+  verifier scoring. Two clean protocol runs completed in 75-82 seconds without
+  a GLM reflection or repeated action.
+- The Laya + GLM shopping fast path completed in 37.37 seconds with three visible
+  actions and two GLM calls. Laya pre-ranked four organic cards in 0.253 seconds;
+  its low top probability (0.3024) means the ranking remains advisory.
 - No cart, account, checkout, payment, or purchase action was executed.
 
 ## Risks
@@ -35,8 +42,7 @@
 
 ## Next concrete action
 
-Add atomic `fill(target_node_id, text)` and `submit(target_node_id)` actions and
-record the focused Accessibility/DOM node after execution. Then replace raw
-coordinate alternatives with Accessibility/DOM candidates, batch verifier
-scores, and run a held-out suite that labels planner, candidate-generation,
-verifier, executor, reflection, and terminal-verification failures separately.
+Port semantic targets from browser DOM nodes to native macOS Accessibility,
+add typed drag/select operations, and run a held-out multi-application task
+suite. Qualify a local Qwen 27B planner against the same traces before replacing
+GLM-5.3.

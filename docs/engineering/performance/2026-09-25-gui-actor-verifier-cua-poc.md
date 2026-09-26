@@ -213,3 +213,6 @@ actions such as `fill(target_node_id, text)` and `submit(target_node_id)`, recor
 the focused Accessibility/DOM node after each action, and make `no_effect`
 recovery consume that structured state. GLM at low reasoning is already strong
 enough to expose this interface bottleneck.
+
+This follow-up was implemented and measured in
+[Semantic action protocol browser CUA POC](2026-09-25-cua-semantic-action-protocol.md).
