@@ -1114,7 +1114,9 @@ def _build_app(
             # behind it, unlike a timed-out generation worker.
             def _render() -> str | PreparedPrompt:
                 renderer = render_prompt_fn or _render_prompt
-                renderer_kwargs = {"enable_thinking": effective_thinking}
+                renderer_kwargs: dict[str, Any] = {
+                    "enable_thinking": effective_thinking
+                }
                 if telemetry_model is not None:
                     renderer_kwargs.update(
                         telemetry_model=telemetry_model,

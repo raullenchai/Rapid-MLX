@@ -1082,6 +1082,38 @@ def test_companion_video_rejection_carries_served_model_and_caller(
     ]
 
 
+def test_companion_renderer_receives_served_model_and_caller() -> None:
+    from rapid_mlx.spec_decode.dspark.server import _validate_greedy_request
+    from rapid_mlx.telemetry.model_id import telemetry_model_id
+
+    served_model = telemetry_model_id(LFM25_VL_3B.target_repo)
+    client, render_calls, _ = _companion_client(
+        validate_request_fn=_validate_greedy_request,
+        telemetry_model=served_model,
+    )
+
+    response = client.post(
+        "/v1/chat/completions",
+        headers={
+            "User-Agent": "Codex CLI/1.0",
+            "X-Rapid-Client": "codex-cli",
+        },
+        json={
+            "model": "lfm-vl",
+            "messages": [{"role": "user", "content": "hello"}],
+            "temperature": 0,
+        },
+    )
+
+    assert response.status_code == 200
+    assert render_calls[0][1] == {
+        "enable_thinking": False,
+        "telemetry_model": served_model,
+        "caller_agent": "Codex CLI/1.0",
+        "caller_client": "codex-cli",
+    }
+
+
 @pytest.mark.parametrize(
     "content_part",
     [
