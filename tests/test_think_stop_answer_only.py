@@ -78,12 +78,26 @@ def test_partial_opener_waits(partial):
     assert answer_start(partial, MODEL_OPENED) is None
 
 
+@pytest.mark.parametrize("partial", ["<", "<thi"])
+def test_terminal_partial_opener_is_plain_answer_text(partial):
+    """An EOS/length boundary resolves an incomplete opener as answer text."""
+    assert answer_start(partial, MODEL_OPENED, terminal=True) == 0
+    assert find_stop_in_answer(partial, ["<"], MODEL_OPENED, terminal=True) == ("<", 0)
+
+
 def test_no_reasoning_keeps_raw_stream_semantics():
     """A thinking-off answer (no markers) matches exactly as before,
     including the first-listed-stop-wins iteration order."""
     text = "B then A"
     assert answer_start(text, MODEL_OPENED) == 0
     assert find_stop_in_answer(text, ["A", "B"], MODEL_OPENED) == ("A", 7)
+
+
+def test_plain_answer_end_marker_does_not_retroactively_open_reasoning():
+    """Thinking-off text may mention ``</think>`` as ordinary content."""
+    text = "STOP before a literal </think> marker"
+    assert answer_start(text, MODEL_OPENED) == 0
+    assert find_stop_in_answer(text, ["STOP"], MODEL_OPENED) == ("STOP", 0)
 
 
 def test_stop_spanning_the_close_marker_is_not_an_answer_stop():
@@ -330,5 +344,37 @@ def test_multimodel_scope_fails_closed_on_registry_replacement():
     cfg.model_registry = registry
     try:
         assert reasoning_stop_scope_kwargs(captured_engine, request) == {}
+    finally:
+        reset_config()
+
+
+def test_mllm_scope_uses_the_processor_template_rendered_by_the_engine():
+    """Processor and tokenizer templates can disagree on multimodal models."""
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.reasoning import get_parser
+    from rapid_mlx.service.helpers import reasoning_stop_scope_kwargs
+
+    engine = _RecordingEngine()
+    engine._is_mllm = True
+    engine._processor = SimpleNamespace(
+        apply_chat_template=lambda *_args, **_kwargs: "",
+        chat_template=_THINK_TEMPLATE,
+    )
+    engine.tokenizer.chat_template = "{{ messages }}"
+    request = SimpleNamespace(
+        model="vision-reasoning",
+        stop=["10"],
+        tools=None,
+        enable_thinking=None,
+        chat_template_kwargs={"enable_thinking": True},
+    )
+    cfg = reset_config()
+    cfg.model_registry = None
+    cfg.reasoning_parser = get_parser("qwen3")()
+    cfg.reasoning_parser_name = "qwen3"
+    try:
+        assert reasoning_stop_scope_kwargs(engine, request) == {
+            "reasoning_stop_scope": PROMPT_OPENED
+        }
     finally:
         reset_config()

@@ -74,22 +74,40 @@ def build_reasoning_stop_scope(
     )
 
 
-def answer_start(decoded_so_far: str, scope: ReasoningStopScope) -> int | None:
+def answer_start(
+    decoded_so_far: str,
+    scope: ReasoningStopScope,
+    *,
+    terminal: bool = False,
+) -> int | None:
     """Offset in ``decoded_so_far`` where the answer begins, or ``None``.
 
-    * The first ``end_marker`` closes reasoning; the answer starts after it
-      and after the whitespace the template writes there (the reasoning
-      parser strips that whitespace from ``content`` as well).
+    * When the prompt opened reasoning, or the output begins with the start
+      marker, the first following ``end_marker`` closes reasoning; the answer
+      starts after it and after the whitespace the template writes there (the
+      reasoning parser strips that whitespace from ``content`` as well).
     * With no close yet, the output is still reasoning when the prompt
       opened the block or the output itself opened it, and cannot be
       classified yet while it is empty or a partial ``start_marker``.
       ``None`` means no user stop may match yet. The scheduler searches the
       whole decoded text on every step, so a stop in text that later turns
-      out to be answer is still found at its original position.
+      out to be answer is still found at its original position. ``terminal``
+      resolves an incomplete opener prefix as ordinary answer text when no
+      more output can arrive.
     * Otherwise the model answered without reasoning: ``0``, i.e. the
       pre-scope raw-stream match.
     """
-    close = decoded_so_far.find(scope.end_marker)
+    head = decoded_so_far.lstrip()
+    leading_offset = len(decoded_so_far) - len(head)
+    opened_in_output = head.startswith(scope.start_marker)
+    close_from = (
+        0 if scope.starts_in_reasoning else leading_offset + len(scope.start_marker)
+    )
+    close = (
+        decoded_so_far.find(scope.end_marker, close_from)
+        if scope.starts_in_reasoning or opened_in_output
+        else -1
+    )
     if close != -1:
         start = close + len(scope.end_marker)
         while start < len(decoded_so_far) and decoded_so_far[start].isspace():
@@ -97,14 +115,19 @@ def answer_start(decoded_so_far: str, scope: ReasoningStopScope) -> int | None:
         return start
     if scope.starts_in_reasoning:
         return None
-    head = decoded_so_far.lstrip()
-    if head.startswith(scope.start_marker) or scope.start_marker.startswith(head):
+    if opened_in_output:
+        return None
+    if scope.start_marker.startswith(head) and not terminal:
         return None
     return 0
 
 
 def find_stop_in_answer(
-    decoded_so_far: str, stop_params: list[str], scope: ReasoningStopScope
+    decoded_so_far: str,
+    stop_params: list[str],
+    scope: ReasoningStopScope,
+    *,
+    terminal: bool = False,
 ) -> tuple[str, int] | None:
     """Match ``stop_params`` against the answer part of ``decoded_so_far``.
 
@@ -113,7 +136,7 @@ def find_stop_in_answer(
     ``stop_params`` that occurs wins), so a request whose answer starts at
     offset 0 behaves exactly as before.
     """
-    start = answer_start(decoded_so_far, scope)
+    start = answer_start(decoded_so_far, scope, terminal=terminal)
     if start is None:
         return None
     for stop_str in stop_params:

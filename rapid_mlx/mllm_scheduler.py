@@ -523,6 +523,8 @@ class MLLMScheduler:
         new_text_start_len: int,
         stop_params: list[str],
         reasoning_stop_scope: Any | None = None,
+        *,
+        terminal: bool = False,
     ) -> tuple[int, str] | None:
         """Rolling user-stop matcher with harmony channel scoping.
 
@@ -547,7 +549,7 @@ class MLLMScheduler:
                 )
             from .reasoning.think_stop import answer_start
 
-            start = answer_start(text, reasoning_stop_scope)
+            start = answer_start(text, reasoning_stop_scope, terminal=terminal)
             if start is None:
                 # Still reasoning — user stops cannot fire.
                 return None
@@ -1256,6 +1258,7 @@ class MLLMScheduler:
                         previous_seen_len,
                         stop_params,
                         request.sampling_params.reasoning_stop_scope,
+                        terminal=finish_reason is not None,
                     )
                     if match is not None:
                         idx, stop_str = match
@@ -1326,6 +1329,7 @@ class MLLMScheduler:
                         request.stop_text_len,
                         stop_params,
                         request.sampling_params.reasoning_stop_scope,
+                        terminal=True,
                     )
                     if match is not None:
                         idx, stop_str = match

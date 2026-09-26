@@ -2713,10 +2713,11 @@ def reasoning_stop_scope_kwargs(engine: Any, request: Any) -> dict:
         return {}
     from ..reasoning.think_stop import build_reasoning_stop_scope
 
-    chat_template = ""
-    tokenizer = getattr(engine, "tokenizer", None)
-    if tokenizer is not None and hasattr(tokenizer, "chat_template"):
-        chat_template = tokenizer.chat_template or ""
+    # Use the same tokenizer/processor template selection as prompt rendering.
+    # MLLM engines can render the processor's template while their tokenizer
+    # advertises a different one; classifying against the latter would make
+    # stop matching disagree with the actual assistant prefix.
+    chat_template = served_chat_template(engine) or ""
     starts_in_reasoning = _should_start_in_thinking(
         chat_template,
         _resolve_enable_thinking(request),

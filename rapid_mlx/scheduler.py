@@ -9052,7 +9052,18 @@ class Scheduler:
                         request.num_output_tokens,
                     )
             stop_params = request.sampling_params.stop or []
-            if finish_reason is None and stop_params:
+            reasoning_stop_scope = getattr(
+                request.sampling_params, "reasoning_stop_scope", None
+            )
+            # A model-opened ``<think>`` prefix can be ambiguous for its
+            # first few characters. Scoped matching defers those bytes until
+            # the opener is complete or disproved; on a terminal engine step
+            # it must get one final search so a response ending at ``<thi``
+            # still honors a user stop contained in that plain answer.
+            terminal_scoped_check = (
+                reasoning_stop_scope is not None and response.finish_reason is not None
+            )
+            if stop_params and (finish_reason is None or terminal_scoped_check):
                 decoder = getattr(request, "_decoder", None)
                 if decoder is not None:
                     decoded_so_far = decoder.get_full_text()
@@ -9078,9 +9089,6 @@ class Scheduler:
                 # stops then match only the answer after the reasoning
                 # close. Requests without a scope keep the raw match.
                 stop_match: tuple[str, int] | None = None
-                reasoning_stop_scope = getattr(
-                    request.sampling_params, "reasoning_stop_scope", None
-                )
                 if self._is_harmony_family:
                     from .reasoning.harmony_stop import find_stop_in_final_channel
 
@@ -9089,7 +9097,10 @@ class Scheduler:
                     from .reasoning.think_stop import find_stop_in_answer
 
                     stop_match = find_stop_in_answer(
-                        decoded_so_far, stop_params, reasoning_stop_scope
+                        decoded_so_far,
+                        stop_params,
+                        reasoning_stop_scope,
+                        terminal=terminal_scoped_check,
                     )
                 else:
                     for stop_str in stop_params:

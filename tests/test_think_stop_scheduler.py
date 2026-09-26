@@ -49,7 +49,9 @@ def _scheduler():
     return scheduler
 
 
-def _step(scheduler, *, decoded: str, stop: list[str], scope):
+def _step(
+    scheduler, *, decoded: str, stop: list[str], scope, finish_reason: str | None = None
+):
     sp = SamplingParams(max_tokens=100, stop=stop, reasoning_stop_scope=scope)
     request = Request(request_id="r", prompt="ignored", sampling_params=sp)
     request.num_prompt_tokens = 4
@@ -68,7 +70,7 @@ def _step(scheduler, *, decoded: str, stop: list[str], scope):
     response = MagicMock()
     response.uid = 0
     response.token = 42
-    response.finish_reason = None
+    response.finish_reason = finish_reason
     response.logprobs = None
     del response.prompt_cache
     outputs, finished = scheduler._process_batch_responses([response])
@@ -108,6 +110,21 @@ def test_scheduler_without_scope_keeps_the_raw_stream_match():
     assert output.output_text == "I will count 1 to "
 
 
+def test_scheduler_resolves_a_partial_opener_on_terminal_step():
+    scheduler = _scheduler()
+    output, finished = _step(
+        scheduler,
+        decoded="<thi",
+        stop=["<"],
+        scope=ReasoningStopScope("<think>", "</think>", starts_in_reasoning=False),
+        finish_reason="length",
+    )
+    assert output.finish_reason == "stop"
+    assert output.matched_stop == "<"
+    assert output.output_text == ""
+    assert "r" in finished
+
+
 # ---------------------------------------------------------------------------
 # Multimodal scheduler rolling matcher
 # ---------------------------------------------------------------------------
@@ -132,3 +149,13 @@ def test_mllm_matcher_ignores_reasoning_and_stops_in_answer():
     # No scope: the raw rolling-window match is unchanged.
     idx, _ = scheduler._match_user_stop(reasoning, 0, ["10"])
     assert reasoning[:idx] == "I will count 1 to "
+
+
+def test_mllm_matcher_resolves_a_partial_opener_at_terminal():
+    scheduler = _mllm_scheduler()
+    scope = ReasoningStopScope("<think>", "</think>", starts_in_reasoning=False)
+    assert scheduler._match_user_stop("<thi", 0, ["<"], scope) is None
+    assert scheduler._match_user_stop("<thi", 0, ["<"], scope, terminal=True) == (
+        0,
+        "<",
+    )
