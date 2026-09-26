@@ -171,9 +171,10 @@ _stt_engine = None
 
 #: Telemetry id of the STT/aligner engine that served the current request,
 #: captured under the STT lane lock by the request runners. Telemetry model
-#: identity comes ONLY from the engine that actually ran — never from the
-#: request's ``model`` form/query field, which passes ``org/name`` strings
-#: through verbatim (see ``rapid_mlx/telemetry/events.json`` ``model_id``).
+#: identity is derived from the engine that actually LOADED and ran (its
+#: resolved checkpoint, still classified by ``telemetry_model_id``); it is
+#: never reported for a model that was merely requested but never loaded
+#: (see ``rapid_mlx/telemetry/events.json`` ``model_id``).
 _SERVED_STT_TELEMETRY_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "rapid_mlx_served_stt_telemetry_id", default=None
 )
