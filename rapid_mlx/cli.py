@@ -67,6 +67,15 @@ def _stamp_port_explicit(args: argparse.Namespace) -> argparse.Namespace:
     return args
 
 
+def port_explicit_for(args: argparse.Namespace) -> bool | None:
+    """Return bind-port provenance for parsed or programmatic namespaces."""
+    if hasattr(args, "_port_explicit"):
+        return args._port_explicit
+    if getattr(args, "listen_fd", None) is not None:
+        return None
+    return getattr(args, "port", None) is not None
+
+
 class _PortContextArgumentParser(argparse.ArgumentParser):
     """Argument parser that records the effective bind-port provenance."""
 
@@ -782,7 +791,7 @@ def _run_uvicorn(app, args, log_level: str) -> None:
                 log_level=log_level,
                 timeout_keep_alive=30,
                 on_server_accepting=print_ready_banner,
-                port_explicit=args._port_explicit,
+                port_explicit=port_explicit_for(args),
             )
         else:
             port = _resolved_serve_port(args)
@@ -793,7 +802,7 @@ def _run_uvicorn(app, args, log_level: str) -> None:
                 log_level=log_level,
                 timeout_keep_alive=30,
                 on_server_accepting=print_ready_banner,
-                port_explicit=args._port_explicit,
+                port_explicit=port_explicit_for(args),
             )
     except OSError as exc:
         # Direct EADDRINUSE — older uvicorn, ``--listen-fd`` mode bind
@@ -3529,7 +3538,7 @@ def _serve_native_mtp_if_requested(
         pair=pair,
         host=args.host,
         port=_resolved_serve_port(args),
-        port_explicit=args._port_explicit,
+        port_explicit=port_explicit_for(args),
         served_model_name=args.served_model_name or alias_name,
         default_max_tokens=effective_max_tokens,
         cors_origins=cors_origins,
@@ -3632,7 +3641,7 @@ def _serve_companion_dspark_if_requested(
         artifacts=getattr(args, "_companion_dspark_artifacts", None),
         host=args.host,
         port=args.port,
-        port_explicit=args._port_explicit,
+        port_explicit=port_explicit_for(args),
         served_model_name=args.served_model_name or alias_name,
         default_max_tokens=effective_max_tokens,
         cors_origins=cors_origins,
@@ -4517,7 +4526,7 @@ def system_one_command(args) -> None:
         args.host,
         args.port,
         model=args.model,
-        port_explicit=args._port_explicit,
+        port_explicit=port_explicit_for(args),
     )
     backend: DecisionBackend
     if backend_name == "clm":
@@ -4553,7 +4562,7 @@ def system_one_command(args) -> None:
         port=args.port,
         log_level=args.log_level.lower(),
         timeout_keep_alive=30,
-        port_explicit=args._port_explicit,
+        port_explicit=port_explicit_for(args),
     )
 
 
@@ -4855,7 +4864,7 @@ def serve_command(args):
             getattr(args, "host", "127.0.0.1"),
             getattr(args, "port", None),
             model=args.model,
-            port_explicit=args._port_explicit,
+            port_explicit=port_explicit_for(args),
             listen_fd=getattr(args, "listen_fd", None),
         )
         _serve_audio_mode(args, audio_entry)
@@ -4912,7 +4921,7 @@ def serve_command(args):
         getattr(args, "host", "127.0.0.1"),
         getattr(args, "port", None),
         model=args.model,
-        port_explicit=args._port_explicit,
+        port_explicit=port_explicit_for(args),
         listen_fd=getattr(args, "listen_fd", None),
     )
 
@@ -5683,7 +5692,7 @@ def serve_command(args):
         run_v41_server(
             host=args.host,
             port=_resolved_serve_port(args),
-            port_explicit=args._port_explicit,
+            port_explicit=port_explicit_for(args),
             served_model_name=(
                 args.served_model_name
                 or getattr(args, "_original_alias", None)
@@ -5762,7 +5771,7 @@ def serve_command(args):
             drafter_revision=_drafter_revision,
             host=args.host,
             port=_resolved_serve_port(args),
-            port_explicit=args._port_explicit,
+            port_explicit=port_explicit_for(args),
             served_model_name=args.served_model_name or _alias_name,
             default_max_tokens=effective_max_tokens,
             cors_origins=cors_origins,
@@ -6343,7 +6352,7 @@ def serve_command(args):
             or _profile.ddtree_tree_budget,
             host=args.host,
             port=_resolved_serve_port(args),
-            port_explicit=args._port_explicit,
+            port_explicit=port_explicit_for(args),
             served_model_name=args.served_model_name or _alias_name,
             default_max_tokens=args.max_tokens,
             cors_origins=cors_origins,

@@ -3921,13 +3921,13 @@ def main():
     # AND ``127.0.0.1`` when ``args.host`` is a wildcard alias
     # (``0.0.0.0`` or ``""``) so a co-resident loopback-only listener
     # is caught before we sink time into model load.
-    from .cli import _resolve_serve_port
+    from .cli import _resolve_serve_port, port_explicit_for
 
     args.port = _resolve_serve_port(
         args.host,
         args.port,
         model=args.model,
-        port_explicit=args._port_explicit,
+        port_explicit=port_explicit_for(args),
     )
     assert isinstance(args.port, int)
 
@@ -4345,7 +4345,7 @@ def main():
         port=args.port,
         log_level=uvicorn_log_level,
         on_server_accepting=print_ready_banner,
-        port_explicit=args._port_explicit,
+        port_explicit=port_explicit_for(args),
     )
 
     # Issue #3495: same contract as the CLI serve entrypoints — after a

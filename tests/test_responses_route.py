@@ -5,17 +5,33 @@ Same lightweight-engine harness shape as ``test_anthropic_route_auth.py``
 (no MLX import) so the tests stay fast and CI-portable.
 """
 
+import http.client
 import json
 import math
 import sys
+import threading
 import types
 from dataclasses import dataclass, field
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
+
+
+class _TelemetryCaptureHandler(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:
+        length = int(self.headers["Content-Length"])
+        self.server.bodies.append(self.rfile.read(length))  # type: ignore[attr-defined]
+        self.send_response(200)
+        self.send_header("Content-Length", "2")
+        self.end_headers()
+        self.wfile.write(b"{}")
+
+    def log_message(self, _format: str, *_args: object) -> None:
+        pass
 
 
 class _Tokenizer:
@@ -293,6 +309,101 @@ class TestResponsesAuth:
 
 
 class TestResponsesNonStream:
+    def test_unsupported_tool_still_precedes_invalid_model(self, responses_client):
+        response = responses_client.client.post(
+            "/v1/responses",
+            json=_payload(
+                model="definitely-not-served",
+                tools=[{"type": "web_search"}],
+            ),
+            headers={"Authorization": "Bearer test-secret"},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "unsupported_tool_type"
+
+    def test_unsupported_tool_telemetry_posts_served_model_to_loopback(
+        self, responses_client, monkeypatch
+    ):
+        from rapid_mlx.telemetry import inference, posthog_sender
+        from rapid_mlx.telemetry.build_gate import ReleaseStamp
+
+        sink = HTTPServer(("127.0.0.1", 0), _TelemetryCaptureHandler)
+        sink.bodies = []  # type: ignore[attr-defined]
+        thread = threading.Thread(target=sink.serve_forever, daemon=True)
+        thread.start()
+
+        def post(_url: str, body: bytes, timeout: float) -> int:
+            connection = http.client.HTTPConnection(
+                "127.0.0.1", sink.server_port, timeout=timeout
+            )
+            try:
+                connection.request(
+                    "POST",
+                    "/batch/",
+                    body=body,
+                    headers={"Content-Type": "application/json"},
+                )
+                return connection.getresponse().status
+            finally:
+                connection.close()
+
+        sender = posthog_sender.PostHogSender(
+            post=post,
+            gate=lambda: ReleaseStamp(channel="stable", posthog_key="phc_" + "a" * 32),
+            allowed=lambda: True,
+        )
+        monkeypatch.setattr(inference.track_module, "_upload_allowed", lambda: True)
+        monkeypatch.setattr(inference, "_submit", lambda work: work())
+        monkeypatch.setattr(
+            inference.track_module,
+            "track",
+            lambda event, props: sender.capture(
+                {
+                    "uuid": "01020304-0506-4708-890a-0b0c0d0e0f10",
+                    "event": event,
+                    "properties": dict(props),
+                }
+            ),
+        )
+        responses_client.cfg.model_path = "qwen3.5-4b-4bit"
+
+        try:
+            response = responses_client.client.post(
+                "/v1/responses",
+                json=_payload(tools=[{"type": "web_search"}]),
+                headers={
+                    "Authorization": "Bearer test-secret",
+                    "x-rapid-client": "rapid-desktop",
+                },
+            )
+            sender.flush(2.0)
+        finally:
+            sender.close(0.5)
+            sink.shutdown()
+            thread.join(timeout=2.0)
+            sink.server_close()
+
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "unsupported_tool_type"
+        items = [
+            item
+            for body in sink.bodies  # type: ignore[attr-defined]
+            for item in json.loads(body)["batch"]
+        ]
+        assert items == [
+            {
+                "uuid": "01020304-0506-4708-890a-0b0c0d0e0f10",
+                "event": "capability_rejected",
+                "properties": {
+                    "capability": "tool_type_unsupported",
+                    "model_type": "other",
+                    "model": "qwen3.5-4b-4bit",
+                    "caller": "rapid-desktop",
+                },
+            }
+        ]
+
     def test_response_shape_matches_codex_expectation(self, responses_client):
         client = responses_client.client
 

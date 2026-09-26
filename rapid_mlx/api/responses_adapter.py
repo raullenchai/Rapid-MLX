@@ -348,10 +348,9 @@ def validate_responses_tool_types(
 ) -> None:
     """Raise 400 if any ``tools[i].type`` falls outside the allowlist.
 
-    Idempotent — safe to call from both the route entry point and from
-    the adapter's own ``responses_to_openai`` path. The route gate fires
-    BEFORE we touch the engine so unsupported requests don't admit a
-    scheduler slot.
+    The route calls this before its other semantic validators, using the
+    server's pre-resolved served identity so telemetry gains model context
+    without changing HTTP validation ordering.
 
     Alias-aware: ``tools[i].type`` is checked AFTER the alias map is
     applied (see :func:`_canonicalize_tool_type`), so OpenAI-SDK

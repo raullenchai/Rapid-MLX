@@ -68,6 +68,19 @@ def test_port_explicit_never_uses_getattr_fallback() -> None:
     assert offenders == [], f"_port_explicit getattr fallbacks remain: {offenders}"
 
 
+@pytest.mark.parametrize(
+    ("args", "expected"),
+    [
+        (SimpleNamespace(port=8123, _port_explicit=False), False),
+        (SimpleNamespace(port=8123), True),
+        (SimpleNamespace(port=None), False),
+        (SimpleNamespace(port=8123, listen_fd=9), None),
+    ],
+)
+def test_port_explicit_for_supports_programmatic_namespaces(args, expected) -> None:
+    assert cli.port_explicit_for(args) is expected
+
+
 async def _asgi_app(scope, receive, send):
     if scope["type"] == "lifespan":
         while True:

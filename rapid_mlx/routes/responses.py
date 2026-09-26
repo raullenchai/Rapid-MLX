@@ -967,8 +967,17 @@ async def create_response(request: Request):
             "DeepSeek Codex first-action priming: pinning exec_command for "
             "the initial repository locating turn"
         )
+    # Keep this gate ahead of tool-choice and model validation so requests
+    # with multiple invalid fields retain their established error ordering.
+    # The server can resolve the selected served identity without loading or
+    # readying the engine; the identity-based value below remains authoritative
+    # for events emitted after engine selection.
+    from rapid_mlx.telemetry.model_id import served_model_id
+
+    _preflight_telemetry_id = served_model_id(responses_request.model)
     validate_responses_tool_types(
         responses_request.tools,
+        telemetry_model=_preflight_telemetry_id,
         caller_agent=_caller_agent,
         caller_client=_caller_client,
     )
