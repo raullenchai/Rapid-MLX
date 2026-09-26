@@ -241,6 +241,56 @@ def _product(target_id, asin, sponsored=False):
     )
 
 
+def _cart_ptc(target_id, dom_id="", label="Proceed to checkout"):
+    return MODULE.Target(
+        target_id=target_id,
+        tag="input",
+        role="",
+        label=label,
+        value="",
+        href="",
+        input_type="submit",
+        sponsored=None,
+        context="",
+        box={"x": 900, "y": 300, "width": 220, "height": 40},
+        dom_id=dom_id,
+    )
+
+
+def test_cart_checkout_target_found_by_dom_id_or_label():
+    by_id = {"t010": _cart_ptc("t010", dom_id="sc-buy-box-ptc-button", label="")}
+    assert MODULE._cart_checkout_target(by_id).target_id == "t010"
+    by_label = {"t011": _cart_ptc("t011", label="Proceed to checkout ($21.99)")}
+    assert MODULE._cart_checkout_target(by_label).target_id == "t011"
+    assert (
+        MODULE._cart_checkout_target({"t012": _product("t012", "B000000012")}) is None
+    )
+
+
+def test_fast_controller_clicks_cart_checkout_once_then_yields_to_planner():
+    targets = {
+        "t010": _cart_ptc("t010", dom_id="sc-buy-box-ptc-button", label=""),
+        "t012": _product("t012", "B000000012"),
+    }
+    plan = MODULE._fast_controller_plan(
+        "https://www.amazon.com/gp/cart/view.html", targets, [], 4
+    )
+    assert plan and plan["action"] == "click" and plan["target_id"] == "t010"
+    history = [
+        {
+            "source": "fast-controller",
+            "action": "click",
+            "target_id": "t010",
+        }
+    ]
+    assert (
+        MODULE._fast_controller_plan(
+            "https://www.amazon.com/gp/cart/view.html", targets, history, 4
+        )
+        is None
+    )
+
+
 def test_fast_controller_scrolls_until_three_organic_products_are_visible():
     targets = {
         "t001": _product("t001", "B000000001"),

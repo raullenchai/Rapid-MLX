@@ -113,6 +113,7 @@ class Target:
     sponsored: bool | None
     context: str
     box: dict[str, float]
+    dom_id: str = ""
 
 
 def _data_url(path: Path, max_size: tuple[int, int] = (960, 600)) -> str:
@@ -544,6 +545,7 @@ async def _collect_targets(page: Page) -> tuple[str, dict[str, Target]]:
                 target_id,
                 tag: e.tagName.toLowerCase(),
                 role: e.getAttribute('role') || '',
+                dom_id: e.id || '',
                 label,
                 value: String(e.value || '').slice(0, 300),
                 href: e.href || '',
@@ -578,6 +580,8 @@ async def _collect_targets(page: Page) -> tuple[str, dict[str, Target]]:
             f"type={target.input_type or '-'} label={target.label!r} "
             f"sponsored={sponsored}"
         )
+        if target.dom_id:
+            line += f" dom_id={target.dom_id!r}"
         if target.href:
             line += f" href={target.href[:220]!r}"
         if target.context and target.context != target.label:
@@ -830,6 +834,16 @@ async def _wait_for_human(
     return False
 
 
+def _cart_checkout_target(targets: dict[str, Target]) -> Target | None:
+    ptc_ids = {"sc-buy-box-ptc-button", "attach-sidesheet-checkout-button"}
+    for target in targets.values():
+        if target.dom_id in ptc_ids:
+            return target
+        if re.search(r"proceed\s+to\s+checkout", target.label, re.IGNORECASE):
+            return target
+    return None
+
+
 def _fast_controller_plan(
     url: str,
     targets: dict[str, Target],
@@ -837,6 +851,24 @@ def _fast_controller_plan(
     max_scrolls: int,
 ) -> dict[str, Any] | None:
     if "/s?" not in url:
+        cart_ptc = _cart_checkout_target(targets)
+        if cart_ptc is not None:
+            already_tried = any(
+                item.get("source") == "fast-controller"
+                and item.get("action") == "click"
+                and item.get("target_id") == cart_ptc.target_id
+                for item in history
+            )
+            if not already_tried:
+                return {
+                    "action": "click",
+                    "step_instruction": "Click Proceed to checkout on the cart page",
+                    "target_id": cart_ptc.target_id,
+                    "text": "",
+                    "submit": False,
+                    "direction": "down",
+                    "final_summary": "",
+                }
         return None
     products = _organic_product_targets(targets)
     controller_scrolls = sum(
