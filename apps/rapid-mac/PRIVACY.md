@@ -1,6 +1,6 @@
 # Rapid-MLX Desktop — Privacy Policy
 
-Last updated: 2026-08-27.
+Last updated: 2026-09-25.
 
 Rapid-MLX Desktop ("the App") is a local-first SwiftUI Mac client for the
 `rapid-mlx` inference server. We designed it so that your prompts,
