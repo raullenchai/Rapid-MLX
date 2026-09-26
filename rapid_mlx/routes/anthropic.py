@@ -731,13 +731,22 @@ async def create_anthropic_message(
                             "image_input_unsupported",
                             model_type=model_type_token(engine),
                         )
-                        raise HTTPException(
-                            status_code=400,
-                            detail=(
-                                f"Model '{cfg_pre.model_name}' does not support "
-                                f"{_block_type} inputs."
-                            ),
+                        from rapid_mlx.api.utils import (
+                            public_model_label,
+                            text_lane_image_guidance,
                         )
+
+                        _detail = (
+                            f"Model '{public_model_label(cfg_pre.model_name)}' "
+                            f"does not support {_block_type} inputs."
+                        )
+                        _guidance = text_lane_image_guidance(
+                            cfg_pre.model_name,
+                            getattr(engine, "serving_lane_reason", None),
+                        )
+                        if _guidance is not None:
+                            _detail = f"{_detail} {_guidance}"
+                        raise HTTPException(status_code=400, detail=_detail)
 
         # Convert Anthropic request -> OpenAI request. The adapter raises
         # ``AnthropicOutputConfigError`` (a ``ValueError`` subclass) on

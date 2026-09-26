@@ -2080,14 +2080,16 @@ class TestValidateContentBlocksForCapabilities:
                 allow_video=False,
             )
 
-        assert caught.value.openai_detail(
+        detail = caught.value.openai_detail(
             serving_lane_reason="vision_hybrid_runtime_unsupported"
-        ) == {
+        )
+        message = detail["error"].pop("message")
+        assert message.startswith(
+            "Model 'vision-model' is serving text-only; image input is "
+            "unsupported. The installed vision runtime (mlx-vlm)"
+        )
+        assert detail == {
             "error": {
-                "message": (
-                    "Model 'vision-model' is serving text-only; image input "
-                    "is unsupported."
-                ),
                 "type": "invalid_request_error",
                 "code": "image_input_unsupported",
                 "param": "messages.content",

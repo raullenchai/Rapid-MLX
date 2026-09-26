@@ -389,10 +389,12 @@ class TestResponsesNonStream:
 
         assert image_response.status_code == 400
         image_body = image_response.json()
-        assert image_body.get("detail", image_body)["error"] == {
-            "message": (
-                "Model 'test-model' is serving text-only; image input is unsupported."
-            ),
+        image_error = image_body.get("detail", image_body)["error"]
+        assert image_error.pop("message").startswith(
+            "Model 'test-model' is serving text-only; image input is unsupported. "
+            "The installed vision runtime (mlx-vlm)"
+        )
+        assert image_error == {
             "type": "invalid_request_error",
             "code": "image_input_unsupported",
             "param": "messages.content",

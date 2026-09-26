@@ -1608,6 +1608,193 @@ def resolve_serving_lane(
     return decision.is_mllm, decision.auto_text_fallback
 
 
+# A catalog vision alias is suggested only when its estimated working set stays
+# inside the conservative "no memory warning" band ``serve`` applies to models
+# without a measured footprint (projected use below 65% of physical RAM) and
+# every memory floor the alias declares is met. Unmeasured aliases use the same
+# download-size x1.5 working-set estimate as that warning; an alias with no
+# size evidence is never suggested.
+_VISION_SUGGESTION_RAM_FRACTION = 0.65
+_UNMEASURED_WORKING_SET_FACTOR = 1.5
+
+# Text-lane reasons whose only remedy is serving a different, vision-capable
+# model. Each value names the cause in one sentence.
+_SUGGEST_VISION_ALIAS_CAUSES = {
+    "text_checkpoint": "This checkpoint has no vision tower.",
+    "vision_weights_unavailable": (
+        "This checkpoint's vision weights are missing, so it started text-only."
+    ),
+    "vision_architecture_unavailable": (
+        "The installed vision runtime does not provide this model's vision "
+        "architecture, so it started text-only."
+    ),
+    "vision_hybrid_cache_unsupported": (
+        "The vision lane does not support this model's cache layout, so it "
+        "started text-only."
+    ),
+}
+
+# Reasons shown in the serve ready banner: a vision-capable checkpoint that was
+# routed to the text lane automatically rather than by an operator flag.
+BANNER_TEXT_LANE_REASONS = AUTO_TEXT_FALLBACK_REASONS | {"vision_weights_unavailable"}
+
+
+def vision_alias_memory_need_gb(alias: str, profile) -> float | None:
+    """Estimated serve working set (GiB) for a catalog alias, or ``None``."""
+    from ..model_sizes import size_bytes
+    from ..recommendations import recommendation_footprint_gb
+
+    measured = recommendation_footprint_gb(alias)
+    if measured is not None:
+        return measured
+    raw = size_bytes(profile.hf_path)
+    if raw is None:
+        return None
+    return raw * _UNMEASURED_WORKING_SET_FACTOR / float(1 << 30)
+
+
+def _is_sidecar_drafter(profile) -> bool:
+    """Gemma 4 ``*-assistant`` checkpoints are speculative-decoding drafters
+    (``gemma4_assistant``, a few hundred MB), not standalone chat models."""
+    return "-assistant" in profile.hf_path.rsplit("/", 1)[-1].lower()
+
+
+def _profile_has_hybrid_backbone(profile) -> bool:
+    """Catalog evidence of a hybrid backbone.
+
+    ``vision_min_memory_gb`` is only consulted for hybrid (``arrays``-cache)
+    backbones, so declaring it is catalog evidence of one, as is ``is_hybrid``.
+    """
+    return bool(profile.is_hybrid or profile.vision_min_memory_gb is not None)
+
+
+def fitting_vision_alias(
+    ram_gb: float,
+    *,
+    hybrid_runtime_ok: bool,
+    exclude_hf_path: str | None = None,
+) -> str | None:
+    """Pick the catalog vision alias that best fits ``ram_gb`` of memory.
+
+    Deterministic: among non-experimental ``text``-modality aliases that accept
+    image input and are not sidecar drafters, whose vision/model memory floors are at most ``ram_gb`` and
+    whose estimated working set stays within the suggestion band, return the
+    one with the largest working set (alias name breaks ties). Hybrid-backbone
+    aliases are skipped when the installed vision runtime cannot serve them,
+    since they would start text-only too. ``None`` when nothing fits.
+    """
+    from ..model_aliases import list_builtin_aliases
+
+    if ram_gb <= 0:
+        return None
+    budget = ram_gb * _VISION_SUGGESTION_RAM_FRACTION
+    best: tuple[float, str] | None = None
+    for alias in sorted(list_builtin_aliases()):
+        profile = resolve_profile(alias)
+        if (
+            profile is None
+            or not profile.supports_image_input
+            or profile.is_text_only
+            or profile.experimental
+            or profile.modality != "text"
+            or _is_sidecar_drafter(profile)
+            or (exclude_hf_path is not None and profile.hf_path == exclude_hf_path)
+            or (not hybrid_runtime_ok and _profile_has_hybrid_backbone(profile))
+        ):
+            continue
+        floors = (profile.vision_min_memory_gb, profile.min_memory_gb)
+        if any(floor is not None and floor > ram_gb for floor in floors):
+            continue
+        need = vision_alias_memory_need_gb(alias, profile)
+        if need is None or need > budget:
+            continue
+        if best is None or need > best[0]:
+            best = (need, alias)
+    return None if best is None else best[1]
+
+
+def public_model_label(model_name: object) -> str:
+    """Model name safe to echo to clients: never a local filesystem path."""
+    import os
+
+    if not isinstance(model_name, str):
+        return str(model_name)
+    if os.path.isabs(model_name) or model_name.startswith(("~", ".")):
+        return os.path.basename(os.path.normpath(model_name)) or "model"
+    return model_name
+
+
+def text_lane_image_guidance(
+    model_name: object,
+    reason: object,
+    *,
+    ram_gb: float | None = None,
+    hybrid_runtime_ok: bool | None = None,
+) -> str | None:
+    """Explain why a model serves text-only and what to do, or ``None``.
+
+    ``reason`` is the engine's ``serving_lane_reason``. The text never contains
+    a filesystem path: it names flags, catalog aliases and memory sizes only.
+    """
+    if not isinstance(reason, str):
+        return None
+    profile = resolve_profile(model_name) if isinstance(model_name, str) else None
+    if ram_gb is None:
+        ram_gb = physical_ram_gb()
+    if hybrid_runtime_ok is None:
+        hybrid_runtime_ok = mllm_hybrid_runtime_supported()
+
+    def _suggest() -> str:
+        alias = fitting_vision_alias(
+            ram_gb,
+            hybrid_runtime_ok=hybrid_runtime_ok,
+            exclude_hf_path=profile.hf_path if profile is not None else None,
+        )
+        if alias is None:
+            return "No catalog vision model fits this Mac's memory."
+        return f"For image input, serve '{alias}', a vision model that fits this Mac."
+
+    mac_gb = f"{ram_gb:.0f}"
+    if reason == "vision_memory_insufficient":
+        floor = profile.vision_min_memory_gb if profile is not None else None
+        if floor is not None:
+            cause = (
+                f"Vision for this model needs at least {floor:g} GB of RAM; "
+                f"this Mac has {mac_gb} GB, so it started text-only."
+            )
+        else:
+            cause = (
+                f"Vision for this model needs more than this Mac's {mac_gb} GB "
+                "of RAM, so it started text-only."
+            )
+        return f"{cause} {_suggest()}"
+    if reason == "vision_hybrid_runtime_unsupported":
+        from ..models.mllm import _vision_install_hint
+
+        hint = " ".join(_vision_install_hint(include_paths=False).split())
+        return (
+            "The installed vision runtime (mlx-vlm) is missing or too old for "
+            f"this model's hybrid backbone, so it started text-only. {hint}"
+        )
+    if reason == "text_lane_forced":
+        if profile is not None and profile.is_text_only:
+            return f"Its catalog entry pins it to text-only serving. {_suggest()}"
+        return (
+            "Text-only serving was forced with --no-mllm (--text-only); restart "
+            "without that flag for image input."
+        )
+    if reason == "text_lane_speculative_decode":
+        return (
+            "Speculative decoding was requested (--spec-decode, "
+            "--force-spec-decode or MTP) and only the text lane runs it; restart "
+            "without speculative decoding for image input."
+        )
+    cause = _SUGGEST_VISION_ALIAS_CAUSES.get(reason)
+    if cause is None:
+        return None
+    return f"{cause} {_suggest()}"
+
+
 def decode_inline_tool_call_arguments(messages: list[dict]) -> None:
     """Decode `tool_calls[].function.arguments` from JSON string to dict in-place.
 
@@ -1746,14 +1933,30 @@ def _validate_content_part_payload(item: dict) -> None:
 class UnsupportedContentBlockError(ValueError):
     """Typed request-boundary error for unsupported media content."""
 
-    def __init__(self, message: str, *, code: str, param: str):
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str,
+        param: str,
+        model_name: str | None = None,
+    ):
         super().__init__(message)
         self.code = code
         self.param = param
+        self.model_name = model_name
+
+    def client_message(self, serving_lane_reason: object = None) -> str:
+        """The message plus, for a text-lane image rejection, why and what next."""
+        message = str(self)
+        if self.code != "image_input_unsupported" or self.model_name is None:
+            return message
+        guidance = text_lane_image_guidance(self.model_name, serving_lane_reason)
+        return message if guidance is None else f"{message} {guidance}"
 
     def openai_detail(self, *, serving_lane_reason: str | None = None) -> dict:
         error = {
-            "message": str(self),
+            "message": self.client_message(serving_lane_reason),
             "type": "invalid_request_error",
             "code": self.code,
             "param": self.param,
@@ -1809,10 +2012,11 @@ def validate_content_blocks_for_capabilities(
 
                 emit_capability_rejected("image_input_unsupported", model_type="llm")
                 raise UnsupportedContentBlockError(
-                    f"Model '{model_name}' is serving text-only; image input "
-                    "is unsupported.",
+                    f"Model '{public_model_label(model_name)}' is serving "
+                    "text-only; image input is unsupported.",
                     code="image_input_unsupported",
                     param="messages.content",
+                    model_name=model_name,
                 )
             if item_type in VIDEO_CONTENT_TYPES:
                 from rapid_mlx.telemetry.inference import emit_capability_rejected
