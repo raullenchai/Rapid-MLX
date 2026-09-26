@@ -863,6 +863,18 @@ if sys.argv[1:3] == ["serve", "owner/gated-model"]:
             HfHubHTTPError("token=wire-secret", response=response)
         )
     )
+
+if sys.argv[1:3] == ["serve", "gemma-4-e4b-4bit"]:
+    from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
+
+    cli.serve_command = lambda _args: (_ for _ in ()).throw(
+        OptionalRuntimeMissing(
+            extra="vision",
+            install_hint="pip install 'rapid-mlx[vision]'",
+            detail="deterministic missing vision runtime",
+            status="broken",
+        )
+    )
 """.lstrip(),
         encoding="utf-8",
     )
@@ -1205,6 +1217,75 @@ def test_gated_serve_posts_one_resolve_and_serve_failure_to_loopback(
     assert serve_failures[0]["properties"]["error_class"] == "download_failed"
     assert len(pull_failures) == 1
     assert pull_failures[0]["properties"]["error_class"] == "gated"
+
+
+def test_restarted_missing_extra_serve_dedupes_only_model_failure(
+    tmp_path, official_entrypoint_layout
+):
+    root, hooks_dir, site_dir, console = official_entrypoint_layout
+    home = tmp_path / "home"
+    telemetry_dir = home / ".rapid-mlx"
+    telemetry_dir.mkdir(parents=True)
+    (telemetry_dir / "telemetry-consent.yaml").write_text(
+        "consent: true\nprompted_version: 0.15.1\nnotice_revision_seen: 1\n",
+        encoding="utf-8",
+    )
+    sink = HTTPServer(("127.0.0.1", 0), _CaptureHandler)
+    sink.bodies = []  # type: ignore[attr-defined]
+    thread = threading.Thread(target=sink.serve_forever, daemon=True)
+    thread.start()
+    env = dict(
+        os.environ,
+        HOME=str(home),
+        USER="rc",
+        PATH=f"{root / 'bin'}{os.pathsep}{os.environ.get('PATH', '')}",
+        PYTHONPATH=os.pathsep.join(
+            (
+                str(hooks_dir),
+                str(site_dir),
+                *(path for path in sys.path if path.endswith("site-packages")),
+            )
+        ),
+        RAPID_MLX_POSTHOG_URL=f"http://127.0.0.1:{sink.server_port}/batch/",
+        RAPID_MLX_DISABLE_VERSION_CHECK="1",
+    )
+    for name in (*state.CI_ENV_VARS, state.ENV_VAR, state.DO_NOT_TRACK_ENV):
+        env.pop(name, None)
+    try:
+        procs = [
+            subprocess.run(
+                [str(console), "serve", "gemma-4-e4b-4bit", "--port", "0"],
+                cwd=home,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+            for _ in range(2)
+        ]
+    finally:
+        sink.shutdown()
+        thread.join(timeout=2.0)
+        sink.server_close()
+
+    assert [proc.returncode for proc in procs] == [2, 2]
+    items = [
+        item
+        for body in sink.bodies  # type: ignore[attr-defined]
+        for item in json.loads(body)["batch"]
+    ]
+    serve_failures = [item for item in items if item["event"] == "model_serve_failed"]
+    start_states = [item for item in items if item["event"] == "server_start_state"]
+    assert len(serve_failures) == 1
+    assert serve_failures[0]["properties"]["error_class"] == "missing_extra"
+    assert serve_failures[0]["properties"]["extra"] == "vision"
+    assert [item["properties"]["state"] for item in start_states] == [
+        "attempted",
+        "failed",
+        "attempted",
+        "failed",
+    ]
 
 
 @pytest.mark.parametrize(
