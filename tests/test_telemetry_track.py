@@ -332,6 +332,16 @@ def test_copy_of_accepted_token_cannot_mutate_snapshot(monkeypatch):
     assert "free_text" not in sender.items[-1]["properties"]
 
 
+def test_enqueue_rejects_token_with_mutated_authority(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    accepted = track_module.would_accept("app_opened", {})
+    assert accepted is not None
+    object.__setattr__(accepted, "_authority", object())
+
+    assert track_module._enqueue_accepted(accepted) is False
+    assert sender.items == []
+
+
 def test_enqueue_rejects_accepted_event_subclass(monkeypatch):
     sender = inject_sender(monkeypatch)
     accepted = track_module.would_accept("app_opened", {})

@@ -1343,6 +1343,26 @@ def test_serve_failure_recent_file_is_private_and_evicts_oldest(monkeypatch, tmp
     assert path.stat().st_mode & 0o777 == 0o600
 
 
+def test_future_dated_claims_do_not_evict_current_claim(tmp_path):
+    path = tmp_path / ".rapid-mlx" / "state" / "serve-failed-recent.json"
+    path.parent.mkdir(parents=True)
+    future = {
+        json.dumps(
+            [f"future-{index}", "llm", "other", ""], separators=(",", ":")
+        ): 2000.0 + index
+        for index in range(64)
+    }
+    path.write_text(json.dumps(future), encoding="utf-8")
+    key = ("current", "llm", "other", "")
+    encoded_key = json.dumps(key, separators=(",", ":"))
+
+    assert model_events._claim_serve_failure_key(key, now=1000.0) is True
+
+    record = json.loads(path.read_text(encoding="utf-8"))
+    assert record == {encoded_key: 1000.0}
+    assert model_events._claim_serve_failure_key(key, now=1001.0) is False
+
+
 def test_serve_failure_recent_reader_rejects_oversize_and_non_mapping(
     monkeypatch, tmp_path
 ):

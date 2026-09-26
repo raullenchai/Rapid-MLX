@@ -373,6 +373,12 @@ def _reset_one_shot_state():
         model_events._reset_for_tests()
 
 
+def test_telemetry_state_uses_per_test_home(tmp_path) -> None:
+    assert model_events._serve_failed_recent_path() == (
+        tmp_path / "home" / ".rapid-mlx" / "state" / "serve-failed-recent.json"
+    )
+
+
 def test_posix_prompt_ready_at_deadline_is_not_accepted(monkeypatch) -> None:
     now = [10.0]
 

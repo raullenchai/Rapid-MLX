@@ -535,6 +535,15 @@ def _claim_serve_failure_key(
                 should_enqueue = True
             else:
                 recent = _read_serve_failed_recent(path)
+                # A wall-clock rollback makes claims written by the previous
+                # clock appear to be in the future. They cannot provide a
+                # meaningful freshness bound and must not crowd a claim from
+                # the current clock out of the bounded ledger.
+                recent = {
+                    stored_key: timestamp
+                    for stored_key, timestamp in recent.items()
+                    if timestamp <= current
+                }
                 if _serve_failure_claim_is_fresh(recent, encoded_key, current):
                     return False
                 if not accepted():

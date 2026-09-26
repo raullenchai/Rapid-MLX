@@ -382,7 +382,12 @@ def _hermetic_hf_and_config_dirs(tmp_path, monkeypatch, request):
 
     # Application state is independent of the HF cache opt-in. A test that
     # reads real cached weights must still never read or mutate the developer's
-    # first-run/config/bench state under ~/.rapid-mlx.
+    # first-run/config/bench state under ~/.rapid-mlx. Telemetry resolves its
+    # state directory from Path.home() at call time, so HOME itself must be
+    # isolated as well as the product-specific directory overrides. Keeping a
+    # fresh HOME per test also prevents durable dedupe claims from one test or
+    # pytest invocation suppressing events in another.
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     for var in _RAPID_MLX_DIR_ENV_VARS:
         monkeypatch.setenv(var, str(tmp_path / var.lower()))
 
