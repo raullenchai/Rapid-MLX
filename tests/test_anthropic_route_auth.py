@@ -243,6 +243,7 @@ def test_anthropic_engine_failure_emits_failed_inference(anthropic_client, monke
             "caller_agent": "testclient",
             "caller_client": None,
             "result": "failed",
+            "error_class": "other",
         }
     ]
 
