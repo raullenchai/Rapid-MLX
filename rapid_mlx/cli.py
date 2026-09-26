@@ -1898,7 +1898,11 @@ def _check_memory_capacity(model_name: str, *, alias: str | None = None) -> None
         from rapid_mlx.model_aliases import resolve_profile
 
         catalog_profile = resolve_profile(display_alias)
-        if catalog_working_gb is None and catalog_profile.modality == "image-gen":
+        if (
+            catalog_working_gb is None
+            and catalog_profile is not None
+            and catalog_profile.modality == "image-gen"
+        ):
             from rapid_mlx.runtime.resident_models import estimate_model_bytes
 
             catalog_working_gb = estimate_model_bytes(display_alias) / (1024**3)
