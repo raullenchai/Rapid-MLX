@@ -88,6 +88,22 @@ class ExplodingMapping(Mapping[str, object]):
         return 1
 
 
+class ChangingMapping(Mapping[str, object]):
+    def __init__(self) -> None:
+        self.reads = 0
+
+    def __getitem__(self, key: str) -> object:
+        assert key == "error_class"
+        self.reads += 1
+        return "other" if self.reads == 1 else "future_load_error"
+
+    def __iter__(self) -> Iterator[str]:
+        yield "error_class"
+
+    def __len__(self) -> int:
+        return 1
+
+
 @pytest.fixture(autouse=True)
 def isolated_emit(monkeypatch, tmp_path):
     for name in (state.ENV_VAR, state.DO_NOT_TRACK_ENV, *state.CI_ENV_VARS):
@@ -249,7 +265,7 @@ def test_would_accept_is_track_acceptance_authority(monkeypatch):
     sender = inject_sender(monkeypatch)
     decisions: list[tuple[str, dict[str, object]]] = []
 
-    def reject(event, props):
+    def reject(event, props, **_kwargs):
         decisions.append((event, dict(props)))
         return False
 
@@ -260,16 +276,72 @@ def test_would_accept_is_track_acceptance_authority(monkeypatch):
     assert sender.items == []
 
 
-def test_decided_track_does_not_recheck_acceptance(monkeypatch):
+def test_track_contains_acceptance_decision_failure(monkeypatch):
     sender = inject_sender(monkeypatch)
     monkeypatch.setattr(
         track_module,
         "would_accept",
-        lambda *_args: pytest.fail("accepted event was re-decided"),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("failed")),
     )
 
-    assert track_module.track("app_opened", {}, decided=True) is True
-    assert [item["event"] for item in sender.items] == ["app_opened"]
+    assert track_module.track("app_opened", {}) is False
+    assert sender.items == []
+
+
+def test_accepted_event_constructor_rejects_forged_authority():
+    with pytest.raises(TypeError, match="only be created by would_accept"):
+        track_module._AcceptedEvent(
+            event="app_opened",
+            props={},
+            nth_model_served=None,
+            _authority=object(),
+        )
+
+
+@pytest.mark.parametrize(
+    "hand_built",
+    [
+        {"event": "app_opened", "props": {}, "nth_model_served": None},
+        SimpleNamespace(event="app_opened", props={}, nth_model_served=None),
+    ],
+)
+def test_enqueue_rejects_hand_built_acceptance_token(monkeypatch, hand_built):
+    sender = inject_sender(monkeypatch)
+
+    assert track_module._enqueue_accepted(hand_built) is False
+    assert sender.items == []
+
+
+def test_track_uses_one_validated_mapping_snapshot(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    props = ChangingMapping()
+    validated: list[dict[str, object]] = []
+    real_validate = track_module.registry.validate
+    real_build = track_module.envelope._build_batch_item_from_validated
+
+    def validate(event, snapshot):
+        accepted = real_validate(event, snapshot)
+        assert accepted is not None
+        validated.append(accepted)
+        return accepted
+
+    def build(event, accepted_props, common):
+        assert accepted_props is validated[0]
+        return real_build(event, accepted_props, common)
+
+    monkeypatch.setattr(track_module.registry, "validate", validate)
+    monkeypatch.setattr(
+        track_module.envelope,
+        "_build_batch_item_from_validated",
+        build,
+    )
+
+    assert track_module.track("model_serve_failed", props) is True
+    assert props.reads == 1
+    [item] = sender.items
+    properties = item["properties"]
+    assert isinstance(properties, dict)
+    assert properties["error_class"] == "other"
 
 
 def test_zero_nth_model_served_is_omitted(monkeypatch):

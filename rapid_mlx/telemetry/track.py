@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from typing import TYPE_CHECKING, Protocol
 
@@ -31,6 +31,23 @@ class _ProcessContext:
     session_id: str
     app_version: str
     channel: str
+
+
+_ACCEPTED_EVENT_AUTHORITY = object()
+
+
+@dataclass(frozen=True, slots=True)
+class _AcceptedEvent:
+    """Opaque proof that one event-property snapshot was accepted."""
+
+    event: str
+    props: dict[str, object]
+    nth_model_served: int | None
+    _authority: object = field(repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if self._authority is not _ACCEPTED_EVENT_AUTHORITY:
+            raise TypeError("accepted events can only be created by would_accept")
 
 
 class _ActiveDayStore(Protocol):
@@ -161,9 +178,22 @@ def _accepted_props(
         return None
 
 
-def would_accept(event: str, props: Mapping[str, object]) -> bool:
-    """Return whether the consent gate and event registry accept this event."""
-    return _accepted_props(event, props) is not None
+def would_accept(
+    event: str,
+    props: Mapping[str, object],
+    *,
+    nth_model_served: int | None = None,
+) -> _AcceptedEvent | None:
+    """Return opaque proof of consent and registry acceptance, or ``None``."""
+    accepted_props = _accepted_props(event, props)
+    if accepted_props is None:
+        return None
+    return _AcceptedEvent(
+        event=event,
+        props=accepted_props,
+        nth_model_served=nth_model_served,
+        _authority=_ACCEPTED_EVENT_AUTHORITY,
+    )
 
 
 def track(
@@ -171,20 +201,36 @@ def track(
     props: Mapping[str, object],
     *,
     nth_model_served: int | None = None,
-    decided: bool = False,
 ) -> bool:
     """Queue one registry-approved v2 event and report sender acceptance."""
     try:
-        if not decided and not would_accept(event, props):
+        accepted = would_accept(
+            event,
+            props,
+            nth_model_served=nth_model_served,
+        )
+        if accepted is None:
             return False
-        accepted_props = dict(props)
+        return _enqueue_accepted(accepted)
+    except Exception:
+        return False
+
+
+def _enqueue_accepted(accepted: _AcceptedEvent) -> bool:
+    """Queue an event only when accompanied by proof minted by this module."""
+    try:
+        if (
+            not isinstance(accepted, _AcceptedEvent)
+            or accepted._authority is not _ACCEPTED_EVENT_AUTHORITY
+        ):
+            return False
         context = _process_context()
         if context is None:
             return False
 
         # ``note_model_served`` uses zero as its failure sentinel. A real
         # successful note is always at least one, so zero must stay off wire.
-        nth = None if nth_model_served == 0 else nth_model_served
+        nth = None if accepted.nth_model_served == 0 else accepted.nth_model_served
         common = common_props.build_common_props(
             surface=context.surface,
             install_id=context.install_id,
@@ -197,7 +243,9 @@ def track(
         )
         if common is None:
             return False
-        item = envelope._build_batch_item_from_validated(event, accepted_props, common)
+        item = envelope._build_batch_item_from_validated(
+            accepted.event, accepted.props, common
+        )
         if item is None:
             return False
 
