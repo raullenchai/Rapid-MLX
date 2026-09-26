@@ -7,6 +7,7 @@ import errno
 import fcntl
 import functools
 import json
+import logging
 import math
 import os
 import re
@@ -31,6 +32,8 @@ _SERVE_FAILED_MAX_BYTES = 64 * 1024
 _SERVE_FAILED_LOCK_WAIT_SECONDS = 0.25
 _SERVE_FAILED_LOCK_SLEEP_SECONDS = 0.01
 _serve_failed_clock = time.time
+
+logger = logging.getLogger(__name__)
 
 
 def _never_raise(func: Callable[_P, None]) -> Callable[_P, None]:
@@ -499,7 +502,19 @@ def _claim_serve_failure_key(
         if not accepted():
             return False
         if on_claim is not None:
-            on_claim()
+            try:
+                enqueue_result = on_claim()
+            except Exception:
+                logger.debug(
+                    "model_serve_failed enqueue raised; any durable dedupe claim "
+                    "was left intact"
+                )
+            else:
+                if enqueue_result is False:
+                    logger.debug(
+                        "model_serve_failed enqueue was rejected; any durable dedupe "
+                        "claim was left intact"
+                    )
         return True
 
     try:
@@ -548,6 +563,12 @@ def _claim_serve_failure_key(
                     return False
                 if not accepted():
                     return False
+                # Persisting the claim before enqueue is deliberate: it gives all
+                # processes exactly one event per key per window. The rejected
+                # enqueue-then-claim alternative lets lock-contention losers emit
+                # duplicates. A process death or defensive enqueue rejection can
+                # instead lose at most this <=10-minute window, matching the
+                # sender's batch-loss profile; do not roll the durable claim back.
                 recent[encoded_key] = current
                 if len(recent) > _SERVE_FAILED_MAX_KEYS:
                     recent = dict(

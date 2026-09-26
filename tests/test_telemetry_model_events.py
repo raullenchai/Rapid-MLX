@@ -1285,6 +1285,31 @@ def test_identical_serve_failures_after_window_emit_twice(monkeypatch):
     assert len(calls) == 2
 
 
+@pytest.mark.parametrize("enqueue_raises", [False, True], ids=["rejected", "raised"])
+def test_failed_enqueue_keeps_durable_serve_failure_claim(
+    monkeypatch, tmp_path, caplog, enqueue_raises
+):
+    calls: list[track_module._AcceptedEvent] = []
+
+    def fail_enqueue(accepted):
+        calls.append(accepted)
+        if enqueue_raises:
+            raise RuntimeError("defensive enqueue failure")
+        return False
+
+    monkeypatch.setattr(track_module, "_enqueue_accepted", fail_enqueue)
+    monkeypatch.setattr(model_events, "_serve_failed_clock", lambda: 1000.0)
+    caplog.set_level("DEBUG", logger=model_events.__name__)
+
+    _emit_failure_from_fresh_process(RuntimeError("first"), alias_or_path="unknown")
+    _emit_failure_from_fresh_process(RuntimeError("second"), alias_or_path="unknown")
+
+    path = tmp_path / ".rapid-mlx" / "state" / "serve-failed-recent.json"
+    assert len(json.loads(path.read_text(encoding="utf-8"))) == 1
+    assert len(calls) == 1
+    assert "any durable dedupe claim was left intact" in caplog.text
+
+
 def test_different_serve_failure_key_is_not_suppressed(monkeypatch):
     calls: list[dict[str, object]] = []
     monkeypatch.setattr(model_events, "_serve_failed_clock", lambda: 1000.0)
