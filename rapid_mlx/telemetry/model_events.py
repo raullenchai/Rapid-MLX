@@ -455,9 +455,18 @@ def _read_serve_failed_recent(path: Path) -> dict[str, float]:
 
 
 def _claim_serve_failure_key(
-    key: tuple[str, str, str, str], *, now: float | None = None
+    key: tuple[str, str, str, str],
+    *,
+    now: float | None = None,
+    on_claim: Callable[[], bool] | None = None,
 ) -> bool:
-    """Claim a cross-process failure key; fail open on every storage error."""
+    """Claim a cross-process failure key and optionally accept it under lock."""
+
+    def accept_without_dedupe() -> bool:
+        if on_claim is None:
+            return True
+        return on_claim()
+
     try:
         from rapid_mlx.telemetry.server_start import (
             _atomic_write_marker,
@@ -466,14 +475,18 @@ def _claim_serve_failure_key(
 
         current = _serve_failed_clock() if now is None else now
         if not math.isfinite(current):
-            return True
+            return accept_without_dedupe()
         path = _serve_failed_recent_path()
         if not _prepare_state_dir(path.parent):
-            return True
+            return accept_without_dedupe()
         flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
         flags |= getattr(os, "O_CLOEXEC", 0)
         flags |= getattr(os, "O_NOFOLLOW", 0)
         dir_fd = os.open(path.parent, flags)
+    except Exception:
+        return accept_without_dedupe()
+
+    try:
         try:
             deadline = time.monotonic() + _SERVE_FAILED_LOCK_WAIT_SECONDS
             while True:
@@ -483,7 +496,7 @@ def _claim_serve_failure_key(
                 except BlockingIOError:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
-                        return True
+                        return accept_without_dedupe()
                     time.sleep(min(_SERVE_FAILED_LOCK_SLEEP_SECONDS, remaining))
             recent = _read_serve_failed_recent(path)
             encoded_key = json.dumps(key, separators=(",", ":"))
@@ -504,11 +517,15 @@ def _claim_serve_failure_key(
                     )[:_SERVE_FAILED_MAX_KEYS]
                 )
             _atomic_write_marker(path, value=recent)
-            return True
-        finally:
-            os.close(dir_fd)
-    except Exception:
+        except Exception:
+            return accept_without_dedupe()
+        if on_claim is not None and not on_claim():
+            recent.pop(encoded_key, None)
+            _atomic_write_marker(path, value=recent)
+            return False
         return True
+    finally:
+        os.close(dir_fd)
 
 
 @_never_raise
@@ -568,9 +585,10 @@ def emit_model_serve_failed(
         validated_error_class,
         extra if isinstance(extra, str) else "",
     )
-    if not _claim_serve_failure_key(key):
-        return
-    track_module.track("model_serve_failed", validated_props)
+    _claim_serve_failure_key(
+        key,
+        on_claim=lambda: track_module.track("model_serve_failed", validated_props),
+    )
 
 
 def _reset_for_tests() -> None:
