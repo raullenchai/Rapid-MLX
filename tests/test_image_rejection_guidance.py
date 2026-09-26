@@ -201,12 +201,19 @@ def test_catalog_text_only_pin_suggests_a_vision_alias():
     )
 
 
-def test_speculative_decode_names_the_flags():
+def test_speculative_decode_names_the_switch_that_turns_it_off():
+    """Usually the catalog's MTP default: name --no-spec-decode, not flags the
+    user never passed."""
     message = _chat_image_error("text_lane_speculative_decode")
     assert message == (
-        f"{_BASE} Speculative decoding was requested (--spec-decode, "
-        "--force-spec-decode or MTP) and only the text lane runs it; restart "
-        "without speculative decoding for image input."
+        f"{_BASE} Speculative decoding (MTP) is on, and only the text lane runs "
+        "it; restart with --no-spec-decode for image input."
+    )
+    assert text_lane_image_guidance(
+        "org/x", "text_lane_speculative_decode", desktop=True
+    ) == (
+        "Speculative decoding is on, and only the text lane runs it. Turn it off "
+        "in Settings → Performance to add photos."
     )
 
 
@@ -759,23 +766,24 @@ def test_identity_falls_back_to_first_name_and_to_none():
 def test_missing_vision_runtime_leads_with_the_install_hint(monkeypatch):
     monkeypatch.setattr(mllm, "_managed_desktop_runtime_kind", lambda: None)
     hint = " ".join(mllm._vision_install_hint(include_paths=False).split())
-    for reason in (
-        "text_checkpoint",
-        "vision_memory_insufficient",
-        "text_lane_speculative_decode",
-    ):
+    alias = fitting_vision_alias(16.0, hybrid_runtime_ok=True)
+    for reason in ("text_checkpoint", "vision_memory_insufficient"):
         guidance = text_lane_image_guidance(
-            "qwen3.5-4b-4bit",
-            reason,
-            vision_runtime_ok=False,
-            desktop=reason == "text_lane_speculative_decode",
+            "qwen3.5-4b-4bit", reason, vision_runtime_ok=False
         )
         assert guidance is not None
+        # Install first, only then a model to serve.
         assert guidance.endswith(
             "Image input needs the vision runtime (mlx-vlm), which is not usable "
-            f"here. {hint}"
+            f"here. {hint} Then for image input, serve '{alias}', a vision model "
+            "that fits this Mac."
         )
-        assert "serve '" not in guidance and "such as '" not in guidance
+    nothing_fits = text_lane_image_guidance(
+        "org/x", "text_checkpoint", vision_runtime_ok=False, ram_gb=0.5
+    )
+    assert nothing_fits.endswith(
+        f"{hint} Then no catalog vision model fits this Mac's memory."
+    )
     assert text_lane_image_guidance(
         "qwen3.5-4b-4bit", "vision_architecture_unavailable", vision_runtime_ok=False
     ) == (
@@ -851,3 +859,116 @@ def test_route_detects_desktop_through_the_cached_probe(monkeypatch):
     message = _chat_image_error("text_lane_forced")
     assert "--no-mllm" not in message
     assert "model picker" in message
+
+
+# ---------------------------------------------------------------------------
+# Review r2.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("hybrid_runtime_ok", [True, False])
+def test_suggestion_never_starts_on_the_speculative_text_lane(hybrid_runtime_ok):
+    """A default-on MTP alias would serve text-only again after ``serve``."""
+    suggested = {
+        fitting_vision_alias(ram, hybrid_runtime_ok=hybrid_runtime_ok)
+        for ram in _RAM_SWEEP
+    } - {None}
+    assert suggested
+    for alias in suggested:
+        profile = resolve_profile(alias)
+        assert not (
+            profile.mtp_default_enabled
+            and (
+                profile.supports_native_mtp
+                or profile.mtp_continuous_batching_tier == "verified"
+            )
+        ), alias
+    assert fitting_vision_alias(36, hybrid_runtime_ok=True) != "qwen3.8-27b-4bit-fp16"
+
+
+def test_suggested_aliases_resolve_to_the_vision_lane_under_default_serve():
+    """End to end with the CLI's own default-MTP decision."""
+    from rapid_mlx import cli
+
+    for ram in (8, 16, 24, 32, 36, 48, 64, 96, 128):
+        alias = fitting_vision_alias(ram, hybrid_runtime_ok=True)
+        assert alias is not None
+        injects = (
+            cli._alias_native_mtp_capable(alias)
+            or cli._alias_continuous_mtp_tier(alias) == "verified"
+        ) and cli._alias_mtp_default_enabled(alias)
+        assert not injects, (ram, alias)
+
+
+def test_evicted_resident_gets_generic_copy_not_the_primarys():
+    from rapid_mlx.runtime.model_registry import ModelEntry, ModelRegistry
+
+    cfg = reset_config()
+    primary = _TextLaneEngine("text_lane_forced")
+    cfg.engine = primary
+    cfg.model_name = "qwen3.6-35b"
+    cfg.model_alias = "qwen3.6-35b"
+    registry = ModelRegistry()
+    registry.add(
+        ModelEntry(engine=primary, model_name="qwen3.6-35b", model_path="p"),
+        is_default=True,
+    )
+    cfg.model_registry = registry
+    evicted = _TextLaneEngine("text_lane_forced")
+    assert api_utils.served_model_catalog_name(evicted) is None
+    guidance = api_utils.image_rejection_guidance("text_lane_forced", engine=evicted)
+    assert guidance == _FORCED_TEXT
+    assert api_utils.served_model_catalog_name(primary) == "qwen3.6-35b"
+
+
+def test_anthropic_document_block_gets_no_image_guidance():
+    client, _ = _client("text_lane_forced")
+    response = client.post(
+        "/v1/messages",
+        json={
+            "model": "qwen3.5-4b-4bit",
+            "max_tokens": 8,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "document",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "application/pdf",
+                                "data": "JVBERi0xLjQK",
+                            },
+                        },
+                        {"type": "text", "text": "summarise"},
+                    ],
+                }
+            ],
+        },
+    )
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == (
+        "Model 'qwen3.5-4b-4bit' does not support document inputs."
+    )
+
+
+def test_broken_user_aliases_file_is_never_read_on_rejection(monkeypatch):
+    """Guidance uses the built-in catalog only; a malformed user-alias file
+    (read by ``resolve_profile`` for non-alias names) must not matter."""
+    monkeypatch.setattr(
+        "rapid_mlx.user_aliases.validated_user_aliases", _boom, raising=True
+    )
+    cfg = reset_config()
+    engine = _TextLaneEngine("vision_memory_insufficient")
+    cfg.engine = engine
+    cfg.model_name = resolve_profile("qwen3.5-4b-4bit").hf_path
+    guidance = api_utils.image_rejection_guidance(
+        "vision_memory_insufficient", engine=engine
+    )
+    assert guidance is not None
+    assert guidance.startswith("Vision for this model needs at least 32 GB of RAM")
+    # And the guidance builder itself, handed an HF path directly.
+    direct = text_lane_image_guidance(
+        resolve_profile("qwen3.5-4b-4bit").hf_path, "vision_memory_insufficient"
+    )
+    assert direct.startswith("Vision for this model needs at least 32 GB of RAM")

@@ -1672,6 +1672,24 @@ def _is_sidecar_drafter(profile) -> bool:
     return "-assistant" in profile.hf_path.rsplit("/", 1)[-1].lower()
 
 
+def _starts_on_speculative_text_lane(profile) -> bool:
+    """Whether a plain ``serve <alias>`` turns MTP on and so serves text-only.
+
+    Mirrors the catalog half of ``cli._normalize_speculative_config_or_exit``:
+    an alias that ships MTP default-on (native backend or a verified
+    continuous tier) gets a speculative decoder injected unless the user
+    passes ``--no-spec-decode``, which routes it to the text lane
+    (``text_lane_speculative_decode``). Suggesting it would not enable images.
+    """
+    return bool(
+        profile.mtp_default_enabled
+        and (
+            profile.supports_native_mtp
+            or profile.mtp_continuous_batching_tier == "verified"
+        )
+    )
+
+
 def _profile_has_hybrid_backbone(profile) -> bool:
     """Catalog evidence of a hybrid backbone.
 
@@ -1712,6 +1730,7 @@ def fitting_vision_alias(
             or profile.experimental
             or profile.modality != "text"
             or _is_sidecar_drafter(profile)
+            or _starts_on_speculative_text_lane(profile)
             or (exclude_hf_path is not None and profile.hf_path == exclude_hf_path)
             or (not hybrid_runtime_ok and _profile_has_hybrid_backbone(profile))
         ):
@@ -1825,12 +1844,17 @@ def text_lane_image_guidance(
 
     def _suggest() -> str:
         # No alias can start without a usable vision runtime: lead with the
-        # install hint instead of naming a model that would fail to load.
+        # install hint, and only then name a model to serve.
         if not vision_runtime_ok:
+            pick = _pick_model()
+            then = f" Then {pick[0].lower()}{pick[1:]}" if pick else ""
             return (
                 "Image input needs the vision runtime (mlx-vlm), which is not "
-                f"usable here. {_install_hint()}"
+                f"usable here. {_install_hint()}{then}"
             )
+        return _pick_model()
+
+    def _pick_model() -> str:
         if ram_gb <= 0:
             # RAM unknown: no fit can be judged, so name nothing.
             if desktop:
@@ -1890,15 +1914,16 @@ def text_lane_image_guidance(
             "--no-mllm / --text-only); restart without it for image input."
         )
     if reason == "text_lane_speculative_decode":
+        # Usually the catalog's MTP default, not a flag the user passed, so
+        # name the switch that turns it off rather than flags to remove.
         if desktop:
             return (
                 "Speculative decoding is on, and only the text lane runs it. "
-                f"{_suggest()}"
+                "Turn it off in Settings → Performance to add photos."
             )
         return (
-            "Speculative decoding was requested (--spec-decode, "
-            "--force-spec-decode or MTP) and only the text lane runs it; restart "
-            "without speculative decoding for image input."
+            "Speculative decoding (MTP) is on, and only the text lane runs it; "
+            "restart with --no-spec-decode for image input."
         )
     checkpoint_cause = _SUGGEST_VISION_ALIAS_CAUSES.get(reason)
     if checkpoint_cause is None:
@@ -1927,6 +1952,9 @@ def served_model_catalog_name(engine: object) -> str | None:
             if entry.engine is engine:
                 candidates += [*sorted(entry.aliases), entry.model_name]
                 candidates.append(entry.model_path)
+        if not candidates and engine is not cfg.engine:
+            # Evicted or swapped mid-request: unknown, never the primary.
+            return None
     if engine is cfg.engine or not candidates:
         candidates = [cfg.model_alias, cfg.model_path, cfg.model_name, *candidates]
     names = [c for c in candidates if isinstance(c, str) and c]
@@ -1952,7 +1980,7 @@ def image_rejection_guidance(
     """
     try:
         if engine is not None:
-            model_name = served_model_catalog_name(engine) or model_name
+            model_name = served_model_catalog_name(engine)
         return text_lane_image_guidance(model_name, reason, include_paths=include_paths)
     except Exception:  # noqa: BLE001 — advisory text must never fail a request
         logger.debug("text-lane image guidance unavailable", exc_info=True)

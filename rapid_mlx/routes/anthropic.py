@@ -746,10 +746,15 @@ async def create_anthropic_message(
                             f"Model '{public_model_label(cfg_pre.model_name)}' "
                             f"does not support {_block_type} inputs."
                         )
-                        _guidance = image_rejection_guidance(
-                            getattr(engine, "serving_lane_reason", None),
-                            engine=engine,
-                            model_name=cfg_pre.model_name,
+                        # A vision model cannot read documents on this route
+                        # either, so only image blocks get lane guidance.
+                        _guidance = (
+                            image_rejection_guidance(
+                                getattr(engine, "serving_lane_reason", None),
+                                engine=engine,
+                            )
+                            if _block_type == "image"
+                            else None
                         )
                         if _guidance is not None:
                             _detail = f"{_detail} {_guidance}"
