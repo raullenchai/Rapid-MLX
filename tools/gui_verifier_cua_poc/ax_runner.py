@@ -1,6 +1,6 @@
-"""Native macOS Accessibility CUA runner — Muse-on-Mac shape, GLM planner.
+"""Native macOS Accessibility CUA runner (DOM-free, semantic actions).
 
-Same protocol as run_poc.py (semantic actions, strict-schema plans, GUI-Actor
+Same protocol as run_poc.py (semantic actions, strict-schema plans, optional
 grounding verifier, optional laya outcome ranker) but the backend is the
 macOS Accessibility tree + system screenshots instead of Playwright DOM
 injection. No browser-specific code: any app with an AX tree is drivable.

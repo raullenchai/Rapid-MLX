@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Document digest flow for the local Meta Muse MVP.
+"""Document digest flow for the on-device assistant MVP.
 
 Reads text documents from a folder, asks a local planner for a structured
 per-file summary, and renders one urgency-sorted digest. Read-only: the flow
@@ -105,7 +105,7 @@ async def _ask_json(
         "messages": [{"role": "user", "content": prompt}],
         "response_format": {
             "type": "json_schema",
-            "json_schema": {"name": "local_muse", "strict": True, "schema": schema},
+            "json_schema": {"name": "flow_decision", "strict": True, "schema": schema},
         },
     }
     async with httpx.AsyncClient(timeout=180.0) as client:
@@ -218,9 +218,7 @@ def parse_args() -> argparse.Namespace:
         "--planner-url", default="http://127.0.0.1:18730/v1/chat/completions"
     )
     parser.add_argument("--planner-model", default="GLM-5.3-Flash-EXL3")
-    parser.add_argument(
-        "--output-root", default="/private/tmp/rapid-mlx-local-muse-runs"
-    )
+    parser.add_argument("--output-root", default="/private/tmp/rapid-mlx-flow-runs")
     args = parser.parse_args()
     args.planner_url = _validate_loopback_url(args.planner_url)
     return args

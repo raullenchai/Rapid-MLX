@@ -6,7 +6,7 @@ This experiment separates four possible failure sources in a browser task:
    action using current-page target IDs.
 2. **Fast controller:** a local System One ranker handles structured outcome
    routing and pre-ranks visible product candidates.
-3. **Grounding verifier:** GUI-Actor-Verifier-2B confirms coordinates compiled
+3. **Grounding verifier:** a 2B vision verifier checkpoint confirms coordinates compiled
    from the selected target's live bounding box.
 4. **Action protocol:** typed actions return URL, DOM, scroll, focus, and input
    value deltas. The planner is used for visual reflection only when those

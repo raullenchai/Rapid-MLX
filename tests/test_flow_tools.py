@@ -9,7 +9,7 @@ pytest.importorskip("httpx")
 
 
 def _load(name: str) -> Any:  # noqa: ANN401
-    module_path = Path(__file__).parents[1] / "tools" / "local_muse" / f"{name}.py"
+    module_path = Path(__file__).parents[1] / "tools" / "flow_tools" / f"{name}.py"
     spec = importlib.util.spec_from_file_location(name, module_path)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
@@ -130,3 +130,87 @@ def test_digest_rejects_non_loopback_planner_url():
         DIGEST._validate_loopback_url("http://127.0.0.1:18730/v1/chat/completions")
         == "http://127.0.0.1:18730/v1/chat/completions"
     )
+
+
+def test_execute_moves_with_collision_stamp_and_undo(tmp_path):
+    (tmp_path / "a.txt").write_text("A")
+    (tmp_path / "b.txt").write_text("B")
+    (tmp_path / "Docs").mkdir()
+    (tmp_path / "Docs" / "a.txt").write_text("existing")
+
+    result = MODULE._execute(
+        tmp_path,
+        [
+            {"file": "a.txt", "folder": "Docs"},
+            {"file": "b.txt", "folder": "Docs"},
+            {"file": "missing.txt", "folder": "Docs"},  # skipped silently
+        ],
+    )
+    assert len(result["executed"]) == 2
+    moved = tmp_path / "Docs" / "b.txt"
+    assert moved.read_text() == "B"
+    stamped = [p for p in (tmp_path / "Docs").glob("a-*.txt")]
+    assert stamped, "collision must be stamped, not overwritten"
+    assert result["undo"][0]["to"] == "a.txt"
+
+
+def test_undo_restores_original_layout(tmp_path):
+    (tmp_path / "a.txt").write_text("A")
+    MODULE._execute(tmp_path, [{"file": "a.txt", "folder": "Docs"}])
+    assert not (tmp_path / "a.txt").exists()
+    undo = [{"from": "Docs/a.txt", "to": "a.txt"}]
+    restored = MODULE._undo(tmp_path, undo)
+    assert (tmp_path / "a.txt").read_text() == "A"
+    assert restored == ["a.txt"]
+
+
+def test_validate_plan_rejects_unknown_duplicate_and_escape(tmp_path):
+    known = {"a.txt"}
+    with pytest.raises(ValueError, match="unknown file"):
+        MODULE._validate_plan(
+            {"moves": [{"file": "ghost.txt", "folder": "X"}]}, known, tmp_path
+        )
+    with pytest.raises(ValueError, match="duplicate"):
+        MODULE._validate_plan(
+            {
+                "moves": [
+                    {"file": "a.txt", "folder": "X"},
+                    {"file": "a.txt", "folder": "Y"},
+                ]
+            },
+            known,
+            tmp_path,
+        )
+
+
+def test_digest_validate_item_normalizes_and_truncates():
+    item = DIGEST._validate_item(
+        {
+            "title": "T" * 200,
+            "summary": "S" * 2000,
+            "action_items": ["x" * 300, 42, {"bad": "type"}],
+            "urgency": "CRITICAL",  # not in order -> low
+        },
+        "fallback.md",
+    )
+    assert item["urgency"] == "low"
+    assert len(item["title"]) == 120
+    assert len(item["summary"]) == 1200
+    assert len(item["action_items"]) == 3
+    assert all(isinstance(a, str) for a in item["action_items"])
+
+
+def test_render_digest_orders_by_urgency():
+    items = [
+        {"title": "weekly", "summary": "s", "action_items": [], "urgency": "medium"},
+        {
+            "title": "incident",
+            "summary": "s",
+            "action_items": ["page on-call"],
+            "urgency": "high",
+        },
+    ]
+    text = DIGEST._render_digest("goal", items)
+    assert text.index("incident") < text.index("weekly")
+    assert "[HIGH]" in text and "[MEDIUM]" in text
+    assert "- page on-call" in text

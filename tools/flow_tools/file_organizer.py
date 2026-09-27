@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local file organization flow for the local Meta Muse MVP.
+"""Local file organization flow for the on-device assistant MVP.
 
 Natural-language rule in, dry-run plan out, human gate, reversible execution.
 The agent never deletes; it only moves files inside the target root and records
@@ -164,7 +164,7 @@ async def _ask_json(
         "messages": [{"role": "user", "content": prompt}],
         "response_format": {
             "type": "json_schema",
-            "json_schema": {"name": "local_muse", "strict": True, "schema": schema},
+            "json_schema": {"name": "flow_decision", "strict": True, "schema": schema},
         },
     }
     async with httpx.AsyncClient(timeout=180.0) as client:
@@ -337,9 +337,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--pause-timeout", type=float, default=600.0, help="Approval gate timeout"
     )
-    parser.add_argument(
-        "--output-root", default="/private/tmp/rapid-mlx-local-muse-runs"
-    )
+    parser.add_argument("--output-root", default="/private/tmp/rapid-mlx-flow-runs")
     parser.add_argument(
         "--yes",
         action="store_true",
