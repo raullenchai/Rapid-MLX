@@ -137,7 +137,12 @@ from .hybrid_state_checkpoints import (  # noqa: E402
 from .hybrid_state_checkpoints import (  # noqa: E402
     record_checkpoints as _record_state_checkpoints,
 )
-from .memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig  # noqa: E402
+from .memory_cache import (  # noqa: E402
+    MemoryAwarePrefixCache,
+    MemoryCacheConfig,
+    _cache_has_non_trimmable,
+    session_floor_bytes,
+)
 from .paged_cache import PagedCacheManager
 from .pflash import PFlashConfig, compress_request_tokens
 from .prefix_cache import (
@@ -4030,6 +4035,26 @@ class Scheduler:
         # #1197: resolve the shared KV-quant group size + per-cache enable flags.
         self._init_kv_quantization(model)
 
+        # D-METAL-CAP / D-METAL-PFX: cached hard cap in bytes for fast
+        # admission checks. Computed lazily on first use so unit tests
+        # that build a Scheduler against a fake model with no Metal
+        # device pay zero cost. ``0`` means "no cap" (see
+        # ``gpu_memory_utilization`` doc on SchedulerConfig).
+        self._metal_cap_bytes: int = 0
+        # The device working-set budget the cap was derived from — kept so
+        # the #2858 preflight error can report "X% of Y GB" faithfully.
+        self._metal_cap_base_bytes: int = 0
+        self._metal_cap_bytes_resolved: bool = False
+        # Generation of the process-wide utilization ratchet this cap was
+        # resolved against; a mismatch re-resolves (see
+        # ``memory_budget.process_utilization_floor``).
+        self._metal_cap_floor_generation: int = -1
+        # The utilization the cap actually enforces after the ratchet —
+        # what error messages must report, which can exceed the config's.
+        self._metal_cap_effective_utilization: float = 0.0
+        # (Initialised before the prefix cache: its agent-session floor is
+        # derived from this cap — see ``_prefix_cache_session_floor_bytes``.)
+
         # Prefix cache for KV state reuse
         self.prefix_cache: PrefixCacheManager | None = None
         self.memory_aware_cache: MemoryAwarePrefixCache | None = None
@@ -4108,6 +4133,7 @@ class Scheduler:
                     kv_turboquant_mode=self.config.kv_cache_turboquant_mode,
                     # #1103: bounded trim-free hybrid reuse (0 = #1075 policy).
                     hybrid_reuse_max_entries=self.config.hybrid_cache_entries,
+                    min_memory_bytes=self._prefix_cache_session_floor_bytes(),
                 )
                 # R15-P1 (task #303): radix-tree prefix-cache index.
                 # Constructed when ``prefix_cache_index == "radix"`` and
@@ -4264,23 +4290,6 @@ class Scheduler:
         self._last_adaptive_prefill_size = self.config.prefill_step_size
         self._adaptive_prefill_protected_chunks = 0
         self._adaptive_prefill_reduced_chunks = 0
-        # D-METAL-CAP / D-METAL-PFX: cached hard cap in bytes for fast
-        # admission checks. Computed lazily on first use so unit tests
-        # that build a Scheduler against a fake model with no Metal
-        # device pay zero cost. ``0`` means "no cap" (see
-        # ``gpu_memory_utilization`` doc on SchedulerConfig).
-        self._metal_cap_bytes: int = 0
-        # The device working-set budget the cap was derived from — kept so
-        # the #2858 preflight error can report "X% of Y GB" faithfully.
-        self._metal_cap_base_bytes: int = 0
-        self._metal_cap_bytes_resolved: bool = False
-        # Generation of the process-wide utilization ratchet this cap was
-        # resolved against; a mismatch re-resolves (see
-        # ``memory_budget.process_utilization_floor``).
-        self._metal_cap_floor_generation: int = -1
-        # The utilization the cap actually enforces after the ratchet —
-        # what error messages must report, which can exceed the config's.
-        self._metal_cap_effective_utilization: float = 0.0
         # D-METAL-CAP: cached per-token KV-cache size for the
         # projection-based admission gate. Auto-derived from the
         # model config on first use (operator override via
@@ -5045,6 +5054,18 @@ class Scheduler:
                 and getattr(request, "_cache_snapshot_is_internal", False)
                 and getattr(request, "_cache_snapshot_stored", False)
             ):
+                return
+            # Same reasoning for a MESSAGE-boundary snapshot on a
+            # non-trimmable (hybrid recurrent-state) cache: the next agent
+            # turn extends the boundary entry, never the N-token prompt
+            # (the history re-renders the generation prompt differently),
+            # and an exact repeat cannot trim-one into the N-token entry
+            # either. Storing it anyway doubles the per-turn footprint
+            # (~1 GB each at 23k tokens on Qwen3.5-9B) and, on a small-Mac
+            # budget, LRU-evicts the boundary entry the next turn needs.
+            if getattr(
+                request, "_cache_snapshot_stored", False
+            ) and _cache_has_non_trimmable(extracted_cache):
                 return
 
             prompt_tokens = list(request.prompt_token_ids)
@@ -5914,6 +5935,18 @@ class Scheduler:
         self._metal_cap_effective_utilization = util
         self._metal_cap_bytes_resolved = True
         return cap
+
+    def _prefix_cache_session_floor_bytes(self) -> int:
+        """Agent-session floor for the memory-aware prefix-cache budget.
+
+        One third of the Metal headroom left after the resident weights
+        (capped at 4 GiB, see ``memory_cache.session_floor_bytes``). ``0``
+        when no Metal cap is configured, so hosts without a cap keep the
+        percent-of-available budget unchanged.
+        """
+        return session_floor_bytes(
+            self._resolve_metal_cap_bytes(), self._current_metal_active_bytes()
+        )
 
     def _current_metal_active_bytes(self) -> int:
         """Best-effort snapshot of MLX-reported Metal active memory.
@@ -6851,6 +6884,27 @@ class Scheduler:
         if active < cap and (active + reserved_kv + projected_kv) < cap:
             return
 
+        # The memory-aware prefix cache holds finished requests' KV in Metal
+        # memory. It is reclaimable by definition, so it must yield to a live
+        # request instead of turning a warm cache into a 503 — this is what
+        # makes the agent-session budget floor safe on 16 GB Macs. LRU order
+        # evicts the entry this request would hit (the most recent) last.
+        if self.memory_aware_cache is not None:
+            for dropped in range(1, 65):
+                if not self._evict_one_prefix_cache_entry():
+                    break
+                self.num_prefix_cache_pressure_evictions += 1
+                active = self._current_metal_active_bytes()
+                reserved_kv = self._sum_in_flight_kv_bytes()
+                if active < cap and (active + reserved_kv + projected_kv) < cap:
+                    logger.info(
+                        "[D-METAL-CAP-force-evict] evicted %d prefix-cache "
+                        "entr%s; admitted request after pressure drop",
+                        dropped,
+                        "y" if dropped == 1 else "ies",
+                    )
+                    return
+
         # ── Hermes patch: force-evict paged KV before rejecting ──
         # D-METAL-CAP wedge root cause: the paged cache keeps KV
         # tensor memory resident on FREE blocks for reuse, so once
@@ -7074,10 +7128,12 @@ class Scheduler:
         triggered_cache_self = False
         for _ in range(max(0, int(max_evict))):
             should_evict = False
+            metal_pressure = False
             if metal_threshold > 0:
                 active = self._current_metal_active_bytes()
                 if active >= metal_threshold:
                     should_evict = True
+                    metal_pressure = True
                     triggered_metal = True
             if not should_evict and cache_self_threshold > 0:
                 current_cache = self._cache_self_pressure_current_bytes()
@@ -7086,7 +7142,14 @@ class Scheduler:
                     triggered_cache_self = True
             if not should_evict:
                 break
-            if not self._evict_one_prefix_cache_entry():
+            # Cache-self pressure is a ledger trim, not a memory emergency:
+            # the cache's own admission already bounded it by ``_max_memory``.
+            # It must never drop the most-recently-used entry — for an agent
+            # session that single entry (one ~23k-token prompt) routinely sits
+            # above 90% of a small-Mac budget, and evicting it right after the
+            # store made every next turn a full re-prefill. Real Metal
+            # pressure may still take every entry.
+            if not self._evict_one_prefix_cache_entry(keep_mru=not metal_pressure):
                 break
             # The entry has been removed from the cache trie — count
             # this as a successful eviction REGARDLESS of whether the
@@ -7141,10 +7204,12 @@ class Scheduler:
             )
         return evicted
 
-    def _evict_one_prefix_cache_entry(self) -> bool:
+    def _evict_one_prefix_cache_entry(self, keep_mru: bool = False) -> bool:
         """Evict a single LRU prefix-cache entry across all cache variants.
 
-        Returns True if an entry was actually removed. Encapsulates the
+        Returns True if an entry was actually removed. ``keep_mru`` refuses to
+        evict the memory-aware cache's last remaining (most-recently-used)
+        entry — used by the cache-self pressure trigger. Encapsulates the
         cache-variant dispatch so ``evict_prefix_cache_under_pressure``
         stays variant-agnostic.
 
@@ -7171,7 +7236,8 @@ class Scheduler:
         """
         if self.memory_aware_cache is not None:
             with self.memory_aware_cache._lock:  # noqa: SLF001 — coordinated eviction
-                if not self.memory_aware_cache._entries:  # noqa: SLF001
+                remaining = len(self.memory_aware_cache._entries)  # noqa: SLF001
+                if remaining == 0 or (keep_mru and remaining == 1):
                     return False
                 self.memory_aware_cache._evict_lru()  # noqa: SLF001
             return True

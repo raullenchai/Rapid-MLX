@@ -49,6 +49,39 @@ logger = logging.getLogger(__name__)
 _BYTES_PER_MB = 1024 * 1024
 _DEFAULT_MEMORY_PERCENT = 0.20  # 20% of available RAM
 _MIN_MEMORY_BYTES = 100 * _BYTES_PER_MB  # Minimum 100MB
+# Session floor (agent-session prefix reuse on 16-32 GB Macs). The heuristic
+# budget is a fraction of *currently available* RAM, measured after the model
+# weights are resident — on an 18 GB Mac serving a 5 GB model that is ~0.8 GB,
+# smaller than ONE ~23k-token agent-session entry (~1 GB for Qwen3.5-9B), so the
+# entry the next turn needs was refused ("Cache entry too large") and every turn
+# re-prefilled the whole prompt. The floor reserves a fixed share of the Metal
+# headroom left after weights (``allocation cap - resident``) for the prefix
+# cache; the remaining two thirds stay available for live KV + activations, and
+# the Metal-pressure evictor / admission gate still reclaim the cache whenever
+# live requests need the memory. The absolute cap keeps large-RAM hosts on the
+# existing percent-of-available budget (the floor only ever raises a budget).
+_SESSION_FLOOR_HEADROOM_FRACTION = 1.0 / 3.0
+_SESSION_FLOOR_MAX_BYTES = 4 * 1024 * _BYTES_PER_MB
+
+
+def session_floor_bytes(metal_cap_bytes: int, resident_bytes: int) -> int:
+    """Prefix-cache floor that keeps one agent session resident.
+
+    ``metal_cap_bytes`` is the engine's Metal allocation cap and
+    ``resident_bytes`` the Metal memory already in use (model weights) when the
+    cache is built. Returns ``0`` — no floor — when the cap is unknown or the
+    weights already exhaust it, so a host we cannot measure keeps the legacy
+    percent-of-available budget.
+    """
+    cap = int(metal_cap_bytes or 0)
+    headroom = cap - max(0, int(resident_bytes or 0))
+    if cap <= 0 or headroom <= 0:
+        return 0
+    return min(
+        int(headroom * _SESSION_FLOOR_HEADROOM_FRACTION), _SESSION_FLOOR_MAX_BYTES
+    )
+
+
 # #1100 codex round 6 (#3): replace-mode stage-then-swap transiently holds BOTH
 # the existing live cache AND the fully-staged new blob until the atomic swap
 # (the DELIBERATE cost of the "corrupt source leaves existing cache intact"
@@ -480,6 +513,41 @@ def _read_tokens_bin(
         except _struct.error as exc:
             return None, f"struct.unpack_from failed: {exc}"
         return tokens, ""
+
+
+# Shutdown-save throughput probe. The save loop predicts each entry's write
+# time before starting it; with no sample yet it used a fixed 150 MB/s floor,
+# which predicts ~6.4 s for one ~1 GB agent-session entry and skips it under
+# the 3.5 s SIGTERM budget even though an Apple SSD writes it in ~1 s. A small
+# measured write (fsynced, then halved for serialization overhead) replaces
+# the guess whenever the disk is demonstrably faster than the floor.
+_THROUGHPUT_PROBE_BYTES = 16 * _BYTES_PER_MB
+_THROUGHPUT_PROBE_SAFETY = 0.5
+
+
+def _probe_write_bytes_per_sec(directory: str) -> float:
+    """Measured, safety-discounted write+fsync throughput; ``0.0`` on failure."""
+    import time as _time
+
+    path = os.path.join(directory, ".throughput_probe")
+    chunk = os.urandom(_BYTES_PER_MB)
+    try:
+        t0 = _time.monotonic()
+        with open(path, "wb") as f:
+            for _ in range(_THROUGHPUT_PROBE_BYTES // _BYTES_PER_MB):
+                f.write(chunk)
+            f.flush()
+            os.fsync(f.fileno())
+        elapsed = _time.monotonic() - t0
+    except OSError as exc:
+        logger.debug(f"[cache_persist] throughput probe failed: {exc}")
+        return 0.0
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    return _THROUGHPUT_PROBE_BYTES / max(elapsed, 1e-6) * _THROUGHPUT_PROBE_SAFETY
 
 
 def _fsync_file(path: str) -> None:
@@ -993,6 +1061,10 @@ class MemoryCacheConfig:
     #                  conversation reuse comes back without re-opening the
     #                  #1025 unbounded-retention leak.
     hybrid_reuse_max_entries: int = 0
+    # Lower bound (bytes) for the heuristic percent-of-available budget; see
+    # :func:`session_floor_bytes`. Explicit ``max_memory_mb`` and the operator
+    # env override are never raised by it. ``0`` = no floor.
+    min_memory_bytes: int = 0
 
     def __post_init__(self) -> None:
         if not 0.0 < self.max_memory_percent <= 1.0:
@@ -1001,6 +1073,10 @@ class MemoryCacheConfig:
             )
         if self.max_entries < 1:
             raise ValueError(f"max_entries must be >= 1, got {self.max_entries}")
+        if self.min_memory_bytes < 0:
+            raise ValueError(
+                f"min_memory_bytes must be >= 0, got {self.min_memory_bytes}"
+            )
         if self.hybrid_reuse_max_entries < 0:
             raise ValueError(
                 "hybrid_reuse_max_entries must be >= 0, "
@@ -1031,6 +1107,9 @@ class MemoryCacheConfig:
           4. ``max_memory_percent`` × 8 GiB fallback when psutil is
              unavailable.
 
+        Steps 3 and 4 are raised to ``min_memory_bytes`` (the agent-session
+        floor the scheduler derives from Metal headroom) when that is larger.
+
         Returns:
             Memory limit in bytes.
         """
@@ -1051,11 +1130,11 @@ class MemoryCacheConfig:
         available = _get_available_memory()
         if available > 0:
             limit = int(available * self.max_memory_percent)
-            return max(limit, _MIN_MEMORY_BYTES)
+            return max(limit, _MIN_MEMORY_BYTES, self.min_memory_bytes)
 
         # Fallback: assume 8GB system, use configured percent
         fallback_total = 8 * 1024 * _BYTES_PER_MB
-        return int(fallback_total * self.max_memory_percent)
+        return max(int(fallback_total * self.max_memory_percent), self.min_memory_bytes)
 
 
 @dataclass
@@ -2895,6 +2974,13 @@ class MemoryAwarePrefixCache:
         # original incident) ~6× safety margin while still catching
         # genuinely-too-large entries.
         _BOOTSTRAP_BYTES_PER_SEC = 150 * _BYTES_PER_MB
+        if should_abort is not None:
+            # Budgeted (shutdown) save: calibrate the first prediction
+            # against the real disk instead of the fixed floor. The floor
+            # still wins on a disk slower than it (the historical contract).
+            _BOOTSTRAP_BYTES_PER_SEC = max(
+                _BOOTSTRAP_BYTES_PER_SEC, _probe_write_bytes_per_sec(new_dir)
+            )
         # Support BOTH zero-arg and one-arg ``should_abort`` predicates
         # at the per-entry layer. The new contract is
         # ``Callable[[float], bool]`` (forward-looking) but external
