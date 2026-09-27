@@ -225,17 +225,7 @@ def _walk(element: object, depth: int, out: list[dict], counter: list[int]) -> N
                 "element": element,  # live ref, popped before serialization
             }
         )
-    raw_children = _get(element, "AXChildren")
-    # pyobjc returns AXChildren as an NSMutableArray, which is iterable but
-    # is NOT a python list/tuple; isinstance() checks here silently skipped
-    # every child and emptied all snapshots (dogfood 2026-09-27).
-    children: list = []
-    if raw_children is not None:
-        try:
-            children = list(raw_children)
-        except TypeError:
-            children = []
-    for child in children:
+    for child in _as_list(_get(element, "AXChildren")):
         _walk(child, depth + 1, out, counter)
         if counter[0] >= MAX_NODES:
             return
@@ -258,7 +248,8 @@ def _app_element(app_name: str) -> object:
         if wanted not in name:
             continue
         (exact if name == wanted else candidates).append(app)
-    for app in exact + candidates:
+    matches = exact + candidates
+    for app in matches:
         element = AXUIElementCreateApplication(app.processIdentifier())
         # Chrome builds web-content AX trees lazily; ask it to expose them.
         # Dogfood find (2026-09-27): the same poke on AppKit/SwiftUI apps
@@ -275,7 +266,7 @@ def _app_element(app_name: str) -> object:
         # Window verification only matters when several processes matched
         # (an XPC helper could shadow the real app); with a single candidate
         # take it as-is — an AX-unresponsive app should still be selectable.
-        if len(exact + candidates) == 1 or _get(element, "AXWindows"):
+        if len(matches) == 1 or _as_list(_get(element, "AXWindows")):
             return element
     raise SystemExit(f"app not found: {app_name!r}")
 
@@ -301,13 +292,11 @@ def collect(
                 break
         if any(t["role"] == "AXWebArea" for t in targets) or attempt == 3:
             break
-        # Chrome builds the web-content AX tree lazily; wait and retry.
+        # Chrome builds the web-content AX tree lazily; _app_element has
+        # already enabled manual accessibility for Chromium apps. Repeating
+        # that write here restarts the tree build, and writing it for native
+        # apps can temporarily hide their deep children.
         time.sleep(1.5)
-        if attempt == 0:
-            # Poke only once. Repeating AXManualAccessibility restarts the
-            # tree rebuild on every retry, so each attempt would observe a
-            # half-built tree and never converge (dogfood 2026-09-27).
-            AXUIElementSetAttributeValue(app, _MANUAL_ACCESSIBILITY, True)
     if not targets and window_index == 0:  # menu-bar-only apps
         _walk(AXUIElementCreateSystemWide(), 0, targets, counter)
     if not keep_elements:
