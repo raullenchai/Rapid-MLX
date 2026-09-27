@@ -255,7 +255,11 @@ def fake_backend(monkeypatch):
     monkeypatch.setattr(
         backend_mod,
         "set_value",
-        lambda app, index, value: {"ok": True, "verified": True, "actual": value},
+        lambda app, index, value, **kw: {
+            "ok": True,
+            "verified": True,
+            "actual": value,
+        },
     )
     monkeypatch.setattr(
         backend_mod, "press_key", lambda app, key: {"ok": True, "key": key}
@@ -981,6 +985,34 @@ def test_execute_all_action_variants(fake_backend, tmp_path, monkeypatch):
     assert scroll["direction"] == "up"
 
 
+def test_execute_reports_snapshot_drift_without_acting(
+    fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.computer_use.errors import ComputerUseError
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    monkeypatch.setattr(
+        fake_backend,
+        "click",
+        lambda *a, **k: (_ for _ in ()).throw(
+            ComputerUseError("element_not_found", "changed since snapshot")
+        ),
+    )
+    runner = loop_mod.CUARun(_make_config(tmp_path), "Chrome", "g", tmp_path / "run")
+    result = asyncio.run(
+        runner._execute(
+            {"action": "click", "element_index": 1},
+            {"snapshot_id": "planned", "elements": [{"index": 1}]},
+        )
+    )
+    assert result["ok"] is False
+    assert result["executed"] is False
+    assert "changed since snapshot" in result["error"]
+
+
 def test_loop_invalid_domain_consent_and_human_timeout(
     fake_backend, tmp_path, monkeypatch
 ):
@@ -1236,3 +1268,35 @@ def test_planner_validation_and_helpers(monkeypatch):
     assert seen["reasoning_effort"] == "low"
     assert asyncio.run(planner_mod.ask_with_timeout(asyncio.sleep(0, result=7), 1)) == 7
     asyncio.run(planner.close())
+
+
+def test_loop_ax_watchdog_stops_honestly(config_dir, tmp_path, monkeypatch):
+    """Regression (2026-09-27 dogfood): Chrome's AX service wedged mid-run and
+    AXUIElement calls blocked forever. The snapshot watchdog must convert the
+    hang into an honest stop instead of freezing the run mid-step."""
+    import asyncio
+    import time as time_mod
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    def wedged_collect(app, **kwargs):
+        time_mod.sleep(120)  # would block forever without the watchdog
+        return []
+
+    monkeypatch.setattr(loop_mod.backend.ax_driver, "collect", wedged_collect)
+    monkeypatch.setattr(loop_mod.backend, "AX_COLLECT_TIMEOUT_S", 0.01)
+    monkeypatch.setattr(loop_mod.backend, "read_url", lambda app: "")
+    monkeypatch.setattr(
+        loop_mod.backend, "_resolve_app", lambda app: (None, {"name": app, "pid": 1})
+    )
+    config = _make_config(tmp_path)
+    planner = _FakePlanner(
+        [{"action": "done", "step_instruction": "x", "final_summary": "y"}],
+        text_only=True,
+    )
+    trace = asyncio.run(
+        loop_mod.run(config, "Google Chrome", "goal", max_steps=5, planner=planner)
+    )
+    assert trace["status"] == "stopped"
+    assert "accessibility tree" in (trace.get("final_summary") or "")
+    assert planner.calls == 0

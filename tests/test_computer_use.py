@@ -113,7 +113,7 @@ def test_read_url_uses_axvalue_and_escapes_app_name(monkeypatch):
     def fake_get(_element, attr):
         return state["axvalue"] if attr == "AXValue" else None
 
-    def fake_collect(app, keep_elements=True, max_windows=1):
+    def fake_collect(app, keep_elements=True, max_windows=1, **kwargs):
         return [{"element": _FakeElement()}]
 
     monkeypatch.setattr(backend.ax_driver, "_get", fake_get)
@@ -559,12 +559,45 @@ def test_element_live_and_read_helpers(monkeypatch):
         backend.ax_driver, "collect", lambda *a, **k: [_target(2, element="live")]
     )
     assert backend._live_element(snapshot, 2) == "live"
-    with pytest.raises(errors.ComputerUseError, match="no longer"):
+    with pytest.raises(errors.ComputerUseError, match="not in the current snapshot"):
         backend._live_element(snapshot, 3)
     monkeypatch.setattr(backend.ax_driver, "_get", lambda *a: "value")
     assert backend._read_value("live") == "value"
     monkeypatch.setattr(backend.ax_driver, "_get", lambda *a: 3)
     assert backend._read_value("live") is None
+
+
+def test_live_element_rejects_snapshot_index_drift(monkeypatch):
+    snapshot = {
+        "snapshot_id": "planned",
+        "app": {"name": "A"},
+        "window_index": 0,
+        "elements": [
+            {
+                "index": 2,
+                "role": "AXButton",
+                "label": "Safe target",
+                "center": [10, 20],
+            }
+        ],
+    }
+    drifted = _target(2, role="AXButton", element="wrong-live-element")
+    drifted["text"] = "Different target"
+    monkeypatch.setattr(backend, "_collect_with_timeout", lambda *a, **k: [drifted])
+    with pytest.raises(errors.ComputerUseError, match="changed since snapshot"):
+        backend._live_element(snapshot, 2)
+
+
+def test_collect_watchdog_preserves_structured_errors(monkeypatch):
+    expected = errors.ComputerUseError("element_not_found", "window vanished")
+
+    def failed_collect(*args, **kwargs):
+        raise expected
+
+    monkeypatch.setattr(backend.ax_driver, "collect", failed_collect)
+    with pytest.raises(errors.ComputerUseError) as excinfo:
+        backend._collect_with_timeout("A", timeout_s=1)
+    assert excinfo.value is expected
 
 
 def test_element_click_ax_and_fallback(monkeypatch):
@@ -591,8 +624,9 @@ def test_element_click_ax_and_fallback(monkeypatch):
             errors.ComputerUseError("element_not_found", "gone")
         ),
     )
-    backend.click("A", element_index=0)
-    assert len(clicks) == 2
+    with pytest.raises(errors.ComputerUseError, match="gone"):
+        backend.click("A", element_index=0)
+    assert len(clicks) == 1
 
 
 def test_set_value_and_synthetic_fill_paths(monkeypatch):
@@ -756,8 +790,15 @@ def test_permissions_apps_windows_and_read_url_failures(monkeypatch):
 
 
 def test_ax_driver_tree_collect_and_events(monkeypatch):
+    class ObjCArray:
+        def __init__(self, values):
+            self.values = values
+
+        def __iter__(self):
+            return iter(self.values)
+
     attrs = {
-        "root": {"AXRole": "AXWindow", "AXChildren": ["button"]},
+        "root": {"AXRole": "AXWindow", "AXChildren": ObjCArray(["button"])},
         "button": {
             "AXRole": "AXButton",
             "AXTitle": "Go\nNow",
@@ -797,6 +838,8 @@ def test_ax_driver_tree_collect_and_events(monkeypatch):
     assert ax_driver._get("missing", "x") is None
     assert ax_driver._action_names("missing") == []
     assert ax_driver._point_size("missing") is None
+    assert ax_driver._as_list(None) == []
+    assert ax_driver._as_list(object()) == []
 
     monkeypatch.setattr(ax_driver, "_app_element", lambda _: "app")
     monkeypatch.setattr(
@@ -837,21 +880,39 @@ def test_ax_driver_tree_collect_and_events(monkeypatch):
 
 
 def test_ax_driver_app_collect_retries_and_press(monkeypatch):
+    helper = _RunningApp("ThemeWidgetControlViewService (Target App)", pid=41)
     app = _RunningApp()
-    ax_element = object()
     fake_as = types.SimpleNamespace(
-        NSWorkspace=types.SimpleNamespace(sharedWorkspace=lambda: _Workspace([app]))
+        NSWorkspace=types.SimpleNamespace(
+            sharedWorkspace=lambda: _Workspace([helper, app])
+        )
     )
     monkeypatch.setattr(ax_driver, "AS", fake_as)
     monkeypatch.setattr(
-        ax_driver, "AXUIElementCreateApplication", lambda pid: ax_element
+        ax_driver, "AXUIElementCreateApplication", lambda pid: ("element", pid)
+    )
+    monkeypatch.setattr(
+        ax_driver,
+        "_get",
+        lambda element, attr: ["window"] if attr == "AXWindows" else None,
     )
     sets = []
     monkeypatch.setattr(
         ax_driver, "AXUIElementSetAttributeValue", lambda *a: sets.append(a)
     )
     monkeypatch.setattr(ax_driver.time, "sleep", lambda _: None)
-    assert ax_driver._app_element("target") is ax_element
+    assert ax_driver._app_element("Target App") == ("element", 42)
+    assert sets == []  # native apps must not be forced into manual AX mode
+
+    chrome = _RunningApp("Chrome", "com.google.Chrome", pid=43)
+    fake_as.NSWorkspace = types.SimpleNamespace(
+        sharedWorkspace=lambda: _Workspace([chrome])
+    )
+    assert ax_driver._app_element("Chrome") == ("element", 43)
+    assert [call[1] for call in sets] == [
+        ax_driver._MANUAL_ACCESSIBILITY,
+        ax_driver._ENHANCED_UI,
+    ]
     with pytest.raises(SystemExit, match="not found"):
         ax_driver._app_element("missing")
     monkeypatch.setattr(ax_driver, "AS", None)
@@ -875,8 +936,10 @@ def test_ax_driver_app_collect_retries_and_press(monkeypatch):
         c[0] += 1
 
     monkeypatch.setattr(ax_driver, "_walk", walk)
+    sets_before_collect = list(sets)
     collected = ax_driver.collect("A", keep_elements=True)
-    assert collected and attempts["n"] == 2 and sets
+    assert collected and attempts["n"] == 2
+    assert sets == sets_before_collect
 
     monkeypatch.setattr(ax_driver, "_app_element", lambda _: "app")
     monkeypatch.setattr(

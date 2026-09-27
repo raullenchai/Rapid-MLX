@@ -22,6 +22,7 @@ from typing import Any, cast
 from .errors import ComputerUseError
 
 SNAPSHOT_TTL_S = 120.0
+AX_COLLECT_TIMEOUT_S = 20.0
 FILL_ROLES = {"AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"}
 SNAPSHOT_CACHE_MAX = 32
 from . import ax_driver
@@ -177,10 +178,8 @@ def get_app_state(
         if cached is not None:
             return cached
     ax_element, app_info = _resolve_app(app)
-    targets = ax_driver.collect(
+    targets = _collect_with_timeout(
         app_info["name"] or app,
-        keep_elements=True,
-        max_windows=1,
         window_index=window_index,
     )
     if not targets and window_index:
@@ -293,16 +292,81 @@ def _element(snapshot: dict, element_index: int, live: bool = False) -> dict:
     )
 
 
+def _collect_with_timeout(
+    app_name: str,
+    *,
+    window_index: int = 0,
+    timeout_s: float | None = None,
+) -> list[dict]:
+    """ax_driver.collect with a watchdog.
+
+    macOS AX calls have no built-in timeout: when a target app's
+    accessibility service wedges (Chrome does this in the field),
+    AXUIElementCopyAttributeValue blocks forever and the whole agent run
+    freezes mid-step (2026-09-27 dogfood). Run the walk in a daemon worker
+    thread and convert a timeout into an honest ComputerUseError; a wedged
+    worker leaks as a daemon instead of blocking the run forever.
+    """
+    import threading
+
+    timeout_s = AX_COLLECT_TIMEOUT_S if timeout_s is None else timeout_s
+    outcome: dict[str, Any] = {}
+
+    def worker() -> None:
+        try:
+            outcome["value"] = ax_driver.collect(
+                app_name,
+                keep_elements=True,
+                max_windows=1,
+                window_index=window_index,
+            )
+        except Exception as exc:  # noqa: BLE001 - surfaced below
+            outcome["error"] = exc
+
+    worker_thread = threading.Thread(target=worker, daemon=True)
+    worker_thread.start()
+    worker_thread.join(timeout_s)
+    if worker_thread.is_alive():
+        raise ComputerUseError(
+            "ax_unavailable",
+            f"accessibility tree collection for {app_name!r} timed out "
+            f"after {timeout_s:.0f}s; the app's AX service is likely wedged",
+        )
+    if "error" in outcome:
+        error = cast(BaseException, outcome["error"])
+        if isinstance(error, ComputerUseError):
+            raise error
+        raise ComputerUseError(
+            "ax_unavailable",
+            f"accessibility tree collection for {app_name!r} failed: {error}",
+        ) from error
+    return cast(list[dict], outcome.get("value", []))
+
+
 def _live_element(snapshot: dict, element_index: int) -> object:
     """Re-collect and return the live AX ref for an index, if still present."""
-    fresh = ax_driver.collect(
+    expected = _element(snapshot, element_index)
+    fresh = _collect_with_timeout(
         snapshot["app"]["name"],
-        keep_elements=True,
-        max_windows=1,
         window_index=snapshot.get("window_index", 0),
     )
     for target in fresh:
         if int(target["target_id"][1:]) == element_index:
+            comparisons = (
+                ("role", "role"),
+                ("label", "text"),
+                ("center", "center"),
+            )
+            if any(
+                expected.get(snapshot_key) is not None
+                and expected.get(snapshot_key) != target.get(target_key)
+                for snapshot_key, target_key in comparisons
+            ):
+                raise ComputerUseError(
+                    "element_not_found",
+                    f"element {element_index} changed since snapshot "
+                    f"{snapshot.get('snapshot_id')}; re-observe before acting",
+                )
             return target.get("element")
     raise ComputerUseError(
         "element_not_found",
@@ -322,16 +386,15 @@ def click(
     y: int | None = None,
     click_count: int = 1,
     mouse_button: str = "left",
+    expected_snapshot: dict | None = None,
 ) -> dict:
     if element_index is not None:
-        snapshot = get_app_state(app, screenshot=False, use_cache=False)
+        snapshot = expected_snapshot or get_app_state(
+            app, screenshot=False, use_cache=False
+        )
         entry = _element(snapshot, element_index)
         center = entry["center"]
-        live = None
-        try:
-            live = _live_element(snapshot, element_index)
-        except ComputerUseError:
-            live = None
+        live = _live_element(snapshot, element_index)
         if live is not None and "AXPress" in entry["actions"]:
             import ApplicationServices as AS  # type: ignore[import-untyped]  # noqa: N813, N817  # camelcase pyobjc module, alias is conventional
             from ApplicationServices import AXUIElementPerformAction
@@ -350,14 +413,21 @@ def click(
     return {"mode": "CGEvent-click", "at": [x, y]}
 
 
-def set_value(app: str, element_index: int, value: str) -> dict:
+def set_value(
+    app: str,
+    element_index: int,
+    value: str,
+    expected_snapshot: dict | None = None,
+) -> dict:
     """Write a value into a settable element; verify by reading it back.
 
     Falls back to synthetic typing (click, Cmd+A, delete, CGEvent unicode) when
     the element rejects direct AX writes. The returned verification field tells
     the agent whether the value landed exactly.
     """
-    snapshot = get_app_state(app, screenshot=False, use_cache=False)
+    snapshot = expected_snapshot or get_app_state(
+        app, screenshot=False, use_cache=False
+    )
     _element(snapshot, element_index)
     live = _live_element(snapshot, element_index)
     if live is not None:
@@ -393,10 +463,8 @@ def _synthetic_fill(snapshot: dict, element_index: int, value: str) -> dict:
     # tree rebuilds with shifted indexes (a runtime element identity would
     # remove this class of staleness; snapshots are refreshed instead).
     try:
-        fresh = ax_driver.collect(
+        fresh = _collect_with_timeout(
             snapshot["app"]["name"],
-            keep_elements=True,
-            max_windows=1,
             window_index=snapshot.get("window_index", 0),
         )
         for target in fresh:
@@ -572,7 +640,7 @@ def read_url(app: str) -> str:
     which case the guard sees an empty URL and stays inert.
     """
     try:
-        targets = ax_driver.collect(app, keep_elements=True, max_windows=1)
+        targets = _collect_with_timeout(app)
     except Exception:  # noqa: BLE001 - guard must never crash the loop
         targets = []
     for entry in targets:

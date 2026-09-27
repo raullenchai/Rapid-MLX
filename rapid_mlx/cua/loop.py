@@ -21,6 +21,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from rapid_mlx.computer_use import backend
+from rapid_mlx.computer_use.errors import ComputerUseError
 from rapid_mlx.cua import config as config_mod
 from rapid_mlx.cua import gates
 from rapid_mlx.cua.config import CUAConfig
@@ -139,20 +140,36 @@ class CUARun:
         action = plan["action"]
         index = plan.get("element_index", -1)
         result: dict = {"action": action}
-        if action == "click":
-            result.update(backend.click(self.app, index))
-        elif action == "fill":
-            backend.click(self.app, index)
-            result.update(backend.set_value(self.app, index, plan.get("text", "")))
-        elif action == "press":
-            backend.click(self.app, index)
-            await asyncio.sleep(0.2)
-            result.update(backend.press_key(self.app, plan.get("key", "Enter")))
-        elif action == "scroll":
-            result.update(backend.scroll(self.app, plan.get("direction", "down"), 1.0))
-        elif action == "wait":
-            await asyncio.sleep(2.0)
-            result.update({"ok": True})
+        try:
+            if action == "click":
+                result.update(
+                    backend.click(self.app, index, expected_snapshot=snapshot)
+                )
+            elif action == "fill":
+                result.update(
+                    backend.set_value(
+                        self.app,
+                        index,
+                        plan.get("text", ""),
+                        expected_snapshot=snapshot,
+                    )
+                )
+            elif action == "press":
+                backend.click(self.app, index, expected_snapshot=snapshot)
+                await asyncio.sleep(0.2)
+                result.update(backend.press_key(self.app, plan.get("key", "Enter")))
+            elif action == "scroll":
+                result.update(
+                    backend.scroll(self.app, plan.get("direction", "down"), 1.0)
+                )
+            elif action == "wait":
+                await asyncio.sleep(2.0)
+                result.update({"ok": True})
+        except ComputerUseError as exc:
+            # A tool failure is an action-level outcome, not a run-level
+            # crash: the tracker records it and the next step re-observes.
+            result.update({"ok": False, "error": str(exc), "executed": False})
+            return result
         result["executed"] = action != "wait"
         return result
 
@@ -164,10 +181,21 @@ class CUARun:
             self._record({"step": step_no, "stop": "cancelled by client"})
             self._emit({"kind": "terminal", "status": "stopped"})
             return {"status": "stopped", "reason": "cancelled by client"}
-        snapshot = backend.get_app_state(
-            self.app, screenshot=not planner.text_only, use_cache=False
-        )
-        if not snapshot.get("elements"):
+        try:
+            snapshot = backend.get_app_state(
+                self.app, screenshot=not planner.text_only, use_cache=False
+            )
+        except ComputerUseError as exc:
+            # AX watchdog tripped (wedged app accessibility service): treat as
+            # an unusable snapshot and let the honest-stop path handle it.
+            snapshot = {
+                "app": {"name": self.app},
+                "elements": [],
+                "tree_text": "",
+                "ax_unavailable": True,
+                "snapshot_error": str(exc),
+            }
+        if not snapshot.get("elements") or snapshot.get("ax_unavailable"):
             # Dogfooding find (2026-09-27): when the target app's AX tree is
             # unavailable (e.g. Chrome's accessibility service wedged), an
             # empty snapshot used to reach the planner, whose guesses (index 0)
