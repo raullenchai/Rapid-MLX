@@ -99,3 +99,18 @@ GLM-5.3.
   slider) expose numeric `.value`, so text collection now String()-coerces
   before .trim(). All four Muse scenarios (shop / travel / files / digest /
   music) have now each been dogfooded end-to-end at least once.
+
+## 2026-09-26 night — computer-use tool layer decoupled (Orca pattern)
+
+- Shipped `rapid_mlx/computer_use/` (CLI: capabilities/permissions/list-apps/
+  list-windows/get-app-state/click/set-value/type-text/press-key/hotkey/scroll/
+  perform-secondary-action). Model-free; any agent (cloud GLM, local Qwen 27B,
+  Claude Code, Codex) can drive the Mac through it. 46 tests green.
+- Hand-driven Wikipedia smoke closed the loop: set-value verified exactly,
+  stale-index recovery worked (re-observe → new index → AXPress → results).
+- Four fixes worth remembering: per-event CGEvent flags (sticky shift),
+  keycode typing required for Chromium web fields (unicode-string events
+  filtered), front-window-only collection for multi-window apps, observe-fresh
+  before coordinate actions.
+- Queued: right/middle+drag clicks, AXObserver eventing, per-action consent
+  policy (Orca ACTION_POLICY analog), wire ax_runner onto this backend.
