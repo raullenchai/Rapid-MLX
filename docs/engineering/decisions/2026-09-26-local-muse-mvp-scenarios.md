@@ -243,3 +243,25 @@ Caveat: this task is 2-3 steps. The earlier music task (13 steps for GLM,
 where the 27B terminated prematurely) remains the harder qualification; a
 done-gate that requires milestone evidence before accepting `done` is the
 next lever before drawing conclusions for long-horizon work.
+
+## 9B across all five flows (2026-09-26 night) — split verdict
+
+Operator asked whether the 9B can do all five flows. Measured:
+
+| flow | result | notes |
+|---|---|---|
+| 3 file organizer | ✅ (11/12) | classification perfect (incl. csv→Documents); one file omitted by the plan, validator only rejects hallucinations, not omissions |
+| 4 digest | ✅ (3/3) | urgency ranking correct (P1 > OKR deadline > weekly), actions extracted |
+| 5 music (AX, 20 steps) | ❌ | execution got to search results (site combobox filled, URL /search?q=…), but planner fixated: re-issued "click search button" across tree rebuilds, never played/queued |
+| 2 flights, 1 shopping | not attempted | strictly harder than music; ceiling already established |
+
+Diagnosis: 9B's *execution* through the tool layer is fine; its *observation
+update* fails under long horizons — outcomes read "success" (tree changed)
+while the plan fixates on stale intent. GLM re-plans from changed context.
+
+Levers before retrying local-small on long flows: (a) done/no-progress gate —
+N consecutive identical step_instructions force a re-observe with a "you are
+here: <domain/page signature>" hint; (b) feed the executor's structured delta
+into the next prompt more loudly; (c) vision for small models (Qwen3-VL-8B in
+cache) so page identity is unambiguous; (d) grant Automation TCC so the URL
+guard has real teeth (AppleScript blocked: -1743).

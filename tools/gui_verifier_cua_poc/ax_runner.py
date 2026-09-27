@@ -98,9 +98,13 @@ def capture_window(app_name: str, out_png: Path) -> bool:
     )
 
 
-def _read_url_from_ax(targets: list[dict]) -> str:
-    """Read the browser URL from any element whose AXValue looks like a URL
-    (address bar included), regardless of role or label. No AppleScript/TCC."""
+def _read_url_from_ax(targets: list[dict], app_name: str = "") -> str:
+    """Browser URL for the domain guard: AXValue first, then AppleScript.
+
+    Chrome's active-tab address bar often exposes an empty AXValue, so the
+    AX scan alone under-reports; AppleScript (Automation TCC) is the
+    reliable fallback, and the window title is the last resort.
+    """
     for entry in targets:
         live = entry.get("element")
         if live is None:
@@ -108,6 +112,23 @@ def _read_url_from_ax(targets: list[dict]) -> str:
         value = ax_driver._get(live, "AXValue")
         if isinstance(value, str) and value.startswith(("http://", "https://")):
             return value
+    if app_name:
+        try:
+            result = subprocess.run(
+                [
+                    "osascript",
+                    "-e",
+                    f'tell application "{app_name}" to get URL of active tab of front window',
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            url = result.stdout.strip()
+            if url.startswith(("http://", "https://")):
+                return url
+        except Exception:  # noqa: BLE001 - guard best-effort
+            pass
     return ""
 
 
@@ -280,7 +301,7 @@ async def run(args: argparse.Namespace) -> None:
     try:
         for step_no in range(1, args.max_steps + 1):
             targets = ax_driver.collect(args.app, keep_elements=True, max_windows=1)
-            url_now = _read_url_from_ax(targets)
+            url_now = _read_url_from_ax(targets, args.app)
             if url_now and not _url_allowed(url_now, allowed_domain):
                 log(f"[ax-runner] guard: URL left allowed domain: {url_now}")
                 trace["guard_stop"] = url_now
