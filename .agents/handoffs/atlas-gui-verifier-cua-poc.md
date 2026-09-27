@@ -91,3 +91,11 @@ GLM-5.3.
 - Failed approach worth remembering: starting a run from a truncated results
   URL redirects to the flights homepage and burns the budget on re-search
   (20260926-170756); always copy full final_url from trace.json.
+
+- Operator declined Spotify account login; music dogfood moved to YouTube Music
+  (logged out) and PASSED: search → play first instrumental → 2 tracks queued
+  via action menus (press Enter fallback needed once). Trace 20260926-174123.
+  Same run surfaced a real bug fixed in code: custom elements (YouTube paper
+  slider) expose numeric `.value`, so text collection now String()-coerces
+  before .trim(). All four Muse scenarios (shop / travel / files / digest /
+  music) have now each been dogfooded end-to-end at least once.
