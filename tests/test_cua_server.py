@@ -57,6 +57,7 @@ def client(monkeypatch, tmp_path, authorized):
     async def fake_run_loop(config, app, goal, **kwargs):
         sink = kwargs.get("event_sink")
         if sink is not None:
+            sink({"kind": "started", "app": app, "run_dir": "/tmp/fake-cua-run"})
             sink(
                 {
                     "kind": "plan",
@@ -132,6 +133,9 @@ def test_run_lifecycle_done(client):
     kinds = [e["kind"] for e in view["events"]]
     assert kinds[0] == "started" and "plan" in kinds and "executed" in kinds
     assert kinds[-1] == "terminal"
+    assert kinds.count("started") == 1
+    assert kinds.count("terminal") == 1
+    assert view["run_dir"] == "/tmp/fake-cua-run"
 
     # pagination: events after the last seq is empty
     tail = test_client.get(
@@ -140,6 +144,10 @@ def test_run_lifecycle_done(client):
         params={"after": len(view["events"])},
     ).json()["events"]
     assert tail == []
+
+    listed = test_client.get("/v1/cua/runs", headers=AUTH)
+    assert listed.status_code == 200
+    assert listed.json()["runs"][0]["run_id"] == run_id
 
 
 def test_create_rejects_bad_planner_and_concurrency(client):
@@ -159,6 +167,13 @@ def test_create_rejects_bad_planner_and_concurrency(client):
     fresh._runs["active1"] = active
     conflict = _post_run(client)
     assert conflict.status_code == 409
+
+
+def test_create_rejects_invalid_urls_and_blank_text(client):
+    assert _post_run(client, goal="   ").status_code == 400
+    assert _post_run(client, open_url="file:///tmp/private").status_code == 400
+    remote = _post_run(client, planner_url="https://example.com/v1/chat")
+    assert remote.status_code == 400
 
 
 def test_approval_gate_flow(client):
@@ -187,6 +202,23 @@ def test_approval_gate_flow(client):
     assert asyncio.run(scenario()) is True
     # loop-level rule: approve only resolves a waiting gate
     assert active.approve() is False
+    conflict = test_client.post("/v1/cua/runs/gate1/approval", headers=AUTH)
+    assert conflict.status_code == 409
+
+    active._awaiting = True
+    approved = test_client.post("/v1/cua/runs/gate1/approval", headers=AUTH)
+    assert approved.status_code == 200
+    assert approved.json() == {"run_id": "gate1", "approved": True}
+
+
+def test_approval_timeout(client):
+    active = cua_service.CUAServiceRun(
+        run_id="timeout1",
+        app="A",
+        goal="g",
+        config=None,  # type: ignore[arg-type]
+    )
+    assert asyncio.run(active.wait_for_approval("sign-in", timeout=0.001)) is False
 
 
 def test_cancel_requests_stop(client):
@@ -225,3 +257,194 @@ def test_events_after_seq_pagination(client):
     ).json()
     assert [e["seq"] for e in view["events"]] == [3]
     assert view["events"][0]["kind"] == "executed"
+
+    assert client.get("/v1/cua/runs/missing", headers=AUTH).status_code == 404
+    assert client.get("/v1/cua/runs/missing/events", headers=AUTH).status_code == 404
+
+
+def test_event_cursor_metadata_cannot_be_forged(client):
+    active = cua_service.CUAServiceRun(
+        run_id="cursor1",
+        app="A",
+        goal="g",
+        config=None,  # type: ignore[arg-type]
+    )
+    active.emit(
+        {
+            "kind": "started",
+            "seq": 999,
+            "ts": 0,
+            "run_dir": "/tmp/cursor1",
+        }
+    )
+    event = active.events[0]
+    assert event["seq"] == 1
+    assert event["ts"] > 0
+    assert active.run_dir == "/tmp/cursor1"
+
+
+def test_cancel_interrupts_active_background_task(client, monkeypatch):
+    service = client.fresh_service
+
+    async def blocked_run(*args, **kwargs):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(cua_service, "run_loop", blocked_run)
+
+    async def scenario():
+        run = await service.create(app="Chrome", goal="wait", planner="local-9b")
+        await asyncio.sleep(0)
+        service.cancel(run.run_id)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        return run
+
+    run = asyncio.run(scenario())
+    assert run.status == "stopped"
+    assert run.final_summary == "cancelled by client"
+    assert run.run_id not in service._tasks
+    assert [event["kind"] for event in run.events].count("terminal") == 1
+
+
+def test_service_failure_pruning_and_shutdown(client, monkeypatch):
+    service = client.fresh_service
+
+    async def failed_run(*args, **kwargs):
+        raise RuntimeError("planner exploded")
+
+    monkeypatch.setattr(cua_service, "run_loop", failed_run)
+
+    async def failure_scenario():
+        run = await service.create(app="Chrome", goal="fail", planner="local-9b")
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        return run
+
+    failed = asyncio.run(failure_scenario())
+    assert failed.status == "failed"
+    assert failed.error == "planner exploded"
+    assert failed.events[-1]["status"] == "failed"
+
+    old_limit = cua_service.MAX_RETAINED_RUNS
+    monkeypatch.setattr(cua_service, "MAX_RETAINED_RUNS", 1)
+    service._prune_runs()
+    assert service._runs == {}
+    monkeypatch.setattr(cua_service, "MAX_RETAINED_RUNS", old_limit)
+
+    service._closing = True
+    with pytest.raises(cua_service.CUARunConflictError, match="shutting down"):
+        asyncio.run(service.create(app="Chrome", goal="g", planner="local-9b"))
+
+    async def blocked_run(*args, **kwargs):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(cua_service, "run_loop", blocked_run)
+
+    async def close_active_service():
+        closing = cua_service.CUAService()
+        run = await closing.create(app="Chrome", goal="wait", planner="local-9b")
+        await asyncio.sleep(0)
+        await closing.close()
+        return closing, run
+
+    closing, stopped = asyncio.run(close_active_service())
+    assert stopped.status == "stopped"
+    assert closing._tasks == {}
+
+    fresh = cua_service.CUAService()
+    monkeypatch.setattr(cua_service, "_SERVICE", fresh)
+    asyncio.run(cua_service.close_cua_service())
+    assert cua_service.get_cua_service() is not fresh
+
+
+def test_unknown_http_error_maps_to_500():
+    error = cua_routes._http_error(RuntimeError("unexpected"))
+    assert error.status_code == 500
+
+
+def test_real_server_mounts_cua_router():
+    from rapid_mlx.server import app
+
+    paths = set(app.openapi()["paths"])
+    assert "/v1/cua/runs" in paths
+    assert "/v1/cua/runs/{run_id}/approval" in paths
+
+
+def test_real_server_lifespan_closes_cua_service(monkeypatch):
+    import rapid_mlx.server as server
+    from rapid_mlx.routes import agents, audio, video
+
+    closed = []
+
+    async def fake_close():
+        closed.append(True)
+
+    async def no_op_async(*args, **kwargs):
+        return None
+
+    class FakeResidencyManager:
+        async def start(self):
+            return None
+
+        async def shutdown(self):
+            return None
+
+    cfg = get_config()
+    previous_ready = cfg.ready
+    previous_draining = cfg.draining
+    monkeypatch.setattr(cua_service, "close_cua_service", fake_close)
+    monkeypatch.setattr(agents, "start_agent_service_lifecycle", lambda: None)
+    monkeypatch.setattr(agents, "close_agent_service", no_op_async)
+    monkeypatch.setattr(video, "start_video_jobs", lambda: None)
+    monkeypatch.setattr(video, "shutdown_video_jobs", no_op_async)
+    monkeypatch.setattr(audio, "shutdown_audio_lanes", no_op_async)
+    monkeypatch.setattr(server, "_residency_manager", FakeResidencyManager())
+    monkeypatch.setattr(server, "_drain_deferred_prefix_cache_load", no_op_async)
+    monkeypatch.setattr(server, "_shutdown_save_prefix_cache", no_op_async)
+    try:
+        with TestClient(server.app):
+            pass
+    finally:
+        cfg.ready = previous_ready
+        cfg.draining = previous_draining
+
+    assert closed == [True]
+
+
+def test_loop_gate_callback_wiring(client, tmp_path):
+    """Regression: CUARun must honor the injected gate callback.
+
+    Before the fix the loop always used the file sentinel, so a GUI/server
+    approval POST resolved nothing and the run stalled to a timeout stop.
+    """
+    from rapid_mlx.cua import loop as cua_loop
+    from rapid_mlx.cua.config import resolve_planner
+
+    config = cua_loop.CUAConfig(planner=resolve_planner("local-9b"), human_login=True)
+    service_run = cua_service.CUAServiceRun(
+        run_id="gatetest", app="Google Chrome", goal="g", config=config
+    )
+
+    async def scenario():
+        run = cua_loop.CUARun(
+            config,
+            app="Google Chrome",
+            goal="sign in and continue",
+            run_dir=tmp_path / "gatetest",
+            event_sink=service_run.emit,
+            gate=lambda reason: service_run.wait_for_approval(reason, timeout=5.0),
+        )
+
+        async def approver():
+            await asyncio.sleep(0.05)
+            assert service_run.approve() is True
+
+        task = asyncio.create_task(approver())
+        approved = await run._request_signin_approval()
+        await task
+        return approved
+
+    assert asyncio.run(scenario()) is True
+    kinds = [e["kind"] for e in service_run.events]
+    assert "gate" in kinds and "gate_resolved" in kinds
+    assert service_run.status == "running"  # reset after resolution

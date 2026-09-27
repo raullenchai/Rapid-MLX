@@ -35,9 +35,9 @@ class CUAPlannerInfo(BaseModel):
 class CUARunCreateRequest(BaseModel):
     app: str = Field(min_length=1, max_length=120)
     goal: str = Field(min_length=1, max_length=4000)
-    planner: str = "cloud-glm"
-    planner_model: str | None = None
-    planner_url: str | None = None
+    planner: str = Field(default="cloud-glm", min_length=1, max_length=2000)
+    planner_model: str | None = Field(default=None, max_length=500)
+    planner_url: str | None = Field(default=None, max_length=2000)
     open_url: str = Field(default="", max_length=2000)
     allowed_domain: str = Field(default="", max_length=200)
     max_steps: int = Field(default=12, ge=1, le=40)
@@ -159,8 +159,7 @@ async def approve_run(run_id: str) -> CUAApprovalResult:
 @router.post("/runs/{run_id}/cancel", response_model=CUARunView)
 async def cancel_run(run_id: str) -> CUARunView:
     try:
-        run = _service().get(run_id)
-        run.cancel()
+        run = _service().cancel(run_id)
         return CUARunView(**run.view())
     except cua_service.CUARunNotFoundError as exc:
         raise _http_error(exc) from exc

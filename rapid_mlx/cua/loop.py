@@ -74,6 +74,8 @@ class CUARun:
             "steps": [],
         }
         self.tracker = NoProgressTracker()
+        self._empty_snapshots = 0
+        self._terminal_emitted = False
         self.ranker = (
             FastOutcomeRanker(config.fast_ranker_url)
             if config.fast_ranker_url
@@ -88,12 +90,33 @@ class CUARun:
         )
 
     def _emit(self, event: dict) -> None:
+        if event.get("kind") == "terminal":
+            self._terminal_emitted = True
         if self.event_sink is None:
             return
         try:
             self.event_sink(event)
         except Exception:  # noqa: BLE001 - events must never kill the run
             pass
+
+    async def _request_signin_approval(self) -> bool:
+        """Ask the human to approve a sign-in pause.
+
+        With a `gate` callback (server/GUI mode) the pause is surfaced as
+        gate/gate_resolved events and resolved through the callback; without
+        one (CLI mode) the file sentinel is the approval channel.
+        """
+        if self.gate is None:
+            return await gates.wait_for_human(
+                self.run_dir, "APPROVE_SIGNIN", self.config.pause_timeout
+            )
+        self._emit({"kind": "gate", "reason": "sign-in"})
+        try:
+            approved = bool(await self.gate("sign-in"))
+        except Exception:  # noqa: BLE001 - a broken gate must not hang the run
+            approved = False
+        self._emit({"kind": "gate_resolved", "approved": approved})
+        return approved
 
     def _check_domain(self, url: str) -> str | None:
         allowed = self.config.allowed_domain.strip().lower().rstrip(".")
@@ -144,6 +167,33 @@ class CUARun:
         snapshot = backend.get_app_state(
             self.app, screenshot=not planner.text_only, use_cache=False
         )
+        if not snapshot.get("elements"):
+            # Dogfooding find (2026-09-27): when the target app's AX tree is
+            # unavailable (e.g. Chrome's accessibility service wedged), an
+            # empty snapshot used to reach the planner, whose guesses (index 0)
+            # crashed the whole run as "incomplete". Fail honestly instead.
+            self._empty_snapshots += 1
+            reason = (
+                f"accessibility tree for {self.app!r} is unavailable "
+                f"({self._empty_snapshots} empty snapshot(s))"
+            )
+            self._record({"step": step_no, "stop": reason})
+            self._emit(
+                {
+                    "kind": "executed",
+                    "step": step_no,
+                    "action": "observe",
+                    "outcome": "unavailable",
+                    "tree_changed": False,
+                }
+            )
+            if self._empty_snapshots >= 2:
+                self.trace["status"] = "stopped"
+                self.trace["final_summary"] = reason
+                self._emit({"kind": "terminal", "status": "stopped", "reason": reason})
+                return {"status": "stopped", "reason": reason}
+            return None
+        self._empty_snapshots = 0
         url_now = backend.read_url(self.app)
         guard = self._check_domain(url_now)
         if guard:
@@ -194,9 +244,7 @@ class CUARun:
             return {"status": "done", "summary": plan["final_summary"]}
 
         if self.config.human_login and gates.looks_like_sign_in(snapshot):
-            approved = await gates.wait_for_human(
-                self.run_dir, "APPROVE_SIGNIN", self.config.pause_timeout
-            )
+            approved = await self._request_signin_approval()
             if not approved:
                 self.trace["human_gate"] = "sign-in gate timed out"
                 self._record({"step": step_no, "plan": plan, "gate": "timeout"})
@@ -302,8 +350,7 @@ async def run(
         gate=gate,
         stop_event=stop_event,
     )
-    if event_sink is not None:
-        event_sink({"kind": "started", "app": app, "run_dir": str(run_dir)})
+    cua_run._emit({"kind": "started", "app": app, "run_dir": str(run_dir)})
     limit = max_steps or config.max_steps
     terminal: dict = {"status": "incomplete"}
     try:
@@ -318,11 +365,42 @@ async def run(
                 break
         else:
             cua_run.trace["max_steps_reached"] = limit
-            event_sink_local = event_sink
-            if event_sink_local is not None:
-                event_sink_local({"kind": "terminal", "status": "incomplete"})
+            reason = f"maximum step count reached ({limit})"
+            cua_run.trace["final_summary"] = reason
+            terminal = {"status": "stalled", "reason": reason}
+    except (ValueError, KeyError) as exc:
+        # A planner repair exhaustion or malformed plan must not surface as a
+        # bare traceback with status "incomplete"; stop with a readable reason.
+        reason = f"planner produced invalid plans: {exc}"
+        cua_run.trace["status"] = "stopped"
+        cua_run.trace["final_summary"] = reason
+        terminal = {"status": "stopped", "reason": reason}
+    except asyncio.CancelledError:
+        reason = "cancelled by client"
+        cua_run.trace["final_summary"] = reason
+        terminal = {"status": "stopped", "reason": reason}
+        raise
+    except Exception as exc:
+        terminal = {"status": "failed", "reason": str(exc)[:400]}
+        raise
     finally:
         cua_run.trace["status"] = terminal.get("status", "incomplete")
+        reason = str(terminal.get("reason", ""))
+        if reason and not cua_run.trace.get("final_summary"):
+            cua_run.trace["final_summary"] = reason
+        if not cua_run._terminal_emitted:
+            public_status = {
+                "done": "completed",
+                "incomplete": "stalled",
+            }.get(str(terminal.get("status")), str(terminal.get("status")))
+            cua_run._emit(
+                {
+                    "kind": "terminal",
+                    "status": public_status,
+                    "final_summary": str(cua_run.trace.get("final_summary", "")),
+                    **({"reason": reason} if reason else {}),
+                }
+            )
         (run_dir / "trace.json").write_text(
             json.dumps(cua_run.trace, ensure_ascii=False, indent=2, default=str),
             encoding="utf-8",

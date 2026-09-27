@@ -13,11 +13,14 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
+from urllib.parse import urlparse
 
-from rapid_mlx.cua.config import CUAConfig, PlannerConfig, resolve_planner
+from rapid_mlx.cua.config import CUAConfig, PlannerConfig, load_config, resolve_planner
 from rapid_mlx.cua.loop import run as run_loop
+from rapid_mlx.cua.planner import assert_loopback_url
 
 MAX_CONCURRENT_RUNS = 1
+MAX_RETAINED_RUNS = 100
 
 
 class CUARunConflictError(RuntimeError):
@@ -47,16 +50,20 @@ class CUAServiceRun:
 
     def emit(self, event: dict) -> None:
         with self._lock:
-            event = {"seq": len(self.events) + 1, "ts": time.time(), **event}
+            # Cursor metadata is service-owned.  A sink payload must not be able
+            # to forge sequence numbers or timestamps and break pagination.
+            event = {**event, "seq": len(self.events) + 1, "ts": time.time()}
             self.events.append(event)
-        kind = event.get("kind")
-        if kind == "gate":
-            self._awaiting = True
-            self.status = "awaiting_approval"
-        elif kind == "gate_resolved":
-            self._awaiting = False
-            if self.status == "awaiting_approval":
-                self.status = "running"
+            kind = event.get("kind")
+            if kind == "started" and event.get("run_dir"):
+                self.run_dir = str(event["run_dir"])
+            elif kind == "gate":
+                self._awaiting = True
+                self.status = "awaiting_approval"
+            elif kind == "gate_resolved":
+                self._awaiting = False
+                if self.status == "awaiting_approval":
+                    self.status = "running"
 
     async def wait_for_approval(self, reason: str, timeout: float) -> bool:
         self.emit({"kind": "gate_detail", "reason": reason, "timeout_s": timeout})
@@ -66,12 +73,14 @@ class CUAServiceRun:
         except (asyncio.TimeoutError, TimeoutError):
             return False
         finally:
-            self._awaiting = False
+            with self._lock:
+                self._awaiting = False
             self._approve_event.clear()
 
     def approve(self) -> bool:
-        if not self._awaiting:
-            return False
+        with self._lock:
+            if not self._awaiting:
+                return False
         self._approve_event.set()
         return True
 
@@ -81,18 +90,18 @@ class CUAServiceRun:
     def view(self, events_after: int = 0) -> dict:
         with self._lock:
             events = [e for e in self.events if e["seq"] > events_after]
-        return {
-            "run_id": self.run_id,
-            "app": self.app,
-            "goal": self.goal,
-            "status": self.status,
-            "final_summary": self.final_summary,
-            "error": self.error,
-            "planner": self.config.planner.describe() if self.config else "n/a",
-            "events_after_seq": events_after,
-            "events": events,
-            "run_dir": str(self.run_dir),
-        }
+            return {
+                "run_id": self.run_id,
+                "app": self.app,
+                "goal": self.goal,
+                "status": self.status,
+                "final_summary": self.final_summary,
+                "error": self.error,
+                "planner": self.config.planner.describe() if self.config else "n/a",
+                "events_after_seq": events_after,
+                "events": events,
+                "run_dir": str(self.run_dir),
+            }
 
 
 class CUAService:
@@ -101,6 +110,7 @@ class CUAService:
     def __init__(self) -> None:
         self._runs: dict[str, CUAServiceRun] = {}
         self._tasks: dict[str, asyncio.Task] = {}
+        self._closing = False
 
     def list_runs(self) -> list[dict]:
         return [
@@ -132,12 +142,26 @@ class CUAService:
         max_steps: int = 12,
         human_login: bool = False,
     ) -> CUAServiceRun:
-        active = [
-            r
-            for r in self._runs.values()
-            if r.status in {"running", "awaiting_approval"}
+        if self._closing:
+            raise CUARunConflictError("CUA service is shutting down")
+        app = app.strip()
+        goal = goal.strip()
+        if not app or not goal:
+            raise ValueError("app and goal must contain non-whitespace text")
+        if open_url:
+            parsed_open_url = urlparse(open_url)
+            if (
+                parsed_open_url.scheme not in {"http", "https"}
+                or not parsed_open_url.hostname
+            ):
+                raise ValueError("open_url must be an absolute HTTP(S) URL")
+        active_tasks = [task for task in self._tasks.values() if not task.done()]
+        active_runs = [
+            run
+            for run in self._runs.values()
+            if run.status in {"running", "awaiting_approval"}
         ]
-        if len(active) >= MAX_CONCURRENT_RUNS:
+        if active_tasks or len(active_runs) >= MAX_CONCURRENT_RUNS:
             raise CUARunConflictError(
                 "another CUA run is active; cancel it before starting a new one"
             )
@@ -147,16 +171,24 @@ class CUAService:
             )
         except ValueError as exc:
             raise ValueError(f"bad planner: {exc}") from exc
+        # Fail synchronously with HTTP 400 instead of accepting a run that is
+        # guaranteed to die in its background task.
+        assert_loopback_url(planner_cfg.url)
+        stored_config = load_config()
+        fast_ranker_url = str(stored_config.get("fast_ranker_url", ""))
+        if fast_ranker_url:
+            assert_loopback_url(fast_ranker_url)
         config = CUAConfig(
             planner=planner_cfg,
+            fast_ranker_url=fast_ranker_url,
             allowed_domain=allowed_domain,
             human_login=human_login,
         )
         run_id = uuid.uuid4().hex[:12]
         run = CUAServiceRun(run_id=run_id, app=app, goal=goal, config=config)
         run.run_dir = ""
+        self._prune_runs()
         self._runs[run_id] = run
-        run.emit({"kind": "started", "app": app, "goal": goal[:200]})
 
         task = asyncio.create_task(
             run_loop(
@@ -171,17 +203,62 @@ class CUAService:
             )
         )
         self._tasks[run_id] = task
-        task.add_done_callback(lambda t: self._finalize(run, t))
+
+        def finalize(completed: asyncio.Task) -> None:
+            self._finalize(run, completed)
+
+        task.add_done_callback(finalize)
+        return run
+
+    def _prune_runs(self) -> None:
+        terminal = sorted(
+            (
+                run
+                for run in self._runs.values()
+                if run.run_id not in self._tasks or self._tasks[run.run_id].done()
+            ),
+            key=lambda run: run.created_at,
+        )
+        while len(self._runs) >= MAX_RETAINED_RUNS and terminal:
+            expired = terminal.pop(0)
+            self._runs.pop(expired.run_id, None)
+            self._tasks.pop(expired.run_id, None)
+
+    @staticmethod
+    def _has_terminal_event(run: CUAServiceRun) -> bool:
+        with run._lock:
+            return any(event.get("kind") == "terminal" for event in run.events)
+
+    def cancel(self, run_id: str) -> CUAServiceRun:
+        run = self.get(run_id)
+        run.cancel()
+        task = self._tasks.get(run_id)
+        if task is not None and not task.done():
+            task.cancel()
         return run
 
     def _finalize(self, run: CUAServiceRun, task: asyncio.Task) -> None:
+        self._tasks.pop(run.run_id, None)
         trace: dict = {}
         try:
             trace = task.result() or {}
+        except asyncio.CancelledError:
+            run.status = "stopped"
+            run.final_summary = "cancelled by client"
+            if not self._has_terminal_event(run):
+                run.emit(
+                    {
+                        "kind": "terminal",
+                        "status": "stopped",
+                        "final_summary": run.final_summary,
+                    }
+                )
+            return
         except Exception as exc:  # noqa: BLE001 - surface failure to the client
             run.status = "failed"
             run.error = str(exc)[:400]
-            run.emit({"kind": "terminal", "status": "failed", "error": run.error})
+            if not self._has_terminal_event(run):
+                run.emit({"kind": "terminal", "status": "failed", "error": run.error})
             return
         run.final_summary = str(trace.get("final_summary", ""))
         status = trace.get("status", "incomplete")
@@ -189,14 +266,29 @@ class CUAService:
             "done": "completed",
             "stopped": "stopped",
             "stalled": "stalled",
-        }.get(status, status if status in {"failed"} else "incomplete")
-        run.emit(
-            {
-                "kind": "terminal",
-                "status": run.status,
-                "final_summary": run.final_summary,
-            }
-        )
+            "incomplete": "stalled",
+        }.get(status, status if status in {"failed"} else "failed")
+        if not self._has_terminal_event(run):
+            run.emit(
+                {
+                    "kind": "terminal",
+                    "status": run.status,
+                    "final_summary": run.final_summary,
+                }
+            )
+
+    async def close(self) -> None:
+        """Stop active work and wait for every background task to settle."""
+        self._closing = True
+        tasks = list(self._tasks.values())
+        for run in self._runs.values():
+            run.cancel()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._tasks.clear()
 
 
 _SERVICE = CUAService()
@@ -208,8 +300,8 @@ def get_cua_service() -> CUAService:
 
 async def close_cua_service() -> None:
     """Cancel any active run (server shutdown)."""
-    for run in _SERVICE._runs.values():
-        if run.status in {"running", "awaiting_approval"}:
-            run.cancel()
-    for task in _SERVICE._tasks.values():
-        task.cancel()
+    global _SERVICE
+    service = _SERVICE
+    await service.close()
+    if _SERVICE is service:
+        _SERVICE = CUAService()
