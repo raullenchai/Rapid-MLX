@@ -21,7 +21,7 @@ Families with registered aliases (run `rapid-mlx models` for the full, current l
 | LFM 2 / 2.5 | 1B, 2.6B, 8B-A1B, 24B-A2B | 4-bit |
 | MiniCPM 5 | 1B, 2B | 4-bit, OptiQ 4-bit |
 | GPT-OSS | 20B, 120B | 4/8-bit, mxfp4 |
-| Ternary Bonsai | 1.7B, 27B | 2-bit (ternary) |
+| Ternary Bonsai | 1.7B, 27B, Bonsai 2 27B (vision) | 2-bit (ternary) |
 | Hunyuan 3 (Hy3) | 295B MoE (21B active) — **Ultra-only** | 4-bit |
 | NeoHorse 1 | 9B (experimental Chat candidate) | 4-bit |
 | G9v3 (AI9Stars) | 39B MoE (5B active) | 4-bit |
