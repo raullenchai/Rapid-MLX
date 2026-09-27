@@ -79,7 +79,7 @@ needed by the application; leave it unset for URL/base64-only deployments.
 | `--enable-prefix-cache` / `--disable-prefix-cache` | Toggle prefix caching for repeated prompts | enabled |
 | `--prefix-cache-index` | Prefix-cache lookup index: `radix` (token trie) or `hash` (legacy bisect) | `radix` |
 | `--cache-memory-mb` | Cache memory limit in MB | Auto |
-| `--cache-memory-percent` | Fraction of RAM for cache | `0.20` |
+| `--cache-memory-percent` | Fraction of available RAM for cache, raised to the agent-session floor (a third of the Metal headroom left after the weights, at most 4 GiB) when that is larger | `0.20` |
 | `--idle-cache-clear-seconds` | Clear reusable KV cache after idle time; model weights remain loaded | Disabled |
 | `--no-memory-aware-cache` | Use legacy entry-count cache | `false` |
 | `--pin-system-prompt` | Auto-pin the system prompt in the prefix cache to prevent eviction under memory pressure | `false` |
