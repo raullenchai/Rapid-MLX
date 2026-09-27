@@ -588,6 +588,18 @@ def test_live_element_rejects_snapshot_index_drift(monkeypatch):
         backend._live_element(snapshot, 2)
 
 
+def test_collect_watchdog_preserves_structured_errors(monkeypatch):
+    expected = errors.ComputerUseError("element_not_found", "window vanished")
+
+    def failed_collect(*args, **kwargs):
+        raise expected
+
+    monkeypatch.setattr(backend.ax_driver, "collect", failed_collect)
+    with pytest.raises(errors.ComputerUseError) as excinfo:
+        backend._collect_with_timeout("A", timeout_s=1)
+    assert excinfo.value is expected
+
+
 def test_element_click_ax_and_fallback(monkeypatch):
     snapshot = {"elements": [{"index": 0, "center": [6, 12], "actions": ["AXPress"]}]}
     monkeypatch.setattr(backend, "get_app_state", lambda *a, **k: snapshot)
