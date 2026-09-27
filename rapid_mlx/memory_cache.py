@@ -37,8 +37,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from .hybrid_state_checkpoints import (
+    StateCheckpoints,
     achievable_position,
+    attach_checkpoints,
     checkpoint_bytes,
+    collect_checkpoints,
     is_recurrent_layer,
     restore_recurrent_layer,
 )
@@ -49,6 +52,39 @@ logger = logging.getLogger(__name__)
 _BYTES_PER_MB = 1024 * 1024
 _DEFAULT_MEMORY_PERCENT = 0.20  # 20% of available RAM
 _MIN_MEMORY_BYTES = 100 * _BYTES_PER_MB  # Minimum 100MB
+# Session floor (agent-session prefix reuse on 16-32 GB Macs). The heuristic
+# budget is a fraction of *currently available* RAM, measured after the model
+# weights are resident — on an 18 GB Mac serving a 5 GB model that is ~0.8 GB,
+# smaller than ONE ~23k-token agent-session entry (~1 GB for Qwen3.5-9B), so the
+# entry the next turn needs was refused ("Cache entry too large") and every turn
+# re-prefilled the whole prompt. The floor reserves a fixed share of the Metal
+# headroom left after weights (``allocation cap - resident``) for the prefix
+# cache; the remaining two thirds stay available for live KV + activations, and
+# the Metal-pressure evictor / admission gate still reclaim the cache whenever
+# live requests need the memory. The absolute cap keeps large-RAM hosts on the
+# existing percent-of-available budget (the floor only ever raises a budget).
+_SESSION_FLOOR_HEADROOM_FRACTION = 1.0 / 3.0
+_SESSION_FLOOR_MAX_BYTES = 4 * 1024 * _BYTES_PER_MB
+
+
+def session_floor_bytes(metal_cap_bytes: int, resident_bytes: int) -> int:
+    """Prefix-cache floor that keeps one agent session resident.
+
+    ``metal_cap_bytes`` is the engine's Metal allocation cap and
+    ``resident_bytes`` the Metal memory already in use (model weights) when the
+    cache is built. Returns ``0`` — no floor — when the cap is unknown or the
+    weights already exhaust it, so a host we cannot measure keeps the legacy
+    percent-of-available budget.
+    """
+    cap = int(metal_cap_bytes or 0)
+    headroom = cap - max(0, int(resident_bytes or 0))
+    if cap <= 0 or headroom <= 0:
+        return 0
+    return min(
+        int(headroom * _SESSION_FLOOR_HEADROOM_FRACTION), _SESSION_FLOOR_MAX_BYTES
+    )
+
+
 # #1100 codex round 6 (#3): replace-mode stage-then-swap transiently holds BOTH
 # the existing live cache AND the fully-staged new blob until the atomic swap
 # (the DELIBERATE cost of the "corrupt source leaves existing cache intact"
@@ -205,6 +241,99 @@ def _save_prompt_cache_compat(path: str, cache: list[Any], metadata: dict[str, s
     embedded[_VENDORED_STATE_METADATA] = json.dumps(sorted(vendored))
     cache_metadata = dict(tree_flatten([cache_info, embedded, cache_classes]))
     mx.save_safetensors(path, encoded, cache_metadata)
+
+
+def _checkpoints_sidecar_path(entry_path: str) -> str:
+    """``entry_K.safetensors`` -> ``entry_K_ckpt.safetensors``."""
+    return entry_path[: -len(".safetensors")] + "_ckpt.safetensors"
+
+
+def _save_checkpoints_sidecar(path: str, cache: list[Any]) -> bool:
+    """Persist the hybrid recurrent-state checkpoints of ``cache``.
+
+    Without them a restored hybrid entry can serve only requests that extend
+    it exactly; with them a shorter request sharing its prefix (a session
+    replayed from its first turn after a restart) snaps to the newest
+    checkpoint instead of re-prefilling everything. Keys are
+    ``"<layer>.<position>.<array>"``. Best effort: returns False (and leaves
+    no file) when there is nothing to save or the write fails, and the entry
+    itself is still committed.
+    """
+    import mlx.core as mx
+
+    arrays: dict[str, Any] = {}
+    for layer_idx, holder in enumerate(collect_checkpoints(cache)):
+        if holder is None:
+            continue
+        for position in holder.positions:
+            for k, arr in enumerate(holder.arrays_at(position) or ()):
+                arrays[f"{layer_idx}.{position}.{k}"] = arr
+    if not arrays:
+        return False
+    try:
+        mx.save_safetensors(path, arrays)
+        _fsync_file(path)
+    except Exception as exc:
+        logger.warning(f"[cache_persist] checkpoint sidecar not saved: {exc}")
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return False
+    return True
+
+
+def _attach_checkpoints_sidecar(path: str, cache: list[Any], num_tokens: int) -> int:
+    """Re-attach checkpoints saved by :func:`_save_checkpoints_sidecar`.
+
+    Every array must match the live layer's state slot in shape and dtype and
+    every position must lie inside the entry; any mismatch drops ALL of the
+    entry's checkpoints (the entry still loads and serves exact extensions),
+    so a stale or foreign sidecar can never seed generation with wrong state.
+    Returns the number of checkpoint positions attached.
+    """
+    import mlx.core as mx
+
+    try:
+        # mx.load mmaps lazily and reads zeros past EOF: a truncated sidecar
+        # must be refused before any array is trusted (same rule as entries).
+        if not _safetensors_is_complete(path):
+            raise ValueError("body is short of its header's data range")
+        loaded = mx.load(path)
+        grouped: dict[int, dict[int, dict[int, Any]]] = {}
+        for key, arr in loaded.items():
+            layer_s, pos_s, k_s = key.split(".")
+            grouped.setdefault(int(layer_s), {}).setdefault(int(pos_s), {})[
+                int(k_s)
+            ] = arr
+        holders: list[StateCheckpoints | None] = [None] * len(cache)
+        position_sets = set()
+        for layer_idx, by_pos in grouped.items():
+            layer = cache[layer_idx]
+            if not is_recurrent_layer(layer):
+                raise ValueError(f"layer {layer_idx} is not recurrent")
+            live = layer.cache
+            items = []
+            for position, by_k in by_pos.items():
+                if not 0 < position <= num_tokens:
+                    raise ValueError(f"position {position} outside entry")
+                if sorted(by_k) != list(range(len(live))):
+                    raise ValueError(f"layer {layer_idx} array count mismatch")
+                for k, arr in by_k.items():
+                    ref = live[k]
+                    if ref is None or arr.shape != ref.shape or arr.dtype != ref.dtype:
+                        raise ValueError(f"layer {layer_idx} slot {k} shape/dtype")
+                items.append((position, tuple(by_k[k] for k in range(len(live)))))
+            holders[layer_idx] = StateCheckpoints(items)
+            position_sets.add(frozenset(by_pos))
+        recurrent = [i for i, layer in enumerate(cache) if is_recurrent_layer(layer)]
+        if len(position_sets) != 1 or sorted(grouped) != recurrent:
+            raise ValueError("checkpoints do not cover every recurrent layer")
+    except Exception as exc:
+        logger.warning(f"[cache_persist] ignoring checkpoint sidecar {path}: {exc}")
+        return 0
+    attach_checkpoints(cache, holders, max_position=num_tokens)
+    return len(next(iter(position_sets)))
 
 
 def _load_prompt_cache_compat(path: str) -> list[Any]:
@@ -480,6 +609,46 @@ def _read_tokens_bin(
         except _struct.error as exc:
             return None, f"struct.unpack_from failed: {exc}"
         return tokens, ""
+
+
+# Shutdown-save throughput probe. The save loop predicts each entry's write
+# time before starting it; with no sample yet it used a fixed 150 MB/s floor,
+# which predicts ~6.4 s for one ~1 GB agent-session entry and skips it under
+# the 3.5 s SIGTERM budget even though an Apple SSD writes it in ~1 s. A small
+# measured write (fsynced, then halved for serialization overhead) replaces
+# the guess whenever the disk is demonstrably faster than the floor.
+_THROUGHPUT_PROBE_BYTES = 16 * _BYTES_PER_MB
+_THROUGHPUT_PROBE_SAFETY = 0.5
+# A 16 MiB write can land in the page cache at several GB/s while a real
+# ~1 GB entry (Metal -> safetensors + fsync) measured 700-1300 MB/s, so the
+# probe only ever lifts the first prediction up to this ceiling; later
+# entries use the throughput observed on the real writes.
+_THROUGHPUT_PROBE_MAX_BYTES_PER_SEC = 600 * _BYTES_PER_MB
+
+
+def _probe_write_bytes_per_sec(directory: str) -> float:
+    """Measured, safety-discounted write+fsync throughput; ``0.0`` on failure."""
+    import time as _time
+
+    path = os.path.join(directory, ".throughput_probe")
+    chunk = os.urandom(_BYTES_PER_MB)
+    try:
+        t0 = _time.monotonic()
+        with open(path, "wb") as f:
+            for _ in range(_THROUGHPUT_PROBE_BYTES // _BYTES_PER_MB):
+                f.write(chunk)
+            f.flush()
+            os.fsync(f.fileno())
+        elapsed = _time.monotonic() - t0
+    except OSError as exc:
+        logger.debug(f"[cache_persist] throughput probe failed: {exc}")
+        return 0.0
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    return _THROUGHPUT_PROBE_BYTES / max(elapsed, 1e-6) * _THROUGHPUT_PROBE_SAFETY
 
 
 def _fsync_file(path: str) -> None:
@@ -993,6 +1162,10 @@ class MemoryCacheConfig:
     #                  conversation reuse comes back without re-opening the
     #                  #1025 unbounded-retention leak.
     hybrid_reuse_max_entries: int = 0
+    # Lower bound (bytes) for the heuristic percent-of-available budget; see
+    # :func:`session_floor_bytes`. Explicit ``max_memory_mb`` and the operator
+    # env override are never raised by it. ``0`` = no floor.
+    min_memory_bytes: int = 0
 
     def __post_init__(self) -> None:
         if not 0.0 < self.max_memory_percent <= 1.0:
@@ -1001,6 +1174,10 @@ class MemoryCacheConfig:
             )
         if self.max_entries < 1:
             raise ValueError(f"max_entries must be >= 1, got {self.max_entries}")
+        if self.min_memory_bytes < 0:
+            raise ValueError(
+                f"min_memory_bytes must be >= 0, got {self.min_memory_bytes}"
+            )
         if self.hybrid_reuse_max_entries < 0:
             raise ValueError(
                 "hybrid_reuse_max_entries must be >= 0, "
@@ -1031,6 +1208,9 @@ class MemoryCacheConfig:
           4. ``max_memory_percent`` × 8 GiB fallback when psutil is
              unavailable.
 
+        Steps 3 and 4 are raised to ``min_memory_bytes`` (the agent-session
+        floor the scheduler derives from Metal headroom) when that is larger.
+
         Returns:
             Memory limit in bytes.
         """
@@ -1051,11 +1231,11 @@ class MemoryCacheConfig:
         available = _get_available_memory()
         if available > 0:
             limit = int(available * self.max_memory_percent)
-            return max(limit, _MIN_MEMORY_BYTES)
+            return max(limit, _MIN_MEMORY_BYTES, self.min_memory_bytes)
 
         # Fallback: assume 8GB system, use configured percent
         fallback_total = 8 * 1024 * _BYTES_PER_MB
-        return int(fallback_total * self.max_memory_percent)
+        return max(int(fallback_total * self.max_memory_percent), self.min_memory_bytes)
 
 
 @dataclass
@@ -2894,7 +3074,18 @@ class MemoryAwarePrefixCache:
         # real-world observed throughput (~875 MB/s during the
         # original incident) ~6× safety margin while still catching
         # genuinely-too-large entries.
-        _BOOTSTRAP_BYTES_PER_SEC = 150 * _BYTES_PER_MB
+        _BOOTSTRAP_BYTES_PER_SEC: float = 150 * _BYTES_PER_MB
+        if should_abort is not None:
+            # Budgeted (shutdown) save: calibrate the first prediction
+            # against the real disk instead of the fixed floor. The floor
+            # still wins on a disk slower than it (the historical contract).
+            _BOOTSTRAP_BYTES_PER_SEC = max(
+                _BOOTSTRAP_BYTES_PER_SEC,
+                min(
+                    _probe_write_bytes_per_sec(new_dir),
+                    _THROUGHPUT_PROBE_MAX_BYTES_PER_SEC,
+                ),
+            )
         # Support BOTH zero-arg and one-arg ``should_abort`` predicates
         # at the per-entry layer. The new contract is
         # ``Callable[[float], bool]`` (forward-looking) but external
@@ -2997,6 +3188,9 @@ class MemoryAwarePrefixCache:
                 # per token regardless of host ``array.array("i").itemsize``
                 # — wire format must be portable.
                 _write_tokens_bin_v3(tokens_path, list(tokens_key), save_uuid)
+                has_checkpoints = _save_checkpoints_sidecar(
+                    _checkpoints_sidecar_path(entry_path), persist_cache
+                )
 
                 # Record the per-layer cache class names so loaders can
                 # gate on cache-type compatibility (#198 BUG B). Read from
@@ -3016,6 +3210,7 @@ class MemoryAwarePrefixCache:
                         "cache_types": cache_types,
                         "message_boundary": entry.message_boundary,
                         "message_boundary_sequence": (entry.message_boundary_sequence),
+                        "checkpoints": has_checkpoints,
                     }
                 )
                 saved_lru_rank[i] = lru_rank[tokens_key]
@@ -3175,6 +3370,8 @@ class MemoryAwarePrefixCache:
             sf, tk = _entry_paths(e["index"])
             keep_paths.add(sf)
             keep_paths.add(tk)
+            if e.get("checkpoints"):
+                keep_paths.add(_checkpoints_sidecar_path(sf))
         try:
             for name in os.listdir(new_dir):
                 full = os.path.join(new_dir, name)
@@ -3817,7 +4014,12 @@ class MemoryAwarePrefixCache:
                             break
                         continue
 
-                # Estimate memory
+                if entry_meta.get("checkpoints"):
+                    _attach_checkpoints_sidecar(
+                        _checkpoints_sidecar_path(entry_path), cache, len(tokens)
+                    )
+
+                # Estimate memory (includes re-attached checkpoints)
                 memory = estimate_kv_cache_memory(cache)
 
                 # Check if it fits against the running (live+staged in

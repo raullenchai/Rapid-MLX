@@ -69,7 +69,7 @@ flag visible in `rapid-mlx serve --help`, grouped by category — lives in the
 | `--prefix-cache-index` | Prefix-cache lookup index: `radix` (token trie) or `hash` (legacy) | radix |
 | `--use-paged-cache` | Enable paged KV cache | False |
 | `--cache-memory-mb` | Cache memory limit in MB | Auto |
-| `--cache-memory-percent` | Fraction of RAM for cache | 0.20 |
+| `--cache-memory-percent` | Fraction of available RAM for cache. When the flag is not passed, the 0.20 default is raised to the agent-session floor (a third of the Metal headroom left after the weights, at most 4 GiB) when that is larger. An explicit value is always kept | 0.20 |
 | `--idle-cache-clear-seconds` | Clear reusable KV cache after idle time; model weights remain loaded | Disabled |
 | `--max-tokens` | Default max tokens | 32768 |
 | `--default-temperature` | Default temperature when not specified (companions: `--default-top-k`, `--default-min-p`, `--default-repetition-penalty`, `--default-presence-penalty`, `--default-frequency-penalty`) | None |
