@@ -622,7 +622,7 @@ async def _collect_targets(page: Page) -> tuple[str, dict[str, Target]]:
 async def _browser_state(page: Page) -> dict[str, Any]:
     state = dict(
         await page.evaluate(
-        r"""() => {
+            r"""() => {
           const active = document.activeElement;
           return {
             url: location.href,

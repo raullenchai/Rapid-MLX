@@ -249,11 +249,8 @@ def _url_allowed(url: str, allowed_domain: str) -> bool:
         return False
     parsed = urlparse(url)
     host = (parsed.hostname or "").lower().rstrip(".").removeprefix("www.")
-    return (
-        parsed.scheme in {"http", "https"}
-        and (host == allowed_domain
-        or host.endswith("." + allowed_domain)
-        )
+    return parsed.scheme in {"http", "https"} and (
+        host == allowed_domain or host.endswith("." + allowed_domain)
     )
 
 

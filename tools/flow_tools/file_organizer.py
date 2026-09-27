@@ -240,7 +240,9 @@ def _execute(root: Path, moves: list[dict[str, Any]]) -> dict[str, Any]:
                 f"{Path(move['file']).stem}-{stamp}{source.suffix}"
             )
         if destination.exists() or destination.is_symlink() or destination in reserved:
-            raise FileExistsError(f"could not allocate collision-safe path: {destination}")
+            raise FileExistsError(
+                f"could not allocate collision-safe path: {destination}"
+            )
         reserved.add(destination)
         prepared.append((move, source, destination))
     try:
