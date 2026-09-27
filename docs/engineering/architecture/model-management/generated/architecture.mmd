@@ -29,7 +29,7 @@ flowchart LR
   subgraph lane_runtime["Runtime resolution and consumption"]
     runtime_config_override["RuntimeConfigOverride<br/><small>partial</small>"]
     runtime_resolver["RuntimeResolver<br/><small>partial</small>"]
-    effective_runtime_config["EffectiveRuntimeConfig<br/><small>planned</small>"]
+    effective_runtime_config["EffectiveRuntimeConfig<br/><small>partial</small>"]
     desktop_gui["Rapid Desktop GUI<br/><small>partial</small>"]
     rapid_server["Rapid Server / CLI<br/><small>partial</small>"]
   end
@@ -100,7 +100,7 @@ flowchart LR
   class selected_model_variant planned
   class runtime_config_override partial
   class runtime_resolver partial
-  class effective_runtime_config planned
+  class effective_runtime_config partial
   class desktop_gui partial
   class rapid_server partial
   class actual_runtime_telemetry planned
