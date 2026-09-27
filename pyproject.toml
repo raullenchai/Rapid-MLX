@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "rapid-mlx"
 version = "0.15.2"
-description = "Rapid-MLX — AI inference for Apple Silicon. Drop-in OpenAI API, up to 3x Ollama's measured throughput."
+description = "Rapid-MLX is an open-source (Apache 2.0) OpenAI- and Anthropic-compatible LLM inference server and Mac app for Apple Silicon, built on MLX, focused on reliable tool calling for coding agents."
 readme = "README.md"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.10"
@@ -535,9 +535,11 @@ image = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/raullenchai/Rapid-MLX"
-Documentation = "https://github.com/raullenchai/Rapid-MLX#readme"
-Repository = "https://github.com/raullenchai/Rapid-MLX"
+Homepage = "https://rapidmlx.com"
+Documentation = "https://rapidmlx.com/docs/"
+Source = "https://github.com/raullenchai/Rapid-MLX"
+Changelog = "https://rapidmlx.com/changelog/"
+Issues = "https://github.com/raullenchai/Rapid-MLX/issues"
 
 [project.scripts]
 rapid-mlx = "rapid_mlx.cli:cli_entrypoint"
