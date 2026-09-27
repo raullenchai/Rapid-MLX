@@ -26,6 +26,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+pytest.importorskip("mlx")
 pytestmark = pytest.mark.requires_mlx
 
 from rapid_mlx import memory_cache as mc
