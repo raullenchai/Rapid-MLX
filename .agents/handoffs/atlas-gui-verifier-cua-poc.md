@@ -68,3 +68,26 @@ semantic targets from browser DOM nodes to native macOS Accessibility, add
 typed drag/select operations, and run a held-out multi-application task suite.
 Qualify a local Qwen 27B planner against the same traces before replacing
 GLM-5.3.
+
+## 2026-09-26 evening — four-flow dogfood status
+
+- Machine rebooted mid-session; /tmp worktree wiped. Rebuilt at durable path
+  `/Users/raullenstudio/work/rapid-mlx-gui-verifier-poc` (venv: python 3.12 via
+  uv; deps pinned mlx 0.32.2 / mlx-vlm 0.7.2 / laya-mlx 0.2). Run artifacts from
+  earlier today are gone; distilled results live in the decisions doc.
+- **press action added** to the semantic protocol (click/fill/submit/press/
+  scroll/wait/done; keys: Enter, Escape, Tab, ArrowDown/Up, Space; success =
+  dom/url changed; key allowlisted in _validate_plan). Unlocked Google Flights
+  Material UI widgets that ignore clicks.
+- **--human-login now pauses up front** before any planning (in-page login
+  modals like Spotify's never change the URL, so the URL-pattern gate alone
+  misses them).
+- **done path now copies plan.final_summary into trace** (was step-record only).
+- Scenario results: S2 travel SEARCH+COMPARE dogfooded end-to-end on Google
+  Flights (SFO→HND 2026-10-12 one-way; GLM compared Cathay $658 1-stop vs
+  United $961 nonstop vs JAL $961 nonstop, balanced pick United nonstop; no
+  booking). S3/S4 file organizer + digest previously green. S4 Spotify playlist
+  run waiting on operator sign-in at the upfront gate (1h window from 17:23).
+- Failed approach worth remembering: starting a run from a truncated results
+  URL redirects to the flights homepage and burns the budget on re-search
+  (20260926-170756); always copy full final_url from trace.json.
