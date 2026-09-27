@@ -352,3 +352,229 @@ def test_loop_writes_trace(config_dir, fake_backend, tmp_path, monkeypatch):
     assert trace_path.exists()
     saved = json.loads(trace_path.read_text())
     assert saved["status"] == "done"
+
+
+def test_commerce_click_rejected():
+    """Adversarial: clicking 'Add to cart' must trip the consent gate too."""
+    with pytest.raises(ConsentError, match="cart"):
+        gates.check_plan_consents(
+            {"action": "click", "step_instruction": "add the item"},
+            target_label="Add to cart",
+        )
+
+
+def test_wait_uses_async_sleep(config_dir, fake_backend, tmp_path, monkeypatch):
+    """The loop must not block the event loop during wait/backoff."""
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    slept = []
+
+    class _FakeTime:
+        @staticmethod
+        async def sleep(seconds):
+            slept.append(seconds)
+
+    monkeypatch.setattr(loop_mod.asyncio, "sleep", _FakeTime.sleep)
+    config = _make_config(tmp_path)
+    planner = _FakePlanner(
+        [
+            {
+                "action": "wait",
+                "step_instruction": "let the page settle",
+                "final_summary": "",
+            },
+            {
+                "action": "done",
+                "step_instruction": "finish",
+                "final_summary": "waited then finished",
+            },
+        ]
+    )
+    trace = asyncio.run(
+        loop_mod.run(config, "Google Chrome", "g", max_steps=3, planner=planner)
+    )
+    assert trace["status"] == "done"
+    assert 2.0 in slept and 1.2 in slept
+
+
+# ---------------------------------------------------------------- cli dispatch
+
+
+def test_cli_planners_and_config(capsys, config_dir):
+    from rapid_mlx.cua.cli import main
+
+    assert main(["planners"]) == 0
+    out = capsys.readouterr().out
+    assert "local-9b" in out and "cloud-glm" in out
+
+    assert main(["config", "--show"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert "presets" in data
+
+    assert (
+        main(["config", "--set", "presets.local-9b.url", "http://127.0.0.1:9/v1"]) == 0
+    )
+    assert main(["config", "--set", "bogus.key", "x"]) == 2
+
+
+def test_cli_run_dispatch_and_planner_error(capsys, config_dir, monkeypatch, tmp_path):
+    import rapid_mlx.cua.cli as cli_mod
+    import rapid_mlx.cua.loop as loop_mod
+
+    seen = {}
+
+    async def fake_run(config, app, goal, open_url="", max_steps=None, planner=None):
+        seen["planner"] = config.planner.preset
+        seen["goal"] = goal
+        return {"status": "done", "final_summary": "ok"}
+
+    monkeypatch.setattr(loop_mod, "run", fake_run)
+    rc = cli_mod.main(
+        [
+            "run",
+            "--app",
+            "Chrome",
+            "--goal",
+            "g",
+            "--planner",
+            "local-9b",
+            "--max-steps",
+            "4",
+        ]
+    )
+    assert rc == 0
+    assert seen["planner"] == "local-9b" and seen["goal"] == "g"
+
+    rc = cli_mod.main(["run", "--app", "Chrome", "--goal", "g", "--planner", "nope"])
+    assert rc == 2
+
+
+# ---------------------------------------------------------------- planner client
+
+
+class _FakeResponse:
+    def __init__(self, content=None, status_error=False):
+        self._content = content
+        self.is_error = status_error
+        self.status_code = 500 if status_error else 200
+        self.text = "server exploded" if status_error else ""
+
+    def json(self):
+        return {"choices": [{"message": {"content": self._content}}]}
+
+
+def _make_planner(monkeypatch, responses):
+    from rapid_mlx.cua import planner as planner_mod
+
+    p = planner_mod.Planner(
+        url="http://127.0.0.1:9/v1/chat/completions", model="m", text_only=True
+    )
+    queue = list(responses)
+
+    async def fake_post(url, json=None):
+        return _FakeResponse(queue.pop(0))
+
+    monkeypatch.setattr(p.client, "post", fake_post)
+    return p
+
+
+def test_plan_repairs_invalid_then_accepts(monkeypatch, fake_backend):
+    import asyncio
+
+    snapshot = fake_backend.get_app_state("Chrome", screenshot=False)
+    planner = _make_planner(
+        monkeypatch,
+        [
+            '{"action":"click","step_instruction":"x","element_index":999,"text":"","key":"","direction":"","final_summary":""}',
+            '{"action":"click","step_instruction":"x","element_index":1,"text":"","key":"","direction":"","final_summary":""}',
+        ],
+    )
+    plan, raw, latency, attempts = asyncio.run(
+        planner.plan("g", snapshot, [], allowed_domain="", progress_hint="")
+    )
+    assert plan["element_index"] == 1
+    assert len(attempts) == 2 and attempts[0]["error"]
+
+
+def test_plan_http_error_raises(monkeypatch, fake_backend):
+    import asyncio
+
+    snapshot = fake_backend.get_app_state("Chrome", screenshot=False)
+    planner = _make_planner(monkeypatch, [])
+
+    async def fake_post(url, json=None):
+        return _FakeResponse(status_error=True)
+
+    monkeypatch.setattr(planner.client, "post", fake_post)
+    with pytest.raises(RuntimeError, match="planner HTTP 500"):
+        asyncio.run(planner.plan("g", snapshot, []))
+
+
+def test_plan_attaches_screenshot_for_vision(monkeypatch, fake_backend):
+    import asyncio
+    import io as _io
+
+    from PIL import Image
+
+    from rapid_mlx.cua import planner as planner_mod
+
+    buffer = _io.BytesIO()
+    Image.new("RGB", (8, 8)).save(buffer, format="PNG")
+    snapshot = fake_backend.get_app_state("Chrome", screenshot=False)
+    snapshot["screenshot_png"] = buffer.getvalue()
+
+    seen = {}
+    planner = planner_mod.Planner(
+        url="http://127.0.0.1:9/v1/chat/completions", model="m", text_only=False
+    )
+
+    async def fake_post(url, json=None):
+        seen["content_kinds"] = [c["type"] for c in json["messages"][0]["content"]]
+        return _FakeResponse(
+            '{"action":"wait","step_instruction":"s","element_index":-1,"text":"","key":"","direction":"","final_summary":""}'
+        )
+
+    monkeypatch.setattr(planner.client, "post", fake_post)
+    asyncio.run(planner.plan("g", snapshot, []))
+    assert seen["content_kinds"] == ["text", "image_url"]
+
+
+def test_reflect_text_only(monkeypatch):
+    import asyncio
+
+    planner = _make_planner(
+        monkeypatch,
+        [
+            '{"outcome":"no_effect","evidence":"nothing changed","recommended_recovery":"retry"}'
+        ],
+    )
+    verdict, latency = asyncio.run(
+        planner.reflect("g", "step", "u1", "u1", {"tree_changed": False})
+    )
+    assert verdict["outcome"] == "no_effect"
+
+
+def test_planner_rejects_non_loopback():
+    from rapid_mlx.cua.planner import Planner
+
+    with pytest.raises(ValueError, match="loopback"):
+        Planner(url="http://10.0.0.5:8888/v1", model="m")
+
+
+def test_data_url_roundtrip():
+    import base64
+    import io as _io
+
+    from PIL import Image
+
+    from rapid_mlx.cua.planner import data_url
+
+    buffer = _io.BytesIO()
+    Image.new("RGB", (4, 4), color=(255, 0, 0)).save(buffer, format="PNG")
+    url = data_url(buffer.getvalue())
+    assert url.startswith("data:image/png;base64,")
+    image = Image.open(_io.BytesIO(base64.b64decode(url.split(",", 1)[1])))
+    assert image.size == (4, 4)

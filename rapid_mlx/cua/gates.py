@@ -1,8 +1,8 @@
-"""Consent gates: credential guard, sign-in gate, destructive-action gate.
+"""Consent gates: credential guard, commerce guard, sign-in gate.
 
-Mirrors Orca's ACTION_POLICY idea in file-sentinel form: the agent never
-touches credentials or payments; sign-in pages pause for a human APPROVE
-marker; the run directory keeps the audit trail.
+The agent never touches credentials or payments, and never clicks or fills
+cart/checkout controls (research-only v1). Sign-in pages pause for a human
+APPROVE marker; the run directory keeps the audit trail.
 """
 
 from __future__ import annotations
@@ -38,10 +38,12 @@ def check_plan_consents(plan: dict, target_label: str = "") -> None:
             "plan references credentials or payment secrets "
             f"(step: {plan.get('step_instruction', '')[:80]!r})"
         )
-    if plan.get("action") == "fill" and FORBIDDEN_COMMERCE_RE.search(haystack):
+    if plan.get("action") in {"fill", "click"} and FORBIDDEN_COMMERCE_RE.search(
+        haystack
+    ):
         raise ConsentError(
-            "fill must not target cart/checkout/payment controls "
-            f"(label: {target_label[:80]!r})"
+            f"{plan.get('action')} must not target cart/checkout/payment "
+            f"controls (label: {target_label[:80]!r})"
         )
 
 

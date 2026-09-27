@@ -9,6 +9,7 @@ Replaces the GUI-verifier POC loop with the productized native-AX pipeline:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import subprocess
@@ -84,12 +85,12 @@ class CUARun:
             result.update(backend.set_value(self.app, index, plan.get("text", "")))
         elif action == "press":
             backend.click(self.app, index)
-            time.sleep(0.2)
+            await asyncio.sleep(0.2)
             result.update(backend.press_key(self.app, plan.get("key", "Enter")))
         elif action == "scroll":
             result.update(backend.scroll(self.app, plan.get("direction", "down"), 1.0))
         elif action == "wait":
-            time.sleep(2.0)
+            await asyncio.sleep(2.0)
             result.update({"ok": True})
         result["executed"] = action != "wait"
         return result
@@ -148,7 +149,7 @@ class CUARun:
 
         before_sig = _tree_signature(snapshot)
         executed = await self._execute(plan, snapshot)
-        time.sleep(1.2)
+        await asyncio.sleep(1.2)
         after = backend.get_app_state(self.app, screenshot=False, use_cache=False)
         after_sig = _tree_signature(after)
         url_after = backend.read_url(self.app)
@@ -213,7 +214,7 @@ async def run(
     run_dir = config_mod.RUNS_DIR / time.strftime("%Y%m%d-%H%M%S")
     if open_url:
         _open_url(app, open_url)
-        time.sleep(6.0)
+        await asyncio.sleep(6.0)
     if planner is None:
         planner = Planner(
             url=config.planner.url,
