@@ -159,6 +159,18 @@ def _get(element: object, attribute: str) -> object:
     return value if err == kAXErrorSuccess else None
 
 
+def _as_list(raw: object) -> list:
+    """pyobjc returns AX arrays as NSMutableArray — iterable, never a python
+    list. isinstance(raw, (list, tuple)) is always False for them and silently
+    emptied every snapshot (dogfood 2026-09-27); normalize once here."""
+    if raw is None:
+        return []
+    try:
+        return list(raw)
+    except TypeError:
+        return []
+
+
 def _action_names(element: object) -> list[str]:
     err, names = AXUIElementCopyActionNames(element, None)
     return list(names) if err == kAXErrorSuccess and names else []
@@ -214,7 +226,15 @@ def _walk(element: object, depth: int, out: list[dict], counter: list[int]) -> N
             }
         )
     raw_children = _get(element, "AXChildren")
-    children = raw_children if isinstance(raw_children, (list, tuple)) else []
+    # pyobjc returns AXChildren as an NSMutableArray, which is iterable but
+    # is NOT a python list/tuple; isinstance() checks here silently skipped
+    # every child and emptied all snapshots (dogfood 2026-09-27).
+    children: list = []
+    if raw_children is not None:
+        try:
+            children = list(raw_children)
+        except TypeError:
+            children = []
     for child in children:
         _walk(child, depth + 1, out, counter)
         if counter[0] >= MAX_NODES:
@@ -225,13 +245,37 @@ def _app_element(app_name: str) -> object:
     if AS is None:
         raise RuntimeError("computer-use actions require macOS with PyObjC installed")
     workspace = AS.NSWorkspace.sharedWorkspace()
+    # Dogfood find (2026-09-27): substring matching picked up system XPC
+    # helpers whose localized name merely contains the app name (e.g.
+    # "ThemeWidgetControlViewService (Rapid)"), yielding an AX element with
+    # no windows and empty snapshots for every app. Prefer exact-name matches
+    # over Apple's own XPC processes, then verify the element has windows.
+    candidates: list[object] = []
+    exact: list[object] = []
+    wanted = app_name.lower()
     for app in workspace.runningApplications():
-        if app_name.lower() in (app.localizedName() or "").lower():
-            element = AXUIElementCreateApplication(app.processIdentifier())
-            # Ask Chrome to expose web content even without an AX client bundle id.
+        name = (app.localizedName() or "").lower()
+        if wanted not in name:
+            continue
+        (exact if name == wanted else candidates).append(app)
+    for app in exact + candidates:
+        element = AXUIElementCreateApplication(app.processIdentifier())
+        # Chrome builds web-content AX trees lazily; ask it to expose them.
+        # Dogfood find (2026-09-27): the same poke on AppKit/SwiftUI apps
+        # retriggers an AX tree rebuild whose in-flight state hides deep
+        # children (windows look fine, walks come back empty), so restrict
+        # the poke to Chrome-family apps.
+        bundle = (app.bundleIdentifier() or "").lower()
+        if "chrome" in bundle or "chromium" in bundle or "edge" in bundle:
             AXUIElementSetAttributeValue(element, _MANUAL_ACCESSIBILITY, True)
             AXUIElementSetAttributeValue(element, _ENHANCED_UI, True)
             time.sleep(0.4)
+        else:
+            time.sleep(0.1)
+        # Window verification only matters when several processes matched
+        # (an XPC helper could shadow the real app); with a single candidate
+        # take it as-is — an AX-unresponsive app should still be selectable.
+        if len(exact + candidates) == 1 or _get(element, "AXWindows"):
             return element
     raise SystemExit(f"app not found: {app_name!r}")
 
@@ -248,8 +292,7 @@ def collect(
     targets: list[dict] = []
     counter = [0]
     for attempt in range(4):
-        raw_windows = _get(app, "AXWindows")
-        windows = raw_windows if isinstance(raw_windows, (list, tuple)) else []
+        windows = _as_list(_get(app, "AXWindows"))
         targets = []
         counter = [0]
         for window in windows[window_index : window_index + max_windows]:
@@ -260,7 +303,11 @@ def collect(
             break
         # Chrome builds the web-content AX tree lazily; wait and retry.
         time.sleep(1.5)
-        AXUIElementSetAttributeValue(app, _MANUAL_ACCESSIBILITY, True)
+        if attempt == 0:
+            # Poke only once. Repeating AXManualAccessibility restarts the
+            # tree rebuild on every retry, so each attempt would observe a
+            # half-built tree and never converge (dogfood 2026-09-27).
+            AXUIElementSetAttributeValue(app, _MANUAL_ACCESSIBILITY, True)
     if not targets and window_index == 0:  # menu-bar-only apps
         _walk(AXUIElementCreateSystemWide(), 0, targets, counter)
     if not keep_elements:
