@@ -24,3 +24,20 @@ The experimental Computer Use page can start a goal-driven CUA run through the a
 ## Earlier Studio dogfood
 
 The original stacked panel completed multi-step Chrome tasks with the configured GLM slow planner and local fast ranker, including a successful rerun after the empty-AX-tree failure was fixed. Traces were written under `~/.rapid-mlx/cua-runs/`.
+
+
+## Round 3 (2026-09-27 afternoon): tool-layer hardening from live dogfood
+
+Four production failure modes found and fixed on this branch (commits through 233b7f1e8):
+
+1. Snapshot index drift → stale-element honest results (backend.py) + `_execute` ComputerUseError containment (loop.py).
+2. Wedged AX services (no-timeout macOS AX calls froze runs 8+ min) → 20 s daemon-thread watchdog in `backend._collect_with_timeout`, routed into the honest-stop path.
+3. pyobjc NSArray is never `isinstance(list)` — `_walk`/`collect` silently emptied all snapshots → shared `_as_list` normalization (ax_driver.py).
+4. App resolution: exact-name preference beats system XPC helpers (`ThemeWidgetControlViewService (Rapid)`); AXManualAccessibility poke restricted to Chrome-family (it corrupts AppKit/SwiftUI trees mid-rebuild).
+
+**E2E proof**: pizza form via GUI panel — 5 steps, Run completed, `AXValue` readback verified (`Atlas`, `555-0100`, `atlas@example.com`). Fast-think evidence: laya ranker verdict per step at 0.17–0.21 s (`system-one-rank`).
+
+**Unresolved**:
+- Dogfood matrix T4 (form via panel with openURL binding), T5 (commerce consent gate), T3 (Finder dry-run) still pending; AX setValue does not sync SwiftUI TextField bindings (Pixel: needs focus/commit fix, workaround is real-keyboard typing or goal-embedded URLs).
+- Chrome AX wedges repeatedly under load (watchdog now degrades honestly; self-heal via AXManualAccessibility reset is a candidate tool-layer PR).
+- Muse comparison still blocked on installer.
