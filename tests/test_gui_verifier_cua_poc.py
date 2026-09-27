@@ -311,6 +311,43 @@ def test_fast_controller_scrolls_until_three_organic_products_are_visible():
     )
 
 
+def test_press_action_requires_allowed_key_and_optional_target():
+    plan = MODULE._validate_plan(
+        {
+            "action": "press",
+            "step_instruction": "Open the trip-type menu",
+            "target_id": "t011",
+            "key": "Enter",
+        },
+        {"t011"},
+    )
+    assert plan["key"] == "Enter"
+    with pytest.raises(ValueError, match="press key"):
+        MODULE._validate_plan(
+            {
+                "action": "press",
+                "step_instruction": "Open menu",
+                "target_id": "t011",
+                "key": "Cmd+R",
+            },
+            {"t011"},
+        )
+
+
+def test_press_protocol_success_on_dom_change():
+    outcome = MODULE._protocol_outcome(
+        {"action": "press", "key": "Enter", "step_instruction": "open menu"},
+        {
+            "url_changed": False,
+            "dom_changed": True,
+            "focus_matches_target": False,
+            "scroll_changed": False,
+        },
+        "",
+    )
+    assert outcome == "success"
+
+
 def test_navigation_guard_rejects_cross_origin_target():
     target = _product("t001", "B000000001")
     MODULE._guard_target_origin(target, "amazon.com")

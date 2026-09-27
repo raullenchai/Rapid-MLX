@@ -56,12 +56,13 @@ PLAN_SCHEMA = {
     "properties": {
         "action": {
             "type": "string",
-            "enum": ["click", "fill", "submit", "scroll", "wait", "done"],
+            "enum": ["click", "fill", "submit", "press", "scroll", "wait", "done"],
         },
         "step_instruction": {"type": "string"},
         "target_id": {"type": "string"},
         "text": {"type": "string"},
         "submit": {"type": "boolean"},
+        "key": {"type": "string"},
         "direction": {"type": "string"},
         "final_summary": {"type": "string"},
     },
@@ -71,6 +72,7 @@ PLAN_SCHEMA = {
         "target_id",
         "text",
         "submit",
+        "key",
         "direction",
         "final_summary",
     ],
@@ -147,8 +149,14 @@ def _validate_plan(
     forbidden_re: re.Pattern[str] = FORBIDDEN_RE,
 ) -> dict[str, Any]:
     action = str(raw.get("action", "")).lower()
-    if action not in {"click", "fill", "submit", "scroll", "wait", "done"}:
+    if action not in {"click", "fill", "submit", "press", "scroll", "wait", "done"}:
         raise ValueError(f"unsupported action: {action!r}")
+    raw["action"] = action
+    raw["key"] = str(raw.get("key", "")).strip()
+    if action == "press":
+        allowed_keys = {"Enter", "Tab", "Escape", "ArrowDown", "ArrowUp", "Space"}
+        if raw["key"] not in allowed_keys:
+            raise ValueError(f"press key must be one of {sorted(allowed_keys)}")
     raw["action"] = action
     raw["step_instruction"] = str(raw.get("step_instruction", "")).strip()
     if forbidden_re.search(raw["step_instruction"]):
@@ -274,7 +282,9 @@ Goal: {goal}
 Choose exactly one next action. Interactive elements are identified by target_id
 in the page context. Never invent a target_id. Use fill with submit=true to
 focus, replace the value, and submit a search in one atomic action. Use click
-for links and buttons. The executor derives coordinates from the chosen target;
+for links and buttons. Use press for custom comboboxes, dropdowns, and menus
+that ignore clicks: it focuses the target and sends one keyboard key
+(Enter, Escape, Tab, ArrowDown, ArrowUp, or Space). The executor derives coordinates from the chosen target;
 you never generate coordinates.
 
 {guard_text}
@@ -297,9 +307,9 @@ Compact visible page context:
 {page_context[:6500]}
 
 Return JSON only:
-{{"action":"click|fill|submit|scroll|wait|done",
+{{"action":"click|fill|submit|press|scroll|wait|done",
   "step_instruction":"...",
-  "target_id":"t000", "text":"...", "submit":false,
+  "target_id":"t000", "text":"...", "submit":false, "key":"",
   "direction":"down",
   "final_summary":"..."}}
 """
@@ -784,6 +794,7 @@ def _protocol_outcome(
         succeeded
         or (action == "scroll" and delta["scroll_changed"])
         or (action == "wait" and delta["dom_changed"])
+        or (action == "press" and (delta["dom_changed"] or delta["url_changed"]))
     )
     if succeeded:
         return "success"
@@ -1009,6 +1020,17 @@ async def run(args: argparse.Namespace) -> Path:
     history: list[dict[str, Any]] = []
     sign_in_pauses = 0
     try:
+        if args.human_login:
+            # Sign-in-first sites (Spotify, etc.) show in-page login modals that
+            # never change the URL, so the human logs in before any planning.
+            await _wait_for_human(
+                run_dir,
+                "RESUME",
+                "Sign in to the site inside the opened Chrome window if needed "
+                "(the agent never touches credentials), then approve to start.",
+                args.pause_timeout,
+            )
+            await page.wait_for_timeout(2500)
         if args.bootstrap_query:
             trace["bootstrap"] = await _bootstrap_search(
                 page, verifier, run_dir, args.bootstrap_query, forbidden_re
@@ -1242,6 +1264,12 @@ async def run(args: argparse.Namespace) -> Path:
                     await page.locator(
                         f'[data-rapid-cua-id="{target.target_id}"]'
                     ).press("Enter")
+                elif action == "press":
+                    if target is not None:
+                        await page.locator(
+                            f'[data-rapid-cua-id="{target.target_id}"]'
+                        ).focus()
+                    await page.keyboard.press(plan["key"])
                 elif action == "scroll":
                     amount = -620 if plan["direction"] == "up" else 620
                     await page.mouse.wheel(0, amount)
