@@ -154,3 +154,8 @@ CLAUDE.md
 # release workflow into rapid_mlx/telemetry/ at publish time ONLY; it must
 # never exist in a checkout (see rapid_mlx/telemetry/build_gate.py).
 rapid_mlx/telemetry/_release_stamp.json
+
+# scripts/dev_verify.py local evidence (commit-bound result artifacts are
+# written here per run; the contract artifact travels in the PR description,
+# not in git)
+rapid-dev-verify/
