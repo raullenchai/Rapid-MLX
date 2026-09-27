@@ -4114,6 +4114,7 @@ class Scheduler:
                 )
             elif self.config.use_memory_aware_cache:
                 # Use memory-aware cache (recommended for large models)
+                session_floor = self._prefix_cache_session_floor_bytes()
                 cache_config = MemoryCacheConfig(
                     max_memory_mb=self.config.cache_memory_mb,
                     max_memory_percent=self.config.cache_memory_percent,
@@ -4133,7 +4134,7 @@ class Scheduler:
                     kv_turboquant_mode=self.config.kv_cache_turboquant_mode,
                     # #1103: bounded trim-free hybrid reuse (0 = #1075 policy).
                     hybrid_reuse_max_entries=self.config.hybrid_cache_entries,
-                    min_memory_bytes=self._prefix_cache_session_floor_bytes(),
+                    min_memory_bytes=session_floor,
                 )
                 # R15-P1 (task #303): radix-tree prefix-cache index.
                 # Constructed when ``prefix_cache_index == "radix"`` and
@@ -4158,7 +4159,8 @@ class Scheduler:
                 )
                 logger.info(
                     f"Memory-aware cache enabled: "
-                    f"limit={self.memory_aware_cache.memory_limit_mb:.1f}MB, "
+                    f"limit={self.memory_aware_cache.memory_limit_mb:.1f}MB "
+                    f"(agent-session floor {session_floor / (1024 * 1024):.1f}MB), "
                     f"index={'radix' if radix_idx is not None else 'hash'}"
                 )
             else:
