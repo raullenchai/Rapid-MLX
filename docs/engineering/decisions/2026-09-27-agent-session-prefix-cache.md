@@ -58,9 +58,12 @@ turn.
   - An explicit `--cache-memory-mb` or `RAPID_MLX_PREFIX_CACHE_MAX_BYTES` is
     never raised.
   - The 4 GiB cap means large-RAM hosts keep their existing budget.
-- **Cache-self pressure keeps the newest entry.** The cache-self trigger still
-  trims older entries, but never the most recently used one. Metal-active
-  pressure may still evict every entry.
+- **Pressure below the Metal cap keeps the newest entry.** The cache-self
+  trigger and the soft Metal zone (90% of the cap up to the cap) still trim
+  older entries, but never the most recently used one. In the 16 GB-class run,
+  a hit turn's transient state (live KV plus the snapshot copy) peaked at
+  9.3 GB against a 9.6 GB cap. Evicting there dropped the entry on every hit
+  turn. At or over the cap itself, every entry may still be evicted.
 - **Admission reclaims the cache before rejecting.** When a new request would
   cross the Metal cap, the D-METAL-CAP admission gate evicts memory-aware
   prefix-cache entries in LRU order before returning 503. A larger cache
@@ -105,7 +108,8 @@ On a 16 GB Mac:
 
 Three guards cover that case:
 
-- The Metal-pressure evictor fires at 90% of the cap.
+- The Metal-pressure evictor fires at 90% of the cap. It trims older entries
+  there and empties the cache at the cap.
 - The admission gate now evicts cache entries before a request is admitted.
 - The per-request KV projection still rejects requests that cannot fit.
 

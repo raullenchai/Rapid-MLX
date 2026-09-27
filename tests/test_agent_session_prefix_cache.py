@@ -211,7 +211,20 @@ def test_cache_self_pressure_trims_older_entries_but_keeps_the_newest(monkeypatc
     assert list(cache._entries) == [tuple(range(100, 200))]
 
 
-def test_metal_pressure_still_evicts_the_newest_entry(monkeypatch):
+def test_soft_metal_pressure_trims_older_entries_but_keeps_the_newest(monkeypatch):
+    sched = _scheduler(monkeypatch)
+    cache = sched.memory_aware_cache
+    cache.store([1, 2, 3], _hybrid_cache(int(FLOOR * 0.04)))
+    cache.store(list(range(100)), _hybrid_cache(int(FLOOR * 0.5)))
+    # Between 90% of the cap and the cap: the finishing request's transient
+    # state (measured 9.3 of a 9.6 GB cap on a hit turn).
+    sched._test_active[0] = int(CAP * 0.97)
+
+    assert sched.evict_prefix_cache_under_pressure() == 1
+    assert list(cache._entries) == [tuple(range(100))]
+
+
+def test_metal_pressure_at_the_cap_evicts_the_newest_entry(monkeypatch):
     sched = _scheduler(monkeypatch)
     cache = sched.memory_aware_cache
     cache.store(list(range(100)), _hybrid_cache(int(FLOOR * 0.95)))

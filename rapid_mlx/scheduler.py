@@ -7130,12 +7130,12 @@ class Scheduler:
         triggered_cache_self = False
         for _ in range(max(0, int(max_evict))):
             should_evict = False
-            metal_pressure = False
+            at_metal_cap = False
             if metal_threshold > 0:
                 active = self._current_metal_active_bytes()
                 if active >= metal_threshold:
                     should_evict = True
-                    metal_pressure = True
+                    at_metal_cap = active >= metal_cap
                     triggered_metal = True
             if not should_evict and cache_self_threshold > 0:
                 current_cache = self._cache_self_pressure_current_bytes()
@@ -7144,14 +7144,20 @@ class Scheduler:
                     triggered_cache_self = True
             if not should_evict:
                 break
-            # Cache-self pressure is a ledger trim, not a memory emergency:
-            # the cache's own admission already bounded it by ``_max_memory``.
-            # It must never drop the most-recently-used entry — for an agent
-            # session that single entry (one ~23k-token prompt) routinely sits
-            # above 90% of a small-Mac budget, and evicting it right after the
-            # store made every next turn a full re-prefill. Real Metal
-            # pressure may still take every entry.
-            if not self._evict_one_prefix_cache_entry(keep_mru=not metal_pressure):
+            # The most-recently-used entry is what the next agent turn
+            # extends. Below the Metal cap it is kept:
+            # * cache-self pressure is a ledger trim, not a memory emergency —
+            #   the cache's own admission already bounded it by
+            #   ``_max_memory``, and one ~23k-token session entry routinely
+            #   sits above 90% of a small-Mac budget;
+            # * the soft Metal zone (fraction x cap .. cap) is mostly the
+            #   finishing request's transient state (live KV + the snapshot
+            #   copy), released when it completes — measured at 9.3 of a
+            #   9.6 GB 16 GB-class cap, which evicted the entry on every hit
+            #   turn and made every other turn a full re-prefill.
+            # At or over the cap itself every entry may go; the admission
+            # gate also reclaims the cache before admitting new work.
+            if not self._evict_one_prefix_cache_entry(keep_mru=not at_metal_cap):
                 break
             # The entry has been removed from the cache trie — count
             # this as a successful eviction REGARDLESS of whether the
