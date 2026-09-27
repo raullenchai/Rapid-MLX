@@ -50,6 +50,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 if TYPE_CHECKING:
     from .runtime.audio_worker import AudioWorkerHandoff, ModelWorker
+    from .runtime.effective_config import EffectiveRuntimeConfig
 
 # Single source of truth for the OpenAI-shaped 400 / 422 / 500 envelopes
 # (F-161 / F-162 / F-163 / F-094-class). Defined in ``middleware`` so
@@ -2263,6 +2264,7 @@ def load_model(
     no_openai_harmony_streaming: bool = False,
     enable_disk_stream: bool = False,
     disk_stream_cache_gb: float = 1.0,
+    effective_runtime_config: "EffectiveRuntimeConfig | None" = None,
 ):
     """
     Load a model (auto-detects MLLM vs LLM).
@@ -2311,6 +2313,10 @@ def load_model(
             ``rapid_mlx.disk_stream_patch`` in ``_start_llm`` before the
             model reaches ``AsyncEngineCore``. Default False keeps every
             existing caller's behavior unchanged.
+        effective_runtime_config: Optional authoritative result produced by
+            the CLI resolver. The Server verifies it against the legacy
+            launch values before applying it. Direct Python callers are
+            resolved at this boundary with conservative provenance.
     """
     if force_mllm and force_text:
         raise ValueError(
@@ -2435,6 +2441,65 @@ def load_model(
             scheduler_config = SchedulerConfig(prefill_step_size=prefill_step_size)
         else:
             scheduler_config.prefill_step_size = prefill_step_size
+
+    # Migration 002: every engine construction now crosses one immutable,
+    # provenance-carrying boundary.  Keep the legacy values beside it until
+    # parity is proven, then consume the central result.  A mismatch fails
+    # before any model I/O, providing the rollback guard required by #3768.
+    from .runtime.config_adapter import (
+        DEFAULT_RUNTIME_LAUNCH_VALUES,
+        RuntimeLaunchValues,
+        assert_runtime_config_parity,
+        resolve_programmatic_runtime_config,
+    )
+
+    _legacy_runtime_values = RuntimeLaunchValues(
+        prefill_step_size=getattr(
+            scheduler_config,
+            "prefill_step_size",
+            DEFAULT_RUNTIME_LAUNCH_VALUES.prefill_step_size,
+        ),
+        max_num_seqs=getattr(
+            scheduler_config,
+            "max_num_seqs",
+            DEFAULT_RUNTIME_LAUNCH_VALUES.max_num_seqs,
+        ),
+        gpu_memory_utilization=gpu_memory_utilization,
+        enable_prefix_cache=getattr(
+            scheduler_config,
+            "enable_prefix_cache",
+            DEFAULT_RUNTIME_LAUNCH_VALUES.enable_prefix_cache,
+        ),
+        kv_cache_dtype=getattr(
+            scheduler_config,
+            "kv_cache_dtype",
+            DEFAULT_RUNTIME_LAUNCH_VALUES.kv_cache_dtype,
+        ),
+    )
+    if effective_runtime_config is None:
+        effective_runtime_config = resolve_programmatic_runtime_config(
+            surface="server.load_model", legacy=_legacy_runtime_values
+        )
+    else:
+        assert_runtime_config_parity(
+            surface="cli-to-server",
+            legacy=_legacy_runtime_values,
+            config=effective_runtime_config,
+        )
+    _effective_runtime_values = RuntimeLaunchValues.from_effective(
+        effective_runtime_config
+    )
+    if scheduler_config is not None:
+        scheduler_config.prefill_step_size = _effective_runtime_values.prefill_step_size
+        scheduler_config.max_num_seqs = _effective_runtime_values.max_num_seqs
+        scheduler_config.enable_prefix_cache = (
+            _effective_runtime_values.enable_prefix_cache
+        )
+        scheduler_config.kv_cache_dtype = _effective_runtime_values.kv_cache_dtype
+        scheduler_config.gpu_memory_utilization = (
+            _effective_runtime_values.gpu_memory_utilization or 0.0
+        )
+    gpu_memory_utilization = _effective_runtime_values.gpu_memory_utilization
 
     global \
         _engine, \
@@ -2782,6 +2847,12 @@ def load_model(
             ),
             model_name,
         )
+
+    # Publish the DTO only after engine construction succeeds, so a failed
+    # residency replacement cannot overwrite the running model's truth.
+    _runtime_config_owner = effective_model_alias or requested_model_name
+    get_config().effective_runtime_config = effective_runtime_config
+    get_config().effective_runtime_model = _runtime_config_owner
 
     # Sync globals into ServerConfig BEFORE _detect_native_tool_support reads
     # them via get_config(). Detection short-circuits when cfg.tool_call_parser
@@ -3458,6 +3529,7 @@ from .routes.metrics import router as _metrics_router
 from .routes.models import router as _models_router
 from .routes.residency import router as _residency_router
 from .routes.responses import router as _responses_router
+from .routes.runtime_config import router as _runtime_config_router
 from .routes.video import router as _video_router
 
 app.include_router(_probe_router)
@@ -3469,6 +3541,7 @@ app.include_router(_metrics_router)
 # Keep literal residency paths ahead of ``/v1/models/{model_id:path}`` so the
 # latter cannot consume ``residency`` as an ordinary model id.
 app.include_router(_residency_router)
+app.include_router(_runtime_config_router)
 app.include_router(_models_router)
 app.include_router(_agents_router)
 app.include_router(_chat_router)

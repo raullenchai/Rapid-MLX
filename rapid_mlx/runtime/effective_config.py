@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Immutable, provenance-carrying runtime configuration contract.
 
-This module is intentionally disconnected from the production startup path.
-It defines the contract and precedence rules used by migration 002; adapters
-can compare it with the existing CLI and Server resolvers before either caller
-is switched over.
+This module defines the contract and precedence rules used by migration 002.
+CLI and Server retain a parity adapter around their former values so a rollout
+regression fails before model loading instead of silently changing behavior.
 """
 
 from __future__ import annotations
@@ -124,6 +123,33 @@ class EffectiveRuntimeConfig:
         if not isinstance(field, RuntimeField):
             raise RuntimeResolutionError(f"unknown runtime field: {field!r}")
         return self.fields[list(RuntimeField).index(field)]
+
+    def to_wire(self) -> dict[str, object]:
+        """Return the stable, read-only v1 DTO consumed by Desktop."""
+
+        return {
+            "schema_version": 1,
+            "fields": [
+                {
+                    "field": item.field.value,
+                    "value": item.value,
+                    "source": item.source.value,
+                    "source_id": item.source_id,
+                    "reason_code": item.reason_code.value,
+                    "trace": [
+                        {
+                            "value": entry.value,
+                            "source": entry.source.value,
+                            "source_id": entry.source_id,
+                            "reason_code": entry.reason_code.value,
+                            "action": entry.action.value,
+                        }
+                        for entry in item.trace
+                    ],
+                }
+                for item in self.fields
+            ],
+        }
 
 
 @dataclass(frozen=True, slots=True)

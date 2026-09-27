@@ -96,6 +96,11 @@ struct SettingsPerformancePanel: View {
                 modelSection
                 if let alias = targetAlias {
                     if needsReload { reloadBanner(alias: alias) }
+                    if server.isModelResident(alias),
+                       let runtime = server.effectiveRuntimeConfig,
+                       runtime.belongs(to: alias) {
+                        activeRuntimeSection(runtime)
+                    }
                     kvSection(alias: alias)
                     speculativeDecodingSection(alias: alias)
                     prefixSection(alias: alias)
@@ -114,10 +119,11 @@ struct SettingsPerformancePanel: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .accessibilityIdentifier("Settings.Performance.Panel")
-        .task(id: server.launchedChildAlias) {
+        .task(id: server.effectiveRuntimeConfigRefreshID) {
             // Snapshot what the original child was spawned with so the legacy
             // primary-record fallback can compare stored opinion with reality.
             launchedFlags = targetAlias.map { perf.launchFlags(forAlias: $0) } ?? []
+            await server.refreshEffectiveRuntimeConfig()
         }
         .task(id: downloads.cacheGeneration) {
             guard let binary = server.binaryPath else { return }
@@ -138,6 +144,34 @@ struct SettingsPerformancePanel: View {
     }
 
     // MARK: - Sections
+
+    private func activeRuntimeSection(
+        _ runtime: EffectiveRuntimeConfigSnapshot
+    ) -> some View {
+        SettingsSection(
+            "Active runtime",
+            subtitle: "Values the engine actually started with, including where each one came from."
+        ) {
+            VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
+                ForEach(runtime.fields) { item in
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(item.displayName)
+                            .font(RapidFont.body)
+                        Spacer()
+                        VStack(alignment: .trailing, spacing: 2) {
+                            Text(item.value.displayText)
+                                .font(RapidFont.metric)
+                            Text(item.provenanceText)
+                                .font(RapidFont.caption)
+                                .foregroundStyle(RapidTheme.textSecondary)
+                        }
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("Settings.Performance.Active.\(item.field)")
+                }
+            }
+        }
+    }
 
     private var modelSection: some View {
         SettingsSection(

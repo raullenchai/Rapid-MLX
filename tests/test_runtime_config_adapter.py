@@ -9,6 +9,8 @@ from rapid_mlx.runtime.config_adapter import (
     DEFAULT_RUNTIME_LAUNCH_VALUES,
     RuntimeLaunchValues,
     RuntimeParityError,
+    assert_runtime_config_parity,
+    resolve_programmatic_runtime_config,
     resolve_with_legacy_parity,
 )
 from rapid_mlx.runtime.effective_config import (
@@ -112,6 +114,33 @@ def test_surface_id_is_required():
         )
 
 
+def test_handoff_surface_id_is_required():
+    config = resolve_with_legacy_parity(
+        surface="server",
+        legacy=BASELINE,
+        defaults=BASELINE.as_defaults("runtime-defaults:v1"),
+    )
+    with pytest.raises(RuntimeParityError, match="surface must not be empty"):
+        assert_runtime_config_parity(surface=" ", legacy=BASELINE, config=config)
+
+
 @pytest.mark.parametrize("field", list(RuntimeField))
 def test_launch_values_have_a_typed_value_for_every_contract_field(field):
     assert BASELINE.value_for(field) is not ...
+
+
+def test_programmatic_server_values_are_resolved_and_sourced():
+    legacy = RuntimeLaunchValues(1024, 16, 0.5, False, "int8")
+    config = resolve_programmatic_runtime_config(
+        surface="server.load_model", legacy=legacy
+    )
+
+    assert RuntimeLaunchValues.from_effective(config) == legacy
+    assert (
+        config.get(RuntimeField.PREFILL_STEP_SIZE).source
+        is RuntimeValueSource.USER_OVERRIDE
+    )
+    assert config.get(RuntimeField.PREFILL_STEP_SIZE).source_id == (
+        "server.load_model:programmatic-input"
+    )
+    assert config.get(RuntimeField.GPU_MEMORY_UTILIZATION).value == 0.5

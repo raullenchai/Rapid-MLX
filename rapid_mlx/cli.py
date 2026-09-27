@@ -4122,6 +4122,155 @@ def _resolve_prefill_step_size(
     return resolved
 
 
+def _resolve_cli_effective_runtime_config(
+    *,
+    args,
+    prefill_step_size: int,
+    prefill_user_set_explicit: bool,
+    enable_prefix_cache: bool,
+    kv_cache_decision,
+    kv_quant_explicit: bool,
+    argv: tuple[str, ...] | list[str] | None = None,
+):
+    """Resolve the shared launch fields and retain their CLI provenance."""
+    from .runtime.config_adapter import (
+        DEFAULT_RUNTIME_LAUNCH_VALUES,
+        RuntimeLaunchValues,
+        resolve_with_legacy_parity,
+    )
+    from .runtime.effective_config import (
+        RuntimeConfigOverride,
+        RuntimeConstraint,
+        RuntimeField,
+        RuntimeProfileValue,
+        RuntimeReasonCode,
+        RuntimeValueSource,
+    )
+
+    profile_values = []
+    overrides = []
+    constraints = []
+    if prefill_user_set_explicit:
+        overrides.append(
+            RuntimeConfigOverride(
+                RuntimeField.PREFILL_STEP_SIZE,
+                prefill_step_size,
+                "cli:--prefill-step-size",
+            )
+        )
+    elif prefill_step_size != DEFAULT_RUNTIME_LAUNCH_VALUES.prefill_step_size:
+        profile_values.append(
+            RuntimeProfileValue(
+                RuntimeField.PREFILL_STEP_SIZE,
+                prefill_step_size,
+                f"model-profile:{getattr(args, '_original_alias', None) or args.model}",
+            )
+        )
+
+    launch_argv = sys.argv if argv is None else argv
+
+    def argv_has_runtime_option(option: str) -> bool:
+        return option in launch_argv or any(
+            value.startswith(f"{option}=") for value in launch_argv
+        )
+
+    for field, value, option, source_id in (
+        (
+            RuntimeField.MAX_NUM_SEQS,
+            args.max_num_seqs,
+            "--max-num-seqs",
+            "cli:--max-num-seqs",
+        ),
+        (
+            RuntimeField.GPU_MEMORY_UTILIZATION,
+            args.gpu_memory_utilization,
+            "--gpu-memory-utilization",
+            "cli:--gpu-memory-utilization",
+        ),
+    ):
+        if argv_has_runtime_option(option):
+            overrides.append(RuntimeConfigOverride(field, value, source_id))
+        elif value != DEFAULT_RUNTIME_LAUNCH_VALUES.value_for(field):
+            profile_values.append(
+                RuntimeProfileValue(field, value, "auto-config:hardware-profile")
+            )
+
+    prefix_explicit = argv_has_runtime_option(
+        "--enable-prefix-cache"
+    ) or argv_has_runtime_option("--disable-prefix-cache")
+    if prefix_explicit:
+        overrides.append(
+            RuntimeConfigOverride(
+                RuntimeField.ENABLE_PREFIX_CACHE,
+                enable_prefix_cache,
+                "cli:prefix-cache-flag",
+            )
+        )
+    elif enable_prefix_cache != DEFAULT_RUNTIME_LAUNCH_VALUES.enable_prefix_cache:
+        profile_values.append(
+            RuntimeProfileValue(
+                RuntimeField.ENABLE_PREFIX_CACHE,
+                enable_prefix_cache,
+                "auto-config:runtime-profile",
+            )
+        )
+
+    legacy_kv_dtype = (
+        kv_cache_decision.dtype if kv_cache_decision is not None else "bf16"
+    )
+    if kv_cache_decision is not None:
+        requested_kv_dtype = kv_cache_decision.requested
+        if kv_quant_explicit:
+            overrides.append(
+                RuntimeConfigOverride(
+                    RuntimeField.KV_CACHE_DTYPE,
+                    requested_kv_dtype,
+                    "cli:kv-cache-flag",
+                )
+            )
+        elif requested_kv_dtype != DEFAULT_RUNTIME_LAUNCH_VALUES.kv_cache_dtype:
+            profile_values.append(
+                RuntimeProfileValue(
+                    RuntimeField.KV_CACHE_DTYPE,
+                    requested_kv_dtype,
+                    "model-profile:kv-cache",
+                )
+            )
+        if legacy_kv_dtype != requested_kv_dtype:
+            safety_fallback = bool(args.reasoning)
+            constraints.append(
+                RuntimeConstraint(
+                    RuntimeField.KV_CACHE_DTYPE,
+                    legacy_kv_dtype,
+                    RuntimeValueSource.SAFETY
+                    if safety_fallback
+                    else RuntimeValueSource.COMPATIBILITY,
+                    "workload:reasoning-quality-floor"
+                    if safety_fallback
+                    else "model:kv-cache-compatibility",
+                    RuntimeReasonCode.SAFETY_FALLBACK
+                    if safety_fallback
+                    else RuntimeReasonCode.COMPATIBILITY_FALLBACK,
+                )
+            )
+
+    legacy_values = RuntimeLaunchValues(
+        prefill_step_size=prefill_step_size,
+        max_num_seqs=args.max_num_seqs,
+        gpu_memory_utilization=args.gpu_memory_utilization,
+        enable_prefix_cache=enable_prefix_cache,
+        kv_cache_dtype=legacy_kv_dtype,
+    )
+    return resolve_with_legacy_parity(
+        surface="cli",
+        legacy=legacy_values,
+        defaults=DEFAULT_RUNTIME_LAUNCH_VALUES.as_defaults("runtime-defaults:v1"),
+        profile_values=tuple(profile_values),
+        overrides=tuple(overrides),
+        constraints=tuple(constraints),
+    )
+
+
 def _resolve_vision_prefill_token_budget(
     *,
     configured: int | None,
@@ -6052,6 +6201,23 @@ def serve_command(args):
         configured=args.prefill_step_size,
         user_set_explicit=_prefill_user_set_explicit,
     )
+
+    # Migration 002 production cutover. The existing policy code above still
+    # computes the comparison value during this release; the central resolver
+    # records where each value came from and proves exact parity before load.
+    _effective_runtime_config = _resolve_cli_effective_runtime_config(
+        args=args,
+        prefill_step_size=_prefill_step_size,
+        prefill_user_set_explicit=_prefill_user_set_explicit,
+        enable_prefix_cache=enable_prefix_cache,
+        kv_cache_decision=kv_cache_decision,
+        kv_quant_explicit=_kv_quant_explicit,
+    )
+    from .runtime.config_adapter import RuntimeLaunchValues
+
+    _effective_runtime_values = RuntimeLaunchValues.from_effective(
+        _effective_runtime_config
+    )
     _vision_prefill_token_budget = _resolve_vision_prefill_token_budget(
         configured=getattr(args, "vision_prefill_token_budget", None),
         prefill_step_size=_prefill_step_size,
@@ -6079,7 +6245,7 @@ def serve_command(args):
             _cli_mtp_model_type = None
 
     scheduler_config = SchedulerConfig(
-        max_num_seqs=args.max_num_seqs,
+        max_num_seqs=_effective_runtime_values.max_num_seqs,
         max_concurrent_requests=args.max_concurrent_requests,
         mllm_singleton_fastpath=args.mllm_singleton_fastpath,
         mllm_media_prefix_cache=args.mllm_media_prefix_cache,
@@ -6087,7 +6253,7 @@ def serve_command(args):
         completion_batch_size=args.completion_batch_size,
         scheduling_policy=args.scheduling_policy,
         scheduling_max_deferrals=args.scheduling_max_deferrals,
-        enable_prefix_cache=enable_prefix_cache,
+        enable_prefix_cache=_effective_runtime_values.enable_prefix_cache,
         prefix_cache_size=args.prefix_cache_size,
         # R15-P1 (task #303): radix-tree prefix-cache index.
         prefix_cache_index=getattr(args, "prefix_cache_index", "radix"),
@@ -6121,7 +6287,7 @@ def serve_command(args):
         # reads it off scheduler_config only; the legacy load_model kwarg was
         # accepted but never used. See #400 and the CLI ↔ Config fidelity
         # audit at scripts/audit_cli_config_fidelity.py.
-        prefill_step_size=_prefill_step_size,
+        prefill_step_size=_effective_runtime_values.prefill_step_size,
         vision_prefill_token_budget=_vision_prefill_token_budget,
         vision_min_pixels=getattr(args, "vision_min_pixels", 0),
         vision_max_pixels=getattr(args, "vision_max_pixels", 0),
@@ -6157,9 +6323,7 @@ def serve_command(args):
         # KV cache quantization (R15 #300: dtype string is the canonical
         # observability surface; ``_quantization`` / ``_bits`` are the
         # wire-level toggles that drive ``mlx_lm.QuantizedKVCache``).
-        kv_cache_dtype=(
-            kv_cache_decision.dtype if kv_cache_decision is not None else "bf16"
-        ),
+        kv_cache_dtype=_effective_runtime_values.kv_cache_dtype,
         kv_cache_quantization=args.kv_cache_quantization,
         kv_cache_quantization_bits=args.kv_cache_quantization_bits,
         kv_cache_quantization_group_size=args.kv_cache_quantization_group_size,
@@ -6197,7 +6361,9 @@ def serve_command(args):
         # per-model budget after load and engine_core's D-METAL-CAP
         # propagation fills the scheduler config with the RESOLVED
         # utilization, so both enforcement points share one cap.
-        gpu_memory_utilization=args.gpu_memory_utilization or 0.0,
+        gpu_memory_utilization=(
+            _effective_runtime_values.gpu_memory_utilization or 0.0
+        ),
     )
 
     print("Mode: Continuous batching (for multiple concurrent users)")
@@ -6472,6 +6638,7 @@ def serve_command(args):
             ),
             enable_disk_stream=getattr(args, "disk_stream", False),
             disk_stream_cache_gb=getattr(args, "disk_stream_cache_gb", 1.0),
+            effective_runtime_config=_effective_runtime_config,
         )
     except OptionalRuntimeMissing:
         # All optional-runtime failures converge at the serve dispatch below.

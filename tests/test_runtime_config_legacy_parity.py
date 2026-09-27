@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 import rapid_mlx.cli as cli
@@ -150,3 +152,87 @@ def test_explicit_incompatible_kv_request_still_fails_closed():
             model_name="gemma-4-12b",
             hf_config={"model_type": "gemma4", "sliding_window": 1024},
         )
+
+
+def _cli_args(**overrides):
+    values = {
+        "model": "example/model",
+        "_original_alias": "example-alias",
+        "max_num_seqs": 256,
+        "gpu_memory_utilization": None,
+        "reasoning": False,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+def test_cli_effective_config_keeps_untouched_defaults():
+    config = cli._resolve_cli_effective_runtime_config(
+        args=_cli_args(),
+        prefill_step_size=2048,
+        prefill_user_set_explicit=False,
+        enable_prefix_cache=True,
+        kv_cache_decision=None,
+        kv_quant_explicit=False,
+        argv=[],
+    )
+
+    assert RuntimeLaunchValues.from_effective(config) == DEFAULT_RUNTIME_LAUNCH_VALUES
+    assert all(
+        field.source is RuntimeValueSource.GLOBAL_DEFAULT for field in config.fields
+    )
+
+
+def test_cli_effective_config_records_auto_profile_values():
+    config = cli._resolve_cli_effective_runtime_config(
+        args=_cli_args(max_num_seqs=16, gpu_memory_utilization=0.5),
+        prefill_step_size=1024,
+        prefill_user_set_explicit=False,
+        enable_prefix_cache=False,
+        kv_cache_decision=SimpleNamespace(requested="int8", dtype="int8"),
+        kv_quant_explicit=False,
+        argv=[],
+    )
+
+    assert RuntimeLaunchValues.from_effective(config) == RuntimeLaunchValues(
+        1024, 16, 0.5, False, "int8"
+    )
+    assert all(
+        config.get(field).source is RuntimeValueSource.PERFORMANCE_PROFILE
+        for field in RuntimeField
+    )
+
+
+@pytest.mark.parametrize(
+    ("reasoning", "expected_source"),
+    [
+        (False, RuntimeValueSource.COMPATIBILITY),
+        (True, RuntimeValueSource.SAFETY),
+    ],
+)
+def test_cli_effective_config_records_flags_and_kv_fallback(reasoning, expected_source):
+    config = cli._resolve_cli_effective_runtime_config(
+        args=_cli_args(
+            max_num_seqs=8,
+            gpu_memory_utilization=0.75,
+            reasoning=reasoning,
+        ),
+        prefill_step_size=1536,
+        prefill_user_set_explicit=True,
+        enable_prefix_cache=False,
+        kv_cache_decision=SimpleNamespace(requested="int4", dtype="int8"),
+        kv_quant_explicit=True,
+        argv=[
+            "--max-num-seqs=8",
+            "--gpu-memory-utilization",
+            "--disable-prefix-cache",
+        ],
+    )
+
+    assert RuntimeLaunchValues.from_effective(config) == RuntimeLaunchValues(
+        1536, 8, 0.75, False, "int8"
+    )
+    assert config.get(RuntimeField.PREFILL_STEP_SIZE).source is (
+        RuntimeValueSource.USER_OVERRIDE
+    )
+    assert config.get(RuntimeField.KV_CACHE_DTYPE).source is expected_source
