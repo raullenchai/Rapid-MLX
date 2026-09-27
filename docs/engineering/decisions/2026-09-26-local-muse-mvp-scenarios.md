@@ -265,3 +265,24 @@ here: <domain/page signature>" hint; (b) feed the executor's structured delta
 into the next prompt more loudly; (c) vision for small models (Qwen3-VL-8B in
 cache) so page identity is unambiguous; (d) grant Automation TCC so the URL
 guard has real teeth (AppleScript blocked: -1743).
+
+## Productization: rapid_mlx.cua replaces the POC loop (2026-09-27)
+
+Decision: ship the native-AX pipeline as `rapid_mlx/cua/` and wire it into
+the main CLI as `rapid-mlx cua`. Architecture mirrors Orca's split:
+- execution layer = existing `rapid_mlx.computer_use` (unchanged, reused)
+- fast thinking = always on-device (laya /v1/rank outcome routing + fixation
+  gate with recovery hints; two interventions then stall out honestly)
+- slow thinking = user-configured preset or loopback URL
+  (`~/.rapid-mlx/cua-config.json`; cloud-glm / local-27b / local-9b)
+- consent = hard credential/commerce stops + optional sign-in file sentinel
+- traces in ~/.rapid-mlx/cua-runs/<ts>/trace.json
+
+The planner protocol keeps the proven strict-schema + one-repair-retry shape,
+retargeted from DOM target_ids to AX element indexes. `planner` is injectable
+for SDK/testing. 21 new tests (config/validation/fixation/gates/loop paths);
+full loop verified end-to-end with local-9b on the Wikipedia task (3 steps,
+grounded final summary quoting the article's first paragraph).
+
+The POC tools stay under tools/gui_verifier_cua_poc/ as reference; new work
+targets rapid_mlx.cua.

@@ -12836,6 +12836,20 @@ Examples:
     # ``--no-thi`` prefix and prefix matching becomes ambiguous (an
     # ambiguity which argparse does NOT report by default for hidden
     # aliases). Force users to type the flag in full.
+    cua_parser = subparsers.add_parser(
+        "cua",
+        help="Native-accessibility computer-use agent with configurable planner",
+        description=(
+            "Run the computer-use agent loop. Fast thinking (outcome routing, "
+            "fixation detection) is always local; slow thinking (planning) uses "
+            "the preset or URL you choose: `rapid-mlx cua run --planner local-9b`."
+        ),
+    )
+    cua_parser.add_argument(
+        "cua_args",
+        nargs=argparse.REMAINDER,
+        help="arguments passed to the cua subcommand (run/config/planners)",
+    )
     serve_parser = subparsers.add_parser(
         "serve",
         help="Start OpenAI-compatible server",
@@ -15504,6 +15518,10 @@ def main():
     if args.command == "system-one":
         system_one_command(args)
         return
+    if args.command == "cua":
+        from rapid_mlx.cua.cli import main as cua_main
+
+        return cua_main(args.cua_args)
     if args.command == "serve":
         from rapid_mlx.telemetry.server_start import set_failure_stage
 

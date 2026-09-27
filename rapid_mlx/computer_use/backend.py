@@ -540,6 +540,43 @@ def list_apps() -> list[dict]:
     return apps
 
 
+def read_url(app: str) -> str:
+    """Best-effort URL of the front tab for the domain guard.
+
+    Chrome's active-tab address bar often exposes an empty AXValue, so after
+    the AX scan we try AppleScript (needs Automation TCC); both may fail, in
+    which case the guard sees an empty URL and stays inert.
+    """
+    try:
+        targets = ax_driver.collect(app, keep_elements=True, max_windows=1)
+    except Exception:  # noqa: BLE001 - guard must never crash the loop
+        targets = []
+    for entry in targets:
+        live = entry.get("element")
+        if live is None:
+            continue
+        value = ax_driver._get(live, "AXValue")
+        if isinstance(value, str) and value.startswith(("http://", "https://")):
+            return value
+    try:
+        result = subprocess.run(
+            [
+                "osascript",
+                "-e",
+                f'tell application "{app}" to get URL of active tab of front window',
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        url = result.stdout.strip()
+        if url.startswith(("http://", "https://")):
+            return url
+    except Exception:  # noqa: BLE001
+        pass
+    return ""
+
+
 def list_windows(app: str) -> list[dict]:
     from Quartz import (
         CGWindowListCopyWindowInfo,
