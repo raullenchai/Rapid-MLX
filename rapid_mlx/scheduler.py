@@ -141,6 +141,7 @@ from .memory_cache import (  # noqa: E402
     MemoryAwarePrefixCache,
     MemoryCacheConfig,
     _cache_has_non_trimmable,
+    estimate_kv_cache_memory,
     session_floor_bytes,
 )
 from .paged_cache import PagedCacheManager
@@ -269,6 +270,19 @@ def _assemble_stop_tokens(
 # Rows per tile in MLX's quantized matmuls; see
 # ``Scheduler._prefill_tile_rows`` for the measurements behind it.
 _PREFILL_TILE_ROWS = 32
+# Agent-session prefix policy (docs/engineering/decisions/
+# 2026-09-27-agent-session-prefix-cache.md).
+#
+# A non-trimmable (hybrid recurrent-state) N-token prompt entry can only save
+# the tokens between the stored message boundary and N over the boundary entry
+# (an exact repeat cannot trim-one into it). When that gap is this small the
+# second ~full-size entry is not worth its memory.
+_BOUNDARY_SUPERSEDES_PROMPT_MAX_GAP = 64
+# Transient memory of a long prefill beyond its own KV (attention scores,
+# chunk activations, recurrent scratch), as a multiple of the prompt's KV.
+# Measured on Qwen3.5-9B-4bit, 23k-token cold prefill, 2048-token chunks:
+# peak - weights = 3.2 GB for 0.75 GB of prompt KV (3.3x the KV beyond it).
+_COLD_PREFILL_TRANSIENT_KV_MULTIPLE = 3.5
 
 
 @dataclass
@@ -5058,16 +5072,15 @@ class Scheduler:
             ):
                 return
             # Same reasoning for a MESSAGE-boundary snapshot on a
-            # non-trimmable (hybrid recurrent-state) cache: the next agent
-            # turn extends the boundary entry, never the N-token prompt
-            # (the history re-renders the generation prompt differently),
-            # and an exact repeat cannot trim-one into the N-token entry
-            # either. Storing it anyway doubles the per-turn footprint
-            # (~1 GB each at 23k tokens on Qwen3.5-9B) and, on a small-Mac
-            # budget, LRU-evicts the boundary entry the next turn needs.
-            if getattr(
-                request, "_cache_snapshot_stored", False
-            ) and _cache_has_non_trimmable(extracted_cache):
+            # non-trimmable (hybrid recurrent-state) cache that sits just
+            # before the generation prompt: the N-token entry could only save
+            # those few tokens over the boundary entry, yet doubles the
+            # per-turn footprint (~1 GB each at 23k tokens on Qwen3.5-9B) and,
+            # on a small-Mac budget, LRU-evicts the boundary entry the next
+            # turn needs.
+            if self._boundary_snapshot_supersedes(
+                request, extracted_cache, len(request.prompt_token_ids)
+            ):
                 return
 
             prompt_tokens = list(request.prompt_token_ids)
@@ -5087,6 +5100,133 @@ class Scheduler:
                 )
 
         return _prompt_cache_save
+
+    def _boundary_snapshot_supersedes(
+        self, request: Any, cache: list[Any], entry_len: int
+    ) -> bool:
+        """True when this request's stored message-boundary snapshot makes a
+        second non-trimmable entry of ``entry_len`` tokens not worth storing.
+
+        Only for non-trimmable caches (an exact hit cannot trim-one, so the
+        longer entry is useful only as an extension base) and only when it
+        would add at most ``_BOUNDARY_SUPERSEDES_PROMPT_MAX_GAP`` tokens of
+        reuse beyond the boundary. Internal N-1 snapshots keep their own rule.
+        """
+        if not getattr(request, "_cache_snapshot_stored", False) or getattr(
+            request, "_cache_snapshot_is_internal", False
+        ):
+            return False
+        boundary = int(
+            getattr(
+                request,
+                "_cache_snapshot_boundary",
+                getattr(request, "prefix_boundary", 0),
+            )
+            or 0
+        )
+        if boundary <= 0 or entry_len - boundary > _BOUNDARY_SUPERSEDES_PROMPT_MAX_GAP:
+            return False
+        return _cache_has_non_trimmable(cache)
+
+    def _protect_boundary_behind_completion(
+        self, request: Any, cache: list[Any]
+    ) -> bool:
+        """Keep a hybrid request's boundary entry ahead of its completion entry.
+
+        The completion (prompt + output) entry of a non-trimmable cache is
+        reusable only if the next turn re-renders the output verbatim (thinking
+        templates never do); the message-boundary entry is what the next turn
+        extends. Returns False — skip the completion store — when both would
+        not fit the budget, so storing it can never LRU-evict the boundary.
+        Otherwise the caller stores it and :meth:`_touch_boundary_entry` moves
+        the boundary back to most-recently-used.
+        """
+        if not getattr(request, "_cache_snapshot_stored", False) or getattr(
+            request, "_cache_snapshot_is_internal", False
+        ):
+            return True
+        if not _cache_has_non_trimmable(cache):
+            return True
+        mac = self.memory_aware_cache
+        with mac._lock:  # noqa: SLF001 — budget read coordinated with store
+            used = mac._current_memory  # noqa: SLF001
+        fits = used + estimate_kv_cache_memory(cache) <= mac._max_memory  # noqa: SLF001
+        if not fits:
+            logger.debug(
+                "[cache_store] request=%s skipped hybrid completion entry: it "
+                "would evict the message-boundary entry the next turn extends",
+                str(getattr(request, "request_id", ""))[:12],
+            )
+        return fits
+
+    def _touch_boundary_entry(self, request: Any) -> None:
+        """Mark this request's stored boundary entry most-recently-used."""
+        if not getattr(request, "_cache_snapshot_stored", False) or getattr(
+            request, "_cache_snapshot_is_internal", False
+        ):
+            return
+        boundary = int(
+            getattr(
+                request,
+                "_cache_snapshot_boundary",
+                getattr(request, "prefix_boundary", 0),
+            )
+            or 0
+        )
+        key = tuple(request.prompt_token_ids[:boundary])
+        mac = self.memory_aware_cache
+        with mac._lock:  # noqa: SLF001
+            if key in mac._entries:  # noqa: SLF001
+                mac._entries.move_to_end(key)  # noqa: SLF001
+
+    def _reclaim_prefix_cache_for_prefill(self, request: Any) -> int:
+        """Let the prefix cache yield to a long prefill's transient peak.
+
+        The admission gate projects KV only; a cold 23k-token prefill also
+        needs ~3.3x its KV in transient activations. With the agent-session
+        budget floor a resident entry plus that peak can exceed a 16 GB-class
+        Metal cap, and the engine-loop pressure tick (every 16 steps) may not
+        fire inside a 12-chunk prefill. So before a request with a long
+        remaining prefill starts, evict cache entries (LRU) until the
+        projected peak fits under the pressure threshold. Returns the number
+        evicted.
+        """
+        cap = self._resolve_metal_cap_bytes()
+        mac = self.memory_aware_cache
+        if cap <= 0 or mac is None or not mac._entries:  # noqa: SLF001
+            return 0
+        prefill_tokens = len(getattr(request, "remaining_tokens", None) or [])
+        need = (
+            self._estimate_request_kv_bytes(request)
+            + self._sum_in_flight_kv_bytes()
+            + int(
+                self._resolve_kv_bytes_per_token()
+                * prefill_tokens
+                * _COLD_PREFILL_TRANSIENT_KV_MULTIPLE
+            )
+        )
+        # Aim below the pressure threshold, not the cap itself: the entries
+        # reclaimed here are not the ones this prefill reads (a miss, or a
+        # hit whose state the request already holds), so yielding them is
+        # cheap, and it keeps the prefill out of the evictor's soft zone.
+        threshold = int(cap * self._resolve_pressure_evict_fraction())
+        evicted = 0
+        while self._current_metal_active_bytes() + need >= threshold:
+            if not self._evict_one_prefix_cache_entry():
+                break
+            evicted += 1
+            self.num_prefix_cache_pressure_evictions += 1
+        if evicted:
+            logger.info(
+                "[prefix-prefill-reclaim] request=%s evicted %d prefix-cache "
+                "entr%s ahead of a %d-token prefill (cap %.1f GB)",
+                str(getattr(request, "request_id", ""))[:12],
+                evicted,
+                "y" if evicted == 1 else "ies",
+                prefill_tokens,
+                cap / 1e9,
+            )
+        return evicted
 
     def _hybrid_checkpoints_enabled(self) -> bool:
         """Checkpoints are only worth recording when hybrid entries are kept."""
@@ -7645,6 +7785,7 @@ class Scheduler:
                     f"prompt_tokens={len(request.prompt_token_ids)} "
                     f"time={_fetch_dt:.3f}s entries={len(self.memory_aware_cache._entries)}"
                 )
+            self._reclaim_prefix_cache_for_prefill(request)
         elif self.prefix_cache is not None:
             # Use legacy prefix cache
             cache, remaining = self.prefix_cache.fetch_cache(request.prompt_token_ids)
@@ -9580,6 +9721,9 @@ class Scheduler:
                     if (
                         hasattr(request, "_extracted_cache")
                         and request._extracted_cache is not None
+                        and self._protect_boundary_behind_completion(
+                            request, request._extracted_cache
+                        )
                     ):
                         try:
                             full_token_sequence = list(request.prompt_token_ids) + list(
@@ -9593,6 +9737,7 @@ class Scheduler:
                                 request._extracted_cache,
                                 evict_prefixes=False,
                             )
+                            self._touch_boundary_entry(request)
                             _store_dt = _time.monotonic() - _store_t0
                             # NOTE: We intentionally do NOT store a prompt-only
                             # cache entry.  Hybrid Mamba+Transformer models

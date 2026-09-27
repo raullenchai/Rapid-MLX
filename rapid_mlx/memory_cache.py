@@ -37,8 +37,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from .hybrid_state_checkpoints import (
+    StateCheckpoints,
     achievable_position,
+    attach_checkpoints,
     checkpoint_bytes,
+    collect_checkpoints,
     is_recurrent_layer,
     restore_recurrent_layer,
 )
@@ -238,6 +241,99 @@ def _save_prompt_cache_compat(path: str, cache: list[Any], metadata: dict[str, s
     embedded[_VENDORED_STATE_METADATA] = json.dumps(sorted(vendored))
     cache_metadata = dict(tree_flatten([cache_info, embedded, cache_classes]))
     mx.save_safetensors(path, encoded, cache_metadata)
+
+
+def _checkpoints_sidecar_path(entry_path: str) -> str:
+    """``entry_K.safetensors`` -> ``entry_K_ckpt.safetensors``."""
+    return entry_path[: -len(".safetensors")] + "_ckpt.safetensors"
+
+
+def _save_checkpoints_sidecar(path: str, cache: list[Any]) -> bool:
+    """Persist the hybrid recurrent-state checkpoints of ``cache``.
+
+    Without them a restored hybrid entry can serve only requests that extend
+    it exactly; with them a shorter request sharing its prefix (a session
+    replayed from its first turn after a restart) snaps to the newest
+    checkpoint instead of re-prefilling everything. Keys are
+    ``"<layer>.<position>.<array>"``. Best effort: returns False (and leaves
+    no file) when there is nothing to save or the write fails, and the entry
+    itself is still committed.
+    """
+    import mlx.core as mx
+
+    arrays: dict[str, Any] = {}
+    for layer_idx, holder in enumerate(collect_checkpoints(cache)):
+        if holder is None:
+            continue
+        for position in holder.positions:
+            for k, arr in enumerate(holder.arrays_at(position) or ()):
+                arrays[f"{layer_idx}.{position}.{k}"] = arr
+    if not arrays:
+        return False
+    try:
+        mx.save_safetensors(path, arrays)
+        _fsync_file(path)
+    except Exception as exc:
+        logger.warning(f"[cache_persist] checkpoint sidecar not saved: {exc}")
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return False
+    return True
+
+
+def _attach_checkpoints_sidecar(path: str, cache: list[Any], num_tokens: int) -> int:
+    """Re-attach checkpoints saved by :func:`_save_checkpoints_sidecar`.
+
+    Every array must match the live layer's state slot in shape and dtype and
+    every position must lie inside the entry; any mismatch drops ALL of the
+    entry's checkpoints (the entry still loads and serves exact extensions),
+    so a stale or foreign sidecar can never seed generation with wrong state.
+    Returns the number of checkpoint positions attached.
+    """
+    import mlx.core as mx
+
+    try:
+        # mx.load mmaps lazily and reads zeros past EOF: a truncated sidecar
+        # must be refused before any array is trusted (same rule as entries).
+        if not _safetensors_is_complete(path):
+            raise ValueError("body is short of its header's data range")
+        loaded = mx.load(path)
+        grouped: dict[int, dict[int, dict[int, Any]]] = {}
+        for key, arr in loaded.items():
+            layer_s, pos_s, k_s = key.split(".")
+            grouped.setdefault(int(layer_s), {}).setdefault(int(pos_s), {})[
+                int(k_s)
+            ] = arr
+        holders: list[StateCheckpoints | None] = [None] * len(cache)
+        position_sets = set()
+        for layer_idx, by_pos in grouped.items():
+            layer = cache[layer_idx]
+            if not is_recurrent_layer(layer):
+                raise ValueError(f"layer {layer_idx} is not recurrent")
+            live = layer.cache
+            items = []
+            for position, by_k in by_pos.items():
+                if not 0 < position <= num_tokens:
+                    raise ValueError(f"position {position} outside entry")
+                if sorted(by_k) != list(range(len(live))):
+                    raise ValueError(f"layer {layer_idx} array count mismatch")
+                for k, arr in by_k.items():
+                    ref = live[k]
+                    if ref is None or arr.shape != ref.shape or arr.dtype != ref.dtype:
+                        raise ValueError(f"layer {layer_idx} slot {k} shape/dtype")
+                items.append((position, tuple(by_k[k] for k in range(len(live)))))
+            holders[layer_idx] = StateCheckpoints(items)
+            position_sets.add(frozenset(by_pos))
+        recurrent = [i for i, layer in enumerate(cache) if is_recurrent_layer(layer)]
+        if len(position_sets) != 1 or sorted(grouped) != recurrent:
+            raise ValueError("checkpoints do not cover every recurrent layer")
+    except Exception as exc:
+        logger.warning(f"[cache_persist] ignoring checkpoint sidecar {path}: {exc}")
+        return 0
+    attach_checkpoints(cache, holders, max_position=num_tokens)
+    return len(next(iter(position_sets)))
 
 
 def _load_prompt_cache_compat(path: str) -> list[Any]:
@@ -523,6 +619,11 @@ def _read_tokens_bin(
 # the guess whenever the disk is demonstrably faster than the floor.
 _THROUGHPUT_PROBE_BYTES = 16 * _BYTES_PER_MB
 _THROUGHPUT_PROBE_SAFETY = 0.5
+# A 16 MiB write can land in the page cache at several GB/s while a real
+# ~1 GB entry (Metal -> safetensors + fsync) measured 700-1300 MB/s, so the
+# probe only ever lifts the first prediction up to this ceiling; later
+# entries use the throughput observed on the real writes.
+_THROUGHPUT_PROBE_MAX_BYTES_PER_SEC = 600 * _BYTES_PER_MB
 
 
 def _probe_write_bytes_per_sec(directory: str) -> float:
@@ -2979,7 +3080,11 @@ class MemoryAwarePrefixCache:
             # against the real disk instead of the fixed floor. The floor
             # still wins on a disk slower than it (the historical contract).
             _BOOTSTRAP_BYTES_PER_SEC = max(
-                _BOOTSTRAP_BYTES_PER_SEC, _probe_write_bytes_per_sec(new_dir)
+                _BOOTSTRAP_BYTES_PER_SEC,
+                min(
+                    _probe_write_bytes_per_sec(new_dir),
+                    _THROUGHPUT_PROBE_MAX_BYTES_PER_SEC,
+                ),
             )
         # Support BOTH zero-arg and one-arg ``should_abort`` predicates
         # at the per-entry layer. The new contract is
@@ -3083,6 +3188,9 @@ class MemoryAwarePrefixCache:
                 # per token regardless of host ``array.array("i").itemsize``
                 # — wire format must be portable.
                 _write_tokens_bin_v3(tokens_path, list(tokens_key), save_uuid)
+                has_checkpoints = _save_checkpoints_sidecar(
+                    _checkpoints_sidecar_path(entry_path), persist_cache
+                )
 
                 # Record the per-layer cache class names so loaders can
                 # gate on cache-type compatibility (#198 BUG B). Read from
@@ -3102,6 +3210,7 @@ class MemoryAwarePrefixCache:
                         "cache_types": cache_types,
                         "message_boundary": entry.message_boundary,
                         "message_boundary_sequence": (entry.message_boundary_sequence),
+                        "checkpoints": has_checkpoints,
                     }
                 )
                 saved_lru_rank[i] = lru_rank[tokens_key]
@@ -3261,6 +3370,8 @@ class MemoryAwarePrefixCache:
             sf, tk = _entry_paths(e["index"])
             keep_paths.add(sf)
             keep_paths.add(tk)
+            if e.get("checkpoints"):
+                keep_paths.add(_checkpoints_sidecar_path(sf))
         try:
             for name in os.listdir(new_dir):
                 full = os.path.join(new_dir, name)
@@ -3903,7 +4014,12 @@ class MemoryAwarePrefixCache:
                             break
                         continue
 
-                # Estimate memory
+                if entry_meta.get("checkpoints"):
+                    _attach_checkpoints_sidecar(
+                        _checkpoints_sidecar_path(entry_path), cache, len(tokens)
+                    )
+
+                # Estimate memory (includes re-attached checkpoints)
                 memory = estimate_kv_cache_memory(cache)
 
                 # Check if it fits against the running (live+staged in

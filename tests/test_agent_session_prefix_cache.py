@@ -362,8 +362,8 @@ def _saved_entry_count(tmp_path, probe_bps: float, monkeypatch) -> int:
     layer.update_and_fetch(keys, keys)
     cache.store(list(range(64)), [layer])
     entry_bytes = next(iter(cache._entries.values())).memory_bytes
-    # Budget that fits the entry at 1 GB/s but not at the 150 MB/s floor.
-    budget_sec = entry_bytes / (600 * MB)
+    # Budget that fits the entry at >= 500 MB/s but not at the 150 MB/s floor.
+    budget_sec = entry_bytes / (500 * MB)
     snap = tmp_path / "snap"
     cache.save_to_disk(
         str(snap), should_abort=lambda predicted_sec=0.0: predicted_sec > budget_sec
@@ -378,3 +378,310 @@ def test_budgeted_save_uses_measured_throughput(tmp_path, monkeypatch):
 
 def test_budgeted_save_keeps_the_floor_on_a_slow_disk(tmp_path, monkeypatch):
     assert _saved_entry_count(tmp_path, 10 * MB, monkeypatch) == 0
+
+
+def test_hybrid_prompt_entry_kept_when_the_boundary_is_far_back(monkeypatch):
+    # Fallback (dummy-LCP) boundaries can sit before a long last message; the
+    # N-token entry then saves more than the bounded gap, so keep it.
+    sched = _scheduler(monkeypatch)
+    req = _register(sched, 10, 400)
+    req.prefix_boundary = 100
+    req._cache_snapshot_stored = True
+    sched.memory_aware_cache.store = MagicMock(return_value=True)
+    layers = _hybrid_cache(4 * MB)
+
+    sched._prompt_cache_save_cb(10, layers)
+
+    sched.memory_aware_cache.store.assert_called_once_with(
+        list(range(400)), layers, evict_prefixes=False
+    )
+
+
+def test_internal_snapshot_is_not_a_message_boundary(monkeypatch):
+    sched = _scheduler(monkeypatch)
+    req = _register(sched, 11, 40)
+    req._cache_snapshot_boundary = 39
+    req._cache_snapshot_is_internal = True
+    req._cache_snapshot_stored = True
+    layers = _hybrid_cache(4 * MB)
+    assert sched._boundary_snapshot_supersedes(req, layers, 40) is False
+    assert sched._protect_boundary_behind_completion(req, layers) is True
+    sched._touch_boundary_entry(req)  # no-op, must not raise
+
+
+# --------------------------------------------------------------------------
+# Completion (prompt + output) entry never displaces the boundary entry
+# --------------------------------------------------------------------------
+
+
+def _finish_with_completion(sched, uid, prompt_len, boundary, cache_bytes, output):
+    req = _register(sched, uid, prompt_len)
+    req.prefix_boundary = boundary
+    req._cache_snapshot_stored = True
+    req.output_token_ids = list(output)
+    sched.running[req.request_id] = req
+    boundary_tokens = list(range(boundary))
+    assert sched.memory_aware_cache.store(
+        boundary_tokens, _hybrid_cache(cache_bytes), message_boundary=True
+    )
+    req._extracted_cache = _hybrid_cache(cache_bytes)
+    sched._cleanup_finished({req.request_id})
+    return tuple(boundary_tokens), tuple(list(range(prompt_len)) + list(output))
+
+
+def test_completion_entry_skipped_when_it_would_evict_the_boundary(monkeypatch):
+    # 16 GB shape: one ~entry fits the floor, two do not.
+    sched = _scheduler(monkeypatch)
+    entry = int(FLOOR * 0.6)
+    boundary_key, completion_key = _finish_with_completion(
+        sched, 20, 500, 490, entry, [900, 901, 902]
+    )
+    assert list(sched.memory_aware_cache._entries) == [boundary_key]
+    assert completion_key not in sched.memory_aware_cache._entries
+
+
+def test_completion_entry_stored_behind_the_boundary_when_both_fit(monkeypatch):
+    sched = _scheduler(monkeypatch)
+    entry = int(FLOOR * 0.3)
+    boundary_key, completion_key = _finish_with_completion(
+        sched, 21, 500, 490, entry, [900, 901, 902]
+    )
+    # Boundary is most-recently-used, so any trim takes the completion first.
+    assert list(sched.memory_aware_cache._entries) == [completion_key, boundary_key]
+
+
+def test_trimmable_completion_entry_is_stored_normally(monkeypatch):
+    sched = _scheduler(monkeypatch)
+    req = _register(sched, 22, 50)
+    req._cache_snapshot_stored = True
+    req.prefix_boundary = 45
+    req.output_token_ids = [7, 8]
+    sched.running[req.request_id] = req
+    req._extracted_cache = [_KVLayer(int(FLOOR * 2))]  # would not fit: no gate
+    assert sched._protect_boundary_behind_completion(req, req._extracted_cache)
+
+
+# --------------------------------------------------------------------------
+# Long prefill reclaims the cache before its transient peak
+# --------------------------------------------------------------------------
+
+
+def _long_request(rid: str, tokens: int) -> Request:
+    req = _request(rid, tokens)
+    req.num_prompt_tokens = tokens
+    return req
+
+
+def test_cold_prefill_reclaims_the_cache_on_a_16gb_class_cap(monkeypatch):
+    cap_16 = int(9.6 * GB)
+    sched = _scheduler(monkeypatch)
+    monkeypatch.setattr(sched, "_resolve_metal_cap_bytes", lambda: cap_16)
+    monkeypatch.setattr(sched, "_resolve_kv_bytes_per_token", lambda: 32 * 1024)
+    monkeypatch.setattr(sched, "_estimate_request_kv_bytes", lambda _r: int(0.75 * GB))
+    cache = sched.memory_aware_cache
+    cache.store(list(range(50_000, 50_100)), _hybrid_cache(GB))  # other session
+    freed_by_evict = sched._test_active
+
+    def _evict(keep_mru: bool = False, _orig=sched._evict_one_prefix_cache_entry):
+        ok = _orig(keep_mru=keep_mru)
+        if ok:
+            freed_by_evict[0] -= GB
+        return ok
+
+    monkeypatch.setattr(sched, "_evict_one_prefix_cache_entry", _evict)
+    sched._test_active[0] = RESIDENT + GB
+
+    req = _long_request("cold", 22_800)
+    sched.add_request(req)
+
+    assert req.remaining_tokens == req.prompt_token_ids  # cold miss
+    assert len(cache._entries) == 0
+    assert sched.num_metal_cap_violations == 0
+
+
+def test_short_remaining_prefill_keeps_the_cache(monkeypatch):
+    sched = _scheduler(monkeypatch)
+    monkeypatch.setattr(sched, "_resolve_kv_bytes_per_token", lambda: 32 * 1024)
+    monkeypatch.setattr(sched, "_estimate_request_kv_bytes", lambda _r: 0)
+    cache = sched.memory_aware_cache
+    cache.store(list(range(100)), _hybrid_cache(64 * MB))
+    req = _long_request("short", 50)
+    req.remaining_tokens = list(range(50))
+    assert sched._reclaim_prefix_cache_for_prefill(req) == 0
+    assert len(cache._entries) == 1
+
+
+def test_prefill_reclaim_is_a_no_op_without_a_cap_or_entries(monkeypatch):
+    sched = _scheduler(monkeypatch)
+    req = _long_request("empty", 10)
+    assert sched._reclaim_prefix_cache_for_prefill(req) == 0  # no entries
+    sched.memory_aware_cache.store(list(range(10)), _hybrid_cache(MB))
+    monkeypatch.setattr(sched, "_resolve_metal_cap_bytes", lambda: 0)
+    assert sched._reclaim_prefix_cache_for_prefill(req) == 0
+
+
+def test_prefill_reclaim_stops_when_nothing_is_left_to_evict(monkeypatch):
+    sched = _scheduler(monkeypatch)
+    monkeypatch.setattr(sched, "_resolve_kv_bytes_per_token", lambda: 32 * 1024)
+    monkeypatch.setattr(sched, "_estimate_request_kv_bytes", lambda _r: 0)
+    sched.memory_aware_cache.store(list(range(10)), _hybrid_cache(MB))
+    sched._test_active[0] = CAP * 2  # over the cap regardless
+    req = _long_request("hopeless", 10)
+    req.remaining_tokens = list(range(10))
+    assert sched._reclaim_prefix_cache_for_prefill(req) == 1
+    assert len(sched.memory_aware_cache._entries) == 0
+
+
+def test_budgeted_save_caps_an_optimistic_probe(tmp_path, monkeypatch):
+    # A page-cache-speed probe (10 GB/s) is capped at 600 MB/s, so an entry
+    # that needs 1 GB/s to fit the budget is still skipped.
+    import mlx.core as mx
+    from mlx_lm.models.cache import KVCache
+
+    monkeypatch.setattr(mc, "_probe_write_bytes_per_sec", lambda _d: 10 * GB)
+    cache = MemoryAwarePrefixCache(MagicMock(), MemoryCacheConfig(max_memory_mb=64))
+    layer = KVCache()
+    keys = mx.ones((1, 2, 64, 8), dtype=mx.float32)
+    layer.update_and_fetch(keys, keys)
+    cache.store(list(range(64)), [layer])
+    entry_bytes = next(iter(cache._entries.values())).memory_bytes
+    budget_sec = entry_bytes / (1000 * MB)
+    assert (
+        cache.save_to_disk(
+            str(tmp_path / "snap"),
+            should_abort=lambda predicted_sec=0.0: predicted_sec > budget_sec,
+        )
+        is False
+    )
+
+
+# --------------------------------------------------------------------------
+# Hybrid checkpoints survive a restart
+# --------------------------------------------------------------------------
+
+
+def _hybrid_entry(length: int, checkpoints: tuple[int, ...]):
+    import mlx.core as mx
+    from mlx_lm.models.cache import ArraysCache, KVCache
+
+    from rapid_mlx.hybrid_state_checkpoints import CHECKPOINT_ATTR, StateCheckpoints
+
+    kv = KVCache()
+    kv.keys = mx.zeros((1, 2, length, 8))
+    kv.values = mx.zeros((1, 2, length, 8))
+    kv.offset = length
+    rec = ArraysCache(2)
+    rec.cache = [mx.full((1, 3, 4), length), mx.full((1, 2, 2), length)]
+    setattr(
+        rec,
+        CHECKPOINT_ATTR,
+        StateCheckpoints(
+            (pos, (mx.full((1, 3, 4), pos), mx.full((1, 2, 2), pos)))
+            for pos in checkpoints
+        ),
+    )
+    return [kv, rec]
+
+
+def _hybrid_cache_store():
+    return MemoryAwarePrefixCache(
+        MagicMock(),
+        MemoryCacheConfig(max_memory_mb=64, max_entries=16, hybrid_reuse_max_entries=4),
+    )
+
+
+def _save_and_reload(tmp_path, entry_tokens, entry):
+    cache = _hybrid_cache_store()
+    assert cache.store(entry_tokens, entry, message_boundary=True)
+    snap = tmp_path / "snap"
+    assert cache.save_to_disk(str(snap), should_abort=lambda _s=0.0: False)
+    restored = _hybrid_cache_store()
+    assert restored.load_from_disk(str(snap)) == 1
+    return snap, restored
+
+
+def test_replayed_first_turn_snaps_to_a_restored_checkpoint(tmp_path):
+    """After a restart, a session replayed from turn 1 (a strict prefix of
+    the saved deepest boundary) resumes from the newest persisted checkpoint
+    instead of re-prefilling the whole prompt."""
+    from rapid_mlx.hybrid_state_checkpoints import layer_checkpoints
+
+    stored = list(range(1000, 7000))
+    snap, restored = _save_and_reload(
+        tmp_path, stored, _hybrid_entry(6000, (2048, 4096))
+    )
+    assert (snap / "entry_0_ckpt.safetensors").exists()
+    entry = next(iter(restored._entries.values()))
+    assert layer_checkpoints(entry.cache[1]).positions == (2048, 4096)
+
+    turn_1 = stored[:5000] + [1, 2, 3]
+    result, remaining = restored.fetch(turn_1)
+
+    assert result is not None
+    assert remaining == turn_1[4096:]
+    assert result[1].cache[0][0, 0, 0].item() == 4096
+
+
+def test_entry_without_checkpoints_writes_no_sidecar(tmp_path):
+    snap, restored = _save_and_reload(tmp_path, list(range(50)), _hybrid_entry(50, ()))
+    assert not (snap / "entry_0_ckpt.safetensors").exists()
+    assert restored.fetch(list(range(40)) + [9])[0] is None
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    ["truncate", "wrong_shape", "outside_entry", "not_recurrent", "missing_slot"],
+)
+def test_bad_sidecar_drops_checkpoints_but_keeps_the_entry(tmp_path, tamper):
+    import mlx.core as mx
+
+    stored = list(range(1000, 7000))
+    cache = _hybrid_cache_store()
+    assert cache.store(stored, _hybrid_entry(6000, (2048, 4096)))
+    snap = tmp_path / "snap"
+    assert cache.save_to_disk(str(snap), should_abort=lambda _s=0.0: False)
+    sidecar = snap / "entry_0_ckpt.safetensors"
+    good = {
+        "1.2048.0": mx.full((1, 3, 4), 2048),
+        "1.2048.1": mx.full((1, 2, 2), 2048),
+    }
+    if tamper == "truncate":
+        data = sidecar.read_bytes()
+        sidecar.write_bytes(data[: len(data) - 16])
+    else:
+        bad = dict(good)
+        if tamper == "wrong_shape":
+            bad["1.2048.1"] = mx.full((1, 2, 3), 2048)
+        elif tamper == "outside_entry":
+            bad = {k.replace("2048", "9000"): v for k, v in good.items()}
+        elif tamper == "not_recurrent":
+            bad = {k.replace("1.", "0.", 1): v for k, v in good.items()}
+        else:
+            del bad["1.2048.1"]
+        mx.save_safetensors(str(sidecar), bad)
+
+    restored = _hybrid_cache_store()
+    assert restored.load_from_disk(str(snap)) == 1
+    result, _ = restored.fetch(stored[:5000] + [1, 2, 3])
+    assert result is None  # no checkpoint to snap to, but no crash either
+    assert restored.fetch(stored + [5])[0] is not None  # exact extension still hits
+
+
+def test_checkpoint_sidecar_write_failure_keeps_the_entry(tmp_path, monkeypatch):
+    import mlx.core as mx
+
+    def _boom(*_a, **_k):
+        raise OSError("disk full")
+
+    cache = _hybrid_cache_store()
+    stored = list(range(1000, 7000))
+    assert cache.store(stored, _hybrid_entry(6000, (2048,)))
+    monkeypatch.setattr(mx, "save_safetensors", _boom)
+    assert (
+        mc._save_checkpoints_sidecar(
+            str(tmp_path / "x_ckpt.safetensors"),
+            next(iter(cache._entries.values())).cache,
+        )
+        is False
+    )
+    assert not (tmp_path / "x_ckpt.safetensors").exists()
