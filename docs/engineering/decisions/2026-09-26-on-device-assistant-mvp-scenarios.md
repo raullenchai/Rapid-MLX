@@ -4,33 +4,21 @@
 - **Date:** 2026-09-26
 - **Owner:** Atlas
 - **Consumers:** gui_verifier_cua_poc, Rapid Desktop (Personal Intelligence), always-on service, model catalog
-- **Evidence base:** public reporting on the consumer personal-AI agent category (CNBC, LA Times, The Verge, Tom's Hardware, Ars Technica, Music Ally, Business Insider) plus three instrumented dogfood runs in
-  `tools/gui_verifier_cua_poc/` (branch `atlas/gui-verifier-cua-poc`)
+- **Evidence base:** instrumented local dogfood runs in
+  `tools/gui_verifier_cua_poc/` and the product implementation in
+  `rapid_mlx/cua/`
 
 ## Context
 
-A cloud-hosted consumer personal-AI agent launched in September 2026 (its assistant surface,
-model family, led by Nat Friedman). It reached 730k downloads in five days and
-2.5M in thirteen (CNBC), was rated the top AI agent by J.P. Morgan, and forced
-OpenAI to rush an always-on competitor. Public reporting establishes its shape:
+Consumer computer-use agents have established demand for shopping research,
+travel planning, account summaries, media control, file organization, and
+scheduled monitoring. These flows combine high-value assistance with access to
+credentials, money, private files, and authenticated sessions.
 
-- **Execution substrate:** per-user cloud Linux VMs (AMD EPYC, 2 cores, 8 GB)
-  with terminal and browser access (Tom's Hardware). It is cloud-hosted and
-  Meta collects a transaction fee (Zuckerberg, Yahoo Finance).
-- **Headline scenarios:** shopping and travel booking ("can now book travel and
-  shop for you", LA Times); money management (Yahoo Finance); an official
-  Spotify connector (Music Ally, Spotify Newsroom); first-class filesystem
-  access (The Verge); always-on proactive behavior.
-- **Friction:** Amazon blocked that agent from shopping (GeekWire, Engadget) using
-  standards it ignores for its own agent (TechTimes); a serious 0-day followed
-  within weeks (Ars Technica) because an "extraordinarily privileged" agent is
-  a high-value attack surface.
-
-Goal: distill the category's proven user flows into 5-6 MVP scenarios for a **local,
-Apple-Silicon-native equivalent on Rapid-MLX**, and name the technology stack
-they force us to build. Walking every flow fully is not required; stopping at a
-human gate (for example Amazon's final order button) is an accepted, expected
-outcome whenever the operator declines permission.
+The goal is to implement the useful interaction patterns on Apple silicon with
+local inference, explicit permission boundaries, and auditable traces. Walking
+every flow fully is not required: the accepted outcome for a sensitive step is
+a clear human gate that expires safely when the operator does not approve it.
 
 ## Top scenarios for the MVP
 
@@ -41,7 +29,7 @@ outcome whenever the operator declines permission.
 | 3 | **Money assistant**: read-only account/spend digest; bill pay strictly behind a human gate | Category money flows; bank-partner coverage | Not started; browser lane + gate machinery already exist | Read-only digest of one bank dashboard; a payment flow demonstrably halts at the gate unexecuted |
 | 4 | **Music/media**: create/curate playlists and queues from NL; discovery | Spotify is the category reference connector; operator declined account login, so dogfood ran on YouTube Music | **Dogfooded logged-out on YouTube Music**: search → play first instrumental track → add two more to the queue via each track's action menu (one menu needed the `press` Enter fallback). Trace shows player active (3:53/1:19:58) and `Song added to queue` toasts; no sign-in encountered | NL-driven search + playback + queue curation on the user's own machine, trace-verified; account-scoped actions (saved playlists) remain gated on `--human-login` |
 | 5 | **Local files & desktop**: organize folders, find documents, cross-app desktop flows | Filesystem access is the category's highest-privilege surface | **Dogfooded end-to-end** (`tools/flow_tools/file_organizer.py`): NL rule → planner proposal → validation caught a hallucinated file → repair retry → APPROVE gate → 12 files moved with undo log | One rule-based Downloads organization with dry-run summary and per-batch confirm — **met** |
-| 6 | **Always-on proactive agent**: price/deal watching, inbox digest, reminders | Competitors copy this; it is the category's retention hook | **Digest flow dogfooded** (`tools/flow_tools/digest.py`): 5 repo docs → urgency-sorted digest with action items (long-doc token fix applied); watcher scheduling pending | One watcher produces a daily human digest for a product price threshold |
+| 6 | **Always-on proactive agent**: price/deal watching, inbox digest, reminders | Recurring high-value use case | **Digest flow dogfooded** (`tools/flow_tools/digest.py`): 5 repo docs → urgency-sorted digest with action items (long-doc token fix applied); watcher scheduling pending | One watcher produces a daily human digest for a product price threshold |
 
 Scenarios 1, 2, 3 share one pipeline (browser lane + money gate). Scenario 4 is
 the low-risk quick win with an official integration path. Scenario 5 is our home
@@ -78,16 +66,16 @@ unless marked next:
 7. **Host integration** — Rapid Desktop surface plus the always-on service
    (ADR 2026-09-05) as the scheduler for scenario 6.
 
-## Why this beats cloud agents for our users
+## User value of the local architecture
 
-- **Local-first privacy:** screenshots and page context never leave the Mac;
-  Cloud agents process them on remote VMs.
-- **No transaction tax:** Meta skims a fee from purchases; we have no such
-  incentive and our money gate is opt-in by design.
-- **Platform-block resilience:** Amazon locked a leading cloud agent out while running its own
-  shopping agent. A human-paced local agent acting through the user's own
-  session is a different trust model, and scenarios 4-6 do not depend on
-  hostile platforms at all.
+- **Local processing:** screenshots, accessibility trees, and page context stay
+  on the Mac when a local planner is selected.
+- **Explicit control:** credential, payment, purchase, and filesystem mutations
+  stop at a human gate with a bounded timeout.
+- **Auditable execution:** each planned action, guard decision, outcome, and
+  recovery is recorded in a local trace.
+- **Broad host coverage:** browser, native Accessibility, local files, and
+  scheduled tasks share one permission model without requiring a remote VM.
 
 ## Risks
 
@@ -112,23 +100,22 @@ unless marked next:
 5. Operator-authorized `CONFIRM_ORDER` run remains optional (per operator:
    add-to-cart is the accepted shopping terminal for the MVP).
 
-## Native-macOS computer-use product settings intel (2026-09-26, operator-supplied)
+## Native macOS capability requirements
 
-OCR of a leading commercial computer-use product's desktop settings panel confirms the native-macOS route:
-
-- **Accessibility is the first required permission** — computer use is described as the ability "to click, type and use apps on your computer" (native AX driving, no DOM injection). Followed by File system access, Screen Recording, Dictation.
-- **Per-capability consent**: Computer control and Browser automation are
-  separate dropdowns (default "Ask every time") — same human-gate philosophy
-  as our RESUME/CONFIRM_ORDER file sentinels, generalized per capability.
-- **Per-app allowlist** ("Add app") and **Keep screen awake while working**
-  (always-on watcher support).
+The product surface needs separate grants for Accessibility, file access,
+screen capture, and dictation. Computer control and browser automation should
+have independent consent policies, with per-app allowlists and an explicit
+keep-awake option for long-running tasks. These requirements follow directly
+from the capabilities used by the local POC and keep each permission visible to
+the user.
 
 ## Local planner qualification (2026-09-26)
 
 `--planner-text-only` now runs the planner without screenshots: text-only
-planners judge from page text, targets, and structured deltas while the local
-The vision verifier keeps visual grounding. First A/B on the YouTube Music task
-(M3 Ultra 256GB, rapid-mlx serve on-device, strict json_schema guided decode):
+planners judge from page text, targets, and structured deltas, while the local
+vision verifier keeps visual grounding. The first A/B on the YouTube Music
+task (M3 Ultra 256GB, rapid-mlx serve on-device, strict json_schema guided
+decode):
 
 | planner | steps | success outcomes | median plan latency | notes |
 |---|---|---|---|---|
@@ -146,7 +133,7 @@ screenshots close the persistence gap.
 
 ## AX probe result (2026-09-26)
 
-`tools/gui_verifier_cua_poc/ax_driver.py` proved the DOM-free route alongside
+`rapid_mlx/computer_use/ax_driver.py` proved the DOM-free route alongside
 the Playwright driver: it enumerated Chrome's AX tree including web content
 (92 targets after AXManualAccessibility enablement + lazy-load retry) and
 performed a semantic `AXPress` (kAXErrorSuccess) with CGEvent click fallback —
@@ -167,29 +154,18 @@ correct summary (run /tmp/ax-runs/20260926-183150). Screenshot capture uses
 `screencapture -l<window>` (Screen Recording TCC verified on this host);
 `--planner-text-only` is the fallback if capture degrades.
 
-**Architecture validation from an established commercial native-AX
-computer-use product** ( surveyed for pattern confirmation only; its runtime
-is private and peer-locked, so we never drive it — we adopt validated
-patterns and implement them independently): browser automation rides a
-snapshot daemon (a11y-tree snapshots with stable element refs); desktop
-computer-use rides a signed local helper speaking JSON-RPC over a Unix
-socket with token auth, exposing app-state/click/scroll/type/press/hotkey/
-set-value/secondary-action, a ~120 s snapshot cache keyed by app/window,
-stale-element rejection, set-value with read-back verification, typed error
-codes with per-code recovery hints for the agent, and per-capability
-permission gating. Linux/Windows ride OS script providers (AT-SPI / UIA).
-Patterns we adopt:
+The native runner established four implementation requirements that now guide
+the shared tool layer:
 
-1. AX element snapshots carry an index + role + label + value; actions accept
-   elementIndex (semantic) or x/y (fallback) — matches our target_id scheme.
-2. Fill should try settable-value with read-back verification before
-   synthetic typing (our fill currently types via CGEvents only).
-3. Typed errors with recovery hints belong in the planner context.
-4. Per-capability consent prompts are the right generalization of our
-   RESUME/CONFIRM_ORDER sentinels.
+1. Accessibility snapshots carry an index, role, label, and value; actions use
+   a semantic element index, with coordinates reserved for fallback.
+2. Text entry tries an Accessibility value write and read-back before synthetic
+   keyboard input.
+3. Typed errors include recovery hints that the planner can act on.
+4. Consent is evaluated by capability and by action sensitivity.
 
-Adopted now: error taxonomy + recovery hints land with the ax driver; setValue
-read-back and AXObserver eventing are queued as follow-ups.
+Adopted now: the AX driver has typed errors, recovery hints, and set-value
+read-back. AXObserver eventing remains a follow-up.
 
 ## Tool/agent decoupling shipped: `rapid-mlx computer` CLI (2026-09-26 night)
 
@@ -275,9 +251,9 @@ the main CLI as `rapid-mlx cua`. Architecture separates the concerns:
 
 The planner protocol keeps the proven strict-schema + one-repair-retry shape,
 retargeted from DOM target_ids to AX element indexes. `planner` is injectable
-for SDK/testing. 21 new tests (config/validation/fixation/gates/loop paths);
-full loop verified end-to-end with local-9b on the Wikipedia task (3 steps,
-grounded final summary quoting the article's first paragraph).
+for SDK/testing. Tests cover config, validation, fixation, gates, and loop
+paths; the full loop was verified end-to-end with local-9b on the Wikipedia
+task (3 steps, grounded final summary quoting the article's first paragraph).
 
 The POC tools stay under tools/gui_verifier_cua_poc/ as reference; new work
 targets rapid_mlx.cua.

@@ -21,7 +21,7 @@ blocked.
 - Rapid-MLX base revision `e68bb534f`
 - Planner: `mlx-community/Qwen3.5-9B-4bit`, revision
   `8b2b98c00a6b4d291155e4890773ca8f769aee53`
-- Verifier: `microsoft/the 2B vision verifier checkpoint`, revision
+- Verifier: `microsoft/GUI-Actor-Verifier-2B`, revision
   `30dd0db468762d45df20b5a01c4084c5a3ed3ca3`
 - MLX 0.32.2, mlx-vlm 0.7.2
 - Visible Google Chrome, 1280x800 viewport, clean temporary profile

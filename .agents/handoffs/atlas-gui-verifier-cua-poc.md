@@ -1,17 +1,18 @@
 # Atlas handoff — GUI verifier → productized CUA
 
-## State (branch atlas/gui-verifier-cua-poc, all pushed)
+## State
 - `rapid_mlx/cua/` product package LIVE: config presets (cloud-glm/local-27b/local-9b
   in ~/.rapid-mlx/cua-config.json), planner (strict schema + repair, injectable),
   fast path (laya + NoProgressTracker fixation gate), consent gates, agent loop,
   CLI (`rapid-mlx cua run|config|planners`). E2E verified with local-9b on
-  Wikipedia (3 steps, grounded summary). 67 tests green.
+  Wikipedia (3 steps, grounded summary). Targeted CUA and tool-layer tests pass.
 
 ## Verified facts
 - Qualification matrix (see decisions doc): 9B ok short/planner-only, fixates
   long-horizon; 27B premature-done risk; GLM still strongest long-horizon brain.
-- Chrome active-tab AXValue is empty → URL guard needs Automation TCC grant
-  (AppleScript fallback; currently rejected -1743 in our host).
+- Chrome active-tab AXValue is empty → URL guard fails closed when AX cannot
+  expose the active URL; browser fallback requires the host app to have
+  Automation permission.
 
 ## Next concrete actions
 1. User grants Automation→Chrome to the host app; then verify domain guard bites
