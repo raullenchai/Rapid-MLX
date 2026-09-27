@@ -3,7 +3,7 @@
 <p align="center">
   <strong>Rapid-MLX is an open-source (Apache 2.0) OpenAI- and Anthropic-compatible LLM inference server and Mac app for Apple Silicon, built on MLX, focused on reliable tool calling for coding agents.</strong>
   <br>
-  <em>Measured: 3.0× Ollama's aggregate decode throughput at 8 concurrent streams (82.9 vs 27.2 tok/s; Qwen3.6-35B-A3B, 32 GB M2 Pro Mac mini, Rapid-MLX 0.12.11 vs Ollama 0.32.7). Single-stream decode on the same model was about 1.5×, and llama.cpp-family engines prefilled cold prompts faster. <a href="https://rapidmlx.com/blog/rapid-mlx-vs-ollama-benchmark">Method and raw data</a>.</em>
+  <em>Measured: 3.0× Ollama's aggregate decode throughput at 8 concurrent streams on a MoE model (82.9 vs 27.2 tok/s; Qwen3.6-35B-A3B, 32 GB M2 Pro Mac mini, Rapid-MLX 0.12.11 vs Ollama 0.32.7). Including prefill, whole-batch throughput was 1.6×; single-stream decode was about 1.5×; a dense 12B model was a tie at 8 streams; and llama.cpp-family engines prefilled cold prompts faster. <a href="https://rapidmlx.com/blog/rapid-mlx-vs-ollama-benchmark">Method and raw data</a>.</em>
 </p>
 
 <p align="center">
@@ -47,15 +47,16 @@ above. Full comparison: [rapidmlx.com/compare](https://rapidmlx.com/compare).
 | **Inference engine on a Mac** | MLX | MLX | GGML/GGUF engine, plus an MLX engine for safetensors models | llama.cpp (GGUF) and MLX engines | MLX |
 | **Local API** | OpenAI (`/v1/chat/completions`, `/v1/responses`) and Anthropic Messages (`/v1/messages`) | OpenAI and Anthropic Messages | Ollama API, OpenAI-compatible, Anthropic-compatible (subset) | OpenAI-compatible, Anthropic-compatible, LM Studio REST API | OpenAI-style chat API |
 | **GUI** | Rapid-MLX Desktop (macOS app) | macOS menu-bar app and web admin panel | Desktop app (macOS, Windows) | Desktop app | None (CLI / Python) |
-| **Concurrent requests** | Continuous batching | Continuous batching (mlx-lm `BatchGenerator`) | Parallel requests per model (`OLLAMA_NUM_PARALLEL`, default 1) | Continuous batching (llama.cpp engine; MLX engine since 0.4.2) | Batched decoding (`--decode-concurrency`); one request at a time with a quantized KV cache |
-| **Prompt / KV cache** | In-memory prefix cache (radix, with state snapshots for hybrid models); quantized KV cache | Tiered KV cache: in-memory hot tier plus SSD cold tier that survives restarts | KV cache quantization (`OLLAMA_KV_CACHE_TYPE`) | Not listed here (not verified) | In-memory prompt cache; quantized KV cache (`--kv-bits`) |
-| **Tool-call parsing** | 27 model-family parser modules plus an auto-detect fallback ([`rapid_mlx/tool_parsers`](rapid_mlx/tool_parsers)) | mlx-lm formats plus the auto-detected families listed in its README | [Tool calling](https://docs.ollama.com/capabilities/tool-calling) | [Tool use](https://lmstudio.ai/docs/developer/openai-compat/tools) via the OpenAI-compatible API | Tool calls for models whose tokenizer declares tool-calling support |
+| **Concurrent requests** | Continuous batching | Continuous batching (mlx-lm `BatchGenerator`) | Parallel requests per model (`OLLAMA_NUM_PARALLEL`, default 1) | Continuous batching (llama.cpp engine; MLX engine since 0.4.2) | Continuous batching (`BatchGenerator`); one request at a time with a quantized KV cache |
+| **Prompt / KV cache** | Radix prefix cache in memory (with state snapshots for hybrid models), saved to disk on shutdown and restored at startup; quantized KV cache | Tiered KV cache: in-memory hot tier plus SSD cold tier, reused across restarts | Reuses the previous request's prompt KV cache; KV cache quantization (`OLLAMA_KV_CACHE_TYPE`) | — | In-memory prompt cache; quantized KV cache (`--kv-bits`) |
+| **Tool-call parsing** | 27 parser modules, including an auto-detect fallback ([`rapid_mlx/tool_parsers`](https://github.com/raullenchai/Rapid-MLX/tree/main/rapid_mlx/tool_parsers)) | mlx-lm formats plus the auto-detected families listed in its README | [Tool calling](https://docs.ollama.com/capabilities/tool-calling) | [Tool use](https://lmstudio.ai/docs/developer/openai-compat/tools) via the OpenAI-compatible API | Tool calls for models whose tokenizer declares tool-calling support |
 
 <sub>Sources: [oMLX README](https://github.com/jundot/omlx#readme) ·
 Ollama [OpenAI](https://docs.ollama.com/api/openai-compatibility) and [Anthropic](https://docs.ollama.com/api/anthropic-compatibility) compatibility, [FAQ](https://docs.ollama.com/faq), [MLX engine](https://github.com/ollama/ollama/blob/main/docs/development.md#mlx-engine-optional) ·
 LM Studio [Anthropic compatibility](https://lmstudio.ai/docs/developer/anthropic-compat), [parallel requests](https://lmstudio.ai/docs/app/advanced/parallel-requests), [0.4.2 changelog](https://lmstudio.ai/changelog/lmstudio-v0.4.2), [app terms](https://lmstudio.ai/app-terms), [mlx-engine](https://github.com/lmstudio-ai/mlx-engine) ·
-[mlx-lm server docs](https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/SERVER.md).
-Spot an error? Please [open an issue](https://github.com/raullenchai/Rapid-MLX/issues).</sub>
+[mlx-lm server docs](https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/SERVER.md) and [`server.py`](https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/server.py).
+Ollama prompt-cache reuse is from our [benchmark notes](https://rapidmlx.com/blog/assets/engine-bench-2026-08/results.json).
+— = not verified for this table. Spot an error? Please [open an issue](https://github.com/raullenchai/Rapid-MLX/issues).</sub>
 
 ---
 
@@ -705,7 +706,7 @@ Rapid-MLX began as **[vLLM-MLX](https://github.com/waybarrios/vllm-mlx)** by
 history starts and where the engine's paged KV cache, prefix cache, and
 continuous batching were first built. It was renamed to Rapid-MLX on 2026-03-13,
 now ships as the `rapid-mlx` package (import name `rapid_mlx`), and has been
-extensively modified and in large part rewritten since (see [NOTICE](NOTICE)).
+extensively modified and in large part rewritten since (see [NOTICE](https://github.com/raullenchai/Rapid-MLX/blob/main/NOTICE)).
 Thank you.
 
 It stands on Apple's MLX stack and the runtimes built around it:
