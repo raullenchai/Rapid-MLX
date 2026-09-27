@@ -75,7 +75,10 @@ turn.
     reuse over the boundary entry. That is the normal case. A fallback
     boundary further back keeps both entries.
   - The prompt + output completion entry is skipped when it and the boundary
-    entry would not both fit the budget.
+    entry would not both fit, either in the byte budget or under the
+    hybrid-entry count bound. On non-thinking templates that re-render the
+    output verbatim, the next turn then re-prefills the previous output. The
+    boundary entry still covers everything before it.
   - Otherwise the completion entry is stored and the boundary entry is moved
     back to most recently used, so budget or pressure trims take the
     completion entry first.
@@ -90,6 +93,13 @@ turn.
   While the peak does not fit, prefix-cache entries are evicted in LRU order.
   This is the case the pressure tick cannot cover: it runs every 16 engine
   steps, and a 12-chunk prefill may finish inside one interval.
+  - Reclaim applies only to hybrid (recurrent-state) models. That is where the
+    transient was measured: head_dim-256 attention materialises each chunk's
+    score matrix. On dense models KV dominates the peak, and the admission
+    gate's KV projection already covers it.
+  - Reclaim stops as soon as an eviction frees no Metal memory, such as a
+    lazily loaded entry or buffers the request still shares. So it never
+    empties the cache for nothing.
 - **Shutdown saves use measured throughput.** A budgeted (shutdown) save
   measures a 16 MiB fsynced write and halves the result to cover serialization
   overhead. For the first prediction it uses that throughput, bounded to

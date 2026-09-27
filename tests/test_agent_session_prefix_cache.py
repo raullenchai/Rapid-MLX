@@ -477,6 +477,7 @@ def test_cold_prefill_reclaims_the_cache_on_a_16gb_class_cap(monkeypatch):
     sched = _scheduler(monkeypatch)
     monkeypatch.setattr(sched, "_resolve_metal_cap_bytes", lambda: cap_16)
     monkeypatch.setattr(sched, "_resolve_kv_bytes_per_token", lambda: 32 * 1024)
+    monkeypatch.setattr(sched, "_resolve_kv_fixed_baseline_bytes", lambda: 50 * MB)
     monkeypatch.setattr(sched, "_estimate_request_kv_bytes", lambda _r: int(0.75 * GB))
     cache = sched.memory_aware_cache
     cache.store(list(range(50_000, 50_100)), _hybrid_cache(GB))  # other session
@@ -500,9 +501,7 @@ def test_cold_prefill_reclaims_the_cache_on_a_16gb_class_cap(monkeypatch):
 
 
 def test_short_remaining_prefill_keeps_the_cache(monkeypatch):
-    sched = _scheduler(monkeypatch)
-    monkeypatch.setattr(sched, "_resolve_kv_bytes_per_token", lambda: 32 * 1024)
-    monkeypatch.setattr(sched, "_estimate_request_kv_bytes", lambda _r: 0)
+    sched = _hybrid_reclaim_scheduler(monkeypatch)
     cache = sched.memory_aware_cache
     cache.store(list(range(100)), _hybrid_cache(64 * MB))
     req = _long_request("short", 50)
@@ -520,39 +519,49 @@ def test_prefill_reclaim_is_a_no_op_without_a_cap_or_entries(monkeypatch):
     assert sched._reclaim_prefix_cache_for_prefill(req) == 0
 
 
-def test_prefill_reclaim_stops_when_nothing_is_left_to_evict(monkeypatch):
+def _hybrid_reclaim_scheduler(monkeypatch):
     sched = _scheduler(monkeypatch)
     monkeypatch.setattr(sched, "_resolve_kv_bytes_per_token", lambda: 32 * 1024)
     monkeypatch.setattr(sched, "_estimate_request_kv_bytes", lambda _r: 0)
+    monkeypatch.setattr(sched, "_resolve_kv_fixed_baseline_bytes", lambda: 50 * MB)
+    return sched
+
+
+def test_prefill_reclaim_stops_when_an_eviction_frees_nothing(monkeypatch):
+    # Lazily loaded entries (or buffers the request still shares) free no
+    # Metal memory: one futile eviction must not flush the whole cache.
+    sched = _hybrid_reclaim_scheduler(monkeypatch)
     sched.memory_aware_cache.store(list(range(10)), _hybrid_cache(MB))
-    sched._test_active[0] = CAP * 2  # over the cap regardless
-    req = _long_request("hopeless", 10)
+    sched.memory_aware_cache.store(list(range(20, 30)), _hybrid_cache(MB))
+    sched._test_active[0] = CAP * 2  # over the threshold regardless
+    req = _long_request("futile", 10)
     req.remaining_tokens = list(range(10))
     assert sched._reclaim_prefix_cache_for_prefill(req) == 1
-    assert len(sched.memory_aware_cache._entries) == 0
+    assert len(sched.memory_aware_cache._entries) == 1
 
 
-def test_budgeted_save_caps_an_optimistic_probe(tmp_path, monkeypatch):
-    # A page-cache-speed probe (10 GB/s) is capped at 600 MB/s, so an entry
-    # that needs 1 GB/s to fit the budget is still skipped.
-    import mlx.core as mx
-    from mlx_lm.models.cache import KVCache
+def test_prefill_reclaim_leaves_dense_models_to_the_admission_gate(monkeypatch):
+    sched = _hybrid_reclaim_scheduler(monkeypatch)
+    monkeypatch.setattr(sched, "_resolve_kv_fixed_baseline_bytes", lambda: 0)
+    sched.memory_aware_cache.store(list(range(10)), _hybrid_cache(MB))
+    sched._test_active[0] = CAP * 2
+    req = _long_request("dense", 10)
+    req.remaining_tokens = list(range(10))
+    assert sched._reclaim_prefix_cache_for_prefill(req) == 0
+    assert len(sched.memory_aware_cache._entries) == 1
 
-    monkeypatch.setattr(mc, "_probe_write_bytes_per_sec", lambda _d: 10 * GB)
-    cache = MemoryAwarePrefixCache(MagicMock(), MemoryCacheConfig(max_memory_mb=64))
-    layer = KVCache()
-    keys = mx.ones((1, 2, 64, 8), dtype=mx.float32)
-    layer.update_and_fetch(keys, keys)
-    cache.store(list(range(64)), [layer])
-    entry_bytes = next(iter(cache._entries.values())).memory_bytes
-    budget_sec = entry_bytes / (1000 * MB)
-    assert (
-        cache.save_to_disk(
-            str(tmp_path / "snap"),
-            should_abort=lambda predicted_sec=0.0: predicted_sec > budget_sec,
-        )
-        is False
+
+def test_completion_entry_skipped_when_the_hybrid_bound_is_one(monkeypatch):
+    sched = _scheduler(monkeypatch)
+    req = _register(sched, 23, 50)
+    req._cache_snapshot_stored = True
+    req.prefix_boundary = 45
+    object.__setattr__(
+        sched.memory_aware_cache,
+        "_config",
+        MemoryCacheConfig(max_memory_mb=64, hybrid_reuse_max_entries=1),
     )
+    assert not sched._protect_boundary_behind_completion(req, _hybrid_cache(MB))
 
 
 # --------------------------------------------------------------------------

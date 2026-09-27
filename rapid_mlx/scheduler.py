@@ -5150,7 +5150,12 @@ class Scheduler:
         mac = self.memory_aware_cache
         with mac._lock:  # noqa: SLF001 — budget read coordinated with store
             used = mac._current_memory  # noqa: SLF001
-        fits = used + estimate_kv_cache_memory(cache) <= mac._max_memory  # noqa: SLF001
+        # Both the byte budget and the hybrid entry-count bound must leave
+        # room for the boundary entry next to this one.
+        fits = (
+            used + estimate_kv_cache_memory(cache) <= mac._max_memory  # noqa: SLF001
+            and mac._config.hybrid_reuse_max_entries >= 2  # noqa: SLF001
+        )
         if not fits:
             logger.debug(
                 "[cache_store] request=%s skipped hybrid completion entry: it "
@@ -5180,42 +5185,49 @@ class Scheduler:
                 mac._entries.move_to_end(key)  # noqa: SLF001
 
     def _reclaim_prefix_cache_for_prefill(self, request: Any) -> int:
-        """Let the prefix cache yield to a long prefill's transient peak.
+        """Let the prefix cache yield to a long hybrid prefill's transient peak.
 
-        The admission gate projects KV only; a cold 23k-token prefill also
-        needs ~3.3x its KV in transient activations. With the agent-session
-        budget floor a resident entry plus that peak can exceed a 16 GB-class
-        Metal cap, and the engine-loop pressure tick (every 16 steps) may not
-        fire inside a 12-chunk prefill. So before a request with a long
-        remaining prefill starts, evict cache entries (LRU) until the
-        projected peak fits under the pressure threshold. Returns the number
-        evicted.
+        The admission gate projects KV only. On the hybrid (recurrent-state)
+        layout this was measured on — Qwen3.5-9B, whose head_dim-256 attention
+        builds each chunk's full score matrix — a cold 23k-token prefill also
+        needs ~3.3x its KV in transients. With the agent-session budget floor
+        a resident entry plus that peak can exceed a 16 GB-class Metal cap,
+        and the engine-loop pressure tick (every 16 steps) may not fire inside
+        a 12-chunk prefill. So before such a request starts, evict cache
+        entries (LRU) until the projected peak fits under the pressure
+        threshold. Dense models (no recurrent baseline) are left to the
+        admission gate's KV projection, where KV dominates the peak. The loop
+        stops as soon as an eviction frees no Metal memory (a lazily loaded
+        entry, or buffers the request itself still shares), so it never
+        empties the cache for nothing. Returns the number evicted.
         """
         cap = self._resolve_metal_cap_bytes()
         mac = self.memory_aware_cache
         if cap <= 0 or mac is None or not mac._entries:  # noqa: SLF001
             return 0
+        per_tok = self._resolve_kv_bytes_per_token()
+        if self._resolve_kv_fixed_baseline_bytes() <= 0:
+            return 0
         prefill_tokens = len(getattr(request, "remaining_tokens", None) or [])
         need = (
             self._estimate_request_kv_bytes(request)
             + self._sum_in_flight_kv_bytes()
-            + int(
-                self._resolve_kv_bytes_per_token()
-                * prefill_tokens
-                * _COLD_PREFILL_TRANSIENT_KV_MULTIPLE
-            )
+            + int(per_tok * prefill_tokens * _COLD_PREFILL_TRANSIENT_KV_MULTIPLE)
         )
-        # Aim below the pressure threshold, not the cap itself: the entries
-        # reclaimed here are not the ones this prefill reads (a miss, or a
-        # hit whose state the request already holds), so yielding them is
-        # cheap, and it keeps the prefill out of the evictor's soft zone.
+        # Aim below the pressure threshold, not the cap itself, so the
+        # prefill stays out of the evictor's soft zone.
         threshold = int(cap * self._resolve_pressure_evict_fraction())
         evicted = 0
-        while self._current_metal_active_bytes() + need >= threshold:
+        active = self._current_metal_active_bytes()
+        while active + need >= threshold:
             if not self._evict_one_prefix_cache_entry():
                 break
             evicted += 1
             self.num_prefix_cache_pressure_evictions += 1
+            after = self._current_metal_active_bytes()
+            if after >= active:
+                break
+            active = after
         if evicted:
             logger.info(
                 "[prefix-prefill-reclaim] request=%s evicted %d prefix-cache "
@@ -7030,7 +7042,8 @@ class Scheduler:
         # memory. It is reclaimable by definition, so it must yield to a live
         # request instead of turning a warm cache into a 503 — this is what
         # makes the agent-session budget floor safe on 16 GB Macs. LRU order
-        # evicts the entry this request would hit (the most recent) last.
+        # evicts the least recently used entries first (this runs before the
+        # fetch, so the entry this request would hit is not refreshed yet).
         if self.memory_aware_cache is not None:
             for dropped in range(1, 65):
                 if not self._evict_one_prefix_cache_entry():
