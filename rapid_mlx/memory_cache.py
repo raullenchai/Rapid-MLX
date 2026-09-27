@@ -2973,7 +2973,7 @@ class MemoryAwarePrefixCache:
         # real-world observed throughput (~875 MB/s during the
         # original incident) ~6× safety margin while still catching
         # genuinely-too-large entries.
-        _BOOTSTRAP_BYTES_PER_SEC = 150 * _BYTES_PER_MB
+        _BOOTSTRAP_BYTES_PER_SEC: float = 150 * _BYTES_PER_MB
         if should_abort is not None:
             # Budgeted (shutdown) save: calibrate the first prediction
             # against the real disk instead of the fixed floor. The floor
