@@ -185,7 +185,7 @@ def execute(plan: dict, targets: list[dict], app_name: str) -> dict:
     element = match.get("element")
     if action == "click":
         if element is not None and "AXPress" in match["actions"]:
-            import ApplicationServices as AS
+            import ApplicationServices as AS  # noqa: N817
 
             err = AS.AXUIElementPerformAction(element, "AXPress")
             record["executed"] = (

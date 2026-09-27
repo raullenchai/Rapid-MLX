@@ -25,7 +25,7 @@ import json
 import sys
 import time
 
-import ApplicationServices as AS
+import ApplicationServices as AS  # noqa: N817
 from ApplicationServices import (
     AXUIElementCopyActionNames,
     AXUIElementCopyAttributeValue,
