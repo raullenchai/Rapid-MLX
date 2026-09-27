@@ -293,6 +293,42 @@ def _element(snapshot: dict, element_index: int, live: bool = False) -> dict:
     )
 
 
+def _collect_with_timeout(app_name: str, timeout_s: float = 20.0) -> list[dict]:
+    """ax_driver.collect with a watchdog.
+
+    macOS AX calls have no built-in timeout: when a target app's
+    accessibility service wedges (Chrome does this in the field),
+    AXUIElementCopyAttributeValue blocks forever and the whole agent run
+    freezes mid-step (2026-09-27 dogfood). Run the walk in a daemon worker
+    thread and convert a timeout into an honest ComputerUseError; a wedged
+    worker leaks as a daemon instead of blocking the run forever.
+    """
+    import threading
+
+    outcome: dict = {}
+
+    def worker() -> None:
+        try:
+            outcome["value"] = ax_driver.collect(
+                app_name, keep_elements=True, max_windows=1
+            )
+        except Exception as exc:  # noqa: BLE001 - surfaced below
+            outcome["error"] = exc
+
+    worker_thread = threading.Thread(target=worker, daemon=True)
+    worker_thread.start()
+    worker_thread.join(timeout_s)
+    if worker_thread.is_alive():
+        raise ComputerUseError(
+            "ax_unavailable",
+            f"accessibility tree collection for {app_name!r} timed out "
+            f"after {timeout_s:.0f}s; the app's AX service is likely wedged",
+        )
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome.get("value", [])
+
+
 def _live_element(snapshot: dict, element_index: int) -> object:
     """Re-collect and return the live AX ref for an index, if still present."""
     fresh = ax_driver.collect(
