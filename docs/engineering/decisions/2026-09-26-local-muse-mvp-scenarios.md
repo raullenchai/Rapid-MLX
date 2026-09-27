@@ -157,3 +157,41 @@ was empty without an open window; fill/settable-value handling and incremental
 AXObserver eventing are not wired yet. Integration plan: expose `--driver ax`
 in run_poc so `_collect_targets` and the executor swap to AX targets while
 planner/verifier protocols stay unchanged.
+
+## Native AX runner dogfood + Orca computer-use teardown (2026-09-26 evening)
+
+**ax_runner.py is live**: the full CUA loop (GLM planner → semantic actions →
+GUI-Actor-capable capture → laya assessment → domain guards) now runs on the
+macOS Accessibility tree with no Playwright and no DOM injection. Wikipedia
+smoke passed in 2 steps: fill+submit typed into the search box via CGEvents,
+GLM read the Apple Silicon article straight from AX text and terminated with a
+correct summary (run /tmp/ax-runs/20260926-183150). Screenshot capture uses
+`screencapture -l<window>` (Screen Recording TCC verified on this host);
+`--planner-text-only` is the fallback if capture degrades.
+
+**How Orca does it** (torn down from the installed app, com.stablyai.orca
+1.4.214): browser automation rides a bundled `agent-browser` daemon
+(a11y-tree snapshots with `@eN` element refs, AGENT_BROWSER_ACTION_POLICY /
+CONFIRM_ACTIONS env gates); desktop computer-use rides a signed Swift helper
+("Orca Computer Use.app", JSON-RPC v1 over a Unix socket with token auth) with
+methods getAppState/click/scroll/drag/typeText/pressKey/hotkey/pasteText/
+setValue/performSecondaryAction, a 120 s snapshot cache keyed by
+app/window, stale-element rejection, setValue with read-back verification,
+typed error codes plus per-code recovery hints for the agent, and
+per-capability permission gating (accessibility = keystroke injection +
+window control; screen recording = screenshots). Linux/Windows use script
+providers (AT-SPI / UIA). We confirmed the helper is peer-locked to Orca's
+own signing ("computer-use agent peer is not authorized") and the CLI is
+single-instance-gated while the app runs — private by design, so we do not
+drive it; we adopt its patterns instead:
+
+1. AX element snapshots carry an index + role + label + value; actions accept
+   elementIndex (semantic) or x/y (fallback) — matches our target_id scheme.
+2. Fill should try settable-value with read-back verification before
+   synthetic typing (our fill currently types via CGEvents only).
+3. Typed errors with recovery hints belong in the planner context.
+4. Per-capability consent (Muse "Ask every time" ≈ Orca ACTION_POLICY) is the
+   right generalization of our RESUME/CONFIRM_ORDER sentinels.
+
+Adopted now: error taxonomy + recovery hints land with the ax driver; setValue
+read-back and AXObserver eventing are queued as follow-ups.

@@ -38,8 +38,11 @@ from ApplicationServices import (
     kAXErrorSuccess,
 )
 from Quartz import (
+    CGEventCreateKeyboardEvent,
     CGEventCreateMouseEvent,
+    CGEventKeyboardSetUnicodeString,
     CGEventPost,
+    CGEventSetFlags,
     CGEventSetIntegerValueField,
     kCGEventLeftMouseDown,
     kCGEventLeftMouseUp,
@@ -47,6 +50,9 @@ from Quartz import (
     kCGHIDEventTap,
     kCGMouseEventClickState,
 )
+
+FLAG_COMMAND = 1 << 3  # kCGEventFlagMaskCommand
+FLAG_NONE = 0
 
 # Chrome/Safari only surface web content to AX when an assistive client asks.
 _MANUAL_ACCESSIBILITY = "AXManualAccessibility"
@@ -150,7 +156,7 @@ def _app_element(app_name: str) -> object:
     raise SystemExit(f"app not found: {app_name!r}")
 
 
-def collect(app_name: str) -> list[dict]:
+def collect(app_name: str, keep_elements: bool = False) -> list[dict]:
     app = _app_element(app_name)
     targets: list[dict] = []
     counter = [0]
@@ -169,11 +175,16 @@ def collect(app_name: str) -> list[dict]:
         AXUIElementSetAttributeValue(app, _MANUAL_ACCESSIBILITY, True)
     if not targets:  # menu-bar-only apps
         _walk(AXUIElementCreateSystemWide(), 0, targets, counter)
+    if not keep_elements:
+        for entry in targets:
+            entry.pop("element", None)
     for entry in targets:
-        entry.pop("element", None)
         rect = entry.get("rect")
         if rect:
-            entry["center"] = [round(rect[0] + rect[2] / 2), round(rect[1] + rect[3] / 2)]
+            entry["center"] = [
+                round(rect[0] + rect[2] / 2),
+                round(rect[1] + rect[3] / 2),
+            ]
     return targets
 
 
@@ -190,6 +201,32 @@ def _cg_click(x: float, y: float, clicks: int = 1) -> None:
     CGEventPost(kCGHIDEventTap, up)
 
 
+def _press_key(keycode: int, modifiers: int = FLAG_NONE) -> None:
+    down = CGEventCreateKeyboardEvent(None, keycode, True)
+    up = CGEventCreateKeyboardEvent(None, keycode, False)
+    if modifiers:
+        CGEventSetFlags(down, modifiers)
+        CGEventSetFlags(up, modifiers)
+    CGEventPost(kCGHIDEventTap, down)
+    time.sleep(0.02)
+    CGEventPost(kCGHIDEventTap, up)
+
+
+def _type_text(text: str) -> None:
+    for ch in text:
+        down = CGEventCreateKeyboardEvent(None, 0, True)
+        up = CGEventCreateKeyboardEvent(None, 0, False)
+        try:
+            CGEventKeyboardSetUnicodeString(down, len(ch), ch)
+            CGEventKeyboardSetUnicodeString(up, len(ch), ch)
+        except TypeError:  # older pyobjc: (event, string) form
+            CGEventKeyboardSetUnicodeString(down, ch)
+            CGEventKeyboardSetUnicodeString(up, ch)
+        CGEventPost(kCGHIDEventTap, down)
+        time.sleep(0.015)
+        CGEventPost(kCGHIDEventTap, up)
+
+
 def press(targets: list[dict], target_id: str, app_name: str) -> dict:
     for entry in targets:
         if entry["target_id"] != target_id:
@@ -204,7 +241,10 @@ def press(targets: list[dict], target_id: str, app_name: str) -> dict:
                 break
         match = next((f for f in fresh if f["target_id"] == target_id), None)
         if match is None:
-            return {"ok": False, "error": f"{target_id} no longer present (tree shifted)"}
+            return {
+                "ok": False,
+                "error": f"{target_id} no longer present (tree shifted)",
+            }
         live_element = match.get("element")
         if live_element is not None and "AXPress" in match["actions"]:
             err = AXUIElementPerformAction(live_element, "AXPress")
@@ -222,7 +262,9 @@ def main() -> None:
     global MAX_NODES
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--app", required=True, help="running app name substring")
-    parser.add_argument("--dump", default=None, help="write targets JSON here ('-' prints)")
+    parser.add_argument(
+        "--dump", default=None, help="write targets JSON here ('-' prints)"
+    )
     parser.add_argument("--press", default=None, help="AXPress/click a tNNN target id")
     parser.add_argument("--max-nodes", type=int, default=MAX_NODES)
     args = parser.parse_args()
