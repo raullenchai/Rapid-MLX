@@ -39,7 +39,7 @@
 
 Feature facts only, taken mostly from each project's own documentation as of
 2026-09-26 (sources below). For measured speed, see the benchmark linked
-above. Full comparison: [rapidmlx.com/compare](https://rapidmlx.com/compare).
+above.
 
 | | Rapid-MLX | [oMLX](https://github.com/jundot/omlx) | [Ollama](https://github.com/ollama/ollama) | [LM Studio](https://lmstudio.ai) | [mlx-lm](https://github.com/ml-explore/mlx-lm) (`mlx_lm.server`) |
 |---|---|---|---|---|---|
