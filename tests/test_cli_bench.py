@@ -252,7 +252,7 @@ def test_bench_success_emits_model_served(monkeypatch) -> None:
     """A successful weight load must twin bench's load-failure event."""
     cli = importlib.import_module("rapid_mlx.cli")
     scheduler = importlib.import_module("rapid_mlx.scheduler")
-    from rapid_mlx.telemetry import store
+    from rapid_mlx.telemetry import model_events, store
 
     class ServedObservedError(Exception):
         pass
@@ -281,6 +281,11 @@ def test_bench_success_emits_model_served(monkeypatch) -> None:
         raise ServedObservedError
 
     monkeypatch.setattr(store, "note_model_served", note_model_served)
+    monkeypatch.setattr(
+        model_events,
+        "_submit_model_served",
+        lambda callback: (callback(), True)[1],
+    )
     monkeypatch.setattr("rapid_mlx.telemetry.track._upload_allowed", lambda: True)
     monkeypatch.setattr("rapid_mlx.telemetry.track.track", observe)
     monkeypatch.setattr(
