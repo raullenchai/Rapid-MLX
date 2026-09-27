@@ -68,13 +68,42 @@ turn.
   cross the Metal cap, the D-METAL-CAP admission gate evicts memory-aware
   prefix-cache entries in LRU order before returning 503. A larger cache
   therefore never turns into backpressure.
-- **Hybrid prompts store one entry per turn.** A non-trimmable cache that has
-  already stored its message-boundary snapshot skips the N-token prompt entry.
-  Trimmable caches are unchanged.
+- **The message-boundary entry is the one a hybrid turn keeps.** This applies
+  to non-trimmable caches once the request has stored its message-boundary
+  snapshot. Trimmable caches are unchanged.
+  - The N-token prompt entry is skipped when it would add at most 64 tokens of
+    reuse over the boundary entry. That is the normal case. A fallback
+    boundary further back keeps both entries.
+  - The prompt + output completion entry is skipped when it and the boundary
+    entry would not both fit the budget.
+  - Otherwise the completion entry is stored and the boundary entry is moved
+    back to most recently used, so budget or pressure trims take the
+    completion entry first.
+- **Long prefills reclaim the cache first.** Before a prefill starts, the
+  request's projected peak is compared against the Metal pressure threshold
+  (90% of the cap). The projected peak is:
+  - the projected KV and the in-flight reservations, plus
+  - 3.5 × the KV of the remaining prompt, for transients. A measured 23k-token
+    cold prefill on Qwen3.5-9B peaked 3.2 GB above the weights, with 0.75 GB
+    of that being the prompt's KV.
+
+  While the peak does not fit, prefix-cache entries are evicted in LRU order.
+  This is the case the pressure tick cannot cover: it runs every 16 engine
+  steps, and a 12-chunk prefill may finish inside one interval.
 - **Shutdown saves use measured throughput.** A budgeted (shutdown) save
   measures a 16 MiB fsynced write and halves the result to cover serialization
-  overhead. It uses that throughput for the first prediction when it beats
-  the 150 MB/s floor. The 3.5 s SIGTERM budget is unchanged.
+  overhead. For the first prediction it uses that throughput, bounded to
+  150-600 MB/s. A page-cache-speed probe cannot over-promise, because real
+  1 GB entry writes measured 700-1300 MB/s. Later entries use the throughput
+  observed on the real writes. The 3.5 s SIGTERM budget is unchanged.
+- **Hybrid checkpoints are persisted.** An entry's recurrent-state checkpoints
+  are written to an `entry_K_ckpt.safetensors` sidecar. On load, the sidecar
+  is re-attached only if every array matches its layer's state slot in shape
+  and dtype, every position lies inside the entry, and every recurrent layer
+  is covered. Any mismatch, including a truncated file, drops the checkpoints
+  and keeps the entry. After a restart, a session replayed from its first
+  turn snaps to the newest checkpoint below the shared prefix instead of
+  re-prefilling everything.
 
 ## Alternatives considered
 
@@ -106,11 +135,13 @@ On a 16 GB Mac:
 - Weights + a full cache + a cold prefill come to about 10.2 GB, which is
   above the cap.
 
-Three guards cover that case:
+The prefill reclaim covers that case. Before the prefill starts, it evicts
+cache entries until the projected peak fits under 90% of the cap. The existing
+guards stay in place:
 
 - The Metal-pressure evictor fires at 90% of the cap. It trims older entries
   there and empties the cache at the cap.
-- The admission gate now evicts cache entries before a request is admitted.
+- The admission gate now evicts cache entries before rejecting a request.
 - The per-request KV projection still rejects requests that cannot fit.
 
 No guard was removed.
@@ -124,8 +155,18 @@ Restart persistence now completes for a realistic session. The newest
 boundary entries are written within the SIGTERM budget and reloaded on start,
 so a client that resumes the same conversation extends them.
 
-Replaying a session from turn 1 after a restart is still a cold prefill for
-turn 1. That turn needs the shorter turn-1 prefix, and loaded entries carry no
-hybrid checkpoints. The follow-up is to persist hybrid state checkpoints with
-the entry, so a restarted turn 1 can snap to the newest checkpoint below the
-shared prefix. The other option is a separate system+tools boundary snapshot.
+Replaying a session from turn 1 after a restart resumes from the newest
+persisted checkpoint below the turn-1 prefix. It does not reuse the full
+turn-1 prefix, because checkpoints are recorded at prefill-chunk strides of
+2048 tokens. An exact turn-1 hit, like oMLX's block-level SSD cache, would
+need one of two follow-ups: a boundary snapshot at the end of system + tools,
+or checkpoints recorded at message boundaries.
+
+Known limits:
+
+- The floor is computed once, when the scheduler is built. It does not
+  subtract models loaded later, and with `--disk-stream` the resident weights
+  are near zero.
+- The multimodal (MLLM) lane keeps its own budget and gets no floor.
+- An explicit `--cache-memory-percent` is raised by the floor, because it
+  cannot be told apart from the default.
