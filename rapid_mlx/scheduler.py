@@ -19,7 +19,7 @@ import threading
 import time
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import Any, cast
 
 import mlx.core as mx
 
@@ -5147,7 +5147,8 @@ class Scheduler:
             return True
         if not _cache_has_non_trimmable(cache):
             return True
-        mac = self.memory_aware_cache
+        # Only reached from the memory-aware store paths.
+        mac = cast(MemoryAwarePrefixCache, self.memory_aware_cache)
         with mac._lock:  # noqa: SLF001 — budget read coordinated with store
             used = mac._current_memory  # noqa: SLF001
         # Both the byte budget and the hybrid entry-count bound must leave
@@ -5179,7 +5180,8 @@ class Scheduler:
             or 0
         )
         key = tuple(request.prompt_token_ids[:boundary])
-        mac = self.memory_aware_cache
+        # Only reached from the memory-aware store paths.
+        mac = cast(MemoryAwarePrefixCache, self.memory_aware_cache)
         with mac._lock:  # noqa: SLF001
             if key in mac._entries:  # noqa: SLF001
                 mac._entries.move_to_end(key)  # noqa: SLF001
