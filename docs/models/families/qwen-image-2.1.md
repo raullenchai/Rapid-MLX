@@ -1,15 +1,43 @@
 # Qwen-Image 2.1
 
-`qwen-image-2.1` uses the pinned `Qwen/Qwen-Image-2.1` checkpoint through mflux 0.20.0. It is a separate runtime family from Qwen-Image 1.x. Rapid-MLX quantizes the transformer to 8-bit at load, retains the Qwen3-VL text encoder in bf16, and defaults to 40 denoising steps with guidance 1.0.
-
-The alias supports `/v1/images/generations` and `/v1/images/edits`. The latter is mflux img2img conditioning with one source image and the upstream default image strength 0.4. It is not the separate Qwen-Image instruction-edit variant. Rapid-MLX derives an approximately 1024² canvas from the source aspect ratio when editing through the OpenAI-compatible endpoint. `negative_prompt` is accepted; true CFG runs only when guidance exceeds 1.0.
+`qwen-image-2.1` is the low-memory default. It uses Rapid-MLX's pinned mflux
+checkpoint with both the denoiser and Qwen3-VL text encoder stored as native
+MLX 4-bit weights. The download is 8.9 GiB, the catalog floor is 8 GB of
+unified memory, and the runtime releases the text encoder before denoising and
+the denoiser after each request. It defaults to 40 denoising steps and guidance
+1.0.
 
 ```sh
 rapid-mlx serve qwen-image-2.1
 ```
 
-The canonical bf16 download is 30.9 GiB and is pinned to commit `790c92633540aa0cb11d9abf19eb46d861714758`. The runtime checks checkpoint completeness and the Qwen3-VL text-encoder layout before loading. Community `MLX-Serve` 4-bit/8-bit packs have a different format and are rejected; a compatible prequantized pack must use the mflux layout.
+Users with more memory can select `qwen-image-2.1-bf16`. That alias retains the
+previous pinned `Qwen/Qwen-Image-2.1` path: mflux quantizes its transformer to
+8-bit at load while the Qwen3-VL text encoder remains bf16. Its canonical
+download is 30.9 GiB and its catalog floor is 32 GB.
 
-The image lane registers mflux's `MemorySaver` and tiled VAE decoding for this family. After an encoder is evicted, a new prompt causes a clean model reload; a cached prompt can reuse the resident transformer. The 32 GB minimum follows the issue reporter's M2 Max CLI run and still needs exact-candidate Server and Mac app dogfood at both 512² and 1024² before release. See the [image release matrix](../../engineering/operations/image-release-dogfood-matrix.md) for the required checks.
+Both aliases appear in the Mac app and support `/v1/images/generations` and
+`/v1/images/edits`. The edit endpoint uses mflux img2img conditioning with one
+source image and the upstream default image strength 0.4. It is distinct from
+the Qwen-Image instruction-edit variant. Rapid-MLX derives an approximately
+1024-square canvas from the source aspect ratio. `negative_prompt` is accepted;
+true CFG runs only when guidance exceeds 1.0.
 
-Upstream model and implementation: <https://huggingface.co/Qwen/Qwen-Image-2.1>, <https://github.com/mflux-community/mflux/pull/736>. Tracking issue: <https://github.com/raullenchai/Rapid-MLX/issues/3642>.
+The low-memory pack is pinned to commit
+`746a58556820933a2df5c75887a2570f1ad200c0`. Rapid-MLX checks every component
+and requires native q4 weight, scale, and bias tensors in the encoder before it
+loads. The source checkpoint is pinned to
+`790c92633540aa0cb11d9abf19eb46d861714758`. Community `MLX-Serve` packs use a
+different format and remain unsupported.
+
+Measured on an M3 Ultra, the prequantized pack peaked at 4.68 GiB for a
+512-square, 40-step generation and 5.14 GiB for a 1024-square smoke run. These
+are MLX allocator peaks rather than total macOS process memory. The 8 GB floor
+must therefore be verified on physical 8 GB and 16 GB Macs before release. See
+the [low-memory qualification](../../engineering/performance/2026-09-25-qwen-image-2.1-low-memory-spike.md)
+and [image release matrix](../../engineering/operations/image-release-dogfood-matrix.md).
+
+Upstream model and implementation:
+<https://huggingface.co/Qwen/Qwen-Image-2.1> and
+<https://github.com/mflux-community/mflux/pull/736>. Tracking issue:
+<https://github.com/raullenchai/Rapid-MLX/issues/3642>.
