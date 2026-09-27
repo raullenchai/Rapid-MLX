@@ -205,6 +205,29 @@ def test_qwen38_27b_aliases_pin_the_native_named_xml_tool_contract() -> None:
         assert detect_model_config(profile.hf_path) == profile
 
 
+def test_bonsai2_27b_pins_the_published_multimodal_contract() -> None:
+    """Bonsai 2 uses named XML tools and its published sampling defaults."""
+
+    alias = "bonsai2-27b-2bit"
+    profile = list_profiles()[alias]
+
+    assert profile.hf_path == "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit"
+    assert profile.supports_image_input is True
+    assert profile.is_text_only is False
+    assert profile.tool_call_parser == "qwen3_coder_xml"
+    assert profile.reasoning_parser == "qwen3"
+    assert profile.is_hybrid is True
+    assert profile.is_hybrid_explicit is True
+    assert profile.supports_spec_decode is False
+    assert dict(profile.recommended_sampling or ()) == {
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "top_k": 20.0,
+    }
+    assert detect_model_config(alias) == profile
+    assert detect_model_config(profile.hf_path) == profile
+
+
 def test_qwen38_27b_abliterated_alias_is_scoped_and_conservative() -> None:
     """The research checkpoint loads one build and borrows no base drafter."""
 

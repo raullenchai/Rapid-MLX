@@ -390,18 +390,23 @@ class TestDetectModelConfig:
     # serves the repo id directly (as in #3547) gets no reasoning parser and
     # sees the bare ``<think>`` scratchpad in ``content``. Both the aliased
     # 27B and an un-aliased sibling (8B, regex-only path) must wire the
-    # Qwen3 hermes-tool + qwen3-reasoning contract.
+    # Qwen3 reasoning contract. The registered 27B checkpoint pins its
+    # published named-XML tool wire; an unknown sibling retains the
+    # conservative family fallback until its template is reviewed.
     @pytest.mark.parametrize(
-        "model_path",
+        ("model_path", "tool_parser"),
         [
-            "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit",
-            "prism-ml/Ternary-Bonsai-2-8B-mlx-2bit",
+            (
+                "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit",
+                "qwen3_coder_xml",
+            ),
+            ("prism-ml/Ternary-Bonsai-2-8B-mlx-2bit", "hermes"),
         ],
     )
-    def test_bonsai2_hadamard(self, model_path):
+    def test_bonsai2_hadamard(self, model_path, tool_parser):
         cfg = detect_model_config(model_path)
         assert cfg is not None
-        assert cfg.tool_call_parser == "hermes"
+        assert cfg.tool_call_parser == tool_parser
         assert cfg.reasoning_parser == "qwen3"
 
     def test_bonsai2_regex_does_not_match_v1_sibling(self):
