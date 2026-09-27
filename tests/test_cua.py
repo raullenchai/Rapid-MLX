@@ -304,6 +304,39 @@ def test_loop_done_path(config_dir, fake_backend, tmp_path, monkeypatch):
     assert len(trace["steps"]) == 2
 
 
+def test_loop_honors_a_preexisting_stop_request(
+    config_dir, fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    planner = _FakePlanner(
+        [{"action": "done", "step_instruction": "finish", "final_summary": "done"}]
+    )
+    events: list[dict] = []
+
+    async def scenario():
+        stop_event = asyncio.Event()
+        stop_event.set()
+        return await loop_mod.run(
+            _make_config(tmp_path),
+            "Google Chrome",
+            "goal",
+            max_steps=2,
+            planner=planner,
+            event_sink=events.append,
+            stop_event=stop_event,
+        )
+
+    trace = asyncio.run(scenario())
+    assert trace["status"] == "stopped"
+    assert trace["final_summary"] == "cancelled by client"
+    assert planner.calls == 0
+    assert [event["kind"] for event in events].count("terminal") == 1
+
+
 def test_loop_fixation_stall(config_dir, fake_backend, tmp_path, monkeypatch):
     """The 9B music failure mode: same instruction forever -> stalled, not hung."""
     import asyncio
@@ -328,6 +361,46 @@ def test_loop_fixation_stall(config_dir, fake_backend, tmp_path, monkeypatch):
     assert trace["stalled"] is True
     # two intervention cycles before giving up
     assert planner.calls <= 7
+
+
+def test_loop_empty_ax_tree_stops_honestly(
+    config_dir, fake_backend, tmp_path, monkeypatch
+):
+    """Regression (2026-09-27 dogfood): Chrome's AX service wedged mid-run and
+    get_app_state returned empty snapshots. The planner then guessed index 0
+    and the ValueError crashed the run as "incomplete". The loop must stop
+    with a readable reason after two empty snapshots instead."""
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    def empty_state(app, screenshot=True, use_cache=True):
+        return {"app": {"name": app}, "elements": [], "tree_text": ""}
+
+    monkeypatch.setattr(loop_mod.backend, "get_app_state", empty_state)
+    monkeypatch.setattr(loop_mod.backend, "read_url", lambda app: "")
+    config = _make_config(tmp_path)
+    planner = _FakePlanner(
+        [{"action": "done", "step_instruction": "x", "final_summary": "y"}],
+        text_only=True,
+    )
+    events: list[dict] = []
+    trace = asyncio.run(
+        loop_mod.run(
+            config,
+            "Google Chrome",
+            "goal",
+            max_steps=5,
+            planner=planner,
+            event_sink=events.append,
+        )
+    )
+    assert trace["status"] == "stopped"
+    assert "accessibility tree" in (trace.get("final_summary") or "")
+    assert planner.calls == 0  # planner never sees an empty snapshot
+    kinds = [e["kind"] for e in events]
+    assert kinds.count("executed") == 2  # one observe per empty snapshot
+    assert kinds[-1] == "terminal"
 
 
 def test_loop_domain_guard(config_dir, fake_backend, tmp_path, monkeypatch):
@@ -449,7 +522,7 @@ def test_wait_uses_async_sleep(config_dir, fake_backend, tmp_path, monkeypatch):
     assert 2.0 in slept and 1.2 in slept
 
 
-def test_max_steps_returns_incomplete_instead_of_crashing(
+def test_max_steps_returns_stalled_instead_of_crashing(
     config_dir, fake_backend, tmp_path, monkeypatch
 ):
     import asyncio
@@ -466,13 +539,136 @@ def test_max_steps_returns_incomplete_instead_of_crashing(
             }
         ]
     )
+    events: list[dict] = []
     trace = asyncio.run(
         loop_mod.run(
-            _make_config(tmp_path), "Chrome", "g", max_steps=1, planner=planner
+            _make_config(tmp_path),
+            "Chrome",
+            "g",
+            max_steps=1,
+            planner=planner,
+            event_sink=events.append,
         )
     )
-    assert trace["status"] == "incomplete"
+    assert trace["status"] == "stalled"
     assert trace["max_steps_reached"] == 1
+    assert events[-1]["kind"] == "terminal"
+    assert events[-1]["status"] == "stalled"
+
+
+def test_loop_reports_invalid_plan_and_runtime_failures(
+    config_dir, fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+
+    class FailingPlanner:
+        text_only = True
+
+        def __init__(self, error):
+            self.error = error
+            self.closed = False
+
+        async def plan(self, *args, **kwargs):
+            raise self.error
+
+        async def close(self):
+            self.closed = True
+
+    invalid = FailingPlanner(ValueError("bad element"))
+    invalid_events: list[dict] = []
+    trace = asyncio.run(
+        loop_mod.run(
+            _make_config(tmp_path),
+            "Chrome",
+            "g",
+            planner=invalid,
+            event_sink=invalid_events.append,
+        )
+    )
+    assert trace["status"] == "stopped"
+    assert "bad element" in trace["final_summary"]
+    assert invalid_events[-1]["status"] == "stopped"
+    assert invalid.closed is True
+
+    runtime = FailingPlanner(RuntimeError("planner offline"))
+    runtime_events: list[dict] = []
+    with pytest.raises(RuntimeError, match="planner offline"):
+        asyncio.run(
+            loop_mod.run(
+                _make_config(tmp_path),
+                "Chrome",
+                "g",
+                planner=runtime,
+                event_sink=runtime_events.append,
+            )
+        )
+    assert runtime_events[-1]["status"] == "failed"
+    assert runtime.closed is True
+
+
+def test_loop_cancellation_and_event_sink_fail_closed(
+    config_dir, fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+
+    class BlockingPlanner:
+        text_only = True
+
+        def __init__(self):
+            self.started = asyncio.Event()
+            self.closed = False
+
+        async def plan(self, *args, **kwargs):
+            self.started.set()
+            await asyncio.Event().wait()
+
+        async def close(self):
+            self.closed = True
+
+    async def scenario():
+        planner = BlockingPlanner()
+        events: list[dict] = []
+        task = asyncio.create_task(
+            loop_mod.run(
+                _make_config(tmp_path),
+                "Chrome",
+                "g",
+                planner=planner,
+                event_sink=events.append,
+            )
+        )
+        await planner.started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return planner, events
+
+    planner, events = asyncio.run(scenario())
+    assert planner.closed is True
+    assert events[-1]["status"] == "stopped"
+
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path),
+        "Chrome",
+        "g",
+        tmp_path / "bad-sink",
+        event_sink=lambda _event: (_ for _ in ()).throw(RuntimeError("sink")),
+    )
+    runner._emit({"kind": "progress"})
+
+    async def broken_gate(_reason):
+        raise RuntimeError("gate unavailable")
+
+    runner.gate = broken_gate
+    assert asyncio.run(runner._request_signin_approval()) is False
 
 
 # ---------------------------------------------------------------- cli dispatch
@@ -660,6 +856,25 @@ def test_data_url_roundtrip():
     assert url.startswith("data:image/png;base64,")
     image = Image.open(_io.BytesIO(base64.b64decode(url.split(",", 1)[1])))
     assert image.size == (4, 4)
+
+
+def test_data_url_works_without_optional_pillow(monkeypatch):
+    import base64
+    import builtins
+
+    from rapid_mlx.cua.planner import data_url
+
+    real_import = builtins.__import__
+
+    def import_without_pillow(name, *args, **kwargs):
+        if name == "PIL":
+            raise ModuleNotFoundError("No module named 'PIL'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_without_pillow)
+    png = b"native-macos-png"
+    url = data_url(png)
+    assert base64.b64decode(url.split(",", 1)[1]) == png
 
 
 def test_config_recovers_from_invalid_json(config_dir):
