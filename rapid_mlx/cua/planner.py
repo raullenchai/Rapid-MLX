@@ -107,7 +107,7 @@ def validate_plan(
     except (TypeError, ValueError):
         raise ValueError(f"element_index must be an integer, got {index!r}") from None
     raw["element_index"] = index
-    if action in {"click", "fill"}:
+    if action in {"click", "fill", "press"}:
         if index < 0:
             raise ValueError(f"{action} plan requires a valid element_index")
         if valid_indexes is not None and index not in valid_indexes:
@@ -117,8 +117,6 @@ def validate_plan(
     if action == "press":
         if raw["key"] not in ALLOWED_KEYS:
             raise ValueError(f"press key must be one of {sorted(ALLOWED_KEYS)}")
-        if index < 0:
-            raise ValueError("press plan requires a valid element_index to focus")
     if action == "scroll":
         raw["direction"] = "up" if raw.get("direction") == "up" else "down"
     else:
@@ -128,7 +126,7 @@ def validate_plan(
     return raw
 
 
-def _assert_loopback(url: str) -> str:
+def assert_loopback_url(url: str) -> str:
     import ipaddress
     from urllib.parse import urlparse
 
@@ -155,7 +153,7 @@ class Planner:
         timeout: float = 180.0,
         text_only: bool = False,
     ):
-        self.url = _assert_loopback(url)
+        self.url = assert_loopback_url(url)
         self.model = model
         self.reasoning_effort = reasoning_effort
         self.text_only = text_only

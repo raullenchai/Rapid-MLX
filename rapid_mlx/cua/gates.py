@@ -7,15 +7,18 @@ APPROVE marker; the run directory keeps the audit trail.
 
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from pathlib import Path
 
 from rapid_mlx.cua.planner import SENSITIVE_RE
 
-SIGN_IN_RE = re.compile(r"\b(sign.?in|log.?in|log.?on|登录|登入)\b", re.IGNORECASE)
+SIGN_IN_RE = re.compile(
+    r"(?:\b(?:sign.?in|log.?in|log.?on)\b|登录|登入)", re.IGNORECASE
+)
 FORBIDDEN_COMMERCE_RE = re.compile(
-    r"\b(add.?to.?cart|checkout|check.?out|place.?order|buy.?now|支付|下单|购买)\b",
+    r"(?:\b(?:add.?to.?cart|checkout|check.?out|place.?order|buy.?now)\b|支付|下单|购买)",
     re.IGNORECASE,
 )
 
@@ -38,9 +41,11 @@ def check_plan_consents(plan: dict, target_label: str = "") -> None:
             "plan references credentials or payment secrets "
             f"(step: {plan.get('step_instruction', '')[:80]!r})"
         )
-    if plan.get("action") in {"fill", "click"} and FORBIDDEN_COMMERCE_RE.search(
-        haystack
-    ):
+    if plan.get("action") in {
+        "fill",
+        "click",
+        "press",
+    } and FORBIDDEN_COMMERCE_RE.search(haystack):
         raise ConsentError(
             f"{plan.get('action')} must not target cart/checkout/payment "
             f"controls (label: {target_label[:80]!r})"
@@ -56,7 +61,7 @@ def looks_like_sign_in(snapshot: dict) -> bool:
     return bool(SIGN_IN_RE.search(haystack)) and "AXSecureTextField" in haystack
 
 
-def wait_for_human(run_dir: Path, marker: str, timeout: float) -> bool:
+async def wait_for_human(run_dir: Path, marker: str, timeout: float) -> bool:
     """File-sentinel human gate. Returns True when approved in time."""
     path = run_dir / marker
     deadline = time.monotonic() + timeout
@@ -64,5 +69,5 @@ def wait_for_human(run_dir: Path, marker: str, timeout: float) -> bool:
     while time.monotonic() < deadline:
         if path.exists():
             return True
-        time.sleep(1.0)
+        await asyncio.sleep(1.0)
     return False

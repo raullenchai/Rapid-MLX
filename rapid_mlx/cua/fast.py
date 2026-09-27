@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 
 import httpx
 
+from rapid_mlx.cua.planner import assert_loopback_url
+
 RANKER_MODEL = "convaiinnovations/laya"
 
 
@@ -27,7 +29,7 @@ class FastOutcomeRanker:
     }
 
     def __init__(self, url: str, model: str = RANKER_MODEL, timeout: float = 10.0):
-        self.url = url
+        self.url = assert_loopback_url(url)
         self.model = model
         self.client = httpx.AsyncClient(timeout=timeout)
 

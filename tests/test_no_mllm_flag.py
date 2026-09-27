@@ -215,6 +215,9 @@ NON_ROUTING_FLAGS_ALLOWLIST: frozenset[str] = frozenset(
         # Computer-use observation knob: omits window pixels while retaining
         # the AX tree. It does not select a model or runtime route.
         "--no-screenshot",
+        # CUA quality/latency knob: disables an optional local outcome ranker.
+        # It does not alter model loading or an auto-detected engine route.
+        "--no-fast-ranker",
     }
 )
 

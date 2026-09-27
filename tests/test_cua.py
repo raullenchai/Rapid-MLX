@@ -84,6 +84,19 @@ def test_press_key_allowlist():
     assert plan["key"] == "Enter"
 
 
+def test_press_rejects_unknown_index():
+    with pytest.raises(ValueError, match="unknown element_index"):
+        validate_plan(
+            {
+                "action": "press",
+                "step_instruction": "submit",
+                "element_index": 99,
+                "key": "Enter",
+            },
+            valid_indexes={1, 2},
+        )
+
+
 def test_done_requires_summary():
     with pytest.raises(ValueError, match="final_summary"):
         validate_plan({"action": "done", "step_instruction": "x", "final_summary": ""})
@@ -181,6 +194,7 @@ def test_sign_in_detection():
 
 
 def test_human_gate_approve_file(tmp_path):
+    import asyncio
     import threading
 
     marker = "APPROVE_SIGNIN"
@@ -192,7 +206,7 @@ def test_human_gate_approve_file(tmp_path):
         (tmp_path / marker).write_text("")
 
     threading.Thread(target=approve_later, daemon=True).start()
-    assert gates.wait_for_human(tmp_path, marker, timeout=5.0)
+    assert asyncio.run(gates.wait_for_human(tmp_path, marker, timeout=5.0))
 
 
 # ---------------------------------------------------------------- loop
@@ -363,6 +377,41 @@ def test_commerce_click_rejected():
         )
 
 
+def test_commerce_press_and_unspaced_chinese_rejected():
+    with pytest.raises(ConsentError, match="cart"):
+        gates.check_plan_consents(
+            {"action": "press", "step_instruction": "submit", "key": "Enter"},
+            target_label="Place order",
+        )
+    with pytest.raises(ConsentError, match="cart"):
+        gates.check_plan_consents(
+            {"action": "click", "step_instruction": "立即购买商品"},
+            target_label="继续",
+        )
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://example.com/page", None),
+        ("https://docs.example.com/page", None),
+        ("https://example.com.evil.test/", "outside"),
+        ("https://evil.test/?next=example.com", "outside"),
+        ("", "could not be read"),
+    ],
+)
+def test_domain_guard_matches_hostname_boundary(tmp_path, url, expected):
+    from rapid_mlx.cua.loop import CUARun
+
+    config = _make_config(tmp_path)
+    config.allowed_domain = "example.com"
+    guard = CUARun(config, "Chrome", "g", tmp_path / "run")._check_domain(url)
+    if expected is None:
+        assert guard is None
+    else:
+        assert expected in guard
+
+
 def test_wait_uses_async_sleep(config_dir, fake_backend, tmp_path, monkeypatch):
     """The loop must not block the event loop during wait/backoff."""
     import asyncio
@@ -398,6 +447,32 @@ def test_wait_uses_async_sleep(config_dir, fake_backend, tmp_path, monkeypatch):
     )
     assert trace["status"] == "done"
     assert 2.0 in slept and 1.2 in slept
+
+
+def test_max_steps_returns_incomplete_instead_of_crashing(
+    config_dir, fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    planner = _FakePlanner(
+        [
+            {
+                "action": "wait",
+                "step_instruction": "keep waiting",
+                "final_summary": "",
+            }
+        ]
+    )
+    trace = asyncio.run(
+        loop_mod.run(
+            _make_config(tmp_path), "Chrome", "g", max_steps=1, planner=planner
+        )
+    )
+    assert trace["status"] == "incomplete"
+    assert trace["max_steps_reached"] == 1
 
 
 # ---------------------------------------------------------------- cli dispatch
@@ -562,6 +637,13 @@ def test_planner_rejects_non_loopback():
 
     with pytest.raises(ValueError, match="loopback"):
         Planner(url="http://10.0.0.5:8888/v1", model="m")
+
+
+def test_fast_ranker_rejects_non_loopback():
+    from rapid_mlx.cua.fast import FastOutcomeRanker
+
+    with pytest.raises(ValueError, match="literal IP"):
+        FastOutcomeRanker("https://ranker.example/v1/rank")
 
 
 def test_data_url_roundtrip():

@@ -14,7 +14,9 @@ import hashlib
 import json
 import subprocess
 import time
+import uuid
 from pathlib import Path
+from urllib.parse import urlparse
 
 from rapid_mlx.computer_use import backend
 from rapid_mlx.cua import config as config_mod
@@ -64,10 +66,16 @@ class CUARun:
         )
 
     def _check_domain(self, url: str) -> str | None:
-        allowed = self.config.allowed_domain
-        if not allowed or not url:
+        allowed = self.config.allowed_domain.strip().lower().rstrip(".")
+        if not allowed:
             return None
-        if allowed not in url:
+        if not url:
+            return "domain guard: current URL could not be read; refusing to act"
+        parsed = urlparse(url)
+        hostname = (parsed.hostname or "").lower().rstrip(".")
+        if parsed.scheme not in {"http", "https"} or not hostname:
+            return f"domain guard: current URL {url!r} is not a valid HTTP(S) URL"
+        if hostname != allowed and not hostname.endswith(f".{allowed}"):
             return (
                 f"domain guard: current URL {url!r} is outside "
                 f"--allowed-domain {allowed!r}"
@@ -117,7 +125,7 @@ class CUARun:
             self.config.allowed_domain,
             progress_hint,
         )
-        target = next(
+        target: dict = next(
             (
                 e
                 for e in snapshot.get("elements", [])
@@ -139,7 +147,7 @@ class CUARun:
             return {"status": "done", "summary": plan["final_summary"]}
 
         if self.config.human_login and gates.looks_like_sign_in(snapshot):
-            approved = gates.wait_for_human(
+            approved = await gates.wait_for_human(
                 self.run_dir, "APPROVE_SIGNIN", self.config.pause_timeout
             )
             if not approved:
@@ -211,9 +219,11 @@ async def run(
     planner: Planner | None = None,
 ) -> dict:
     """Run the loop. Pass `planner` to inject a custom brain (SDK/testing use)."""
-    run_dir = config_mod.RUNS_DIR / time.strftime("%Y%m%d-%H%M%S")
+    run_dir = config_mod.RUNS_DIR / (
+        f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    )
     if open_url:
-        _open_url(app, open_url)
+        await asyncio.to_thread(_open_url, app, open_url)
         await asyncio.sleep(6.0)
     if planner is None:
         planner = Planner(
@@ -232,8 +242,9 @@ async def run(
                 f"[cua] step {step_no}: planning with {config.planner.describe()}",
                 flush=True,
             )
-            terminal = await cua_run.step(planner, step_no)
-            if terminal is not None:
+            result = await cua_run.step(planner, step_no)
+            if result is not None:
+                terminal = result
                 break
         else:
             cua_run.trace["max_steps_reached"] = limit
