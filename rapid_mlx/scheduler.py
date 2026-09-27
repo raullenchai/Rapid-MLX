@@ -6631,9 +6631,9 @@ class Scheduler:
             return None
         num_layers, kv_heads, head_dim, struct_cfg = dims
         dtype_bytes = self._infer_kv_dtype_bytes(struct_cfg)
+        # ``_read_kv_dims`` only returns positive dims and dtype bytes are
+        # >= 1, so the uniform figure is always positive here.
         uniform_per_token = 2 * num_layers * kv_heads * head_dim * dtype_bytes
-        if uniform_per_token <= 0:
-            return None
         return estimate_kv_footprint(
             struct_cfg,
             dtype_bytes=dtype_bytes,
