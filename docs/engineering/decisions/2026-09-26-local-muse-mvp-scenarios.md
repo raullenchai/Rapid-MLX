@@ -195,3 +195,31 @@ drive it; we adopt its patterns instead:
 
 Adopted now: error taxonomy + recovery hints land with the ax driver; setValue
 read-back and AXObserver eventing are queued as follow-ups.
+
+## Tool/agent decoupling shipped: `rapid-mlx computer` CLI (2026-09-26 night)
+
+Per operator decision ("直接抄作业 Orca"), the computer-use layer is now a
+standalone model-free tool suite: `python -m rapid_mlx.computer_use ...`
+(capabilities, permissions, list-apps, list-windows, get-app-state, click,
+set-value, type-text, press-key, hotkey, scroll, perform-secondary-action).
+Single JSON output shape with typed error codes + recovery hints; snapshot
+cache (TTL 120 s, front-window-only) with stale-index rejection; activation
+before synthetic input; fill = AX write → read-back verify → synthetic
+keycode typing → verify by value.
+
+Hand-driven end-to-end smoke on Wikipedia (agent protocol: observe → act →
+re-observe → act): set-value verified `"Alan Turing"` exactly (element 113),
+tree shifted (Search button 122→159), fresh observe + AXPress clicked the new
+index, results page confirmed. Four real bugs found and fixed along the way:
+1) CGEvent modifiers must be set per-event or shift sticks (ALLCAPS);
+2) Chromium drops CGEventKeyboardSetUnicodeString on web content — real HID
+   keycodes are required (unicode fallback kept for non-keymap chars);
+3) multi-window apps need front-window-only element collection (max_windows=1)
+   or coordinates hit the wrong window;
+4) cached snapshots are unsafe for coordinate actions — observe fresh before
+   acting (Orca needs runtimeId re-resolution for the same reason).
+
+What Orca ships that we did NOT copy: per-action confirmation policy UI
+(AGENT_BROWSER_CONFIRM_ACTIONS analog: our RESUME/CONFIRM_ORDER sentinels stay
+loop-level for now), AXObserver evented updates (we poll), runtimeId element
+identity (we re-index per snapshot), right/middle click and drag (queued).
