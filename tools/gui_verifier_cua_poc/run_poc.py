@@ -198,10 +198,12 @@ class Planner:
         model: str,
         reasoning_effort: str | None = None,
         timeout: float = 180.0,
+        text_only: bool = False,
     ):
         self.url = url
         self.model = model
         self.reasoning_effort = reasoning_effort
+        self.text_only = text_only
         self.client = httpx.AsyncClient(timeout=timeout)
 
     async def close(self) -> None:
@@ -314,11 +316,13 @@ Return JSON only:
   "final_summary":"..."}}
 """
         started = time.perf_counter()
+        content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+        if not self.text_only:
+            content.append(
+                {"type": "image_url", "image_url": {"url": _data_url(screenshot)}}
+            )
         text = await self._ask(
-            [
-                {"type": "text", "text": prompt},
-                {"type": "image_url", "image_url": {"url": _data_url(screenshot)}},
-            ],
+            content,
             max_tokens=900,
             schema=PLAN_SCHEMA,
         )
@@ -369,12 +373,21 @@ Return JSON only:
 Do not mark success merely because pixels changed.
 """
         started = time.perf_counter()
+        reflect_content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+        if not self.text_only:
+            reflect_content.extend(
+                [
+                    {"type": "image_url", "image_url": {"url": _data_url(before)}},
+                    {"type": "image_url", "image_url": {"url": _data_url(after)}},
+                ]
+            )
+        else:
+            prompt += (
+                "\n(Images unavailable: judge from the structured delta and URLs.)"
+            )
+            reflect_content[0] = {"type": "text", "text": prompt}
         text = await self._ask(
-            [
-                {"type": "text", "text": prompt},
-                {"type": "image_url", "image_url": {"url": _data_url(before)}},
-                {"type": "image_url", "image_url": {"url": _data_url(after)}},
-            ],
+            reflect_content,
             max_tokens=350,
             schema=REFLECTION_SCHEMA,
         )
@@ -998,6 +1011,7 @@ async def run(args: argparse.Namespace) -> Path:
         args.planner_url,
         args.planner_model,
         reasoning_effort=args.reasoning_effort,
+        text_only=args.planner_text_only,
     )
     fast_ranker = (
         FastOutcomeRanker(args.fast_ranker_url, args.fast_ranker_model)
@@ -1010,6 +1024,7 @@ async def run(args: argparse.Namespace) -> Path:
         "goal": args.goal,
         "purchase_mode": args.purchase,
         "planner_model": args.planner_model,
+        "planner_text_only": args.planner_text_only,
         "reasoning_effort": args.reasoning_effort,
         "fast_ranker_model": args.fast_ranker_model if fast_ranker else None,
         "verifier_model": VERIFIER_REPO,
@@ -1412,6 +1427,12 @@ def parse_args() -> argparse.Namespace:
         "--reasoning-effort",
         choices=("low", "medium", "high", "max"),
         help="Optional OpenAI-compatible reasoning effort for the planner",
+    )
+    parser.add_argument(
+        "--planner-text-only",
+        action="store_true",
+        help="Omit screenshots from planner/reflect requests (text-only "
+        "planners judge from page text, targets, and structured deltas)",
     )
     parser.add_argument(
         "--fast-ranker-url",
