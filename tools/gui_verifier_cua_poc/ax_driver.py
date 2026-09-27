@@ -152,13 +152,21 @@ def _app_element(app_name: str) -> object:
 
 def collect(app_name: str) -> list[dict]:
     app = _app_element(app_name)
-    windows = _get(app, "AXWindows") or []
     targets: list[dict] = []
     counter = [0]
-    for window in windows[:3]:
-        _walk(window, 0, targets, counter)
-        if counter[0] >= MAX_NODES:
+    for attempt in range(4):
+        windows = _get(app, "AXWindows") or []
+        targets = []
+        counter = [0]
+        for window in windows[:3]:
+            _walk(window, 0, targets, counter)
+            if counter[0] >= MAX_NODES:
+                break
+        if any(t["role"] == "AXWebArea" for t in targets) or attempt == 3:
             break
+        # Chrome builds the web-content AX tree lazily; wait and retry.
+        time.sleep(1.5)
+        AXUIElementSetAttributeValue(app, _MANUAL_ACCESSIBILITY, True)
     if not targets:  # menu-bar-only apps
         _walk(AXUIElementCreateSystemWide(), 0, targets, counter)
     for entry in targets:

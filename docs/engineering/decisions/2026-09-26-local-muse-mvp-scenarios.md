@@ -111,3 +111,49 @@ unless marked next:
 4. Native macOS Accessibility targets to open non-browser desktop flows.
 5. Operator-authorized `CONFIRM_ORDER` run remains optional (per operator:
    add-to-cart is the accepted shopping terminal for the MVP).
+
+## Muse on Mac screenshot intel (2026-09-26, operator-supplied)
+
+OCR of the Muse desktop settings panel confirms the native-macOS route:
+
+- **Accessibility is the first required permission** — "Computer use enables
+  Muse to click, type and use apps on your computer" (native AX driving, no
+  DOM injection). Followed by File system access, Screen Recording, Dictation.
+- **Per-capability consent**: Computer control and Browser automation are
+  separate dropdowns (default "Ask every time") — same human-gate philosophy
+  as our RESUME/CONFIRM_ORDER file sentinels, generalized per capability.
+- **Per-app allowlist** ("Add app") and **Keep screen awake while working**
+  (always-on watcher support).
+
+## Local planner qualification (2026-09-26)
+
+`--planner-text-only` now runs the planner without screenshots: text-only
+planners judge from page text, targets, and structured deltas while the local
+GUI-Actor-Verifier keeps visual grounding. First A/B on the YouTube Music task
+(M3 Ultra 256GB, rapid-mlx serve on-device, strict json_schema guided decode):
+
+| planner | steps | success outcomes | median plan latency | notes |
+|---|---|---|---|---|
+| GLM-5.3-Flash (cloud EXL3, vision) | 13 | 6 | 10.2 s | full task: played 1 + queued 2 via action menus |
+| Qwen3.8-27B-4bit-MTP (local, text-only) | 3 | 2 | 17.6 s | played 1, then done'd early claiming queueing "requires login" without attempting it |
+
+Verdict: the local 27B is **protocol-competent** (valid strict-schema plans,
+real actions, honest final_summary) but **terminates prematurely** versus
+GLM's persistence. Local latency is 1.7x cloud despite MTP speculative decode
+(guided-schema generation dominates). Next levers: a done-gate that requires
+task milestone evidence before accepting `done` from weak planners,
+longer-horizon prompting, and a vision-capable local candidate
+(gemma-4-26b-a4b-it-4bit is already in the HF cache) to test whether
+screenshots close the persistence gap.
+
+## AX probe result (2026-09-26)
+
+`tools/gui_verifier_cua_poc/ax_driver.py` proved the DOM-free route alongside
+the Playwright driver: it enumerated Chrome's AX tree including web content
+(92 targets after AXManualAccessibility enablement + lazy-load retry) and
+performed a semantic `AXPress` (kAXErrorSuccess) with CGEvent click fallback —
+no injected ids, no planner-generated coordinates. Known limits: Finder dump
+was empty without an open window; fill/settable-value handling and incremental
+AXObserver eventing are not wired yet. Integration plan: expose `--driver ax`
+in run_poc so `_collect_targets` and the executor swap to AX targets while
+planner/verifier protocols stay unchanged.
