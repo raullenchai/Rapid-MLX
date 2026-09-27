@@ -143,22 +143,25 @@ class _PromptMaterializer:
     """Cut MLX's lazy text-encoder graph before MemorySaver evicts it.
 
     Qwen Image 2.1 caches prompt embeddings, but merely storing the lazy arrays
-    keeps their encoder weights reachable. Evaluating the cached pair at the
-    before-loop boundary lets the following MemorySaver callback release the
-    encoder before denoising starts.
+    keeps their encoder weights reachable. With true CFG, mflux encodes and
+    caches both the positive and negative prompts before this callback while
+    passing only the positive prompt to callbacks. Evaluate every cached pair
+    at the before-loop boundary so the following MemorySaver callback can
+    release the encoder before denoising starts in both cases.
     """
 
     def __init__(self, model) -> None:  # noqa: ANN001
         self._model = model
 
     def call_before_loop(self, *, prompt: str, **kwargs) -> None:  # noqa: ANN003
-        del kwargs
+        del prompt, kwargs
         cached = getattr(self._model, "prompt_cache", {}) or {}
-        arrays = cached.get(prompt)
-        if arrays:
-            import mlx.core as mx
+        arrays = [array for pair in cached.values() if pair for array in pair]
+        if not arrays:
+            return
+        import mlx.core as mx
 
-            mx.eval(*arrays)
+        mx.eval(*arrays)
 
 
 def _detect_family(model_name: str) -> str:

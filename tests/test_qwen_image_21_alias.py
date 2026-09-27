@@ -284,7 +284,7 @@ def test_low_memory_pack_enables_q4_encoder_and_evicts_transformer(monkeypatch):
     )
 
 
-def test_prompt_materializer_evaluates_only_the_requested_cached_arrays(monkeypatch):
+def test_prompt_materializer_evaluates_positive_and_negative_cached_arrays(monkeypatch):
     calls = []
     mlx = types.ModuleType("mlx")
     mlx.__path__ = []
@@ -296,12 +296,13 @@ def test_prompt_materializer_evaluates_only_the_requested_cached_arrays(monkeypa
     _PromptMaterializer(types.SimpleNamespace()).call_before_loop(
         prompt="uncached", ignored=True
     )
-    arrays = (object(), object())
+    positive = (object(), object())
+    negative = (object(), object())
     _PromptMaterializer(
-        types.SimpleNamespace(prompt_cache={"cached": arrays})
+        types.SimpleNamespace(prompt_cache={"cached": positive, "avoid": negative})
     ).call_before_loop(prompt="cached")
 
-    assert calls == [arrays]
+    assert calls == [positive + negative]
 
 
 def test_img2img_passes_one_path_and_strength(monkeypatch, tmp_path):

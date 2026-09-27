@@ -5249,6 +5249,15 @@ class Scheduler:
                 break
             evicted += 1
             self.num_prefix_cache_pressure_evictions += 1
+            # Removing the CacheEntry only drops its Python references. MLX
+            # keeps the released Metal slabs in its allocator cache until it
+            # is explicitly flushed, so measuring active memory before this
+            # call can make a useful eviction look futile and leave the cold
+            # prefill headed into the same OOM this guard is meant to avoid.
+            # Keep this after the counter update: the entry is already gone
+            # if clear_cache raises, matching the pressure-eviction path's
+            # cache-state/metric invariant and exception policy.
+            mx.clear_cache()
             after = self._current_metal_active_bytes()
             if after >= active:
                 break

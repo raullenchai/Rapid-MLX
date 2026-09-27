@@ -590,6 +590,29 @@ def test_prefill_reclaim_stops_when_an_eviction_frees_nothing(monkeypatch):
     assert len(sched.memory_aware_cache._entries) == 1
 
 
+def test_prefill_reclaim_flushes_allocator_before_measuring_freed_memory(monkeypatch):
+    import mlx.core as mx
+
+    sched = _hybrid_reclaim_scheduler(monkeypatch)
+    sched.memory_aware_cache.store(list(range(10)), _hybrid_cache(MB))
+    sched.memory_aware_cache.store(list(range(20, 30)), _hybrid_cache(MB))
+    sched._test_active[0] = CAP * 2
+    clear_calls = 0
+
+    def _clear_cache():
+        nonlocal clear_calls
+        clear_calls += 1
+        sched._test_active[0] -= CAP
+
+    monkeypatch.setattr(mx, "clear_cache", _clear_cache)
+
+    req = _long_request("allocator-cache", 10)
+    req.remaining_tokens = list(range(10))
+    assert sched._reclaim_prefix_cache_for_prefill(req) == 2
+    assert clear_calls == 2
+    assert len(sched.memory_aware_cache._entries) == 0
+
+
 def test_prefill_reclaim_leaves_dense_models_to_the_admission_gate(monkeypatch):
     sched = _hybrid_reclaim_scheduler(monkeypatch)
     monkeypatch.setattr(sched, "_resolve_kv_fixed_baseline_bytes", lambda: 0)
