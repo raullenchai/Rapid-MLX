@@ -1,4 +1,4 @@
-# Planner + GUI-Actor-Verifier browser POC
+# Planner + vision-verifier browser POC
 
 Date: 2026-09-25
 Owner: Atlas
@@ -21,7 +21,7 @@ blocked.
 - Rapid-MLX base revision `e68bb534f`
 - Planner: `mlx-community/Qwen3.5-9B-4bit`, revision
   `8b2b98c00a6b4d291155e4890773ca8f769aee53`
-- Verifier: `microsoft/GUI-Actor-Verifier-2B`, revision
+- Verifier: `microsoft/the 2B vision verifier checkpoint`, revision
   `30dd0db468762d45df20b5a01c4084c5a3ed3ca3`
 - MLX 0.32.2, mlx-vlm 0.7.2
 - Visible Google Chrome, 1280x800 viewport, clean temporary profile
@@ -133,7 +133,7 @@ The verifier is useful but insufficient:
 1. The planner should choose a semantic target from stable Accessibility/DOM
    node IDs, not generate three raw coordinates.
 2. Candidate boxes should come from Accessibility, DOM geometry, or a dedicated
-   GUI-Actor action head. The verifier should rerank those grounded candidates.
+   the verifier action head. The verifier should rerank those grounded candidates.
 3. Reject the entire candidate set when the winning margin is small, all points
    resolve to unrelated elements, or the points do not share the requested
    semantic target.

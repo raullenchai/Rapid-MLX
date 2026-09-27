@@ -7,7 +7,7 @@ Status: Experimental; no product claim
 ## Goal
 
 Test whether a typed agent action protocol plus a local fast decision model can
-turn the earlier GLM-5.3 + GUI-Actor-Verifier browser experiment into a smoother
+turn the earlier GLM-5.3 + vision-verifier browser experiment into a smoother
 end-to-end flow. The task starts from a clean Amazon home page, searches for a
 flashlight, compares visible organic results by rating and review count, and
 stops on the recommended product detail page. Cart, checkout, account,
@@ -23,7 +23,7 @@ The POC uses three local-model roles:
 2. `convaiinnovations/laya` runs on the Mac Studio CPU through Rapid's System
    One `/v1/rank` endpoint. It classifies structured action outcomes and
    pre-ranks visible product cards for GLM review.
-3. `microsoft/GUI-Actor-Verifier-2B` confirms click points on the Mac Studio.
+3. The 2B vision verifier checkpoint confirms click points on the Mac Studio.
 
 The executor publishes only current-page semantic target IDs. The planner emits
 `click(target_id)`, `fill(target_id, text, submit)`, `submit(target_id)`,
@@ -132,14 +132,14 @@ for `CONFIRM_ORDER` (or the pause timeout, which ends the run with
 page (`/buy/confirmation` or "Order placed" text).
 
 Three dogfood runs exercised the pipeline (GLM-5.3-Flash low reasoning + laya
-pre-ranking + GUI-Actor-Verifier-2B, signed-in persistent profile):
+pre-ranking + the 2B vision verifier, signed-in persistent profile):
 
 - Search, compare, product selection, buy-box scroll, and add-to-cart all ran
   without human input. Add-to-cart was verified by the typed cart-count
   postcondition (`#nav-cart-count` 0 → 1, and 1 → 2 on a re-run). Mean GLM
   planning latency was 9.3–11.2 s per step across the runs.
 - The cart page's Prime Video ad banner was misread by the planner as the
-  checkout button three times; GUI-Actor-Verifier correctly rejected every
+  checkout button three times; the vision verifier correctly rejected every
   click (P(True) 0.47–0.56 < 0.65), after which the planner looped on the wrong
   target. Fix: expose DOM ids in target context plus a deterministic cart-page
   checkout bootstrap that still passes verifier review.
