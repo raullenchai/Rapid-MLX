@@ -22,16 +22,15 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import sys
 import time
 
 import ApplicationServices as AS
 from ApplicationServices import (
-    AXUIElementCreateApplication,
-    AXUIElementCreateSystemWide,
     AXUIElementCopyActionNames,
     AXUIElementCopyAttributeValue,
+    AXUIElementCreateApplication,
+    AXUIElementCreateSystemWide,
     AXUIElementPerformAction,
     AXUIElementSetAttributeValue,
     AXValueGetValue,
