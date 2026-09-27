@@ -3,7 +3,7 @@
 <p align="center">
   <strong>Rapid-MLX is an open-source (Apache 2.0) OpenAI- and Anthropic-compatible LLM inference server and Mac app for Apple Silicon, built on MLX, focused on reliable tool calling for coding agents.</strong>
   <br>
-  <em>Measured: 3.0× Ollama's aggregate decode throughput at 8 concurrent streams on a MoE model (82.9 vs 27.2 tok/s; Qwen3.6-35B-A3B, 32 GB M2 Pro Mac mini, Rapid-MLX 0.12.11 vs Ollama 0.32.7). Including prefill, whole-batch throughput was 1.6×; single-stream decode was about 1.5×; a dense 12B model was no faster; and llama.cpp-family engines prefilled cold prompts faster. <a href="https://rapidmlx.com/blog/rapid-mlx-vs-ollama-benchmark">Method and raw data</a>.</em>
+  <em>Measured: 3.0× Ollama's aggregate decode throughput at 8 concurrent streams on Qwen3.6-35B-A3B (M2 Pro) — <a href="https://rapidmlx.com/blog/rapid-mlx-vs-ollama-benchmark">method, raw data, and where it is slower</a>.</em>
 </p>
 
 <p align="center">
@@ -57,6 +57,12 @@ LM Studio [Anthropic compatibility](https://lmstudio.ai/docs/developer/anthropic
 [mlx-lm server docs](https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/SERVER.md) and [`server.py`](https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/server.py).
 Ollama prompt-cache reuse is from our [benchmark notes](https://rapidmlx.com/blog/assets/engine-bench-2026-08/results.json).
 — = not verified for this table. Spot an error? Please [open an issue](https://github.com/raullenchai/Rapid-MLX/issues).</sub>
+
+**Measured speed:** the 3.0× above is 82.9 vs 27.2 tok/s aggregate decode
+(32 GB M2 Pro Mac mini, Rapid-MLX 0.12.11 vs Ollama 0.32.7). Including
+prefill, whole-batch throughput was 1.6×; single-stream decode was about 1.5×;
+a dense 12B model was no faster; and llama.cpp-family engines prefilled cold
+prompts faster ([method and raw data](https://rapidmlx.com/blog/rapid-mlx-vs-ollama-benchmark)).
 
 ---
 
