@@ -17,7 +17,11 @@ overrode or adjusted another source.
    fields, typed override/constraint inputs, field-level source IDs and reason
    codes, and the complete override/fallback trace. Unknown, missing, duplicate,
    or incompatible inputs fail closed.
-2. Wrap existing resolver helpers and compare old/new output.
+2. **Complete:** wrap existing resolver helpers and compare old/new output. The
+   rollback adapter rejects any mismatch and the fixture matrix covers real
+   model-profile prefill, machine-memory overrides, reasoning workloads,
+   explicit flags, and incompatible KV-cache options without downloading a
+   model.
 3. Route Server and CLI through the central resolver.
 4. expose a read-only DTO for Desktop.
 5. Add GUI presentation for active optimizations, warnings, and overrides.
