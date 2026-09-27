@@ -722,3 +722,86 @@ def test_prefill_reclaim_empties_the_cache_when_every_eviction_helps(monkeypatch
     req.remaining_tokens = list(range(10))
     assert sched._reclaim_prefix_cache_for_prefill(req) == 2
     assert len(sched.memory_aware_cache._entries) == 0
+
+
+# The Qwen3.5-9B text tower as mlx-lm loads it: dims live on ``model.args``,
+# there is no ``model.config`` (the config-only KV resolver reads 0 there).
+_QWEN35_9B = {
+    "model_type": "qwen3_5",
+    "text_config": {
+        "model_type": "qwen3_5_text",
+        "dtype": "bfloat16",
+        "hidden_size": 4096,
+        "intermediate_size": 12288,
+        "num_hidden_layers": 32,
+        "num_attention_heads": 16,
+        "num_key_value_heads": 4,
+        "head_dim": 256,
+        "full_attention_interval": 4,
+        "layer_types": ["linear_attention"] * 3 * 8 + ["full_attention"] * 8,
+        "linear_conv_kernel_dim": 4,
+        "linear_key_head_dim": 128,
+        "linear_num_key_heads": 16,
+        "linear_num_value_heads": 32,
+        "linear_value_head_dim": 128,
+        "vocab_size": 248320,
+        "rms_norm_eps": 1e-6,
+        "max_position_embeddings": 262144,
+        "rope_parameters": {
+            "rope_type": "default",
+            "rope_theta": 10000000,
+            "partial_rotary_factor": 0.25,
+        },
+    },
+}
+
+
+def _mlx_lm_shaped_model():
+    from types import SimpleNamespace
+
+    from mlx_lm.models import qwen3_5
+
+    text = dict(_QWEN35_9B["text_config"])
+    # Interleave as the real config does (3 linear, then 1 full attention).
+    text["layer_types"] = ["linear_attention"] * 3 + ["full_attention"]
+    text["layer_types"] = text["layer_types"] * 8
+    return SimpleNamespace(
+        args=qwen3_5.ModelArgs.from_dict(dict(_QWEN35_9B, text_config=text))
+    )
+
+
+def test_prefill_reclaim_reads_mlx_lm_model_args(monkeypatch):
+    """Round-3 review repro: with a real mlx-lm model object the reclaim
+    must resolve the hybrid footprint from ``.args`` and fire."""
+    model = _mlx_lm_shaped_model()
+    assert getattr(model, "config", None) is None
+    sched = _scheduler(monkeypatch)
+    sched.model = model
+    assert sched._resolve_kv_bytes_per_token() == 0  # the config-only resolver
+    per_tok, fixed = sched._prefill_reclaim_footprint()
+    assert per_tok == 8 * 2 * 4 * 256 * 2  # 8 full-attention layers, bf16
+    assert fixed > 0
+
+    cap_16 = int(9.6 * GB)
+    monkeypatch.setattr(sched, "_resolve_metal_cap_bytes", lambda: cap_16)
+    cache = sched.memory_aware_cache
+    entry = int(1.3 * GB)
+    cache.store(list(range(50_000, 50_100)), _hybrid_cache(entry))
+    sched._test_active[0] = RESIDENT + entry
+
+    def _evict(keep_mru: bool = False, _orig=sched._evict_one_prefix_cache_entry):
+        ok = _orig(keep_mru=keep_mru)
+        if ok:
+            sched._test_active[0] -= entry
+        return ok
+
+    monkeypatch.setattr(sched, "_evict_one_prefix_cache_entry", _evict)
+    req = _long_request("cold-real", 22_800)
+    sched.add_request(req)
+    assert len(cache._entries) == 0
+
+
+def test_prefill_reclaim_has_no_footprint_for_an_unknown_model(monkeypatch):
+    sched = _scheduler(monkeypatch)
+    sched.model = object()
+    assert sched._prefill_reclaim_footprint() is None

@@ -50,6 +50,7 @@ from ._sampler_fast_path import (  # noqa: E402
 from ._seeded_sampler import make_seeded_sampler  # noqa: E402
 from .errors import BackpressureError, PagedCacheUnsupportedLayoutError  # noqa: E402
 from .kv_estimation import (  # noqa: E402
+    KVFootprintEstimate,
     _cfg_get,
     _valid_layer_types,
     estimate_kv_footprint,
@@ -5207,14 +5208,18 @@ class Scheduler:
         mac = self.memory_aware_cache
         if cap <= 0 or mac is None or not mac._entries:  # noqa: SLF001
             return 0
-        per_tok = self._resolve_kv_bytes_per_token()
-        if self._resolve_kv_fixed_baseline_bytes() <= 0:
+        footprint = self._prefill_reclaim_footprint()
+        if footprint is None:
             return 0
+        per_tok, fixed_baseline = footprint
         prefill_tokens = len(getattr(request, "remaining_tokens", None) or [])
+        # The prefill's own peak: the recurrent state, the remaining prompt's
+        # KV and its transients. Decode growth (max_tokens) is not part of
+        # the prefill spike; the pressure tick covers it as it accrues.
         need = (
-            self._estimate_request_kv_bytes(request)
+            fixed_baseline
+            + int(per_tok * prefill_tokens * (1 + _COLD_PREFILL_TRANSIENT_KV_MULTIPLE))
             + self._sum_in_flight_kv_bytes()
-            + int(per_tok * prefill_tokens * _COLD_PREFILL_TRANSIENT_KV_MULTIPLE)
         )
         # Aim below the pressure threshold, not the cap itself, so the
         # prefill stays out of the evictor's soft zone.
@@ -5241,6 +5246,26 @@ class Scheduler:
                 cap / 1e9,
             )
         return evicted
+
+    def _prefill_reclaim_footprint(self) -> tuple[int, int] | None:
+        """``(per_token_growth, fixed_baseline)`` for a hybrid model, else None.
+
+        Prefers the scheduler's resolved terms and falls back to the model's
+        own dims (``.args`` on mlx-lm models, where the resolver reads 0).
+        ``None`` for dense models (no recurrent baseline) and when nothing
+        can be resolved.
+        """
+        per_tok = self._resolve_kv_bytes_per_token()
+        fixed = self._resolve_kv_fixed_baseline_bytes()
+        if per_tok <= 0 and fixed <= 0:
+            estimate = self._footprint_from_model_dims()
+            if estimate is None:
+                return None
+            per_tok = estimate.per_token_growth_bytes
+            fixed = estimate.fixed_baseline_bytes
+        if fixed <= 0:
+            return None
+        return per_tok, fixed
 
     def _hybrid_checkpoints_enabled(self) -> bool:
         """Checkpoints are only worth recording when hybrid entries are kept."""
@@ -6592,6 +6617,32 @@ class Scheduler:
         self._kv_bytes_per_token_resolved = True
         return per_tok
 
+    def _footprint_from_model_dims(self) -> KVFootprintEstimate | None:
+        """Hybrid-aware KV footprint read off the model itself, or ``None``.
+
+        mlx-lm models expose their dims on ``.args``, not ``.config``, so the
+        config-only ``_resolve_kv_bytes_per_token`` reads 0 for them. This
+        runs the same estimator on ``_read_kv_dims`` (``.config`` or
+        ``.args``, text tower preferred) for callers that need real numbers
+        without switching on the admission gate's projection.
+        """
+        dims = _read_kv_dims(self.model)
+        if dims is None:
+            return None
+        num_layers, kv_heads, head_dim, struct_cfg = dims
+        dtype_bytes = self._infer_kv_dtype_bytes(struct_cfg)
+        uniform_per_token = 2 * num_layers * kv_heads * head_dim * dtype_bytes
+        if uniform_per_token <= 0:
+            return None
+        return estimate_kv_footprint(
+            struct_cfg,
+            dtype_bytes=dtype_bytes,
+            uniform_per_token_bytes=uniform_per_token,
+            base_num_layers=num_layers,
+            base_kv_heads=kv_heads,
+            base_head_dim=head_dim,
+        )
+
     def _resolve_kv_fixed_baseline_bytes(self) -> int:
         """Per-sequence FIXED KV baseline (bytes) for hybrid architectures.
 
@@ -6663,22 +6714,9 @@ class Scheduler:
                 # dims off the model and running the SAME hybrid-aware
                 # estimator, preferring the text tower over any decoy outer
                 # config (``_read_kv_dims``).
-                dims = _read_kv_dims(self.model)
-                if dims is None:
+                estimate = self._footprint_from_model_dims()
+                if estimate is None:
                     return None
-                num_layers, kv_heads, head_dim, struct_cfg = dims
-                dtype_bytes = self._infer_kv_dtype_bytes(struct_cfg)
-                uniform_per_token = 2 * num_layers * kv_heads * head_dim * dtype_bytes
-                if uniform_per_token <= 0:
-                    return None
-                estimate = estimate_kv_footprint(
-                    struct_cfg,
-                    dtype_bytes=dtype_bytes,
-                    uniform_per_token_bytes=uniform_per_token,
-                    base_num_layers=num_layers,
-                    base_kv_heads=kv_heads,
-                    base_head_dim=head_dim,
-                )
                 per_tok = estimate.per_token_growth_bytes
                 fixed_baseline = estimate.fixed_baseline_bytes
                 sliding_slot_bytes = estimate.sliding_slot_bytes

@@ -85,18 +85,25 @@ turn.
 - **Long prefills reclaim the cache first.** Before a prefill starts, the
   request's projected peak is compared against the Metal pressure threshold
   (90% of the cap). The projected peak is:
-  - the projected KV and the in-flight reservations, plus
-  - 3.5 × the KV of the remaining prompt, for transients. A measured 23k-token
-    cold prefill on Qwen3.5-9B peaked 3.2 GB above the weights, with 0.75 GB
-    of that being the prompt's KV.
+  - the recurrent state and the in-flight reservations, plus
+  - the remaining prompt's KV, plus 3.5 × that KV for transients. A measured
+    23k-token cold prefill on Qwen3.5-9B peaked 3.2 GB above the weights, with
+    0.75 GB of that being the prompt's KV.
+
+  Decode growth (`max_tokens`) is left out, because it is not part of the
+  prefill spike; the pressure tick covers it as it accrues. The KV dims are
+  read from the model itself (`.config`, or `.args` on mlx-lm models) through
+  the same hybrid-aware estimator as the `/v1/models` context ceiling. The
+  config-only admission projection reads 0 for mlx-lm models; that gap
+  predates this PR, and changing it is out of scope.
 
   While the peak does not fit, prefix-cache entries are evicted in LRU order.
   This is the case the pressure tick cannot cover: it runs every 16 engine
   steps, and a 12-chunk prefill may finish inside one interval.
   - Reclaim applies only to hybrid (recurrent-state) models. That is where the
     transient was measured: head_dim-256 attention materialises each chunk's
-    score matrix. On dense models KV dominates the peak, and the admission
-    gate's KV projection already covers it.
+    score matrix. On dense models KV dominates the peak, so they get no
+    transient allowance here.
   - Reclaim stops as soon as an eviction frees no Metal memory, such as a
     lazily loaded entry or buffers the request still shares. So it never
     empties the cache for nothing.
