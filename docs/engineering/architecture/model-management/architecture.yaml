@@ -1,5 +1,5 @@
 schema_version: 1
-architecture_version: "0.2"
+architecture_version: "0.3"
 title: Rapid-MLX model management and performance decision SSOT
 adr: ../../decisions/2026-08-22-model-management-performance-ssot.md
 status_values: [planned, in_progress, partial, implemented, migrating, blocked, deprecated]
@@ -232,8 +232,8 @@ components:
     phase: 1
     owner: atlas
     summary: Explicit advanced runtime knobs; user value wins within hard constraints.
-    files: [rapid_mlx/cli.py, rapid_mlx/server.py, rapid_mlx/runtime/effective_config.py]
-    tests: [tests/test_recurrent_prefill_auto_default.py, tests/test_cli_config_fidelity.py, tests/test_effective_runtime_config.py]
+    files: [rapid_mlx/cli.py, rapid_mlx/server.py, rapid_mlx/runtime/effective_config.py, rapid_mlx/runtime/config_adapter.py]
+    tests: [tests/test_recurrent_prefill_auto_default.py, tests/test_cli_config_fidelity.py, tests/test_effective_runtime_config.py, tests/test_runtime_config_adapter.py, tests/test_runtime_config_legacy_parity.py]
     missing: Adapt CLI, Server, and Desktop inputs to the typed override contract.
   runtime_resolver:
     name: RuntimeResolver
@@ -242,10 +242,10 @@ components:
     phase: 1
     owner: atlas
     summary: Sole authority for resolving how the selected variant runs.
-    files: [rapid_mlx/cli.py, rapid_mlx/server.py, rapid_mlx/runtime/effective_config.py]
-    tests: [tests/test_recurrent_prefill_auto_default.py, tests/test_cli_config_fidelity.py, tests/test_effective_runtime_config.py]
+    files: [rapid_mlx/cli.py, rapid_mlx/server.py, rapid_mlx/runtime/effective_config.py, rapid_mlx/runtime/config_adapter.py]
+    tests: [tests/test_recurrent_prefill_auto_default.py, tests/test_cli_config_fidelity.py, tests/test_effective_runtime_config.py, tests/test_runtime_config_adapter.py, tests/test_runtime_config_legacy_parity.py]
     migrations: [migrations/002-effective-runtime-config.md]
-    missing: Add parity adapters, then route every production entry point through the shared resolver.
+    missing: Route every production entry point through the parity-proven shared resolver.
   effective_runtime_config:
     name: EffectiveRuntimeConfig
     lane: runtime
@@ -256,7 +256,7 @@ components:
     files: [rapid_mlx/runtime/effective_config.py]
     tests: [tests/test_effective_runtime_config.py]
     migrations: [migrations/002-effective-runtime-config.md]
-    missing: Expand the initial field set through parity adapters and expose a read-only Desktop DTO.
+    missing: Route production through the adapter, expand the field set, and expose a read-only Desktop DTO.
   desktop_gui:
     name: Rapid Desktop GUI
     lane: runtime
