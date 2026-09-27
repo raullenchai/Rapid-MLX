@@ -549,7 +549,7 @@ async def _collect_targets(page: Page) -> tuple[str, dict[str, Target]]:
               const r = e.getBoundingClientRect();
               const card = e.closest('[data-component-type="s-search-result"],[data-asin]');
               const cardText = (card?.innerText || '').trim().replace(/\s+/g, ' ').slice(0, 360);
-              const label = (e.innerText || e.value || e.getAttribute('aria-label') ||
+              const label = String(e.innerText || e.value || e.getAttribute('aria-label') ||
                 e.placeholder || e.title || e.alt || '').trim().replace(/\s+/g, ' ').slice(0, 200);
               return {
                 target_id,
@@ -659,7 +659,7 @@ async def _element_at(page: Page, x: float, y: float) -> dict[str, Any]:
           const a = e.closest('a,button,input,textarea,select,[role=button]') || e;
           return {
             tag: a.tagName?.toLowerCase() || '',
-            text: (a.innerText || a.value || a.getAttribute?.('aria-label') || a.placeholder || '').trim().replace(/\s+/g,' ').slice(0,240),
+            text: String(a.innerText || a.value || a.getAttribute?.('aria-label') || a.placeholder || '').trim().replace(/\s+/g,' ').slice(0,240),
             href: a.href || '', type: a.type || '', id: a.id || '',
             target_id: a.getAttribute?.('data-rapid-cua-id') || ''
           };
