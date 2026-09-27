@@ -1084,6 +1084,9 @@ async def lifespan(app: FastAPI):
         from .routes.video import shutdown_video_jobs
 
         await close_agent_service()
+        from .cua.service import close_cua_service
+
+        await close_cua_service()
         await shutdown_video_jobs()
 
         if _primary_model_lifecycle is not None:
@@ -3443,6 +3446,7 @@ from .routes.anthropic import router as _anthropic_router
 from .routes.cache import router as _cache_router
 from .routes.chat import router as _chat_router
 from .routes.completions import router as _completions_router
+from .routes.cua import router as _cua_router
 from .routes.embeddings import router as _embeddings_router
 from .routes.health import admin_router as _health_admin_router
 from .routes.health import probe_router as _probe_router
@@ -3469,6 +3473,8 @@ app.include_router(_models_router)
 app.include_router(_agents_router)
 app.include_router(_chat_router)
 app.include_router(_completions_router)
+# CUA runs drive the local computer (AX/CGEvent); single active run enforced by the service.
+app.include_router(_cua_router)
 app.include_router(_anthropic_router)
 app.include_router(_responses_router)
 app.include_router(_video_router)

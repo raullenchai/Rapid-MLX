@@ -15,7 +15,9 @@ import json
 import subprocess
 import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 from rapid_mlx.computer_use import backend
@@ -38,11 +40,31 @@ def _open_url(app: str, url: str) -> None:
 
 
 class CUARun:
-    def __init__(self, config: CUAConfig, app: str, goal: str, run_dir: Path):
+    """One agent run.
+
+    `event_sink` receives progress dicts (plan/executed/gate/terminal) for
+    server/GUI consumers; `gate` is an async approval callback that replaces
+    the file sentinel when a UI can ask the human directly; `stop_event`
+    cooperatively cancels the run between steps.
+    """
+
+    def __init__(
+        self,
+        config: CUAConfig,
+        app: str,
+        goal: str,
+        run_dir: Path,
+        event_sink: Callable[[dict], None] | None = None,
+        gate: Callable[[str], Any] | None = None,
+        stop_event: asyncio.Event | None = None,
+    ):
         self.config = config
         self.app = app
         self.goal = goal
         self.run_dir = run_dir
+        self.event_sink = event_sink
+        self.gate = gate
+        self.stop_event = stop_event or asyncio.Event()
         run_dir.mkdir(parents=True, exist_ok=True)
         self.history: list[dict] = []
         self.trace: dict = {
@@ -64,6 +86,14 @@ class CUARun:
             json.dumps(self.trace, ensure_ascii=False, indent=2, default=str),
             encoding="utf-8",
         )
+
+    def _emit(self, event: dict) -> None:
+        if self.event_sink is None:
+            return
+        try:
+            self.event_sink(event)
+        except Exception:  # noqa: BLE001 - events must never kill the run
+            pass
 
     def _check_domain(self, url: str) -> str | None:
         allowed = self.config.allowed_domain.strip().lower().rstrip(".")
@@ -105,6 +135,12 @@ class CUARun:
 
     async def step(self, planner: Planner, step_no: int) -> dict | None:
         """One loop iteration. Returns a terminal record or None to continue."""
+        if self.stop_event.is_set():
+            self.trace["status"] = "stopped"
+            self.trace["final_summary"] = "cancelled by client"
+            self._record({"step": step_no, "stop": "cancelled by client"})
+            self._emit({"kind": "terminal", "status": "stopped"})
+            return {"status": "stopped", "reason": "cancelled by client"}
         snapshot = backend.get_app_state(
             self.app, screenshot=not planner.text_only, use_cache=False
         )
@@ -141,6 +177,17 @@ class CUARun:
             self._record({"step": step_no, "plan": plan, "consent_stop": str(exc)})
             return {"status": "stopped", "reason": str(exc)}
 
+        self._emit(
+            {
+                "kind": "plan",
+                "step": step_no,
+                "action": plan["action"],
+                "step_instruction": plan["step_instruction"],
+                "element_index": plan.get("element_index", -1),
+                "target_label": target_label[:120],
+                "latency_s": round(latency, 2),
+            }
+        )
         if plan["action"] == "done":
             self.trace["final_summary"] = plan["final_summary"]
             self._record({"step": step_no, "plan": plan, "latency_s": latency})
@@ -180,6 +227,16 @@ class CUARun:
             except (RuntimeError, KeyError, ValueError):
                 delta["fast_outcome"] = {"outcome": "unavailable"}
         self.tracker.record(plan, outcome)
+        self._emit(
+            {
+                "kind": "executed",
+                "step": step_no,
+                "action": plan["action"],
+                "outcome": outcome,
+                "tree_changed": delta["tree_changed"],
+                "url_after": url_after[:120],
+            }
+        )
         self.history.append(
             {
                 "step": step_no,
@@ -217,6 +274,9 @@ async def run(
     open_url: str = "",
     max_steps: int | None = None,
     planner: Planner | None = None,
+    event_sink: Callable[[dict], None] | None = None,
+    gate: Callable[[str], Any] | None = None,
+    stop_event: asyncio.Event | None = None,
 ) -> dict:
     """Run the loop. Pass `planner` to inject a custom brain (SDK/testing use)."""
     run_dir = config_mod.RUNS_DIR / (
@@ -233,7 +293,17 @@ async def run(
             text_only=config.planner.text_only,
             timeout=config.planner.timeout,
         )
-    cua_run = CUARun(config, app, goal, run_dir)
+    cua_run = CUARun(
+        config,
+        app,
+        goal,
+        run_dir,
+        event_sink=event_sink,
+        gate=gate,
+        stop_event=stop_event,
+    )
+    if event_sink is not None:
+        event_sink({"kind": "started", "app": app, "run_dir": str(run_dir)})
     limit = max_steps or config.max_steps
     terminal: dict = {"status": "incomplete"}
     try:
@@ -248,6 +318,9 @@ async def run(
                 break
         else:
             cua_run.trace["max_steps_reached"] = limit
+            event_sink_local = event_sink
+            if event_sink_local is not None:
+                event_sink_local({"kind": "terminal", "status": "incomplete"})
     finally:
         cua_run.trace["status"] = terminal.get("status", "incomplete")
         (run_dir / "trace.json").write_text(
