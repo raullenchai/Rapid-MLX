@@ -113,7 +113,7 @@ def test_read_url_uses_axvalue_and_escapes_app_name(monkeypatch):
     def fake_get(_element, attr):
         return state["axvalue"] if attr == "AXValue" else None
 
-    def fake_collect(app, keep_elements=True, max_windows=1):
+    def fake_collect(app, keep_elements=True, max_windows=1, **kwargs):
         return [{"element": _FakeElement()}]
 
     monkeypatch.setattr(backend.ax_driver, "_get", fake_get)
@@ -559,12 +559,33 @@ def test_element_live_and_read_helpers(monkeypatch):
         backend.ax_driver, "collect", lambda *a, **k: [_target(2, element="live")]
     )
     assert backend._live_element(snapshot, 2) == "live"
-    with pytest.raises(errors.ComputerUseError, match="no longer"):
+    with pytest.raises(errors.ComputerUseError, match="not in the current snapshot"):
         backend._live_element(snapshot, 3)
     monkeypatch.setattr(backend.ax_driver, "_get", lambda *a: "value")
     assert backend._read_value("live") == "value"
     monkeypatch.setattr(backend.ax_driver, "_get", lambda *a: 3)
     assert backend._read_value("live") is None
+
+
+def test_live_element_rejects_snapshot_index_drift(monkeypatch):
+    snapshot = {
+        "snapshot_id": "planned",
+        "app": {"name": "A"},
+        "window_index": 0,
+        "elements": [
+            {
+                "index": 2,
+                "role": "AXButton",
+                "label": "Safe target",
+                "center": [10, 20],
+            }
+        ],
+    }
+    drifted = _target(2, role="AXButton", element="wrong-live-element")
+    drifted["text"] = "Different target"
+    monkeypatch.setattr(backend, "_collect_with_timeout", lambda *a, **k: [drifted])
+    with pytest.raises(errors.ComputerUseError, match="changed since snapshot"):
+        backend._live_element(snapshot, 2)
 
 
 def test_element_click_ax_and_fallback(monkeypatch):
@@ -591,8 +612,9 @@ def test_element_click_ax_and_fallback(monkeypatch):
             errors.ComputerUseError("element_not_found", "gone")
         ),
     )
-    backend.click("A", element_index=0)
-    assert len(clicks) == 2
+    with pytest.raises(errors.ComputerUseError, match="gone"):
+        backend.click("A", element_index=0)
+    assert len(clicks) == 1
 
 
 def test_set_value_and_synthetic_fill_paths(monkeypatch):

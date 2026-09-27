@@ -255,7 +255,11 @@ def fake_backend(monkeypatch):
     monkeypatch.setattr(
         backend_mod,
         "set_value",
-        lambda app, index, value: {"ok": True, "verified": True, "actual": value},
+        lambda app, index, value, **kw: {
+            "ok": True,
+            "verified": True,
+            "actual": value,
+        },
     )
     monkeypatch.setattr(
         backend_mod, "press_key", lambda app, key: {"ok": True, "key": key}
@@ -981,6 +985,34 @@ def test_execute_all_action_variants(fake_backend, tmp_path, monkeypatch):
     assert scroll["direction"] == "up"
 
 
+def test_execute_reports_snapshot_drift_without_acting(
+    fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.computer_use.errors import ComputerUseError
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    monkeypatch.setattr(
+        fake_backend,
+        "click",
+        lambda *a, **k: (_ for _ in ()).throw(
+            ComputerUseError("element_not_found", "changed since snapshot")
+        ),
+    )
+    runner = loop_mod.CUARun(_make_config(tmp_path), "Chrome", "g", tmp_path / "run")
+    result = asyncio.run(
+        runner._execute(
+            {"action": "click", "element_index": 1},
+            {"snapshot_id": "planned", "elements": [{"index": 1}]},
+        )
+    )
+    assert result["ok"] is False
+    assert result["executed"] is False
+    assert "changed since snapshot" in result["error"]
+
+
 def test_loop_invalid_domain_consent_and_human_timeout(
     fake_backend, tmp_path, monkeypatch
 ):
@@ -1252,6 +1284,7 @@ def test_loop_ax_watchdog_stops_honestly(config_dir, tmp_path, monkeypatch):
         return []
 
     monkeypatch.setattr(loop_mod.backend.ax_driver, "collect", wedged_collect)
+    monkeypatch.setattr(loop_mod.backend, "AX_COLLECT_TIMEOUT_S", 0.01)
     monkeypatch.setattr(loop_mod.backend, "read_url", lambda app: "")
     monkeypatch.setattr(
         loop_mod.backend, "_resolve_app", lambda app: (None, {"name": app, "pid": 1})

@@ -137,18 +137,25 @@ class CUARun:
         return None
 
     async def _execute(self, plan: dict, snapshot: dict) -> dict:
-
         action = plan["action"]
         index = plan.get("element_index", -1)
         result: dict = {"action": action}
         try:
             if action == "click":
-                result.update(backend.click(self.app, index))
+                result.update(
+                    backend.click(self.app, index, expected_snapshot=snapshot)
+                )
             elif action == "fill":
-                backend.click(self.app, index)
-                result.update(backend.set_value(self.app, index, plan.get("text", "")))
+                result.update(
+                    backend.set_value(
+                        self.app,
+                        index,
+                        plan.get("text", ""),
+                        expected_snapshot=snapshot,
+                    )
+                )
             elif action == "press":
-                backend.click(self.app, index)
+                backend.click(self.app, index, expected_snapshot=snapshot)
                 await asyncio.sleep(0.2)
                 result.update(backend.press_key(self.app, plan.get("key", "Enter")))
             elif action == "scroll":
