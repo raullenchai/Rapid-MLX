@@ -258,7 +258,7 @@ are the argparse defaults from `rapid_mlx/cli.py`.
 | `--prefix-cache-index` | Prefix-cache lookup index: `radix` (token trie, surfaces dedup-bytes-saved on `/metrics`) or `hash` (legacy bisect path) | radix |
 | `--prefix-cache-size` | Max entries in the prefix cache (legacy entry-count mode only) | 100 |
 | `--cache-memory-mb` | Cache memory limit in MB | Auto (~20% of RAM) |
-| `--cache-memory-percent` | Fraction of available RAM for cache when auto-detecting; raised to the agent-session floor (a third of the Metal headroom left after the weights, at most 4 GiB) when that is larger | 0.20 |
+| `--cache-memory-percent` | Fraction of available RAM for cache when auto-detecting. When the flag is not passed, the 0.20 default is raised to the agent-session floor (a third of the Metal headroom left after the weights, at most 4 GiB) when that is larger. An explicit value is always kept | 0.20 |
 | `--idle-cache-clear-seconds` | Clear reusable prefix/KV cache after this many idle seconds; model weights remain loaded. 0 disables. Falls back to `RAPID_MLX_IDLE_CACHE_CLEAR_SECONDS`. | Disabled |
 | `--no-memory-aware-cache` | Use the legacy entry-count cache instead of the memory-aware cache | off |
 | `--hybrid-cache-entries` | Opt-in trim-free prefix reuse: retain N non-trimmable prefix-cache entries (stable prefix + new suffix each turn) for hybrid (GatedDeltaNet/Mamba) and sliding-window (Gemma 4, GPT-OSS) models. 0 disables. | 0 |

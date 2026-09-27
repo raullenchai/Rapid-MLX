@@ -627,6 +627,13 @@ class SchedulerConfig:
     # stays exactly on the cold image path. Appended for positional callers.
     mllm_media_prefix_cache: str = "auto"
 
+    # True when the operator passed ``--cache-memory-percent`` explicitly.
+    # The agent-session budget floor then never raises their value (a
+    # warning names the floor instead); it applies only to the default
+    # percent. ``cache_memory_mb`` is always explicit and is never raised.
+    # Appended for positional callers.
+    cache_memory_percent_explicit: bool = False
+
     def __post_init__(self) -> None:
         if self.mllm_singleton_fastpath not in ("auto", "off"):
             raise ValueError(
@@ -4130,6 +4137,17 @@ class Scheduler:
             elif self.config.use_memory_aware_cache:
                 # Use memory-aware cache (recommended for large models)
                 session_floor = self._prefix_cache_session_floor_bytes()
+                if getattr(self.config, "cache_memory_percent_explicit", False):
+                    if session_floor > 0:
+                        logger.warning(
+                            "Prefix-cache budget: keeping the explicit "
+                            "--cache-memory-percent %.2f; it can be below "
+                            "the agent-session floor of %.1f MB, which may "
+                            "make long agent sessions re-prefill every turn.",
+                            self.config.cache_memory_percent,
+                            session_floor / (1024 * 1024),
+                        )
+                    session_floor = 0
                 cache_config = MemoryCacheConfig(
                     max_memory_mb=self.config.cache_memory_mb,
                     max_memory_percent=self.config.cache_memory_percent,

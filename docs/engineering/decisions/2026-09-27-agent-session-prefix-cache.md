@@ -55,8 +55,9 @@ turn.
     headroom stay free for live KV and activations.
   - The floor applies only when a Metal cap is configured. The engine's
     default auto cap counts.
-  - An explicit `--cache-memory-mb` or `RAPID_MLX_PREFIX_CACHE_MAX_BYTES` is
-    never raised.
+  - An explicit `--cache-memory-percent`, `--cache-memory-mb` or
+    `RAPID_MLX_PREFIX_CACHE_MAX_BYTES` is never raised. An explicit percent
+    below the floor is kept, and one warning names the floor.
   - The 4 GiB cap means large-RAM hosts keep their existing budget.
 - **Pressure below the Metal cap keeps the newest entry.** The cache-self
   trigger and the soft Metal zone (90% of the cap up to the cap) still trim
@@ -185,5 +186,9 @@ Known limits:
   subtract models loaded later, and with `--disk-stream` the resident weights
   are near zero.
 - The multimodal (MLLM) lane keeps its own budget and gets no floor.
-- An explicit `--cache-memory-percent` is raised by the floor, because it
-  cannot be told apart from the default.
+- An explicit `--cache-memory-percent` is never raised by the floor. The
+  operator's value is kept, and one warning at startup names the floor. The
+  floor applies only when the flag is not passed. `--cache-memory-mb` and
+  `RAPID_MLX_PREFIX_CACHE_MAX_BYTES` are likewise never raised. Other
+  front-ends that build `SchedulerConfig` directly must set
+  `cache_memory_percent_explicit` to get the same treatment.

@@ -148,7 +148,7 @@ RESIDENT = int(5.2 * GB)
 FLOOR = session_floor_bytes(CAP, RESIDENT)
 
 
-def _scheduler(monkeypatch, *, active: int = RESIDENT) -> Scheduler:
+def _scheduler(monkeypatch, *, active: int = RESIDENT, **config_overrides) -> Scheduler:
     """Memory-aware scheduler on the measured 18 GB shape (small free RAM)."""
     active_box = [active]
     monkeypatch.delenv(mc.PREFIX_CACHE_MAX_BYTES_ENV, raising=False)
@@ -163,6 +163,7 @@ def _scheduler(monkeypatch, *, active: int = RESIDENT) -> Scheduler:
         use_paged_cache=False,
         gpu_memory_utilization=0.9,
         hybrid_cache_entries=8,
+        **config_overrides,
     )
     tokenizer = MagicMock()
     tokenizer.encode = lambda s: list(range(len(s)))
@@ -178,6 +179,55 @@ def test_scheduler_budget_uses_the_session_floor(monkeypatch):
     assert int(4.07 * GB * 0.20) < 900 * MB
     assert sched.memory_aware_cache._max_memory == FLOOR
     assert sched._prefix_cache_session_floor_bytes() == FLOOR
+
+
+def test_explicit_cache_percent_below_the_floor_is_kept_with_a_warning(
+    monkeypatch, caplog
+):
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="rapid_mlx.scheduler"):
+        sched = _scheduler(
+            monkeypatch, cache_memory_percent=0.05, cache_memory_percent_explicit=True
+        )
+    assert sched.memory_aware_cache._max_memory == int(4.07 * GB * 0.05)
+    warnings = [
+        r.getMessage() for r in caplog.records if "agent-session floor" in r.message
+    ]
+    assert len(warnings) == 1
+    assert f"{FLOOR / MB:.1f} MB" in warnings[0]
+    assert "0.05" in warnings[0]
+
+
+def test_default_cache_percent_gets_the_floor_without_a_warning(monkeypatch, caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="rapid_mlx.scheduler"):
+        sched = _scheduler(monkeypatch)
+    assert sched.memory_aware_cache._max_memory == FLOOR
+    assert not [r for r in caplog.records if "agent-session floor" in r.message]
+
+
+def test_explicit_cache_percent_without_a_cap_logs_nothing(monkeypatch, caplog):
+    import logging
+
+    monkeypatch.setattr(Scheduler, "_prefix_cache_session_floor_bytes", lambda s: 0)
+    with caplog.at_level(logging.WARNING, logger="rapid_mlx.scheduler"):
+        sched = _scheduler(
+            monkeypatch, cache_memory_percent=0.05, cache_memory_percent_explicit=True
+        )
+    assert sched.memory_aware_cache._max_memory == int(4.07 * GB * 0.05)
+    assert not [r for r in caplog.records if "agent-session floor" in r.message]
+
+
+def test_cli_distinguishes_an_explicit_cache_percent():
+    from types import SimpleNamespace
+
+    from rapid_mlx import cli
+
+    assert cli._cache_memory_percent(SimpleNamespace(cache_memory_percent=None)) == 0.20
+    assert cli._cache_memory_percent(SimpleNamespace()) == 0.20
+    assert cli._cache_memory_percent(SimpleNamespace(cache_memory_percent=0.05)) == 0.05
 
 
 def test_turn_two_extending_turn_one_hits_under_a_small_budget(monkeypatch):

@@ -743,6 +743,15 @@ def _print_port_collision_and_exit(
     sys.exit(1)
 
 
+_DEFAULT_CACHE_MEMORY_PERCENT = 0.20
+
+
+def _cache_memory_percent(args) -> float:
+    """``--cache-memory-percent`` or the 0.20 default when it was not passed."""
+    value = getattr(args, "cache_memory_percent", None)
+    return _DEFAULT_CACHE_MEMORY_PERCENT if value is None else value
+
+
 def _run_uvicorn(app, args, log_level: str) -> None:
     """Dispatch through Rapid-MLX's Uvicorn startup seam with the kwargs that match the
     current ``--listen-fd`` / ``--host``/``--port`` mode.
@@ -6060,7 +6069,8 @@ def serve_command(args):
         # Memory-aware cache options
         use_memory_aware_cache=not args.no_memory_aware_cache,
         cache_memory_mb=args.cache_memory_mb,
-        cache_memory_percent=args.cache_memory_percent,
+        cache_memory_percent=_cache_memory_percent(args),
+        cache_memory_percent_explicit=args.cache_memory_percent is not None,
         idle_cache_clear_seconds=getattr(args, "idle_cache_clear_seconds", None),
         # #1103/#1122: bounded trim-free hybrid (recurrent-state) prefix reuse.
         # Auto-defaulted to 8 for hybrid models when prefix cache is enabled.
@@ -6296,7 +6306,7 @@ def serve_command(args):
         cache_info = (
             f"{args.cache_memory_mb}MB"
             if args.cache_memory_mb
-            else f"{args.cache_memory_percent * 100:.0f}% of RAM"
+            else f"{_cache_memory_percent(args) * 100:.0f}% of RAM"
         )
         index_choice = getattr(args, "prefix_cache_index", "radix")
         print(f"Memory-aware cache: {cache_info} (index={index_choice})")
@@ -7354,7 +7364,8 @@ def bench_command(args):
             # Memory-aware cache options
             use_memory_aware_cache=not args.no_memory_aware_cache,
             cache_memory_mb=args.cache_memory_mb,
-            cache_memory_percent=args.cache_memory_percent,
+            cache_memory_percent=_cache_memory_percent(args),
+            cache_memory_percent_explicit=args.cache_memory_percent is not None,
             # #1103: bounded trim-free hybrid (recurrent-state) prefix reuse.
             # Bench path mirrors serve so hybrid-reuse effects show up in
             # `rapid-mlx bench` numbers too.
@@ -13149,8 +13160,11 @@ Examples:
     serve_parser.add_argument(
         "--cache-memory-percent",
         type=float,
-        default=0.20,
-        help="Fraction of available RAM for cache if auto-detecting (default: 0.20)",
+        default=None,
+        help=(
+            "Fraction of available RAM for cache if auto-detecting (default: "
+            "0.20, raised to the agent-session floor; an explicit value is kept)"
+        ),
     )
     serve_parser.add_argument(
         "--idle-cache-clear-seconds",
@@ -14252,8 +14266,11 @@ Examples:
     bench_parser.add_argument(
         "--cache-memory-percent",
         type=float,
-        default=0.20,
-        help="Fraction of available RAM for cache if auto-detecting (default: 0.20)",
+        default=None,
+        help=(
+            "Fraction of available RAM for cache if auto-detecting (default: "
+            "0.20, raised to the agent-session floor; an explicit value is kept)"
+        ),
     )
     bench_parser.add_argument(
         "--no-memory-aware-cache",
