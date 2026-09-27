@@ -359,3 +359,18 @@ def test_navigation_guard_rejects_cross_origin_target():
     )
     with pytest.raises(RuntimeError, match="navigation guard"):
         MODULE._guard_target_origin(hostile, "amazon.com")
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://amazon.com/item", True),
+        ("https://www.amazon.com/item", True),
+        ("https://shop.amazon.com/item", True),
+        ("https://amazon.com.evil.test/item", False),
+        ("javascript:alert(1)", False),
+        ("file:///tmp/page.html", False),
+    ],
+)
+def test_url_has_allowed_host(url, expected):
+    assert MODULE._url_has_allowed_host(url, "amazon.com") is expected

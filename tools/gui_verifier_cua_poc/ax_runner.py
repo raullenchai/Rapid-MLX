@@ -24,7 +24,9 @@ import hashlib
 import json
 import subprocess
 import time
+import uuid
 from pathlib import Path
+from urllib.parse import urlparse
 
 from run_poc import (  # noqa: E402
     FORBIDDEN_RE,
@@ -32,7 +34,7 @@ from run_poc import (  # noqa: E402
     Planner,
 )
 
-from rapid_mlx.computer_use import ax_driver
+from rapid_mlx.computer_use import ax_driver, backend
 
 # Special-key keycodes (HID usage). Everything else goes through unicode typing.
 KEYCODES = {
@@ -81,7 +83,7 @@ def front_window(app_name: str) -> dict:
             best = (area, window)
     if best is None:
         raise RuntimeError(f"no on-screen window for {app_name!r}")
-    return best[1]
+    return dict(best[1])
 
 
 def capture_window(app_name: str, out_png: Path) -> bool:
@@ -111,22 +113,8 @@ def _read_url_from_ax(targets: list[dict], app_name: str = "") -> str:
         if isinstance(value, str) and value.startswith(("http://", "https://")):
             return value
     if app_name:
-        try:
-            result = subprocess.run(
-                [
-                    "osascript",
-                    "-e",
-                    f'tell application "{app_name}" to get URL of active tab of front window',
-                ],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            url = result.stdout.strip()
-            if url.startswith(("http://", "https://")):
-                return url
-        except Exception:  # noqa: BLE001 - guard best-effort
-            pass
+        value = backend.read_url(app_name)
+        return value if isinstance(value, str) else ""
     return ""
 
 
@@ -193,7 +181,7 @@ def execute(plan: dict, targets: list[dict], app_name: str) -> dict:
         )
 
         direction = plan.get("direction") or "down"
-        delta = -3 if direction == "up" else 3
+        delta = 3 if direction == "up" else -3
         event = CGEventCreateScrollWheelEvent(None, kCGScrollEventUnitLine, 1, delta)
         CGEventPost(kCGHIDEventTap, event)
         record["executed"] = "scroll"
@@ -255,18 +243,24 @@ def execute(plan: dict, targets: list[dict], app_name: str) -> dict:
 
 
 def _url_allowed(url: str, allowed_domain: str) -> bool:
-    if not url:
+    if not allowed_domain:
         return True
-    host = url.split("://", 1)[-1].split("/", 1)[0].lower().removeprefix("www.")
+    if not url:
+        return False
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower().rstrip(".").removeprefix("www.")
     return (
-        (not allowed_domain)
-        or host == allowed_domain
+        parsed.scheme in {"http", "https"}
+        and (host == allowed_domain
         or host.endswith("." + allowed_domain)
+        )
     )
 
 
 async def run(args: argparse.Namespace) -> None:
-    run_dir = Path("/tmp/ax-runs") / time.strftime("%Y%m%d-%H%M%S")
+    run_dir = Path("/tmp/ax-runs") / (
+        f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    )
     run_dir.mkdir(parents=True, exist_ok=True)
     planner = Planner(
         args.planner_url,
@@ -275,7 +269,10 @@ async def run(args: argparse.Namespace) -> None:
         text_only=args.planner_text_only,
     )
     ranker = (
-        FastOutcomeRanker(args.fast_ranker_url, args.fast_ranker_model)
+        FastOutcomeRanker(
+            args.fast_ranker_url,
+            args.fast_ranker_model or "convaiinnovations/laya",
+        )
         if args.fast_ranker_url
         else None
     )
@@ -284,7 +281,9 @@ async def run(args: argparse.Namespace) -> None:
         subprocess.run(["open", "-a", args.app, args.open_url], check=False)
         time.sleep(4.0)
 
-    allowed_domain = (args.allowed_domain or "").lower()
+    allowed_domain = (
+        (args.allowed_domain or "").lower().rstrip(".").removeprefix("www.")
+    )
     history: list[dict] = []
     trace: dict = {
         "goal": args.goal,
@@ -300,7 +299,7 @@ async def run(args: argparse.Namespace) -> None:
         for step_no in range(1, args.max_steps + 1):
             targets = ax_driver.collect(args.app, keep_elements=True, max_windows=1)
             url_now = _read_url_from_ax(targets, args.app)
-            if url_now and not _url_allowed(url_now, allowed_domain):
+            if not _url_allowed(url_now, allowed_domain):
                 log(f"[ax-runner] guard: URL left allowed domain: {url_now}")
                 trace["guard_stop"] = url_now
                 break
@@ -319,6 +318,28 @@ async def run(args: argparse.Namespace) -> None:
                 False,
                 FORBIDDEN_RE,
             )
+            target = next(
+                (
+                    item
+                    for item in targets
+                    if item["target_id"] == plan.get("target_id")
+                ),
+                None,
+            )
+            guard_text = " ".join(
+                [
+                    str(plan.get("step_instruction", "")),
+                    str(plan.get("text", "")),
+                    str(target.get("text", "") if target else ""),
+                ]
+            )
+            if plan.get("action") in {
+                "click",
+                "fill",
+                "press",
+            } and FORBIDDEN_RE.search(guard_text):
+                trace["guard_stop"] = f"forbidden target: {guard_text[:160]}"
+                break
             log(
                 f"[ax-runner] step {step_no}: {plan['action']} "
                 f"{plan.get('target_id', '')} {plan.get('step_instruction', '')[:60]} "

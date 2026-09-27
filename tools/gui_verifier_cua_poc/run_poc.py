@@ -13,6 +13,7 @@ import json
 import math
 import re
 import time
+import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -619,7 +620,8 @@ async def _collect_targets(page: Page) -> tuple[str, dict[str, Target]]:
 
 
 async def _browser_state(page: Page) -> dict[str, Any]:
-    state = await page.evaluate(
+    state = dict(
+        await page.evaluate(
         r"""() => {
           const active = document.activeElement;
           return {
@@ -633,6 +635,7 @@ async def _browser_state(page: Page) -> dict[str, Any]:
             text: (document.body?.innerText || '').replace(/\s+/g,' ').slice(0,12000)
           };
         }"""
+        )
     )
     text = state.pop("text")
     state["visible_text_hash"] = hashlib.sha256(text.encode()).hexdigest()[:16]
@@ -665,8 +668,9 @@ def _state_delta(
 
 
 async def _element_at(page: Page, x: float, y: float) -> dict[str, Any]:
-    return await page.evaluate(
-        r"""([x,y]) => {
+    return dict(
+        await page.evaluate(
+            r"""([x,y]) => {
           const e = document.elementFromPoint(x,y);
           if (!e) return {};
           const a = e.closest('a,button,input,textarea,select,[role=button]') || e;
@@ -677,7 +681,8 @@ async def _element_at(page: Page, x: float, y: float) -> dict[str, Any]:
             target_id: a.getAttribute?.('data-rapid-cua-id') || ''
           };
         }""",
-        [x, y],
+            [x, y],
+        )
     )
 
 
@@ -694,11 +699,22 @@ def _guard_element(
 def _guard_target_origin(target: Target, allowed_domain: str) -> None:
     if not target.href:
         return
-    hostname = (urlparse(target.href).hostname or "").lower()
-    if hostname != allowed_domain and not hostname.endswith(f".{allowed_domain}"):
+    if not _url_has_allowed_host(target.href, allowed_domain):
+        hostname = (urlparse(target.href).hostname or "").lower()
         raise RuntimeError(
             f"navigation guard rejected host {hostname!r}; allowed {allowed_domain!r}"
         )
+
+
+def _url_has_allowed_host(url: str, allowed_domain: str) -> bool:
+    parsed = urlparse(url)
+    hostname = (parsed.hostname or "").lower().rstrip(".").removeprefix("www.")
+    allowed_domain = allowed_domain.lower().rstrip(".").removeprefix("www.")
+    return (
+        parsed.scheme in {"http", "https"}
+        and bool(allowed_domain)
+        and (hostname == allowed_domain or hostname.endswith(f".{allowed_domain}"))
+    )
 
 
 def _target_candidates(target: Target, viewport: dict[str, int]) -> list[Candidate]:
@@ -996,7 +1012,9 @@ async def _bootstrap_search(
 
 
 async def run(args: argparse.Namespace) -> Path:
-    run_dir = Path(args.output_root) / time.strftime("%Y%m%d-%H%M%S")
+    run_dir = Path(args.output_root) / (
+        f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    )
     run_dir.mkdir(parents=True, exist_ok=False)
     if args.profile_dir:
         profile = Path(args.profile_dir)
@@ -1038,13 +1056,16 @@ async def run(args: argparse.Namespace) -> Path:
         if args.human_login:
             # Sign-in-first sites (Spotify, etc.) show in-page login modals that
             # never change the URL, so the human logs in before any planning.
-            await _wait_for_human(
+            resumed = await _wait_for_human(
                 run_dir,
                 "RESUME",
                 "Sign in to the site inside the opened Chrome window if needed "
                 "(the agent never touches credentials), then approve to start.",
                 args.pause_timeout,
             )
+            if not resumed:
+                trace["awaiting_human"] = "sign-in"
+                return run_dir
             await page.wait_for_timeout(2500)
         if args.bootstrap_query:
             trace["bootstrap"] = await _bootstrap_search(
@@ -1054,6 +1075,13 @@ async def run(args: argparse.Namespace) -> Path:
                 json.dumps(trace, ensure_ascii=False, indent=2), encoding="utf-8"
             )
         for step_number in range(1, args.max_steps + 1):
+            current_host = (urlparse(page.url).hostname or "").lower()
+            if not _url_has_allowed_host(page.url, allowed_domain):
+                trace["guard_stop"] = (
+                    f"current page host {current_host!r} left allowed domain "
+                    f"{allowed_domain!r}"
+                )
+                break
             if (
                 (args.purchase or args.human_login)
                 and sign_in_pauses < 3
@@ -1099,7 +1127,7 @@ async def run(args: argparse.Namespace) -> Path:
                 plan = controller_plan
                 raw_plan = ""
                 planner_latency = 0.0
-                plan_attempts = []
+                plan_attempts: list[dict[str, Any]] = []
                 plan_source = "fast-controller"
             else:
                 if fast_ranker and len(product_targets) >= 3:

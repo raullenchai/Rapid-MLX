@@ -15,6 +15,7 @@ import json
 import re
 import shutil
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -219,31 +220,58 @@ Return JSON only:
 
 
 def _execute(root: Path, moves: list[dict[str, Any]]) -> dict[str, Any]:
+    root = root.resolve()
     undo: list[dict[str, str]] = []
     executed: list[dict[str, str]] = []
+    prepared: list[tuple[dict[str, Any], Path, Path]] = []
+    reserved: set[Path] = set()
     for move in moves:
         source = root / move["file"]
         destination_dir = root / move["folder"]
-        destination_dir.mkdir(parents=True, exist_ok=True)
-        destination = destination_dir / move["file"]
-        if not source.exists():
+        if source.is_symlink() or not source.is_file():
             continue
-        if destination.exists():
-            stamp = time.strftime("%Y%m%d-%H%M%S")
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        if not destination_dir.resolve().is_relative_to(root):
+            raise ValueError(f"destination escapes root: {destination_dir}")
+        destination = destination_dir / move["file"]
+        if destination.exists() or destination.is_symlink() or destination in reserved:
+            stamp = f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
             destination = destination_dir / (
                 f"{Path(move['file']).stem}-{stamp}{source.suffix}"
             )
-        shutil.move(str(source), str(destination))
-        undo.append({"from": str(destination.relative_to(root)), "to": move["file"]})
-        executed.append({"file": move["file"], "folder": move["folder"]})
+        if destination.exists() or destination.is_symlink() or destination in reserved:
+            raise FileExistsError(f"could not allocate collision-safe path: {destination}")
+        reserved.add(destination)
+        prepared.append((move, source, destination))
+    try:
+        for move, source, destination in prepared:
+            shutil.move(str(source), str(destination))
+            undo.append(
+                {"from": str(destination.relative_to(root)), "to": move["file"]}
+            )
+            executed.append({"file": move["file"], "folder": move["folder"]})
+    except Exception:
+        for item in reversed(undo):
+            current = root / item["from"]
+            original = root / item["to"]
+            if current.exists() and not original.exists() and not original.is_symlink():
+                shutil.move(str(current), str(original))
+        raise
     return {"executed": executed, "undo": undo}
 
 
 def _undo(root: Path, undo: list[dict[str, str]]) -> list[str]:
+    root = root.resolve()
     restored = []
     for item in reversed(undo):
         current = root / item["from"]
         target = root / item["to"]
+        if not current.resolve().is_relative_to(
+            root
+        ) or not target.parent.resolve().is_relative_to(root):
+            raise ValueError("undo entry escapes root")
+        if target.exists() or target.is_symlink():
+            raise FileExistsError(f"refusing to overwrite during undo: {target}")
         if current.exists():
             shutil.move(str(current), str(target))
             restored.append(item["to"])
@@ -267,14 +295,16 @@ async def run(args: argparse.Namespace) -> Path:
     root = Path(args.root).expanduser().resolve()
     if not root.is_dir():
         raise SystemExit(f"not a directory: {root}")
-    run_dir = Path(args.output_root) / time.strftime("%Y%m%d-%H%M%S")
+    run_dir = Path(args.output_root) / (
+        f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    )
     run_dir.mkdir(parents=True, exist_ok=False)
     files = _scan(root)
     if not files:
         raise SystemExit("no eligible files found")
     known = {item["name"] for item in files}
     listing = "\n".join(item["name"] for item in files)
-    plan = None
+    plan: dict[str, Any] | None = None
     for attempt in range(2):
         raw_plan = await _propose(
             args.planner_url, args.planner_model, args.instruction, files
@@ -299,6 +329,8 @@ Invalid plan:
                 2000,
             )
             plan = _validate_plan(raw_plan, known, root)
+    if plan is None:  # pragma: no cover - both loop paths assign or raise
+        raise RuntimeError("planner produced no plan")
     (run_dir / "plan.json").write_text(
         json.dumps({"instruction": args.instruction, **plan}, indent=2),
         encoding="utf-8",
@@ -351,7 +383,10 @@ def parse_args() -> argparse.Namespace:
 def _validate_loopback_url(value: str) -> str:
     from urllib.parse import urlparse
 
-    host = (urlparse(value).hostname or "").lower()
+    parsed_url = urlparse(value)
+    if parsed_url.scheme not in {"http", "https"}:
+        raise ValueError(f"planner URL must be HTTP(S): {value}")
+    host = (parsed_url.hostname or "").lower()
     try:
         parsed = ipaddress.ip_address(host)
     except ValueError:

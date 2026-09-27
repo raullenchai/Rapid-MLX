@@ -123,6 +123,13 @@ def test_digest_collect_limits_extensions_and_size(tmp_path):
     assert names == ["a.md"]
 
 
+def test_digest_collect_skips_symlinks(tmp_path):
+    outside = tmp_path.parent / f"{tmp_path.name}-private.md"
+    outside.write_text("private")
+    (tmp_path / "linked.md").symlink_to(outside)
+    assert DIGEST._collect(tmp_path) == []
+
+
 def test_digest_rejects_non_loopback_planner_url():
     with pytest.raises(ValueError, match="loopback"):
         DIGEST._validate_loopback_url("http://10.0.0.1:8888/v1")
@@ -130,6 +137,8 @@ def test_digest_rejects_non_loopback_planner_url():
         DIGEST._validate_loopback_url("http://127.0.0.1:18730/v1/chat/completions")
         == "http://127.0.0.1:18730/v1/chat/completions"
     )
+    with pytest.raises(ValueError, match="HTTP"):
+        DIGEST._validate_loopback_url("ftp://127.0.0.1/model")
 
 
 def test_execute_moves_with_collision_stamp_and_undo(tmp_path):
@@ -162,6 +171,36 @@ def test_undo_restores_original_layout(tmp_path):
     restored = MODULE._undo(tmp_path, undo)
     assert (tmp_path / "a.txt").read_text() == "A"
     assert restored == ["a.txt"]
+
+
+def test_execute_rejects_destination_directory_symlink_escape(tmp_path):
+    outside = tmp_path.parent / f"{tmp_path.name}-outside"
+    outside.mkdir()
+    (tmp_path / "a.txt").write_text("A")
+    (tmp_path / "Docs").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="escapes root"):
+        MODULE._execute(tmp_path, [{"file": "a.txt", "folder": "Docs"}])
+    assert (tmp_path / "a.txt").exists()
+    assert not (outside / "a.txt").exists()
+
+
+def test_undo_refuses_to_overwrite_new_file(tmp_path):
+    (tmp_path / "Docs").mkdir()
+    (tmp_path / "Docs" / "a.txt").write_text("moved")
+    (tmp_path / "a.txt").write_text("new")
+
+    with pytest.raises(FileExistsError, match="refusing to overwrite"):
+        MODULE._undo(tmp_path, [{"from": "Docs/a.txt", "to": "a.txt"}])
+    assert (tmp_path / "a.txt").read_text() == "new"
+    assert (tmp_path / "Docs" / "a.txt").read_text() == "moved"
+
+
+def test_undo_rejects_ledger_escape(tmp_path):
+    outside = tmp_path.parent / f"{tmp_path.name}-outside.txt"
+    outside.write_text("outside")
+    with pytest.raises(ValueError, match="escapes root"):
+        MODULE._undo(tmp_path, [{"from": "../" + outside.name, "to": "x.txt"}])
 
 
 def test_validate_plan_rejects_unknown_duplicate_and_escape(tmp_path):
