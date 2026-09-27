@@ -838,6 +838,7 @@ def test_ax_driver_tree_collect_and_events(monkeypatch):
     assert ax_driver._get("missing", "x") is None
     assert ax_driver._action_names("missing") == []
     assert ax_driver._point_size("missing") is None
+    assert ax_driver._as_list(None) == []
     assert ax_driver._as_list(object()) == []
 
     monkeypatch.setattr(ax_driver, "_app_element", lambda _: "app")
