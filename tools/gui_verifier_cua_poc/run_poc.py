@@ -1183,6 +1183,7 @@ async def run(args: argparse.Namespace) -> Path:
                     )
                     continue
                 record["terminal"] = True
+                trace["final_summary"] = plan.get("final_summary") or "Task completed."
                 trace["steps"].append(record)
                 break
             target = targets.get(plan["target_id"])
