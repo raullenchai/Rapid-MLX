@@ -52,7 +52,7 @@ flowchart LR
   subgraph lane_runtime["Runtime resolution and consumption"]
     runtime_config_override["RuntimeConfigOverride<br/><small>partial</small>"]
     runtime_resolver["RuntimeResolver<br/><small>partial</small>"]
-    effective_runtime_config["EffectiveRuntimeConfig<br/><small>planned</small>"]
+    effective_runtime_config["EffectiveRuntimeConfig<br/><small>partial</small>"]
     desktop_gui["Rapid Desktop GUI<br/><small>partial</small>"]
     rapid_server["Rapid Server / CLI<br/><small>partial</small>"]
   end
@@ -123,7 +123,7 @@ flowchart LR
   class selected_model_variant planned
   class runtime_config_override partial
   class runtime_resolver partial
-  class effective_runtime_config planned
+  class effective_runtime_config partial
   class desktop_gui partial
   class rapid_server partial
   class actual_runtime_telemetry planned
@@ -162,9 +162,9 @@ The generated standalone sources are
 | ModelSelectionOverride | ⚪ `planned` | 4 | Atlas | — | Typed override separate from runtime knob overrides. |
 | Selection | 🟡 `partial` | 4 | Atlas | [`model_aliases.py`](../../../../rapid_mlx/model_aliases.py) · [`test_aliases_contract.py`](../../../../tests/test_aliases_contract.py) | First-class qualified selection decision. |
 | SelectedModelVariant | ⚪ `planned` | 4 | Atlas | — | Stable selected-variant contract and selection decision ID. |
-| RuntimeConfigOverride | 🟡 `partial` | 1 | Atlas | [`cli.py`](../../../../rapid_mlx/cli.py) · [`server.py`](../../../../rapid_mlx/server.py) · [`test_recurrent_prefill_auto_default.py`](../../../../tests/test_recurrent_prefill_auto_default.py) · [`test_cli_config_fidelity.py`](../../../../tests/test_cli_config_fidelity.py) | Typed override layer shared across CLI, Server, and Desktop. |
-| RuntimeResolver | 🟡 `partial` | 1 | Atlas | [`cli.py`](../../../../rapid_mlx/cli.py) · [`server.py`](../../../../rapid_mlx/server.py) · [`test_recurrent_prefill_auto_default.py`](../../../../tests/test_recurrent_prefill_auto_default.py) · [`test_cli_config_fidelity.py`](../../../../tests/test_cli_config_fidelity.py) · [migration](migrations/002-effective-runtime-config.md) | One API shared by every entry point and typed runtime overrides. |
-| EffectiveRuntimeConfig | ⚪ `planned` | 1 | Atlas | [migration](migrations/002-effective-runtime-config.md) | Schema, resolver output, read-only API, and provenance contract. |
+| RuntimeConfigOverride | 🟡 `partial` | 1 | Atlas | [`cli.py`](../../../../rapid_mlx/cli.py) · [`server.py`](../../../../rapid_mlx/server.py) · [`effective_config.py`](../../../../rapid_mlx/runtime/effective_config.py) · [`test_recurrent_prefill_auto_default.py`](../../../../tests/test_recurrent_prefill_auto_default.py) · [`test_cli_config_fidelity.py`](../../../../tests/test_cli_config_fidelity.py) · [`test_effective_runtime_config.py`](../../../../tests/test_effective_runtime_config.py) | Adapt CLI, Server, and Desktop inputs to the typed override contract. |
+| RuntimeResolver | 🟡 `partial` | 1 | Atlas | [`cli.py`](../../../../rapid_mlx/cli.py) · [`server.py`](../../../../rapid_mlx/server.py) · [`effective_config.py`](../../../../rapid_mlx/runtime/effective_config.py) · [`test_recurrent_prefill_auto_default.py`](../../../../tests/test_recurrent_prefill_auto_default.py) · [`test_cli_config_fidelity.py`](../../../../tests/test_cli_config_fidelity.py) · [`test_effective_runtime_config.py`](../../../../tests/test_effective_runtime_config.py) · [migration](migrations/002-effective-runtime-config.md) | Add parity adapters, then route every production entry point through the shared resolver. |
+| EffectiveRuntimeConfig | 🟡 `partial` | 1 | Atlas | [`effective_config.py`](../../../../rapid_mlx/runtime/effective_config.py) · [`test_effective_runtime_config.py`](../../../../tests/test_effective_runtime_config.py) · [migration](migrations/002-effective-runtime-config.md) | Expand the initial field set through parity adapters and expose a read-only Desktop DTO. |
 | Rapid Desktop GUI | 🟡 `partial` | 1 | Pixel | [`cli.py`](../../../../rapid_mlx/cli.py) · [`ModelCatalog.swift`](../../../../apps/rapid-mac/Sources/Rapid/Server/ModelCatalog.swift) · [`RAMBucketedDefault.swift`](../../../../apps/rapid-mac/Sources/Rapid/Server/RAMBucketedDefault.swift) · [`SettingsModelManagementPanel.swift`](../../../../apps/rapid-mac/Sources/Rapid/UI/SettingsModelManagementPanel.swift) · [`test_recurrent_prefill_auto_default.py`](../../../../tests/test_recurrent_prefill_auto_default.py) · [`AtomicModelCatalogTests.swift`](../../../../apps/rapid-mac/Tests/RapidTests/AtomicModelCatalogTests.swift) · [`RAMBucketedDefaultTests.swift`](../../../../apps/rapid-mac/Tests/RapidTests/RAMBucketedDefaultTests.swift) · [evidence](../../performance/2026-08-22-long-context-service-prefill.md) | Resolved-config provenance/reason presentation. |
 | Rapid Server / CLI | 🟡 `partial` | 1 | Atlas | [`cli.py`](../../../../rapid_mlx/cli.py) · [`server.py`](../../../../rapid_mlx/server.py) · [`legacy.py`](../../../../rapid_mlx/catalog/legacy.py) · [`test_cli_config_fidelity.py`](../../../../tests/test_cli_config_fidelity.py) · [`test_cli_models_json.py`](../../../../tests/test_cli_models_json.py) · [`test_atomic_model_catalog.py`](../../../../tests/test_atomic_model_catalog.py) | Central resolved-config contract, immutable model resolver, and provenance API. |
 | ActualRuntimeTelemetry | ⚪ `planned` | 4 | Vector | — | Minimized schema, consent, effective-config linkage, and retention policy. |
