@@ -1,6 +1,6 @@
 # Migration 002: central EffectiveRuntimeConfig
 
-- **Status:** planned
+- **Status:** in progress — stage 1 contract complete
 - **Owner:** Atlas
 - **Rollback:** preserve existing CLI/server resolver helpers behind an adapter
 
@@ -12,11 +12,19 @@ overrode or adjusted another source.
 
 ## Sequence
 
-1. Define the internal schema and precedence tests without changing behavior.
+1. **Complete:** define the internal schema and precedence tests without changing
+   behavior. `rapid_mlx.runtime.effective_config` now owns immutable resolved
+   fields, typed override/constraint inputs, field-level source IDs and reason
+   codes, and the complete override/fallback trace. Unknown, missing, duplicate,
+   or incompatible inputs fail closed.
 2. Wrap existing resolver helpers and compare old/new output.
 3. Route Server and CLI through the central resolver.
 4. expose a read-only DTO for Desktop.
 5. Add GUI presentation for active optimizations, warnings, and overrides.
+
+Stage 1 deliberately has no production caller. Its rollback is deletion of the
+new module and tests; CLI and Server continue to use their existing helpers until
+the stage 2 parity fixtures prove equivalent results.
 
 ## Exit criteria
 
