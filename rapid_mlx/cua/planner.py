@@ -15,7 +15,6 @@ import time
 from typing import Any
 
 import httpx
-from PIL import Image
 
 PLAN_SCHEMA = {
     "type": "object",
@@ -64,6 +63,15 @@ SENSITIVE_RE = re.compile(
 
 
 def data_url(png: bytes, max_size: tuple[int, int] = (960, 600)) -> str:
+    try:
+        from PIL import Image
+    except ImportError:
+        # Pillow is intentionally optional for text-only Rapid installs. CUA
+        # can still send the native macOS PNG; only the bandwidth-saving
+        # thumbnail optimization is unavailable.
+        encoded = base64.b64encode(png).decode("ascii")
+        return f"data:image/png;base64,{encoded}"
+
     image = Image.open(io.BytesIO(png)).convert("RGB")
     image.thumbnail(max_size, Image.Resampling.LANCZOS)
     buffer = io.BytesIO()

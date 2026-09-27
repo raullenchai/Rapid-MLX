@@ -858,6 +858,25 @@ def test_data_url_roundtrip():
     assert image.size == (4, 4)
 
 
+def test_data_url_works_without_optional_pillow(monkeypatch):
+    import base64
+    import builtins
+
+    from rapid_mlx.cua.planner import data_url
+
+    real_import = builtins.__import__
+
+    def import_without_pillow(name, *args, **kwargs):
+        if name == "PIL":
+            raise ModuleNotFoundError("No module named 'PIL'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_without_pillow)
+    png = b"native-macos-png"
+    url = data_url(png)
+    assert base64.b64decode(url.split(",", 1)[1]) == png
+
+
 def test_config_recovers_from_invalid_json(config_dir):
     path = config_dir / "cua-config.json"
     path.write_text("{broken")
