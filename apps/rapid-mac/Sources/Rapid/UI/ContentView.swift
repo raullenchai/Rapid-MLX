@@ -1230,8 +1230,17 @@ struct ContentView: View {
                         port: server.activePort,
                         bearerToken: server.activeBearer,
                         liveServer: server
+                    ),
+                    cuaRuntime: CUAClient(
+                        host: server.host,
+                        port: server.activePort,
+                        bearerToken: server.activeBearer ?? ""
                     )
                 )
+                // Recreate the CUA state object when the app-owned server
+                // rotates credentials. Otherwise it retains a client with a
+                // stale bearer token across server restarts.
+                .id(server.activeBearer)
             } else {
                 mainArea
             }

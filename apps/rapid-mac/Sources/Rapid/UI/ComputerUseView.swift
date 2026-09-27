@@ -13,8 +13,10 @@ private struct StarterCardHeightKey: PreferenceKey {
 struct ComputerUseView: View {
     let languageRuntime: DraftPostLanguageRuntime?
     let visualRuntime: DraftPostVisualRuntime?
+    var cuaRuntime: CUAClient?
     @State private var showingDraftPost = false
     @State private var showingFreeUpSpace = false
+    @StateObject private var cuaViewModel: CUAViewModel
     /// A shared minimum keeps the flow grid even at the common text size;
     /// cards still grow past it rather than clip when the summary wraps under
     /// larger Dynamic Type. Scaled so the floor tracks the viewer's text size.
@@ -33,10 +35,15 @@ struct ComputerUseView: View {
 
     init(
         languageRuntime: DraftPostLanguageRuntime? = nil,
-        visualRuntime: DraftPostVisualRuntime? = nil
+        visualRuntime: DraftPostVisualRuntime? = nil,
+        cuaRuntime: CUAClient? = nil
     ) {
         self.languageRuntime = languageRuntime
         self.visualRuntime = visualRuntime
+        self.cuaRuntime = cuaRuntime
+        _cuaViewModel = StateObject(
+            wrappedValue: CUAViewModel(api: cuaRuntime)
+        )
     }
 
     var body: some View {
@@ -56,6 +63,8 @@ struct ComputerUseView: View {
                         .padding(.vertical, 5)
                         .background(.orange.opacity(0.1), in: Capsule())
                 }
+
+                CUASection(viewModel: cuaViewModel)
 
                 VStack(alignment: .leading, spacing: RapidTheme.Space.md) {
                     Text("Start with a flow").font(.headline)
