@@ -112,6 +112,12 @@ class SamplingParams:
     # ``CompletionRequest.seed``; out-of-range values are rejected at
     # the API layer with a 422 before they reach SamplingParams.
     seed: int | None = None
+    # Where user ``stop`` strings may match for a ``<think>``-style
+    # reasoning model: a ``reasoning.think_stop.ReasoningStopScope`` set by
+    # the route layer, or ``None`` for the raw-stream match. With a scope,
+    # a stop the model writes while reasoning does not end the request;
+    # only the answer after the reasoning close is searched.
+    reasoning_stop_scope: Any | None = None
 
     def __post_init__(self):
         if self.stop is None:

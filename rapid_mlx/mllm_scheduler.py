@@ -518,7 +518,13 @@ class MLLMScheduler:
             )
 
     def _match_user_stop(
-        self, text: str, new_text_start_len: int, stop_params: list[str]
+        self,
+        text: str,
+        new_text_start_len: int,
+        stop_params: list[str],
+        reasoning_stop_scope: Any | None = None,
+        *,
+        terminal: bool = False,
     ) -> tuple[int, str] | None:
         """Rolling user-stop matcher with harmony channel scoping.
 
@@ -527,17 +533,31 @@ class MLLMScheduler:
         as before this method existed. Harmony (gpt-oss) models scope
         the match to the ``<|channel|>final<|message|>`` body region
         only; the analysis-channel CoT is stop-agnostic (#1049).
+        ``<think>``-style reasoning models with a ``reasoning_stop_scope``
+        scope it to the answer after the reasoning close marker.
 
         Returns ``(idx, stop_str)`` for the earliest matching stop, or
         ``None`` if no stop is present in the searchable window. The
         tuple shape matches the pre-#1049 ``_find_stop_match_in_new_window``
         return so callers don't need to change.
         """
+        span: tuple[int, int] | None
         if not self._is_harmony_family:
-            return _find_stop_match_in_new_window(text, new_text_start_len, stop_params)
-        from .reasoning.harmony_stop import find_harmony_final_span
+            if reasoning_stop_scope is None:
+                return _find_stop_match_in_new_window(
+                    text, new_text_start_len, stop_params
+                )
+            from .reasoning.think_stop import answer_start
 
-        span = find_harmony_final_span(text)
+            start = answer_start(text, reasoning_stop_scope, terminal=terminal)
+            if start is None:
+                # Still reasoning — user stops cannot fire.
+                return None
+            span = (start, len(text))
+        else:
+            from .reasoning.harmony_stop import find_harmony_final_span
+
+            span = find_harmony_final_span(text)
         if span is None:
             # Not yet in the final channel — user stops cannot fire.
             return None
@@ -699,6 +719,7 @@ class MLLMScheduler:
             frequency_penalty=frequency_penalty,
             ignore_eos=bool(kwargs.pop("ignore_eos", False)),
             seed=kwargs.pop("seed", None),
+            reasoning_stop_scope=kwargs.pop("reasoning_stop_scope", None),
         )
 
         request = MLLMRequest(
@@ -1233,7 +1254,11 @@ class MLLMScheduler:
                     previous_seen_len = len(request.stop_text)
                     streamed_so_far = request.stop_text + new_text
                     match = self._match_user_stop(
-                        streamed_so_far, previous_seen_len, stop_params
+                        streamed_so_far,
+                        previous_seen_len,
+                        stop_params,
+                        request.sampling_params.reasoning_stop_scope,
+                        terminal=finish_reason is not None,
                     )
                     if match is not None:
                         idx, stop_str = match
@@ -1300,7 +1325,11 @@ class MLLMScheduler:
                     and request.stop_text_len < len(request.stop_text)
                 ):
                     match = self._match_user_stop(
-                        request.stop_text, request.stop_text_len, stop_params
+                        request.stop_text,
+                        request.stop_text_len,
+                        stop_params,
+                        request.sampling_params.reasoning_stop_scope,
+                        terminal=True,
                     )
                     if match is not None:
                         idx, stop_str = match
