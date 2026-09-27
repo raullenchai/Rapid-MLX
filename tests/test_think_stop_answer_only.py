@@ -131,6 +131,21 @@ def test_scope_built_only_for_think_tag_parsers():
     assert build_reasoning_stop_scope(harmony, starts_in_reasoning=True) is None
 
 
+def test_scope_rejects_a_think_parser_with_empty_markers():
+    from rapid_mlx.reasoning import get_parser
+
+    parser_type = type(get_parser("qwen3")())
+
+    class EmptyStartParser(parser_type):
+        @property
+        def start_token(self):
+            return ""
+
+    assert (
+        build_reasoning_stop_scope(EmptyStartParser(), starts_in_reasoning=True) is None
+    )
+
+
 # ---------------------------------------------------------------------------
 # Layer 2: routes attach the scope
 # ---------------------------------------------------------------------------
@@ -344,6 +359,25 @@ def test_multimodel_scope_fails_closed_on_registry_replacement():
     cfg.model_registry = registry
     try:
         assert reasoning_stop_scope_kwargs(captured_engine, request) == {}
+    finally:
+        reset_config()
+
+
+def test_multimodel_scope_fails_closed_when_registry_entry_disappears():
+    """A concurrent registry removal must keep raw stop semantics."""
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.service.helpers import reasoning_stop_scope_kwargs
+
+    engine = _RecordingEngine()
+
+    def missing_entry(_model):
+        raise KeyError("removed-sidecar")
+
+    request = SimpleNamespace(model="removed-sidecar", stop=["10"])
+    cfg = reset_config()
+    cfg.model_registry = SimpleNamespace(get_entry=missing_entry)
+    try:
+        assert reasoning_stop_scope_kwargs(engine, request) == {}
     finally:
         reset_config()
 

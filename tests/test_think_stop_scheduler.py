@@ -159,3 +159,17 @@ def test_mllm_matcher_resolves_a_partial_opener_at_terminal():
         0,
         "<",
     )
+
+
+def test_mllm_harmony_path_still_scopes_stops_to_final_channel():
+    scheduler = _mllm_scheduler()
+    scheduler._is_harmony_family = True
+    analysis = "<|channel|>analysis<|message|>mention STOP while reasoning"
+    assert scheduler._match_user_stop(analysis, 0, ["STOP"]) is None
+
+    text = analysis + "<|channel|>final<|message|>answer STOP tail"
+    match = scheduler._match_user_stop(text, len(analysis), ["STOP"])
+    assert match is not None
+    idx, stop = match
+    assert stop == "STOP"
+    assert text[:idx].endswith("answer ")
