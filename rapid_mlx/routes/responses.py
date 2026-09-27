@@ -1626,6 +1626,31 @@ def _message_to_engine_dict(msg) -> dict:
     return {k: v for k, v in raw.items() if v is not None}
 
 
+#: Responses-input conversion failures the non-stream handler answers as 400.
+_RESPONSES_INPUT_400_MARKERS = (
+    "content block",
+    "input_text.",
+    "output_text.",
+    "input_image.",
+)
+
+
+def _record_nonstream_failure(engine, request: Request, error_class: str) -> None:
+    """Count one failed non-streaming /v1/responses request under a class."""
+    from rapid_mlx.telemetry import inference as _telemetry_inference
+    from rapid_mlx.telemetry.model_id import engine_telemetry_id
+
+    caller_agent, caller_client = _telemetry_inference.request_caller_headers(request)
+    _telemetry_inference.emit_completed_request(
+        model=engine_telemetry_id(engine),
+        endpoint="/v1/responses",
+        caller_agent=caller_agent,
+        caller_client=caller_client,
+        result="failed",
+        error_class=error_class,
+    )
+
+
 async def _non_stream(
     engine: BaseEngine,
     openai_request: ChatCompletionRequest,
@@ -1800,6 +1825,7 @@ async def _non_stream(
                 guided_err,
             )
             incr_strict_violation()
+            _record_nonstream_failure(engine, request, "strict_schema_violation")
             raise HTTPException(
                 status_code=502,
                 detail={
@@ -1855,6 +1881,7 @@ async def _non_stream(
                 # Engine-owned cancellation is lifecycle control, never a
                 # strict-schema failure and never eligible for fallback.
                 if _consume_guided_lifecycle_cancel(engine, exc):
+                    _record_nonstream_failure(engine, request, "model_replaced")
                     raise HTTPException(
                         status_code=503,
                         detail="Request cancelled by model replacement",
@@ -1867,6 +1894,7 @@ async def _non_stream(
                     guided_err,
                 )
                 incr_strict_violation()
+                _record_nonstream_failure(engine, request, "strict_schema_violation")
                 raise HTTPException(
                     status_code=502,
                     detail={
@@ -1894,13 +1922,38 @@ async def _non_stream(
     except HTTPException:
         raise
     except Exception as e:  # noqa: BLE001 — match other routes' error shape
-        err_msg = str(e)
-        err_type = type(e).__name__
-        if (
-            "TemplateError" in err_type
-            or "template" in err_msg.lower()
-            or ("user" in err_msg.lower() and "found" in err_msg.lower())
+        from rapid_mlx.telemetry import inference as _telemetry_inference
+
+        from ..request import (
+            is_batch_cap_error,
+            is_chat_template_error,
+            is_media_input_error,
+        )
+
+        # Responses-input conversion failures this route answers as 400. The
+        # text is read defensively so an exception whose ``__str__`` raises is
+        # still counted before the (unchanged) ``str(e)`` below re-raises.
+        try:
+            responses_input_400 = any(
+                marker in str(e) for marker in _RESPONSES_INPUT_400_MARKERS
+            )
+        except Exception:
+            responses_input_400 = False
+        # Classify in THIS handler's order: the shared 400 predicates, then
+        # the responses-only input markers (a request-shape 400 is "other",
+        # never an engine abort), then the abort category.
+        error_class = _telemetry_inference.classify_inference_failure(
+            e, abort_first=False
+        )
+        if responses_input_400 and error_class not in (
+            "template_error",
+            "media_input_invalid",
+            "prompt_too_large",
         ):
+            error_class = "other"
+        _record_nonstream_failure(engine, request, error_class)
+        err_msg = str(e)
+        if is_chat_template_error(e):
             raise HTTPException(
                 status_code=400, detail=f"Chat template error: {err_msg}"
             )
@@ -1910,15 +1963,7 @@ async def _non_stream(
         # must map both to 400 or the /v1/responses surface returns a 500
         # for what is really an oversized-image / oversized-prompt user
         # error.
-        if (
-            "Failed to process image" in err_msg
-            or "Failed to process video" in err_msg
-            or "exceeds the per-batch cap" in err_msg
-            or "content block" in err_msg
-            or "input_text." in err_msg
-            or "output_text." in err_msg
-            or "input_image." in err_msg
-        ):
+        if is_media_input_error(e) or is_batch_cap_error(e) or responses_input_400:
             raise HTTPException(status_code=400, detail=err_msg)
         raise
 
@@ -2021,6 +2066,13 @@ async def _non_stream(
                         type(repair_err).__name__,
                         repair_err,
                     )
+                    from rapid_mlx.telemetry import inference as _telemetry_inference
+
+                    _record_nonstream_failure(
+                        engine,
+                        request,
+                        _telemetry_inference.classify_inference_failure(repair_err),
+                    )
                     raise HTTPException(
                         status_code=502,
                         detail={
@@ -2085,6 +2137,7 @@ async def _non_stream(
                 attempts,
                 (failure_details or {}).get("message"),
             )
+            _record_nonstream_failure(engine, request, "strict_schema_violation")
             raise HTTPException(status_code=422, detail=envelope)
 
     # r6-A R6-C2: detect a degenerate engine output — no text, no
@@ -2170,6 +2223,7 @@ async def _non_stream(
                 "the server logs for the underlying engine error."
             ),
         }
+        _record_nonstream_failure(engine, request, "output_contract_unmet")
         return Response(
             content=json.dumps(payload),
             media_type="application/json",
@@ -2211,6 +2265,7 @@ async def _non_stream(
                 "on /v1/responses: %s",
                 err,
             )
+            _record_nonstream_failure(engine, request, "strict_schema_violation")
             raise HTTPException(
                 status_code=502,
                 detail={
@@ -2249,6 +2304,10 @@ async def _non_stream(
                 tool_calls, openai_request.tools, enforce_required=True
             )
     except HTTPException as tool_error:
+        # Every rejection out of the tool_choice / tool-argument contract
+        # check is an unmet output contract, whether it is answered as the
+        # failed envelope below or re-raised as the route's 4xx.
+        _record_nonstream_failure(engine, request, "output_contract_unmet")
         detail = tool_error.detail
         classified_code = getattr(tool_error, "rapid_mlx_error_code", None)
         if classified_code is None:
@@ -2379,6 +2438,7 @@ async def _non_stream(
                 "call. Retry the request."
             ),
         }
+        _record_nonstream_failure(engine, request, "output_contract_unmet")
         return Response(content=json.dumps(payload), media_type="application/json")
 
     openai_response = ChatCompletionResponse(
@@ -2633,6 +2693,9 @@ async def _stream_responses_with_nonprogress_retry(
         public_sequence,
     )
     attempt_heartbeat_state: dict[str, object] = {}
+    # The first attempt's route-level failure is only counted if we do NOT
+    # retry it (see _stream_responses ``deferred_failure``).
+    first_attempt_failure: list[str | None] = [None]
     buffered: list[str] = []
     buffered_bytes = 0
     committed = False
@@ -2652,6 +2715,7 @@ async def _stream_responses_with_nonprogress_retry(
         caller_agent=caller_agent,
         caller_client=caller_client,
         served_telemetry_id=served_telemetry_id,
+        deferred_failure=first_attempt_failure,
     ):
         if committed:
             if heartbeat_state is not None:
@@ -2689,6 +2753,17 @@ async def _stream_responses_with_nonprogress_retry(
         elif _responses_event_is_nonprogress_failure(event):
             retry_nonprogress = True
 
+    if (committed or not retry_nonprogress) and first_attempt_failure[0] is not None:
+        from rapid_mlx.telemetry import inference as _telemetry_inference
+
+        _telemetry_inference.emit_completed_request(
+            model=served_telemetry_id or "<custom>",
+            endpoint="/v1/responses",
+            caller_agent=caller_agent,
+            caller_client=caller_client,
+            result="failed",
+            error_class=first_attempt_failure[0],
+        )
     if committed:
         return
     if not retry_nonprogress:
@@ -2813,6 +2888,7 @@ async def _stream_responses(
     caller_agent: str | None = None,
     caller_client: str | None = None,
     served_telemetry_id: str | None = None,
+    deferred_failure: list[str | None] | None = None,
 ) -> AsyncIterator[str]:
     """Stream a Responses-API SSE event sequence Codex CLI can parse.
 
@@ -2863,10 +2939,16 @@ async def _stream_responses(
         _seq[0] += 1
         return _sse(event, data)
 
-    def _record_failed() -> None:
+    def _record_failed(error_class: str) -> None:
         if telemetry_failure_emitted[0]:
             return
         telemetry_failure_emitted[0] = True
+        if deferred_failure is not None:
+            # A buffered attempt the caller may still retry transparently:
+            # hand the class back instead of counting a failure the client
+            # may never see.
+            deferred_failure[:] = [error_class]
+            return
         from rapid_mlx.telemetry import inference as _telemetry_inference
 
         _telemetry_inference.emit_completed_request(
@@ -2875,6 +2957,7 @@ async def _stream_responses(
             caller_agent=caller_agent,
             caller_client=caller_client,
             result="failed",
+            error_class=error_class,
         )
 
     # response.created — Codex needs this before any deltas.
@@ -4217,7 +4300,7 @@ async def _stream_responses(
                     "tool_choice_unfulfilled",
                 )
                 err_msg = str(err_detail)
-            _record_failed()
+            _record_failed("output_contract_unmet")
             yield _emit(
                 "response.failed",
                 {
@@ -4636,7 +4719,7 @@ async def _stream_responses(
                 if isinstance(part, dict)
             )
         if reasoning_item_finalized and emitted_reasoning != accumulated_reasoning_text:
-            _record_failed()
+            _record_failed("output_contract_unmet")
             yield _emit(
                 "response.failed",
                 {
@@ -4681,7 +4764,7 @@ async def _stream_responses(
                 error_code,
                 completion_tokens,
             )
-            _record_failed()
+            _record_failed("output_contract_unmet")
             yield _emit(
                 "response.failed",
                 {
@@ -4993,7 +5076,7 @@ async def _stream_responses(
                 "(accumulated_text empty, no tool_calls, completion_tokens=0); "
                 "surfacing as response.failed"
             )
-            _record_failed()
+            _record_failed("output_contract_unmet")
             yield _emit(
                 "response.failed",
                 {
@@ -5089,7 +5172,9 @@ async def _stream_responses(
         # a half-stream-then-EOF; matches how the OpenAI cloud
         # Responses API closes errored streams.
         logger.exception("Responses stream failed: %s", e)
-        _record_failed()
+        from rapid_mlx.telemetry import inference as _telemetry_inference
+
+        _record_failed(_telemetry_inference.classify_inference_failure(e))
         yield _emit(
             "response.failed",
             {

@@ -229,7 +229,7 @@ def test_completed_inference_with_non_string_endpoint_falls_back_to_other(
     )
     inference._QUEUE.join()
 
-    assert records == ["inf|<custom>|other|unknown|failed"]
+    assert records == ["inf|<custom>|other|unknown|failed|other"]
 
 
 @pytest.mark.asyncio
@@ -597,6 +597,7 @@ async def test_midstream_generation_error_records_failed_without_active_day(
                 "result": "failed",
                 "count_bucket": "1",
                 "bucket_source": "crossed_now",
+                "error_class": "other",
             },
         )
     ]
@@ -3147,13 +3148,43 @@ def test_worst_case_counter_cardinality_supports_28_complete_models():
     from rapid_mlx.telemetry import registry, store
 
     enums = registry.load_registry()["enums"]
+    # One ok key plus one failed key per inference_error_class value.
+    assert enums["result"]["values"] == ["ok", "failed"]
     keys_per_model = (
         len(enums["endpoint"]["values"])
         * len(enums["caller"]["values"])
-        * len(enums["result"]["values"])
+        * (1 + len(enums["inference_error_class"]["values"]))
     )
-    assert keys_per_model == 8 * 26 * 2
+    assert keys_per_model == 8 * 27 * 11
     assert store.MAX_KEYS // keys_per_model == 28
+
+
+def test_longest_failed_counter_key_fits_the_store_limit(monkeypatch):
+    """A worst-case legitimate key (128-char public model id) must be storable."""
+    from rapid_mlx.telemetry import inference, registry
+
+    enums = registry.load_registry()["enums"]
+    longest = "inf|{}|{}|{}|failed|{}".format(
+        "x" * registry.load_registry()["model_id"]["max_length"],
+        max(enums["endpoint"]["values"], key=len),
+        max(enums["caller"]["values"], key=len),
+        max(enums["inference_error_class"]["values"], key=len),
+    )
+    assert len(longest) <= inference.store.MAX_KEY_LENGTH
+    keys: list[str] = []
+    monkeypatch.setattr(inference.store, "record", lambda key: keys.append(key))
+    inference._record_completed_request(
+        model="x" * 128,
+        endpoint="/v1/audio/transcriptions",
+        caller_agent="python-requests/2.32",
+        caller_client=None,
+        result="failed",
+        error_class="strict_schema_violation",
+    )
+    assert keys == [
+        "inf|<custom>|/v1/audio/transcriptions|python-requests|failed|"
+        "strict_schema_violation"
+    ]
 
 
 @pytest.mark.parametrize(
@@ -3175,9 +3206,10 @@ def test_additional_endpoint_has_completed_request_emit(relative_path, endpoint)
 @pytest.mark.parametrize(
     ("relative_path", "failed_count"),
     [
-        ("rapid_mlx/routes/chat.py", 4),
+        ("rapid_mlx/routes/chat.py", 6),
         ("rapid_mlx/routes/completions.py", 1),
         ("rapid_mlx/routes/anthropic.py", 1),
+        ("rapid_mlx/routes/responses.py", 3),
     ],
 )
 def test_each_terminal_site_uses_only_v2_emit(relative_path, failed_count):
@@ -3541,3 +3573,639 @@ def test_privacy_gate_leaves_depends_and_engine_lookup_boundaries_clean(tmp_path
     route_dir.mkdir(parents=True)
     (route_dir / "images.py").write_text(source, encoding="utf-8")
     assert _request_model_violations(tmp_path) == []
+
+
+# ------------------------------------------------ failed-inference classes
+
+
+_EMIT_NAMES = frozenset({"emit_completed_request", "_record_completed_request"})
+
+
+def _failed_emits(tree: ast.AST) -> tuple[list[int], list[int]]:
+    """``(failed emit lines, those among them that omit error_class)``.
+
+    Purely AST-based: any spelling of ``result="failed"`` (spacing, quote
+    style) is the same ``ast.Constant``, so no textual prefilter can let a
+    site slip past the gate.
+    """
+    failed: list[int] = []
+    missing: list[int] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = (
+            func.id
+            if isinstance(func, ast.Name)
+            else func.attr
+            if isinstance(func, ast.Attribute)
+            else None
+        )
+        if name not in _EMIT_NAMES:
+            continue
+        keywords = {kw.arg: kw.value for kw in node.keywords if kw.arg}
+        result = keywords.get("result")
+        if isinstance(result, ast.Constant) and result.value == "failed":
+            failed.append(node.lineno)
+            error_class = keywords.get("error_class")
+            if error_class is None or (
+                isinstance(error_class, ast.Constant) and error_class.value is None
+            ):
+                missing.append(node.lineno)
+    return failed, missing
+
+
+def _emit_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
+
+
+def _emit_shape_violations(
+    tree: ast.AST, *, allow_worker_partial: bool = True
+) -> list[tuple[int, str]]:
+    """Every way an emit could dodge the literal-result check.
+
+    Allowed shapes only: a direct call with keyword arguments, a literal
+    ``result`` of "ok"/"failed", and -- for "failed" -- an explicit non-None
+    ``error_class``. The single exception is the worker hand-off
+    ``partial(_record_completed_request, ..., result=result,
+    error_class=error_class)``, which must forward both unchanged. Any other
+    reference to the emitters (alias, re-binding, import alias, passing them
+    around) is rejected. A failed class must be a registry literal or a
+    classifier call / name; a name that resolves (lexically, through
+    closures) to a function or lambda parameter must have NO default (a forwarding wrapper whose class defaults
+    to None would let callers omit it). String-keyed dynamic lookups
+    (``getattr(mod, "emit_...")``) are out of reach of any static check; the
+    runtime still collapses a missing class to ``other``.
+    """
+    violations: list[tuple[int, str]] = []
+    allowed: set[int] = set()
+    allowed_classes = set(
+        __import__("rapid_mlx.telemetry.registry", fromlist=["x"]).load_registry()[
+            "enums"
+        ]["inference_error_class"]["values"]
+    )
+    scopes = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+    parent: dict[int, ast.AST] = {}
+    for outer in ast.walk(tree):
+        for child in ast.iter_child_nodes(outer):
+            parent[id(child)] = outer
+
+    def _params(fn: ast.AST) -> tuple[set[str], set[str]]:
+        """(all parameter names, those with a default) of ``fn``."""
+        args = fn.args  # type: ignore[attr-defined]
+        positional = [*args.posonlyargs, *args.args]
+        names = {a.arg for a in [*positional, *args.kwonlyargs]}
+        names |= {a.arg for a in (args.vararg, args.kwarg) if a is not None}
+        defaulted = (
+            {a.arg for a in positional[len(positional) - len(args.defaults) :]}
+            if args.defaults
+            else set()
+        )
+        defaulted |= {
+            a.arg
+            for a, default in zip(args.kwonlyargs, args.kw_defaults, strict=True)
+            if default is not None
+        }
+        return names, defaulted
+
+    def _binds_locally(fn: ast.AST, name: str) -> bool:
+        body = fn.body if isinstance(fn.body, list) else [fn.body]  # type: ignore[attr-defined]
+        stack: list[ast.AST] = list(body)
+        while stack:
+            current = stack.pop()
+            if isinstance(current, (*scopes, ast.ClassDef)):
+                if getattr(current, "name", None) == name:
+                    return True
+                continue
+            if (
+                isinstance(current, ast.Name)
+                and current.id == name
+                and isinstance(current.ctx, ast.Store)
+            ):
+                return True
+            stack.extend(ast.iter_child_nodes(current))
+        return False
+
+    def _class_param_has_default(call: ast.AST, name: str) -> bool:
+        """Resolve ``name`` lexically, innermost scope outward (def, async
+        def, lambda; class bodies are skipped as Python does). The first scope
+        that binds it decides: a parameter with a default is a violation; a
+        local assignment ends the walk (dataflow is out of static reach)."""
+        scope = parent.get(id(call))
+        while scope is not None:
+            if isinstance(scope, scopes):
+                names, defaulted = _params(scope)
+                if name in names:
+                    return name in defaulted
+                if _binds_locally(scope, name):
+                    return False
+            scope = parent.get(id(scope))
+        return False
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name in _EMIT_NAMES and alias.asname:
+                    violations.append((node.lineno, "import alias"))
+        if not isinstance(node, ast.Call):
+            continue
+        if (
+            allow_worker_partial
+            and _emit_name(node.func) == "partial"
+            and node.args
+            and _emit_name(node.args[0]) == "_record_completed_request"
+        ):
+            allowed.add(id(node.args[0]))
+            forwarded = {kw.arg: kw.value for kw in node.keywords}
+            ok = (
+                None not in forwarded
+                and len(node.args) == 1
+                and isinstance(forwarded.get("result"), ast.Name)
+                and forwarded["result"].id == "result"
+                and isinstance(forwarded.get("error_class"), ast.Name)
+                and forwarded["error_class"].id == "error_class"
+            )
+            if not ok:
+                violations.append((node.lineno, "partial must forward result+class"))
+            continue
+        if _emit_name(node.func) not in _EMIT_NAMES:
+            continue
+        allowed.add(id(node.func))
+        if node.args or any(kw.arg is None for kw in node.keywords):
+            violations.append((node.lineno, "positional or **kwargs"))
+            continue
+        keywords = {kw.arg: kw.value for kw in node.keywords}
+        result = keywords.get("result")
+        if not (isinstance(result, ast.Constant) and result.value in ("ok", "failed")):
+            violations.append((node.lineno, "non-literal result"))
+            continue
+        if result.value == "failed":
+            error_class = keywords.get("error_class")
+            if error_class is None or (
+                isinstance(error_class, ast.Constant) and error_class.value is None
+            ):
+                violations.append((node.lineno, "failed without error_class"))
+            elif isinstance(error_class, ast.Constant):
+                if error_class.value not in allowed_classes:
+                    violations.append((node.lineno, "class not in registry"))
+            elif isinstance(error_class, ast.Name) and _class_param_has_default(
+                node, error_class.id
+            ):
+                violations.append((node.lineno, "class parameter has a default"))
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, (ast.Name, ast.Attribute))
+            and _emit_name(node) in _EMIT_NAMES
+            and id(node) not in allowed
+        ):
+            violations.append((node.lineno, "emitter referenced outside a call"))
+    return violations
+
+
+def test_every_failed_inference_site_passes_an_error_class():
+    offenders: list[str] = []
+    failed_sites = 0
+    for path in sorted((REPO_ROOT / "rapid_mlx").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        failed, _missing = _failed_emits(tree)
+        failed_sites += len(failed)
+        relative = path.relative_to(REPO_ROOT)
+        offenders.extend(
+            f"{relative}:{line}: {why}"
+            for line, why in _emit_shape_violations(
+                tree,
+                # The worker hand-off partial lives only in the emitter module.
+                allow_worker_partial=relative.as_posix()
+                == "rapid_mlx/telemetry/inference.py",
+            )
+        )
+    assert failed_sites >= 12
+    assert offenders == []
+
+
+@pytest.mark.parametrize(
+    ("source", "reason"),
+    [
+        ("emit_completed_request(result='failed')", "failed without error_class"),
+        (
+            "x.emit_completed_request(result=outcome, error_class=c)",
+            "non-literal result",
+        ),
+        ("x.emit_completed_request(**kwargs)", "positional or **kwargs"),
+        ("emit_completed_request('<custom>', result='ok')", "positional or **kwargs"),
+        ("f = x.emit_completed_request", "emitter referenced outside a call"),
+        ("g(x.emit_completed_request)", "emitter referenced outside a call"),
+        ("from m import emit_completed_request as e", "import alias"),
+        (
+            "partial(_record_completed_request, result='failed')",
+            "partial must forward result+class",
+        ),
+        (
+            "partial(_record_completed_request, result=r, error_class=error_class)",
+            "partial must forward result+class",
+        ),
+        (
+            "partial(_record_completed_request, result=result, error_class=c)",
+            "partial must forward result+class",
+        ),
+        (
+            "partial(_record_completed_request, x, result=result,"
+            " error_class=error_class)",
+            "partial must forward result+class",
+        ),
+        (
+            "partial(_record_completed_request, **kw, result=result,"
+            " error_class=error_class)",
+            "partial must forward result+class",
+        ),
+        (
+            "partial(emit_completed_request, result=result, error_class=error_class)",
+            "emitter referenced outside a call",
+        ),
+        (
+            "x.emit_completed_request(result='failed', error_class=None)",
+            "failed without error_class",
+        ),
+        (
+            "x.emit_completed_request(result='failed', error_class='')",
+            "class not in registry",
+        ),
+        ("x.emit_completed_request(result='error')", "non-literal result"),
+        (
+            "def w(m, error_class=None):\n"
+            "    x.emit_completed_request(result='failed', error_class=error_class)",
+            "class parameter has a default",
+        ),
+        (
+            "def w(m, *, error_class='other'):\n"
+            "    x.emit_completed_request(result='failed', error_class=error_class)",
+            "class parameter has a default",
+        ),
+        (
+            "def outer(m, error_class=None):\n"
+            "    def inner():\n"
+            "        x.emit_completed_request(result='failed', error_class=error_class)\n"
+            "    inner()",
+            "class parameter has a default",
+        ),
+        (
+            "def outer(src, *, error_class=None):\n"
+            "    async def gen():\n"
+            "        x.emit_completed_request(result='failed', error_class=error_class)\n"
+            "        yield 1\n"
+            "    return gen()",
+            "class parameter has a default",
+        ),
+        (
+            "def outer(m, error_class=None):\n"
+            "    class K:\n"
+            "        def go(self):\n"
+            "            x.emit_completed_request("
+            "result='failed', error_class=error_class)\n"
+            "    K().go()",
+            "class parameter has a default",
+        ),
+        (
+            "g(_record_completed_request, result=result, error_class=error_class)",
+            "emitter referenced outside a call",
+        ),
+        (
+            "def w(error_class=None, /):\n"
+            "    x.emit_completed_request(result='failed', error_class=error_class)",
+            "class parameter has a default",
+        ),
+        (
+            "rec = lambda m, error_class=None: x.emit_completed_request("
+            "result='failed', error_class=error_class)",
+            "class parameter has a default",
+        ),
+        (
+            "def outer(m, error_class):\n"
+            "    def inner(error_class=None):\n"
+            "        x.emit_completed_request(result='failed', error_class=error_class)\n"
+            "    inner()",
+            "class parameter has a default",
+        ),
+    ],
+)
+def test_emit_shape_gate_rejects_every_bypass(source, reason):
+    assert [why for _line, why in _emit_shape_violations(ast.parse(source))] == [reason]
+
+
+def test_emit_shape_gate_accepts_the_allowed_shapes():
+    source = (
+        "x.emit_completed_request(result='ok')\n"
+        "x.emit_completed_request(result='failed', error_class=classify(e))\n"
+        "x.emit_completed_request(result='failed', error_class='model_replaced')\n"
+        "def w(m, error_class: str):\n"
+        "    x.emit_completed_request(result='failed', error_class=error_class)\n"
+        "def outer(m, error_class=None):\n"
+        "    def inner(error_class):\n"
+        "        x.emit_completed_request(result='failed', error_class=error_class)\n"
+        "    cb = lambda error_class: x.emit_completed_request("
+        "result='failed', error_class=error_class)\n"
+        "def closure_ok(m, error_class: str):\n"
+        "    def inner():\n"
+        "        x.emit_completed_request(result='failed', error_class=error_class)\n"
+        "partial(_record_completed_request, model=m, result=result,"
+        " error_class=error_class)\n"
+        "def emit_completed_request(*, result, error_class=None): pass\n"
+    )
+    assert _emit_shape_violations(ast.parse(source)) == []
+
+
+def test_failed_site_gate_catches_a_site_without_a_class():
+    tree = ast.parse(
+        "emit_completed_request(model=m, result='failed')\n"
+        "x.emit_completed_request(result='failed', error_class=None)\n"
+        "x.emit_completed_request(result='failed', error_class='other')\n"
+        "x.emit_completed_request(result='ok')\n"
+        "(lambda: None)()(result='failed')\n"
+        'x.emit_completed_request(result = "failed")\n'
+        "_record_completed_request(\n    result=(\n        'failed'\n    )\n)\n"
+    )
+    failed, missing = _failed_emits(tree)
+    assert failed == [1, 2, 3, 6, 7]
+    assert missing == [1, 2, 6, 7]
+
+
+def test_inference_error_class_enum_is_the_documented_closed_set():
+    from rapid_mlx.telemetry import registry
+
+    reg = registry.load_registry()
+    assert reg["enums"]["inference_error_class"]["values"] == [
+        "insufficient_memory",
+        "engine_aborted",
+        "template_error",
+        "media_input_invalid",
+        "prompt_too_large",
+        "strict_schema_violation",
+        "model_replaced",
+        "output_contract_unmet",
+        "stream_error",
+        "other",
+    ]
+    prop = reg["events"]["inference_bucket_reached"]["props"]["error_class"]
+    assert prop == {
+        "kind": "enum",
+        "enum": "inference_error_class",
+        "required": False,
+        "only_when": {"result": ["failed"]},
+    }
+
+
+def _classify_cases():
+    from rapid_mlx.request import (
+        ENGINE_ABORT_CODE_ENGINE_ABORTED,
+        ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY,
+        InferenceAbortedError,
+    )
+
+    class TemplateError(Exception):
+        pass
+
+    return [
+        (
+            InferenceAbortedError(
+                "/Users/alice/secret.txt",
+                error_kind=ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY,
+            ),
+            "insufficient_memory",
+        ),
+        (
+            InferenceAbortedError(
+                "Metal out of memory", error_kind=ENGINE_ABORT_CODE_ENGINE_ABORTED
+            ),
+            "engine_aborted",
+        ),
+        (
+            InferenceAbortedError("kIOGPUCommandBufferCallbackErrorOutOfMemory"),
+            "insufficient_memory",
+        ),
+        (InferenceAbortedError("Metal command buffer failed"), "engine_aborted"),
+        (InferenceAbortedError("cancelled", error_kind="lifecycle"), "model_replaced"),
+        (InferenceAbortedError("template gone", error_kind="bogus"), "engine_aborted"),
+        (TemplateError("bad jinja"), "template_error"),
+        (ValueError("Conversation roles must alternate user/assistant"), "other"),
+        (ValueError("No user query found in messages."), "template_error"),
+        (ValueError("chat template missing"), "template_error"),
+        (
+            ValueError("Failed to process image: http://private/x.png"),
+            "media_input_invalid",
+        ),
+        (ValueError("Failed to process video: /tmp/x.mp4"), "media_input_invalid"),
+        (
+            ValueError("prompt of 9000 tokens exceeds the per-batch cap of 8192"),
+            "prompt_too_large",
+        ),
+        (RuntimeError("boom /Users/alice/prompt text"), "other"),
+        (MemoryError(), "other"),
+        (None, "other"),
+    ]
+
+
+def test_classify_inference_failure_mirrors_route_decisions_and_never_leaks():
+    from rapid_mlx.telemetry import inference, registry
+
+    allowed = set(registry.load_registry()["enums"]["inference_error_class"]["values"])
+    for exc, expected in _classify_cases():
+        got = inference.classify_inference_failure(exc)
+        assert got == expected, (exc, got)
+        assert got in allowed
+
+
+def test_classify_inference_failure_is_total():
+    from rapid_mlx.telemetry import inference
+
+    class HostileError(Exception):
+        def __str__(self) -> str:
+            raise RuntimeError("str() explodes")
+
+    assert inference.classify_inference_failure(HostileError()) == "other"
+
+
+def test_abort_classes_follow_the_client_error_payload():
+    """Telemetry and the client-visible error.code come from one helper."""
+    from rapid_mlx import request
+    from rapid_mlx.telemetry import inference
+
+    for exc, _expected in _classify_cases():
+        if not isinstance(exc, request.InferenceAbortedError):
+            continue
+        payload_code = request.inference_aborted_error_payload(exc)["code"]
+        assert inference._ABORT_CODE_CLASSES[payload_code] == (
+            inference.classify_inference_failure(exc)
+        )
+
+
+@pytest.mark.parametrize(
+    ("error_class", "expected"),
+    [
+        ("insufficient_memory", "insufficient_memory"),
+        ("stream_error", "stream_error"),
+        (None, "other"),
+        ("/Users/alice/secret", "other"),
+        (["not", "hashable"], "other"),
+    ],
+)
+def test_failed_request_carries_validated_class_and_per_class_key(
+    monkeypatch, error_class, expected
+):
+    from rapid_mlx.telemetry import inference
+
+    records: list[str] = []
+    events: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        inference.store,
+        "record",
+        lambda key: (
+            records.append(key)
+            or SimpleNamespace(bucket="1", bucket_source="crossed_now")
+        ),
+    )
+    monkeypatch.setattr(
+        inference.track_module,
+        "track",
+        lambda _event, props: events.append(dict(props)),
+    )
+
+    inference._record_completed_request(
+        model="<custom>",
+        endpoint="/v1/messages",
+        caller_agent="claude-cli/2.0",
+        caller_client=None,
+        result="failed",
+        error_class=error_class,
+    )
+
+    assert records == [f"inf|<custom>|/v1/messages|claude-code|failed|{expected}"]
+    assert events[0]["error_class"] == expected
+    assert "alice" not in repr(records + events)
+
+
+def test_ok_request_never_carries_an_error_class(monkeypatch):
+    from rapid_mlx.telemetry import inference
+
+    records: list[str] = []
+    events: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        inference.store,
+        "record",
+        lambda key: (
+            records.append(key)
+            or SimpleNamespace(bucket="1", bucket_source="crossed_now")
+        ),
+    )
+    monkeypatch.setattr(
+        inference.track_module,
+        "track",
+        lambda _event, props: events.append(dict(props)),
+    )
+    monkeypatch.setattr(inference.track_module, "emit_active_day", lambda: None)
+
+    inference._record_completed_request(
+        model="<custom>",
+        endpoint="/v1/messages",
+        caller_agent=None,
+        caller_client=None,
+        result="ok",
+        error_class="insufficient_memory",
+    )
+
+    assert records == ["inf|<custom>|/v1/messages|unknown|ok"]
+    assert "error_class" not in events[0]
+
+
+def test_failed_event_with_class_passes_registry_validation():
+    from rapid_mlx.telemetry import registry
+
+    base = {
+        "model": "<custom>",
+        "endpoint": "/v1/chat/completions",
+        "caller": "openai-node",
+        "result": "failed",
+        "count_bucket": "1",
+        "bucket_source": "crossed_now",
+    }
+    ok = {**base, "error_class": "template_error"}
+    assert registry.validate("inference_bucket_reached", ok) == ok
+    assert registry.validate("inference_bucket_reached", base) == base
+    for bad in (
+        {**base, "error_class": "free text"},
+        {**base, "result": "ok", "error_class": "template_error"},
+    ):
+        assert registry.validate("inference_bucket_reached", bad) is None
+
+
+@pytest.mark.asyncio
+async def test_midstream_engine_abort_is_classified_without_message_text(
+    monkeypatch,
+):
+    from rapid_mlx.request import InferenceAbortedError
+    from rapid_mlx.telemetry import inference
+
+    inference._QUEUE.join()
+    monkeypatch.setattr(inference.track_module, "_upload_allowed", lambda: True)
+    events: list[dict[str, object]] = []
+    captured = threading.Event()
+
+    def capture(_event, props):
+        events.append(dict(props))
+        captured.set()
+
+    monkeypatch.setattr(inference.track_module, "track", capture)
+
+    async def aborted_stream():
+        yield "first-token"
+        raise InferenceAbortedError("Metal: out of memory at /Users/alice/x")
+
+    guarded = inference.emit_failed_on_stream_error(
+        aborted_stream(),
+        model="<custom>",
+        endpoint="/v1/responses",
+        caller_agent="OpenAI/JS 5.23.0",
+        caller_client=None,
+    )
+    with pytest.raises(InferenceAbortedError):
+        async for _ in guarded:
+            pass
+
+    loop = asyncio.get_running_loop()
+    assert await loop.run_in_executor(None, captured.wait, 5)
+    assert events[0]["error_class"] == "insufficient_memory"
+    assert events[0]["caller"] == "openai-node"
+    assert "alice" not in repr(events)
+
+
+def test_classifier_route_order_for_template_first_handlers():
+    from rapid_mlx.request import InferenceAbortedError
+    from rapid_mlx.telemetry import inference
+
+    template_abort = InferenceAbortedError("chat template render aborted")
+    media_abort = InferenceAbortedError("Failed to process image: x")
+    oom = InferenceAbortedError("Metal: out of memory")
+    # chat order: abort category wins
+    assert inference.classify_inference_failure(template_abort) == "engine_aborted"
+    # anthropic / non-stream responses order: the 400 predicates win
+    for exc, expected in (
+        (template_abort, "template_error"),
+        (media_abort, "media_input_invalid"),
+        (oom, "insufficient_memory"),
+        (RuntimeError("boom"), "other"),
+    ):
+        assert inference.classify_inference_failure(exc, abort_first=False) == expected
+
+
+def test_worker_partial_is_only_allowed_in_the_emitter_module():
+    source = (
+        "partial(_record_completed_request, result=result, error_class=error_class)"
+    )
+    tree = ast.parse(source)
+    assert _emit_shape_violations(tree) == []
+    assert [
+        why for _l, why in _emit_shape_violations(tree, allow_worker_partial=False)
+    ] == ["emitter referenced outside a call"]

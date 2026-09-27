@@ -243,7 +243,54 @@ def test_anthropic_engine_failure_emits_failed_inference(anthropic_client, monke
             "caller_agent": "testclient",
             "caller_client": None,
             "result": "failed",
+            "error_class": "other",
         }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("message", "expected_status", "expected_class"),
+    [
+        # The /v1/messages handler tests the template predicate before
+        # anything else: an abort whose text matches it is answered as the
+        # template 400, and telemetry must say template_error, not abort.
+        ("chat template render aborted", 400, "template_error"),
+        # No 400 predicate matches: the abort category is still recorded.
+        ("Metal: out of memory", None, "insufficient_memory"),
+    ],
+)
+def test_anthropic_failure_class_follows_the_route_order(
+    anthropic_client, monkeypatch, message, expected_status, expected_class
+):
+    from rapid_mlx.request import InferenceAbortedError
+    from rapid_mlx.telemetry import inference
+
+    calls: list[dict[str, object]] = []
+
+    async def fail_chat(*_args, **_kwargs):
+        raise InferenceAbortedError(message)
+
+    monkeypatch.setattr(anthropic_client.engine, "chat", fail_chat)
+    monkeypatch.setattr(
+        inference, "emit_completed_request", lambda **kwargs: calls.append(kwargs)
+    )
+
+    if expected_status is None:
+        with pytest.raises(InferenceAbortedError):
+            anthropic_client.client.post(
+                "/v1/messages",
+                headers={"x-api-key": "test-secret"},
+                json=_messages_payload(),
+            )
+    else:
+        response = anthropic_client.client.post(
+            "/v1/messages",
+            headers={"x-api-key": "test-secret"},
+            json=_messages_payload(),
+        )
+        assert response.status_code == expected_status, response.text
+    assert [(c["result"], c["error_class"]) for c in calls] == [
+        ("failed", expected_class)
     ]
 
 

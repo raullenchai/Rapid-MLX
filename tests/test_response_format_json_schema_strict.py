@@ -2594,3 +2594,225 @@ def test_strict_true_responses_sync_setup_failure_returns_502(_rate_limiter_stat
     assert engine.chat_calls == []
     snap = response_format_metrics.snapshot()
     assert snap["strict_violations_total"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Telemetry: every non-stream strict 502 is a counted strict_schema_violation
+# ---------------------------------------------------------------------------
+
+
+class _CallTimeFailureEngine(_Engine):
+    """``generate_with_schema`` raises when CALLED (plain ``def``), before any
+    coroutine exists -- the responses.py sync-setup arm, which
+    ``_SyncFailureEngine`` (an ``async def``) never actually reaches."""
+
+    def generate_with_schema(self, *, messages, json_schema, **kwargs):
+        raise RuntimeError("grammar setup failed at call time")
+
+
+def _capture_failed_emits(monkeypatch) -> list[dict]:
+    from rapid_mlx.telemetry import inference
+
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        inference, "emit_completed_request", lambda **kwargs: calls.append(kwargs)
+    )
+    return calls
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "engine_factory"),
+    [
+        # chat: guided raises -> 502 without fallback
+        (
+            "/v1/chat/completions",
+            lambda: _Engine(supports_guided=True, guided_raises=RuntimeError("x")),
+        ),
+        # chat: post-decode validation
+        (
+            "/v1/chat/completions",
+            lambda: _Engine(supports_guided=True, guided_text=_INVALID_PAYLOAD_PROSE),
+        ),
+        # responses: guided raises mid-await
+        (
+            "/v1/responses",
+            lambda: _Engine(supports_guided=True, guided_raises=RuntimeError("x")),
+        ),
+        # responses: guided raises at sync setup (call time)
+        ("/v1/responses", lambda: _CallTimeFailureEngine(supports_guided=True)),
+        # responses: post-decode validation
+        (
+            "/v1/responses",
+            lambda: _Engine(supports_guided=True, guided_text=_INVALID_PAYLOAD_PROSE),
+        ),
+    ],
+)
+def test_nonstream_strict_502_counts_one_strict_schema_violation(
+    monkeypatch, _rate_limiter_state, endpoint, engine_factory
+):
+    calls = _capture_failed_emits(monkeypatch)
+    engine = engine_factory()
+    if endpoint == "/v1/responses":
+        client = _make_responses_client(engine, _rate_limiter_state)
+        body = _responses_payload(strict=True)
+    else:
+        client = _make_client(engine)
+        body = _payload(strict=True)
+    resp = client.post(endpoint, json=body, headers={"User-Agent": "OpenAI/JS 5.23.0"})
+    assert resp.status_code == 502, resp.text
+    assert resp.json()["error"]["code"] == "strict_schema_violation"
+    assert [call["result"] for call in calls] == ["failed"]
+    assert calls[0]["error_class"] == "strict_schema_violation"
+    assert calls[0]["endpoint"] == endpoint
+    assert calls[0]["caller_agent"] == "OpenAI/JS 5.23.0"
+
+
+class _EngineThatBreaksOnRepair(_Engine):
+    """First (unconstrained) attempt misses the schema; the repair turn raises
+    an engine OOM abort."""
+
+    async def chat(self, *, messages, **kwargs):
+        from rapid_mlx.request import InferenceAbortedError
+
+        is_repair = len(self.chat_calls) > 0
+        self.chat_calls.append({"messages": messages, "kwargs": kwargs})
+        if is_repair:
+            raise InferenceAbortedError("Metal: out of memory at /Users/alice/x")
+        return GenerationOutput(
+            text=_INVALID_PAYLOAD_OUT_OF_RANGE,
+            new_text=_INVALID_PAYLOAD_OUT_OF_RANGE,
+            prompt_tokens=4,
+            completion_tokens=5,
+            finished=True,
+            finish_reason="stop",
+            channel=None,
+        )
+
+
+_LIFECYCLE_TASK = object()
+
+
+class _ReplacedDuringGuidedEngine(_Engine):
+    def consume_lifecycle_task_abort(self, task):
+        return task is _LIFECYCLE_TASK
+
+    async def generate_with_schema(self, *, messages, json_schema, **kwargs):
+        from rapid_mlx.api.errors import GuidedGenerationCancelledError
+
+        raise GuidedGenerationCancelledError(lifecycle_task=_LIFECYCLE_TASK)
+
+
+def _post_strict(endpoint, engine, rate_limiter_state):
+    if endpoint == "/v1/responses":
+        client = _make_responses_client(engine, rate_limiter_state)
+        body = _responses_payload(strict=True)
+    else:
+        client = _make_client(engine)
+        body = _payload(strict=True)
+    return client.post(endpoint, json=body)
+
+
+@pytest.mark.parametrize("endpoint", ["/v1/chat/completions", "/v1/responses"])
+def test_strict_repair_engine_failure_counts_the_classified_exception(
+    monkeypatch, _rate_limiter_state, endpoint
+):
+    calls = _capture_failed_emits(monkeypatch)
+    resp = _post_strict(
+        endpoint, _EngineThatBreaksOnRepair(supports_guided=False), _rate_limiter_state
+    )
+    assert resp.status_code == 502, resp.text
+    assert resp.json()["error"]["code"] == "strict_repair_engine_failure"
+    assert [(c["result"], c["error_class"]) for c in calls] == [
+        ("failed", "insufficient_memory")
+    ]
+    assert "alice" not in repr(calls)
+
+
+@pytest.mark.parametrize("endpoint", ["/v1/chat/completions", "/v1/responses"])
+def test_strict_422_after_repair_counts_strict_schema_violation(
+    monkeypatch, _rate_limiter_state, endpoint
+):
+    calls = _capture_failed_emits(monkeypatch)
+    resp = _post_strict(
+        endpoint,
+        _Engine(supports_guided=False, chat_text=_INVALID_PAYLOAD_OUT_OF_RANGE),
+        _rate_limiter_state,
+    )
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["error"]["code"] == "json_schema_violation"
+    assert [(c["result"], c["error_class"]) for c in calls] == [
+        ("failed", "strict_schema_violation")
+    ]
+
+
+@pytest.mark.parametrize("endpoint", ["/v1/chat/completions", "/v1/responses"])
+def test_nonstream_guided_model_replacement_counts_model_replaced(
+    monkeypatch, _rate_limiter_state, endpoint
+):
+    calls = _capture_failed_emits(monkeypatch)
+    resp = _post_strict(
+        endpoint, _ReplacedDuringGuidedEngine(supports_guided=True), _rate_limiter_state
+    )
+    assert resp.status_code == 503, resp.text
+    assert [(c["result"], c["error_class"]) for c in calls] == [
+        ("failed", "model_replaced")
+    ]
+
+
+@pytest.mark.parametrize(
+    ("chat_text", "expected"),
+    [
+        (_INVALID_PAYLOAD_OUT_OF_RANGE, [("failed", "strict_schema_violation")]),
+        (_VALID_PAYLOAD, [("ok", None)]),
+    ],
+)
+def test_strict_postgen_stream_counts_exactly_one_judged_outcome(
+    monkeypatch, _rate_limiter_state, chat_text, expected
+):
+    """The unconstrained strict stream is judged AFTER the upstream stream's
+    clean end: a violation is one strict_schema_violation (never also ok),
+    a valid body is one ok."""
+    calls = _capture_failed_emits(monkeypatch)
+    engine = _Engine(supports_guided=False, chat_text=chat_text)
+    client = _make_client(engine)
+    resp = client.post("/v1/chat/completions", json=_payload(strict=True, stream=True))
+    assert resp.status_code == 200, resp.text
+    assert ("json_schema_violation" in resp.text) == (expected[0][0] == "failed")
+    assert [(c["result"], c.get("error_class")) for c in calls] == expected
+
+
+def test_strict_postgen_stream_buffer_overflow_counts_strict_schema_violation(
+    monkeypatch, _rate_limiter_state
+):
+    monkeypatch.setenv("RAPID_MLX_STRICT_BUFFER_BYTES", "8")
+    calls = _capture_failed_emits(monkeypatch)
+    engine = _Engine(supports_guided=False, chat_text=_VALID_PAYLOAD * 50)
+    client = _make_client(engine)
+    resp = client.post("/v1/chat/completions", json=_payload(strict=True, stream=True))
+    assert "buffer_overflow" in resp.text, resp.text[-400:]
+    assert [(c["result"], c.get("error_class")) for c in calls] == [
+        ("failed", "strict_schema_violation")
+    ]
+
+
+def test_chat_nonstream_abort_is_classified_abort_first(
+    monkeypatch, _rate_limiter_state
+):
+    """The chat handler maps InferenceAbortedError to 503 BEFORE its template
+    400 check, so an abort whose text matches the template predicate is an
+    abort in telemetry too (the counterpart of the template-first routes)."""
+    from rapid_mlx.request import InferenceAbortedError
+
+    class _AbortingEngine(_Engine):
+        async def chat(self, *, messages, **kwargs):
+            raise InferenceAbortedError("chat template render aborted")
+
+    calls = _capture_failed_emits(monkeypatch)
+    client = _make_client(_AbortingEngine(supports_guided=False))
+    body = _payload(strict=False)
+    body.pop("response_format", None)
+    resp = client.post("/v1/chat/completions", json=body)
+    assert resp.status_code == 503, resp.text
+    assert [(c["result"], c["error_class"]) for c in calls] == [
+        ("failed", "engine_aborted")
+    ]

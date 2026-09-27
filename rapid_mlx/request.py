@@ -455,6 +455,57 @@ def model_load_error_payload(exc: BaseException) -> dict:
     }
 
 
+def inference_aborted_error_code(exc: BaseException) -> str:
+    """Return the stable category of an engine-loop abort.
+
+    One of :data:`MODEL_REPLACEMENT_CODE` (``error_kind="lifecycle"``),
+    :data:`ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY` or
+    :data:`ENGINE_ABORT_CODE_ENGINE_ABORTED`. The category is carried on
+    :attr:`InferenceAbortedError.error_kind` for lanes that pre-classify, else
+    re-derived via :func:`classify_engine_abort`. Shared by the client error
+    payload below and the telemetry failure classifier so both always agree.
+    """
+    kind = getattr(exc, "error_kind", None)
+    if kind == "lifecycle":
+        return MODEL_REPLACEMENT_CODE
+    if isinstance(kind, str) and kind in ENGINE_ABORT_CODES:
+        return kind
+    return classify_engine_abort(exc)
+
+
+def is_chat_template_error(exc: BaseException) -> bool:
+    """True when a chat/prompt build failure is a chat-template error.
+
+    The single predicate behind every route's ``Chat template error`` 400
+    mapping and the telemetry ``template_error`` class. Reads the exception
+    text inside the trust boundary; callers decide what (if anything) to echo.
+    """
+    err_msg = str(exc).lower()
+    return (
+        "TemplateError" in type(exc).__name__
+        or "template" in err_msg
+        or ("user" in err_msg and "found" in err_msg)
+    )
+
+
+def is_media_input_error(exc: BaseException) -> bool:
+    """True for an image/video fetch or decode failure (routes map it to 400).
+
+    ``multimodal_processor`` and ``models/mllm.py:_prepare_images`` raise these
+    with a ``Failed to process image|video`` prefix (#457).
+    """
+    err_msg = str(exc)
+    return "Failed to process image" in err_msg or "Failed to process video" in err_msg
+
+
+def is_batch_cap_error(exc: BaseException) -> bool:
+    """True when vision + text tokens exceed the MLLM per-batch cap (#682).
+
+    Raised by ``mllm_batch_generator._process_prompts``; routes map it to 400.
+    """
+    return "exceeds the per-batch cap" in str(exc)
+
+
 def inference_aborted_error_payload(exc: BaseException) -> dict:
     """Build the OpenAI-shaped ``error`` object for an engine-loop abort.
 
@@ -467,8 +518,8 @@ def inference_aborted_error_payload(exc: BaseException) -> dict:
     user-facing ``message`` is a fixed, safe string per code -- never
     ``str(exc)`` -- so no engine internals (paths, prompt fragments) leak.
     """
-    kind = getattr(exc, "error_kind", None)
-    if kind == "lifecycle":
+    code = inference_aborted_error_code(exc)
+    if code == MODEL_REPLACEMENT_CODE:
         # A cooperative cancellation (the primary model was replaced under a
         # running request), NOT an engine fault. Mirror the terminal SSE frame
         # ``_disconnect_guard`` emits post-commit so the pre-commit HTTP 503 and
@@ -476,14 +527,12 @@ def inference_aborted_error_payload(exc: BaseException) -> dict:
         # a model replacement reads as a transient crash with a misleading
         # "please try again".
         return lifecycle_cancel_error_payload()
-    code = kind if kind in ENGINE_ABORT_CODES else classify_engine_abort(exc)
     if code == ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY:
         message = (
             "The model ran out of memory during generation. "
             "Free up memory or choose a smaller model."
         )
     else:
-        code = ENGINE_ABORT_CODE_ENGINE_ABORTED
         message = (
             "Inference was interrupted by a transient engine error. Please try again."
         )
