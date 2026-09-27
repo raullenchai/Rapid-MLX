@@ -2183,6 +2183,18 @@
     "min_memory_gb": 64
   },
   "qwen-image-2.1": {
+    "hf_path": "mlx-community/Qwen-Image-2.1-mflux-q4",
+    "modality": "image-gen",
+    "tool_call_parser": null,
+    "reasoning_parser": null,
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": false,
+    "suffix_decoding_tier": "unknown",
+    "min_memory_gb": 8
+  },
+  "qwen-image-2.1-bf16": {
     "hf_path": "Qwen/Qwen-Image-2.1",
     "modality": "image-gen",
     "tool_call_parser": null,
