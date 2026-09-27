@@ -1,7 +1,7 @@
 """Native macOS backend for the model-agnostic computer-use tool suite.
 
 Wraps the AX probe (tools/gui_verifier_cua_poc/ax_driver.py primitives) into
-an Orca-shaped surface: snapshot caches keyed by app/window with a TTL,
+a snapshot-cache-first surface: caches keyed by app/window with a TTL,
 element actions that accept an element index (semantic) or coordinates
 (fallback), direct AX value writes with read-back verification before
 falling back to synthetic typing, and typed errors with recovery hints.
@@ -371,7 +371,8 @@ def _synthetic_fill(snapshot: dict, element_index: int, value: str) -> dict:
     ax_driver._type_text(value)
     time.sleep(0.4)
     # Verify by VALUE, not index: typing can open suggestion dropdowns and the
-    # tree rebuilds with shifted indexes (Orca solves this with runtimeIds).
+    # tree rebuilds with shifted indexes (a runtime element identity would
+    # remove this class of staleness; snapshots are refreshed instead).
     try:
         fresh = ax_driver.collect(
             snapshot["app"]["name"], keep_elements=True, max_windows=1
@@ -551,12 +552,13 @@ def read_url(app: str) -> str:
         value = ax_driver._get(live, "AXValue")
         if isinstance(value, str) and value.startswith(("http://", "https://")):
             return value
+    safe_app = app.replace("\\", "\\\\").replace('"', '\\"')
     try:
         result = subprocess.run(
             [
                 "osascript",
                 "-e",
-                f'tell application "{app}" to get URL of active tab of front window',
+                f'tell application "{safe_app}" to get URL of active tab of front window',
             ],
             capture_output=True,
             text=True,

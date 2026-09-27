@@ -1,8 +1,8 @@
-"""Typed computer-use errors with agent-facing recovery hints (Orca-style).
+"""Typed computer-use errors with agent-facing recovery hints.
 
 Every failure surfaced to an agent carries a machine-readable code and a
 short recovery hint so the agent can self-correct instead of retrying
-blindly. Codes mirror the taxonomy observed in Orca's computer-use runtime.
+blindly. Codes follow a taxonomy of actionable failure classes.
 """
 
 from __future__ import annotations

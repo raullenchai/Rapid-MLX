@@ -1,7 +1,7 @@
 """Native macOS Accessibility element probe — DOM-free target enumeration.
 
-Meta Muse on Mac drives apps through the macOS Accessibility (AX) tree instead
-of injected page scripts. This probe proves the same route locally:
+Drives apps through the macOS Accessibility (AX) tree instead of injected
+page scripts:
 
 * enumerates actionable elements of any app (native OR browser content —
   Chrome exposes its web area through AX once manual accessibility is on),

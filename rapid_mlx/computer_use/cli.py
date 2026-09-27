@@ -1,4 +1,4 @@
-"""`rapid-mlx computer` — model-agnostic computer-use CLI (Orca-shaped).
+"""`rapid-mlx computer` — model-agnostic computer-use CLI.
 
 Any agent drives the machine through these commands; the layer never calls a
 model. Output is a single JSON object on stdout: {ok: true, ...} or

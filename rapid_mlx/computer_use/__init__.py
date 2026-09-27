@@ -1,4 +1,4 @@
-"""Model-agnostic computer-use tool layer for macOS (Orca-style).
+"""Model-agnostic computer-use tool layer for macOS.
 
 Agents observe and act through the `rapid-mlx computer` CLI; this package
 never calls a model. See cli.py for the command surface and errors.py for
