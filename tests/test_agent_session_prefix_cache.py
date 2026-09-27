@@ -805,3 +805,22 @@ def test_prefill_reclaim_has_no_footprint_for_an_unknown_model(monkeypatch):
     sched = _scheduler(monkeypatch)
     sched.model = object()
     assert sched._prefill_reclaim_footprint() is None
+
+
+def test_context_ceiling_shares_the_model_dims_footprint(monkeypatch):
+    # ``projected_memory_max_context`` now routes its ``.args`` fallback
+    # through the same helper as the prefill reclaim.
+    sched = _scheduler(monkeypatch)
+    sched.model = object()
+    assert sched.projected_memory_max_context(262_144) is None
+    sched.model = _mlx_lm_shaped_model()
+    calls = []
+    orig = sched._footprint_from_model_dims
+
+    def _spy():
+        calls.append(1)
+        return orig()
+
+    monkeypatch.setattr(sched, "_footprint_from_model_dims", _spy)
+    sched.projected_memory_max_context(262_144)
+    assert calls
