@@ -24,7 +24,8 @@ import argparse
 import json
 import sys
 import time
-from typing import Any
+from collections.abc import Iterable
+from typing import Any, cast
 
 try:
     import ApplicationServices as AS  # type: ignore[import-untyped]  # noqa: N817
@@ -159,14 +160,14 @@ def _get(element: object, attribute: str) -> object:
     return value if err == kAXErrorSuccess else None
 
 
-def _as_list(raw: object) -> list:
+def _as_list(raw: object) -> list[object]:
     """pyobjc returns AX arrays as NSMutableArray — iterable, never a python
     list. isinstance(raw, (list, tuple)) is always False for them and silently
     emptied every snapshot (dogfood 2026-09-27); normalize once here."""
     if raw is None:
         return []
     try:
-        return list(raw)
+        return list(cast(Iterable[object], raw))
     except TypeError:
         return []
 
@@ -240,8 +241,8 @@ def _app_element(app_name: str) -> object:
     # "ThemeWidgetControlViewService (Rapid)"), yielding an AX element with
     # no windows and empty snapshots for every app. Prefer exact-name matches
     # over Apple's own XPC processes, then verify the element has windows.
-    candidates: list[object] = []
-    exact: list[object] = []
+    candidates: list[Any] = []
+    exact: list[Any] = []
     wanted = app_name.lower()
     for app in workspace.runningApplications():
         name = (app.localizedName() or "").lower()
