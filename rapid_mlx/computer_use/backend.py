@@ -17,6 +17,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
+from typing import Any, cast
 
 from .errors import ComputerUseError
 
@@ -65,7 +66,12 @@ MODIFIER_FLAGS = {
 
 def _resolve_app(app: str) -> tuple[object, dict]:
     """Find a running app by name substring, bundle id, or pid:N."""
-    import ApplicationServices as AS  # type: ignore[import-untyped]  # noqa: N813, N817  # camelcase pyobjc module, alias is conventional
+    try:
+        import ApplicationServices as AS  # type: ignore[import-untyped]  # noqa: N813, N817
+    except ImportError as exc:
+        raise ComputerUseError(
+            "unsupported_platform", "computer-use actions require macOS with PyObjC"
+        ) from exc
 
     workspace = AS.NSWorkspace.sharedWorkspace()
     wanted_pid = None
@@ -104,7 +110,7 @@ def _resolve_app(app: str) -> tuple[object, dict]:
     raise ComputerUseError("app_not_found", f"no running app matches {app!r}")
 
 
-def _ax_app_element(running_app: object, activate: bool = True) -> object:
+def _ax_app_element(running_app: Any, activate: bool = True) -> object:
     from ApplicationServices import (
         AXUIElementCreateApplication,
         AXUIElementSetAttributeValue,
@@ -134,20 +140,23 @@ class SnapshotCache:
     """TTL cache of AX snapshots keyed by (app spec, window index)."""
 
     def __init__(self) -> None:
-        self._entries: dict[tuple[str, int], tuple[float, dict]] = {}
+        self._entries: dict[tuple[str, int, bool], tuple[float, dict]] = {}
 
-    def get(self, app: str, window_index: int) -> dict | None:
-        entry = self._entries.get((app, window_index))
+    def get(self, app: str, window_index: int, screenshot: bool = False) -> dict | None:
+        key = (app, window_index, screenshot)
+        entry = self._entries.get(key)
         if entry is None:
             return None
         created, snapshot = entry
         if time.time() - created > SNAPSHOT_TTL_S:
-            self._entries.pop((app, window_index), None)
+            self._entries.pop(key, None)
             return None
         return snapshot
 
-    def put(self, app: str, window_index: int, snapshot: dict) -> None:
-        self._entries[(app, window_index)] = (time.time(), snapshot)
+    def put(
+        self, app: str, window_index: int, snapshot: dict, screenshot: bool = False
+    ) -> None:
+        self._entries[(app, window_index, screenshot)] = (time.time(), snapshot)
         if len(self._entries) > SNAPSHOT_CACHE_MAX:
             oldest = min(self._entries, key=lambda key: self._entries[key][0])
             self._entries.pop(oldest, None)
@@ -164,13 +173,20 @@ def get_app_state(
 ) -> dict:
     """Snapshot one window: elements with indexes, tree text, optional PNG."""
     if use_cache:
-        cached = _CACHE.get(app, window_index)
+        cached = _CACHE.get(app, window_index, screenshot)
         if cached is not None:
             return cached
     ax_element, app_info = _resolve_app(app)
     targets = ax_driver.collect(
-        app_info["name"] or app, keep_elements=True, max_windows=1
+        app_info["name"] or app,
+        keep_elements=True,
+        max_windows=1,
+        window_index=window_index,
     )
+    if not targets and window_index:
+        raise ComputerUseError(
+            "window_not_found", f"window index {window_index} is not available"
+        )
     # collect() enumerates all windows; emulate per-window slicing cheaply by
     # keeping the first window's worth (POC) and flag truncation.
     elements = []
@@ -211,7 +227,7 @@ def get_app_state(
     )
     if png is not None:
         snapshot["screenshot_png"] = png
-    _CACHE.put(app, window_index, snapshot)
+    _CACHE.put(app, window_index, snapshot, screenshot)
     return snapshot
 
 
@@ -228,26 +244,25 @@ def screenshot_window(app_name: str, window_index: int = 0) -> bytes | None:
         kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
         kCGNullWindowID,
     )
-    candidates = []
+    candidates: list[int] = []
     for window in windows:
         owner = str(window.get("kCGWindowOwnerName", ""))
         if app_name.lower() not in owner.lower():
             continue
         if window.get("kCGWindowLayer", 99) != 0:
             continue
-        bounds = window.get("kCGWindowBounds", {})
-        candidates.append(
-            (
-                bounds.get("Width", 0) * bounds.get("Height", 0),
-                window.get("kCGWindowNumber"),
-            )
-        )
+        window_number = window.get("kCGWindowNumber")
+        if window_number is not None:
+            candidates.append(int(window_number))
     if not candidates:
         raise ComputerUseError(
             "window_not_found", f"no on-screen window for {app_name!r}"
         )
-    candidates.sort(reverse=True)
-    window_number = candidates[min(window_index, len(candidates) - 1)][1]
+    if window_index >= len(candidates):
+        raise ComputerUseError(
+            "window_not_found", f"window index {window_index} is not available"
+        )
+    window_number = candidates[window_index]
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as handle:
         out_path = handle.name
     try:
@@ -270,7 +285,7 @@ def screenshot_window(app_name: str, window_index: int = 0) -> bytes | None:
 def _element(snapshot: dict, element_index: int, live: bool = False) -> dict:
     for entry in snapshot["elements"]:
         if entry["index"] == element_index:
-            return entry
+            return cast(dict, entry)
     raise ComputerUseError(
         "element_not_found",
         f"element {element_index} is not in the current snapshot "
@@ -281,7 +296,10 @@ def _element(snapshot: dict, element_index: int, live: bool = False) -> dict:
 def _live_element(snapshot: dict, element_index: int) -> object:
     """Re-collect and return the live AX ref for an index, if still present."""
     fresh = ax_driver.collect(
-        snapshot["app"]["name"], keep_elements=True, max_windows=1
+        snapshot["app"]["name"],
+        keep_elements=True,
+        max_windows=1,
+        window_index=snapshot.get("window_index", 0),
     )
     for target in fresh:
         if int(target["target_id"][1:]) == element_index:
@@ -305,8 +323,8 @@ def click(
     click_count: int = 1,
     mouse_button: str = "left",
 ) -> dict:
-    snapshot = get_app_state(app, use_cache=False)
     if element_index is not None:
+        snapshot = get_app_state(app, screenshot=False, use_cache=False)
         entry = _element(snapshot, element_index)
         center = entry["center"]
         live = None
@@ -327,6 +345,7 @@ def click(
         raise ComputerUseError(
             "invalid_argument", "click requires --element-index or both --x and --y"
         )
+    _resolve_app(app)
     ax_driver._cg_click(float(x), float(y), clicks=click_count)
     return {"mode": "CGEvent-click", "at": [x, y]}
 
@@ -338,15 +357,15 @@ def set_value(app: str, element_index: int, value: str) -> dict:
     the element rejects direct AX writes. The returned verification field tells
     the agent whether the value landed exactly.
     """
-    from ApplicationServices import (  # noqa: N813  # camelcase pyobjc module, alias is conventional
-        AXUIElementSetAttributeValue,
-        kAXValueAttribute,
-    )
-
-    snapshot = get_app_state(app, use_cache=False)
+    snapshot = get_app_state(app, screenshot=False, use_cache=False)
     _element(snapshot, element_index)
     live = _live_element(snapshot, element_index)
     if live is not None:
+        from ApplicationServices import (  # type: ignore[import-untyped]
+            AXUIElementSetAttributeValue,
+            kAXValueAttribute,
+        )
+
         err = AXUIElementSetAttributeValue(live, kAXValueAttribute, value)
         if err == 0:
             readback = _read_value(live)
@@ -375,7 +394,10 @@ def _synthetic_fill(snapshot: dict, element_index: int, value: str) -> dict:
     # remove this class of staleness; snapshots are refreshed instead).
     try:
         fresh = ax_driver.collect(
-            snapshot["app"]["name"], keep_elements=True, max_windows=1
+            snapshot["app"]["name"],
+            keep_elements=True,
+            max_windows=1,
+            window_index=snapshot.get("window_index", 0),
         )
         for target in fresh:
             if target.get("element") is None or target["role"] not in FILL_ROLES:
@@ -399,6 +421,7 @@ def _synthetic_fill(snapshot: dict, element_index: int, value: str) -> dict:
 
 
 def type_text(app: str, text: str) -> dict:
+    _resolve_app(app)
     ax_driver._type_text(text)
     return {"mode": "CGEvent-unicode", "characters": len(text)}
 
@@ -406,9 +429,11 @@ def type_text(app: str, text: str) -> dict:
 def press_key(app: str, key: str) -> dict:
     normalized = key.strip().lower()
     if normalized in KEY_ALIASES:
+        _resolve_app(app)
         ax_driver._press_key(KEY_ALIASES[normalized])
         return {"mode": "CGEvent-keycode", "key": normalized}
     if normalized in ax_driver.KEYCODE_MAP:
+        _resolve_app(app)
         ax_driver._press_key(ax_driver._keycode_for(normalized))
         return {"mode": "CGEvent-keycode", "key": normalized}
     raise ComputerUseError("unsupported_key", f"unsupported single key {key!r}")
@@ -416,8 +441,6 @@ def press_key(app: str, key: str) -> dict:
 
 def hotkey(app: str, key: str) -> dict:
     """Modifier chord like 'Cmd+A', 'Ctrl+Shift+Tab'."""
-    import Quartz
-
     parts = [p.strip().lower() for p in key.split("+") if p.strip()]
     if len(parts) < 2:
         raise ComputerUseError(
@@ -437,6 +460,8 @@ def hotkey(app: str, key: str) -> dict:
         raise ComputerUseError(
             "unsupported_key", f"unsupported hotkey key {key_part!r}"
         )
+    _resolve_app(app)
+    import Quartz
     down = Quartz.CGEventCreateKeyboardEvent(None, keycode, True)
     up = Quartz.CGEventCreateKeyboardEvent(None, keycode, False)
     Quartz.CGEventSetFlags(down, modifiers)
@@ -454,23 +479,26 @@ def scroll(
     x: int | None = None,
     y: int | None = None,
 ) -> dict:
-    import Quartz
-
     if direction not in {"up", "down", "left", "right"}:
         raise ComputerUseError(
             "invalid_argument", f"unsupported direction {direction!r}"
         )
+    _resolve_app(app)
+    import Quartz
     lines = int(max(1, round(pages * 10)))
-    sign = -1 if direction in {"up", "left"} else 1
-    events = [(0, sign * lines)] if direction in {"up", "down"} else [(1, sign * lines)]
+    delta = lines if direction in {"up", "left"} else -lines
     if x is not None and y is not None:
         ax_driver._cg_click(float(x), float(y))  # position pointer for scroll target
-    for axis, delta in events:
+    if direction in {"up", "down"}:
         event = Quartz.CGEventCreateScrollWheelEvent(
-            None, Quartz.kCGScrollEventUnitLine, axis, delta
+            None, Quartz.kCGScrollEventUnitLine, 1, delta
         )
-        Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
-        time.sleep(0.05)
+    else:
+        event = Quartz.CGEventCreateScrollWheelEvent(
+            None, Quartz.kCGScrollEventUnitLine, 2, 0, delta
+        )
+    Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
+    time.sleep(0.05)
     return {"mode": "CGEvent-scroll", "direction": direction, "lines": lines}
 
 
@@ -478,7 +506,7 @@ def perform_secondary_action(app: str, element_index: int, action: str) -> dict:
     import ApplicationServices as AS  # type: ignore[import-untyped]  # noqa: N813, N817  # camelcase pyobjc module, alias is conventional
     from ApplicationServices import AXUIElementPerformAction
 
-    snapshot = get_app_state(app, use_cache=False)
+    snapshot = get_app_state(app, screenshot=False, use_cache=False)
     entry = _element(snapshot, element_index)
     live = _live_element(snapshot, element_index)
     if live is None or action not in entry["actions"]:
@@ -501,7 +529,7 @@ def permissions() -> dict:
     import Quartz
 
     trusted = AS.AXIsProcessTrustedWithOptions({AS.kAXTrustedCheckOptionPrompt: False})
-    preflight = True
+    preflight: bool | None = True
     try:
         preflight = bool(Quartz.CGPreflightScreenCaptureAccess())
     except Exception:  # noqa: BLE001 - older macOS without the API

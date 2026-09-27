@@ -46,6 +46,7 @@ RECOVERY_HINTS: dict[str, tuple[str, ...]] = {
     "stale_snapshot": (
         "The cached snapshot expired; re-run get-app-state for fresh indexes.",
     ),
+    "unsupported_platform": ("Run computer-use on a Mac with PyObjC installed.",),
 }
 
 

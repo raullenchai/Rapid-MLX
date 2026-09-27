@@ -60,6 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
         "get-app-state", help="Capture a compact AX snapshot of an app"
     )
     state.add_argument("--app", required=True)
+    state.add_argument("--window-index", type=int, default=0)
     state.add_argument("--no-screenshot", action="store_true")
     state.add_argument(
         "--refresh", action="store_true", help="bypass the snapshot cache"
@@ -150,7 +151,10 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.subcommand == "get-app-state":
             snapshot = backend.get_app_state(
-                args.app, screenshot=not args.no_screenshot, use_cache=not args.refresh
+                args.app,
+                window_index=args.window_index,
+                screenshot=not args.no_screenshot,
+                use_cache=not args.refresh,
             )
             if args.png_out and snapshot.get("screenshot_png"):
                 Path(args.png_out).write_bytes(snapshot["screenshot_png"])

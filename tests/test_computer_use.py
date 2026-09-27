@@ -1,6 +1,8 @@
 """Unit tests for the model-agnostic computer-use layer (no AX calls)."""
 
 import json
+import sys
+import types
 
 import pytest
 
@@ -68,10 +70,18 @@ def test_snapshot_cache_evicts_oldest(monkeypatch):
     assert len(cache._entries) <= backend.SNAPSHOT_CACHE_MAX
 
 
+def test_snapshot_cache_separates_pixel_and_ax_only_entries():
+    cache = backend.SnapshotCache()
+    cache.put("app", 0, {"kind": "ax"}, screenshot=False)
+    cache.put("app", 0, {"kind": "pixels"}, screenshot=True)
+    assert cache.get("app", 0, screenshot=False) == {"kind": "ax"}
+    assert cache.get("app", 0, screenshot=True) == {"kind": "pixels"}
+
+
 def test_resolve_app_unknown_name():
     with pytest.raises(errors.ComputerUseError) as excinfo:
         backend._resolve_app("Definitely Not Running App XYZ")
-    assert excinfo.value.code == "app_not_found"
+    assert excinfo.value.code in {"app_not_found", "unsupported_platform"}
 
 
 # ---------------------------------------------------------------- cache / cli / read_url
@@ -143,6 +153,83 @@ def test_read_url_empty_value_without_osascript_result(monkeypatch):
     assert backend.read_url("Safari") == "https://ok.example"
 
 
+def test_coordinate_click_activates_target_without_snapshot(monkeypatch):
+    calls = []
+    monkeypatch.setattr(backend, "_resolve_app", lambda app: calls.append(app))
+    monkeypatch.setattr(
+        backend,
+        "get_app_state",
+        lambda *args, **kwargs: pytest.fail("coordinate click must not take a snapshot"),
+    )
+    monkeypatch.setattr(backend.ax_driver, "_cg_click", lambda *args, **kwargs: None)
+    assert backend.click("Target App", x=4, y=9)["at"] == [4, 9]
+    assert calls == ["Target App"]
+
+
+def test_synthetic_keyboard_actions_activate_target_app(monkeypatch):
+    calls = []
+    monkeypatch.setattr(backend, "_resolve_app", lambda app: calls.append(app))
+    monkeypatch.setattr(backend.ax_driver, "_type_text", lambda text: None)
+    monkeypatch.setattr(backend.ax_driver, "_press_key", lambda *args, **kwargs: None)
+
+    backend.type_text("Target App", "secret")
+    backend.press_key("Target App", "return")
+    assert calls == ["Target App", "Target App"]
+
+
+def test_hotkey_and_scroll_activate_target_before_posting(monkeypatch):
+    calls = []
+    scroll_events = []
+    monkeypatch.setattr(backend, "_resolve_app", lambda app: calls.append(app))
+    fake_quartz = types.SimpleNamespace(
+        CGEventCreateKeyboardEvent=lambda *_args: object(),
+        CGEventSetFlags=lambda *_args: None,
+        CGEventPost=lambda *_args: None,
+        CGEventCreateScrollWheelEvent=lambda *_args: scroll_events.append(_args)
+        or object(),
+        kCGHIDEventTap=0,
+        kCGScrollEventUnitLine=0,
+    )
+    monkeypatch.setitem(sys.modules, "Quartz", fake_quartz)
+
+    backend.hotkey("Target App", "Cmd+A")
+    backend.scroll("Target App", "down")
+    assert calls == ["Target App", "Target App"]
+    assert scroll_events == [(None, 0, 1, -10)]
+
+    scroll_events.clear()
+    backend.scroll("Target App", "left", pages=0.5)
+    assert scroll_events == [(None, 0, 2, 0, 5)]
+
+
+def test_get_app_state_uses_requested_window_without_screenshot(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        backend,
+        "_resolve_app",
+        lambda app: (object(), {"name": "Target App", "bundleId": "x", "pid": 7}),
+    )
+
+    def fake_collect(app, **kwargs):
+        captured.update(kwargs)
+        return [
+            {
+                "target_id": "t000",
+                "role": "AXButton",
+                "text": "OK",
+                "actions": ["AXPress"],
+                "rect": [0, 0, 10, 10],
+            }
+        ]
+
+    monkeypatch.setattr(backend.ax_driver, "collect", fake_collect)
+    state = backend.get_app_state(
+        "Target App", window_index=2, screenshot=False, use_cache=False
+    )
+    assert state["window_index"] == 2
+    assert captured["window_index"] == 2
+
+
 def test_cli_capabilities_and_error_envelope(capsys):
     from rapid_mlx.computer_use import cli
 
@@ -161,4 +248,5 @@ def test_cli_capabilities_and_error_envelope(capsys):
         "app_not_found",
         "element_not_found",
         "ax_set_failed",
+        "unsupported_platform",
     }

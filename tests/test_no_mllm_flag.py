@@ -212,6 +212,9 @@ NON_ROUTING_FLAGS_ALLOWLIST: frozenset[str] = frozenset(
         # knob on a read-only subcommand: it selects no model, parser,
         # tier or engine route, and forwards no kwarg into the engine.
         "--no-open",
+        # Computer-use observation knob: omits window pixels while retaining
+        # the AX tree. It does not select a model or runtime route.
+        "--no-screenshot",
     }
 )
 

@@ -24,31 +24,58 @@ import argparse
 import json
 import sys
 import time
+from typing import Any
 
-import ApplicationServices as AS  # noqa: N817
-from ApplicationServices import (
-    AXUIElementCopyActionNames,
-    AXUIElementCopyAttributeValue,
-    AXUIElementCreateApplication,
-    AXUIElementCreateSystemWide,
-    AXUIElementPerformAction,
-    AXUIElementSetAttributeValue,
-    AXValueGetValue,
-    kAXErrorSuccess,
-)
-from Quartz import (
-    CGEventCreateKeyboardEvent,
-    CGEventCreateMouseEvent,
-    CGEventKeyboardSetUnicodeString,
-    CGEventPost,
-    CGEventSetFlags,
-    CGEventSetIntegerValueField,
-    kCGEventLeftMouseDown,
-    kCGEventLeftMouseUp,
-    kCGEventMouseMoved,
-    kCGHIDEventTap,
-    kCGMouseEventClickState,
-)
+try:
+    import ApplicationServices as AS  # type: ignore[import-untyped]  # noqa: N817
+    from ApplicationServices import (  # type: ignore[import-untyped]
+        AXUIElementCopyActionNames,
+        AXUIElementCopyAttributeValue,
+        AXUIElementCreateApplication,
+        AXUIElementCreateSystemWide,
+        AXUIElementPerformAction,
+        AXUIElementSetAttributeValue,
+        AXValueGetValue,
+        kAXErrorSuccess,
+    )
+    from Quartz import (  # type: ignore[import-untyped]
+        CGEventCreateKeyboardEvent,
+        CGEventCreateMouseEvent,
+        CGEventKeyboardSetUnicodeString,
+        CGEventPost,
+        CGEventSetFlags,
+        CGEventSetIntegerValueField,
+        kCGEventLeftMouseDown,
+        kCGEventLeftMouseUp,
+        kCGEventMouseMoved,
+        kCGHIDEventTap,
+        kCGMouseEventClickState,
+    )
+except ImportError:  # Linux CI and non-macOS clients may still import the package.
+    AS = None  # type: ignore[assignment]
+
+    def _macos_only(*_args: object, **_kwargs: object) -> Any:
+        raise RuntimeError("computer-use actions require macOS with PyObjC installed")
+
+    AXUIElementCopyActionNames = _macos_only
+    AXUIElementCopyAttributeValue = _macos_only
+    AXUIElementCreateApplication = _macos_only
+    AXUIElementCreateSystemWide = _macos_only
+    AXUIElementPerformAction = _macos_only
+    AXUIElementSetAttributeValue = _macos_only
+    AXValueGetValue = _macos_only
+    CGEventCreateKeyboardEvent = _macos_only
+    CGEventCreateMouseEvent = _macos_only
+    CGEventKeyboardSetUnicodeString = _macos_only
+    CGEventPost = _macos_only
+    CGEventSetFlags = _macos_only
+    CGEventSetIntegerValueField = _macos_only
+    kAXErrorSuccess = 0  # noqa: N816
+    kCGEventLeftMouseDown = 0  # noqa: N816
+    kCGEventLeftMouseUp = 0  # noqa: N816
+    kCGEventMouseMoved = 0  # noqa: N816
+    kCGHIDEventTap = 0  # noqa: N816
+    kCGMouseEventClickState = 0  # noqa: N816
 
 FLAG_COMMAND = 1 << 20  # kCGEventFlagMaskCommand
 FLAG_NONE = 0
@@ -84,7 +111,7 @@ KEYCODE_MAP = {
     "-": 0x1B,
     "8": 0x1C,
     "0": 0x1D,
-    "]": 0x1D,
+    "]": 0x1E,
     "o": 0x1F,
     "u": 0x20,
     "[": 0x21,
@@ -161,7 +188,8 @@ def _label(element: object) -> str:
 def _walk(element: object, depth: int, out: list[dict], counter: list[int]) -> None:
     if depth > MAX_DEPTH or counter[0] >= MAX_NODES:
         return
-    role = _get(element, "AXRole") or ""
+    raw_role = _get(element, "AXRole")
+    role = raw_role if isinstance(raw_role, str) else ""
     label = _label(element)
     actions = _action_names(element)
     geom = _point_size(element)
@@ -185,7 +213,8 @@ def _walk(element: object, depth: int, out: list[dict], counter: list[int]) -> N
                 "element": element,  # live ref, popped before serialization
             }
         )
-    children = _get(element, "AXChildren") or []
+    raw_children = _get(element, "AXChildren")
+    children = raw_children if isinstance(raw_children, (list, tuple)) else []
     for child in children:
         _walk(child, depth + 1, out, counter)
         if counter[0] >= MAX_NODES:
@@ -193,6 +222,8 @@ def _walk(element: object, depth: int, out: list[dict], counter: list[int]) -> N
 
 
 def _app_element(app_name: str) -> object:
+    if AS is None:
+        raise RuntimeError("computer-use actions require macOS with PyObjC installed")
     workspace = AS.NSWorkspace.sharedWorkspace()
     for app in workspace.runningApplications():
         if app_name.lower() in (app.localizedName() or "").lower():
@@ -206,16 +237,22 @@ def _app_element(app_name: str) -> object:
 
 
 def collect(
-    app_name: str, keep_elements: bool = False, max_windows: int = 3
+    app_name: str,
+    keep_elements: bool = False,
+    max_windows: int = 3,
+    window_index: int = 0,
 ) -> list[dict]:
+    if window_index < 0:
+        raise ValueError("window_index must be non-negative")
     app = _app_element(app_name)
     targets: list[dict] = []
     counter = [0]
     for attempt in range(4):
-        windows = _get(app, "AXWindows") or []
+        raw_windows = _get(app, "AXWindows")
+        windows = raw_windows if isinstance(raw_windows, (list, tuple)) else []
         targets = []
         counter = [0]
-        for window in windows[:max_windows]:
+        for window in windows[window_index : window_index + max_windows]:
             _walk(window, 0, targets, counter)
             if counter[0] >= MAX_NODES:
                 break
@@ -224,7 +261,7 @@ def collect(
         # Chrome builds the web-content AX tree lazily; wait and retry.
         time.sleep(1.5)
         AXUIElementSetAttributeValue(app, _MANUAL_ACCESSIBILITY, True)
-    if not targets:  # menu-bar-only apps
+    if not targets and window_index == 0:  # menu-bar-only apps
         _walk(AXUIElementCreateSystemWide(), 0, targets, counter)
     if not keep_elements:
         for entry in targets:
@@ -306,7 +343,9 @@ def press(targets: list[dict], target_id: str, app_name: str) -> dict:
         # Re-resolve by re-walking (live refs are not serialized with --dump).
         fresh: list[dict] = []
         counter = [0]
-        for window in _get(live, "AXWindows") or []:
+        raw_windows = _get(live, "AXWindows")
+        windows = raw_windows if isinstance(raw_windows, (list, tuple)) else []
+        for window in windows:
             _walk(window, 0, fresh, counter)
             if any(f["target_id"] == target_id for f in fresh):
                 break
