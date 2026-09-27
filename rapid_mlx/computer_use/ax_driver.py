@@ -28,7 +28,7 @@ from typing import Any
 
 try:
     import ApplicationServices as AS  # type: ignore[import-untyped]  # noqa: N817
-    from ApplicationServices import (  # type: ignore[import-untyped]
+    from ApplicationServices import (  # type: ignore[import-untyped]  # pragma: no cover
         AXUIElementCopyActionNames,
         AXUIElementCopyAttributeValue,
         AXUIElementCreateApplication,
@@ -38,7 +38,7 @@ try:
         AXValueGetValue,
         kAXErrorSuccess,
     )
-    from Quartz import (  # type: ignore[import-untyped]
+    from Quartz import (  # type: ignore[import-untyped]  # pragma: no cover
         CGEventCreateKeyboardEvent,
         CGEventCreateMouseEvent,
         CGEventKeyboardSetUnicodeString,
@@ -400,5 +400,5 @@ def main() -> None:
             print(entry["target_id"], entry["role"], entry["text"][:60])
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover - module entry point
     main()

@@ -462,6 +462,7 @@ def hotkey(app: str, key: str) -> dict:
         )
     _resolve_app(app)
     import Quartz
+
     down = Quartz.CGEventCreateKeyboardEvent(None, keycode, True)
     up = Quartz.CGEventCreateKeyboardEvent(None, keycode, False)
     Quartz.CGEventSetFlags(down, modifiers)
@@ -485,6 +486,7 @@ def scroll(
         )
     _resolve_app(app)
     import Quartz
+
     lines = int(max(1, round(pages * 10)))
     delta = lines if direction in {"up", "left"} else -lines
     if x is not None and y is not None:
