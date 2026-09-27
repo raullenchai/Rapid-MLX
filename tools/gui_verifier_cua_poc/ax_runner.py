@@ -147,7 +147,7 @@ def _wait_tree_settle(
     signature = before_sig
     for _ in range(tries):
         time.sleep(delay)
-        targets = ax_driver.collect(app_name, keep_elements=True)
+        targets = ax_driver.collect(app_name, keep_elements=True, max_windows=1)
         signature = _tree_signature(targets)
         if signature != before_sig:
             before_sig = signature
@@ -279,7 +279,7 @@ async def run(args: argparse.Namespace) -> None:
 
     try:
         for step_no in range(1, args.max_steps + 1):
-            targets = ax_driver.collect(args.app, keep_elements=True)
+            targets = ax_driver.collect(args.app, keep_elements=True, max_windows=1)
             url_now = _read_url_from_ax(targets)
             if url_now and not _url_allowed(url_now, allowed_domain):
                 log(f"[ax-runner] guard: URL left allowed domain: {url_now}")

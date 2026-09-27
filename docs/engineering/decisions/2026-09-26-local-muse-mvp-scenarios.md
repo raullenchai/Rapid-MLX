@@ -223,3 +223,23 @@ What Orca ships that we did NOT copy: per-action confirmation policy UI
 (AGENT_BROWSER_CONFIRM_ACTIONS analog: our RESUME/CONFIRM_ORDER sentinels stay
 loop-level for now), AXObserver evented updates (we poll), runtimeId element
 identity (we re-index per snapshot), right/middle click and drag (queued).
+
+## Local planner A/B on the decoupled AX tool layer (2026-09-26 night)
+
+Operator directive: skip cloud-vs-local GLM (identical behavior expected);
+qualify local models on the same Wikipedia task through `ax_runner` +
+text-only planning + strict-schema guided decode, then escalate size only if
+the larger fails.
+
+| planner | steps | bad plans | median plan latency | outcome |
+|---|---|---|---|---|
+| GLM-5.3-Flash (tunnel) | 2 | 0 | 7.1 s | ✅ article reached, summary cites page sections |
+| Qwen3.8-27B-4bit-MTP (local) | 2 | 0 | 21.7 s | ✅ same; summary correctly lists A/M/R/S/T-series sections |
+| Qwen3.5-9B-8bit (local) | 3 | 0 | 7.8 s | ✅ same; properly re-observed after submit and clicked the article link from results |
+
+Verdict: **both local sizes qualify** on short-horizon tasks; the 9B is 2.8x
+faster than the 27B and showed the more disciplined observe-act cadence.
+Caveat: this task is 2-3 steps. The earlier music task (13 steps for GLM,
+where the 27B terminated prematurely) remains the harder qualification; a
+done-gate that requires milestone evidence before accepting `done` is the
+next lever before drawing conclusions for long-horizon work.
