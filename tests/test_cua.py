@@ -660,3 +660,364 @@ def test_data_url_roundtrip():
     assert url.startswith("data:image/png;base64,")
     image = Image.open(_io.BytesIO(base64.b64decode(url.split(",", 1)[1])))
     assert image.size == (4, 4)
+
+
+def test_config_recovers_from_invalid_json(config_dir):
+    path = config_dir / "cua-config.json"
+    path.write_text("{broken")
+    assert "cloud-glm" in load_config()["presets"]
+
+
+def test_fast_ranker_success_error_and_assess(monkeypatch):
+    import asyncio
+
+    from rapid_mlx.cua.fast import FastOutcomeRanker
+
+    class Response:
+        is_error = False
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {
+                "ranked": [
+                    {
+                        "candidate": "The requested computer action succeeded.",
+                        "prob": "0.9",
+                    }
+                ]
+            }
+
+    ranker = FastOutcomeRanker("http://127.0.0.1:9/v1/rank")
+
+    async def post(*args, **kwargs):
+        return Response()
+
+    monkeypatch.setattr(ranker.client, "post", post)
+    verdict, latency = asyncio.run(ranker.assess("goal", {"action": "click"}, {}))
+    assert verdict == {
+        "outcome": "success",
+        "confidence": 0.9,
+        "source": "system-one-rank",
+    }
+    assert latency >= 0
+
+    Response.is_error = True
+    Response.status_code = 503
+    Response.text = "down"
+    with pytest.raises(RuntimeError, match="HTTP 503"):
+        asyncio.run(ranker.rank("context", ["answer"]))
+    asyncio.run(ranker.close())
+
+
+def test_tracker_empty_instruction_and_empty_snapshot_hint():
+    tracker = NoProgressTracker(stall_limit=1)
+    tracker.record({"step_instruction": ""}, "success")
+    assert not tracker.should_intervene()
+    tracker.record({"step_instruction": ""}, "uncertain")
+    assert tracker.should_intervene()
+    hint = tracker.take_hint({})
+    assert "(empty snapshot)" in hint
+    assert "consecutive" in hint
+
+
+def test_human_gate_timeout(tmp_path, monkeypatch):
+    import asyncio
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(gates.asyncio, "sleep", no_sleep)
+    assert not asyncio.run(gates.wait_for_human(tmp_path, "NEVER", timeout=-1.0))
+
+
+def test_execute_all_action_variants(fake_backend, tmp_path, monkeypatch):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    monkeypatch.setattr(
+        fake_backend,
+        "scroll",
+        lambda app, direction, pages: {"ok": True, "direction": direction},
+    )
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(loop_mod.asyncio, "sleep", no_sleep)
+    runner = loop_mod.CUARun(_make_config(tmp_path), "Chrome", "g", tmp_path / "run")
+    snapshot = {"elements": []}
+    fill = asyncio.run(
+        runner._execute(
+            {"action": "fill", "element_index": 1, "text": "hello"}, snapshot
+        )
+    )
+    press = asyncio.run(
+        runner._execute(
+            {"action": "press", "element_index": 1, "key": "Enter"}, snapshot
+        )
+    )
+    scroll = asyncio.run(
+        runner._execute({"action": "scroll", "direction": "up"}, snapshot)
+    )
+    assert fill["verified"] and press["key"] == "Enter"
+    assert scroll["direction"] == "up"
+
+
+def test_loop_invalid_domain_consent_and_human_timeout(
+    fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    config = _make_config(tmp_path)
+    config.allowed_domain = "example.com"
+    runner = loop_mod.CUARun(config, "Chrome", "g", tmp_path / "invalid-domain")
+    assert "valid HTTP" in runner._check_domain("file:///tmp/page")
+
+    config.allowed_domain = ""
+    commerce = _FakePlanner(
+        [
+            {
+                "action": "click",
+                "step_instruction": "checkout now",
+                "element_index": 1,
+                "final_summary": "",
+            }
+        ]
+    )
+    result = asyncio.run(runner.step(commerce, 1))
+    assert result["status"] == "stopped" and "cart" in result["reason"]
+
+    config.human_login = True
+    runner = loop_mod.CUARun(config, "Chrome", "g", tmp_path / "human")
+    normal = _FakePlanner(
+        [
+            {
+                "action": "click",
+                "step_instruction": "continue",
+                "element_index": 1,
+                "final_summary": "",
+            }
+        ]
+    )
+    monkeypatch.setattr(loop_mod.gates, "looks_like_sign_in", lambda _: True)
+
+    async def timeout(*args):
+        return False
+
+    monkeypatch.setattr(loop_mod.gates, "wait_for_human", timeout)
+    result = asyncio.run(runner.step(normal, 1))
+    assert result["status"] == "stopped" and "not approved" in result["reason"]
+
+
+def test_loop_ranker_success_and_unavailable(fake_backend, tmp_path, monkeypatch):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(loop_mod.asyncio, "sleep", no_sleep)
+    runner = loop_mod.CUARun(_make_config(tmp_path), "Chrome", "g", tmp_path / "rank")
+
+    class Ranker:
+        async def assess(self, *args):
+            return {"outcome": "success", "confidence": 1.0}, 0.01
+
+    runner.ranker = Ranker()
+    planner = _FakePlanner(
+        [
+            {
+                "action": "click",
+                "step_instruction": "open",
+                "element_index": 1,
+                "final_summary": "",
+            }
+        ]
+    )
+    assert asyncio.run(runner.step(planner, 1)) is None
+    assert runner.trace["steps"][-1]["protocol_outcome"] == "success"
+
+    class BrokenRanker:
+        async def assess(self, *args):
+            raise RuntimeError("offline")
+
+    runner.ranker = BrokenRanker()
+    assert asyncio.run(runner.step(planner, 2)) is None
+    assert runner.trace["steps"][-1]["state_delta"]["fast_outcome"] == {
+        "outcome": "unavailable"
+    }
+
+
+def test_run_constructs_clients_opens_url_and_closes(
+    config_dir, fake_backend, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    opened = []
+    system_opened = []
+    monkeypatch.setattr(
+        loop_mod.subprocess,
+        "run",
+        lambda command, **kwargs: system_opened.append((command, kwargs)),
+    )
+    loop_mod._open_url("Safari", "https://example.com")
+    assert system_opened[0][0] == ["open", "-a", "Safari", "https://example.com"]
+    monkeypatch.setattr(
+        loop_mod, "_open_url", lambda app, url: opened.append((app, url))
+    )
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(loop_mod.asyncio, "sleep", no_sleep)
+    closed = []
+
+    class PlannerFactory(_FakePlanner):
+        def __init__(self, **kwargs):
+            super().__init__(
+                [
+                    {
+                        "action": "done",
+                        "step_instruction": "finish",
+                        "final_summary": "ok",
+                    }
+                ],
+                text_only=kwargs["text_only"],
+            )
+
+        async def close(self):
+            closed.append("planner")
+
+    class RankerFactory:
+        def __init__(self, _url):
+            pass
+
+        async def close(self):
+            closed.append("ranker")
+
+    monkeypatch.setattr(loop_mod, "Planner", PlannerFactory)
+    monkeypatch.setattr(loop_mod, "FastOutcomeRanker", RankerFactory)
+    config = _make_config(config_dir)
+    config.fast_ranker_url = "http://127.0.0.1:9/v1/rank"
+    trace = asyncio.run(
+        loop_mod.run(config, "Chrome", "g", open_url="https://example.com")
+    )
+    assert trace["status"] == "done"
+    assert opened == [("Chrome", "https://example.com")]
+    assert closed == ["planner", "ranker"]
+
+
+def test_cli_remaining_dispatch_paths(capsys, config_dir, monkeypatch):
+    import runpy
+    import sys
+    import types
+
+    import rapid_mlx.cua.cli as cli_mod
+    import rapid_mlx.cua.loop as loop_mod
+
+    assert (
+        cli_mod.main(["config", "--set", "fast_ranker_url", "http://127.0.0.1:8"]) == 0
+    )
+    assert cli_mod.main(["config"]) == 0
+    capsys.readouterr()
+
+    async def incomplete(*args, **kwargs):
+        return {"status": "stopped", "guard_stop": "outside domain"}
+
+    monkeypatch.setattr(loop_mod, "run", incomplete)
+    rc = cli_mod.main(
+        [
+            "run",
+            "--app",
+            "Chrome",
+            "--goal",
+            "g",
+            "--planner",
+            "local-9b",
+            "--planner-vision",
+            "--no-fast-ranker",
+        ]
+    )
+    assert rc == 1 and "NOT DONE" in capsys.readouterr().out
+
+    original = cli_mod.build_parser
+    parser = types.SimpleNamespace(
+        parse_args=lambda argv: types.SimpleNamespace(cua_command="unknown"),
+        print_help=lambda: None,
+    )
+    monkeypatch.setattr(cli_mod, "build_parser", lambda: parser)
+    assert cli_mod.main([]) == 2
+    monkeypatch.setattr(cli_mod, "build_parser", original)
+
+    monkeypatch.setattr(sys, "argv", ["rapid_mlx.cua", "planners"])
+    with pytest.raises(SystemExit) as exc:
+        runpy.run_module("rapid_mlx.cua.__main__", run_name="__main__")
+    assert exc.value.code == 0
+    capsys.readouterr()
+
+    monkeypatch.delitem(sys.modules, "rapid_mlx.cua.cli", raising=False)
+    with pytest.raises(SystemExit) as exc:
+        runpy.run_module("rapid_mlx.cua.cli", run_name="__main__")
+    assert exc.value.code == 0
+    capsys.readouterr()
+
+    import rapid_mlx.cli as root_cli
+
+    monkeypatch.setattr(sys, "argv", ["rapid-mlx", "cua", "planners"])
+    assert root_cli.main() == 0
+    assert "local-9b" in capsys.readouterr().out
+
+
+def test_planner_validation_and_helpers(monkeypatch):
+    import asyncio
+
+    from rapid_mlx.cua import planner as planner_mod
+
+    assert planner_mod.extract_json('```json\n{"ok": true}\n```') == {"ok": True}
+    with pytest.raises(ValueError, match="no JSON"):
+        planner_mod.extract_json("nothing")
+    with pytest.raises(ValueError, match="JSON object"):
+        planner_mod.extract_json("[1]")
+    with monkeypatch.context() as patch:
+        patch.setattr(planner_mod.json, "loads", lambda _text: [])
+        with pytest.raises(ValueError, match="JSON object"):
+            planner_mod.extract_json("{}")
+    with pytest.raises(ValueError, match="unsupported action"):
+        validate_plan({"action": "launch"})
+    with pytest.raises(ValueError, match="integer"):
+        validate_plan({"action": "click", "element_index": None})
+    with pytest.raises(ValueError, match="requires text"):
+        validate_plan({"action": "fill", "element_index": 1, "text": ""})
+    assert validate_plan({"action": "scroll", "direction": "up"})["direction"] == "up"
+    assert validate_plan({"action": "wait", "direction": "up"})["direction"] == ""
+    with pytest.raises(ValueError, match="HTTP"):
+        planner_mod.assert_loopback_url("file:///tmp/socket")
+    with pytest.raises(ValueError, match="literal IP"):
+        planner_mod.assert_loopback_url("http://localhost:9/v1")
+
+    planner = planner_mod.Planner(
+        url="http://127.0.0.1:9/v1", model="m", reasoning_effort="low"
+    )
+    seen = {}
+
+    async def post(url, json=None):
+        seen.update(json)
+        return _FakeResponse('{"ok":true}')
+
+    monkeypatch.setattr(planner.client, "post", post)
+    assert asyncio.run(planner._ask([], 5, {}, "test")) == '{"ok":true}'
+    assert seen["reasoning_effort"] == "low"
+    assert asyncio.run(planner_mod.ask_with_timeout(asyncio.sleep(0, result=7), 1)) == 7
+    asyncio.run(planner.close())
