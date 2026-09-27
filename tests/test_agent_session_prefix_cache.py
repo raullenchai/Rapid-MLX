@@ -703,3 +703,22 @@ def test_checkpoint_sidecar_write_failure_keeps_the_entry(tmp_path, monkeypatch)
         is False
     )
     assert not (tmp_path / "x_ckpt.safetensors").exists()
+
+
+def test_prefill_reclaim_empties_the_cache_when_every_eviction_helps(monkeypatch):
+    sched = _hybrid_reclaim_scheduler(monkeypatch)
+    sched.memory_aware_cache.store(list(range(10)), _hybrid_cache(MB))
+    sched.memory_aware_cache.store(list(range(20, 30)), _hybrid_cache(MB))
+    sched._test_active[0] = CAP * 2
+
+    def _evict(keep_mru: bool = False, _orig=sched._evict_one_prefix_cache_entry):
+        ok = _orig(keep_mru=keep_mru)
+        if ok:
+            sched._test_active[0] -= MB
+        return ok
+
+    monkeypatch.setattr(sched, "_evict_one_prefix_cache_entry", _evict)
+    req = _long_request("still-over", 10)
+    req.remaining_tokens = list(range(10))
+    assert sched._reclaim_prefix_cache_for_prefill(req) == 2
+    assert len(sched.memory_aware_cache._entries) == 0
