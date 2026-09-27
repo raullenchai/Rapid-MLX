@@ -630,7 +630,14 @@ def test_entry_without_checkpoints_writes_no_sidecar(tmp_path):
 
 @pytest.mark.parametrize(
     "tamper",
-    ["truncate", "wrong_shape", "outside_entry", "not_recurrent", "missing_slot"],
+    [
+        "truncate",
+        "wrong_shape",
+        "outside_entry",
+        "not_recurrent",
+        "missing_slot",
+        "missing_layer",
+    ],
 )
 def test_bad_sidecar_drops_checkpoints_but_keeps_the_entry(tmp_path, tamper):
     import mlx.core as mx
@@ -656,6 +663,8 @@ def test_bad_sidecar_drops_checkpoints_but_keeps_the_entry(tmp_path, tamper):
             bad = {k.replace("2048", "9000"): v for k, v in good.items()}
         elif tamper == "not_recurrent":
             bad = {k.replace("1.", "0.", 1): v for k, v in good.items()}
+        elif tamper == "missing_layer":
+            bad = {}
         else:
             del bad["1.2048.1"]
         mx.save_safetensors(str(sidecar), bad)
