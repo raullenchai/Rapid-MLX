@@ -103,6 +103,33 @@ def test_requires_auth(client):
         == 401
     )
     assert test_client.get("/v1/cua/runs").status_code == 401
+    assert (
+        test_client.get(
+            "/v1/cua/runs", headers={"Authorization": "Bearer wrong"}
+        ).status_code
+        == 401
+    )
+
+
+def test_cua_routes_fail_closed_without_server_api_key(client):
+    cfg = get_config()
+    cfg.api_key = None
+    requests = (
+        ("get", "/v1/cua/planners"),
+        ("post", "/v1/cua/planners"),
+        ("delete", "/v1/cua/planners/custom"),
+        ("get", "/v1/cua/runs"),
+        ("post", "/v1/cua/runs"),
+        ("get", "/v1/cua/runs/unknown"),
+        ("get", "/v1/cua/runs/unknown/events"),
+        ("post", "/v1/cua/runs/unknown/approval"),
+        ("post", "/v1/cua/runs/unknown/cancel"),
+    )
+    for method, path in requests:
+        for headers in ({}, AUTH):
+            response = getattr(client, method)(path, headers=headers)
+            assert response.status_code == 503, (method, path, headers)
+    assert client.fresh_service.list_runs() == []
 
 
 def test_list_planners(client):

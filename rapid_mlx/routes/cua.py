@@ -12,15 +12,29 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 
+from ..config import get_config
 from ..cua import service as cua_service
 from ..cua.config import delete_user_preset, load_config, save_user_preset
-from ..middleware.auth import check_rate_limit, verify_api_key
+from ..middleware.auth import check_rate_limit, security, verify_api_key
+
+
+async def require_cua_auth(
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+) -> bool:
+    """Computer control requires an explicitly configured server bearer."""
+    if get_config().api_key is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Computer use API requires a server API key",
+        )
+    return await verify_api_key(credentials)
 
 router = APIRouter(
     prefix="/v1/cua",
-    dependencies=[Depends(verify_api_key), Depends(check_rate_limit)],
+    dependencies=[Depends(require_cua_auth), Depends(check_rate_limit)],
 )
 
 

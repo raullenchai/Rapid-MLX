@@ -43,6 +43,12 @@ rapid-mlx cua run --app "Google Chrome" \
 
 Traces land in `~/.rapid-mlx/cua-runs/<timestamp>/trace.json`.
 
+The `/v1/cua/*` HTTP API controls the local computer and requires the server
+to start with an API key. Without one, these routes return HTTP 503. Send the
+key as `Authorization: Bearer <key>`; the Desktop-managed server supplies its
+own per-launch bearer. The standalone `rapid-mlx cua` CLI does not use this
+HTTP API.
+
 ## SDK
 
 ```python
