@@ -1,5 +1,5 @@
 #!/bin/bash
-# Rapid-MLX installer — AI inference for Apple Silicon
+# Rapid-MLX — OpenAI- and Anthropic-compatible LLM server and Mac app for Apple Silicon, built on MLX, focused on reliable tool calling for coding agents.
 # Usage: curl -fsSL https://rapidmlx.com/install.sh | bash
 #        curl ... | bash -s -- 0.12.15     # specific version
 #        curl ... | bash -s latest         # latest from GitHub (pre-release)
@@ -216,11 +216,17 @@ refresh_starter_from_installed_cache() {
 print_quick_start_commands() {
     info "Quick start:"
     echo ""
+    echo "    rapid-mlx chat ${RECOMMENDED_MODEL}${RECOMMENDED_FLAGS}    # starts its own server"
+    echo ""
+    dim "More useful commands:"
+    echo ""
     echo "    rapid-mlx serve ${RECOMMENDED_MODEL}${RECOMMENDED_FLAGS}"
+    echo "    rapid-mlx models"
+    echo "    rapid-mlx pull ${RECOMMENDED_MODEL}"
+    echo "    rapid-mlx doctor"
     echo ""
-    dim "Then open a second terminal:"
+    dim "Connect apps and coding agents after starting a server:"
     echo ""
-    echo "    rapid-mlx chat ${RECOMMENDED_MODEL} --port 8000    # built-in chat (terminal)"
     echo "    rapid-mlx-chat                                    # web chat UI (first: ${INSTALL_DIR}/bin/pip install 'rapid-mlx[chat]')"
     echo "    ANTHROPIC_BASE_URL=http://localhost:8000 claude    # Claude Code (or: rapid-mlx launch claude-code)"
     echo "    OPENAI_API_BASE=http://localhost:8000/v1 aider     # Aider"

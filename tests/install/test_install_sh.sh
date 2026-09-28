@@ -230,7 +230,7 @@ RAM_GB=32 RECOMMENDED_MODEL="qwen3.5-4b-4bit" RECOMMENDED_FLAGS=""
 refresh_starter_from_installed_cache
 BANNER="$(print_quick_start_commands)"
 case "$BANNER" in
-    *"rapid-mlx serve qwen3.8-27b-4bit"*"rapid-mlx chat qwen3.8-27b-4bit --port 8000"*)
+    *"rapid-mlx chat qwen3.8-27b-4bit"*"rapid-mlx serve qwen3.8-27b-4bit"*)
         ok "post-install structured cache choice reaches both quick-start commands" ;;
     *)
         bad "post-install structured cache choice reaches both quick-start commands"

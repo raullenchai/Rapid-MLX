@@ -151,6 +151,12 @@ def test_every_tier_has_exactly_smart_and_fast() -> None:
         assert all(pick.footprint_gb < tier.floor_gb * 0.75 for pick in tier.picks)
 
 
+def test_display_fast_path_matches_catalog_validated_tiers() -> None:
+    assert load_recommendation_tiers(validate_catalog=False) == (
+        load_recommendation_tiers(validate_catalog=True)
+    )
+
+
 def test_tier_rounds_down_and_clamps() -> None:
     assert recommendation_tier(4).floor_gb == 8
     assert recommendation_tier(20).floor_gb == 18

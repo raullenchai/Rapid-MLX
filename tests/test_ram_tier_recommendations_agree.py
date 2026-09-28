@@ -100,12 +100,35 @@ def test_cached_choice_is_preferred_only_when_it_fits_the_ram_tier():
     assert _select_installer_starter(16, ("qwen3.8-27b-4bit",)) == "qwen3.5-4b-4bit"
 
 
+@pytest.mark.parametrize(
+    ("ram_gb", "cached"),
+    [
+        (8, ()),
+        (16, ()),
+        (18, ("lfm2.5-2.6b-4bit",)),
+        (24, ("qwen3.5-9b-4bit", "qwen3.5-4b-4bit")),
+        (32, ("qwen3.8-27b-4bit",)),
+        (48, ("qwen3.6-35b-4bit", "qwen3.8-27b-4bit")),
+    ],
+)
+def test_installer_and_python_starter_selection_agree(ram_gb, cached):
+    """Report cross-language drift instead of silently choosing a side."""
+    from rapid_mlx.recommendations import select_starter_model
+
+    shell_choice = _select_installer_starter(ram_gb, cached)
+    python_choice = select_starter_model(ram_gb, set(cached))
+    assert shell_choice == python_choice, (
+        "install.sh and rapid_mlx.recommendations disagree for "
+        f"RAM={ram_gb} cached={cached}: shell={shell_choice}, python={python_choice}"
+    )
+
+
 def test_the_banner_prints_a_bare_command_where_no_flags_are_needed():
     text = INSTALL_SH.read_text()
     serve_line = next(
         line
         for line in text.splitlines()
-        if line.strip().startswith("echo ") and "rapid-mlx serve" in line
+        if line.strip().startswith("echo ") and "rapid-mlx chat" in line
     )
     assert "${RECOMMENDED_MODEL}${RECOMMENDED_FLAGS}" in serve_line
 
