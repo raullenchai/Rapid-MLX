@@ -1528,6 +1528,148 @@ def test_selected_window_fails_closed_when_planned_index_changes(
     assert clicks == []
 
 
+def test_selected_window_allows_unrelated_dynamic_content_before_action(
+    fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    window = {"window_id": "cg:404", "index": 0, "x": 10, "y": 10}
+    table_values = iter(["12.1%", "13.8%", "14.0%"])
+
+    def state(app, **kwargs):
+        value = next(table_values)
+        return {
+            "app": {"name": app, "pid": 9},
+            "window_id": "cg:404",
+            "window_index": 0,
+            "window": dict(window),
+            "elements": [
+                {
+                    "index": 4,
+                    "label": "CPU",
+                    "role": "AXRadioButton",
+                    "actions": ["AXPress"],
+                    "x": 20,
+                    "y": 20,
+                    "width": 50,
+                    "height": 20,
+                    "center": [45, 30],
+                },
+                {"index": 20, "label": value, "role": "AXStaticText"},
+            ],
+            "tree_text": f"[4] AXRadioButton CPU\n[20] AXStaticText {value}",
+        }
+
+    monkeypatch.setattr(fake_backend, "get_app_state", state)
+    clicks = []
+    monkeypatch.setattr(
+        fake_backend,
+        "click",
+        lambda app, index, **kwargs: clicks.append(index) or {"ok": True},
+    )
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(loop_mod.asyncio, "sleep", no_sleep)
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path),
+        "Activity Monitor",
+        "click CPU tab",
+        tmp_path / "selected-dynamic-sibling",
+        window_id="cg:404",
+    )
+    planner = _FakePlanner(
+        [
+            {
+                "action": "click",
+                "step_instruction": "click CPU",
+                "element_index": 4,
+                "final_summary": "",
+            }
+        ]
+    )
+
+    assert asyncio.run(runner.step(planner, 1)) is None
+    assert clicks == [4]
+
+
+def test_selected_window_rejects_target_shifted_to_planned_index(
+    fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    window = {"window_id": "cg:404", "index": 0, "x": 10, "y": 10}
+    observations = iter(
+        [
+            [(4, "CPU", 20), (5, "Memory", 80)],
+            [(4, "Memory", 80), (5, "CPU", 20)],
+        ]
+    )
+
+    def state(app, **kwargs):
+        controls = next(observations)
+        return {
+            "app": {"name": app, "pid": 9},
+            "window_id": "cg:404",
+            "window_index": 0,
+            "window": dict(window),
+            "elements": [
+                {
+                    "index": index,
+                    "label": label,
+                    "role": "AXRadioButton",
+                    "actions": ["AXPress"],
+                    "x": x,
+                    "y": 20,
+                    "width": 50,
+                    "height": 20,
+                    "center": [x + 25, 30],
+                }
+                for index, label, x in controls
+            ],
+            "tree_text": "tabs",
+        }
+
+    monkeypatch.setattr(fake_backend, "get_app_state", state)
+    clicks = []
+    monkeypatch.setattr(
+        fake_backend,
+        "click",
+        lambda app, index, **kwargs: clicks.append(index) or {"ok": True},
+    )
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path),
+        "Activity Monitor",
+        "click CPU tab",
+        tmp_path / "selected-index-shift",
+        window_id="cg:404",
+    )
+    planner = _FakePlanner(
+        [
+            {
+                "action": "click",
+                "step_instruction": "click CPU",
+                "element_index": 4,
+                "final_summary": "",
+            }
+        ]
+    )
+
+    assert asyncio.run(runner.step(planner, 1)) == {
+        "status": "stopped",
+        "reason": "planned target changed before action",
+        "error": "target_stale",
+    }
+    assert clicks == []
+
+
 def test_selected_window_rejects_pid_identity_reuse(
     fake_backend, tmp_path, monkeypatch
 ):
