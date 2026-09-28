@@ -23,6 +23,7 @@ import shlex
 import time
 import uuid
 from collections.abc import AsyncIterator, Mapping
+from typing import cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
@@ -2560,7 +2561,7 @@ async def _stream_buffered_responses_response(
     )
     openai_request = responses_to_openai(responses_request)
     async for event in _stream_responses(
-        _ReplayEngine(),
+        cast(BaseEngine, _ReplayEngine()),
         openai_request,
         responses_request,
         response_id_override=response.get("id"),
