@@ -762,7 +762,20 @@ def _load() -> dict[str, AliasProfile]:
         for alias, profile in parsed.items():
             index.setdefault(profile.hf_path.lower(), alias)
         _aliases, _hf_to_alias = parsed, index
+    elif _hf_to_alias is None:
+        # Keep the derived index recoverable if registry state is reset or
+        # replaced independently (notably by tests and embedded reloaders).
+        index = {}
+        for alias, profile in _aliases.items():
+            index.setdefault(profile.hf_path.lower(), alias)
+        _hf_to_alias = index
     return _aliases
+
+
+def _alias_for_hf_path(hf_path: str) -> str | None:
+    """Return the first catalog alias for an HF path from a loaded index."""
+    _load()
+    return _hf_to_alias.get(hf_path.lower()) if _hf_to_alias is not None else None
 
 
 def _assert_subfolder_is_unambiguous(profiles: dict[str, AliasProfile]) -> None:
@@ -872,14 +885,14 @@ def resolve_model(name: str) -> str:
     # must not introduce a cache/download-gate probe.
     if not os.environ.get("RAPID_MLX_EXTRA_MODEL_ROOTS", "").strip():
         if "/" in name:
-            canonical = _hf_to_alias.get(name.lower()) if _hf_to_alias else None
+            canonical = _alias_for_hf_path(name)
             if canonical is not None:
                 return _load()[canonical].hf_path
             return name
         profile = _load().get(name)
         return profile.hf_path if profile is not None else name
     if "/" in name:
-        canonical = _hf_to_alias.get(name.lower()) if _hf_to_alias else None
+        canonical = _alias_for_hf_path(name)
         repo_name = _load()[canonical].hf_path if canonical is not None else name
         if not _managed_hub_model_is_runnable(repo_name):
             if external := _resolve_external_model_path(repo_name):
@@ -1078,8 +1091,8 @@ def list_profiles() -> dict[str, AliasProfile]:
     )
     for alias, target in users.items():
         target_profile = profiles.get(target)
-        if target_profile is None and _hf_to_alias is not None:
-            canonical = _hf_to_alias.get(target.lower())
+        if target_profile is None:
+            canonical = _alias_for_hf_path(target)
             if canonical is not None:
                 target_profile = profiles[canonical]
         profiles[alias] = target_profile or AliasProfile(hf_path=target)
@@ -1111,13 +1124,13 @@ def resolve_profile(name: str) -> AliasProfile | None:
     )
     if target := users.get(name):
         target_profile = profiles.get(target)
-        if target_profile is None and _hf_to_alias is not None:
-            canonical = _hf_to_alias.get(target.lower())
+        if target_profile is None:
+            canonical = _alias_for_hf_path(target)
             if canonical is not None:
                 target_profile = profiles[canonical]
         return target_profile or AliasProfile(hf_path=target)
-    if "/" in name and _hf_to_alias is not None:
-        canonical = _hf_to_alias.get(name.lower())
+    if "/" in name:
+        canonical = _alias_for_hf_path(name)
         if canonical is not None:
             return profiles[canonical]
     return None

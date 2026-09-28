@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import pytest
 
+from rapid_mlx import model_aliases
 from rapid_mlx.audio.registry import list_audio_aliases, resolve_audio_alias
 from rapid_mlx.model_aliases import list_builtin_aliases, resolve_model, resolve_profile
 from rapid_mlx.telemetry.model_events import model_type
@@ -46,6 +47,25 @@ def test_curated_repo_id_routes_like_first_catalog_alias(alias, hf_path, lane):
     assert repo_profile == alias_profile
     assert model_type(mixed_case) == lane
     assert resolve_model(mixed_case) == hf_path
+
+
+def test_curated_repo_id_resolves_case_insensitively_from_cold_registry(monkeypatch):
+    hf_path = "mlx-community/Qwen3.5-9B-4bit"
+
+    monkeypatch.setattr(model_aliases, "_aliases", None)
+    monkeypatch.setattr(model_aliases, "_hf_to_alias", None)
+
+    assert resolve_model(hf_path.swapcase()) == hf_path
+
+
+def test_curated_repo_id_rebuilds_cleared_reverse_index(monkeypatch):
+    hf_path = "mlx-community/Qwen3.5-9B-4bit"
+    profiles = model_aliases._load()
+
+    monkeypatch.setattr(model_aliases, "_aliases", profiles)
+    monkeypatch.setattr(model_aliases, "_hf_to_alias", None)
+
+    assert resolve_model(hf_path.swapcase()) == hf_path
 
 
 @pytest.mark.parametrize("entry", list_audio_aliases(), ids=lambda entry: entry.alias)

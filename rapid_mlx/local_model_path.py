@@ -99,6 +99,19 @@ def _missing_index_shards(root: Path) -> list[str]:
     return sorted(missing)
 
 
+def _exception_filename_path(exc: BaseException) -> Path | None:
+    """Return a text filename as a path without accepting bytes paths."""
+    if not isinstance(exc, FileNotFoundError) or exc.filename is None:
+        return None
+    try:
+        filename = os.fspath(exc.filename)
+    except TypeError:
+        return None
+    if not isinstance(filename, str):
+        return None
+    return Path(filename)
+
+
 def missing_local_model_files(
     model_ref: object,
     exc: BaseException | None = None,
@@ -114,16 +127,17 @@ def missing_local_model_files(
 
     missing = set(_missing_index_shards(root))
     for current in _exception_chain(exc):
-        if isinstance(current, FileNotFoundError) and current.filename:
-            candidate = Path(current.filename)
-            if not candidate.is_absolute():
-                candidate = root / candidate
-            try:
-                relative = candidate.relative_to(root).as_posix()
-            except ValueError:
-                relative = None
-            if relative and relative != ".":
-                missing.add(relative)
+        candidate = _exception_filename_path(current)
+        if candidate is None:
+            continue
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        try:
+            relative = candidate.relative_to(root).as_posix()
+        except ValueError:
+            relative = None
+        if relative and relative != ".":
+            missing.add(relative)
     return tuple(sorted(missing)[: max(0, limit)])
 
 
@@ -145,12 +159,12 @@ def local_model_failure_message(
         return None
     shown = f" {model_ref!r}" if include_supplied_path else ""
     if not exists:
-        missing_path = any(
-            isinstance(current, FileNotFoundError)
-            and current.filename is not None
-            and Path(current.filename).expanduser().absolute() == expanded
-            for current in _exception_chain(exc)
-        )
+        missing_path = False
+        for current in _exception_chain(exc):
+            candidate = _exception_filename_path(current)
+            if candidate is not None and candidate.expanduser().absolute() == expanded:
+                missing_path = True
+                break
         if missing_path:
             return f"The local model path{shown} does not exist."
         return None
@@ -168,10 +182,7 @@ def raise_if_missing_local_model(model_ref: object) -> None:
     if not is_local_model_ref(model_ref) or not isinstance(model_ref, str):
         return
     expanded = Path(model_ref).expanduser().absolute()
-    try:
-        exists = expanded.exists()
-    except OSError:
-        exists = False
+    exists = expanded.exists()
     if not exists:
         raise FileNotFoundError(
             errno.ENOENT,

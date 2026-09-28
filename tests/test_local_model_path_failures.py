@@ -160,16 +160,39 @@ def test_local_diagnostics_handle_filename_causes_and_filesystem_errors(
 
     monkeypatch.setattr(local_paths, "is_local_model_ref", lambda _value: True)
     original_exists = Path.exists
+    filesystem_failure = PermissionError("model directory is unreadable")
 
     def unreliable_exists(path):
         if path == model_dir.absolute():
-            raise OSError
+            raise filesystem_failure
         return original_exists(path)
 
     monkeypatch.setattr(Path, "exists", unreliable_exists)
     assert local_model_failure_message(str(model_dir)) is None
-    with pytest.raises(FileNotFoundError):
+    with pytest.raises(PermissionError) as captured:
         local_paths.raise_if_missing_local_model(str(model_dir))
+    assert captured.value is filesystem_failure
+
+
+def test_local_diagnostics_ignore_bytes_exception_filenames(tmp_path):
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    failure = FileNotFoundError(2, "missing", bytes(model_dir))
+
+    assert missing_local_model_files(str(model_dir), failure) == ()
+    assert local_model_failure_message(str(model_dir), failure) is None
+
+
+def test_local_diagnostics_ignore_invalid_pathlike_exception_filename(tmp_path):
+    class InvalidPath:
+        def __fspath__(self):
+            raise TypeError("not a text path")
+
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    failure = FileNotFoundError(2, "missing", InvalidPath())
+
+    assert missing_local_model_files(str(model_dir), failure) == ()
 
 
 def test_index_scan_oserror_is_an_empty_diagnostic(monkeypatch, tmp_path):
