@@ -135,6 +135,13 @@ final class CUAServerManager {
 
         let output = Pipe()
         let errors = Pipe()
+        Self.drain(output)
+        Self.drain(errors)
+        // Retain the pipes before launch so every failure path can detach the
+        // readability handlers. An undrained child pipe eventually fills and
+        // can block the sidecar while it writes routine request logs.
+        stdoutPipe = output
+        stderrPipe = errors
         let environment = ServerManager.serveEnvironmentAdditions(
             bearer: bearer,
             ambient: ProcessInfo.processInfo.environment,
@@ -159,8 +166,6 @@ final class CUAServerManager {
             return
         }
         child = launched
-        stdoutPipe = output
-        stderrPipe = errors
         port = allocatedPort
         bearerToken = bearer
 
@@ -248,6 +253,8 @@ final class CUAServerManager {
     }
 
     private func clearSession(nextState: CUAServerState) {
+        stdoutPipe?.fileHandleForReading.readabilityHandler = nil
+        stderrPipe?.fileHandleForReading.readabilityHandler = nil
         child = nil
         stdoutPipe = nil
         stderrPipe = nil
@@ -255,6 +262,13 @@ final class CUAServerManager {
         bearerToken = nil
         sessionID = nil
         state = nextState
+    }
+
+    private nonisolated static func drain(_ pipe: Pipe) {
+        let drainer = PipeDrainer(pipe.fileHandleForReading)
+        pipe.fileHandleForReading.readabilityHandler = { _ in
+            _ = drainer.drain()
+        }
     }
 
     private nonisolated static func launch(

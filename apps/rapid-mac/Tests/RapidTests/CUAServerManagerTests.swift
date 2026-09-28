@@ -63,6 +63,7 @@ struct CUAServerManagerTests {
         var launches = 0
         var capturedArguments: [String] = []
         var capturedEnvironment: [String: String] = [:]
+        var outputWasDrained = false
         let manager = CUAServerManager(
             binaryPath: URL(fileURLWithPath: "/usr/bin/true"),
             portProvider: {
@@ -71,10 +72,12 @@ struct CUAServerManagerTests {
             },
             bearerProvider: { "secret" },
             readinessProbe: { _, _, _ in true },
-            launcher: { _, arguments, environment, _, _, _ in
+            launcher: { _, arguments, environment, output, errors, _ in
                 launches += 1
                 capturedArguments = arguments
                 capturedEnvironment = environment
+                outputWasDrained = output.fileHandleForReading.readabilityHandler != nil
+                    && errors.fileHandleForReading.readabilityHandler != nil
                 return ProcessGroupChild.testStub()
             }
         )
@@ -91,6 +94,7 @@ struct CUAServerManagerTests {
         #expect(capturedArguments.dropFirst().first == "--cua-only")
         #expect(capturedEnvironment["RAPID_MLX_API_KEY"] == "secret")
         #expect(capturedEnvironment["RAPID_MLX_WATCHDOG_PPID"] != nil)
+        #expect(outputWasDrained)
 
         await manager.ensureRunning()
         #expect(launches == 1)
