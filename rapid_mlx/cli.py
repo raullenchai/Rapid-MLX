@@ -1062,7 +1062,10 @@ def _print_model_load_error(args: argparse.Namespace, exc: BaseException) -> Non
     """Render local, Hub-not-found, and generic load failures consistently."""
     from huggingface_hub.utils import RepositoryNotFoundError
 
-    from rapid_mlx.local_model_path import local_model_failure_message
+    from rapid_mlx.local_model_path import (
+        is_local_model_ref,
+        local_model_failure_message,
+    )
 
     model_ref = getattr(args, "_original_alias", None) or args.model
     local_message = local_model_failure_message(
@@ -1070,6 +1073,11 @@ def _print_model_load_error(args: argparse.Namespace, exc: BaseException) -> Non
     )
     if local_message is not None:
         print(f"\n  Error: {local_message}", file=sys.stderr)
+        return
+    if isinstance(exc, RepositoryNotFoundError) and is_local_model_ref(model_ref):
+        # A Hub 404 while loading a local primary model belongs to an auxiliary
+        # repository. Keep that typed failure instead of blaming the checkpoint.
+        print(f"\n  Error loading model: {exc}")
         return
     if (
         isinstance(exc, RepositoryNotFoundError)

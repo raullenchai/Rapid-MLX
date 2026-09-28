@@ -11,6 +11,43 @@ from pathlib import Path, PurePosixPath
 MAX_MISSING_LOCAL_MODEL_FILES = 5
 
 
+def _exception_chain(exc: BaseException | None) -> tuple[BaseException, ...]:
+    """Return the bounded explicit cause chain used for load diagnostics."""
+    chain: list[BaseException] = []
+    seen: set[int] = set()
+    current = exc
+    while current is not None and id(current) not in seen and len(chain) < 16:
+        seen.add(id(current))
+        chain.append(current)
+        current = current.__cause__
+    return tuple(chain)
+
+
+def _has_authoritative_load_failure(exc: BaseException | None) -> bool:
+    """Whether a typed failure must retain its own classification/message."""
+    from huggingface_hub.errors import HfHubHTTPError, RepositoryNotFoundError
+
+    from .model_load_errors import (
+        IncompatibleWeights,
+        InvalidModelConfig,
+        QuantizationMismatch,
+        TokenizerLoadFailed,
+    )
+    from .runtime.optional_runtime import OptionalRuntimeMissing
+
+    authoritative = (
+        OptionalRuntimeMissing,
+        InvalidModelConfig,
+        TokenizerLoadFailed,
+        IncompatibleWeights,
+        QuantizationMismatch,
+        HfHubHTTPError,
+        RepositoryNotFoundError,
+        ModuleNotFoundError,
+    )
+    return any(isinstance(current, authoritative) for current in _exception_chain(exc))
+
+
 def is_local_model_ref(model_ref: object) -> bool:
     """Whether ``model_ref`` denotes a local path, including a missing one."""
     if not isinstance(model_ref, str) or not model_ref:
@@ -76,10 +113,7 @@ def missing_local_model_files(
         return ()
 
     missing = set(_missing_index_shards(root))
-    current = exc
-    seen: set[int] = set()
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
+    for current in _exception_chain(exc):
         if isinstance(current, FileNotFoundError) and current.filename:
             candidate = Path(current.filename)
             if not candidate.is_absolute():
@@ -90,17 +124,6 @@ def missing_local_model_files(
                 relative = None
             if relative and relative != ".":
                 missing.add(relative)
-        current = current.__cause__
-
-    try:
-        has_weights = any(
-            path.is_file() and path.stat().st_size > 0
-            for path in root.rglob("*.safetensors")
-        )
-    except OSError:
-        has_weights = False
-    if not has_weights and not missing:
-        missing.add("model.safetensors")
     return tuple(sorted(missing)[: max(0, limit)])
 
 
@@ -111,23 +134,33 @@ def local_model_failure_message(
     include_supplied_path: bool = False,
 ) -> str | None:
     """Render a local-model failure without exposing paths to HTTP clients."""
+    if _has_authoritative_load_failure(exc):
+        return None
     if not is_local_model_ref(model_ref) or not isinstance(model_ref, str):
         return None
     expanded = Path(model_ref).expanduser().absolute()
     try:
         exists = expanded.exists()
     except OSError:
-        exists = False
+        return None
     shown = f" {model_ref!r}" if include_supplied_path else ""
     if not exists:
-        return f"The local model path{shown} does not exist."
+        missing_path = any(
+            isinstance(current, FileNotFoundError)
+            and current.filename is not None
+            and Path(current.filename).expanduser().absolute() == expanded
+            for current in _exception_chain(exc)
+        )
+        if missing_path:
+            return f"The local model path{shown} does not exist."
+        return None
     missing = missing_local_model_files(model_ref, exc)
     if missing:
         return (
             f"The local model directory{shown} is missing required files: "
             f"{', '.join(missing)}."
         )
-    return f"The local model directory{shown} is missing required model files."
+    return None
 
 
 def raise_if_missing_local_model(model_ref: object) -> None:

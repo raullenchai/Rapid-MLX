@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from huggingface_hub.errors import HfHubHTTPError
+from huggingface_hub.errors import HfHubHTTPError, RepositoryNotFoundError
 
 from rapid_mlx import cli
 from rapid_mlx import local_model_path as local_paths
@@ -19,6 +19,7 @@ from rapid_mlx.local_model_path import (
     local_model_failure_message,
     missing_local_model_files,
 )
+from rapid_mlx.model_load_errors import InvalidModelConfig, TokenizerLoadFailed
 from rapid_mlx.request import MODEL_LOAD_FAILED_CODE, model_load_error_payload
 from rapid_mlx.telemetry.model_events import serve_error_class
 
@@ -37,10 +38,17 @@ def test_nonexistent_local_path_has_honest_class_and_messages(tmp_path):
     assert str(model_dir) in cli_message
 
 
+def test_nonexistent_local_path_without_attributable_file_failure_is_generic(tmp_path):
+    model_dir = tmp_path / "private" / "missing-model"
+
+    assert local_model_failure_message(str(model_dir), ValueError("bad config")) is None
+
+
 def test_existing_directory_without_weights_lists_relative_name(tmp_path):
     model_dir = tmp_path / "private-model"
     model_dir.mkdir()
-    exc = FileNotFoundError("missing weights")
+    missing_weight = model_dir / "model.safetensors"
+    exc = FileNotFoundError(2, "missing weights", str(missing_weight))
 
     assert serve_error_class(exc, model_ref=str(model_dir)) == "local_path_missing"
     assert missing_local_model_files(str(model_dir), exc) == ("model.safetensors",)
@@ -148,9 +156,7 @@ def test_local_diagnostics_handle_filename_causes_and_filesystem_errors(
     )
     outside = FileNotFoundError(2, "missing", str(tmp_path / "outside.safetensors"))
     assert missing_local_model_files(str(model_dir), outside) == ()
-    assert local_model_failure_message(str(model_dir)) == (
-        "The local model directory is missing required model files."
-    )
+    assert local_model_failure_message(str(model_dir)) is None
 
     monkeypatch.setattr(local_paths, "is_local_model_ref", lambda _value: True)
     original_exists = Path.exists
@@ -161,9 +167,7 @@ def test_local_diagnostics_handle_filename_causes_and_filesystem_errors(
         return original_exists(path)
 
     monkeypatch.setattr(Path, "exists", unreliable_exists)
-    assert local_model_failure_message(str(model_dir)) == (
-        "The local model path does not exist."
-    )
+    assert local_model_failure_message(str(model_dir)) is None
     with pytest.raises(FileNotFoundError):
         local_paths.raise_if_missing_local_model(str(model_dir))
 
@@ -178,7 +182,56 @@ def test_index_scan_oserror_is_an_empty_diagnostic(monkeypatch, tmp_path):
 
     monkeypatch.setattr(Path, "rglob", unreliable_rglob)
     assert local_paths._missing_index_shards(tmp_path) == []
-    assert missing_local_model_files(str(tmp_path)) == ("model.safetensors",)
+    assert missing_local_model_files(str(tmp_path)) == ()
+
+
+@pytest.mark.parametrize(
+    ("failure", "error_class"),
+    [
+        (InvalidModelConfig("invalid rope_scaling"), "invalid_config"),
+        (TokenizerLoadFailed("tokenizer.json is malformed"), "tokenizer_load_failed"),
+    ],
+)
+def test_valid_local_checkpoint_keeps_typed_load_failure(
+    tmp_path, capsys, failure, error_class
+):
+    model_dir = tmp_path / "valid-checkpoint"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text('{"model_type":"test"}')
+    (model_dir / "model.safetensors").write_bytes(b"weights")
+
+    assert local_model_failure_message(str(model_dir), failure) is None
+    assert serve_error_class(failure, model_ref=str(model_dir)) == error_class
+    payload = model_load_error_payload(failure, model_ref=str(model_dir))
+    assert payload["message"] == (
+        "The model failed to load. Check the model files or choose another model."
+    )
+
+    cli._print_model_load_error(SimpleNamespace(model=str(model_dir)), failure)
+    captured = capsys.readouterr()
+    assert str(failure) in captured.out
+    assert "missing required" not in captured.out + captured.err
+
+
+def test_local_checkpoint_auxiliary_hub_404_keeps_typed_failure(tmp_path, capsys):
+    model_dir = tmp_path / "valid-checkpoint"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text('{"model_type":"test"}')
+    (model_dir / "model.safetensors").write_bytes(b"weights")
+    response = httpx.Response(
+        404,
+        request=httpx.Request("GET", "https://huggingface.co/owner/auxiliary"),
+    )
+    failure = RepositoryNotFoundError(
+        "auxiliary adapter is unavailable", response=response
+    )
+
+    assert local_model_failure_message(str(model_dir), failure) is None
+    assert serve_error_class(failure, model_ref=str(model_dir)) == "download_failed"
+    cli._print_model_load_error(SimpleNamespace(model=str(model_dir)), failure)
+    captured = capsys.readouterr()
+    assert "auxiliary adapter is unavailable" in captured.out
+    assert "missing required" not in captured.out + captured.err
 
 
 @pytest.mark.parametrize(

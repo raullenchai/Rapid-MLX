@@ -284,6 +284,7 @@ def test_ensure_engine_ready_local_failure_never_leaks_model_root(
             raise FileNotFoundError(2, "private", str(missing))
 
     class _FakeConfig:
+        model_path = str(model_root)
         primary_model_lifecycle = _Lifecycle()
 
     monkeypatch.setattr(helpers, "get_config", lambda: _FakeConfig())
@@ -300,6 +301,49 @@ def test_ensure_engine_ready_local_failure_never_leaks_model_root(
     assert "model-00002-of-00002.safetensors" in message
     assert str(model_root) not in message
     assert _SECRET not in message
+
+
+def test_lazy_hub_failure_uses_configured_identity_not_snapshot_path(
+    monkeypatch, tmp_path
+):
+    from rapid_mlx.service import helpers
+
+    snapshot = tmp_path / "hub" / "snapshots" / "revision"
+    snapshot.mkdir(parents=True)
+
+    class _Engine:
+        _model_name = str(snapshot)
+
+    class _Lifecycle:
+        engine = _Engine()
+
+        def acquire_request(self):
+            pass
+
+        def release_request(self):
+            pass
+
+        async def ensure_loaded(self):
+            raise FileNotFoundError(2, "missing", str(snapshot / "model.safetensors"))
+
+    class _FakeConfig:
+        model_path = "owner/hub-model"
+        primary_model_lifecycle = _Lifecycle()
+
+    monkeypatch.setattr(helpers, "get_config", lambda: _FakeConfig())
+
+    async def _run():
+        with pytest.raises(HTTPException) as exc_info:
+            await helpers.ensure_engine_ready(
+                _FakeConfig.primary_model_lifecycle.engine
+            )
+        return exc_info.value
+
+    http = asyncio.run(_run())
+    assert http.detail["error"]["message"] == (
+        "The model failed to load. Check the model files or choose another model."
+    )
+    assert "local model" not in http.detail["error"]["message"].lower()
 
 
 # ── chat route unknown model -> dict envelope with model_not_found ──
