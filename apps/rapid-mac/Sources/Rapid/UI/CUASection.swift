@@ -4,6 +4,10 @@ struct CUAResultPresentation: Equatable {
     let answer: String
     let evidence: String?
 
+    var displayedAnswer: String {
+        answer.isEmpty ? "The task completed without a result summary." : answer
+    }
+
     init(summary: String) {
         let normalized = summary.trimmingCharacters(in: .whitespacesAndNewlines)
         let separators = [
@@ -153,7 +157,7 @@ struct CUASection: View {
                 approvalCard
             }
 
-            if case let .finished(summary) = viewModel.phase, !summary.isEmpty {
+            if case let .finished(summary) = viewModel.phase {
                 resultCard(summary: summary)
             }
             if case let .failed(message) = viewModel.phase {
@@ -467,7 +471,7 @@ struct CUASection: View {
                     .padding(.vertical, 3)
                     .background(.green.opacity(0.1), in: Capsule())
             }
-            Text(result.answer)
+            Text(result.displayedAnswer)
                 .font(.body)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)

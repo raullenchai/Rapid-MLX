@@ -1502,6 +1502,15 @@ struct CUATargetUISourceTests {
         #expect(result.evidence == nil)
     }
 
+    @Test("Completed task without a summary retains a visible result")
+    func emptyCompletedResultPresentation() {
+        let result = CUAResultPresentation(summary: "  \n")
+
+        #expect(result.answer.isEmpty)
+        #expect(result.displayedAnswer == "The task completed without a result summary.")
+        #expect(result.evidence == nil)
+    }
+
     @Test("Window controls are addressable and privacy copy distinguishes execution")
     func targetControlsAndPrivacyCopy() throws {
         let root = URL(fileURLWithPath: #filePath)
@@ -1535,6 +1544,7 @@ struct CUATargetUISourceTests {
         #expect(section.contains("ComputerUse.Agent.History"))
         #expect(section.contains("DisclosureGroup"))
         #expect(section.contains("Task complete"))
+        #expect(section.contains("if case let .finished(summary) = viewModel.phase"))
         #expect(section.contains("COMPLETED"))
         #expect(section.contains("RUNNING"))
         #expect(page.contains("ComputerUse.Server.Starting"))
