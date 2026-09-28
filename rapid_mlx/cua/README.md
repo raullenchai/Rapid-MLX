@@ -94,6 +94,10 @@ Clients should inspect the versioned capability response instead of inferring
 support from route presence. In this revision, `window_selection` and
 `visual_observation` are false, while `approval_gate_id` is true.
 
+Runs and events are retained only in the server process (up to 100 recent
+runs). A server restart clears them, so an old `run_id` can return HTTP 404;
+clients should treat that as an expired session and start a new run.
+
 ## SDK
 
 ```python
