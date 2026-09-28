@@ -797,6 +797,10 @@ def test_bonsai_engine_preflight_is_missing_vision_failure(monkeypatch, capsys) 
         "vision_runtime_status",
         lambda: (mllm.VisionRuntimeStatus.ABSENT, "mlx_vlm"),
     )
+    monkeypatch.setattr(
+        "rapid_mlx._version_check.detect_install_method",
+        lambda: SimpleNamespace(method="uv", upgrade_command=""),
+    )
 
     with pytest.raises(OptionalRuntimeMissing) as caught:
         server._preflight_vision_runtime("bonsai2-27b-2bit")

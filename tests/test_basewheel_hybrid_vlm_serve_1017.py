@@ -230,7 +230,7 @@ def test_serve_guard_no_mllm_skips_vision_extra(monkeypatch):
 def test_absent_runtime_degrade_rejects_image_with_capability_event(
     monkeypatch, capsys
 ):
-    from rapid_mlx import cli
+    from rapid_mlx import cli, server
     from rapid_mlx.api.utils import validate_content_blocks_for_capabilities
     from rapid_mlx.model_aliases import resolve_profile
     from rapid_mlx.models import mllm as mllm_mod
@@ -238,6 +238,7 @@ def test_absent_runtime_degrade_rejects_image_with_capability_event(
     profile = resolve_profile("qwen3.5-4b-4bit")
     assert profile is not None and profile.vision_min_memory_gb is not None
     _patch_probes(monkeypatch, is_mllm=True, hybrid=True)
+    monkeypatch.setattr("rapid_mlx.api.utils.physical_ram_gb", lambda: 64.0)
     monkeypatch.setattr(
         mllm_mod,
         "vision_runtime_status",
@@ -247,6 +248,15 @@ def test_absent_runtime_degrade_rejects_image_with_capability_event(
         "rapid_mlx.runtime.optional_runtime._running_in_desktop_sidecar",
         lambda: False,
     )
+    monkeypatch.setattr(server, "_preflight_vision_runtime", lambda *_a, **_kw: None)
+    monkeypatch.setattr(server, "_ensure_routing_config", lambda _model: None)
+    monkeypatch.setattr(
+        "rapid_mlx.utils.tokenizer._resolve_subfolder_checkpoint",
+        lambda model: model,
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.model_metadata.read_model_metadata", lambda _model: None
+    )
     events = []
     monkeypatch.setattr(
         "rapid_mlx.telemetry.inference.emit_capability_rejected",
@@ -254,12 +264,15 @@ def test_absent_runtime_degrade_rejects_image_with_capability_event(
     )
 
     assert cli._warn_vision_text_only_degrade(profile) is True
+    serving_checkpoint = server._resolve_serving_checkpoint("qwen3.5-4b-4bit")
+    assert serving_checkpoint.lane_reason == "vision_runtime_absent"
+    assert serving_checkpoint.auto_text_fallback is True
     with pytest.raises(Exception) as caught:
         validate_content_blocks_for_capabilities(
             [{"content": [{"type": "image_url", "image_url": {"url": "x"}}]}],
             model_name="qwen3.5-4b-4bit",
-            allow_image=False,
-            allow_video=False,
+            allow_image=serving_checkpoint.is_mllm,
+            allow_video=serving_checkpoint.is_mllm,
         )
 
     assert getattr(caught.value, "code", None) == "image_input_unsupported"

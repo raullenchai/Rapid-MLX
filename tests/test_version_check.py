@@ -690,6 +690,27 @@ def test_launcher_ownership_requires_distribution_and_active_interpreter(
     assert vc._launcher_belongs_to_running_install(str(launcher)) is False
 
     monkeypatch.setattr("sysconfig.get_path", lambda _name: str(launcher.parent))
+    assert vc._launcher_belongs_to_running_install(str(launcher)) is False
+
+
+def test_active_scripts_symlink_must_target_active_interpreter(tmp_path, monkeypatch):
+    scripts = tmp_path / "active" / "bin"
+    scripts.mkdir(parents=True)
+    foreign = tmp_path / "pipx" / "bin" / "rapid-mlx"
+    foreign.parent.mkdir(parents=True)
+    foreign.write_text("#!/foreign/python\n")
+    launcher = scripts / "rapid-mlx"
+    launcher.symlink_to(foreign)
+    monkeypatch.setattr(
+        vc,
+        "distribution",
+        lambda _name: MagicMock(entry_points=[SimpleNamespace(name="rapid-mlx")]),
+    )
+    monkeypatch.setattr("sysconfig.get_path", lambda _name: str(scripts))
+
+    assert vc._launcher_belongs_to_running_install(str(launcher)) is False
+
+    foreign.write_text(f"#!{vc.sys.executable}\n")
     assert vc._launcher_belongs_to_running_install(str(launcher)) is True
 
 

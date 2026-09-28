@@ -768,6 +768,38 @@ def test_recovery_outcome_emits_before_install(
         assert "install" not in order
 
 
+def test_install_method_detection_failure_disables_automatic_install(
+    monkeypatch,
+) -> None:
+    stderr = _TTY()
+    order = _isolate_handler(monkeypatch, stdin=_TTY("y\n"), stderr=stderr)
+    outcomes: list[str] = []
+    monkeypatch.setattr(
+        "rapid_mlx._version_check.detect_install_method",
+        lambda: (_ for _ in ()).throw(RuntimeError("detection failed")),
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.telemetry.model_events.emit_model_serve_failed",
+        lambda *_args, **kwargs: outcomes.append(kwargs["extra_recovery"]),
+    )
+    monkeypatch.setattr(
+        optional_runtime,
+        "_prompt_to_install",
+        lambda _extra: pytest.fail("detection failure must not prompt"),
+    )
+    monkeypatch.setattr(
+        optional_runtime,
+        "_install_optional_extra",
+        lambda _exc: pytest.fail("detection failure must not install"),
+    )
+
+    with pytest.raises(SystemExit, match="2"):
+        optional_runtime.handle_optional_runtime_missing(_failure(), assume_yes=True)
+
+    assert "pip install 'rapid-mlx[vision]'" in stderr.getvalue()
+    assert outcomes == ["no_installer"]
+
+
 def test_keyboard_interrupt_emits_once_then_preserves_interrupt(monkeypatch) -> None:
     order = _isolate_handler(monkeypatch, stdin=_TTY(), stderr=_TTY())
     monkeypatch.setattr(

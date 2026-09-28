@@ -485,8 +485,9 @@ def _launcher_belongs_to_running_install(binary: str) -> bool:
     """Prove that a PATH launcher is owned by this interpreter's install.
 
     A same-name launcher elsewhere on PATH is not evidence about the imported
-    distribution. Accept only the active interpreter's scripts directory or a
-    launcher whose shebang resolves to the active interpreter.
+    distribution. The launcher must resolve to the active interpreter even
+    when its lexical path is inside that interpreter's scripts directory: a
+    stale symlink there may still target a Homebrew or pipx installation.
     """
     try:
         dist = distribution("rapid-mlx")
@@ -495,14 +496,7 @@ def _launcher_belongs_to_running_install(binary: str) -> bool:
     except (PackageNotFoundError, OSError, ValueError):
         return False
 
-    import sysconfig
-
-    launcher = Path(binary)
     resolved = Path(os.path.realpath(binary))
-    scripts_dir = Path(os.path.realpath(sysconfig.get_path("scripts")))
-    launcher_dir = Path(os.path.realpath(launcher.parent))
-    if launcher_dir == scripts_dir or resolved.parent == scripts_dir:
-        return True
     try:
         first_line = resolved.open("rb").readline(4096).decode("utf-8", "replace")
     except OSError:

@@ -339,6 +339,7 @@ def handle_optional_runtime_missing(
     """Render and record the sole terminal result for an unavailable extra."""
     print(exc.format_user_message(), file=sys.stderr)
     managed_runtime = _running_in_desktop_sidecar()
+    install_detection_failed = False
     try:
         from rapid_mlx._version_check import detect_install_method
 
@@ -348,11 +349,13 @@ def handle_optional_runtime_missing(
             install_info, "upgrade_command", ""
         ).startswith("sudo pipx ")
     except Exception:  # noqa: BLE001 - the original typed failure still wins
+        install_detection_failed = True
         install_method = "unknown"
         globally_managed_pipx = False
     can_install = bool(
         exc.status == "absent"
         and not managed_runtime
+        and not install_detection_failed
         and not globally_managed_pipx
         and install_method in {"pip", "install_sh", "unknown"}
         and importlib.util.find_spec("pip") is not None
