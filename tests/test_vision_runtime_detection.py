@@ -328,6 +328,19 @@ def test_boot_guard_message_names_pil_when_broken(monkeypatch):
     assert "rapid-mlx[vision]" in err or "pillow" in err.lower()
 
 
+def test_boot_guard_broken_runtime_keeps_forced_reinstall_hint(monkeypatch):
+    from rapid_mlx.models.mllm import require_mlx_vlm_or_exit
+
+    _simulate_mlx_vlm_present_but_pil_missing(monkeypatch)
+
+    with pytest.raises(OptionalRuntimeMissing) as exc_info:
+        require_mlx_vlm_or_exit("gemma-4-26b-a4b-it-4bit")
+
+    failure = exc_info.value
+    assert "--upgrade --force-reinstall" in failure.install_hint
+    assert failure.format_user_message().count("rapid-mlx[vision]") == 1
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # Doctor: the vision + dflash rows must not be green when mlx-vlm metadata
 # is present but PIL is missing.

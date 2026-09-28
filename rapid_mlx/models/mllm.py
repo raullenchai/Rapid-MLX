@@ -512,7 +512,7 @@ def require_mlx_vlm_or_exit(model_name: str, *, text_diffusion: bool = False) ->
         runtime_status = "absent"
     raise OptionalRuntimeMissing(
         extra="vision",
-        install_hint=_vision_install_hint(),
+        install_hint=_vision_install_hint(status=runtime_status),
         detail=message,
         status=runtime_status,
         marker_reason=marker_reason,

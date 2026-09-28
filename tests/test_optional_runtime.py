@@ -287,15 +287,23 @@ if lane == "vision-present":
     return proc, events, child_executable
 
 
-def _expected_install_hint_line(extra: str, *, child_executable: str) -> str:
+def _expected_install_hint_line(
+    extra: str, *, child_executable: str, status: str = "absent"
+) -> str:
+    reinstall = "--upgrade --force-reinstall " if status == "broken" else ""
     return (
         f"    {shlex.quote(child_executable)} -m pip install "
-        f"'rapid-mlx[{extra}]=={rapid_mlx.__version__}'"
+        f"{reinstall}'rapid-mlx[{extra}]=={rapid_mlx.__version__}'"
     )
 
 
 def _assert_actionable_failure_contract(
-    stderr: str, *, extra: str, marker_reason: str, child_executable: str
+    stderr: str,
+    *,
+    extra: str,
+    marker_reason: str,
+    child_executable: str,
+    status: str = "absent",
 ) -> tuple[str, str]:
     expected_marker = f"RAPID-MLX-STARTUP-FAILURE: {marker_reason} extra={extra}"
     markers = [
@@ -306,7 +314,7 @@ def _assert_actionable_failure_contract(
     assert markers == [expected_marker]
 
     expected_hint = _expected_install_hint_line(
-        extra, child_executable=child_executable
+        extra, child_executable=child_executable, status=status
     )
     assert stderr.splitlines().count(expected_hint) == 1
     return expected_marker, expected_hint
@@ -550,6 +558,7 @@ def test_real_dispatch_posts_one_actionable_failure_to_loopback(
         extra=lane,
         marker_reason=marker_reason,
         child_executable=child_executable,
+        status=status,
     )
     assert (
         len(

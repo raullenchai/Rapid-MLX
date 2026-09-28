@@ -245,11 +245,12 @@ def require_video_runtime_or_exit(model_name: str | None = None) -> None:
             if any("rapid-mlx[video]" in item for item in missing)
             else "runtime_dependency_missing"
         )
+        status = "absent" if reason == "runtime_extra_missing" else "broken"
         raise OptionalRuntimeMissing(
             extra="video",
-            install_hint=optional_extra_install_hint("video"),
+            install_hint=optional_extra_install_hint("video", status=status),
             detail=message,
-            status="absent" if reason == "runtime_extra_missing" else "broken",
+            status=status,
             marker_reason=reason,
         )
 
