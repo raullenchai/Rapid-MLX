@@ -103,6 +103,7 @@ class CUAEvent(BaseModel):
     step_instruction: str | None = None
     element_index: int | None = None
     target_label: str | None = None
+    target: str | None = None
     latency_s: float | None = None
     outcome: str | None = None
     tree_changed: bool | None = None

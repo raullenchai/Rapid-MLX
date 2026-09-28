@@ -82,10 +82,11 @@ curl -X POST -H "Authorization: Bearer $RAPID_API_KEY" \
 ```
 
 Run responses contain a typed event envelope (`kind`, `seq`, `ts`) with
-event-specific fields, terminal status and summary, and the current
-`pending_gate`. Local trace paths are intentionally omitted from HTTP
-responses. Screenshots are not returned by this API; clients use structured
-events and host discovery without transferring captured private content.
+event-specific fields such as `action`, `target`, `target_label`, `outcome`,
+and `tree_changed`, terminal status and summary, and the current `pending_gate`.
+Local trace paths are intentionally omitted from HTTP responses. Screenshots
+are not returned by this API; clients use structured events and host discovery
+without transferring captured private content.
 
 Window discovery returns an opaque `window_id` such as `cg:123`, resolved
 against the target process ID. Discovery is currently informational: run
@@ -97,6 +98,11 @@ support from route presence. In this revision, `window_selection` and
 Runs and events are retained only in the server process (up to 100 recent
 runs). A server restart clears them, so an old `run_id` can return HTTP 404;
 clients should treat that as an expired session and start a new run.
+
+Native clients are not subject to browser CORS checks. For a browser GUI on a
+different origin, start the server with that exact origin in `--cors-origins`
+or `RAPID_MLX_CORS_ALLOW_ORIGINS`; do not use a wildcard for a computer-control
+server.
 
 ## SDK
 

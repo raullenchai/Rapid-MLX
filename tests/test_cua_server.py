@@ -204,6 +204,9 @@ def test_discovery_contract(client):
     assert windows.json()[0]["window_id"] == "cg:123"
     assert windows.json()[0]["title"] == "Finder window"
 
+    event_schema = client.app.openapi()["components"]["schemas"]["CUAEvent"]
+    assert "target" in event_schema["properties"]
+
 
 def test_planner_crud_roundtrip(client):
     """Users add a cloud brain from settings: create, masked listing, delete,
