@@ -1967,7 +1967,9 @@ def test_selected_window_rejects_pid_identity_reuse(
     assert "identity changed" in excinfo.value.message
 
 
-def test_loop_ranker_success_and_unavailable(fake_backend, tmp_path, monkeypatch):
+def test_loop_unverified_ranker_success_remains_uncertain(
+    fake_backend, tmp_path, monkeypatch
+):
     import asyncio
 
     from rapid_mlx.cua import loop as loop_mod
@@ -1982,7 +1984,7 @@ def test_loop_ranker_success_and_unavailable(fake_backend, tmp_path, monkeypatch
 
     class Ranker:
         async def assess(self, *args):
-            return {"outcome": "success", "confidence": 1.0}, 0.01
+            return {"outcome": "success", "confidence": 0.4768}, 0.01
 
     runner.ranker = Ranker()
     planner = _FakePlanner(
@@ -1995,8 +1997,20 @@ def test_loop_ranker_success_and_unavailable(fake_backend, tmp_path, monkeypatch
             }
         ]
     )
+    events = []
+    runner.event_sink = events.append
     assert asyncio.run(runner.step(planner, 1)) is None
-    assert runner.trace["steps"][-1]["protocol_outcome"] == "success"
+    record = runner.trace["steps"][-1]
+    assert record["protocol_outcome"] == "uncertain"
+    assert record["state_delta"]["fast_outcome"] == {
+        "outcome": "success",
+        "confidence": 0.4768,
+        "advisory": True,
+    }
+    assert runner.tracker.consecutive_bad == 1
+    executed = next(event for event in events if event["kind"] == "executed")
+    assert executed["action"] == "click"
+    assert executed["outcome"] == "uncertain"
 
     class BrokenRanker:
         async def assess(self, *args):
@@ -2007,6 +2021,96 @@ def test_loop_ranker_success_and_unavailable(fake_backend, tmp_path, monkeypatch
     assert runner.trace["steps"][-1]["state_delta"]["fast_outcome"] == {
         "outcome": "unavailable"
     }
+
+
+def test_exact_execution_verification_is_authoritative(
+    fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    monkeypatch.setattr(
+        fake_backend,
+        "click",
+        lambda *a, **k: {"executed": True, "verified": True, "mode": "AXPress"},
+    )
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(loop_mod.asyncio, "sleep", no_sleep)
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path), "TextEdit", "open menu", tmp_path / "verified"
+    )
+
+    class Ranker:
+        calls = 0
+
+        async def assess(self, *args):
+            self.calls += 1
+            return {"outcome": "no_effect", "confidence": 0.99}, 0.01
+
+    ranker = Ranker()
+    runner.ranker = ranker
+    planner = _FakePlanner(
+        [{"action": "click", "step_instruction": "open", "element_index": 1}]
+    )
+
+    assert asyncio.run(runner.step(planner, 1)) is None
+    record = runner.trace["steps"][-1]
+    assert ranker.calls == 0
+    assert record["protocol_outcome"] == "success"
+    assert record["state_delta"]["fast_outcome"] == {
+        "outcome": "success",
+        "confidence": 1.0,
+        "source": "execution-verification",
+    }
+
+
+def test_explicit_failed_verification_is_authoritative(
+    fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    monkeypatch.setattr(
+        fake_backend,
+        "click",
+        lambda *a, **k: {"executed": True, "verified": False, "mode": "AXPress"},
+    )
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(loop_mod.asyncio, "sleep", no_sleep)
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path), "TextEdit", "open menu", tmp_path / "not-verified"
+    )
+
+    class Ranker:
+        calls = 0
+
+        async def assess(self, *args):
+            self.calls += 1
+            return {"outcome": "success", "confidence": 0.99}, 0.01
+
+    ranker = Ranker()
+    runner.ranker = ranker
+    planner = _FakePlanner(
+        [{"action": "click", "step_instruction": "open", "element_index": 1}]
+    )
+
+    assert asyncio.run(runner.step(planner, 1)) is None
+    record = runner.trace["steps"][-1]
+    assert ranker.calls == 0
+    assert record["protocol_outcome"] == "no_effect"
+    assert record["state_delta"]["fast_outcome"]["source"] == ("execution-verification")
+    assert runner.tracker.consecutive_bad == 1
+    assert runner._last_execution_failed is True
 
 
 def test_execution_failure_is_authoritative_and_reaches_planner_history(

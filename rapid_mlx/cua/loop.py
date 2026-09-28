@@ -583,24 +583,43 @@ class CUARun:
             "url_after": url_after,
         }
 
-        execution_failed = executed.get("ok") is False
-        outcome = "no_effect" if execution_failed else "uncertain"
+        execution_rejected = executed.get("ok") is False
+        verification = executed.get("verified")
+        verification_failed = verification is False
+        execution_failed = execution_rejected or verification_failed
+        if execution_failed:
+            outcome = "no_effect"
+        elif verification is True:
+            outcome = "success"
+        else:
+            outcome = "uncertain"
         ranker_latency = 0.0
         if execution_failed:
-            # An executor result is observed fact. A probabilistic verifier
-            # must never relabel a rejected action as successful.
+            # Executor rejection and explicit failed verification are observed
+            # facts. A probabilistic verifier must never relabel either one.
             delta["fast_outcome"] = {
                 "outcome": outcome,
                 "confidence": 1.0,
-                "source": "execution",
+                "source": (
+                    "execution" if execution_rejected else "execution-verification"
+                ),
+            }
+        elif verification is True:
+            # Exact readback is stronger evidence than a semantic classifier.
+            delta["fast_outcome"] = {
+                "outcome": outcome,
+                "confidence": 1.0,
+                "source": "execution-verification",
             }
         elif self.ranker is not None:
             try:
                 verdict, ranker_latency = await self.ranker.assess(
                     self.goal, plan, delta
                 )
-                outcome = verdict["outcome"]
-                delta["fast_outcome"] = verdict
+                # The current ranker sees only coarse structured deltas. Keep
+                # its result for diagnostics, but do not promote an unverified
+                # dispatch to user-visible success (or suppress recovery).
+                delta["fast_outcome"] = {**verdict, "advisory": True}
             except (RuntimeError, KeyError, ValueError):
                 delta["fast_outcome"] = {"outcome": "unavailable"}
         self.tracker.record(plan, outcome)
@@ -619,7 +638,7 @@ class CUARun:
             "outcome": outcome,
             "url_after": url_after[:120],
         }
-        if execution_failed:
+        if execution_rejected:
             event.update(
                 {
                     "error": str(executed.get("error", "action was not executed"))[
@@ -636,6 +655,7 @@ class CUARun:
                     "recovery": list(executed.get("recovery", [])),
                 }
             )
+        if execution_failed:
             self._last_execution_failed = True
         elif executed.get("executed") is True:
             # A dispatched action followed by the fresh `after` observation is
