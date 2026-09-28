@@ -4,6 +4,8 @@ import Foundation
 /// unit-tested without a live server.
 protocol CUAAPI: Sendable {
     func planners() async throws -> [CUAPlannerOption]
+    func addPlanner(_ request: CUAPlannerCreateRequest) async throws
+    func deletePlanner(name: String) async throws
     func create(_ request: CUARunRequest) async throws -> String
     func events(runID: String, after: Int) async throws -> CUARunView
     func approve(runID: String) async throws
@@ -35,7 +37,7 @@ enum CUAPhase: Equatable, Sendable {
 final class CUAViewModel: ObservableObject {
     @Published var goal = ""
     @Published var appName = "Google Chrome"
-    @Published var plannerName = "cloud-glm"
+    @Published var plannerName = "local-27b"
     @Published var openURL = ""
     @Published var allowedDomain = ""
     @Published var maxSteps = 12
@@ -64,8 +66,47 @@ final class CUAViewModel: ObservableObject {
 
     func loadPlanners() async {
         plannerOptions = (try? await api.planners()) ?? []
-        if plannerOptions.isEmpty {
-            plannerOptions = []
+    }
+
+    // MARK: Add-brain settings (product behavior: users bring their own cloud brain)
+
+    @Published var showAddBrain = false
+    @Published var newBrainName = ""
+    @Published var newBrainURL = ""
+    @Published var newBrainModel = ""
+    @Published var newBrainAPIKey = ""
+    @Published var newBrainTextOnly = false
+    @Published var brainError: String?
+
+    var addBrainIsValid: Bool {
+        !newBrainName.trimmingCharacters(in: .whitespaces).isEmpty
+            && !newBrainURL.trimmingCharacters(in: .whitespaces).isEmpty
+            && !newBrainModel.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    func saveBrain() async {
+        let api = self.api
+        brainError = nil
+        do {
+            try await api.addPlanner(
+                CUAPlannerCreateRequest(
+                    name: newBrainName,
+                    url: newBrainURL.trimmingCharacters(in: .whitespaces),
+                    model: newBrainModel.trimmingCharacters(in: .whitespaces),
+                    apiKey: newBrainAPIKey.isEmpty ? nil : newBrainAPIKey,
+                    reasoningEffort: nil,
+                    textOnly: newBrainTextOnly
+                )
+            )
+            newBrainName = ""
+            newBrainURL = ""
+            newBrainModel = ""
+            newBrainAPIKey = ""
+            newBrainTextOnly = false
+            showAddBrain = false
+            await loadPlanners()
+        } catch {
+            brainError = String(describing: error)
         }
     }
 
@@ -248,6 +289,14 @@ private struct NullCUAAPI: CUAAPI {
     }
 
     func planners() async throws -> [CUAPlannerOption] {
+        throw Unavailable()
+    }
+
+    func addPlanner(_ request: CUAPlannerCreateRequest) async throws {
+        throw Unavailable()
+    }
+
+    func deletePlanner(name: String) async throws {
         throw Unavailable()
     }
 

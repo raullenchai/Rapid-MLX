@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from ..cua import service as cua_service
-from ..cua.config import load_config
+from ..cua.config import delete_user_preset, load_config, save_user_preset
 from ..middleware.auth import check_rate_limit, verify_api_key
 
 router = APIRouter(
@@ -30,6 +30,23 @@ class CUAPlannerInfo(BaseModel):
     url: str
     text_only: bool
     note: str = ""
+    has_api_key: bool = False
+    user_created: bool = False
+
+
+class CUAPlannerCreateRequest(BaseModel):
+    """User adds a cloud brain from the app settings.
+
+    Providing api_key is the user's explicit consent to send task data to
+    this endpoint; remote URLs must be HTTPS (validated on save).
+    """
+
+    name: str = Field(min_length=1, max_length=32)
+    url: str = Field(min_length=8, max_length=2000)
+    model: str = Field(min_length=1, max_length=500)
+    api_key: str | None = Field(default=None, max_length=2000)
+    reasoning_effort: str | None = Field(default=None, max_length=20)
+    text_only: bool = False
 
 
 class CUARunCreateRequest(BaseModel):
@@ -95,9 +112,44 @@ async def list_planners() -> list[CUAPlannerInfo]:
             url=preset["url"],
             text_only=bool(preset.get("text_only", False)),
             note=preset.get("note", ""),
+            has_api_key=bool(preset.get("api_key")),
+            user_created=bool(preset.get("user_created", False)),
         )
         for name, preset in sorted(presets.items())
     ]
+
+
+@router.post("/planners", response_model=CUAPlannerInfo, status_code=201)
+async def create_planner(request: CUAPlannerCreateRequest) -> CUAPlannerInfo:
+    try:
+        name, preset = save_user_preset(
+            request.name,
+            request.url,
+            request.model,
+            api_key=request.api_key or None,
+            reasoning_effort=request.reasoning_effort,
+            text_only=request.text_only,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return CUAPlannerInfo(
+        name=name,
+        model=preset["model"],
+        url=preset["url"],
+        text_only=bool(preset.get("text_only", False)),
+        note=preset.get("note", ""),
+        has_api_key=bool(preset.get("api_key")),
+        user_created=True,
+    )
+
+
+@router.delete("/planners/{name}")
+async def delete_planner(name: str) -> dict:
+    try:
+        delete_user_preset(name)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"deleted": name}
 
 
 @router.post("/runs", response_model=CUARunCreated, status_code=202)

@@ -36,7 +36,8 @@ def config_dir(tmp_path, monkeypatch):
 
 def test_defaults_created_on_first_load(config_dir):
     data = load_config()
-    assert "cloud-glm" in data["presets"]
+    assert "local-27b" in data["presets"]
+    assert "cloud-glm" not in data["presets"]  # cloud brains are user-added
     assert "local-9b" in data["presets"]
     assert (config_dir / "cua-config.json").exists()
 
@@ -683,7 +684,7 @@ def test_cli_planners_and_config(capsys, config_dir):
 
     assert main(["planners"]) == 0
     out = capsys.readouterr().out
-    assert "local-9b" in out and "cloud-glm" in out
+    assert "local-9b" in out and "local-27b" in out
 
     assert main(["config", "--show"]) == 0
     data = json.loads(capsys.readouterr().out)
@@ -749,7 +750,7 @@ def _make_planner(monkeypatch, responses):
     )
     queue = list(responses)
 
-    async def fake_post(url, json=None):
+    async def fake_post(url, json=None, **_kwargs):
         return _FakeResponse(queue.pop(0))
 
     monkeypatch.setattr(p.client, "post", fake_post)
@@ -780,7 +781,7 @@ def test_plan_http_error_raises(monkeypatch, fake_backend):
     snapshot = fake_backend.get_app_state("Chrome", screenshot=False)
     planner = _make_planner(monkeypatch, [])
 
-    async def fake_post(url, json=None):
+    async def fake_post(url, json=None, **_kwargs):
         return _FakeResponse(status_error=True)
 
     monkeypatch.setattr(planner.client, "post", fake_post)
@@ -806,7 +807,7 @@ def test_plan_attaches_screenshot_for_vision(monkeypatch, fake_backend):
         url="http://127.0.0.1:9/v1/chat/completions", model="m", text_only=False
     )
 
-    async def fake_post(url, json=None):
+    async def fake_post(url, json=None, **_kwargs):
         seen["content_kinds"] = [c["type"] for c in json["messages"][0]["content"]]
         return _FakeResponse(
             '{"action":"wait","step_instruction":"s","element_index":-1,"text":"","key":"","direction":"","final_summary":""}'
@@ -884,7 +885,7 @@ def test_data_url_works_without_optional_pillow(monkeypatch):
 def test_config_recovers_from_invalid_json(config_dir):
     path = config_dir / "cua-config.json"
     path.write_text("{broken")
-    assert "cloud-glm" in load_config()["presets"]
+    assert "local-27b" in load_config()["presets"]
 
 
 def test_fast_ranker_success_error_and_assess(monkeypatch):
@@ -1259,7 +1260,7 @@ def test_planner_validation_and_helpers(monkeypatch):
     )
     seen = {}
 
-    async def post(url, json=None):
+    async def post(url, json=None, **_kwargs):
         seen.update(json)
         return _FakeResponse('{"ok":true}')
 
@@ -1300,3 +1301,96 @@ def test_loop_ax_watchdog_stops_honestly(config_dir, tmp_path, monkeypatch):
     assert trace["status"] == "stopped"
     assert "accessibility tree" in (trace.get("final_summary") or "")
     assert planner.calls == 0
+
+
+def test_planner_bearer_header_and_guided_degradation(monkeypatch):
+    """User-configured cloud brains send Bearer auth and degrade guided JSON
+    once (json_schema unsupported) instead of failing the run."""
+    import asyncio
+
+    from rapid_mlx.cua import planner as planner_mod
+
+    calls: list[dict] = []
+
+    class _Resp:
+        status_code = 200
+
+        def __init__(self, content):
+            self._content = content
+
+        @property
+        def is_error(self):
+            return False
+
+        def json(self):
+            return {"choices": [{"message": {"content": self._content}}]}
+
+    async def post(url, json=None, headers=None, **_kwargs):
+        calls.append({"headers": headers, "payload": json})
+        if len(calls) == 1:
+            # first call: endpoint rejects json_schema response_format
+            class _Err:
+                status_code = 400
+                is_error = True
+                text = "response_format json_schema not supported"
+
+            return _Err()
+        return _Resp('{"ok":true}')
+
+    planner = planner_mod.Planner(
+        url="http://127.0.0.1:9/v1",
+        model="m",
+        api_key="sk-user-key",
+    )
+    monkeypatch.setattr(planner.client, "post", post)
+    out = asyncio.run(planner._ask([], 5, {"type": "object"}, "test"))
+    assert out == '{"ok":true}'
+    assert calls[0]["headers"] == {"Authorization": "Bearer sk-user-key"}
+    assert "response_format" in calls[0]["payload"]
+    assert planner.guided_json is False
+    assert "response_format" not in calls[1]["payload"]
+    assert "schema" in calls[1]["payload"]["messages"][-1]["content"]
+
+
+def test_planner_remote_url_consent_rules():
+    """Loopback stays open; remote requires consent + HTTPS."""
+    from rapid_mlx.cua import planner as planner_mod
+
+    assert planner_mod.validate_planner_url("http://127.0.0.1:18888/v1")
+    assert planner_mod.validate_planner_url(
+        "https://api.example.com/v1", allow_remote=True
+    )
+    with pytest.raises(ValueError, match="credentials"):
+        planner_mod.validate_planner_url("https://api.example.com/v1")
+    with pytest.raises(ValueError, match="HTTPS"):
+        planner_mod.validate_planner_url("http://api.example.com/v1", allow_remote=True)
+
+
+def test_user_preset_crud_and_consent(tmp_path, monkeypatch):
+    """save/delete user presets; api_key implies remote consent; defaults
+    protected; file written 0600."""
+    from rapid_mlx.cua import config as config_mod
+
+    cfg = tmp_path / "cua-config.json"
+    monkeypatch.setattr(config_mod, "CONFIG_PATH", cfg)
+    config_mod.save_user_preset(
+        "My Brain",
+        "https://api.example.com/v1/chat/completions",
+        "deepseek-r1",
+        api_key="sk-x",
+    )
+    stored = config_mod._read_stored()
+    preset = stored["presets"]["my-brain"]
+    assert preset["model"] == "deepseek-r1"
+    assert preset["api_key"] == "sk-x"
+    assert preset["user_created"] is True
+    assert (cfg.stat().st_mode & 0o777) == 0o600
+
+    resolved = config_mod.resolve_planner("my-brain")
+    assert resolved.api_key == "sk-x"
+    assert resolved.allow_remote is True
+
+    with pytest.raises(ValueError, match="cannot be deleted"):
+        config_mod.delete_user_preset("local-27b")
+    config_mod.delete_user_preset("my-brain")
+    assert "my-brain" not in config_mod._read_stored().get("presets", {})

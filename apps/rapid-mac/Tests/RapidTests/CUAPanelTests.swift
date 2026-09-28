@@ -18,8 +18,21 @@ private final class MockAgentAPI: CUAAPI, @unchecked Sendable {
     var cancelShouldFail = false
     var eventsShouldFail = false
 
+    var addedPlanners: [CUAPlannerCreateRequest] = []
+    var deletedPlannerNames: [String] = []
+    var addShouldFail = false
+
     func planners() async throws -> [CUAPlannerOption] {
         plannersResult
+    }
+
+    func addPlanner(_ request: CUAPlannerCreateRequest) async throws {
+        if addShouldFail { throw Failure.requested }
+        addedPlanners.append(request)
+    }
+
+    func deletePlanner(name: String) async throws {
+        deletedPlannerNames.append(name)
     }
 
     func create(_ request: CUARunRequest) async throws -> String {
@@ -369,5 +382,53 @@ final class RecordingURLProtocol: URLProtocol {
             data.append(buffer, count: read)
         }
         return data
+    }
+}
+
+// MARK: - Add-brain settings
+
+@Suite(.serialized)
+struct CUAAddBrainTests {
+    @MainActor
+    @Test func saveBrainPostsRequestAndReloads() async throws {
+        let api = MockAgentAPI()
+        let vm = CUAViewModel(api: api)
+        vm.newBrainName = "deepseek"
+        vm.newBrainURL = "https://api.example.com/v1/chat/completions"
+        vm.newBrainModel = "deepseek-reasoner"
+        vm.newBrainAPIKey = "sk-test"
+        await vm.saveBrain()
+        #expect(api.addedPlanners.count == 1)
+        #expect(api.addedPlanners[0].name == "deepseek")
+        #expect(api.addedPlanners[0].apiKey == "sk-test")
+        #expect(vm.showAddBrain == false)
+        #expect(vm.brainError == nil)
+        #expect(vm.newBrainName.isEmpty)
+    }
+
+    @MainActor
+    @Test func saveBrainSurfacesError() async throws {
+        let api = MockAgentAPI()
+        api.addShouldFail = true
+        let vm = CUAViewModel(api: api)
+        vm.showAddBrain = true
+        vm.newBrainName = "bad"
+        vm.newBrainURL = "https://api.example.com/v1"
+        vm.newBrainModel = "m"
+        await vm.saveBrain()
+        #expect(vm.brainError != nil)
+        #expect(vm.showAddBrain == true)
+    }
+
+    @MainActor
+    @Test func addBrainIsValidRequiresAllFields() {
+        let api = MockAgentAPI()
+        let vm = CUAViewModel(api: api)
+        #expect(vm.addBrainIsValid == false)
+        vm.newBrainName = "x"
+        vm.newBrainURL = "https://api.example.com/v1"
+        #expect(vm.addBrainIsValid == false)
+        vm.newBrainModel = "m"
+        #expect(vm.addBrainIsValid == true)
     }
 }

@@ -150,6 +150,38 @@ def assert_loopback_url(url: str) -> str:
     return url
 
 
+def validate_planner_url(url: str, allow_remote: bool = False) -> str:
+    """Validate a user-configured brain endpoint.
+
+    Loopback HTTP(S) is always allowed. Non-loopback endpoints require the
+    user-consent flag (a preset created with credentials) and must be HTTPS:
+    task screenshots and goals leave the machine, so plaintext HTTP to a
+    remote brain is rejected outright.
+    """
+    import ipaddress
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError(f"planner URL must be HTTP(S): {url!r}")
+    try:
+        address = ipaddress.ip_address(parsed.hostname)
+    except ValueError:
+        address = None  # hostname (api.example.com): remote by definition
+    if address is not None and address.is_loopback:
+        return url
+    if not allow_remote:
+        raise ValueError(
+            "planner URL must be loopback unless the user configured this "
+            f"brain with credentials: {url!r}"
+        )
+    if parsed.scheme != "https":
+        raise ValueError(
+            f"remote brain URL must be HTTPS (task data leaves the machine): {url!r}"
+        )
+    return url
+
+
 class Planner:
     """Slow-thinking brain. Which model serves it is the user's choice."""
 
@@ -160,11 +192,15 @@ class Planner:
         reasoning_effort: str | None = None,
         timeout: float = 180.0,
         text_only: bool = False,
+        api_key: str | None = None,
+        allow_remote: bool = False,
     ):
-        self.url = assert_loopback_url(url)
+        self.url = validate_planner_url(url, allow_remote=allow_remote)
         self.model = model
         self.reasoning_effort = reasoning_effort
         self.text_only = text_only
+        self.api_key = api_key
+        self.guided_json = True
         self.client = httpx.AsyncClient(timeout=timeout)
 
     async def close(self) -> None:
@@ -185,11 +221,39 @@ class Planner:
         }
         if self.reasoning_effort:
             payload["reasoning_effort"] = self.reasoning_effort
-        payload["response_format"] = {
-            "type": "json_schema",
-            "json_schema": {"name": name, "strict": True, "schema": schema},
-        }
-        response = await self.client.post(self.url, json=payload)
+        headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+        if self.guided_json:
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {"name": name, "strict": True, "schema": schema},
+            }
+        response = await self.client.post(self.url, json=payload, headers=headers)
+        if (
+            response.is_error
+            and self.guided_json
+            and response.status_code
+            in (
+                400,
+                422,
+            )
+        ):
+            # Many cloud OpenAI-compatible endpoints reject json_schema
+            # response_format. Degrade once: re-ask without it and put the
+            # schema in prose; extract_json() already tolerates fenced or
+            # embedded JSON. Remember the degradation for later steps.
+            self.guided_json = False
+            bare = dict(payload)
+            bare.pop("response_format", None)
+            bare["messages"] = list(bare["messages"]) + [
+                {
+                    "role": "user",
+                    "content": (
+                        "Respond with ONLY one JSON object matching this "
+                        f"schema: {json.dumps(schema)}"
+                    ),
+                }
+            ]
+            response = await self.client.post(self.url, json=bare, headers=headers)
         if response.is_error:
             raise RuntimeError(
                 f"planner HTTP {response.status_code}: {response.text[:800]}"

@@ -110,7 +110,60 @@ def test_list_planners(client):
     response = test_client.get("/v1/cua/planners", headers=AUTH)
     assert response.status_code == 200
     names = {p["name"] for p in response.json()}
-    assert {"cloud-glm", "local-27b", "local-9b"} <= names
+    assert {"local-27b", "local-9b"} <= names
+
+
+def test_planner_crud_roundtrip(client):
+    """Users add a cloud brain from settings: create, masked listing, delete,
+    built-in presets protected."""
+    test_client = client
+    created = test_client.post(
+        "/v1/cua/planners",
+        headers=AUTH,
+        json={
+            "name": "My Cloud",
+            "url": "https://api.example.com/v1/chat/completions",
+            "model": "deepseek-reasoner",
+            "api_key": "sk-secret",
+            "text_only": True,
+        },
+    )
+    assert created.status_code == 201
+    assert created.json()["name"] == "my-cloud"
+    assert created.json()["has_api_key"] is True
+    assert created.json()["user_created"] is True
+
+    listed = test_client.get("/v1/cua/planners", headers=AUTH).json()
+    entry = next(p for p in listed if p["name"] == "my-cloud")
+    assert entry["has_api_key"] is True
+    assert "api_key" not in entry  # never echoed back
+
+    assert (
+        test_client.delete("/v1/cua/planners/local-27b", headers=AUTH).status_code
+        == 409
+    )
+    assert (
+        test_client.delete("/v1/cua/planners/my-cloud", headers=AUTH).status_code == 200
+    )
+    assert (
+        test_client.delete("/v1/cua/planners/my-cloud", headers=AUTH).status_code == 409
+    )
+
+
+def test_planner_create_rejects_plaintext_remote(client):
+    test_client = client
+    response = test_client.post(
+        "/v1/cua/planners",
+        headers=AUTH,
+        json={
+            "name": "insecure",
+            "url": "http://api.example.com/v1/chat/completions",
+            "model": "m",
+            "api_key": "sk-x",
+        },
+    )
+    assert response.status_code == 422
+    assert "HTTPS" in response.json()["detail"]
 
 
 def test_run_lifecycle_done(client):

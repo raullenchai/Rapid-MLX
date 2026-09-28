@@ -134,7 +134,7 @@ class CUAService:
         self,
         app: str,
         goal: str,
-        planner: str = "cloud-glm",
+        planner: str = "local-27b",
         planner_model: str | None = None,
         planner_url: str | None = None,
         open_url: str = "",

@@ -12,7 +12,7 @@ loop (`tools/gui_verifier_cua_poc/`) with the product pipeline:
   fixation detector catches small-model loops and injects a recovery hint into
   the next planning prompt.
 - **Slow thinking — user's choice**: any loopback OpenAI-compatible endpoint.
-  Presets: `cloud-glm` (tunnel), `local-27b`, `local-9b`; or a custom URL with
+  Presets: `local-27b`, `local-9b` (built-in, on-device); cloud brains are added from the app settings or a custom URL with
   `--planner-model`. Config lives in `~/.rapid-mlx/cua-config.json`.
 - **Consent gates** (hard, not configurable): no credentials / card fields,
   no commerce fills; optional sign-in human gate via file sentinel

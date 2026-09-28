@@ -6,6 +6,11 @@ import SwiftUI
 /// only client-side action is approving a sign-in gate.
 struct CUASection: View {
     @ObservedObject var viewModel: CUAViewModel
+    @State private var brainDraftName = ""
+    @State private var brainDraftURL = ""
+    @State private var brainDraftModel = ""
+    @State private var brainDraftAPIKey = ""
+    @State private var brainDraftTextOnly = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.md) {
@@ -32,17 +37,27 @@ struct CUASection: View {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Brain").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                    Picker("Brain", selection: $viewModel.plannerName) {
-                        ForEach(viewModel.plannerOptions) { option in
-                            Text(option.displayName).tag(option.name)
+                    HStack(spacing: 6) {
+                        Picker("Brain", selection: $viewModel.plannerName) {
+                            ForEach(viewModel.plannerOptions) { option in
+                                Text(option.displayName).tag(option.name)
+                            }
+                            if viewModel.plannerOptions.isEmpty {
+                                Text(viewModel.plannerName).tag(viewModel.plannerName)
+                            }
                         }
-                        if viewModel.plannerOptions.isEmpty {
-                            Text(viewModel.plannerName).tag(viewModel.plannerName)
+                        .labelsHidden()
+                        .frame(maxWidth: 340)
+                        .accessibilityIdentifier("ComputerUse.Agent.Planner")
+                        Button {
+                            viewModel.showAddBrain = true
+                        } label: {
+                            Image(systemName: "plus.circle")
                         }
+                        .buttonStyle(.borderless)
+                        .help("Add a cloud brain (OpenAI-compatible endpoint)")
+                        .accessibilityIdentifier("ComputerUse.Agent.AddBrain")
                     }
-                    .labelsHidden()
-                    .frame(maxWidth: 380)
-                    .accessibilityIdentifier("ComputerUse.Agent.Planner")
                 }
                 VStack(alignment: .leading, spacing: 4) {
                     Text("App").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
@@ -131,6 +146,48 @@ struct CUASection: View {
         .frame(maxWidth: 984, alignment: .leading)
         .task {
             await viewModel.loadPlanners()
+        }
+        .sheet(isPresented: $viewModel.showAddBrain) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Add a cloud brain").font(.headline)
+                Text(
+                    "Your task goal and a compact screen snapshot are sent to this OpenAI-compatible endpoint. Use HTTPS; the API key is stored locally (0600)."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                Form {
+                    TextField("Name (e.g. deepseek)", text: $brainDraftName)
+                        .accessibilityIdentifier("ComputerUse.Agent.BrainName")
+                    TextField("Model (e.g. deepseek-reasoner)", text: $brainDraftModel)
+                        .accessibilityIdentifier("ComputerUse.Agent.BrainModel")
+                    TextField("Base URL", text: $brainDraftURL)
+                        .accessibilityIdentifier("ComputerUse.Agent.BrainURL")
+                    SecureField("API key", text: $brainDraftAPIKey)
+                        .accessibilityIdentifier("ComputerUse.Agent.BrainKey")
+                    Toggle("Text-only (no screenshots)", isOn: $brainDraftTextOnly)
+                        .accessibilityIdentifier("ComputerUse.Agent.BrainTextOnly")
+                }
+                if let error = viewModel.brainError {
+                    Text(error).font(.caption).foregroundStyle(.red)
+                }
+                HStack {
+                    Spacer()
+                    Button("Cancel") { viewModel.showAddBrain = false }
+                    Button("Save Brain") {
+                        viewModel.newBrainName = brainDraftName
+                        viewModel.newBrainURL = brainDraftURL
+                        viewModel.newBrainModel = brainDraftModel
+                        viewModel.newBrainAPIKey = brainDraftAPIKey
+                        viewModel.newBrainTextOnly = brainDraftTextOnly
+                        Task { await viewModel.saveBrain() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(brainDraftName.isEmpty || brainDraftURL.isEmpty || brainDraftModel.isEmpty)
+                    .accessibilityIdentifier("ComputerUse.Agent.BrainSave")
+                }
+            }
+            .padding(20)
+            .frame(width: 460)
         }
     }
 }
