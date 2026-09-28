@@ -125,6 +125,8 @@ final class CUAViewModel: ObservableObject {
     @Published var isLoadingApps = false
     @Published var isLoadingWindows = false
     @Published private(set) var isStopping = false
+    @Published private(set) var isSessionDetached = false
+    @Published private(set) var wasSessionInterrupted = false
 
     private let api: CUAAPI
     private var runID: String?
@@ -148,7 +150,8 @@ final class CUAViewModel: ObservableObject {
     }
 
     var canStart: Bool {
-        !goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !isSessionDetached
+            && !goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !phase.isBusy
             && runContext == nil
             && selectedApp != nil
@@ -172,7 +175,7 @@ final class CUAViewModel: ObservableObject {
     }
 
     var canApprove: Bool {
-        phase == .awaitingApproval && pendingApproval?.gateID != nil
+        !isSessionDetached && phase == .awaitingApproval && pendingApproval?.gateID != nil
             && !requiresBindingCleanup && !isStopping
     }
 
@@ -580,7 +583,7 @@ final class CUAViewModel: ObservableObject {
     }
 
     func newTask() {
-        guard !phase.isBusy else { return }
+        guard !phase.isBusy, !isSessionDetached else { return }
         lifecycleGeneration += 1
         stopPolling()
         runID = nil
@@ -593,6 +596,7 @@ final class CUAViewModel: ObservableObject {
         showingPollError = false
         requiresBindingCleanup = false
         pendingCreateRecovery = nil
+        wasSessionInterrupted = false
         isStopping = false
         phase = .idle
     }
@@ -774,6 +778,51 @@ final class CUAViewModel: ObservableObject {
         stoppingStartGeneration = nil
         pendingCreateRecovery = nil
         isStopping = false
+    }
+
+    /// Detaches every server-side authority while retaining local context for
+    /// an interrupted-session explanation and safe transfer to a replacement
+    /// authenticated sidecar. The old run and gate can never be resumed.
+    func detachFromSession() {
+        let hadActiveAuthority = phase.isBusy || runID != nil || pendingCreateRecovery != nil
+        invalidateSession()
+        isSessionDetached = true
+        pendingGateReason = nil
+        pendingApproval = nil
+        requiresBindingCleanup = false
+        actionError = nil
+        showingPollError = false
+        executorPermissions = nil
+        targetDiscoveryGeneration += 1
+        selectedPID = nil
+        selectedWindowID = nil
+        appOptions = []
+        windowOptions = []
+        targetError = nil
+        isLoadingApps = false
+        isLoadingWindows = false
+        if hadActiveAuthority {
+            wasSessionInterrupted = true
+            phase = .failed(
+                message: "The task was interrupted because the local Computer Use service stopped. It cannot resume."
+            )
+        }
+    }
+
+    /// Copies only local presentation and draft state into a fresh authenticated
+    /// session. Run IDs, approvals, recovery identities, and target bindings
+    /// deliberately remain absent.
+    func restoreContinuity(from previous: CUAViewModel) {
+        goal = previous.goal
+        appName = previous.appName
+        plannerName = previous.plannerName
+        openURL = previous.openURL
+        allowedDomain = previous.allowedDomain
+        maxSteps = previous.maxSteps
+        phase = previous.phase
+        events = previous.events
+        runContext = previous.runContext
+        wasSessionInterrupted = previous.wasSessionInterrupted
     }
 
     private func pollUntilTerminal(runID: String, generation: Int) async {

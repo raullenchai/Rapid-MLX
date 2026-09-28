@@ -21,6 +21,7 @@ final class CUAServerManager {
     typealias PortProvider = @MainActor () async -> Int?
     typealias BearerProvider = @MainActor () -> String
     typealias ReadinessProbe = @MainActor (String, Int, String) async -> Bool
+    typealias StopSignaler = @MainActor (ProcessGroupChild) -> Void
     typealias Launcher = @MainActor (
         URL, [String], [String: String], Pipe, Pipe,
         @escaping @Sendable (ProcessGroupChild) -> Void
@@ -43,11 +44,14 @@ final class CUAServerManager {
     @ObservationIgnored private let bearerProvider: BearerProvider
     @ObservationIgnored private let readinessProbe: ReadinessProbe
     @ObservationIgnored private let launcher: Launcher
+    @ObservationIgnored private let stopSignaler: StopSignaler
     @ObservationIgnored private var child: ProcessGroupChild?
     @ObservationIgnored private var stdoutPipe: Pipe?
     @ObservationIgnored private var stderrPipe: Pipe?
     @ObservationIgnored private var startTask: Task<Void, Never>?
     @ObservationIgnored private var shutdownRequested = false
+    @ObservationIgnored private var stoppingChild: ProcessGroupChild?
+    @ObservationIgnored private var stoppingPreservesContinuity = false
 
     /// A separate window keeps the CUA sidecar away from the user-selected
     /// chat port. Do not call ``PortAllocator.allocate`` here: that allocator
@@ -71,7 +75,8 @@ final class CUAServerManager {
         },
         bearerProvider: @escaping BearerProvider = { BearerSecret.generate() ?? "" },
         readinessProbe: @escaping ReadinessProbe = CUAServerManager.probeReadiness,
-        launcher: @escaping Launcher = CUAServerManager.launch
+        launcher: @escaping Launcher = CUAServerManager.launch,
+        stopSignaler: @escaping StopSignaler = { $0.signalProcessGroup(SIGTERM) }
     ) {
         self.host = host
         self.binaryPath = binaryPath
@@ -81,6 +86,7 @@ final class CUAServerManager {
         self.bearerProvider = bearerProvider
         self.readinessProbe = readinessProbe
         self.launcher = launcher
+        self.stopSignaler = stopSignaler
     }
 
     var client: CUAClient? {
@@ -177,14 +183,18 @@ final class CUAServerManager {
         guard await readinessProbe(host, allocatedPort, bearer),
               child === launched, !shutdownRequested else {
             if child === launched, !shutdownRequested {
-                await stop()
+                await stop(preserveContinuity: true)
                 fail("The Computer Use service didn't become ready. Check the engine installation and try again.")
             }
             return
         }
-        viewModel = CUAViewModel(api: CUAClient(
+        let replacement = CUAViewModel(api: CUAClient(
             host: host, port: allocatedPort, bearerToken: bearer
         ))
+        if let previous = viewModel {
+            replacement.restoreContinuity(from: previous)
+        }
+        viewModel = replacement
         sessionID = UUID()
         state = .ready
     }
@@ -194,17 +204,27 @@ final class CUAServerManager {
     }
 
     func stop() async {
+        await stop(preserveContinuity: false)
+    }
+
+    private func stop(preserveContinuity: Bool) async {
         guard let child else {
-            clearSession(nextState: shutdownRequested ? .idle : .idle)
+            clearSession(nextState: .idle, preserveContinuity: preserveContinuity)
             return
         }
-        child.signalProcessGroup(SIGTERM)
+        // Bind intent to this exact process before SIGTERM. Its asynchronous
+        // termination callback may run before this method resumes.
+        stoppingChild = child
+        stoppingPreservesContinuity = preserveContinuity
+        stopSignaler(child)
         let deadline = Date().addingTimeInterval(2)
         while Date() < deadline, child.isProcessGroupAlive {
             try? await Task.sleep(nanoseconds: 50_000_000)
         }
         if child.isProcessGroupAlive { child.signalProcessGroup(SIGKILL) }
-        if self.child === child { clearSession(nextState: .idle) }
+        if self.child === child {
+            clearSession(nextState: .idle, preserveContinuity: preserveContinuity)
+        }
     }
 
     func beginShutdown() {
@@ -222,7 +242,7 @@ final class CUAServerManager {
             Thread.sleep(forTimeInterval: 0.05)
         }
         if child.isProcessGroupAlive { child.signalProcessGroup(SIGKILL) }
-        clearSession(nextState: .idle)
+        clearSession(nextState: .idle, preserveContinuity: false)
     }
 
     nonisolated static func serveArguments(host: String, port: Int) -> [String] {
@@ -247,21 +267,36 @@ final class CUAServerManager {
 
     private func childExited(_ process: ProcessGroupChild) {
         guard child === process else { return }
+        if stoppingChild === process {
+            clearSession(
+                nextState: .idle,
+                preserveContinuity: stoppingPreservesContinuity
+            )
+            return
+        }
         if shutdownRequested {
-            clearSession(nextState: .idle)
+            clearSession(nextState: .idle, preserveContinuity: false)
         } else {
             clearSession(nextState: .failed(
                 "The Computer Use service stopped unexpectedly. Try again."
-            ))
+            ), preserveContinuity: true)
         }
     }
 
     private func fail(_ message: String) {
-        clearSession(nextState: .failed(message))
+        clearSession(nextState: .failed(message), preserveContinuity: true)
     }
 
-    private func clearSession(nextState: CUAServerState) {
-        viewModel?.invalidateSession()
+    private func clearSession(
+        nextState: CUAServerState,
+        preserveContinuity: Bool
+    ) {
+        if preserveContinuity {
+            viewModel?.detachFromSession()
+        } else {
+            viewModel?.invalidateSession()
+            viewModel = nil
+        }
         stdoutPipe?.fileHandleForReading.readabilityHandler = nil
         stderrPipe?.fileHandleForReading.readabilityHandler = nil
         child = nil
@@ -270,7 +305,8 @@ final class CUAServerManager {
         port = nil
         bearerToken = nil
         sessionID = nil
-        viewModel = nil
+        stoppingChild = nil
+        stoppingPreservesContinuity = false
         state = nextState
     }
 

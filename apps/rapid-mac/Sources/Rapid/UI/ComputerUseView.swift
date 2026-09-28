@@ -53,12 +53,17 @@ struct ComputerUseView: View {
                 ProgressView().controlSize(.small)
             }
         case .idle, .starting:
-            HStack(spacing: 10) {
-                ProgressView().controlSize(.small)
-                Text("Preparing Computer Use on this Mac…")
-                    .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: RapidTheme.Space.md) {
+                HStack(spacing: 10) {
+                    ProgressView().controlSize(.small)
+                    Text("Preparing Computer Use on this Mac…")
+                        .foregroundStyle(.secondary)
+                }
+                .accessibilityIdentifier("ComputerUse.Server.Starting")
+                if let cuaViewModel, showsDetachedContext(cuaViewModel) {
+                    CUASection(viewModel: cuaViewModel)
+                }
             }
-            .accessibilityIdentifier("ComputerUse.Server.Starting")
         case .failed(let message):
             VStack(alignment: .leading, spacing: 10) {
                 Label(message, systemImage: "exclamationmark.triangle")
@@ -68,8 +73,20 @@ struct ComputerUseView: View {
                 }
                 .buttonStyle(.bordered)
                 .accessibilityIdentifier("ComputerUse.Server.Retry")
+                if let cuaViewModel, showsDetachedContext(cuaViewModel) {
+                    CUASection(viewModel: cuaViewModel)
+                }
             }
             .accessibilityIdentifier("ComputerUse.Server.Error")
+        }
+    }
+
+    private func showsDetachedContext(_ viewModel: CUAViewModel) -> Bool {
+        guard viewModel.isSessionDetached else { return false }
+        if viewModel.runContext != nil { return true }
+        return switch viewModel.phase {
+        case .finished, .failed: true
+        case .idle, .starting, .running, .awaitingApproval: false
         }
     }
 }

@@ -221,6 +221,7 @@ struct CUASection: View {
             if viewModel.runContext != nil, !viewModel.phase.isBusy {
                 Button("New Task") { viewModel.newTask() }
                     .buttonStyle(.borderedProminent)
+                    .disabled(viewModel.isSessionDetached)
                     .accessibilityIdentifier("ComputerUse.Agent.NewTask")
             }
             if let actionError = viewModel.actionError {
@@ -239,6 +240,7 @@ struct CUASection: View {
         .overlay(RoundedRectangle(cornerRadius: 14).stroke(.secondary.opacity(0.2)))
         .frame(maxWidth: 984, alignment: .leading)
         .task {
+            guard !viewModel.isSessionDetached else { return }
             await viewModel.loadPlanners()
             await viewModel.loadPermissions()
             await viewModel.loadTargets()
@@ -247,7 +249,9 @@ struct CUASection: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
                 permissionSnapshot = MacAutomationPermissions.snapshot()
-                Task { await viewModel.loadPermissions() }
+                if !viewModel.isSessionDetached {
+                    Task { await viewModel.loadPermissions() }
+                }
             }
         }
         .sheet(isPresented: $viewModel.showAddBrain) {
@@ -578,9 +582,8 @@ struct CUASection: View {
     private func failureCard(message: String) -> some View {
         let failure = CUAFailurePresentation(
             message: message,
-            hasExecutedActions: CUAFailurePresentation.hasPotentialSideEffects(
-                in: viewModel.events
-            )
+            hasExecutedActions: viewModel.wasSessionInterrupted
+                || CUAFailurePresentation.hasPotentialSideEffects(in: viewModel.events)
         )
         return VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {

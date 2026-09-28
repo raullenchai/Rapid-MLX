@@ -148,6 +148,155 @@ struct CUAServerManagerTests {
         #expect(manager.viewModel?.phase == .idle)
     }
 
+    @Test("Unexpected sidecar exit preserves context but revokes run authority")
+    @MainActor
+    func unexpectedExitInterruptsAndRestoresReadOnlyContext() async throws {
+        var exits: [@Sendable (ProcessGroupChild) -> Void] = []
+        var children: [ProcessGroupChild] = []
+        var nextPort = 7_671
+        let manager = CUAServerManager(
+            binaryPath: URL(fileURLWithPath: "/usr/bin/true"),
+            portProvider: {
+                defer { nextPort += 1 }
+                return nextPort
+            },
+            bearerProvider: { UUID().uuidString },
+            readinessProbe: { _, _, _ in true },
+            launcher: { _, _, _, _, _, termination in
+                let child = ProcessGroupChild.testStub()
+                children.append(child)
+                exits.append(termination)
+                return child
+            }
+        )
+        await manager.ensureRunning()
+        let originalSessionID = try #require(manager.sessionID)
+        let original = try #require(manager.viewModel)
+        original.goal = "Rename the selected item"
+        original.plannerName = "remote-brain"
+        original.maxSteps = 9
+        original.phase = .awaitingApproval
+        original.pendingApproval = CUAPendingApproval(
+            gateID: "old-gate", app: "Finder", action: "press",
+            target: "Rename", reason: "Changes a filename"
+        )
+        original.events = [
+            CUAEvent(
+                seq: 1, kind: "executed", step: 1, action: "click",
+                stepInstruction: "Select Rename", outcome: nil,
+                targetLabel: "Rename", status: nil, finalSummary: nil, reason: nil
+            ),
+        ]
+        original.appOptions = [
+            CUAAppOption(name: "Finder", bundleID: "com.apple.finder", pid: 42),
+        ]
+        original.selectedPID = 42
+        original.windowOptions = [
+            CUAWindowOption(
+                windowID: "cg:77", index: 0, title: "Documents",
+                x: 0, y: 0, width: 800, height: 600
+            ),
+        ]
+        original.selectedWindowID = "cg:77"
+
+        exits[0](children[0])
+        for _ in 0..<20 where manager.state == .ready { await Task.yield() }
+
+        #expect(manager.failureMessage != nil)
+        #expect(manager.viewModel === original)
+        #expect(original.isSessionDetached)
+        #expect(original.wasSessionInterrupted)
+        #expect(original.pendingApproval == nil)
+        #expect(!original.canApprove)
+        #expect(!original.canStart)
+        #expect(original.selectedPID == nil)
+        #expect(original.selectedWindowID == nil)
+        #expect(original.events.count == 1)
+        guard case let .failed(message) = original.phase else {
+            Issue.record("active task did not become an interrupted failure")
+            return
+        }
+        #expect(message.contains("cannot resume"))
+
+        await manager.retry()
+        let replacement = try #require(manager.viewModel)
+        #expect(replacement !== original)
+        #expect(manager.sessionID != originalSessionID)
+        #expect(!replacement.isSessionDetached)
+        #expect(replacement.wasSessionInterrupted)
+        #expect(replacement.goal == "Rename the selected item")
+        #expect(replacement.plannerName == "remote-brain")
+        #expect(replacement.maxSteps == 9)
+        #expect(replacement.events.count == 1)
+        #expect(replacement.pendingApproval == nil)
+        #expect(!replacement.canApprove)
+        #expect(replacement.selectedPID == nil)
+        #expect(replacement.selectedWindowID == nil)
+    }
+
+    @Test("Session rotation preserves idle draft and terminal history without targets")
+    @MainActor
+    func detachedPresentationContinuityIsLocalOnly() {
+        let draft = CUAViewModel(api: nil)
+        draft.goal = "Inspect this window"
+        draft.plannerName = "brain"
+        draft.selectedPID = 7
+        draft.selectedWindowID = "cg:9"
+        draft.detachFromSession()
+
+        #expect(draft.phase == .idle)
+        #expect(draft.goal == "Inspect this window")
+        #expect(draft.selectedPID == nil)
+        #expect(draft.selectedWindowID == nil)
+        #expect(!draft.canStart)
+
+        let terminal = CUAViewModel(api: nil)
+        terminal.goal = "Read the title"
+        terminal.phase = .finished(summary: "The title is Notes.")
+        terminal.events = [
+            CUAEvent(
+                seq: 1, kind: "done", step: 1, action: nil,
+                stepInstruction: nil, outcome: nil, targetLabel: nil,
+                status: "completed", finalSummary: "The title is Notes.", reason: nil
+            ),
+        ]
+        terminal.detachFromSession()
+
+        let restored = CUAViewModel(api: nil)
+        restored.restoreContinuity(from: terminal)
+        #expect(restored.phase == .finished(summary: "The title is Notes."))
+        #expect(restored.events == terminal.events)
+        #expect(!restored.isSessionDetached)
+        #expect(!restored.wasSessionInterrupted)
+    }
+
+    @Test("Explicit stop wins when the termination callback runs synchronously")
+    @MainActor
+    func explicitStopConsumesItsChildExit() async throws {
+        var exitHandler: (@Sendable (ProcessGroupChild) -> Void)?
+        let manager = CUAServerManager(
+            binaryPath: URL(fileURLWithPath: "/usr/bin/true"),
+            portProvider: { 7_673 },
+            bearerProvider: { "secret" },
+            readinessProbe: { _, _, _ in true },
+            launcher: { _, _, _, _, _, termination in
+                exitHandler = termination
+                return ProcessGroupChild.testStub()
+            },
+            stopSignaler: { child in exitHandler?(child) }
+        )
+        await manager.ensureRunning()
+        let viewModel = try #require(manager.viewModel)
+        viewModel.goal = "Keep this draft only while the service is alive"
+
+        await manager.stop()
+
+        #expect(manager.state == .idle)
+        #expect(manager.viewModel == nil)
+        #expect(manager.sessionID == nil)
+        #expect(!viewModel.isSessionDetached)
+    }
+
     @Test("Failed readiness is recoverable without duplicate retry children")
     @MainActor
     func failureCanRetry() async {
