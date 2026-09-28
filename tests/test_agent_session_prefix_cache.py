@@ -642,7 +642,12 @@ def test_completion_entry_skipped_when_the_hybrid_bound_is_one(monkeypatch):
 # --------------------------------------------------------------------------
 
 
-def _hybrid_entry(length: int, checkpoints: tuple[int, ...]):
+def _hybrid_entry(
+    length: int,
+    checkpoints: tuple[int, ...],
+    *,
+    anchor_position: int | None = None,
+):
     import mlx.core as mx
     from mlx_lm.models.cache import ArraysCache, KVCache
 
@@ -658,8 +663,11 @@ def _hybrid_entry(length: int, checkpoints: tuple[int, ...]):
         rec,
         CHECKPOINT_ATTR,
         StateCheckpoints(
-            (pos, (mx.full((1, 3, 4), pos), mx.full((1, 2, 2), pos)))
-            for pos in checkpoints
+            (
+                (pos, (mx.full((1, 3, 4), pos), mx.full((1, 2, 2), pos)))
+                for pos in checkpoints
+            ),
+            anchor_position=anchor_position,
         ),
     )
     return [kv, rec]
@@ -702,6 +710,34 @@ def test_replayed_first_turn_snaps_to_a_restored_checkpoint(tmp_path):
     assert result is not None
     assert remaining == turn_1[4096:]
     assert result[1].cache[0][0, 0, 0].item() == 4096
+
+
+def test_boundary_anchor_survives_save_load_and_later_thinning(tmp_path):
+    from rapid_mlx.hybrid_state_checkpoints import layer_checkpoints
+
+    stored = list(range(40_000))
+    _, restored = _save_and_reload(
+        tmp_path,
+        stored,
+        _hybrid_entry(
+            len(stored),
+            (22_819, 26_624, 30_720, 34_816),
+            anchor_position=22_819,
+        ),
+    )
+    entry = next(iter(restored._entries.values()))
+    holder = layer_checkpoints(entry.cache[1])
+    assert holder.anchor_position == 22_819
+
+    holder = holder.with_checkpoint(
+        38_912,
+        (entry.cache[1].cache[0], entry.cache[1].cache[1]),
+        max_count=4,
+        stride=1,
+    )
+    assert len(holder) == 4
+    assert 22_819 in holder.positions
+    assert holder.positions[-1] == 38_912
 
 
 def test_entry_without_checkpoints_writes_no_sidecar(tmp_path):

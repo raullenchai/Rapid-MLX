@@ -102,6 +102,34 @@ class TestStateCheckpoints:
         assert holder.positions == (4096, 8192, 10240)
         assert holder.positions[-1] == 10240
 
+    def test_anchor_bypasses_stride_and_survives_thinning(self):
+        holder = StateCheckpoints([(2048, (_Array(2048),))])
+        holder = holder.with_checkpoint(
+            22819,
+            (_Array(22819),),
+            max_count=4,
+            stride=2048,
+            force=True,
+            anchor=True,
+        )
+        for pos in (24576, 26624, 28672, 30720, 32768):
+            holder = holder.with_checkpoint(
+                pos, (_Array(pos),), max_count=4, stride=1
+            )
+
+        assert holder.anchor_position == 22819
+        assert 22819 in holder.positions
+        assert len(holder) == 4
+        assert holder.positions[-1] == 32768
+
+    def test_single_slot_anchor_wins_over_newer_stride_samples(self):
+        holder = StateCheckpoints().with_checkpoint(
+            100, (_Array(100),), max_count=1, stride=1, anchor=True
+        )
+        holder = holder.with_checkpoint(200, (_Array(200),), max_count=1, stride=1)
+        assert holder.positions == (100,)
+        assert holder.anchor_position == 100
+
     def test_max_count_zero_disables_recording(self):
         holder = StateCheckpoints().with_checkpoint(2048, (), max_count=0, stride=1)
         assert len(holder) == 0
@@ -140,6 +168,15 @@ class TestRecordAndRestore:
         assert holders[0] is None
         assert holders[1].positions == holders[2].positions == (2048, 4096)
         assert holders[1].arrays_at(4096)[0].tag == 1
+
+    def test_forced_record_marks_exact_boundary_as_anchor(self):
+        holders = collect_checkpoints(_cache(0))
+        assert record_checkpoints(
+            _cache(1), holders, 22819, max_count=4, stride=2048,
+            force=True, anchor=True,
+        )
+        assert holders[1].positions == holders[2].positions == (22819,)
+        assert holders[1].anchor_position == holders[2].anchor_position == 22819
 
     def test_record_refuses_unmaterialised_state(self):
         cache = _cache(0)

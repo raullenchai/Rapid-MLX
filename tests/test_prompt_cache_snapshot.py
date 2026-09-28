@@ -559,6 +559,45 @@ class TestBoundarySnapshot:
             is False
         )
 
+    def test_cold_message_boundary_becomes_checkpoint_anchor(self, monkeypatch):
+        from rapid_mlx import scheduler as scheduler_module
+
+        scheduler = _make_scheduler_with_cache()
+        scheduler.config.hybrid_cache_entries = 4
+        scheduler._extract_cache_states = MagicMock(return_value=[{"k": "v"}])
+        reconstructed = [object(), object()]
+        scheduler._reconstruct_cache_from_states = MagicMock(
+            return_value=reconstructed
+        )
+        scheduler.memory_aware_cache.store = MagicMock(return_value=True)
+        record = MagicMock(return_value=True)
+        monkeypatch.setattr(scheduler_module, "_state_checkpoint_max", lambda: 4)
+        monkeypatch.setattr(scheduler_module, "_record_state_checkpoints", record)
+
+        request = self._register_with_boundary(
+            scheduler, "req-anchor", 109, list(range(100)), 80
+        )
+        request.cached_tokens = 0
+        scheduler.batch_generator = MagicMock()
+        scheduler.batch_generator.extract_cache.return_value = {
+            109: (["raw-cache"], list(range(80)))
+        }
+
+        scheduler._snapshot_boundary_segments(
+            [
+                SimpleNamespace(
+                    uid=109,
+                    progress=(80, 100),
+                    end_of_segment=True,
+                    end_of_prompt=False,
+                )
+            ]
+        )
+
+        assert record.call_args.args[:3] == (reconstructed, [None, None], 80)
+        assert record.call_args.kwargs == {"force": True, "anchor": True}
+        assert scheduler._hybrid_checkpoints[109] == [None, None]
+
     def test_snapshot_stores_at_internal_exact_hit_boundary(self):
         """N-1 snapshots make non-trimmable exact repeats prefix extensions."""
         scheduler = _make_scheduler_with_cache()

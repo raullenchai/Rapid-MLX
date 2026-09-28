@@ -173,12 +173,9 @@ Restart persistence now completes for a realistic session. The newest
 boundary entries are written within the SIGTERM budget and reloaded on start,
 so a client that resumes the same conversation extends them.
 
-Replaying a session from turn 1 after a restart resumes from the newest
-persisted checkpoint below the turn-1 prefix. It does not reuse the full
-turn-1 prefix, because checkpoints are recorded at prefill-chunk strides of
-2048 tokens. An exact turn-1 hit, like oMLX's block-level SSD cache, would
-need one of two follow-ups: a boundary snapshot at the end of system + tools,
-or checkpoints recorded at message boundaries.
+Replaying a session from turn 1 after a restart originally resumed from the
+newest persisted 2048-token stride checkpoint below the turn-1 prefix. The
+#3796 follow-up below adds the exact message-boundary anchor.
 
 Known limits:
 
@@ -192,3 +189,31 @@ Known limits:
   `RAPID_MLX_PREFIX_CACHE_MAX_BYTES` are likewise never raised. Other
   front-ends that build `SchedulerConfig` directly must set
   `cache_memory_percent_explicit` to get the same treatment.
+
+## Follow-up: stable boundary checkpoint
+
+Issue #3796 closes the replay gap by recording the recurrent state at every
+real message-boundary snapshot, independent of the 2048-token stride. The
+first boundary reached by a cold session is marked as its anchor. Checkpoint
+thinning keeps that anchor while still enforcing
+`RAPID_MLX_HYBRID_CHECKPOINT_MAX`; newer stride and message-boundary samples
+compete for the remaining slots. The anchor position is stored in the
+checkpoint sidecar metadata, so later turns after a restart cannot thin it
+away. Internal N-1 snapshots are not session anchors.
+
+Measured 2026-09-28 on an M3 Pro 18 GB with
+`mlx-community/Qwen3.5-9B-4bit`, BF16 KV, MTP, PFlash off, 30 synthetic tool
+schemas, and a fresh cache home:
+
+| Phase | Prompt / cache | Engine TTFT |
+|---|---:|---:|
+| Cold turn 1 | 17,220 tokens / miss | 50.3 s |
+| Live turns 2-3 | 38-41 tokens remaining | 0.4 s |
+| Replayed turn 1 after SIGTERM/restart | 17,205 cached, 15 remaining | 0.7 s |
+
+The shutdown saved one 17,231-token boundary entry under the 3.5-second
+budget. Restart loaded it with its sidecar, and the fetch log reported
+`LCP snapped to checkpoint: shared=17216 entry_len=17231 resumed_at=17205`.
+This is a smaller synthetic prompt than the 22,819-token issue harness, so it
+confirms the boundary mechanism and sub-second result on the target hardware;
+it does not replace the issue's exact 30-tool harness measurements.

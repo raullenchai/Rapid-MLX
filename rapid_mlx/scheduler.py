@@ -5554,6 +5554,31 @@ class Scheduler:
             reconstructed = self._reconstruct_cache_from_states(states)
             if not reconstructed:
                 continue
+            # A real message boundary is an exact recurrent-state checkpoint,
+            # not merely a place to store the KV entry.  On the first cold
+            # turn, discard earlier stride samples and make this stable
+            # system+tools/user prefix the protected session anchor.  Later
+            # turns inherit that anchor and add their boundary within the
+            # same fixed checkpoint count.
+            if self._hybrid_checkpoints_enabled() and not getattr(
+                request, "_cache_snapshot_is_internal", False
+            ):
+                holders = self._hybrid_checkpoints.get(uid)
+                if not int(request.cached_tokens or 0):
+                    holders = [None] * len(reconstructed)
+                elif holders is None:
+                    holders = _collect_state_checkpoints(reconstructed)
+                if len(holders) == len(reconstructed) and _record_state_checkpoints(
+                    reconstructed,
+                    holders,
+                    prefix_boundary,
+                    force=True,
+                    anchor=not any(
+                        h is not None and h.anchor_position is not None
+                        for h in holders
+                    ),
+                ):
+                    self._hybrid_checkpoints[uid] = holders
             self._attach_hybrid_checkpoints(uid, reconstructed, length=prefix_boundary)
 
             prefix_tokens = list(request.prompt_token_ids[:prefix_boundary])
