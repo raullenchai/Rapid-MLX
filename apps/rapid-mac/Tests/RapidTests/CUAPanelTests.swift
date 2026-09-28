@@ -432,3 +432,24 @@ struct CUAAddBrainTests {
         #expect(vm.addBrainIsValid == true)
     }
 }
+
+@Suite(.serialized)
+struct CUAPlannerDecodeTests {
+    @Test func decodesLegacyServerJSONWithoutNewFields() throws {
+        // Older sidecars predate has_api_key/user_created; the client must
+        // still decode their planner list instead of failing the picker.
+        let legacy = #"{"name":"local-9b","model":"m9","url":"http://127.0.0.1:1/v1","text_only":true}"#
+        let data = Data(legacy.utf8)
+        let option = try JSONDecoder().decode(CUAPlannerOption.self, from: data)
+        #expect(option.name == "local-9b")
+        #expect(option.hasApiKey == false)
+        #expect(option.userCreated == false)
+    }
+
+    @Test func decodesSnakeCaseFields() throws {
+        let full = #"{"name":"my-cloud","model":"m","url":"https://x/v1","text_only":false,"note":"","has_api_key":true,"user_created":true}"#
+        let option = try JSONDecoder().decode(CUAPlannerOption.self, from: Data(full.utf8))
+        #expect(option.hasApiKey == true)
+        #expect(option.userCreated == true)
+    }
+}

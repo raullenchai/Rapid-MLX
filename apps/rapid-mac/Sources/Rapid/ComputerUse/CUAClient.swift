@@ -15,6 +15,43 @@ struct CUAPlannerOption: Codable, Equatable, Identifiable, Sendable {
     var displayName: String {
         "\(name) — \(model)"
     }
+
+    init(
+        name: String,
+        model: String,
+        url: String,
+        textOnly: Bool,
+        note: String = "",
+        hasApiKey: Bool = false,
+        userCreated: Bool = false
+    ) {
+        self.name = name
+        self.model = model
+        self.url = url
+        self.textOnly = textOnly
+        self.note = note
+        self.hasApiKey = hasApiKey
+        self.userCreated = userCreated
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = try container.decode(String.self, forKey: .name)
+        model = try container.decode(String.self, forKey: .model)
+        url = try container.decode(String.self, forKey: .url)
+        textOnly = try container.decodeIfPresent(Bool.self, forKey: .textOnly) ?? false
+        note = try container.decodeIfPresent(String.self, forKey: .note) ?? ""
+        // Tolerate older sidecars that predate the settings feature.
+        hasApiKey = try container.decodeIfPresent(Bool.self, forKey: .hasApiKey) ?? false
+        userCreated = try container.decodeIfPresent(Bool.self, forKey: .userCreated) ?? false
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case name, model, url, note
+        case textOnly = "text_only"
+        case hasApiKey = "has_api_key"
+        case userCreated = "user_created"
+    }
 }
 
 /// Body for `POST /v1/cua/planners` (user adds a cloud brain in settings).
