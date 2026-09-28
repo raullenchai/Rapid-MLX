@@ -7,8 +7,9 @@ protocol CUAAPI: Sendable {
     func addPlanner(_ request: CUAPlannerCreateRequest) async throws
     func deletePlanner(name: String) async throws
     func create(_ request: CUARunRequest) async throws -> String
+    func permissions() async throws -> CUAPermissionStatus
     func events(runID: String, after: Int) async throws -> CUARunView
-    func approve(runID: String) async throws
+    func approve(runID: String, gateID: String?) async throws
     func cancel(runID: String) async throws
 }
 
@@ -39,6 +40,18 @@ struct CUAPendingApproval: Equatable, Sendable {
     var reason: String
 }
 
+struct CUAPermissionStatus: Codable, Equatable, Sendable {
+    var accessibility: Bool
+    var screenRecording: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case accessibility
+        case screenRecording = "screen_recording"
+    }
+
+    var isReady: Bool { accessibility && screenRecording == true }
+}
+
 struct CUAProgressPresentation: Equatable, Sendable {
     var step: Int
     var maxSteps: Int
@@ -47,13 +60,9 @@ struct CUAProgressPresentation: Equatable, Sendable {
     var target: String?
     var outcome: String?
 
-    var fraction: Double {
-        min(1, max(0, Double(step) / Double(max(1, maxSteps))))
-    }
-
     var outcomeLabel: String? {
         switch outcome {
-        case "success": "Verified"
+        case "success": "Observed expected change"
         case "no_effect": "No effect observed"
         case "wrong_effect": "Unexpected result observed"
         case "uncertain": "Could not verify"
@@ -79,6 +88,7 @@ final class CUAViewModel: ObservableObject {
     @Published var plannerOptions: [CUAPlannerOption] = []
     @Published var pendingGateReason: String?
     @Published var pendingApproval: CUAPendingApproval?
+    @Published var executorPermissions: CUAPermissionStatus?
     @Published var actionError: String?
 
     private let api: CUAAPI
@@ -117,6 +127,10 @@ final class CUAViewModel: ObservableObject {
 
     func loadPlanners() async {
         plannerOptions = (try? await api.planners()) ?? []
+    }
+
+    func loadPermissions() async {
+        executorPermissions = try? await api.permissions()
     }
 
     // MARK: Add-brain settings
@@ -232,7 +246,7 @@ final class CUAViewModel: ObservableObject {
     func approve() async {
         guard let runID, phase == .awaitingApproval else { return }
         do {
-            try await api.approve(runID: runID)
+            try await api.approve(runID: runID, gateID: pendingApproval?.gateID)
             pendingGateReason = nil
             pendingApproval = nil
             actionError = nil
@@ -293,7 +307,7 @@ final class CUAViewModel: ObservableObject {
                         gateID: event.gateID,
                         app: event.app ?? view.app,
                         action: event.action,
-                        target: event.targetLabel,
+                        target: event.target ?? event.targetLabel,
                         reason: event.reason ?? "Approval is required before Rapid continues."
                     )
                     phase = .awaitingApproval
@@ -415,11 +429,15 @@ private struct NullCUAAPI: CUAAPI {
         throw Unavailable()
     }
 
+    func permissions() async throws -> CUAPermissionStatus {
+        throw Unavailable()
+    }
+
     func events(runID: String, after: Int) async throws -> CUARunView {
         throw Unavailable()
     }
 
-    func approve(runID: String) async throws {
+    func approve(runID: String, gateID: String?) async throws {
         throw Unavailable()
     }
 

@@ -28,7 +28,9 @@ struct CUASection: View {
                 }
             }
 
-            if !permissionSnapshot.isReadyForComputerUse {
+            if viewModel.executorPermissions?.isReady != true
+                || !permissionSnapshot.isReadyForComputerUse
+            {
                 permissionReadiness
             }
 
@@ -90,7 +92,9 @@ struct CUASection: View {
                     Task { await viewModel.start() }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!viewModel.canStart || !permissionSnapshot.isReadyForComputerUse)
+                .disabled(
+                    !viewModel.canStart || viewModel.executorPermissions?.isReady == false
+                )
                 .accessibilityIdentifier("ComputerUse.Agent.Start")
             }
 
@@ -143,11 +147,13 @@ struct CUASection: View {
         .frame(maxWidth: 984, alignment: .leading)
         .task {
             await viewModel.loadPlanners()
+            await viewModel.loadPermissions()
             permissionSnapshot = MacAutomationPermissions.snapshot()
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
                 permissionSnapshot = MacAutomationPermissions.snapshot()
+                Task { await viewModel.loadPermissions() }
             }
         }
         .sheet(isPresented: $viewModel.showAddBrain) {
@@ -234,13 +240,13 @@ struct CUASection: View {
 
     private var permissionReadiness: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("Finish Mac permissions", systemImage: "lock.shield")
+            Label("Check Mac permissions", systemImage: "lock.shield")
                 .font(.callout.weight(.semibold))
-            Text("Rapid needs Screen Recording to observe the selected app and Accessibility to control it. Review each grant in System Settings.")
+            Text(permissionReadinessMessage)
                 .font(.caption)
                 .foregroundStyle(.secondary)
             HStack {
-                ForEach(permissionSnapshot.missingForComputerUse, id: \.rawValue) { permission in
+                ForEach(permissionSettingsLinks, id: \.rawValue) { permission in
                     Button("Open \(permission.title) Settings") {
                         MacAutomationPermissions.openSystemPrivacyPane(for: permission)
                     }
@@ -251,6 +257,7 @@ struct CUASection: View {
                 }
                 Button("Refresh") {
                     permissionSnapshot = MacAutomationPermissions.snapshot()
+                    Task { await viewModel.loadPermissions() }
                 }
                 .buttonStyle(.borderless)
                 .accessibilityIdentifier("ComputerUse.Agent.Permission.Refresh")
@@ -260,6 +267,23 @@ struct CUASection: View {
         .background(.blue.opacity(0.07), in: RoundedRectangle(cornerRadius: 10))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("ComputerUse.Agent.PermissionReadiness")
+    }
+
+    private var permissionReadinessMessage: String {
+        if let permissions = viewModel.executorPermissions {
+            if permissions.isReady {
+                return "The local executor has Screen Recording and Accessibility access. The app check below may differ because macOS grants access per process."
+            }
+            return "The local executor needs Screen Recording and Accessibility access. Open System Settings, then refresh the server check."
+        }
+        return "The server could not report its permission status. The settings links use this app's status as a guide; the executor will check its own access when the task starts."
+    }
+
+    private var permissionSettingsLinks: [MacAutomationPermission] {
+        if viewModel.executorPermissions?.isReady != true {
+            return MacAutomationPermission.allCases
+        }
+        return permissionSnapshot.missingForComputerUse
     }
 
     private var activeProgress: some View {
@@ -276,10 +300,7 @@ struct CUASection: View {
                     .accessibilityIdentifier("ComputerUse.Agent.Stop")
             }
             if let progress = viewModel.activeProgress {
-                ProgressView(value: progress.fraction)
-                    .accessibilityLabel("Task progress")
-                    .accessibilityValue("Step \(progress.step) of \(progress.maxSteps)")
-                Text("Step \(progress.step) of \(progress.maxSteps): \(progress.instruction)")
+                Text("Step \(progress.step) · limit \(progress.maxSteps): \(progress.instruction)")
                     .font(.callout)
                     .accessibilityIdentifier("ComputerUse.Agent.ActiveStep")
                 HStack(spacing: 8) {
@@ -395,7 +416,7 @@ struct CUAEventList: View {
 
     private func outcomeLabel(_ outcome: String) -> String {
         switch outcome {
-        case "success": "Verified"
+        case "success": "Observed expected change"
         case "no_effect": "No effect observed"
         case "wrong_effect": "Unexpected result"
         case "uncertain": "Could not verify"

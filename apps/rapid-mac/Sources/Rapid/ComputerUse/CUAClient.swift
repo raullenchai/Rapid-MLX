@@ -93,9 +93,10 @@ struct CUAEvent: Codable, Equatable, Sendable {
     var error: String? = nil
     var app: String? = nil
     var gateID: String? = nil
+    var target: String? = nil
 
     enum CodingKeys: String, CodingKey {
-        case seq, kind, step, action, outcome, status, reason, error, app
+        case seq, kind, step, action, outcome, status, reason, error, app, target
         case gateID = "gate_id"
         case stepInstruction = "step_instruction"
         case targetLabel = "target_label"
@@ -104,6 +105,16 @@ struct CUAEvent: Codable, Equatable, Sendable {
 
     var isTerminal: Bool { kind == "terminal" }
     var isGate: Bool { kind == "gate" }
+}
+
+private struct CUAApprovalRequest: Codable {
+    var gateID: String
+    var approved: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case gateID = "gate_id"
+        case approved
+    }
 }
 
 /// Full run view returned by the events endpoint.
@@ -218,6 +229,11 @@ struct CUAClient: CUAAPI, Sendable {
         return try decode(Created.self, from: data, response: response).runID
     }
 
+    func permissions() async throws -> CUAPermissionStatus {
+        let (data, response) = try await send(path: "/v1/cua/permissions", method: "GET")
+        return try decode(CUAPermissionStatus.self, from: data, response: response)
+    }
+
     func events(runID: String, after: Int) async throws -> CUARunView {
         var components = URLComponents(
             url: baseURL.appendingPathComponent("/v1/cua/runs/\(runID)/events"),
@@ -231,9 +247,12 @@ struct CUAClient: CUAAPI, Sendable {
         return try decode(CUARunView.self, from: data, response: response)
     }
 
-    func approve(runID: String) async throws {
+    func approve(runID: String, gateID: String?) async throws {
+        let body = try gateID.map {
+            try JSONEncoder().encode(CUAApprovalRequest(gateID: $0, approved: true))
+        }
         let (data, response) = try await send(
-            path: "/v1/cua/runs/\(runID)/approval", method: "POST"
+            path: "/v1/cua/runs/\(runID)/approval", method: "POST", body: body
         )
         try requireSuccess(data, response)
     }

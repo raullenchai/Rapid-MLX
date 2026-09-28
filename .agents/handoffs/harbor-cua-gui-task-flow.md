@@ -18,18 +18,22 @@ assets, or claim complete delegated-workflow parity.
 ## Behavior
 
 - Missing Screen Recording and Accessibility grants appear as a readiness card
-  with direct System Settings links and an explicit refresh action. Start stays
-  disabled until both grants are visible to the app.
+  with direct System Settings links and an explicit refresh action. The client
+  prefers the executor's `/v1/cua/permissions` result and treats the app's TCC
+  result only as a guide because macOS grants access per process. Older servers
+  without the endpoint stay usable; an explicit executor denial blocks Start.
 - A running task shows the current structured plan step, action, target, bounded
-  step progress, verifier outcome, and a persistent Stop button.
+  step count and safety limit, verifier outcome, and a persistent Stop button.
 - Approval pauses show app plus optional structured action and target fields.
-  Optional `gate_id` is decoded and retained in pending state for the upcoming
-  server contract without changing today's approval request shape.
+  Optional `gate_id` is decoded and retained in pending state. Approvals with
+  an ID send `{gate_id, approved}` so a delayed request cannot approve a later
+  gate; legacy events without an ID retain the empty-body request.
   Legacy events without those optional fields remain usable and no prose is
   parsed to guess missing details. Approve and Stop are separate actions.
-- Verifier results use honest labels: Verified, No effect observed, Unexpected
-  result, Could not verify, or Verification unavailable. A planner's final
-  summary is labeled only as task-ended rather than as independently verified.
+- Verifier results use honest labels: Observed expected change, No effect
+  observed, Unexpected result, Could not verify, or Verification unavailable.
+  A planner's final summary is labeled only as task-ended rather than as
+  independently verified.
 
 ## Private reference check
 
@@ -40,14 +44,15 @@ workflow model.
 
 ## Verification
 
-- Focused CUA and permission Swift suites: 24 tests passed across panel, client,
+- Focused CUA and permission Swift suites: 28 tests passed across panel, client,
   brain, decode, and TCC readiness suites; the complete Rapid target compiled.
 - Existing Mac automation permission model remains the single source of truth.
 - `git diff --check` passed.
 
 ## Risk and follow-up
 
-Current server gate events normally provide only a reason. The UI is ready for
-optional app/action/target fields without requiring them; richer approval
-details remain a separate backend decision. macOS may require app restart after
-Screen Recording changes; the UI reports only the TCC state returned by the OS.
+Current server gate events may provide only a reason. The UI is ready for
+optional app/action/target fields without requiring them and reads the approval
+target from the gate event's `target` field. Richer approval details remain a
+separate backend decision. macOS may require app or executor restart after
+Screen Recording changes.
