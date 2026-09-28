@@ -390,17 +390,11 @@ async def get_run_events(
 
 
 @router.post("/runs/{run_id}/approval", response_model=CUAApprovalResult)
-async def approve_run(
-    run_id: str, decision: CUAGateDecision | None = None
-) -> CUAApprovalResult:
+async def approve_run(run_id: str, decision: CUAGateDecision) -> CUAApprovalResult:
     try:
-        requested = True if decision is None else decision.approved
+        requested = decision.approved
         resolved = (
-            _service()
-            .get(run_id)
-            .resolve_gate(
-                requested, gate_id=None if decision is None else decision.gate_id
-            )
+            _service().get(run_id).resolve_gate(requested, gate_id=decision.gate_id)
         )
     except (
         cua_service.CUARunNotFoundError,

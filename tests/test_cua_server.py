@@ -358,7 +358,11 @@ def test_approval_gate_flow(client):
     active._awaiting = True
     fresh._runs["gate1"] = active
 
-    not_waiting = test_client.post("/v1/cua/runs/none/approval", headers=AUTH)
+    not_waiting = test_client.post(
+        "/v1/cua/runs/none/approval",
+        headers=AUTH,
+        json={"gate_id": "missing", "approved": True},
+    )
     assert not_waiting.status_code == 404
 
     async def scenario():
@@ -370,11 +374,20 @@ def test_approval_gate_flow(client):
     assert asyncio.run(scenario()) is True
     # loop-level rule: approve only resolves a waiting gate
     assert active.approve() is False
-    conflict = test_client.post("/v1/cua/runs/gate1/approval", headers=AUTH)
+    conflict = test_client.post(
+        "/v1/cua/runs/gate1/approval",
+        headers=AUTH,
+        json={"gate_id": "expired", "approved": True},
+    )
     assert conflict.status_code == 409
 
-    active._awaiting = True
-    approved = test_client.post("/v1/cua/runs/gate1/approval", headers=AUTH)
+    active.emit({"kind": "gate", "reason": "sign-in"})
+    gate_id = active.view()["pending_gate"]["gate_id"]
+    approved = test_client.post(
+        "/v1/cua/runs/gate1/approval",
+        headers=AUTH,
+        json={"gate_id": gate_id, "approved": True},
+    )
     assert approved.status_code == 200
     assert approved.json() == {"run_id": "gate1", "approved": True}
 
@@ -464,6 +477,28 @@ def test_gate_decision_is_idempotent_and_first_decision_wins(client):
         return await waiter
 
     assert asyncio.run(scenario()) is True
+
+
+def test_bodyless_approval_cannot_replay_across_gates(client):
+    active = cua_service.CUAServiceRun(
+        run_id="gate-replay",
+        app="A",
+        goal="g",
+        config=None,  # type: ignore[arg-type]
+    )
+    client.fresh_service._runs[active.run_id] = active
+    active.emit({"kind": "gate", "reason": "gate-a"})
+    gate_a = active.view()["pending_gate"]["gate_id"]
+    assert active.resolve_gate(True, gate_id=gate_a) is True
+
+    active.emit({"kind": "gate", "reason": "gate-b"})
+    gate_b = active.view()["pending_gate"]["gate_id"]
+    assert gate_b != gate_a
+
+    replay = client.post(f"/v1/cua/runs/{active.run_id}/approval", headers=AUTH)
+    assert replay.status_code == 422
+    assert active.view()["pending_gate"]["gate_id"] == gate_b
+    assert not active._approve_event.is_set()
 
 
 def test_gate_events_share_id_and_fast_decision_is_not_lost(client):
