@@ -122,9 +122,7 @@ def test_pull_preflight_covers_audio_and_vision_aliases(monkeypatch) -> None:
         "rapid_mlx.models.mllm.require_mlx_vlm_or_exit",
         lambda name, **_kw: seen.append(name),
     )
-    cli._preflight_pull_optional_runtime(
-        argparse.Namespace(model="qwen3-vl-8b-4bit")
-    )
+    cli._preflight_pull_optional_runtime(argparse.Namespace(model="qwen3-vl-8b-4bit"))
     assert seen
 
 
@@ -148,9 +146,7 @@ def test_repair_command_detector_failures_fall_back_to_python(monkeypatch) -> No
         status="absent",
     )
     monkeypatch.setattr(optional_runtime, "_running_in_desktop_sidecar", lambda: False)
-    monkeypatch.setattr(
-        "rapid_mlx.telemetry.server_start.failed", lambda _stage: None
-    )
+    monkeypatch.setattr("rapid_mlx.telemetry.server_start.failed", lambda _stage: None)
     monkeypatch.setattr(
         "rapid_mlx.telemetry.model_events.emit_model_serve_failed",
         lambda *_a, **_kw: None,
@@ -179,7 +175,9 @@ def test_mllm_and_video_lazy_import_failures_use_pinned_hints(monkeypatch) -> No
         dflash_runtime.load_runtime("local/drafter")
 
     monkeypatch.setitem(sys.modules, "mlx_video", None)
-    monkeypatch.setattr("rapid_mlx.runtime.video_lane._resolve_ffmpeg", lambda: "ffmpeg")
+    monkeypatch.setattr(
+        "rapid_mlx.runtime.video_lane._resolve_ffmpeg", lambda: "ffmpeg"
+    )
     with pytest.raises(VideoRuntimeError, match=r"rapid-mlx\[video\]=="):
         VideoEngine("ltx-2.3").generate(
             prompt="test",
@@ -198,12 +196,17 @@ def test_mllm_and_video_lazy_import_failures_use_pinned_hints(monkeypatch) -> No
 
 
 @pytest.mark.asyncio
-async def test_http_lazy_failures_hide_local_python_paths(monkeypatch, tmp_path) -> None:
-    from rapid_mlx.api.models import AudioMusicRequest, AudioSpeechRequest
+async def test_http_lazy_failures_hide_local_python_paths(
+    monkeypatch, tmp_path
+) -> None:
+    from rapid_mlx import server
+    from rapid_mlx.api.models import (
+        AudioMusicRequest,
+        AudioSpeechRequest,
+        EmbeddingRequest,
+    )
     from rapid_mlx.config import get_config
     from rapid_mlx.routes import audio, embeddings, video
-    from rapid_mlx.api.models import EmbeddingRequest
-    from rapid_mlx import server
 
     async def fail_async(*_args, **_kwargs):
         raise ImportError("missing backend")
