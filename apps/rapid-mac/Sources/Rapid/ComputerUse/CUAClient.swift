@@ -91,9 +91,12 @@ struct CUAEvent: Codable, Equatable, Sendable {
     var finalSummary: String?
     var reason: String?
     var error: String? = nil
+    var app: String? = nil
+    var gateID: String? = nil
 
     enum CodingKeys: String, CodingKey {
-        case seq, kind, step, action, outcome, status, reason, error
+        case seq, kind, step, action, outcome, status, reason, error, app
+        case gateID = "gate_id"
         case stepInstruction = "step_instruction"
         case targetLabel = "target_label"
         case finalSummary = "final_summary"

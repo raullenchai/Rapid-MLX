@@ -31,6 +31,39 @@ enum CUAPhase: Equatable, Sendable {
     }
 }
 
+struct CUAPendingApproval: Equatable, Sendable {
+    var gateID: String? = nil
+    var app: String
+    var action: String?
+    var target: String?
+    var reason: String
+}
+
+struct CUAProgressPresentation: Equatable, Sendable {
+    var step: Int
+    var maxSteps: Int
+    var instruction: String
+    var action: String?
+    var target: String?
+    var outcome: String?
+
+    var fraction: Double {
+        min(1, max(0, Double(step) / Double(max(1, maxSteps))))
+    }
+
+    var outcomeLabel: String? {
+        switch outcome {
+        case "success": "Verified"
+        case "no_effect": "No effect observed"
+        case "wrong_effect": "Unexpected result observed"
+        case "uncertain": "Could not verify"
+        case "unavailable": "Verification unavailable"
+        case .some: "Outcome not recognized"
+        case nil: nil
+        }
+    }
+}
+
 /// Drives one agent task from the GUI: create on the app-owned server, poll
 /// numbered events, surface gate approvals, and finish with the summary.
 @MainActor
@@ -45,6 +78,7 @@ final class CUAViewModel: ObservableObject {
     @Published var events: [CUAEvent] = []
     @Published var plannerOptions: [CUAPlannerOption] = []
     @Published var pendingGateReason: String?
+    @Published var pendingApproval: CUAPendingApproval?
     @Published var actionError: String?
 
     private let api: CUAAPI
@@ -62,6 +96,23 @@ final class CUAViewModel: ObservableObject {
         !goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !phase.isBusy
             && !appName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var activeProgress: CUAProgressPresentation? {
+        guard let plan = events.last(where: { $0.kind == "plan" }), let step = plan.step else {
+            return nil
+        }
+        let outcome = events.last(where: {
+            $0.kind == "executed" && $0.step == step
+        })?.outcome
+        return CUAProgressPresentation(
+            step: step,
+            maxSteps: maxSteps,
+            instruction: plan.stepInstruction ?? "Planning the next action",
+            action: plan.action,
+            target: plan.targetLabel,
+            outcome: outcome
+        )
     }
 
     func loadPlanners() async {
@@ -151,6 +202,7 @@ final class CUAViewModel: ObservableObject {
         phase = .starting
         events = []
         pendingGateReason = nil
+        pendingApproval = nil
         actionError = nil
         showingPollError = false
         stopPolling()
@@ -182,6 +234,7 @@ final class CUAViewModel: ObservableObject {
         do {
             try await api.approve(runID: runID)
             pendingGateReason = nil
+            pendingApproval = nil
             actionError = nil
             showingPollError = false
             phase = .running
@@ -203,6 +256,7 @@ final class CUAViewModel: ObservableObject {
             stopPolling()
             self.runID = nil
             pendingGateReason = nil
+            pendingApproval = nil
             actionError = nil
             showingPollError = false
             phase = .idle
@@ -235,10 +289,31 @@ final class CUAViewModel: ObservableObject {
                 }
                 for event in view.events where event.kind == "gate" {
                     pendingGateReason = event.reason ?? "sign-in"
+                    pendingApproval = CUAPendingApproval(
+                        gateID: event.gateID,
+                        app: event.app ?? view.app,
+                        action: event.action,
+                        target: event.targetLabel,
+                        reason: event.reason ?? "Approval is required before Rapid continues."
+                    )
                     phase = .awaitingApproval
+                }
+                for event in view.events where
+                    event.kind == "gate_detail" && phase == .awaitingApproval
+                {
+                    pendingGateReason = event.reason ?? pendingGateReason
+                    pendingApproval = CUAPendingApproval(
+                        gateID: event.gateID ?? pendingApproval?.gateID,
+                        app: event.app ?? pendingApproval?.app ?? view.app,
+                        action: event.action ?? pendingApproval?.action,
+                        target: event.targetLabel ?? pendingApproval?.target,
+                        reason: event.reason ?? pendingApproval?.reason
+                            ?? "Approval is required before Rapid continues."
+                    )
                 }
                 for event in view.events where event.kind == "gate_resolved" {
                     pendingGateReason = nil
+                    pendingApproval = nil
                 }
                 for event in view.events where event.isTerminal {
                     switch event.status {

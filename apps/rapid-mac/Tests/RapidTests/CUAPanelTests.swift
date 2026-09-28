@@ -46,7 +46,14 @@ private final class MockAgentAPI: CUAAPI, @unchecked Sendable {
         if after == 0 {
             events.append(CUAEvent(seq: 1, kind: "started", step: nil, action: nil, stepInstruction: nil, outcome: nil, targetLabel: nil, status: nil, finalSummary: nil, reason: nil))
             events.append(contentsOf: scriptedEvents.enumerated().map { index, event in
-                CUAEvent(seq: index + 2, kind: event.kind, step: event.step, action: event.action, stepInstruction: event.stepInstruction, outcome: event.outcome, targetLabel: event.targetLabel, status: event.status, finalSummary: event.finalSummary, reason: event.reason, error: event.error)
+                CUAEvent(
+                    seq: index + 2, kind: event.kind, step: event.step,
+                    action: event.action, stepInstruction: event.stepInstruction,
+                    outcome: event.outcome, targetLabel: event.targetLabel,
+                    status: event.status, finalSummary: event.finalSummary,
+                    reason: event.reason, error: event.error, app: event.app,
+                    gateID: event.gateID
+                )
             })
         }
         return CUARunView(
@@ -88,13 +95,15 @@ struct CUAViewModelTests {
     private func makeEvent(
         seq: Int, kind: String, step: Int? = nil, action: String? = nil,
         instruction: String? = nil, outcome: String? = nil,
-        status: String? = nil, summary: String? = nil, error: String? = nil
+        target: String? = nil, status: String? = nil, summary: String? = nil,
+        reason: String? = nil, error: String? = nil, app: String? = nil,
+        gateID: String? = nil
     ) -> CUAEvent {
         CUAEvent(
             seq: seq, kind: kind, step: step, action: action,
             stepInstruction: instruction, outcome: outcome,
-            targetLabel: nil, status: status, finalSummary: summary, reason: nil,
-            error: error
+            targetLabel: target, status: status, finalSummary: summary, reason: reason,
+            error: error, app: app, gateID: gateID
         )
     }
 
@@ -127,12 +136,62 @@ struct CUAViewModelTests {
         viewModel.goal = "check flights"
         await viewModel.start()
         api.scriptedEvents = [
-            makeEvent(seq: 3, kind: "gate"),
+            makeEvent(
+                seq: 3, kind: "gate", action: "sign_in", target: "Account",
+                reason: "sign-in", app: "Safari", gateID: "gate-7"
+            ),
         ]
         await drain()
         #expect(viewModel.phase == .awaitingApproval)
+        #expect(
+            viewModel.pendingApproval == CUAPendingApproval(
+                gateID: "gate-7", app: "Safari", action: "sign_in",
+                target: "Account", reason: "sign-in"
+            )
+        )
         await viewModel.approve()
         #expect(api.approveCalls == 1)
+        #expect(viewModel.pendingApproval == nil)
+    }
+
+    @Test("Legacy gate remains usable without optional structured fields")
+    func legacyGateFallback() async {
+        let api = MockAgentAPI()
+        api.scriptedEvents = [makeEvent(seq: 2, kind: "gate", reason: "sign-in")]
+        let viewModel = CUAViewModel(api: api, pollIntervalNanos: 5_000_000)
+        viewModel.goal = "check flights"
+        viewModel.appName = "Google Chrome"
+        await viewModel.start()
+        await drain()
+
+        #expect(viewModel.phase == .awaitingApproval)
+        #expect(viewModel.pendingApproval?.app == "Google Chrome")
+        #expect(viewModel.pendingApproval?.action == nil)
+        #expect(viewModel.pendingApproval?.target == nil)
+        #expect(viewModel.pendingApproval?.reason == "sign-in")
+    }
+
+    @Test("Active progress reports structured step and honest verifier outcome")
+    func activeProgressPresentation() {
+        let viewModel = CUAViewModel(api: MockAgentAPI())
+        viewModel.maxSteps = 8
+        viewModel.events = [
+            makeEvent(
+                seq: 1, kind: "plan", step: 3, action: "click",
+                instruction: "Open the result", target: "Apple Silicon"
+            ),
+            makeEvent(seq: 2, kind: "executed", step: 3, outcome: "uncertain"),
+        ]
+
+        #expect(viewModel.activeProgress?.step == 3)
+        #expect(viewModel.activeProgress?.maxSteps == 8)
+        #expect(viewModel.activeProgress?.action == "click")
+        #expect(viewModel.activeProgress?.target == "Apple Silicon")
+        #expect(viewModel.activeProgress?.outcomeLabel == "Could not verify")
+        #expect(viewModel.activeProgress?.fraction == 0.375)
+
+        viewModel.events.append(makeEvent(seq: 3, kind: "executed", step: 3, outcome: "success"))
+        #expect(viewModel.activeProgress?.outcomeLabel == "Verified")
     }
 
     @Test("Approval failure keeps the active run controllable")
@@ -298,15 +357,19 @@ struct CUAClientTests {
         let payload = """
         {"run_id":"abc","app":"Google Chrome","goal":"g","status":"running",
          "final_summary":"","error":"","planner":"p","events_after_seq":1,
-         "events":[{"seq":2,"kind":"plan","step":1,"step_instruction":"click it",
-                    "target_label":"Search","latency_s":0.4}],"run_dir":"/tmp/x"}
+         "events":[{"seq":2,"kind":"gate","step":1,"step_instruction":"click it",
+                    "gate_id":"gate-7","app":"Safari","action":"sign_in","target_label":"Account",
+                    "latency_s":0.4}],"run_dir":"/tmp/x"}
         """
         RecordingURLProtocol.stubResponse(path: "/v1/cua/runs/abc/events", body: Data(payload.utf8))
         let client = makeClient()
         let view = try await client.events(runID: "abc", after: 1)
         #expect(view.events.count == 1)
         #expect(view.events[0].stepInstruction == "click it")
-        #expect(view.events[0].targetLabel == "Search")
+        #expect(view.events[0].app == "Safari")
+        #expect(view.events[0].gateID == "gate-7")
+        #expect(view.events[0].action == "sign_in")
+        #expect(view.events[0].targetLabel == "Account")
     }
 
     @Test("HTTP errors surface as typed failures")

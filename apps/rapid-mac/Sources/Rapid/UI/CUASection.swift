@@ -6,6 +6,8 @@ import SwiftUI
 /// only client-side action is approving a sign-in gate.
 struct CUASection: View {
     @ObservedObject var viewModel: CUAViewModel
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var permissionSnapshot = MacAutomationPermissions.snapshot()
     @State private var brainDraftName = ""
     @State private var brainDraftURL = ""
     @State private var brainDraftModel = ""
@@ -24,6 +26,10 @@ struct CUASection: View {
                     ProgressView()
                         .controlSize(.small)
                 }
+            }
+
+            if !permissionSnapshot.isReadyForComputerUse {
+                permissionReadiness
             }
 
             TextEditor(text: $viewModel.goal)
@@ -79,43 +85,28 @@ struct CUASection: View {
                 .foregroundStyle(.secondary)
                 .accessibilityIdentifier("ComputerUse.Agent.BrainDisclosure")
 
-            HStack(spacing: 12) {
-                Button(viewModel.phase.isBusy ? "Stop" : "Start") {
-                    Task { await viewModel.toggle() }
+            if !viewModel.phase.isBusy {
+                Button("Start") {
+                    Task { await viewModel.start() }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!viewModel.canStart && !viewModel.phase.isBusy)
-                .accessibilityIdentifier("ComputerUse.Agent.StartStop")
+                .disabled(!viewModel.canStart || !permissionSnapshot.isReadyForComputerUse)
+                .accessibilityIdentifier("ComputerUse.Agent.Start")
+            }
 
-                if viewModel.phase == .awaitingApproval {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Label {
-                            Text("Approval needed: \(viewModel.pendingGateReason ?? "sign-in")")
-                                .font(.callout.weight(.semibold))
-                        } icon: {
-                            Image(systemName: "hand.raised.fill").foregroundStyle(.orange)
-                        }
-                        Text("Rapid paused for your approval. Act only after you verified what is being asked.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Button("Approve") {
-                            Task { await viewModel.approve() }
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(.orange)
-                        .accessibilityIdentifier("ComputerUse.Agent.Approve")
-                    }
-                    .padding(10)
-                    .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
-                    .accessibilityIdentifier("ComputerUse.Agent.ApprovalCard")
-                }
+            if viewModel.phase == .starting || viewModel.phase == .running {
+                activeProgress
+            }
+
+            if viewModel.phase == .awaitingApproval {
+                approvalCard
             }
 
             if case let .finished(summary) = viewModel.phase, !summary.isEmpty {
                 Label {
-                    Text(summary).font(.callout)
+                    Text("Task ended: \(summary)").font(.callout)
                 } icon: {
-                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                    Image(systemName: "flag.checkered").foregroundStyle(.secondary)
                 }
                 .accessibilityIdentifier("ComputerUse.Agent.Summary")
             }
@@ -152,6 +143,12 @@ struct CUASection: View {
         .frame(maxWidth: 984, alignment: .leading)
         .task {
             await viewModel.loadPlanners()
+            permissionSnapshot = MacAutomationPermissions.snapshot()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active {
+                permissionSnapshot = MacAutomationPermissions.snapshot()
+            }
         }
         .sheet(isPresented: $viewModel.showAddBrain) {
             VStack(alignment: .leading, spacing: 12) {
@@ -234,15 +231,120 @@ struct CUASection: View {
             }
         }
     }
-}
 
-private extension CUAViewModel {
-    func toggle() async {
-        if phase.isBusy {
-            await cancel()
-        } else {
-            await start()
+    private var permissionReadiness: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Finish Mac permissions", systemImage: "lock.shield")
+                .font(.callout.weight(.semibold))
+            Text("Rapid needs Screen Recording to observe the selected app and Accessibility to control it. Review each grant in System Settings.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack {
+                ForEach(permissionSnapshot.missingForComputerUse, id: \.rawValue) { permission in
+                    Button("Open \(permission.title) Settings") {
+                        MacAutomationPermissions.openSystemPrivacyPane(for: permission)
+                    }
+                    .buttonStyle(.bordered)
+                    .accessibilityIdentifier(
+                        "ComputerUse.Agent.Permission.\(permission.rawValue)"
+                    )
+                }
+                Button("Refresh") {
+                    permissionSnapshot = MacAutomationPermissions.snapshot()
+                }
+                .buttonStyle(.borderless)
+                .accessibilityIdentifier("ComputerUse.Agent.Permission.Refresh")
+            }
         }
+        .padding(10)
+        .background(.blue.opacity(0.07), in: RoundedRectangle(cornerRadius: 10))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("ComputerUse.Agent.PermissionReadiness")
+    }
+
+    private var activeProgress: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label(
+                    viewModel.phase == .starting ? "Starting task" : "Task in progress",
+                    systemImage: "gearshape.2"
+                )
+                .font(.callout.weight(.semibold))
+                Spacer()
+                Button("Stop") { Task { await viewModel.cancel() } }
+                    .buttonStyle(.bordered)
+                    .accessibilityIdentifier("ComputerUse.Agent.Stop")
+            }
+            if let progress = viewModel.activeProgress {
+                ProgressView(value: progress.fraction)
+                    .accessibilityLabel("Task progress")
+                    .accessibilityValue("Step \(progress.step) of \(progress.maxSteps)")
+                Text("Step \(progress.step) of \(progress.maxSteps): \(progress.instruction)")
+                    .font(.callout)
+                    .accessibilityIdentifier("ComputerUse.Agent.ActiveStep")
+                HStack(spacing: 8) {
+                    if let action = progress.action, !action.isEmpty {
+                        Text(action).font(.caption.weight(.semibold))
+                    }
+                    if let target = progress.target, !target.isEmpty {
+                        Text(target).font(.caption).foregroundStyle(.secondary)
+                    }
+                    if let outcome = progress.outcomeLabel {
+                        Text(outcome)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(progress.outcome == "success" ? .green : .orange)
+                            .accessibilityIdentifier("ComputerUse.Agent.StepOutcome")
+                    }
+                }
+            } else {
+                ProgressView().controlSize(.small)
+                Text("Preparing the first step…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(10)
+        .background(.blue.opacity(0.07), in: RoundedRectangle(cornerRadius: 10))
+        .accessibilityIdentifier("ComputerUse.Agent.ActiveProgress")
+    }
+
+    private var approvalCard: some View {
+        let approval = viewModel.pendingApproval ?? CUAPendingApproval(
+            gateID: nil,
+            app: viewModel.appName,
+            action: nil,
+            target: nil,
+            reason: viewModel.pendingGateReason ?? "Approval is required before Rapid continues."
+        )
+        return VStack(alignment: .leading, spacing: 8) {
+            Label("Approval needed", systemImage: "hand.raised.fill")
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.orange)
+            LabeledContent("App", value: approval.app)
+            if let action = approval.action, !action.isEmpty {
+                LabeledContent("Action", value: action)
+            }
+            if let target = approval.target, !target.isEmpty {
+                LabeledContent("Target", value: target)
+            }
+            LabeledContent("Reason", value: approval.reason)
+            Text("Rapid is paused. Approve only after checking the app and requested action.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack {
+                Button("Approve and Continue") { Task { await viewModel.approve() } }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.orange)
+                    .accessibilityIdentifier("ComputerUse.Agent.Approve")
+                Button("Stop Task") { Task { await viewModel.cancel() } }
+                    .buttonStyle(.bordered)
+                    .accessibilityIdentifier("ComputerUse.Agent.StopAtApproval")
+            }
+        }
+        .padding(10)
+        .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("ComputerUse.Agent.ApprovalCard")
     }
 }
 
@@ -260,7 +362,7 @@ struct CUAEventList: View {
                         .lineLimit(1)
                     Spacer()
                     if let outcome = event.outcome {
-                        Text(outcome)
+                        Text(outcomeLabel(outcome))
                             .font(.caption2.weight(.bold))
                             .foregroundStyle(outcome == "success" ? .green : .orange)
                     }
@@ -288,6 +390,17 @@ struct CUAEventList: View {
             return "Run \(event.status ?? "ended")"
         default:
             return event.kind
+        }
+    }
+
+    private func outcomeLabel(_ outcome: String) -> String {
+        switch outcome {
+        case "success": "Verified"
+        case "no_effect": "No effect observed"
+        case "wrong_effect": "Unexpected result"
+        case "uncertain": "Could not verify"
+        case "unavailable": "Verification unavailable"
+        default: "Outcome unknown"
         }
     }
 }
