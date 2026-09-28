@@ -434,7 +434,7 @@ struct DesktopFunnelReporterTests {
     }
 
     @Test("Normal development packaging omits the release-only marker")
-    func developmentPackagingIsIneligible() throws {
+    func developmentPackagingIsIneligible() async throws {
         let appRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -448,17 +448,16 @@ struct DesktopFunnelReporterTests {
             to: plist
         )
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = [
-            appRoot.appendingPathComponent(
-                "scripts/configure-desktop-funnel-build.sh"
-            ).path,
-            plist.path,
-            "0",
-        ]
-        try process.run()
-        process.waitUntilExit()
+        let process = try await TestSubprocess.run(
+            executableURL: URL(fileURLWithPath: "/bin/bash"),
+            arguments: [
+                appRoot.appendingPathComponent(
+                    "scripts/configure-desktop-funnel-build.sh"
+                ).path,
+                plist.path,
+                "0",
+            ]
+        )
 
         #expect(process.terminationStatus == 0)
         let packaged = try PropertyListSerialization.propertyList(
@@ -482,7 +481,7 @@ struct DesktopFunnelReporterTests {
     }
 
     @Test("Canonical release packaging injects the release-only marker")
-    func releasePackagingIsEligible() throws {
+    func releasePackagingIsEligible() async throws {
         let appRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -496,19 +495,18 @@ struct DesktopFunnelReporterTests {
             to: plist
         )
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = [
-            appRoot.appendingPathComponent(
-                "scripts/configure-desktop-funnel-build.sh"
-            ).path,
-            plist.path,
-            "1",
-            "developer-id-fixture",
-            "TEAMFIXTURE",
-        ]
-        try process.run()
-        process.waitUntilExit()
+        let process = try await TestSubprocess.run(
+            executableURL: URL(fileURLWithPath: "/bin/bash"),
+            arguments: [
+                appRoot.appendingPathComponent(
+                    "scripts/configure-desktop-funnel-build.sh"
+                ).path,
+                plist.path,
+                "1",
+                "developer-id-fixture",
+                "TEAMFIXTURE",
+            ]
+        )
 
         #expect(process.terminationStatus == 0)
         let packaged = try PropertyListSerialization.propertyList(
@@ -519,7 +517,7 @@ struct DesktopFunnelReporterTests {
     }
 
     @Test("Ad-hoc packaging cannot inject the release-only marker")
-    func adHocPackagingCannotBecomeEligible() throws {
+    func adHocPackagingCannotBecomeEligible() async throws {
         let appRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -533,20 +531,18 @@ struct DesktopFunnelReporterTests {
             to: plist
         )
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = [
-            appRoot.appendingPathComponent(
-                "scripts/configure-desktop-funnel-build.sh"
-            ).path,
-            plist.path,
-            "1",
-            "-",
-            "",
-        ]
-        process.standardError = Pipe()
-        try process.run()
-        process.waitUntilExit()
+        let process = try await TestSubprocess.run(
+            executableURL: URL(fileURLWithPath: "/bin/bash"),
+            arguments: [
+                appRoot.appendingPathComponent(
+                    "scripts/configure-desktop-funnel-build.sh"
+                ).path,
+                plist.path,
+                "1",
+                "-",
+                "",
+            ]
+        )
 
         #expect(process.terminationStatus != 0)
         let packaged = try PropertyListSerialization.propertyList(
