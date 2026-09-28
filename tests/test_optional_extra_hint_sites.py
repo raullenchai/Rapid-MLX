@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import sys
 import types
 from pathlib import Path
@@ -41,6 +42,28 @@ def test_hybrid_runtime_absent_and_broken_are_distinct(monkeypatch) -> None:
     )
     assert broken.is_mllm is True
     assert broken.reason == "vision_supported"
+
+
+def test_hybrid_runtime_absence_is_resolved_without_memory_floor(monkeypatch) -> None:
+    from rapid_mlx.api import utils
+    from rapid_mlx.models import mllm
+
+    monkeypatch.setattr(utils, "is_mllm_model", lambda _name: True)
+    monkeypatch.setattr(utils, "mllm_backbone_cache_mode", lambda _name: "arrays")
+    monkeypatch.setattr(utils, "mllm_hybrid_runtime_supported", lambda: False)
+    monkeypatch.setattr(utils, "physical_ram_gb", lambda: 16.0)
+    monkeypatch.setattr(
+        mllm,
+        "vision_runtime_status",
+        lambda: (mllm.VisionRuntimeStatus.ABSENT, None),
+    )
+
+    decision = utils.resolve_serving_lane_decision(
+        "local/model", vision_min_memory_gb=None
+    )
+
+    assert decision.reason == "vision_hybrid_runtime_unsupported"
+    assert decision.auto_text_fallback is True
 
 
 def test_lazy_benchmark_hints_are_pinned(monkeypatch) -> None:
@@ -94,37 +117,25 @@ def test_cli_broken_runtime_stays_on_vision_and_desktop_does_not_warn(
     assert capsys.readouterr().err == ""
 
 
-def test_pull_preflight_covers_audio_and_vision_aliases(monkeypatch) -> None:
+def test_pull_is_storage_only_and_never_emits_serve_failure(monkeypatch) -> None:
     from rapid_mlx import cli
-    from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
 
-    missing = OptionalRuntimeMissing(
-        extra="audio",
-        install_hint="hint",
-        detail="missing",
-        status="absent",
-    )
-    monkeypatch.setattr("rapid_mlx.audio.probe.is_audio_model_alias", lambda _n: True)
+    pulled: list[str] = []
     monkeypatch.setattr(
-        "rapid_mlx.audio.probe.require_audio_or_exit",
-        lambda _n: (_ for _ in ()).throw(missing),
+        cli, "_pull_repository", lambda args, **_kw: pulled.append(args.model)
     )
     monkeypatch.setattr(
-        cli,
-        "_handle_optional_runtime_missing",
-        lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("handled")),
+        "rapid_mlx.telemetry.model_events.emit_model_serve_failed",
+        lambda *_a, **_kw: pytest.fail("pull must not emit model_serve_failed"),
     )
-    with pytest.raises(RuntimeError, match="handled"):
-        cli._preflight_pull_optional_runtime(argparse.Namespace(model="kokoro"))
-
-    seen: list[str] = []
-    monkeypatch.setattr("rapid_mlx.audio.probe.is_audio_model_alias", lambda _n: False)
     monkeypatch.setattr(
         "rapid_mlx.models.mllm.require_mlx_vlm_or_exit",
-        lambda name, **_kw: seen.append(name),
+        lambda *_a, **_kw: pytest.fail("pull must not gate on a serving runtime"),
     )
-    cli._preflight_pull_optional_runtime(argparse.Namespace(model="qwen3-vl-8b-4bit"))
-    assert seen
+
+    cli.pull_command(argparse.Namespace(model="qwen3.8-27b-4bit"))
+
+    assert pulled == ["qwen3.8-27b-4bit"]
 
 
 def test_repair_command_detector_failures_fall_back_to_python(monkeypatch) -> None:
@@ -236,7 +247,7 @@ async def test_http_lazy_failures_hide_local_python_paths(
         lambda *_a, **_kw: (_ for _ in ()).throw(ImportError("missing")),
     )
     embedding_stub = types.ModuleType("rapid_mlx.embedding")
-    embedding_stub.EMBEDDINGS_EXTRA_INSTALL_HINT = "install embeddings"
+    embedding_stub.EMBEDDINGS_EXTRA_HTTP_INSTALL_HINT = "install embeddings"
     embedding_stub.EmbeddingInputTooLongError = type(
         "EmbeddingInputTooLongError", (Exception,), {}
     )
@@ -254,3 +265,28 @@ async def test_http_lazy_failures_hide_local_python_paths(
         video._validate_reference_image(tmp_path / "input.png")
     assert "python -m pip" in reference.value.detail
     assert sys.executable not in reference.value.detail
+
+
+def test_http_response_hint_constants_explicitly_disable_paths() -> None:
+    """Response constants must opt out even if the helper default changes."""
+    constants = {
+        Path(__file__).parents[1] / "rapid_mlx" / "embedding.py": {
+            "EMBEDDINGS_EXTRA_HTTP_INSTALL_HINT"
+        },
+        Path(__file__).parents[1] / "rapid_mlx" / "audio" / "probe.py": {
+            "_KOKORO_EXTRA_HINT"
+        },
+    }
+    missing: list[str] = []
+    for path, names in constants.items():
+        source = path.read_text()
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            targets = getattr(node, "targets", [])
+            assigned = {target.id for target in targets if isinstance(target, ast.Name)}
+            for name in assigned & names:
+                expression = ast.get_source_segment(source, node) or ""
+                if "include_paths=False" not in expression:
+                    missing.append(f"{path}:{node.lineno}:{name}")
+
+    assert missing == []

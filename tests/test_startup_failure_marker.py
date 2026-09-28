@@ -16,6 +16,7 @@ from rapid_mlx.runtime.optional_runtime import optional_extra_install_hint
 MARKER_PREFIX = "RAPID-MLX-STARTUP-FAILURE:"
 VISION_PYTHON = shlex.quote(sys.executable)
 VISION_INSTALL_HINT = optional_extra_install_hint("vision")
+BROKEN_VISION_INSTALL_HINT = optional_extra_install_hint("vision", status="broken")
 
 
 def _run_guard(source: str) -> subprocess.CompletedProcess[str]:
@@ -202,7 +203,7 @@ def test_sibling_extra_guards_emit_closed_marker_once(
             "but the vision runtime cannot load.\n"
             "`mlx-vlm` is installed but its dependency 'PIL' is not, so the "
             "vision runtime cannot load. "
-            + VISION_INSTALL_HINT
+            + BROKEN_VISION_INSTALL_HINT
             + "\nAlternatively, repair just the missing dependency in this "
             "runtime:\n"
             f"    {VISION_PYTHON} -m pip install pillow\n",

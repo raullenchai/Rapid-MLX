@@ -31,7 +31,10 @@ async def create_embeddings(
     request: EmbeddingRequest, raw_request: Request
 ) -> EmbeddingResponse:
     """Create embeddings for the given input text(s)."""
-    from ..embedding import EMBEDDINGS_EXTRA_INSTALL_HINT, EmbeddingInputTooLongError
+    from ..embedding import (
+        EMBEDDINGS_EXTRA_HTTP_INSTALL_HINT,
+        EmbeddingInputTooLongError,
+    )
     from ..server import load_embedding_model
 
     cfg = get_config()
@@ -86,7 +89,7 @@ async def create_embeddings(
                     "message": (
                         "No embedding model loaded. Restart the server "
                         "with --embedding-model <hf-id> to enable "
-                        "/v1/embeddings. " + EMBEDDINGS_EXTRA_INSTALL_HINT
+                        "/v1/embeddings. " + EMBEDDINGS_EXTRA_HTTP_INSTALL_HINT
                     ),
                     "type": "invalid_request_error",
                     "code": "no_embedding_model",

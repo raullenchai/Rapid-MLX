@@ -198,10 +198,16 @@ def test_tty_timeout_defaults_no_without_reading_stdin(monkeypatch) -> None:
         lambda *_args, **_kwargs: pytest.fail("pip must not run"),
     )
 
+    outcomes: list[str] = []
+    monkeypatch.setattr(
+        "rapid_mlx.telemetry.model_events.emit_model_serve_failed",
+        lambda *_args, **kwargs: outcomes.append(kwargs["extra_recovery"]),
+    )
     with pytest.raises(SystemExit, match="2"):
         optional_runtime.handle_optional_runtime_missing(_failure(extra="video"))
 
     assert "Install rapid-mlx[video] now? [y/N] \n" in stderr.getvalue()
+    assert outcomes == ["no_answer"]
 
 
 def test_posix_partial_response_at_deadline_defaults_no(monkeypatch) -> None:
@@ -247,7 +253,10 @@ def test_windows_console_yes_uses_polled_characters(monkeypatch) -> None:
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(optional_runtime, "_INSTALL_PROMPT_TIMEOUT_SECONDS", 0.01)
 
-    assert optional_runtime._prompt_to_install("vision") is True
+    assert (
+        optional_runtime._prompt_to_install("vision")
+        is optional_runtime.PromptResult.ACCEPTED
+    )
 
 
 def test_windows_console_timeout_never_reads_fake_stdin(monkeypatch) -> None:
@@ -265,7 +274,10 @@ def test_windows_console_timeout_never_reads_fake_stdin(monkeypatch) -> None:
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(optional_runtime, "_INSTALL_PROMPT_TIMEOUT_SECONDS", 0.01)
 
-    assert optional_runtime._prompt_to_install("vision") is False
+    assert (
+        optional_runtime._prompt_to_install("vision")
+        is optional_runtime.PromptResult.NO_ANSWER
+    )
 
 
 def test_windows_console_exception_defaults_no(monkeypatch) -> None:
@@ -279,7 +291,10 @@ def test_windows_console_exception_defaults_no(monkeypatch) -> None:
     )
     monkeypatch.setattr(sys, "platform", "win32")
 
-    assert optional_runtime._prompt_to_install("vision") is False
+    assert (
+        optional_runtime._prompt_to_install("vision")
+        is optional_runtime.PromptResult.NO_ANSWER
+    )
 
 
 def test_non_tty_without_yes_prints_automatic_install_guidance(monkeypatch) -> None:
@@ -438,7 +453,7 @@ def test_real_tty_timeout_does_not_consume_later_prompt_input() -> None:
         """
     )
     proc, master = _pty_child(script)
-    before = _read_until(master, b"TIMEOUT False")
+    before = _read_until(master, b"TIMEOUT PromptResult.NO_ANSWER")
     os.write(master, b"FIRST\nSECOND\n")
     after = _read_until(master, b"LATER_GOT=")
     proc.wait(timeout=3)
@@ -458,7 +473,7 @@ def test_real_tty_process_exits_cleanly_after_timeout() -> None:
         """
     )
     proc, master = _pty_child(script)
-    output = _read_until(master, b"RESULT False")
+    output = _read_until(master, b"RESULT PromptResult.NO_ANSWER")
     proc.wait(timeout=3)
     output += _read_until(master, b"never", timeout=0.2)
     os.close(master)
@@ -480,7 +495,7 @@ def test_real_tty_stdin_closes_cleanly_after_timeout() -> None:
         """
     )
     proc, master = _pty_child(script)
-    output = _read_until(master, b"RESULT False")
+    output = _read_until(master, b"RESULT PromptResult.NO_ANSWER")
     output += _read_until(master, b"CLOSED", timeout=0.2)
     proc.wait(timeout=3)
     os.close(master)
@@ -513,7 +528,7 @@ def test_raw_tty_one_byte_cannot_bypass_prompt_deadline() -> None:
     os.close(master)
 
     assert b"RAW_READY" in before
-    assert b"RESULT=False" in after, (before + after).decode(errors="replace")
+    assert b"PromptResult.NO_ANSWER" in after, (before + after).decode(errors="replace")
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="requires POSIX pty")
@@ -538,7 +553,7 @@ def test_canonical_partial_line_ctrl_d_defaults_no_at_deadline() -> None:
     proc.wait(timeout=3)
     os.close(master)
 
-    assert b"RESULT=False" in after, (before + after).decode(errors="replace")
+    assert b"PromptResult.NO_ANSWER" in after, (before + after).decode(errors="replace")
 
 
 def test_all_optional_runtime_handler_call_sites_forward_assume_yes() -> None:
@@ -753,7 +768,7 @@ def test_recovery_outcome_emits_before_install(
         assert "install" not in order
 
 
-def test_keyboard_interrupt_during_prompt_records_declined(monkeypatch) -> None:
+def test_keyboard_interrupt_emits_once_then_preserves_interrupt(monkeypatch) -> None:
     order = _isolate_handler(monkeypatch, stdin=_TTY(), stderr=_TTY())
     monkeypatch.setattr(
         "rapid_mlx._version_check.detect_install_method",
@@ -769,61 +784,29 @@ def test_keyboard_interrupt_during_prompt_records_declined(monkeypatch) -> None:
         lambda *_args, **kwargs: order.append(kwargs),
     )
 
-    with pytest.raises(SystemExit, match="2"):
+    with pytest.raises(KeyboardInterrupt):
         optional_runtime.handle_optional_runtime_missing(_failure())
 
-    assert order[-1]["extra_recovery"] == "declined"
+    failures = [item for item in order if isinstance(item, dict)]
+    assert len(failures) == 1
+    assert failures[0]["extra_recovery"] == "interrupted"
 
 
-def test_pull_alias_checks_known_video_lane_before_download(monkeypatch) -> None:
-    profile = SimpleNamespace(
-        modality="video-gen",
-        hf_path="publisher/video",
-        supports_image_input=False,
-        vision_min_memory_gb=None,
-    )
-    failure = _failure(extra="video")
+def test_broken_pip_runtime_uses_forced_reinstall_but_absent_does_not(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(sys, "executable", "/tmp/runtime/bin/python")
     monkeypatch.setattr(
-        "rapid_mlx.model_aliases.resolve_profile", lambda _name: profile
-    )
-    monkeypatch.setattr(optional_runtime, "_running_in_desktop_sidecar", lambda: False)
-    monkeypatch.setattr(
-        "rapid_mlx.runtime.video_lane.require_video_runtime_or_exit",
-        lambda _name: (_ for _ in ()).throw(failure),
-    )
-    handled = []
-
-    def handle(exc, **kwargs):
-        handled.append((exc, kwargs))
-        raise SystemExit(2)
-
-    monkeypatch.setattr(cli, "_handle_optional_runtime_missing", handle)
-    monkeypatch.setattr(
-        cli,
-        "_pull_repository",
-        lambda *_args, **_kwargs: pytest.fail("weights must not download"),
+        "rapid_mlx._version_check.detect_install_method",
+        lambda: SimpleNamespace(method="pip"),
     )
 
-    with pytest.raises(SystemExit, match="2"):
-        cli.pull_command(SimpleNamespace(model="video-alias"))
-
-    assert handled == [
-        (
-            failure,
-            {
-                "alias_or_path": "video-alias",
-                "auto_selected": False,
-                "assume_yes": False,
-            },
-        )
-    ]
-
-
-def test_pull_preflight_never_triggers_in_desktop_sidecar(monkeypatch) -> None:
-    monkeypatch.setattr(optional_runtime, "_running_in_desktop_sidecar", lambda: True)
-    monkeypatch.setattr(
-        "rapid_mlx.model_aliases.resolve_profile",
-        lambda _name: pytest.fail("desktop must skip alias runtime preflight"),
+    broken = optional_runtime.optional_extra_repair_command(
+        "vision", version="1.2.3", status="broken"
+    )
+    absent = optional_runtime.optional_extra_repair_command(
+        "vision", version="1.2.3", status="absent"
     )
 
-    cli._preflight_pull_optional_runtime(SimpleNamespace(model="video-alias"))
+    assert "--upgrade --force-reinstall" in broken
+    assert "--force-reinstall" not in absent

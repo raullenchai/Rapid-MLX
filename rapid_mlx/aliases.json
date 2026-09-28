@@ -1249,7 +1249,6 @@
   },
   "mistral-24b-4bit": {
     "hf_path": "mlx-community/Mistral-Small-3.1-24B-Instruct-2503-4bit",
-    "vision_min_memory_gb": 32,
     "tool_call_parser": "mistral",
     "reasoning_parser": null,
     "is_hybrid": false,
@@ -1257,7 +1256,6 @@
   },
   "devstral-24b-4bit": {
     "hf_path": "mlx-community/Devstral-Small-2507-4bit",
-    "vision_min_memory_gb": 32,
     "tool_call_parser": "mistral",
     "reasoning_parser": null,
     "is_hybrid": false,
@@ -1600,7 +1598,6 @@
   },
   "devstral-v2-24b-4bit": {
     "hf_path": "mlx-community/Devstral-Small-2-24B-Instruct-2512-4bit",
-    "vision_min_memory_gb": 32,
     "tool_call_parser": "mistral",
     "reasoning_parser": null,
     "is_hybrid": false,

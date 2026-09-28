@@ -20,6 +20,9 @@ logger = logging.getLogger(__name__)
 from .runtime.optional_runtime import optional_extra_install_hint
 
 EMBEDDINGS_EXTRA_INSTALL_HINT = optional_extra_install_hint("embeddings")
+EMBEDDINGS_EXTRA_HTTP_INSTALL_HINT = optional_extra_install_hint(
+    "embeddings", include_paths=False
+)
 
 # HuggingFace stamps ``tokenizer.model_max_length`` with a huge sentinel
 # (``VERY_LARGE_INTEGER`` ≈ 1e30) when the tokenizer config declares no real

@@ -121,7 +121,7 @@ _LANE_SUBMODULES: dict[str, str] = {
 _KOKORO_EXTRA_DEP = "misaki"
 _KOKORO_EXTRA_HINT = (
     "Kokoro TTS requires the optional `misaki` G2P package, which is "
-    "not installed. " + optional_extra_install_hint("audio") + " "
+    "not installed. " + optional_extra_install_hint("audio", include_paths=False) + " "
     "to pull every audio dep, or `pip install misaki` for a "
     "minimal Kokoro-only install."
 )

@@ -237,6 +237,7 @@ def test_absent_runtime_degrade_rejects_image_with_capability_event(
 
     profile = resolve_profile("qwen3.5-4b-4bit")
     assert profile is not None and profile.vision_min_memory_gb is not None
+    _patch_probes(monkeypatch, is_mllm=True, hybrid=True)
     monkeypatch.setattr(
         mllm_mod,
         "vision_runtime_status",
@@ -263,6 +264,29 @@ def test_absent_runtime_degrade_rejects_image_with_capability_event(
 
     assert getattr(caught.value, "code", None) == "image_input_unsupported"
     assert events[0][0] == "image_input_unsupported"
+    assert capsys.readouterr().err.count("warning: vision runtime absent") == 1
+
+
+@pytest.mark.parametrize(
+    "alias",
+    ["mistral-24b-4bit", "devstral-24b-4bit", "devstral-v2-24b-4bit"],
+)
+def test_absent_runtime_warning_uses_resolved_lane_without_memory_floor(
+    alias, monkeypatch, capsys
+):
+    from rapid_mlx import cli
+    from rapid_mlx.model_aliases import resolve_profile
+
+    profile = resolve_profile(alias)
+    assert profile is not None and profile.vision_min_memory_gb is None
+    _patch_probes(monkeypatch, is_mllm=True, hybrid=True)
+    _mock_mllm_absent(monkeypatch)
+    monkeypatch.setattr(
+        "rapid_mlx.runtime.optional_runtime._running_in_desktop_sidecar",
+        lambda: False,
+    )
+
+    assert cli._warn_vision_text_only_degrade(profile, args=_args(alias)) is True
     assert capsys.readouterr().err.count("warning: vision runtime absent") == 1
 
 

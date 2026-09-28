@@ -77,7 +77,10 @@ restart the original command after success; the prompt defaults to no after 30
 seconds, and `--yes` (or `-y`) accepts non-interactively. uv tool, pipx, and
 Homebrew repairs are print-only so a running manager-owned environment is never
 replaced underneath the process. Broken or incompatible runtimes also remain
-print-only.
+print-only; a broken pip-based runtime is shown a forced reinstall command,
+while an absent runtime uses an ordinary pinned install. Prompt telemetry keeps
+an explicit no distinct from timeout/EOF/read failure and Ctrl-C, and Ctrl-C
+retains normal interrupt exit behavior after the failure is recorded.
 
 Homebrew installs the text-only package and does not provide Python extras.
 The formula is built as a Homebrew-managed virtualenv, but optional PyPI

@@ -10,14 +10,17 @@ import shlex
 import subprocess
 import sys
 import time
+from enum import Enum
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, cast
 
 OptionalExtra = Literal["vision", "video", "audio", "image"]
 OptionalRuntimeStatus = Literal["absent", "broken", "incompatible"]
 ExtraRecovery = Literal[
     "accepted",
     "declined",
+    "no_answer",
+    "interrupted",
     "non_interactive",
     "assume_yes",
     "no_installer",
@@ -34,6 +37,15 @@ _INSTALL_PROMPT_TIMEOUT_SECONDS = 30.0
 
 class _PromptInput(Protocol):
     def fileno(self) -> int: ...
+
+
+class PromptResult(str, Enum):
+    """Closed result of the bounded optional-runtime consent prompt."""
+
+    ACCEPTED = "accepted"
+    DECLINED = "declined"
+    NO_ANSWER = "no_answer"
+    INTERRUPTED = "interrupted"
 
 
 _assume_yes = False
@@ -60,6 +72,7 @@ def optional_extra_repair_command(
     *,
     version: str | None = None,
     include_paths: bool = True,
+    status: OptionalRuntimeStatus = "absent",
 ) -> str:
     """Return the install-method-aware command for one pinned optional extra.
 
@@ -93,15 +106,20 @@ def optional_extra_repair_command(
             f"    brew uninstall rapid-mlx && uv tool install {shlex.quote(pinned)}"
         )
     python = shlex.quote(sys.executable) if include_paths else "python"
-    return f"{python} -m pip install {shlex.quote(pinned)}"
+    reinstall = "--upgrade --force-reinstall " if status == "broken" else ""
+    return f"{python} -m pip install {reinstall}{shlex.quote(pinned)}"
 
 
 def optional_extra_install_hint(
-    extra: str, *, version: str | None = None, include_paths: bool = True
+    extra: str,
+    *,
+    version: str | None = None,
+    include_paths: bool = True,
+    status: OptionalRuntimeStatus = "absent",
 ) -> str:
     """Return consistent human-facing repair guidance for an optional extra."""
     return "Install the optional runtime with:\n    " + optional_extra_repair_command(
-        extra, version=version, include_paths=include_paths
+        extra, version=version, include_paths=include_paths, status=status
     )
 
 
@@ -171,7 +189,7 @@ def _prompt_to_install(
     extra: OptionalExtra,
     *,
     timeout_seconds: float | None = None,
-) -> bool:
+) -> PromptResult:
     """Wait at most 30 seconds for an explicit interactive opt-in."""
     size_mb = _EXTRA_INSTALL_SIZE_MB.get(extra)
     size = f" (~{size_mb} MB)" if size_mb is not None else ""
@@ -184,15 +202,21 @@ def _prompt_to_install(
     timeout = (
         _INSTALL_PROMPT_TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds
     )
-    response = (
-        _read_windows_prompt_response(timeout)
-        if sys.platform == "win32"
-        else _read_posix_prompt_response(sys.stdin, timeout)
-    )
+    try:
+        response = (
+            _read_windows_prompt_response(timeout)
+            if sys.platform == "win32"
+            else _read_posix_prompt_response(sys.stdin, timeout)
+        )
+    except KeyboardInterrupt:
+        print(file=sys.stderr)
+        return PromptResult.INTERRUPTED
     if response is None:
         print(file=sys.stderr)
-        return False
-    return response.strip().lower() in {"y", "yes"}
+        return PromptResult.NO_ANSWER
+    if response.strip().lower() in {"y", "yes"}:
+        return PromptResult.ACCEPTED
+    return PromptResult.DECLINED
 
 
 def _read_posix_prompt_response(
@@ -364,11 +388,12 @@ def handle_optional_runtime_missing(
         extra_recovery = "non_interactive"
     else:
         try:
-            accepted = _prompt_to_install(exc.extra)
+            prompt_result = _prompt_to_install(exc.extra)
         except KeyboardInterrupt:
             print(file=sys.stderr)
-            accepted = False
-        extra_recovery = "accepted" if accepted else "declined"
+            prompt_result = PromptResult.INTERRUPTED
+        accepted = prompt_result is PromptResult.ACCEPTED
+        extra_recovery = cast(ExtraRecovery, prompt_result.value)
     from rapid_mlx.telemetry.model_events import emit_model_serve_failed
 
     emit_model_serve_failed(
@@ -380,4 +405,6 @@ def handle_optional_runtime_missing(
     )
     if accepted:
         _install_optional_extra(exc)
+    if extra_recovery == "interrupted":
+        raise KeyboardInterrupt
     raise SystemExit(2)

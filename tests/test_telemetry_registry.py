@@ -163,6 +163,8 @@ def test_model_serve_failed_rejects_unknown_error_class():
     [
         "accepted",
         "declined",
+        "no_answer",
+        "interrupted",
         "non_interactive",
         "assume_yes",
         "no_installer",

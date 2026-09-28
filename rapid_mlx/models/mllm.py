@@ -43,6 +43,7 @@ from requests.adapters import HTTPAdapter
 
 from rapid_mlx.mllm_cache import MLLMPrefixCacheManager
 from rapid_mlx.model_metadata import MULTIMODAL_TENSOR_PREFIXES
+from rapid_mlx.runtime.optional_runtime import OptionalRuntimeStatus
 
 logger = logging.getLogger(__name__)
 
@@ -217,7 +218,9 @@ def _managed_desktop_runtime_root() -> Path:
     return Path(sys.executable).resolve().parents[2]
 
 
-def _vision_install_hint(*, include_paths: bool = True) -> str:
+def _vision_install_hint(
+    *, include_paths: bool = True, status: OptionalRuntimeStatus = "absent"
+) -> str:
     """Return a repair path that cannot accidentally target another Python.
 
     A signed Desktop runtime is immutable product state: mutating it with pip
@@ -249,7 +252,9 @@ def _vision_install_hint(*, include_paths: bool = True) -> str:
         )
     from rapid_mlx.runtime.optional_runtime import optional_extra_install_hint
 
-    return optional_extra_install_hint("vision", include_paths=include_paths)
+    return optional_extra_install_hint(
+        "vision", include_paths=include_paths, status=status
+    )
 
 
 # Backwards-compatible public constant used by docs/tests. It is generated
@@ -401,7 +406,7 @@ def _vlm_broken_install_hint(detail: str | None) -> str:
         pip_name = _pip_name_for_module(detail)
         hint = (
             f"`mlx-vlm` is installed but its dependency {detail!r} is not, so "
-            f"the vision runtime cannot load. {_vision_install_hint()}"
+            f"the vision runtime cannot load. {_vision_install_hint(status='broken')}"
         )
         if _managed_desktop_runtime():
             return hint
@@ -412,7 +417,7 @@ def _vlm_broken_install_hint(detail: str | None) -> str:
     suffix = f" ({detail})" if detail else ""
     return (
         f"`mlx-vlm` is installed but its import chain is broken, so the "
-        f"vision runtime cannot load{suffix}. {_vision_install_hint()}"
+        f"vision runtime cannot load{suffix}. {_vision_install_hint(status='broken')}"
     )
 
 

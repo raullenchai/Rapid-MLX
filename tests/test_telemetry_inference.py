@@ -2489,6 +2489,7 @@ async def test_embedding_configuration_rejections_emit_capability(monkeypatch, c
 
     fake_embedding = types.ModuleType("rapid_mlx.embedding")
     fake_embedding.EMBEDDINGS_EXTRA_INSTALL_HINT = "install embeddings"
+    fake_embedding.EMBEDDINGS_EXTRA_HTTP_INSTALL_HINT = "install embeddings"
     fake_embedding.EmbeddingInputTooLongError = RuntimeError
     monkeypatch.setitem(sys.modules, "rapid_mlx.embedding", fake_embedding)
     cfg = SimpleNamespace(
@@ -2641,6 +2642,7 @@ async def test_embedding_runtime_rejection_emits_capability(monkeypatch):
 
     fake_embedding = types.ModuleType("rapid_mlx.embedding")
     fake_embedding.EMBEDDINGS_EXTRA_INSTALL_HINT = "install embeddings"
+    fake_embedding.EMBEDDINGS_EXTRA_HTTP_INSTALL_HINT = "install embeddings"
     fake_embedding.EmbeddingInputTooLongError = type(
         "EmbeddingInputTooLongError", (Exception,), {}
     )
@@ -2685,6 +2687,7 @@ async def test_embedding_success_emits_completed_request(monkeypatch):
 
     fake_embedding = types.ModuleType("rapid_mlx.embedding")
     fake_embedding.EMBEDDINGS_EXTRA_INSTALL_HINT = "install embeddings"
+    fake_embedding.EMBEDDINGS_EXTRA_HTTP_INSTALL_HINT = "install embeddings"
     fake_embedding.EmbeddingInputTooLongError = type(
         "EmbeddingInputTooLongError", (Exception,), {}
     )

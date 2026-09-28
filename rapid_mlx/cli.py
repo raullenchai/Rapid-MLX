@@ -4443,12 +4443,7 @@ def _alias_modality(model_name: str) -> str | None:
 
 def _alias_text_degrades_without_vision(profile, *, args=None) -> bool:
     """Whether an absent vision extra leaves this catalog alias text-capable."""
-    if (
-        profile is None
-        or profile.modality != "text"
-        or profile.vision_min_memory_gb is None
-        or profile.is_text_only
-    ):
+    if profile is None or profile.modality != "text" or profile.is_text_only:
         return False
     from .models.mllm import VisionRuntimeStatus, vision_runtime_status
 
@@ -4462,7 +4457,26 @@ def _alias_text_degrades_without_vision(profile, *, args=None) -> bool:
             or getattr(args, "force_spec_decode", False)
         ):
             return False
-    return vision_runtime_status()[0] is VisionRuntimeStatus.ABSENT
+    if vision_runtime_status()[0] is not VisionRuntimeStatus.ABSENT:
+        return False
+    from .api.utils import resolve_serving_lane_decision
+
+    if args is not None:
+        # The serve guard owns the cold-cache metadata prefetch. Run that same
+        # resolver path first so the warning does not fall back to using a
+        # memory floor as a proxy for text-capable vision degradation.
+        _serve_will_run_on_mllm_lane(args)
+    model_name = profile.hf_path
+    decision = resolve_serving_lane_decision(
+        model_name,
+        force_mllm=bool(args is not None and getattr(args, "mllm", False)),
+        force_text=bool(args is not None and getattr(args, "no_mllm", False)),
+        vision_min_memory_gb=profile.vision_min_memory_gb,
+        requested_spec_decode=(
+            getattr(args, "spec_decode", "none") if args is not None else "none"
+        ),
+    )
+    return decision.auto_text_fallback
 
 
 def _warn_vision_text_only_degrade(profile, *, args=None) -> bool:
@@ -4480,58 +4494,6 @@ def _warn_vision_text_only_degrade(profile, *, args=None) -> bool:
         file=sys.stderr,
     )
     return True
-
-
-def _preflight_pull_optional_runtime(args) -> None:
-    """Reject catalog aliases whose known lane cannot run before weight fetch."""
-    from .model_aliases import resolve_profile
-    from .runtime.optional_runtime import _running_in_desktop_sidecar
-
-    if _running_in_desktop_sidecar():
-        return
-    alias = getattr(args, "_original_alias", None) or args.model
-    from .audio.probe import is_audio_model_alias, require_audio_or_exit
-
-    try:
-        if is_audio_model_alias(alias):
-            require_audio_or_exit(alias)
-            return
-    except OptionalRuntimeMissing as exc:
-        _handle_optional_runtime_missing(
-            exc,
-            alias_or_path=alias,
-            auto_selected=False,
-            assume_yes=bool(getattr(args, "yes", False)),
-        )
-    profile = resolve_profile(alias)
-    if profile is None:
-        return
-    try:
-        if profile.modality == "video-gen":
-            from .runtime.video_lane import require_video_runtime_or_exit
-
-            require_video_runtime_or_exit(profile.hf_path)
-        elif profile.modality == "image-gen":
-            from .runtime.image_lane import require_image_runtime_or_exit
-
-            require_image_runtime_or_exit(profile.hf_path)
-        elif profile.modality == "text-diffusion" or (
-            (profile.supports_image_input or profile.vision_min_memory_gb is not None)
-            and not _alias_text_degrades_without_vision(profile)
-        ):
-            from .models.mllm import require_mlx_vlm_or_exit
-
-            require_mlx_vlm_or_exit(
-                profile.hf_path,
-                text_diffusion=profile.modality == "text-diffusion",
-            )
-    except OptionalRuntimeMissing as exc:
-        _handle_optional_runtime_missing(
-            exc,
-            alias_or_path=alias,
-            auto_selected=False,
-            assume_yes=bool(getattr(args, "yes", False)),
-        )
 
 
 def _prefetch_config_for_lane_guard(hf_path: str) -> None:
@@ -9980,8 +9942,6 @@ def pull_command(args):
         AudioRuntimePreparationError,
         prepare_runtime_requirement,
     )
-
-    _preflight_pull_optional_runtime(args)
 
     primary_repo = args.model
     primary_args = args
