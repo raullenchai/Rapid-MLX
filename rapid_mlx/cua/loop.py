@@ -82,6 +82,8 @@ class CUARun:
             "window_id": window_id,
         }
         self.tracker = NoProgressTracker()
+        self._last_execution_failed = False
+        self._failed_completion_rejections = 0
         self._empty_snapshots = 0
         self._terminal_emitted = False
         self.ranker = (
@@ -261,7 +263,15 @@ class CUARun:
         except ComputerUseError as exc:
             # A tool failure is an action-level outcome, not a run-level
             # crash: the tracker records it and the next step re-observes.
-            result.update({"ok": False, "error": str(exc), "executed": False})
+            result.update(
+                {
+                    "ok": False,
+                    "error": exc.message,
+                    "error_code": exc.code,
+                    "recovery": list(exc.recovery),
+                    "executed": False,
+                }
+            )
             return result
         result["executed"] = action != "wait"
         return result
@@ -367,6 +377,32 @@ class CUARun:
             }
         )
         if plan["action"] == "done":
+            if self._last_execution_failed:
+                self._failed_completion_rejections += 1
+                reason = (
+                    "the previous action failed; use the fresh observation to recover"
+                )
+                self.history.append(
+                    {
+                        "step": step_no,
+                        "action": "done",
+                        "instruction": plan["step_instruction"][:120],
+                        "outcome": "no_effect",
+                        "executed": False,
+                        "error": reason,
+                    }
+                )
+                self.tracker.record(plan, "no_effect")
+                self._record(
+                    {
+                        "step": step_no,
+                        "plan": plan,
+                        "completion_rejected": reason,
+                    }
+                )
+                if self._failed_completion_rejections >= 2:
+                    return {"status": "stopped", "reason": reason}
+                return None
             self.trace["final_summary"] = plan["final_summary"]
             self._record({"step": step_no, "plan": plan, "latency_s": latency})
             return {"status": "done", "summary": plan["final_summary"]}
@@ -525,9 +561,18 @@ class CUARun:
             "url_after": url_after,
         }
 
-        outcome = "uncertain"
+        execution_failed = executed.get("ok") is False
+        outcome = "no_effect" if execution_failed else "uncertain"
         ranker_latency = 0.0
-        if self.ranker is not None:
+        if execution_failed:
+            # An executor result is observed fact. A probabilistic verifier
+            # must never relabel a rejected action as successful.
+            delta["fast_outcome"] = {
+                "outcome": outcome,
+                "confidence": 1.0,
+                "source": "execution",
+            }
+        elif self.ranker is not None:
             try:
                 verdict, ranker_latency = await self.ranker.assess(
                     self.goal, plan, delta
@@ -537,25 +582,46 @@ class CUARun:
             except (RuntimeError, KeyError, ValueError):
                 delta["fast_outcome"] = {"outcome": "unavailable"}
         self.tracker.record(plan, outcome)
-        self._emit(
-            {
-                "kind": "executed",
-                "step": step_no,
-                "action": plan["action"],
-                "outcome": outcome,
-                "tree_changed": delta["tree_changed"],
-                "url_after": url_after[:120],
-            }
-        )
-        self.history.append(
-            {
-                "step": step_no,
-                "action": plan["action"],
-                "instruction": plan["step_instruction"][:120],
-                "outcome": outcome,
-                "url_after": url_after[:120],
-            }
-        )
+        event = {
+            "kind": "executed",
+            "step": step_no,
+            "action": plan["action"],
+            "outcome": outcome,
+            "tree_changed": delta["tree_changed"],
+            "url_after": url_after[:120],
+        }
+        history_entry = {
+            "step": step_no,
+            "action": plan["action"],
+            "instruction": plan["step_instruction"][:120],
+            "outcome": outcome,
+            "url_after": url_after[:120],
+        }
+        if execution_failed:
+            event.update(
+                {
+                    "error": str(executed.get("error", "action was not executed"))[
+                        :240
+                    ],
+                    "error_code": str(executed.get("error_code", "execution_failed")),
+                }
+            )
+            history_entry.update(
+                {
+                    "executed": False,
+                    "error": event["error"],
+                    "error_code": event["error_code"],
+                    "recovery": list(executed.get("recovery", [])),
+                }
+            )
+            self._last_execution_failed = True
+        elif executed.get("executed") is True:
+            # A dispatched action followed by the fresh `after` observation is
+            # enough to let the planner assess completion on its next turn.
+            self._last_execution_failed = False
+            self._failed_completion_rejections = 0
+        self._emit(event)
+        self.history.append(history_entry)
         self._record(
             {
                 "step": step_no,
@@ -642,8 +708,9 @@ async def run(
             terminal = {"status": "stalled", "reason": reason}
     except (ValueError, KeyError) as exc:
         # A planner repair exhaustion or malformed plan must not surface as a
-        # bare traceback with status "incomplete"; stop with a readable reason.
-        reason = f"planner produced invalid plans: {exc}"
+        # bare traceback or raw model response in the user-facing result.
+        reason = "planner did not return a valid action after one repair attempt"
+        cua_run.trace["planner_error"] = str(exc)[:800]
         cua_run.trace["status"] = "stopped"
         cua_run.trace["final_summary"] = reason
         terminal = {"status": "stopped", "reason": reason}

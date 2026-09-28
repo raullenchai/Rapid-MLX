@@ -634,12 +634,16 @@ def _collect_with_timeout(
     return cast(list[dict], outcome.get("value", []))
 
 
-def _live_element(snapshot: dict, element_index: int) -> object:
+def _live_element(
+    snapshot: dict, element_index: int, *, validate_point: bool = True
+) -> object:
     """Re-collect and return the live AX ref for an index, if still present."""
     expected = _element(snapshot, element_index)
     center = expected.get("center")
     point = tuple(center) if isinstance(center, list) and len(center) == 2 else None
-    current_window = _validate_snapshot_window(snapshot, point=point)
+    current_window = _validate_snapshot_window(
+        snapshot, point=point if validate_point else None
+    )
     fresh = _collect_with_timeout(
         snapshot["app"]["name"],
         window_index=current_window["index"],
@@ -769,8 +773,14 @@ def click(
         )
         entry = _element(snapshot, element_index)
         center = entry["center"]
-        live = _live_element(snapshot, element_index)
-        if live is not None and "AXPress" in entry["actions"]:
+        live = None
+        if "AXPress" in entry["actions"]:
+            # Menus and popovers can be owned by the selected app/window while
+            # appearing outside the window's content bounds. Revalidate the
+            # exact window and AX target identity, then prefer AXPress on that
+            # live object. Coordinate fallbacks remain bounded below.
+            live = _live_element(snapshot, element_index, validate_point=False)
+        if live is not None:
             import ApplicationServices as AS  # type: ignore[import-untyped]  # noqa: N813, N817  # camelcase pyobjc module, alias is conventional
             from ApplicationServices import AXUIElementPerformAction
 
@@ -784,6 +794,7 @@ def click(
                     verification="action accepted by Accessibility; outcome not asserted",
                     include_post_state=include_post_state,
                 )
+        _validate_snapshot_window(snapshot, point=tuple(center))
         ax_driver._cg_click(float(center[0]), float(center[1]), clicks=click_count)
         return _finish_action(
             app,
