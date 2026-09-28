@@ -14,21 +14,14 @@
   so this handoff records the required start FYI for Atlas, Pixel, Vector, Echo, and
   ds0731. Work continued because the FYI is non-blocking.
 
-## Private reference check
+## Reference check
 
-- Rapid-MLX already had a one-shot run approval endpoint and `awaiting_approval`
-  state for sign-in. The implementation reuses that surface instead of adding API.
-- Open WebUI's current tool approval flow binds resolution to a pending call id,
-  rejects duplicate/stale resolutions, and represents denial as a terminal tool result.
-- Cherry Studio's approval flow pauses execution at the tool wrapper, makes the main
-  process authoritative, and resumes only the held invocation after a specific decision.
-- Jan's documented permission QA requires showing tool parameters, supports Allow Once,
-  and verifies that denial prevents execution.
-- LM Studio documents tool integrations but did not expose an equivalent action-level
-  confirmation contract in the reviewed public material.
-- Adopted pattern: one-shot, execution-time approval with explicit proposed parameters;
-  stale or late approvals fail closed. Rapid additionally re-observes macOS AX state
-  because GUI indexes, geometry, process, window, URL, and surrounding state can drift.
+The existing one-shot run approval endpoint and `awaiting_approval` state are
+reused for sign-in and consequential actions. Established tool approval flows
+were reviewed privately. The adopted pattern is execution-time approval for
+one proposed action with explicit parameters; stale or late decisions fail
+closed. Rapid re-observes macOS Accessibility and window state because indexes,
+geometry, process identity, URL, and surrounding UI can drift.
 
 ## Current state
 
