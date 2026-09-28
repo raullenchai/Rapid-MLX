@@ -5,7 +5,7 @@
 - Host: Studio
 - Branch: `vector/cua-observation-api`
 - Worktree: `/private/tmp/harbor-desk-cua-observation-api`
-- Base: `7acf2e9b455d08864ce3fd7f88dddffdd933334e`
+- Base: selected-window branch `2feecb9c085a46c699bd75125a93141cc18b21eb`
 - PR: intentionally not opened or pushed; waiting for stack linearization and manager review
 
 ## Intention and boundary
@@ -29,7 +29,8 @@ focus, activation, click, typing, or native GUI work is included.
 - The response omits backend `tree_text` and raw `screenshot_png`; observation
   responses use `Cache-Control: no-store` and `Pragma: no-cache`.
 - Capability flags reflect platform, current TCC readiness, and screenshot
-  server policy.
+  server policy. Public server and CUA docs describe the exact request,
+  response, privacy headers, opt-in, TCC, and payload-limit contract.
 
 ## Reference check
 
@@ -43,10 +44,9 @@ public repository.
 
 ## Verification
 
-- `tests/test_cua_observation_server.py`: 12 passed
-- `tests/test_cua_server.py`: 29 passed, 2 real-server import tests deselected
-  because importing MLX aborts in this isolated test environment
-- `tests/test_computer_use.py`: 51 passed
+- Combined computer-use, CUA, server, and observation suites: 186 passed,
+  2 real-server import tests deselected because importing MLX aborts in this
+  isolated test environment.
 - Ruff check and format check pass for all touched Python files
 - `git diff --check` passes
 

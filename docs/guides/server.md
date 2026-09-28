@@ -149,6 +149,7 @@ are marked; multimodal and MCP surfaces link to their own guides.
 | `/v1/cua/permissions` | GET | Authenticated macOS Accessibility and Screen Recording readiness |
 | `/v1/cua/apps` | GET | Authenticated running-app discovery for custom CUA clients |
 | `/v1/cua/apps/{app}/windows` | GET | Authenticated window discovery for an app |
+| `/v1/cua/observations` | POST | Fresh, authenticated observation of an exact app process and window |
 | `/v1/cua/runs` | GET/POST | List or create supervised high-level computer-use runs |
 | `/v1/cua/runs/{id}` | GET | Poll typed events, terminal state, and any pending approval gate |
 | `/v1/cua/runs/{id}/approval` | POST | Resolve the current gate with `{"gate_id": "...", "approved": true|false}` |
@@ -183,6 +184,34 @@ trusted URL cannot be tied unambiguously to the selected browser process,
 including when multiple browser processes expose the same application bundle.
 `open_url` cannot be combined with `window_id`, because opening a URL can change
 which window is targeted.
+
+To render a selected window without starting a run, send the exact app identity,
+PID, and opaque window ID returned by discovery. Observations always bypass the
+snapshot cache and do not activate the app:
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/cua/observations \
+  -H "Authorization: Bearer $RAPID_MLX_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "app": "com.apple.Safari",
+    "pid": 1234,
+    "window_id": "cg:12345",
+    "screenshot": false
+  }'
+```
+
+The response contains `snapshot_id`, `observed_at`, canonical app identity,
+window identity and geometry, coordinate space, typed accessibility elements,
+element count, and truncation status. It deliberately omits the backend's raw
+tree text. `screenshot` defaults to `false` and the response image is `null`.
+
+Accessibility permission is required for every observation. PNG output also
+requires Screen Recording permission, request field `"screenshot": true`, and
+the server opt-in `RAPID_MLX_CUA_EXPOSE_SCREENSHOTS=1`. PNGs larger than 4 MiB
+are rejected before base64 encoding. Success and typed error responses use
+`Cache-Control: no-store` and `Pragma: no-cache`; clients should not persist
+observations that may contain private UI labels or pixels.
 
 For lazy or idle-unload deployments, `/metrics` always exposes primary-model
 residency and lifecycle series even while the engine is in standby:

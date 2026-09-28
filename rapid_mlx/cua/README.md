@@ -84,20 +84,21 @@ curl -X POST -H "Authorization: Bearer $RAPID_API_KEY" \
 Run responses contain a typed event envelope (`kind`, `seq`, `ts`) with
 event-specific fields such as `action`, `target`, `target_label`, `outcome`,
 and `tree_changed`, terminal status and summary, and the current `pending_gate`.
-Local trace paths are intentionally omitted from HTTP responses. Screenshots
-are not returned by this API; clients use structured events and host discovery
-without transferring captured private content.
+Local trace paths are intentionally omitted from HTTP responses. Fresh window
+observations are available through the separately permissioned observation API;
+screenshots remain disabled unless the server and request both opt in.
 
 Every `gate`, `gate_detail`, and `gate_resolved` event for one decision carries
 the same `gate_id` as `pending_gate`. New clients should always send that ID in
 their decision request.
 
 Window discovery returns an opaque `window_id` such as `cg:123`, resolved
-against the target process ID. Discovery is currently informational: run
-creation targets the app's front window and has no `window_id` selector yet.
+against the target process ID. Run creation can bind the run to that exact
+window; clients should rediscover windows before retrying a stopped run.
 Clients should inspect the versioned capability response instead of inferring
-support from route presence. In this revision, `window_selection` and
-`visual_observation` are false, while `approval_gate_id` is true.
+support from route presence. Observation capability flags reflect the host
+platform, current Accessibility and Screen Recording grants, and screenshot
+server policy, while `approval_gate_id` remains true.
 
 Runs and events are retained only in the server process (up to 100 recent
 runs). A server restart clears them, so an old `run_id` can return HTTP 404;
