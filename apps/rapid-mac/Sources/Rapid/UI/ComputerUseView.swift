@@ -162,7 +162,8 @@ struct ComputerUseView: View {
     }
 
     private func starterCard(_ starter: ComputerUseStarter) -> some View {
-        let isAvailable = starter.availability == .available
+        let hasLanguageRuntime = languageRuntime != nil
+        let isAvailable = starter.canStart(hasLanguageRuntime: hasLanguageRuntime)
         // Quiet the supporting content of a not-yet-available card, but keep
         // its title and status legible so the tile reads as a real, named
         // capability rather than a greyed-out blur.
@@ -176,7 +177,7 @@ struct ComputerUseView: View {
                     )
                     .opacity(supportOpacity)
                 Spacer()
-                Text(availabilityLabel(starter.availability))
+                Text(starter.availabilityLabel(hasLanguageRuntime: hasLanguageRuntime))
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(.secondary)
             }
@@ -196,6 +197,12 @@ struct ComputerUseView: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .opacity(supportOpacity)
+            if starter.kind == .draftAndPost, !hasLanguageRuntime {
+                Text("This preview is unavailable without an active authenticated chat session.")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .accessibilityIdentifier("ComputerUse.Starter.DraftAndPost.Unavailable")
+            }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .padding(16)
@@ -280,15 +287,6 @@ struct ComputerUseView: View {
         }
     }
 
-    private func availabilityLabel(
-        _ availability: ComputerUseStarter.Availability
-    ) -> String {
-        switch availability {
-        case .available: "PREVIEW"
-        case .comingSoon: "COMING NEXT"
-        case .reserved: "RESERVED"
-        }
-    }
 }
 
 private struct DraftPostFlowSheet: View {

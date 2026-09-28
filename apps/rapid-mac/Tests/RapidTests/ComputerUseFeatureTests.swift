@@ -70,5 +70,12 @@ struct ComputerUseFeatureTests {
         #expect(ComputerUseStarter.catalog.allSatisfy {
             !$0.approvalNote.isEmpty
         })
+        let freeUpSpace = ComputerUseStarter.catalog.first { $0.kind == .freeUpSpace }
+        let draftAndPost = ComputerUseStarter.catalog.first { $0.kind == .draftAndPost }
+        #expect(freeUpSpace?.canStart(hasLanguageRuntime: false) == true)
+        #expect(draftAndPost?.canStart(hasLanguageRuntime: false) == false)
+        #expect(draftAndPost?.availabilityLabel(hasLanguageRuntime: false) == "UNAVAILABLE")
+        #expect(draftAndPost?.canStart(hasLanguageRuntime: true) == true)
+        #expect(draftAndPost?.availabilityLabel(hasLanguageRuntime: true) == "PREVIEW")
     }
 }

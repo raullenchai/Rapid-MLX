@@ -29,6 +29,22 @@ struct ComputerUseStarter: Identifiable, Equatable, Sendable {
 
     var id: Kind { kind }
 
+    func canStart(hasLanguageRuntime: Bool) -> Bool {
+        guard availability == .available else { return false }
+        return kind != .draftAndPost || hasLanguageRuntime
+    }
+
+    func availabilityLabel(hasLanguageRuntime: Bool) -> String {
+        if kind == .draftAndPost, availability == .available, !hasLanguageRuntime {
+            return "UNAVAILABLE"
+        }
+        switch availability {
+        case .available: return "PREVIEW"
+        case .comingSoon: return "COMING NEXT"
+        case .reserved: return "RESERVED"
+        }
+    }
+
     /// The catalog ordered for display, by availability tier: usable
     /// starters (`.available`) first — so the one flow a user can actually
     /// run leads the grid — then `.comingSoon`, then the `.reserved`
