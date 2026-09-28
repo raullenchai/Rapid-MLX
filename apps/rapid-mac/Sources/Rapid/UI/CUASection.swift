@@ -173,6 +173,7 @@ struct CUASection: View {
                 HStack {
                     Spacer()
                     Button("Cancel") { viewModel.showAddBrain = false }
+                        .accessibilityIdentifier("ComputerUse.Agent.BrainCancel")
                     Button("Save Brain") {
                         viewModel.newBrainName = brainDraftName
                         viewModel.newBrainURL = brainDraftURL
