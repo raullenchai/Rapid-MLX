@@ -381,6 +381,23 @@ def test_system_proxy_cannot_mint_public_proof(monkeypatch):
     assert mid._hub_connection_can_prove_public() is False
 
 
+def test_unreadable_system_proxy_configuration_fails_closed(monkeypatch):
+    """A platform proxy lookup failure cannot become permission to report."""
+
+    def _unreadable():
+        raise OSError("system proxy configuration is unreadable")
+
+    monkeypatch.setattr(mid, "getproxies", _unreadable)
+    assert mid._hub_connection_can_prove_public() is False
+
+
+def test_network_configuration_probe_preserves_keyboard_interrupt(monkeypatch):
+    """The fail-closed wrapper must still preserve user cancellation."""
+    monkeypatch.setattr(mid, "getproxies", _raise_keyboard_interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        mid._hub_connection_can_prove_public()
+
+
 def test_network_override_revokes_older_proof(monkeypatch):
     repo = "someone/public-community-mlx"
     mid.note_hub_fetch(repo)
