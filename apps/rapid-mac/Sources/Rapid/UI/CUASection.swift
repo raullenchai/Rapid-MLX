@@ -125,6 +125,9 @@ struct CUASection: View {
                 permissionReadiness
             }
 
+            if let context = viewModel.runContext {
+                runContextCard(context)
+            } else {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Task")
                     .font(.caption.weight(.semibold))
@@ -199,6 +202,7 @@ struct CUASection: View {
                 )
                 .accessibilityIdentifier("ComputerUse.Agent.Start")
             }
+            }
 
             if viewModel.phase == .starting || viewModel.phase == .running {
                 activeProgress
@@ -213,6 +217,11 @@ struct CUASection: View {
             }
             if case let .failed(message) = viewModel.phase {
                 failureCard(message: message)
+            }
+            if viewModel.runContext != nil, !viewModel.phase.isBusy {
+                Button("New Task") { viewModel.newTask() }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("ComputerUse.Agent.NewTask")
             }
             if let actionError = viewModel.actionError {
                 Label(actionError, systemImage: "exclamationmark.triangle.fill")
@@ -500,6 +509,39 @@ struct CUASection: View {
         .background(.blue.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(.blue.opacity(0.2)))
         .accessibilityIdentifier("ComputerUse.Agent.ActiveProgress")
+    }
+
+    private func runContextCard(_ context: CUARunContext) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(runContextTitle, systemImage: "scope")
+                .font(.callout.weight(.semibold))
+            Text(context.goal)
+                .font(.body)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+                .accessibilityIdentifier("ComputerUse.Agent.RunContext.Goal")
+            HStack(spacing: 14) {
+                Label(context.targetDisplayName, systemImage: "macwindow")
+                Label(context.plannerDisplayName, systemImage: "brain")
+                Label("Up to \(context.maxSteps) steps", systemImage: "list.number")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        .padding(12)
+        .background(RapidTheme.surfaceCanvas, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(.secondary.opacity(0.16)))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("ComputerUse.Agent.RunContext")
+    }
+
+    private var runContextTitle: String {
+        switch viewModel.phase {
+        case .starting, .running: "Current task"
+        case .awaitingApproval: "Task awaiting approval"
+        case .idle: "Stopped task"
+        case .finished, .failed: "Task context"
+        }
     }
 
     private func resultCard(summary: String) -> some View {

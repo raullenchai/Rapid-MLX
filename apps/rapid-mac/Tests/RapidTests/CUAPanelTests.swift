@@ -283,6 +283,58 @@ struct CUAViewModelTests {
         #expect(api.createdRequests[0].app == "pid:42")
         #expect(api.createdRequests[0].windowID == "cg:123")
         #expect(viewModel.events.count == 4)
+        #expect(viewModel.runContext?.goal == "open Apple Silicon")
+        #expect(viewModel.runContext?.targetDisplayName.contains("PID 42") == true)
+        #expect(!viewModel.canStart)
+
+        viewModel.newTask()
+        #expect(viewModel.phase == .idle)
+        #expect(viewModel.runContext == nil)
+        #expect(viewModel.goal.isEmpty)
+        #expect(viewModel.events.isEmpty)
+        #expect(viewModel.plannerName == "local-27b")
+        #expect(viewModel.selectedWindowID == "cg:123")
+    }
+
+    @Test("Start freezes request fields before asynchronous preflight")
+    func startFreezesRunContext() async {
+        let api = MockAgentAPI()
+        api.capabilitiesDelayNanos = 100_000_000
+        let viewModel = CUAViewModel(api: api, pollIntervalNanos: 5_000_000)
+        viewModel.goal = "original goal"
+        viewModel.plannerName = "brain-a"
+        viewModel.plannerOptions = [
+            CUAPlannerOption(
+                name: "brain-a", model: "model-a", url: "http://127.0.0.1:8080/v1",
+                textOnly: true
+            ),
+        ]
+        viewModel.maxSteps = 7
+        selectTarget(viewModel)
+
+        let start = Task { await viewModel.start() }
+        try? await Task.sleep(nanoseconds: 10_000_000)
+        #expect(viewModel.phase == .starting)
+        #expect(viewModel.runContext?.goal == "original goal")
+        #expect(viewModel.runContext?.plannerDisplayName.contains("model-a") == true)
+
+        viewModel.goal = "changed while starting"
+        viewModel.plannerName = "brain-b"
+        viewModel.maxSteps = 39
+        viewModel.selectedPID = nil
+        viewModel.selectedWindowID = nil
+        await start.value
+
+        #expect(api.attemptedRequests.first?.goal == "original goal")
+        #expect(api.attemptedRequests.first?.planner == "brain-a")
+        #expect(api.attemptedRequests.first?.maxSteps == 7)
+        #expect(api.attemptedRequests.first?.app == "pid:42")
+        #expect(api.attemptedRequests.first?.windowID == "cg:123")
+        #expect(viewModel.runContext?.maxSteps == 7)
+        let frozenContext = viewModel.runContext
+        viewModel.newTask()
+        #expect(viewModel.runContext == frozenContext)
+        viewModel.invalidateSession()
     }
 
     @Test("Gate event flips to awaitingApproval and approve() hits the API once")
@@ -1603,6 +1655,9 @@ struct CUATargetUISourceTests {
         #expect(section.contains("ComputerUse.Agent.Failure.Summary"))
         #expect(section.contains("ComputerUse.Agent.Failure.Details"))
         #expect(section.contains("ComputerUse.Agent.Failure.ChangeWarning"))
+        #expect(section.contains("ComputerUse.Agent.RunContext"))
+        #expect(section.contains("ComputerUse.Agent.RunContext.Goal"))
+        #expect(section.contains("ComputerUse.Agent.NewTask"))
         #expect(section.contains("ComputerUse.Agent.Evidence"))
         #expect(section.contains("ComputerUse.Agent.History"))
         #expect(section.contains("DisclosureGroup"))

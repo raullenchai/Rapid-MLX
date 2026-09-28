@@ -89,6 +89,16 @@ struct CUAProgressPresentation: Equatable, Sendable {
     }
 }
 
+struct CUARunContext: Equatable, Sendable {
+    let goal: String
+    let plannerName: String
+    let plannerDisplayName: String
+    let appSelector: String
+    let windowID: String
+    let targetDisplayName: String
+    let maxSteps: Int
+}
+
 /// Drives one agent task from the GUI: create on the app-owned server, poll
 /// numbered events, surface gate approvals, and finish with the summary.
 @MainActor
@@ -106,6 +116,7 @@ final class CUAViewModel: ObservableObject {
     @Published var pendingApproval: CUAPendingApproval?
     @Published var executorPermissions: CUAPermissionStatus?
     @Published var actionError: String?
+    @Published private(set) var runContext: CUARunContext?
     @Published var appOptions: [CUAAppOption] = []
     @Published var windowOptions: [CUAWindowOption] = []
     @Published var selectedPID: Int?
@@ -139,6 +150,7 @@ final class CUAViewModel: ObservableObject {
     var canStart: Bool {
         !goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !phase.isBusy
+            && runContext == nil
             && selectedApp != nil
             && selectedWindow != nil
             && openURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -186,7 +198,7 @@ final class CUAViewModel: ObservableObject {
         })?.outcome
         return CUAProgressPresentation(
             step: step,
-            maxSteps: maxSteps,
+            maxSteps: runContext?.maxSteps ?? maxSteps,
             instruction: plan.stepInstruction ?? "Planning the next action",
             action: plan.action,
             target: plan.targetLabel,
@@ -386,6 +398,16 @@ final class CUAViewModel: ObservableObject {
     func start() async {
         guard canStart else { return }
         guard let app = selectedApp, let window = selectedWindow else { return }
+        let context = CUARunContext(
+            goal: goal.trimmingCharacters(in: .whitespacesAndNewlines),
+            plannerName: plannerName,
+            plannerDisplayName: plannerOptions.first { $0.name == plannerName }?.displayName
+                ?? plannerName,
+            appSelector: "pid:\(app.pid)",
+            windowID: window.windowID,
+            targetDisplayName: "\(window.displayName) in \(app.displayName)",
+            maxSteps: maxSteps
+        )
         lifecycleGeneration += 1
         let generation = lifecycleGeneration
         stoppingStartGeneration = nil
@@ -400,6 +422,7 @@ final class CUAViewModel: ObservableObject {
         pendingCreateRecovery = nil
         stopPolling()
         runID = nil
+        runContext = context
         do {
             let capabilities = try await api.capabilities()
             guard generation == lifecycleGeneration else { return }
@@ -429,14 +452,14 @@ final class CUAViewModel: ObservableObject {
             return
         }
         let request = CUARunRequest(
-            app: "pid:\(app.pid)",
-            goal: goal.trimmingCharacters(in: .whitespacesAndNewlines),
-            planner: plannerName,
+            app: context.appSelector,
+            goal: context.goal,
+            planner: context.plannerName,
             openURL: openURL.trimmingCharacters(in: .whitespacesAndNewlines),
             allowedDomain: allowedDomain.trimmingCharacters(in: .whitespacesAndNewlines),
-            maxSteps: maxSteps,
+            maxSteps: context.maxSteps,
             humanLogin: true,
-            windowID: window.windowID,
+            windowID: context.windowID,
             clientRequestID: UUID().uuidString.lowercased()
         )
         do {
@@ -554,6 +577,24 @@ final class CUAViewModel: ObservableObject {
             await self?.pollUntilTerminal(runID: runID, generation: generation)
         }
         _ = pollTask
+    }
+
+    func newTask() {
+        guard !phase.isBusy else { return }
+        lifecycleGeneration += 1
+        stopPolling()
+        runID = nil
+        runContext = nil
+        goal = ""
+        events = []
+        pendingGateReason = nil
+        pendingApproval = nil
+        actionError = nil
+        showingPollError = false
+        requiresBindingCleanup = false
+        pendingCreateRecovery = nil
+        isStopping = false
+        phase = .idle
     }
 
     func approve() async {
