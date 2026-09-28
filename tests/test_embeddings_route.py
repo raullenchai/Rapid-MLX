@@ -128,7 +128,7 @@ def test_embeddings_503_when_no_model(monkeypatch):
     msg = err["message"]
     assert "No embedding model loaded" in msg
     assert "--embedding-model" in msg
-    assert "pip install 'rapid-mlx[embeddings]'" in msg
+    assert "pip install 'rapid-mlx[embeddings]==" in msg
 
     # CRITICAL: the engine MUST NOT have been touched. Pre-fix the
     # route would fall through to ``embed`` / ``embed_tokens`` with
