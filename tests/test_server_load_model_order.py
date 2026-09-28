@@ -88,9 +88,23 @@ def test_load_model_enables_native_tool_format_when_parser_supports_it(monkeypat
     monkeypatch.setattr(server, "_ensure_routing_config", lambda name: None)
     monkeypatch.setattr(server, "_prefetch_routing_metadata", lambda name: name)
 
-    server.load_model("mlx-community/Qwen3.5-9B-4bit")
+    from rapid_mlx.runtime.config_adapter import (
+        DEFAULT_RUNTIME_LAUNCH_VALUES,
+        resolve_programmatic_runtime_config,
+    )
+
+    runtime_config = resolve_programmatic_runtime_config(
+        surface="test.cli", legacy=DEFAULT_RUNTIME_LAUNCH_VALUES
+    )
+    server.load_model(
+        "mlx-community/Qwen3.5-9B-4bit",
+        effective_runtime_config=runtime_config,
+    )
 
     assert server._engine is not None
+    assert (
+        server.get_config().effective_runtime_model == "mlx-community/Qwen3.5-9B-4bit"
+    )
     # hermes parser sets SUPPORTS_NATIVE_TOOL_FORMAT = True; with the
     # ordering fix, detection sees the synced cfg and propagates that
     # to the engine.

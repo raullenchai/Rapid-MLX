@@ -74,6 +74,35 @@ DEFAULT_RUNTIME_LAUNCH_VALUES = RuntimeLaunchValues(
 )
 
 
+def resolve_programmatic_runtime_config(
+    *, surface: str, legacy: RuntimeLaunchValues
+) -> EffectiveRuntimeConfig:
+    """Resolve a direct Server call without inventing policy provenance.
+
+    Values that differ from the public engine defaults are explicit inputs at
+    this boundary.  Equal values retain global-default provenance.  This is
+    intentionally conservative: Python callers do not carry argv-style
+    presence information, so claiming a model profile or safety decision here
+    would be misleading.
+    """
+
+    overrides = tuple(
+        RuntimeConfigOverride(
+            field=field,
+            value=legacy.value_for(field),
+            source_id=f"{surface}:programmatic-input",
+        )
+        for field in RuntimeField
+        if legacy.value_for(field) != DEFAULT_RUNTIME_LAUNCH_VALUES.value_for(field)
+    )
+    return resolve_with_legacy_parity(
+        surface=surface,
+        legacy=legacy,
+        defaults=DEFAULT_RUNTIME_LAUNCH_VALUES.as_defaults("runtime-defaults:v1"),
+        overrides=overrides,
+    )
+
+
 def resolve_with_legacy_parity(
     *,
     surface: str,
@@ -93,6 +122,20 @@ def resolve_with_legacy_parity(
         overrides=overrides,
         constraints=constraints,
     )
+    assert_runtime_config_parity(surface=surface, legacy=legacy, config=config)
+    return config
+
+
+def assert_runtime_config_parity(
+    *,
+    surface: str,
+    legacy: RuntimeLaunchValues,
+    config: EffectiveRuntimeConfig,
+) -> None:
+    """Reject a handoff whose authoritative config changed legacy behavior."""
+
+    if not surface.strip():
+        raise RuntimeParityError("runtime parity surface must not be empty")
     resolved = RuntimeLaunchValues.from_effective(config)
     if resolved != legacy:
         mismatches = [
@@ -104,4 +147,3 @@ def resolve_with_legacy_parity(
         raise RuntimeParityError(
             f"{surface} runtime parity mismatch: " + "; ".join(mismatches)
         )
-    return config

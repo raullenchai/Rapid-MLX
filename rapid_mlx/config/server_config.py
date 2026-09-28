@@ -41,6 +41,10 @@ class ServerConfig:
     model_name: str | None = None
     model_alias: str | None = None
     model_path: str | None = None
+    # Immutable, provenance-carrying values used to construct the active
+    # engine. Exposed read-only by /v1/runtime/config for Desktop and operators.
+    effective_runtime_config: Any = None
+    effective_runtime_model: str | None = None
     # Runtime owner for additional engines loaded into this process. The
     # legacy ``engine`` fields remain the protected startup/default model;
     # request routes consult this manager for residency, eviction, and status.

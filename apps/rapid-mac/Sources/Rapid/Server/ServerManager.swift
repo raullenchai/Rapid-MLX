@@ -557,6 +557,23 @@ final class ServerManager {
         return true
     }
 
+    @discardableResult
+    func refreshEffectiveRuntimeConfig() async -> Bool {
+        guard case .ready = state else {
+            effectiveRuntimeConfig = nil
+            return false
+        }
+        guard let snapshot = await EffectiveRuntimeConfigClient().fetch(
+            port: activePort,
+            bearer: activeBearer
+        ) else {
+            effectiveRuntimeConfig = nil
+            return false
+        }
+        effectiveRuntimeConfig = snapshot
+        return true
+    }
+
     func confirmPendingModelSwitch(_ request: PendingModelSwitch) {
         resolvePendingModelSwitch(request, approved: true)
     }
@@ -809,6 +826,10 @@ final class ServerManager {
     /// ChatViewModel re-targets the chat client URL.
     private(set) var activePort: Int = PortSweep.defaultPort
 
+    /// Exact engine-construction values and provenance reported by rapid-mlx.
+    /// Desktop renders this read-only and never reimplements resolver policy.
+    private(set) var effectiveRuntimeConfig: EffectiveRuntimeConfigSnapshot?
+
     /// Issue #17 desktop-half: active bearer secret. Generated or restored
     /// by ``start()`` under the user's lifetime policy and handed to the child via the
     /// ``RAPID_MLX_API_KEY`` env (NOT argv); cleared by
@@ -893,6 +914,19 @@ final class ServerManager {
         activeBearer = bearer
         activeServerSessionID = bearer == nil ? nil : UUID()
         activeModelProfile = nil
+        effectiveRuntimeConfig = nil
+    }
+
+    /// Retrigger the read-only runtime snapshot after a new child becomes
+    /// ready. The session ID changes at spawn time, before the endpoint can
+    /// answer; readiness therefore has to be part of the task identity too.
+    var effectiveRuntimeConfigRefreshID: String {
+        let readiness: String
+        switch state {
+        case .ready: readiness = "ready"
+        default: readiness = "not-ready"
+        }
+        return "\(activeServerSessionID?.uuidString ?? "none"):\(readiness)"
     }
 
     func applyActiveModelProfile(_ profile: ServerModelProfile, forAlias alias: String) {

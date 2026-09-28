@@ -1,6 +1,6 @@
 # Migration 002: central EffectiveRuntimeConfig
 
-- **Status:** in progress — stage 1 contract complete
+- **Status:** complete
 - **Owner:** Atlas
 - **Rollback:** preserve existing CLI/server resolver helpers behind an adapter
 
@@ -22,13 +22,19 @@ overrode or adjusted another source.
    model-profile prefill, machine-memory overrides, reasoning workloads,
    explicit flags, and incompatible KV-cache options without downloading a
    model.
-3. Route Server and CLI through the central resolver.
-4. expose a read-only DTO for Desktop.
-5. Add GUI presentation for active optimizations, warnings, and overrides.
+3. **Complete:** route Server and CLI through the central resolver after an
+   exact legacy-result parity assertion. Programmatic Server calls use the same
+   boundary and conservatively identify non-default inputs as explicit.
+4. **Complete:** expose the authenticated, read-only `/v1/runtime/config` DTO
+   with a versioned schema and full field traces.
+5. **Complete:** decode the DTO in Desktop and present the engine's active
+   values and provenance in Settings → Performance. Saved controls continue to
+   describe operator intent; the active-value display contains no copied
+   compatibility or fallback policy.
 
-Stage 1 deliberately has no production caller. Its rollback is deletion of the
-new module and tests; CLI and Server continue to use their existing helpers until
-the stage 2 parity fixtures prove equivalent results.
+Rollback remains explicit: remove the production handoff while retaining the
+legacy resolver computations. The parity assertion runs before model I/O, so a
+new/old mismatch fails closed and identifies every differing field.
 
 ## Exit criteria
 
