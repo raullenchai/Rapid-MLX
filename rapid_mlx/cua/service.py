@@ -31,6 +31,10 @@ class CUARunNotFoundError(RuntimeError):
     pass
 
 
+class CUAGateMismatchError(RuntimeError):
+    pass
+
+
 @dataclass
 class CUAServiceRun:
     run_id: str
@@ -71,6 +75,7 @@ class CUAServiceRun:
 
     async def wait_for_approval(self, reason: str, timeout: float) -> bool:
         gate = {
+            "gate_id": uuid.uuid4().hex,
             "kind": "approval",
             "reason": reason,
             "requested_at": time.time(),
@@ -93,12 +98,21 @@ class CUAServiceRun:
                 self._pending_gate = None
             self._approve_event.clear()
 
-    def resolve_gate(self, approved: bool) -> bool:
+    def resolve_gate(self, approved: bool, *, gate_id: str | None = None) -> bool:
         with self._lock:
             if not self._awaiting:
                 return False
             if self._pending_gate is None:
-                self._pending_gate = {"kind": "approval", "reason": "approval required"}
+                self._pending_gate = {
+                    "gate_id": uuid.uuid4().hex,
+                    "kind": "approval",
+                    "reason": "approval required",
+                }
+            current_gate_id = str(self._pending_gate["gate_id"])
+            if gate_id is not None and gate_id != current_gate_id:
+                raise CUAGateMismatchError(
+                    f"approval gate {gate_id!r} is stale; current gate is {current_gate_id!r}"
+                )
             self._pending_gate["approved"] = approved
         self._approve_event.set()
         return True

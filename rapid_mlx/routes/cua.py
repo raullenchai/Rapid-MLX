@@ -116,6 +116,7 @@ class CUAEvent(BaseModel):
 
 
 class CUAPendingGate(BaseModel):
+    gate_id: str
     kind: Literal["approval"] = "approval"
     reason: str
     requested_at: float | None = None
@@ -153,6 +154,7 @@ class CUAApprovalResult(BaseModel):
 
 
 class CUAGateDecision(BaseModel):
+    gate_id: str = Field(min_length=1, max_length=64)
     approved: bool = True
 
 
@@ -180,6 +182,7 @@ class CUAApp(BaseModel):
 
 
 class CUAWindow(BaseModel):
+    window_id: str
     index: int
     title: str
     x: float | None = None
@@ -196,6 +199,8 @@ def _http_error(exc: Exception) -> HTTPException:
     if isinstance(exc, cua_service.CUARunNotFoundError):
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
     if isinstance(exc, cua_service.CUARunConflictError):
+        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    if isinstance(exc, cua_service.CUAGateMismatchError):
         return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     if isinstance(exc, ValueError):
         return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
@@ -374,8 +379,14 @@ async def approve_run(
 ) -> CUAApprovalResult:
     try:
         requested = True if decision is None else decision.approved
-        resolved = _service().get(run_id).resolve_gate(requested)
-    except cua_service.CUARunNotFoundError as exc:
+        resolved = (
+            _service()
+            .get(run_id)
+            .resolve_gate(
+                requested, gate_id=None if decision is None else decision.gate_id
+            )
+        )
+    except (cua_service.CUARunNotFoundError, cua_service.CUAGateMismatchError) as exc:
         raise _http_error(exc) from exc
     if not resolved:
         raise HTTPException(

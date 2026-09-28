@@ -62,6 +62,7 @@ def client(monkeypatch, tmp_path, authorized):
         "list_windows",
         lambda app: [
             {
+                "window_id": "cg:123",
                 "index": 0,
                 "title": f"{app} window",
                 "x": 1,
@@ -193,6 +194,7 @@ def test_discovery_contract(client):
         {"name": "Finder", "bundle_id": "com.apple.finder", "pid": 42}
     ]
     windows = client.get("/v1/cua/apps/Finder/windows", headers=AUTH)
+    assert windows.json()[0]["window_id"] == "cg:123"
     assert windows.json()[0]["title"] == "Finder window"
 
 
@@ -381,12 +383,45 @@ def test_gate_is_visible_and_can_be_denied(client):
         await asyncio.sleep(0.01)
         view = client.get(f"/v1/cua/runs/{active.run_id}", headers=AUTH).json()
         assert view["pending_gate"]["reason"] == "sign in"
+        gate_id = view["pending_gate"]["gate_id"]
         denied = client.post(
             f"/v1/cua/runs/{active.run_id}/approval",
             headers=AUTH,
-            json={"approved": False},
+            json={"gate_id": gate_id, "approved": False},
         )
         assert denied.json() == {"run_id": active.run_id, "approved": False}
+        return await waiter
+
+    assert asyncio.run(scenario()) is False
+
+
+def test_stale_gate_decision_cannot_resolve_current_gate(client):
+    active = cua_service.CUAServiceRun(
+        run_id="gate-stale",
+        app="A",
+        goal="g",
+        config=None,  # type: ignore[arg-type]
+    )
+    client.fresh_service._runs[active.run_id] = active
+
+    async def scenario():
+        waiter = asyncio.create_task(active.wait_for_approval("sign in", timeout=5))
+        await asyncio.sleep(0.01)
+        current = active.view()["pending_gate"]
+        stale = client.post(
+            f"/v1/cua/runs/{active.run_id}/approval",
+            headers=AUTH,
+            json={"gate_id": "previous-gate", "approved": True},
+        )
+        assert stale.status_code == 409
+        assert active.view()["pending_gate"]["gate_id"] == current["gate_id"]
+        assert not active._approve_event.is_set()
+        resolved = client.post(
+            f"/v1/cua/runs/{active.run_id}/approval",
+            headers=AUTH,
+            json={"gate_id": current["gate_id"], "approved": False},
+        )
+        assert resolved.status_code == 200
         return await waiter
 
     assert asyncio.run(scenario()) is False

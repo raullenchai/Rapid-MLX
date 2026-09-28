@@ -70,11 +70,11 @@ curl -X POST -H "Authorization: Bearer $RAPID_API_KEY" \
 curl -H "Authorization: Bearer $RAPID_API_KEY" \
   'http://127.0.0.1:8000/v1/cua/runs/RUN_ID/events?after=0'
 
-# When pending_gate is present, approve or deny it explicitly.
+# When pending_gate is present, echo its gate_id to approve or deny it.
 curl -X POST -H "Authorization: Bearer $RAPID_API_KEY" \
   -H 'Content-Type: application/json' \
   http://127.0.0.1:8000/v1/cua/runs/RUN_ID/approval \
-  -d '{"approved":true}'
+  -d '{"gate_id":"GATE_ID_FROM_PENDING_GATE","approved":true}'
 
 # Cancellation is idempotent for an existing run.
 curl -X POST -H "Authorization: Bearer $RAPID_API_KEY" \

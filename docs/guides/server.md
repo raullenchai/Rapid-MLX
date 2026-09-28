@@ -151,7 +151,7 @@ are marked; multimodal and MCP surfaces link to their own guides.
 | `/v1/cua/apps/{app}/windows` | GET | Authenticated window discovery for an app |
 | `/v1/cua/runs` | GET/POST | List or create supervised high-level computer-use runs |
 | `/v1/cua/runs/{id}` | GET | Poll typed events, terminal state, and any pending approval gate |
-| `/v1/cua/runs/{id}/approval` | POST | Resolve a pending gate with `{"approved": true|false}` |
+| `/v1/cua/runs/{id}/approval` | POST | Resolve the current gate with `{"gate_id": "...", "approved": true|false}` |
 | `/v1/cua/runs/{id}/cancel` | POST | Cancel a run |
 
 For lazy or idle-unload deployments, `/metrics` always exposes primary-model

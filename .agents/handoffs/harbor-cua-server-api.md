@@ -23,10 +23,13 @@ paths. Raw click/type endpoints and screenshots are outside this change.
   activates or mutates the target application.
 - Run events expose a typed `kind`/`seq`/`ts` envelope with forward-compatible
   event fields. `pending_gate` carries reason and expiry. The existing approval
-  route accepts an optional explicit boolean so old empty-body approval clients
-  remain compatible and new clients can deny.
+  route preserves empty-body approval for the existing Swift client. New clients
+  echo the stable `gate_id` with an explicit decision; stale IDs fail with 409,
+  so a delayed approval cannot resolve a later gate in the same run.
+- Window discovery returns a Core Graphics-backed `window_id` that stays stable
+  for the lifetime of that on-screen window, alongside its current list index.
 - `run_dir` is removed from run responses and stripped from public start events.
-- Focused verification: `94 passed, 2 deselected` in `tests/test_cua_server.py`
+- Focused verification: `95 passed, 2 deselected` in `tests/test_cua_server.py`
   and `tests/test_cua.py`
   under Python 3.12. The two real-server import tests were excluded because the
   local MLX/tokenizer import aborts this host Python process; this is unrelated
@@ -52,10 +55,14 @@ paths. Raw click/type endpoints and screenshots are outside this change.
 
 ## Risks and next actions
 
-- Screenshots remain deferred: an authenticated screenshot response would move
-  potentially private pixels over HTTP, needs payload/rate/retention limits,
-  and should receive an Atlas security contract before Vector implements it.
-  Structured CUA run events remain sufficient for the first custom GUI API.
+- Screenshots/observations remain deferred: an authenticated observation can
+  include private pixels, accessibility labels, URLs, and entered text. Atlas
+  should first define redaction, per-app consent, maximum payload, rate limit,
+  freshness/cache, and remote-bind policy. Vector can then implement a scoped
+  `GET /v1/cua/apps/{app}/windows/{window_id}/observation` whose screenshot is
+  opt-in and whose structured tree is redacted. Structured plan/result events
+  (`action`, target label/index, outcome, tree change, URL transition) remain
+  sufficient for the first custom GUI API.
 - Run storage remains in-process and is lost on server restart; persistence or
   resumable runs require a separate architecture decision.
 - Team FYI transport was unavailable to this worker. Atlas should send the
