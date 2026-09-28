@@ -2,7 +2,7 @@
 
 - Owner: Harbor implementing a Pixel-owned Swift UI slice under Atlas scope
 - Branch/worktree: `harbor/cua-gui-task-flow`, `/private/tmp/harbor-desk-cua-gui`
-- Base dependency: PR #3826 head `2f086d9d`
+- Base dependency: PR #3826 head `3313dafb`
 - FYI: role mailbox unavailable; start/completion context is recorded here.
 - Role files requested by the task were absent from this branch. Current
   session ownership guidance and the repository `AGENTS.md` were followed.
