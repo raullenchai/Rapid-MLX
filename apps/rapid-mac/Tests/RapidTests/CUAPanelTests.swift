@@ -1535,6 +1535,17 @@ struct CUAPlannerDecodeTests {
 
 @Suite("Agent Task Target UI")
 struct CUATargetUISourceTests {
+    @Test("Sidebar exposes only active and approval Computer Use states")
+    func sidebarStatusPresentation() {
+        #expect(CUASidebarStatus(phase: .starting) == .running)
+        #expect(CUASidebarStatus(phase: .running) == .running)
+        #expect(CUASidebarStatus(phase: .awaitingApproval) == .awaitingApproval)
+        #expect(CUASidebarStatus(phase: .idle) == nil)
+        #expect(CUASidebarStatus(phase: .finished(summary: "done")) == nil)
+        #expect(CUASidebarStatus(phase: .failed(message: "stopped")) == nil)
+        #expect(CUASidebarStatus.awaitingApproval.accessibilityValue == "Approval needed")
+    }
+
     @Test("Completed result separates recognized evidence without losing the answer")
     func completedResultPresentation() {
         let result = CUAResultPresentation(
@@ -1641,6 +1652,10 @@ struct CUATargetUISourceTests {
             contentsOf: root.appendingPathComponent("Sources/Rapid/UI/ContentView.swift"),
             encoding: .utf8
         )
+        let sidebar = try String(
+            contentsOf: root.appendingPathComponent("Sources/Rapid/UI/SidebarView.swift"),
+            encoding: .utf8
+        )
 
         #expect(section.contains("ComputerUse.Agent.Target.Process"))
         #expect(section.contains("ComputerUse.Agent.Target.Window"))
@@ -1681,5 +1696,10 @@ struct CUATargetUISourceTests {
         #expect(!page.contains("FreeUpSpaceFlowSheet"))
         #expect(!content.contains("languageRuntime: DraftPostLanguageRuntime"))
         #expect(!content.contains("visualRuntime: DraftPostVisualRuntime"))
+        #expect(content.contains("cuaViewModel: cuaServer.viewModel"))
+        #expect(sidebar.contains("@ObservedObject var viewModel: CUAViewModel"))
+        #expect(sidebar.contains("accessibilityValue"))
+        #expect(sidebar.contains("Approval needed"))
+        #expect(sidebar.contains("Sidebar.ComputerUse"))
     }
 }

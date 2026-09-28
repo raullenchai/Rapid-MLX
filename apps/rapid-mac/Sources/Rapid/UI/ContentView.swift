@@ -670,6 +670,7 @@ struct ContentView: View {
                     benchmarkEnabled: communityBenchmarkEnabled,
                     shareComputeEnabled: shareComputeEnabled,
                     shareComputeActive: shareCompute.state.isActive,
+                    cuaViewModel: cuaServer.viewModel,
                     chat: chat,
                 onNewChat: {
                     chat.newConversation()
