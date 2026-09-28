@@ -158,6 +158,22 @@ are marked; multimodal and MCP surfaces link to their own guides.
 
 ### Custom computer-use clients
 
+To host only the authenticated Computer Use control plane, without resolving,
+downloading, or loading a chat model, start the server in CUA-only mode:
+
+```bash
+RAPID_MLX_API_KEY=replace-me rapid-mlx serve --cua-only \
+  --host 127.0.0.1 --port 8000 \
+  --cors-origins http://127.0.0.1 http://localhost
+```
+
+This mode mounts health and `/v1/cua/*` routes only. It does not expose chat,
+model, image, audio, or video inference routes, and it rejects model and
+residency flags. `GET /health/ready` reports `ready: true`, `model: null`, and
+`model_loaded: false` once the listener is ready. Clients should then verify an
+authenticated `GET /v1/cua/capabilities` before enabling Computer Use. An API
+key is mandatory, including for loopback listeners.
+
 The Desktop sidecar includes the native macOS framework bindings. Standalone
 Python installs that use local macOS Computer Use should install the matching
 extra:
