@@ -40,6 +40,46 @@ struct CUAResultPresentation: Equatable {
     }
 }
 
+struct CUAFailurePresentation: Equatable {
+    let summary: String
+    let technicalDetails: String
+
+    init(message: String) {
+        let normalized = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        technicalDetails = normalized.isEmpty ? "No failure details were provided." : normalized
+
+        let payloadMarkers = [": {", ": [", "\n{", "\n["]
+        let payloadStart = payloadMarkers.compactMap { marker in
+            normalized.range(of: marker)?.lowerBound
+        }.min()
+        if let payloadStart {
+            let prefix = normalized[..<payloadStart]
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .trimmingCharacters(in: CharacterSet(charactersIn: ":"))
+            if !prefix.isEmpty {
+                summary = Self.boundedSummary(prefix)
+                return
+            }
+        }
+
+        if normalized.isEmpty {
+            summary = "The task could not be completed."
+        } else {
+            summary = Self.boundedSummary(normalized)
+        }
+    }
+
+    private static func boundedSummary(_ value: String) -> String {
+        guard value.count > 240 else { return value }
+        let limit = value.index(value.startIndex, offsetBy: 237)
+        let candidate = value[..<limit]
+        if let sentenceEnd = candidate.lastIndex(where: { ".!?".contains($0) }) {
+            return String(candidate[...sentenceEnd])
+        }
+        return candidate.trimmingCharacters(in: .whitespacesAndNewlines) + "…"
+    }
+}
+
 /// "Run an agent task" — the goal-driven computer-use section at the top of
 /// the (experimental) Computer Use panel. Talks to the app-owned local
 /// server's `/v1/cua` API; consent gates are enforced server-side, and the
@@ -161,12 +201,7 @@ struct CUASection: View {
                 resultCard(summary: summary)
             }
             if case let .failed(message) = viewModel.phase {
-                Label {
-                    Text(message).font(.callout)
-                } icon: {
-                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                }
-                .accessibilityIdentifier("ComputerUse.Agent.Failure")
+                failureCard(message: message)
             }
             if let actionError = viewModel.actionError {
                 Label(actionError, systemImage: "exclamationmark.triangle.fill")
@@ -175,7 +210,7 @@ struct CUASection: View {
                     .accessibilityIdentifier("ComputerUse.Agent.ActionError")
             }
 
-            if !viewModel.events.isEmpty, !viewModel.phase.isFinished {
+            if !viewModel.events.isEmpty, !viewModel.phase.hasTerminalCard {
                 runDetails(evidence: nil)
             }
         }
@@ -487,6 +522,57 @@ struct CUASection: View {
         .accessibilityIdentifier("ComputerUse.Agent.Summary")
     }
 
+    private func failureCard(message: String) -> some View {
+        let failure = CUAFailurePresentation(message: message)
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Label("Task failed", systemImage: "exclamationmark.triangle.fill")
+                    .font(.headline)
+                    .foregroundStyle(.red)
+                Spacer()
+                Text("FAILED")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(.red.opacity(0.1), in: Capsule())
+            }
+            Text(failure.summary)
+                .font(.body)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("ComputerUse.Agent.Failure.Summary")
+            DisclosureGroup {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(failure.technicalDetails)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("ComputerUse.Agent.Failure.Details")
+                    if !viewModel.events.isEmpty {
+                        CUAEventList(events: Array(viewModel.events.reversed()))
+                    }
+                }
+                .padding(.top, 6)
+            } label: {
+                Text(
+                    viewModel.events.isEmpty
+                        ? "Technical details"
+                        : "Technical details and run history (\(viewModel.events.count) events)"
+                )
+                .font(.caption.weight(.semibold))
+            }
+            .tint(.secondary)
+            .accessibilityIdentifier("ComputerUse.Agent.History")
+        }
+        .padding(14)
+        .background(.red.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(.red.opacity(0.2)))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("ComputerUse.Agent.Failure")
+    }
+
     private func runDetails(evidence: String?) -> some View {
         DisclosureGroup {
             VStack(alignment: .leading, spacing: 10) {
@@ -568,9 +654,11 @@ struct CUASection: View {
 }
 
 private extension CUAPhase {
-    var isFinished: Bool {
-        if case .finished = self { return true }
-        return false
+    var hasTerminalCard: Bool {
+        switch self {
+        case .finished, .failed: true
+        default: false
+        }
     }
 }
 

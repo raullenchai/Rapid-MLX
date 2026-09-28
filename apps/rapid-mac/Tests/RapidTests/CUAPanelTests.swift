@@ -1511,6 +1511,42 @@ struct CUATargetUISourceTests {
         #expect(result.evidence == nil)
     }
 
+    @Test("Planner payload is folded behind a readable failure summary")
+    func plannerPayloadFailurePresentation() {
+        let message = #"planner produced invalid plans: model returned no JSON object: {"action":"done","final_summary":"raw"}"#
+        let failure = CUAFailurePresentation(message: message)
+
+        #expect(failure.summary == "planner produced invalid plans: model returned no JSON object")
+        #expect(failure.technicalDetails == message)
+    }
+
+    @Test("Unknown long failure remains complete in technical details")
+    func unknownLongFailurePresentation() {
+        let message = String(repeating: "unexpected transport failure ", count: 20)
+        let failure = CUAFailurePresentation(message: message)
+
+        #expect(failure.summary.count <= 240)
+        #expect(failure.summary.hasSuffix("…"))
+        #expect(failure.technicalDetails == message.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    @Test("Long text before a technical payload is also bounded")
+    func longPayloadFailurePresentation() {
+        let message = String(repeating: "planner explanation ", count: 20) + #": {"raw":true}"#
+        let failure = CUAFailurePresentation(message: message)
+
+        #expect(failure.summary.count <= 240)
+        #expect(failure.technicalDetails == message)
+    }
+
+    @Test("Missing failure text still uses explicit failure semantics")
+    func emptyFailurePresentation() {
+        let failure = CUAFailurePresentation(message: " \n ")
+
+        #expect(failure.summary == "The task could not be completed.")
+        #expect(failure.technicalDetails == "No failure details were provided.")
+    }
+
     @Test("Window controls are addressable and privacy copy distinguishes execution")
     func targetControlsAndPrivacyCopy() throws {
         let root = URL(fileURLWithPath: #filePath)
@@ -1540,10 +1576,14 @@ struct CUATargetUISourceTests {
         #expect(section.contains("ComputerUse.Agent.ActiveProgress"))
         #expect(section.contains("ComputerUse.Agent.Summary"))
         #expect(section.contains("ComputerUse.Agent.Summary.Answer"))
+        #expect(section.contains("ComputerUse.Agent.Failure.Summary"))
+        #expect(section.contains("ComputerUse.Agent.Failure.Details"))
         #expect(section.contains("ComputerUse.Agent.Evidence"))
         #expect(section.contains("ComputerUse.Agent.History"))
         #expect(section.contains("DisclosureGroup"))
         #expect(section.contains("Task complete"))
+        #expect(section.contains("Task failed"))
+        #expect(section.contains("FAILED"))
         #expect(section.contains("if case let .finished(summary) = viewModel.phase"))
         #expect(section.contains("COMPLETED"))
         #expect(section.contains("RUNNING"))
