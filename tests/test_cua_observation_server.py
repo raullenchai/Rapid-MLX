@@ -109,6 +109,52 @@ def test_observation_is_fresh_pid_window_bound_and_has_no_screenshot_by_default(
     assert payload["window_id"] == "cg:123"
 
 
+def test_observation_ax_tree_stays_on_requested_pid_with_same_named_apps(
+    observation_client, monkeypatch
+):
+    client, backend = observation_client
+    app_info = {"name": "Finder", "bundleId": "com.apple.finder", "pid": 42}
+    window = {
+        "window_id": "cg:123",
+        "index": 0,
+        "title": "Requested window",
+        "x": 10,
+        "y": 20,
+        "width": 800,
+        "height": 600,
+    }
+    monkeypatch.setattr(
+        backend, "_resolve_app", lambda app, *, activate: (object(), app_info)
+    )
+    monkeypatch.setattr(backend, "_select_window", lambda *a, **k: window)
+    seen_pid = []
+
+    def collect(app, **kwargs):
+        seen_pid.append(kwargs.get("expected_pid"))
+        label = (
+            "PID 42 control"
+            if kwargs.get("expected_pid") == 42
+            else "PID 99 private control"
+        )
+        return [
+            {
+                "target_id": "t000",
+                "role": "AXButton",
+                "subrole": "",
+                "text": label,
+                "actions": ["AXPress"],
+                "rect": [12, 24, 40, 20],
+            }
+        ]
+
+    monkeypatch.setattr(backend, "_collect_with_timeout", collect)
+    response = client.post("/v1/cua/observations", headers=AUTH, json=REQUEST)
+    assert response.status_code == 200
+    assert seen_pid == [42]
+    assert response.json()["elements"][0]["label"] == "PID 42 control"
+    assert "PID 99 private control" not in response.text
+
+
 def test_screenshot_requires_server_opt_in(observation_client, monkeypatch):
     client, backend = observation_client
     called = False
