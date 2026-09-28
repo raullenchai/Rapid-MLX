@@ -176,8 +176,16 @@ def test_nameplate_cold_cache_no_agent(monkeypatch):
     assert "Recommended model: lfm2.5-1b-4bit" in out
     assert "rapid-mlx chat lfm2.5-1b-4bit" in out
     assert "the server starts automatically" in out
-    assert "Then connect your coding agent:\n  rapid-mlx launch --all" in out
-    assert out.count("rapid-mlx launch") == 1
+    assert "Use it from your coding agent (separate stable server on :8000):" in out
+    assert "rapid-mlx serve lfm2.5-1b-4bit" in out
+    assert "rapid-mlx launch --all --model lfm2.5-1b-4bit" in out
+    assert "If :8000 is busy, serve exits; choose a free port in both commands:" in out
+    assert "rapid-mlx serve lfm2.5-1b-4bit --port 8001" in out
+    assert (
+        "rapid-mlx launch --all --model lfm2.5-1b-4bit "
+        "--server-url http://127.0.0.1:8001"
+    ) in out
+    assert out.count("rapid-mlx launch") == 2
     assert out.endswith("Docs: https://rapidmlx.com/docs/")
 
 
@@ -191,12 +199,13 @@ def test_nameplate_with_cache_and_agent(monkeypatch):
     assert "32 GB RAM detected" in out
     assert "Recommended model: qwen3.8-27b-4bit (already cached)" in out
     assert "rapid-mlx chat qwen3.8-27b-4bit" in out
+    assert "rapid-mlx serve qwen3.8-27b-4bit" in out
     assert (
-        "Then connect your coding agent:\n"
-        "  rapid-mlx launch claude-code      # connect your agent (detected ✓)"
+        "rapid-mlx launch claude-code --model qwen3.8-27b-4bit  # detected ✓"
     ) in out
+    assert "--server-url http://127.0.0.1:8001" in out
     assert "rapid-mlx launch --all" not in out
-    assert out.count("rapid-mlx launch") == 1
+    assert out.count("rapid-mlx launch") == 2
 
 
 def test_nameplate_starter_cached_says_already_downloaded(monkeypatch):
@@ -208,6 +217,21 @@ def test_nameplate_starter_cached_says_already_downloaded(monkeypatch):
     out = fr.build_nameplate("9.9.9")
     assert "already cached" in out
     assert "launch --all" in out
+
+
+def test_nameplate_ram_probe_failure_is_explicit_and_conservative(monkeypatch):
+    monkeypatch.setattr(
+        fr, "cached_known_aliases", lambda: [("lfm2.5-2.6b-4bit", 10.0)]
+    )
+    monkeypatch.setattr(fr, "preferred_agent", lambda: None)
+    monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: 0.0)
+
+    out = fr.build_nameplate("9.9.9")
+
+    assert "RAM detection unavailable" in out
+    assert "0 GB RAM detected" not in out
+    assert "Recommended model: lfm2.5-1b-4bit" in out
+    assert "already cached" not in out
 
 
 # ======================================================================
@@ -239,9 +263,11 @@ def test_state_dir_env_override(monkeypatch, tmp_path):
 
 def test_tip_text_with_and_without_agent(monkeypatch):
     monkeypatch.setattr(fr, "preferred_agent", lambda: "claude-code")
-    assert "launch claude-code" in fr.chat_agent_tip_text()
+    assert "separate stable server for claude-code" in fr.chat_agent_tip_text()
+    assert "rapid-mlx launch --help" in fr.chat_agent_tip_text()
     monkeypatch.setattr(fr, "preferred_agent", lambda: None)
-    assert "launch --all" in fr.chat_agent_tip_text()
+    assert "separate stable agent server" in fr.chat_agent_tip_text()
+    assert "rapid-mlx launch --help" in fr.chat_agent_tip_text()
 
 
 # ======================================================================

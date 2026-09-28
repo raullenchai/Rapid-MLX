@@ -101,10 +101,28 @@ def test_cached_choice_is_preferred_only_when_it_fits_the_ram_tier():
 
 
 @pytest.mark.parametrize(
+    ("ram_gb", "cached", "expected"),
+    [
+        (8, ("lfm2.5-2.6b-4bit",), "lfm2.5-2.6b-4bit"),
+        (16, ("lfm2.5-1b-4bit",), "lfm2.5-1b-4bit"),
+    ],
+)
+def test_cached_choice_considers_both_picks_from_fitting_tiers(
+    ram_gb, cached, expected
+):
+    from rapid_mlx.recommendations import select_starter_model
+
+    assert select_starter_model(ram_gb, set(cached)) == expected
+    assert _select_installer_starter(ram_gb, cached) == expected
+
+
+@pytest.mark.parametrize(
     ("ram_gb", "cached"),
     [
         (8, ()),
+        (8, ("lfm2.5-2.6b-4bit",)),
         (16, ()),
+        (16, ("lfm2.5-1b-4bit",)),
         (18, ("lfm2.5-2.6b-4bit",)),
         (24, ("qwen3.5-9b-4bit", "qwen3.5-4b-4bit")),
         (32, ("qwen3.8-27b-4bit",)),

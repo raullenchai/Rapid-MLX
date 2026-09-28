@@ -182,14 +182,14 @@ def build_nameplate(version: str) -> str:
     payload = recommendation_payload(ram_gb, validate_catalog=False)
     model = select_starter_model(ram_gb, cached, validate_catalog=False)
     cached_badge = " (already cached)" if model in cached else ""
-    ram_label = f"{payload['physical_ram_gb']:g} GB RAM detected"
+    ram_label = (
+        f"{payload['physical_ram_gb']:g} GB RAM detected"
+        if ram_gb > 0
+        else "RAM detection unavailable"
+    )
     agent = preferred_agent()
-    if agent is not None:
-        agent_command = (
-            f"  rapid-mlx launch {agent}      # connect your agent (detected ✓)"
-        )
-    else:
-        agent_command = "  rapid-mlx launch --all"
+    launch_target = agent if agent is not None else "--all"
+    detected_badge = "  # detected ✓" if agent is not None else ""
 
     lines = [
         _IDENTITY,
@@ -199,11 +199,17 @@ def build_nameplate(version: str) -> str:
         "Next — start chatting (the server starts automatically):",
         f"  rapid-mlx chat {model}",
         "",
-        "Then connect your coding agent:",
-        agent_command,
+        "Use it from your coding agent (separate stable server on :8000):",
+        f"  rapid-mlx serve {model}",
+        f"  rapid-mlx launch {launch_target} --model {model}{detected_badge}",
+        "If :8000 is busy, serve exits; choose a free port in both commands:",
+        f"  rapid-mlx serve {model} --port 8001",
+        (
+            f"  rapid-mlx launch {launch_target} --model {model} "
+            "--server-url http://127.0.0.1:8001"
+        ),
         "",
         "Useful commands:",
-        f"  rapid-mlx serve {model}",
         "  rapid-mlx chat <model>",
         "  rapid-mlx pull <model>",
         "  rapid-mlx models",
@@ -283,10 +289,16 @@ def mark_first_session() -> bool:
 
 
 def chat_agent_tip_text() -> str:
-    """The one-line tip shown after a user's first successful chat. Names the
-    detected agent (claude-code preferred); falls back to the generic
-    ``launch --all`` when none is detected."""
+    """The one-line tip shown after a user's first successful chat.
+
+    It names the detected agent (claude-code preferred) but directs users to
+    the stable-server setup help instead of implying that ``launch`` can attach
+    to the ephemeral chat server, which has already stopped by this point.
+    """
     agent = preferred_agent()
     if agent is not None:
-        return f"Tip: connect {agent} to this engine → rapid-mlx launch {agent}"
-    return "Tip: connect your coding agent → rapid-mlx launch --all"
+        return (
+            f"Tip: set up a separate stable server for {agent} → "
+            "rapid-mlx launch --help"
+        )
+    return "Tip: set up a separate stable agent server → rapid-mlx launch --help"

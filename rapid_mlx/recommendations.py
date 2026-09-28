@@ -176,20 +176,17 @@ def starter_model_candidates(
     picks. The shell copy is required before Rapid-MLX/Python is installed;
     cross-language contract tests report any disagreement.
     """
-    baseline = starter_baseline_for_ram(ram_gb, validate_catalog=validate_catalog)
-    if ram_gb < 16:
-        return (baseline,)
-
     tiers = load_recommendation_tiers(validate_catalog=validate_catalog)
+    if ram_gb < tiers[0].floor_gb:
+        return (starter_baseline_for_ram(ram_gb, validate_catalog=validate_catalog),)
+
     current = recommendation_tier(ram_gb, validate_catalog=validate_catalog)
-    low_memory = tiers[0].picks[1].alias
-    ordered = [pick.alias for pick in current.picks if pick.alias != low_memory]
-    ordered.append(baseline)
-    ordered.extend(
-        tier.picks[0].alias
+    ordered = [
+        pick.alias
         for tier in reversed(tiers)
         if tier.floor_gb <= current.floor_gb
-    )
+        for pick in tier.picks
+    ]
     return tuple(dict.fromkeys(ordered))
 
 
