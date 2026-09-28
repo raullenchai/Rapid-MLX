@@ -150,6 +150,7 @@ INTERESTING_ROLES = {
     "AXSlider",
     "AXSearchField",
 }
+EDITABLE_ROLES = {"AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"}
 MAX_NODES = 600
 MAX_DEPTH = 22
 CLICKABLE_SUBSTRINGS = ("button", "link", "menuitem", "tab", "checkbox", "radio")
@@ -213,13 +214,17 @@ def _walk(element: object, depth: int, out: list[dict], counter: list[int]) -> N
     actions = _action_names(element)
     geom = _point_size(element)
     actionable = "AXPress" in actions or "AXPick" in actions or "AXIncrement" in actions
+    editable = role in EDITABLE_ROLES
     interesting = (
         actionable
         or role in INTERESTING_ROLES
         or (role == "AXStaticText" and label)
         or any(s in role.lower() for s in CLICKABLE_SUBSTRINGS)
     )
-    if interesting and (label or actionable):
+    # Empty editable controls still need a stable target and geometry so a
+    # planner can fill a blank document or form. Other empty structural nodes
+    # remain excluded to preserve the bounded grounding budget.
+    if interesting and (label or actionable or editable):
         counter[0] += 1
         out.append(
             {

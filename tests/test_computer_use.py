@@ -1685,6 +1685,40 @@ def test_remaining_small_backend_branches(monkeypatch):
     assert backend.read_url("A") == ""
 
 
+def test_ax_walk_keeps_blank_editable_control_without_adding_empty_structure(
+    monkeypatch,
+):
+    attributes = {
+        "root": {"AXRole": "AXWindow", "AXChildren": ["editor", "empty-label"]},
+        "editor": {
+            "AXRole": "AXTextArea",
+            "AXValue": "",
+            "AXChildren": [],
+        },
+        "empty-label": {"AXRole": "AXStaticText", "AXChildren": []},
+    }
+    monkeypatch.setattr(
+        ax_driver,
+        "_get",
+        lambda element, attribute: attributes.get(element, {}).get(attribute),
+    )
+    monkeypatch.setattr(ax_driver, "_action_names", lambda _element: [])
+    monkeypatch.setattr(
+        ax_driver,
+        "_point_size",
+        lambda element: (10, 20, 300, 200) if element == "editor" else None,
+    )
+
+    targets = []
+    ax_driver._walk("root", 0, targets, [0])
+
+    assert len(targets) == 1
+    assert targets[0]["role"] == "AXTextArea"
+    assert targets[0]["text"] == ""
+    assert targets[0]["actions"] == []
+    assert targets[0]["rect"] == (10, 20, 300, 200)
+
+
 def test_cli_unreachable_fallback_and_module_entry(monkeypatch, capsys):
     import runpy
 
