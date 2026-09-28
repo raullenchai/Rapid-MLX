@@ -410,3 +410,19 @@ def test_routes_clamp_large_completion_budget_and_report_length(surface):
         assert body["incomplete_details"]["reason"] == "max_output_tokens"
     else:
         assert body["stop_reason"] == "max_tokens"
+
+
+def test_empty_completion_prompt_keeps_requested_budget(monkeypatch):
+    """An empty legacy prompt has no context cost and bypasses tokenization."""
+    from rapid_mlx.service import helpers
+
+    monkeypatch.setattr(
+        helpers,
+        "count_prompt_tokens",
+        lambda *_args, **_kwargs: pytest.fail("empty prompt must not be tokenized"),
+    )
+
+    assert (
+        helpers.enforce_context_length_for_prompt(_StubEngine(), "", max_tokens=321)
+        == 321
+    )

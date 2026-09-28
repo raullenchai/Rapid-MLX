@@ -2045,9 +2045,9 @@ def test_strict_tools_tool_call_stream_uses_normal_protocol(
 
     engine = _ToolCallEngine(supports_guided=True)
     if surface == "chat":
-        response = _make_client(engine).post(
-            "/v1/chat/completions", json=_chat_tools_payload(stream=True)
-        )
+        payload = _chat_tools_payload(stream=True)
+        payload["stream_options"] = {"include_usage": True}
+        response = _make_client(engine).post("/v1/chat/completions", json=payload)
         payloads = [
             json.loads(line[6:])
             for line in response.text.splitlines()
@@ -2061,7 +2061,9 @@ def test_strict_tools_tool_call_stream_uses_normal_protocol(
         ]
         assert calls[0]["id"] == "call_exact"
         assert calls[0]["function"] == {"name": "noop", "arguments": "{}"}
-        assert payloads[-1]["choices"][0]["finish_reason"] == "tool_calls"
+        assert payloads[-2]["choices"][0]["finish_reason"] == "tool_calls"
+        assert payloads[-1]["choices"] == []
+        assert payloads[-1]["usage"]["total_tokens"] == 7
         assert response.text.rstrip().endswith("data: [DONE]")
     else:
         response = _make_responses_client(engine, _rate_limiter_state).post(
@@ -2086,6 +2088,75 @@ def test_strict_tools_tool_call_stream_uses_normal_protocol(
     assert response.status_code == 200, response.text
     assert len(engine.chat_calls) == 1
     assert engine.guided_calls == []
+
+
+@pytest.mark.asyncio
+async def test_buffered_chat_stream_emits_reasoning_content():
+    from rapid_mlx.api.models import (
+        AssistantMessage,
+        ChatCompletionChoice,
+        ChatCompletionRequest,
+        ChatCompletionResponse,
+    )
+    from rapid_mlx.routes.chat import _stream_buffered_chat_response
+
+    response = ChatCompletionResponse(
+        model="test-model",
+        choices=[
+            ChatCompletionChoice(
+                message=AssistantMessage(
+                    content=_VALID_PAYLOAD,
+                    reasoning_content="checked the schema",
+                )
+            )
+        ],
+    )
+    request = ChatCompletionRequest(
+        model="test-model",
+        messages=[{"role": "user", "content": "hi"}],
+        stream=True,
+    )
+
+    events = [
+        event async for event in _stream_buffered_chat_response(response, request)
+    ]
+    body = "".join(events)
+
+    assert '"reasoning_content":"checked the schema"' in body
+
+
+@pytest.mark.asyncio
+async def test_buffered_responses_stream_skips_non_text_content_parts():
+    """Buffered replay preserves non-text parts only in the completed item."""
+    from rapid_mlx.routes.responses import _stream_buffered_responses_response
+
+    body = json.dumps(
+        {
+            "id": "resp_test",
+            "object": "response",
+            "created_at": 1,
+            "status": "completed",
+            "model": "test-model",
+            "output": [
+                {
+                    "type": "message",
+                    "id": "msg_test",
+                    "status": "completed",
+                    "role": "assistant",
+                    "content": [
+                        {"type": "refusal", "refusal": "no"},
+                        {"type": "output_text", "text": _VALID_PAYLOAD},
+                    ],
+                }
+            ],
+            "usage": {},
+        }
+    ).encode()
+
+    events = [event async for event in _stream_buffered_responses_response(body)]
+
+    assert sum("response.content_part.added" in event for event in events) == 1
+    assert any('"type": "refusal"' in event for event in events)
 
 
 @pytest.mark.parametrize("surface", ["chat", "responses"])
