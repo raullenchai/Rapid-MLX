@@ -16,6 +16,7 @@ private final class MockAgentAPI: CUAAPI, @unchecked Sendable {
         ),
     ]
     var discoveryShouldFail = false
+    var discoveryError: Error?
     var createError: Error?
     var createdRequests: [CUARunRequest] = []
     var scriptedEvents: [CUAEvent] = []
@@ -39,11 +40,13 @@ private final class MockAgentAPI: CUAAPI, @unchecked Sendable {
     }
 
     func apps() async throws -> [CUAAppOption] {
+        if let discoveryError { throw discoveryError }
         if discoveryShouldFail { throw Failure.requested }
         return appsResult
     }
 
     func windows(app: String) async throws -> [CUAWindowOption] {
+        if let discoveryError { throw discoveryError }
         if discoveryShouldFail { throw Failure.requested }
         return windowsResult
     }
@@ -491,6 +494,25 @@ struct CUAViewModelTests {
         #expect(viewModel.targetError?.contains("Could not load apps and windows") == true)
     }
 
+    @Test("Typed discovery 404 distinguishes a closed process from an old server")
+    func typedDiscoveryNotFoundIsActionable() async {
+        let api = MockAgentAPI()
+        api.discoveryError = CUAClientError.typedHTTP(
+            404,
+            code: "app_not_found",
+            message: "no running app for pid:42",
+            recovery: ["Refresh the process list."]
+        )
+        let viewModel = CUAViewModel(api: api)
+        selectTarget(viewModel)
+
+        await viewModel.refreshWindows()
+
+        #expect(viewModel.selectedWindowID == nil)
+        #expect(viewModel.targetError?.contains("no longer running") == true)
+        #expect(viewModel.targetError?.contains("does not support") == false)
+    }
+
     @Test("Server rejection clears stale target and offers recovery")
     func staleTargetCreateFailure() async {
         let api = MockAgentAPI()
@@ -617,7 +639,7 @@ struct CUAClientTests {
     func createDecodes() async throws {
         RecordingURLProtocol.stubResponse(
             path: "/v1/cua/runs",
-            body: Data(#"{"run_id":"abc","status":"running"}"#.utf8)
+            body: Data(#"{"run_id":"abc","status":"running","window_id":"opaque:abc"}"#.utf8)
         )
         let client = makeClient()
         let runID = try await client.create(
@@ -636,6 +658,38 @@ struct CUAClientTests {
         #expect(json["max_steps"] as? Int == 8)
         #expect(json["app"] as? String == "pid:42")
         #expect(json["window_id"] as? String == "opaque:abc")
+    }
+
+    @Test("Create rejects missing or changed window binding and cancels the run")
+    func createRequiresMatchingWindowConfirmation() async throws {
+        let request = CUARunRequest(
+            app: "pid:42", goal: "g", planner: "local-9b", openURL: "",
+            allowedDomain: "", maxSteps: 8, humanLogin: true, windowID: "cg:123"
+        )
+        for actual in [nil, "cg:999"] as [String?] {
+            RecordingURLProtocol.reset()
+            var response: [String: Any] = ["run_id": "unsafe", "status": "running"]
+            if let actual {
+                response["window_id"] = actual
+            }
+            RecordingURLProtocol.stubResponse(
+                path: "/v1/cua/runs",
+                body: try JSONSerialization.data(withJSONObject: response)
+            )
+            RecordingURLProtocol.stubResponse(path: "/v1/cua/runs/unsafe/cancel")
+
+            do {
+                _ = try await makeClient().create(request)
+                Issue.record("expected binding rejection")
+            } catch let error as CUAClientError {
+                #expect(
+                    error == .windowBinding(
+                        expected: "cg:123", actual: actual, cancellationFailed: false
+                    )
+                )
+            }
+            #expect(RecordingURLProtocol.captured["/v1/cua/runs/unsafe/cancel"] != nil)
+        }
     }
 
     @Test("Discovery decodes bundle_id and URL-encodes the PID selector")
@@ -726,6 +780,32 @@ struct CUAClientTests {
             Issue.record("expected throw")
         } catch let error as CUAClientError {
             #expect(error == .http(409, "run is not awaiting approval"))
+        } catch {
+            Issue.record("unexpected error type: \(error)")
+        }
+    }
+
+    @Test("Structured discovery errors preserve code, message, and recovery")
+    func typedHTTPError() async {
+        RecordingURLProtocol.stubResponse(
+            path: "/v1/cua/apps/pid:42/windows",
+            body: Data(
+                #"{"detail":{"code":"window_not_found","message":"no windows for pid:42","recovery":["Open a window."]}}"#.utf8
+            ),
+            status: 404
+        )
+        do {
+            _ = try await makeClient().windows(app: "pid:42")
+            Issue.record("expected throw")
+        } catch let error as CUAClientError {
+            #expect(
+                error == .typedHTTP(
+                    404,
+                    code: "window_not_found",
+                    message: "no windows for pid:42",
+                    recovery: ["Open a window."]
+                )
+            )
         } catch {
             Issue.record("unexpected error type: \(error)")
         }

@@ -225,11 +225,22 @@ struct CUARunRequest: Codable, Equatable, Sendable {
 
 enum CUAClientError: LocalizedError, Equatable {
     case http(Int, String)
+    case typedHTTP(Int, code: String, message: String, recovery: [String])
+    case windowBinding(expected: String, actual: String?, cancellationFailed: Bool)
 
     var errorDescription: String? {
         switch self {
         case let .http(code, detail):
             return "CUA request failed (HTTP \(code)): \(detail)"
+        case let .typedHTTP(code, errorCode, message, recovery):
+            let hint = recovery.first.map { " \($0)" } ?? ""
+            return "CUA request failed (HTTP \(code), \(errorCode)): \(message)\(hint)"
+        case let .windowBinding(expected, actual, cancellationFailed):
+            let received = actual.map { "'\($0)'" } ?? "no window identity"
+            let stop = cancellationFailed
+                ? " Rapid could not confirm that the rejected run stopped. Stop the local server before retrying."
+                : " The rejected run was stopped."
+            return "The server did not bind the run to selected window '\(expected)' (received \(received)).\(stop) Refresh the window list and choose it again."
         }
     }
 }
@@ -306,9 +317,27 @@ struct CUAClient: CUAAPI, Sendable {
         )
         struct Created: Codable {
             var runID: String
-            enum CodingKeys: String, CodingKey { case runID = "run_id" }
+            var windowID: String?
+            enum CodingKeys: String, CodingKey {
+                case runID = "run_id"
+                case windowID = "window_id"
+            }
         }
-        return try decode(Created.self, from: data, response: response).runID
+        let created = try decode(Created.self, from: data, response: response)
+        guard created.windowID == request.windowID else {
+            var cancellationFailed = false
+            do {
+                try await cancel(runID: created.runID)
+            } catch {
+                cancellationFailed = true
+            }
+            throw CUAClientError.windowBinding(
+                expected: request.windowID,
+                actual: created.windowID,
+                cancellationFailed: cancellationFailed
+            )
+        }
+        return created.runID
     }
 
     func permissions() async throws -> CUAPermissionStatus {
@@ -378,6 +407,20 @@ struct CUAClient: CUAAPI, Sendable {
             throw URLError(.badServerResponse)
         }
         guard (200 ... 299).contains(http.statusCode) else {
+            struct TypedDetail: Decodable {
+                let code: String
+                let message: String
+                let recovery: [String]
+            }
+            struct TypedErrorBody: Decodable { let detail: TypedDetail }
+            if let detail = try? JSONDecoder().decode(TypedErrorBody.self, from: data).detail {
+                throw CUAClientError.typedHTTP(
+                    http.statusCode,
+                    code: detail.code,
+                    message: detail.message,
+                    recovery: detail.recovery
+                )
+            }
             struct ErrorBody: Decodable { let detail: String }
             let detail = (try? JSONDecoder().decode(ErrorBody.self, from: data).detail)
                 ?? String(data: data.prefix(300), encoding: .utf8)

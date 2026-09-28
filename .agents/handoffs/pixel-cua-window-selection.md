@@ -27,8 +27,13 @@ sidecar packaging, observation API, or low-level action API.
 - Refresh revalidates both identities. Missing processes or windows clear the
   selection. A generation token prevents older concurrent responses from
   replacing newer discovery state.
+- Run creation accepts success only when the response repeats the requested
+  `window_id`. A missing or different identity triggers an immediate cancel; the
+  UI clears the selection and reports whether cancellation could be confirmed.
 - Typed stale-window failures during creation or execution clear the window and
-  tell the user to refresh and choose again. Discovery errors, permission
+  tell the user to refresh and choose again. Structured discovery 404 responses
+  preserve `code`, `message`, and recovery guidance, so a missing process or
+  window is distinct from an older server without discovery routes. Permission
   failures, loading, and empty results remain visible.
 - Older sidecar run views remain decodable when `window_id` is absent. A sidecar
   without discovery routes produces an update/restart message and cannot start
@@ -55,8 +60,10 @@ Harbor, Echo, and firefighter completion FYIs when messaging is available.
 ## Verification
 
 - `swift test --disable-sandbox --filter CUA`
-- 36 tests passed in the feature worktree and again in a temporary combined
-  server-selection/observation plus GUI tree.
+- 39 tests passed in the feature worktree and again in a temporary combined
+  server-selection/observation plus GUI tree. The added contract regressions use
+  real JSON for typed discovery errors and verify mismatch/missing create
+  responses cancel the created run.
 - `swift build --disable-sandbox`
 - Combined server contract: `python3.12 -m pytest -q tests/test_cua_server.py
   -k 'not real_server_mounts_cua_router and not

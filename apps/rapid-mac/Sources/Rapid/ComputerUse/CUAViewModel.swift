@@ -250,6 +250,17 @@ final class CUAViewModel: ObservableObject {
     }
 
     private func targetDiscoveryMessage(_ error: Error) -> String {
+        if case let CUAClientError.typedHTTP(_, code, message, recovery) = error {
+            let hint = recovery.first.map { " \($0)" } ?? ""
+            switch code {
+            case "app_not_found":
+                return "The selected app process is no longer running. Refresh the app list.\(hint)"
+            case "window_not_found":
+                return "No usable windows were found for this process. Open a window, then refresh.\(hint)"
+            default:
+                return "Could not load apps and windows: \(message)\(hint)"
+            }
+        }
         if case let CUAClientError.http(code, _) = error, code == 404 {
             return "This local server does not support window selection. Update or restart Rapid, then refresh."
         }
@@ -358,13 +369,31 @@ final class CUAViewModel: ObservableObject {
         do {
             runID = try await api.create(request)
         } catch {
-            if case let CUAClientError.http(_, detail) = error,
-               Self.invalidatesSelectedTarget(code: nil, message: detail)
-            {
-                selectedWindowID = nil
-                phase = .failed(
-                    message: "The selected window is no longer available: \(detail) Refresh the window list and choose it again."
+            let bindingFailure: Bool
+            if case CUAClientError.windowBinding = error {
+                bindingFailure = true
+            } else {
+                bindingFailure = false
+            }
+            let typedTargetFailure: Bool
+            if case let CUAClientError.typedHTTP(_, code, message, _) = error {
+                typedTargetFailure = Self.invalidatesSelectedTarget(
+                    code: code, message: message
                 )
+            } else if case let CUAClientError.http(_, detail) = error {
+                typedTargetFailure = Self.invalidatesSelectedTarget(
+                    code: nil, message: detail
+                )
+            } else {
+                typedTargetFailure = false
+            }
+            if bindingFailure || typedTargetFailure {
+                selectedWindowID = nil
+                var message = Self.describe(error)
+                if !message.localizedCaseInsensitiveContains("refresh") {
+                    message += " Refresh the window list and choose it again."
+                }
+                phase = .failed(message: message)
             } else {
                 phase = .failed(message: Self.describe(error))
             }
