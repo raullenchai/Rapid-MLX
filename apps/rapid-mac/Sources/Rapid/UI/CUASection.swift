@@ -1,5 +1,41 @@
 import SwiftUI
 
+struct CUAResultPresentation: Equatable {
+    let answer: String
+    let evidence: String?
+
+    init(summary: String) {
+        let normalized = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let separators = [
+            " — evidenced by ",
+            " Supporting evidence: ",
+            " Evidence: ",
+            "\nSupporting evidence: ",
+            "\nEvidence: ",
+        ]
+        let match = separators.compactMap { separator -> Range<String.Index>? in
+            normalized.range(of: separator, options: .caseInsensitive)
+        }.min { $0.lowerBound < $1.lowerBound }
+
+        if let match {
+            let leading = normalized[..<match.lowerBound]
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let trailing = normalized[match.upperBound...]
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !leading.isEmpty, !trailing.isEmpty {
+                answer = leading
+                evidence = trailing
+                return
+            }
+        }
+        // Planner summaries are free-form. If no known evidence boundary is
+        // present, preserve the complete result rather than guessing and
+        // hiding user-visible content.
+        answer = normalized
+        evidence = nil
+    }
+}
+
 /// "Run an agent task" — the goal-driven computer-use section at the top of
 /// the (experimental) Computer Use panel. Talks to the app-owned local
 /// server's `/v1/cua` API; consent gates are enforced server-side, and the
@@ -118,12 +154,7 @@ struct CUASection: View {
             }
 
             if case let .finished(summary) = viewModel.phase, !summary.isEmpty {
-                Label {
-                    Text("Task ended: \(summary)").font(.callout)
-                } icon: {
-                    Image(systemName: "flag.checkered").foregroundStyle(.secondary)
-                }
-                .accessibilityIdentifier("ComputerUse.Agent.Summary")
+                resultCard(summary: summary)
             }
             if case let .failed(message) = viewModel.phase {
                 Label {
@@ -140,16 +171,8 @@ struct CUASection: View {
                     .accessibilityIdentifier("ComputerUse.Agent.ActionError")
             }
 
-            if !viewModel.events.isEmpty {
-                CUAEventList(events: Array(viewModel.events.suffix(8).reversed()))
-                if viewModel.events.count > 8 {
-                    DisclosureGroup("Full run history (\(viewModel.events.count) events)") {
-                        CUAEventList(events: Array(viewModel.events.reversed()))
-                            .padding(.top, 4)
-                    }
-                    .font(.caption)
-                    .accessibilityIdentifier("ComputerUse.Agent.History")
-                }
+            if !viewModel.events.isEmpty, !viewModel.phase.isFinished {
+                runDetails(evidence: nil)
             }
         }
         .padding(16)
@@ -373,14 +396,20 @@ struct CUASection: View {
     }
 
     private var activeProgress: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Label(
                     viewModel.phase == .starting ? "Starting task" : "Task in progress",
-                    systemImage: "gearshape.2"
+                    systemImage: viewModel.phase == .starting ? "hourglass" : "gearshape.2"
                 )
-                .font(.callout.weight(.semibold))
+                .font(.headline)
                 Spacer()
+                Text(viewModel.phase == .starting ? "STARTING" : "RUNNING")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.blue)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(.blue.opacity(0.1), in: Capsule())
                 Button(
                     viewModel.isRecoveringCreate
                         ? (viewModel.isStopping ? "Recovering…" : "Retry Recovery")
@@ -417,9 +446,71 @@ struct CUASection: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(10)
-        .background(.blue.opacity(0.07), in: RoundedRectangle(cornerRadius: 10))
+        .padding(14)
+        .background(.blue.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(.blue.opacity(0.2)))
         .accessibilityIdentifier("ComputerUse.Agent.ActiveProgress")
+    }
+
+    private func resultCard(summary: String) -> some View {
+        let result = CUAResultPresentation(summary: summary)
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Label("Task complete", systemImage: "checkmark.circle.fill")
+                    .font(.headline)
+                    .foregroundStyle(.green)
+                Spacer()
+                Text("COMPLETED")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.green)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(.green.opacity(0.1), in: Capsule())
+            }
+            Text(result.answer)
+                .font(.body)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("ComputerUse.Agent.Summary.Answer")
+            if result.evidence != nil || !viewModel.events.isEmpty {
+                runDetails(evidence: result.evidence)
+            }
+        }
+        .padding(14)
+        .background(.green.opacity(0.07), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(.green.opacity(0.22)))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("ComputerUse.Agent.Summary")
+    }
+
+    private func runDetails(evidence: String?) -> some View {
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 10) {
+                if let evidence, !evidence.isEmpty {
+                    Text(evidence)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("ComputerUse.Agent.Evidence")
+                }
+                if !viewModel.events.isEmpty {
+                    CUAEventList(events: Array(viewModel.events.reversed()))
+                }
+            }
+            .padding(.top, 6)
+        } label: {
+            Text(detailsLabel(hasEvidence: evidence != nil))
+                .font(.caption.weight(.semibold))
+        }
+        .tint(.secondary)
+        .accessibilityIdentifier("ComputerUse.Agent.History")
+    }
+
+    private func detailsLabel(hasEvidence: Bool) -> String {
+        if viewModel.events.isEmpty { return "Supporting evidence" }
+        if hasEvidence { return "Evidence and run history (\(viewModel.events.count) events)" }
+        return "Run history (\(viewModel.events.count) events)"
     }
 
     private var approvalCard: some View {
@@ -469,6 +560,13 @@ struct CUASection: View {
         .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("ComputerUse.Agent.ApprovalCard")
+    }
+}
+
+private extension CUAPhase {
+    var isFinished: Bool {
+        if case .finished = self { return true }
+        return false
     }
 }
 

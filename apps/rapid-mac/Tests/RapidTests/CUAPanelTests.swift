@@ -1483,6 +1483,25 @@ struct CUAPlannerDecodeTests {
 
 @Suite("Agent Task Target UI")
 struct CUATargetUISourceTests {
+    @Test("Completed result separates recognized evidence without losing the answer")
+    func completedResultPresentation() {
+        let result = CUAResultPresentation(
+            summary: "Created the folder and moved 3 files.\nSupporting evidence: Finder shows all 3 files."
+        )
+
+        #expect(result.answer == "Created the folder and moved 3 files.")
+        #expect(result.evidence == "Finder shows all 3 files.")
+    }
+
+    @Test("Free-form completed result remains intact")
+    func freeFormCompletedResultPresentation() {
+        let summary = "Compared both documents. The second contains the newer pricing and evidence gathered from the page."
+        let result = CUAResultPresentation(summary: summary)
+
+        #expect(result.answer == summary)
+        #expect(result.evidence == nil)
+    }
+
     @Test("Window controls are addressable and privacy copy distinguishes execution")
     func targetControlsAndPrivacyCopy() throws {
         let root = URL(fileURLWithPath: #filePath)
@@ -1509,6 +1528,15 @@ struct CUATargetUISourceTests {
         #expect(section.contains("Retry Recovery"))
         #expect(section.contains("Describe what you want Rapid to do"))
         #expect(section.contains("accessibilityLabel(\"Task goal\")"))
+        #expect(section.contains("ComputerUse.Agent.ActiveProgress"))
+        #expect(section.contains("ComputerUse.Agent.Summary"))
+        #expect(section.contains("ComputerUse.Agent.Summary.Answer"))
+        #expect(section.contains("ComputerUse.Agent.Evidence"))
+        #expect(section.contains("ComputerUse.Agent.History"))
+        #expect(section.contains("DisclosureGroup"))
+        #expect(section.contains("Task complete"))
+        #expect(section.contains("COMPLETED"))
+        #expect(section.contains("RUNNING"))
         #expect(page.contains("ComputerUse.Server.Starting"))
         #expect(page.contains("ComputerUse.Server.Error"))
         #expect(page.contains("ComputerUse.Server.Retry"))
