@@ -5,6 +5,32 @@ import Testing
 
 @Suite("Computer Use model-free server")
 struct CUAServerManagerTests {
+    @Test("Cold panel entry starts the sidecar before a session model exists")
+    @MainActor
+    func coldPanelEntryStartsSession() async {
+        var launches = 0
+        let manager = CUAServerManager(
+            binaryPath: URL(fileURLWithPath: "/usr/bin/true"),
+            portProvider: { 7_658 },
+            bearerProvider: { "secret" },
+            readinessProbe: { _, _, _ in true },
+            launcher: { _, _, _, _, _, _ in
+                launches += 1
+                return ProcessGroupChild.testStub()
+            }
+        )
+        #expect(manager.viewModel == nil)
+
+        manager.startIfNeeded()
+        for _ in 0..<20 where manager.state != .ready {
+            await Task.yield()
+        }
+
+        #expect(launches == 1)
+        #expect(manager.state == .ready)
+        #expect(manager.viewModel != nil)
+    }
+
     @Test("Launch arguments select CUA-only mode without a model")
     func argumentsAreModelFree() {
         let arguments = CUAServerManager.serveArguments(host: "127.0.0.1", port: 7_659)
@@ -90,6 +116,14 @@ struct CUAServerManagerTests {
         #expect(manager.state == .ready)
         #expect(manager.port == 7_659)
         #expect(manager.client != nil)
+        let navigationSession = manager.viewModel
+        navigationSession?.goal = "Format this document"
+        navigationSession?.plannerName = "studio-glm-flash"
+        navigationSession?.phase = .awaitingApproval
+        navigationSession?.pendingApproval = CUAPendingApproval(
+            gateID: "gate-1", app: "TextEdit", action: "click",
+            target: "Bold", reason: "Changes formatting"
+        )
         #expect(capturedArguments.first == "serve")
         #expect(capturedArguments.dropFirst().first == "--cua-only")
         #expect(capturedEnvironment["RAPID_MLX_API_KEY"] == "secret")
@@ -98,6 +132,20 @@ struct CUAServerManagerTests {
 
         await manager.ensureRunning()
         #expect(launches == 1)
+        #expect(manager.viewModel === navigationSession)
+        #expect(manager.viewModel?.goal == "Format this document")
+        #expect(manager.viewModel?.plannerName == "studio-glm-flash")
+        #expect(manager.viewModel?.phase == .awaitingApproval)
+        #expect(manager.viewModel?.pendingApproval?.gateID == "gate-1")
+
+        await manager.stop()
+        #expect(manager.viewModel == nil)
+
+        await manager.retry()
+        #expect(launches == 2)
+        #expect(manager.viewModel != nil)
+        #expect(manager.viewModel !== navigationSession)
+        #expect(manager.viewModel?.phase == .idle)
     }
 
     @Test("Failed readiness is recoverable without duplicate retry children")

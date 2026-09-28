@@ -30,6 +30,11 @@ final class CUAServerManager {
     private(set) var port: Int?
     private(set) var bearerToken: String?
     private(set) var sessionID: UUID?
+    /// The automation session belongs to the sidecar lifecycle, not to the
+    /// currently visible navigation destination. Keeping one view model here
+    /// preserves its run identity, polling, approvals, and form state while
+    /// the user visits another tab.
+    private(set) var viewModel: CUAViewModel?
 
     let host: String
     @ObservationIgnored private var binaryPath: URL?
@@ -177,8 +182,11 @@ final class CUAServerManager {
             }
             return
         }
-        state = .ready
+        viewModel = CUAViewModel(api: CUAClient(
+            host: host, port: allocatedPort, bearerToken: bearer
+        ))
         sessionID = UUID()
+        state = .ready
     }
 
     func retry() async {
@@ -253,6 +261,7 @@ final class CUAServerManager {
     }
 
     private func clearSession(nextState: CUAServerState) {
+        viewModel?.invalidateSession()
         stdoutPipe?.fileHandleForReading.readabilityHandler = nil
         stderrPipe?.fileHandleForReading.readabilityHandler = nil
         child = nil
@@ -261,6 +270,7 @@ final class CUAServerManager {
         port = nil
         bearerToken = nil
         sessionID = nil
+        viewModel = nil
         state = nextState
     }
 

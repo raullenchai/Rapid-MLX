@@ -722,6 +722,19 @@ final class CUAViewModel: ObservableObject {
         pollTask = nil
     }
 
+    /// Permanently detaches this model from its authenticated sidecar session.
+    /// Incrementing the generation makes every in-flight create, approval,
+    /// cancellation, discovery, and poll continuation ignore its late result.
+    func invalidateSession() {
+        lifecycleGeneration += 1
+        targetDiscoveryGeneration += 1
+        stopPolling()
+        runID = nil
+        stoppingStartGeneration = nil
+        pendingCreateRecovery = nil
+        isStopping = false
+    }
+
     private func pollUntilTerminal(runID: String, generation: Int) async {
         var lastSeq = events.map(\.seq).max() ?? 0
         while !Task.isCancelled {

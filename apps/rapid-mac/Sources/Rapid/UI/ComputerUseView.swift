@@ -12,11 +12,11 @@ private struct StarterCardHeightKey: PreferenceKey {
 
 struct ComputerUseView: View {
     @Bindable var cuaServer: CUAServerManager
+    let cuaViewModel: CUAViewModel?
     let languageRuntime: DraftPostLanguageRuntime?
     let visualRuntime: DraftPostVisualRuntime?
     @State private var showingDraftPost = false
     @State private var showingFreeUpSpace = false
-    @StateObject private var cuaViewModel: CUAViewModel
     /// A shared minimum keeps the flow grid even at the common text size;
     /// cards still grow past it rather than clip when the summary wraps under
     /// larger Dynamic Type. Scaled so the floor tracks the viewer's text size.
@@ -35,15 +35,14 @@ struct ComputerUseView: View {
 
     init(
         cuaServer: CUAServerManager,
+        cuaViewModel: CUAViewModel? = nil,
         languageRuntime: DraftPostLanguageRuntime? = nil,
         visualRuntime: DraftPostVisualRuntime? = nil
     ) {
         self.cuaServer = cuaServer
+        self.cuaViewModel = cuaViewModel
         self.languageRuntime = languageRuntime
         self.visualRuntime = visualRuntime
-        _cuaViewModel = StateObject(
-            wrappedValue: CUAViewModel(api: cuaServer.client)
-        )
     }
 
     var body: some View {
@@ -136,7 +135,11 @@ struct ComputerUseView: View {
     private var cuaRuntimeSection: some View {
         switch cuaServer.state {
         case .ready:
-            CUASection(viewModel: cuaViewModel)
+            if let cuaViewModel {
+                CUASection(viewModel: cuaViewModel)
+            } else {
+                ProgressView().controlSize(.small)
+            }
         case .idle, .starting:
             HStack(spacing: 10) {
                 ProgressView().controlSize(.small)

@@ -40,6 +40,7 @@ private final class MockAgentAPI: CUAAPI, @unchecked Sendable {
     var approveShouldFail = false
     var cancelShouldFail = false
     var eventsShouldFail = false
+    var eventsCalls = 0
     var permissionsResult = CUAPermissionStatus(accessibility: true, screenRecording: true)
     var pendingGateResult: CUAPendingGate?
 
@@ -105,6 +106,7 @@ private final class MockAgentAPI: CUAAPI, @unchecked Sendable {
     }
 
     func events(runID: String, after: Int) async throws -> CUARunView {
+        eventsCalls += 1
         if eventsDelayNanos > 0 { try? await Task.sleep(nanoseconds: eventsDelayNanos) }
         if eventsShouldFail { throw Failure.requested }
         var events: [CUAEvent] = []
@@ -230,6 +232,35 @@ struct CUAViewModelTests {
             targetLabel: target, status: status, finalSummary: summary, reason: reason,
             error: error, app: app, gateID: gateID, target: gateTarget
         )
+    }
+
+    @Test("Invalidated sidecar session stops old polling before a replacement starts")
+    func invalidatedSessionStopsPolling() async {
+        let oldAPI = MockAgentAPI()
+        let oldViewModel = CUAViewModel(api: oldAPI, pollIntervalNanos: 5_000_000)
+        oldViewModel.goal = "format the document"
+        selectTarget(oldViewModel)
+        await oldViewModel.start()
+        await drain()
+        #expect(oldAPI.eventsCalls > 0)
+
+        oldViewModel.invalidateSession()
+        // A request already dispatched at invalidation may finish once. Let
+        // that cancellation boundary settle before proving no retry occurs.
+        await drain()
+        let callsAfterInvalidation = oldAPI.eventsCalls
+
+        let newAPI = MockAgentAPI()
+        let newViewModel = CUAViewModel(api: newAPI, pollIntervalNanos: 5_000_000)
+        newViewModel.goal = "new session task"
+        selectTarget(newViewModel)
+        await newViewModel.start()
+        await drain()
+
+        #expect(oldAPI.eventsCalls == callsAfterInvalidation)
+        #expect(newAPI.eventsCalls > 0)
+        #expect(oldViewModel.phase == .running)
+        newViewModel.invalidateSession()
     }
 
     @Test("Start creates a run and finishes with the server summary")

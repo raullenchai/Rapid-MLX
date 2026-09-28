@@ -1217,6 +1217,7 @@ struct ContentView: View {
             if computerUseEnabled {
                 ComputerUseView(
                     cuaServer: cuaServer,
+                    cuaViewModel: cuaServer.viewModel,
                     languageRuntime: DraftPostLanguageRuntime(
                         profile: server.activeModelProfile,
                         selectedAlias: alias,
@@ -1234,7 +1235,6 @@ struct ContentView: View {
                         liveServer: server
                     )
                 )
-                .id(cuaServer.sessionID)
             } else {
                 mainArea
             }
