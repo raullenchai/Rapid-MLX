@@ -962,18 +962,39 @@ struct Step2ModelSelectionBehaviorTests {
     @Test("Both enabled verbs run the one production start route")
     func oneStartRoute() throws {
         let body = Self.stripped(try Self.quickstartSource)
-        #expect(body.contains("case.startExisting,.downloadAndStart:startQuickstart()"),
-                "the cached and uncached commits must share startQuickstart()")
-        #expect(
-            body.contains("privatefuncstartCachedModel(_cached:ModelEntry){coordinator.enterSkippingDownload()"),
-            "the cached route must lead to ServerManager.start via the #2033 finding-1 beat, not a second implementation"
+        func expectSource(_ needle: String, _ message: String) {
+            if !body.contains(needle) {
+                // Keep a source mismatch bounded. Putting `body.contains(...)`
+                // directly in #expect makes Swift Testing render the whole
+                // stripped QuickstartView.swift operand in CI diagnostics.
+                Issue.record(Comment(rawValue: message))
+            }
+        }
+
+        expectSource(
+            "case.startExisting,.downloadAndStart:startQuickstart()",
+            "the cached and uncached commits must share startQuickstart()"
         )
-        #expect(
-            body.contains("awaitcoordinator.afterSkippingDownloadBeat(duration:Self.skippingDownloadBeat){awaitserver.start("),
-            "the beat must hand off to ServerManager.start through the same guarded coordinator method a test can drive directly (#2033 codex follow-up)"
+        expectSource(
+            "privatefuncstartCachedModel(_cached:ModelEntry){coordinator.enterSkippingDownload()",
+            "the cached route must use the #2033 finding-1 beat, not a second implementation"
         )
-        #expect(body.contains("guardisSkippingDownloadStillPendingelse{return}enterStarting()awaitonAuthorized()"),
-                "afterSkippingDownloadBeat itself must still call enterStarting() before authorizing the caller's action")
+        expectSource(
+            "awaitcoordinator.afterSkippingDownloadBeat(duration:Self.skippingDownloadBeat){awaitstartFirstOnboardingEngine(",
+            "the beat must hand off through the funnel-aware onboarding engine wrapper"
+        )
+        expectSource(
+            "privatefuncstartFirstOnboardingEngine(alias:String,hfPath:String?=nil,catalogEntryHint:ServerManager.CatalogEntryHint?=nil)async",
+            "the onboarding engine wrapper must remain the single funnel-aware start seam"
+        )
+        expectSource(
+            "awaitserver.start(alias:alias,hfPath:hfPath,catalogEntryHint:catalogEntryHint,onboardingEngineAttemptToken:token)",
+            "the onboarding engine wrapper must delegate to ServerManager.start"
+        )
+        expectSource(
+            "guardisSkippingDownloadStillPendingelse{return}enterStarting()awaitonAuthorized()",
+            "afterSkippingDownloadBeat must call enterStarting() before authorizing the caller action"
+        )
     }
 
     // MARK: - 8. Escape and Back priority
