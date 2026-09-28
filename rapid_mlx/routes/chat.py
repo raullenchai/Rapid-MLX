@@ -89,6 +89,7 @@ from ..service.helpers import (
     _TOOL_USE_REQUIRED_SUFFIX,
     _TOOL_USE_SYSTEM_SUFFIX,
     SSE_RESPONSE_HEADERS,
+    _aggregate_generation_attempts,
     _append_tool_use_suffix,
     _apply_reasoning_cutoff_notice,
     _build_prompt_with_thinking_compat,
@@ -5969,6 +5970,7 @@ async def _create_chat_completion_impl(
     # then rejects with a confusing stack-trace far from the source.
     # The violations counter still ticks before we raise so the
     # operator sees both the rate AND the error response.
+    usage_detail_output = None
     if strict_mode and use_guided and json_schema and output is not None:
         ok, err = validate_output_against_schema(output.text or "", json_schema)
         if not ok:
@@ -6015,6 +6017,7 @@ async def _create_chat_completion_impl(
     ):
         ok, failure_details = validate_and_envelope(output.text or "", json_schema)
         attempts = 1
+        repair_attempted = False
         if not ok and repair_retry_enabled():
             repair_messages = build_repair_messages(
                 messages,
@@ -6101,6 +6104,7 @@ async def _create_chat_completion_impl(
             else:
                 incr_strict_repair_attempt()
                 attempts = 2
+                repair_attempted = True
                 logger.info(
                     "R12-4 strict json_schema first attempt failed "
                     "validation (%s); attempting single repair retry.",
@@ -6193,19 +6197,8 @@ async def _create_chat_completion_impl(
                     # taken from the SUCCESSFUL repair output since
                     # those describe what the client receives; only
                     # the numeric usage fields are summed.
-                    from dataclasses import replace as _dc_replace
-
-                    initial_prompt_tokens = output.prompt_tokens
-                    initial_completion_tokens = output.completion_tokens
-                    output = _dc_replace(
-                        repair_output,
-                        prompt_tokens=(
-                            initial_prompt_tokens + repair_output.prompt_tokens
-                        ),
-                        completion_tokens=(
-                            initial_completion_tokens + repair_output.completion_tokens
-                        ),
-                    )
+                    usage_detail_output = repair_output
+                    output = _aggregate_generation_attempts(output, repair_output)
                     ok = True
                     failure_details = None
                 else:
@@ -6220,7 +6213,7 @@ async def _create_chat_completion_impl(
                 failure_details or {"reason": "schema_violation"},
                 attempts=attempts,
             )
-            if request.tools:
+            if request.tools and repair_attempted:
                 envelope["error"]["code"] = "strict_schema_violation"
             logger.warning(
                 "R12-4 strict json_schema validation failed after %d attempt(s): %s",
@@ -6231,7 +6224,7 @@ async def _create_chat_completion_impl(
                 raw_request, served_telemetry_id, "strict_schema_violation"
             )
             raise HTTPException(
-                status_code=502 if request.tools else 422,
+                status_code=502 if request.tools and repair_attempted else 422,
                 detail=envelope,
             )
 
@@ -6802,7 +6795,11 @@ async def _create_chat_completion_impl(
                 logprobs=choice_logprobs,
             )
         ],
-        usage=_build_usage(output, reasoning_text),
+        usage=_build_usage(
+            output,
+            reasoning_text,
+            detail_output=usage_detail_output,
+        ),
         metrics=_build_response_metrics(output),
     )
     # ── Response cache — STORE ───────────────────────────────────────
@@ -6865,36 +6862,81 @@ async def _stream_buffered_chat_response(
     response: ChatCompletionResponse,
     request: ChatCompletionRequest,
 ) -> AsyncIterator[str]:
-    """Emit a buffered strict turn with the ordinary Chat SSE protocol."""
-    payload = response.model_dump(exclude_none=True)
-    choice = payload["choices"][0]
-    message = choice["message"]
-    base = {
-        "id": payload["id"],
-        "object": "chat.completion.chunk",
-        "created": payload["created"],
-        "model": payload["model"],
-    }
+    """Replay a buffered strict turn through the ordinary Chat state machine."""
 
-    def chunk(delta: dict, finish_reason=None) -> str:
-        body = {
-            **base,
-            "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
-        }
-        return f"data: {json.dumps(body, separators=(',', ':'))}\n\n"
+    choice = response.choices[0]
+    message = choice.message
+    outputs: list[GenerationOutput] = []
 
-    yield chunk({"role": "assistant"})
-    if message.get("content") is not None:
-        yield chunk({"content": message["content"]})
-    if message.get("reasoning_content") is not None:
-        yield chunk({"reasoning_content": message["reasoning_content"]})
-    if message.get("tool_calls"):
-        yield chunk({"tool_calls": message["tool_calls"]})
-    yield chunk({}, choice.get("finish_reason"))
-    if request.stream_options and request.stream_options.include_usage:
-        usage = payload.get("usage")
-        yield f"data: {json.dumps({**base, 'choices': [], 'usage': usage}, separators=(',', ':'))}\n\n"
-    yield "data: [DONE]\n\n"
+    def append_output(
+        text: str,
+        channel: str,
+        *,
+        tool_calls: list[dict] | None = None,
+    ) -> None:
+        outputs.append(
+            GenerationOutput(
+                text=text,
+                new_text=text,
+                channel=channel,
+                tool_calls=tool_calls,
+                finished=False,
+                finish_reason=None,
+            )
+        )
+
+    if message.reasoning_content:
+        append_output(message.reasoning_content, "reasoning")
+    if message.content:
+        append_output(message.content, "content")
+    if message.tool_calls:
+        append_output(
+            " ",
+            "tool_call",
+            tool_calls=[
+                {
+                    "id": tool_call.id,
+                    "name": tool_call.function.name,
+                    "arguments": tool_call.function.arguments,
+                }
+                for tool_call in message.tool_calls
+            ],
+        )
+    if not outputs:
+        outputs.append(GenerationOutput(text="", new_text="", finished=False))
+
+    terminal = outputs[-1]
+    terminal.finished = True
+    terminal.finish_reason = choice.finish_reason
+    terminal.prompt_tokens = response.usage.prompt_tokens
+    terminal.completion_tokens = response.usage.completion_tokens
+    if response.usage.prompt_tokens_details is not None:
+        terminal.cached_tokens = response.usage.prompt_tokens_details.cached_tokens
+    if (
+        response.metrics is not None
+        and response.metrics.speculative_decoding is not None
+    ):
+        terminal.spec_decode_metrics = (
+            response.metrics.speculative_decoding.model_dump()
+        )
+
+    class _ReplayEngine:
+        tokenizer = None
+
+        async def stream_chat(self, **_kwargs):
+            for replay_output in outputs:
+                yield replay_output
+
+    replay_outcome = [False]
+    async for event in stream_chat_completion(
+        _ReplayEngine(),
+        [],
+        request,
+        response_id=response.id,
+        created=response.created,
+        _ok_outcome=replay_outcome,
+    ):
+        yield event
 
 
 async def stream_chat_completion(

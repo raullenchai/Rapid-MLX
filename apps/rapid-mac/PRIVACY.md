@@ -38,7 +38,7 @@ You can turn telemetry off in Settings → Privacy, with
 `rapid-mlx telemetry off`, or with the `RAPID_MLX_TELEMETRY=0` or
 `DO_NOT_TRACK=1` kill switch. The desktop app and its embedded `rapid-mlx`
 engine use the same consent record and anonymous install ID, so one Mac is not
-counted as two installs. The 0.15.0 engine reports:
+counted as two installs. The current engine reports:
 
 * `app_opened` and `active_day`;
 * `model_pulled`, `model_pull_failed`, `model_served`, and

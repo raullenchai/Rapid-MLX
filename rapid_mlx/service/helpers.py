@@ -19,6 +19,7 @@ import uuid
 from collections.abc import AsyncIterator
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, NoReturn, cast
@@ -2774,7 +2775,38 @@ def _merge_response_metrics(outputs: list[Any]) -> PerRequestMetrics | None:
     return None if merged is None else PerRequestMetrics(speculative_decoding=merged)
 
 
-def _build_usage(output: GenerationOutput, reasoning_text: str | None) -> Usage:
+def _aggregate_generation_attempts(
+    initial: GenerationOutput, delivered: GenerationOutput
+) -> GenerationOutput:
+    """Return the delivered output with all billable attempt counters summed.
+
+    Text, reasoning, tool calls, finish state, and other response semantics come
+    exclusively from ``delivered``.  Only counters that describe work performed
+    across both generations are aggregated.
+    """
+    metrics = _merge_response_metrics([initial, delivered])
+    return replace(
+        delivered,
+        prompt_tokens=initial.prompt_tokens + delivered.prompt_tokens,
+        completion_tokens=(initial.completion_tokens + delivered.completion_tokens),
+        cached_tokens=(
+            getattr(initial, "cached_tokens", 0)
+            + getattr(delivered, "cached_tokens", 0)
+        ),
+        spec_decode_metrics=(
+            metrics.speculative_decoding.model_dump()
+            if metrics is not None and metrics.speculative_decoding is not None
+            else None
+        ),
+    )
+
+
+def _build_usage(
+    output: GenerationOutput,
+    reasoning_text: str | None,
+    *,
+    detail_output: GenerationOutput | None = None,
+) -> Usage:
     """Build Usage with reasoning token breakdown when applicable.
 
     Per OpenAI spec, ``completion_tokens_details.reasoning_tokens`` is a
@@ -2791,6 +2823,11 @@ def _build_usage(output: GenerationOutput, reasoning_text: str | None) -> Usage:
     """
     cfg = get_config()
     total_completion = output.completion_tokens
+    detail_completion = (
+        detail_output.completion_tokens
+        if detail_output is not None
+        else total_completion
+    )
     # ``output`` is normally ``GenerationOutput``, but the streaming
     # path builds an ad-hoc ``_UsageOutput`` namespace and the dflash
     # speculative server passes its own result type. ``getattr`` keeps
@@ -2811,7 +2848,7 @@ def _build_usage(output: GenerationOutput, reasoning_text: str | None) -> Usage:
         content_chars = len(getattr(output, "text", "") or "")
         total_chars = reasoning_chars + content_chars
         if total_chars > 0:
-            reasoning_tokens = round(total_completion * reasoning_chars / total_chars)
+            reasoning_tokens = round(detail_completion * reasoning_chars / total_chars)
             # If reasoning is non-empty, attribute at least 1 token to it
             # so the field reflects that reasoning happened.
             if reasoning_chars > 0:
@@ -2822,9 +2859,9 @@ def _build_usage(output: GenerationOutput, reasoning_text: str | None) -> Usage:
             # completion_tokens - reasoning_tokens >= 0) reflects
             # what actually got generated.
             if content_chars > 0:
-                reasoning_tokens = min(reasoning_tokens, max(0, total_completion - 1))
+                reasoning_tokens = min(reasoning_tokens, max(0, detail_completion - 1))
             else:
-                reasoning_tokens = min(reasoning_tokens, total_completion)
+                reasoning_tokens = min(reasoning_tokens, detail_completion)
         else:
             reasoning_tokens = 0
         return Usage(

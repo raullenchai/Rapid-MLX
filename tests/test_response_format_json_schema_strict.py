@@ -2091,72 +2091,236 @@ def test_strict_tools_tool_call_stream_uses_normal_protocol(
 
 
 @pytest.mark.asyncio
-async def test_buffered_chat_stream_emits_reasoning_content():
+async def test_buffered_chat_stream_matches_normal_state_machine_sdk_shape():
     from rapid_mlx.api.models import (
         AssistantMessage,
         ChatCompletionChoice,
         ChatCompletionRequest,
         ChatCompletionResponse,
+        FunctionCall,
+        PromptTokensDetails,
+        ToolCall,
+        Usage,
     )
-    from rapid_mlx.routes.chat import _stream_buffered_chat_response
+    from rapid_mlx.routes.chat import (
+        _stream_buffered_chat_response,
+        stream_chat_completion,
+    )
+
+    request = ChatCompletionRequest(
+        model="test-model",
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "noop",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ],
+        stream=True,
+        stream_options={"include_usage": True},
+    )
+    scripted = [
+        GenerationOutput(
+            text="checked the schema",
+            new_text="checked the schema",
+            channel="reasoning",
+            finished=False,
+            finish_reason=None,
+        ),
+        GenerationOutput(
+            text=_VALID_PAYLOAD,
+            new_text=_VALID_PAYLOAD,
+            channel="content",
+            finished=False,
+            finish_reason=None,
+        ),
+        GenerationOutput(
+            text=" ",
+            new_text=" ",
+            channel="tool_call",
+            tool_calls=[{"id": "call_exact", "name": "noop", "arguments": "{}"}],
+            prompt_tokens=4,
+            completion_tokens=5,
+            cached_tokens=3,
+            finished=True,
+            finish_reason="tool_calls",
+        ),
+    ]
+
+    class _ScriptedStreamEngine:
+        tokenizer = None
+
+        async def stream_chat(self, **_kwargs):
+            for output in scripted:
+                yield output
+
+    normal = [
+        event
+        async for event in stream_chat_completion(
+            _ScriptedStreamEngine(),
+            [],
+            request,
+            response_id="chatcmpl-parity",
+            created=1,
+            _ok_outcome=[False],
+        )
+    ]
 
     response = ChatCompletionResponse(
+        id="chatcmpl-parity",
+        created=1,
         model="test-model",
         choices=[
             ChatCompletionChoice(
                 message=AssistantMessage(
                     content=_VALID_PAYLOAD,
                     reasoning_content="checked the schema",
-                )
+                    tool_calls=[
+                        ToolCall(
+                            id="call_exact",
+                            function=FunctionCall(name="noop", arguments="{}"),
+                        )
+                    ],
+                ),
+                finish_reason="tool_calls",
             )
         ],
-    )
-    request = ChatCompletionRequest(
-        model="test-model",
-        messages=[{"role": "user", "content": "hi"}],
-        stream=True,
+        usage=Usage(
+            prompt_tokens=4,
+            completion_tokens=5,
+            total_tokens=9,
+            prompt_tokens_details=PromptTokensDetails(cached_tokens=3),
+        ),
     )
 
-    events = [
+    replay = [
         event async for event in _stream_buffered_chat_response(response, request)
     ]
-    body = "".join(events)
+    assert replay == normal
 
-    assert '"reasoning_content":"checked the schema"' in body
+    payloads = [
+        json.loads(event[6:]) for event in replay if event.startswith("data: {")
+    ]
+    deltas = [choice["delta"] for payload in payloads for choice in payload["choices"]]
+    reasoning_index = next(
+        i for i, delta in enumerate(deltas) if "reasoning_content" in delta
+    )
+    content_index = next(i for i, delta in enumerate(deltas) if "content" in delta)
+    assert reasoning_index < content_index
+    tool_delta = next(delta["tool_calls"] for delta in deltas if "tool_calls" in delta)
+    assert tool_delta == [
+        {
+            "index": 0,
+            "id": "call_exact",
+            "type": "function",
+            "function": {"name": "noop", "arguments": "{}"},
+        }
+    ]
+    assert isinstance(tool_delta[0]["index"], int)
 
 
 @pytest.mark.asyncio
-async def test_buffered_responses_stream_skips_non_text_content_parts():
-    """Buffered replay preserves non-text parts only in the completed item."""
-    from rapid_mlx.routes.responses import _stream_buffered_responses_response
+async def test_buffered_responses_stream_matches_normal_state_machine_sdk_shape():
+    from rapid_mlx.api.responses_adapter import responses_to_openai
+    from rapid_mlx.api.responses_models import ResponsesRequest
+    from rapid_mlx.routes.responses import (
+        _stream_buffered_responses_response,
+        _stream_responses,
+    )
 
-    body = json.dumps(
-        {
-            "id": "resp_test",
-            "object": "response",
-            "created_at": 1,
-            "status": "completed",
-            "model": "test-model",
-            "output": [
-                {
-                    "type": "message",
-                    "id": "msg_test",
-                    "status": "completed",
-                    "role": "assistant",
-                    "content": [
-                        {"type": "refusal", "refusal": "no"},
-                        {"type": "output_text", "text": _VALID_PAYLOAD},
-                    ],
-                }
-            ],
-            "usage": {},
-        }
-    ).encode()
+    request = ResponsesRequest.model_validate(_responses_tools_payload(stream=True))
+    openai_request = responses_to_openai(request)
+    scripted = [
+        GenerationOutput(
+            text="checked the schema",
+            new_text="checked the schema",
+            channel="reasoning",
+            finished=False,
+            finish_reason=None,
+        ),
+        GenerationOutput(
+            text=_VALID_PAYLOAD,
+            new_text=_VALID_PAYLOAD,
+            channel="content",
+            finished=False,
+            finish_reason=None,
+        ),
+        GenerationOutput(
+            text=" ",
+            new_text=" ",
+            channel="tool_call",
+            tool_calls=[{"id": "call_exact", "name": "noop", "arguments": "{}"}],
+            prompt_tokens=4,
+            completion_tokens=5,
+            cached_tokens=3,
+            finished=True,
+            finish_reason="tool_calls",
+        ),
+    ]
 
-    events = [event async for event in _stream_buffered_responses_response(body)]
+    class _ScriptedStreamEngine:
+        tokenizer = None
 
-    assert sum("response.content_part.added" in event for event in events) == 1
-    assert any('"type": "refusal"' in event for event in events)
+        async def stream_chat(self, **_kwargs):
+            for output in scripted:
+                yield output
+
+    normal = [
+        event
+        async for event in _stream_responses(
+            _ScriptedStreamEngine(),
+            openai_request,
+            request,
+            response_id_override="resp_parity",
+            created_at_override=1,
+            emit_telemetry=False,
+        )
+    ]
+    parsed_normal = [json.loads(event.splitlines()[1][6:]) for event in normal]
+    completed = parsed_normal[-1]["response"]
+    replay = [
+        event
+        async for event in _stream_buffered_responses_response(
+            json.dumps(completed).encode()
+        )
+    ]
+    assert replay == normal
+
+    event_types = [payload["type"] for payload in parsed_normal]
+    added = [
+        payload
+        for payload in parsed_normal
+        if payload["type"] == "response.output_item.added"
+    ]
+    done = [
+        payload
+        for payload in parsed_normal
+        if payload["type"] == "response.output_item.done"
+    ]
+    assert [(event["output_index"], event["item"]["type"]) for event in added] == [
+        (0, "reasoning"),
+        (1, "message"),
+        (2, "function_call"),
+    ]
+    assert [(event["output_index"], event["item"]["type"]) for event in done] == [
+        (1, "message"),
+        (0, "reasoning"),
+        (2, "function_call"),
+    ]
+    assert event_types.index("response.output_item.added") < event_types.index(
+        "response.output_text.delta"
+    )
+    for event in added + done:
+        assert isinstance(event["output_index"], int)
+        assert isinstance(event["item"]["id"], str)
+    completed_ids = [item["id"] for item in completed["output"]]
+    assert completed_ids == [
+        event["item"]["id"]
+        for event in sorted(done, key=lambda event: event["output_index"])
+    ]
 
 
 @pytest.mark.parametrize("surface", ["chat", "responses"])
@@ -2206,6 +2370,125 @@ def test_strict_tools_invalid_constrained_repair_returns_502(
     assert response.json()["error"]["code"] == "strict_schema_violation"
     assert len(engine.chat_calls) == 1
     assert len(engine.guided_calls) == 1
+
+
+@pytest.mark.parametrize("surface", ["chat", "responses"])
+@pytest.mark.parametrize("skip_reason", ["disabled", "prompt_over_window"])
+def test_strict_tools_skipped_repair_keeps_one_attempt_422(
+    surface, skip_reason, monkeypatch, _rate_limiter_state
+):
+    if skip_reason == "disabled":
+        monkeypatch.setenv("RAPID_MLX_STRICT_JSON_SCHEMA_REPAIR", "off")
+    else:
+        if surface == "chat":
+            from rapid_mlx.routes import chat as route_module
+        else:
+            from rapid_mlx.routes import responses as route_module
+
+        monkeypatch.setattr(
+            route_module, "repair_messages_fit_context", lambda *_a, **_k: False
+        )
+
+    engine = _Engine(
+        supports_guided=True,
+        chat_text=_INVALID_PAYLOAD_WRONG_KEY,
+        guided_text=_VALID_PAYLOAD,
+    )
+    if surface == "chat":
+        response = _make_client(engine).post(
+            "/v1/chat/completions", json=_chat_tools_payload()
+        )
+    else:
+        response = _make_responses_client(engine, _rate_limiter_state).post(
+            "/v1/responses", json=_responses_tools_payload()
+        )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["error"]["code"] == "json_schema_violation"
+    assert response.json()["error"]["details"]["attempts"] == 1
+    assert len(engine.chat_calls) == 1
+    assert engine.guided_calls == []
+
+
+@pytest.mark.parametrize("surface", ["chat", "responses"])
+def test_strict_repair_aggregates_all_usage_but_attributes_delivered_body(
+    surface, _rate_limiter_state
+):
+    first_metrics = {
+        "verify_calls": 1,
+        "correction_tokens": 2,
+        "bonus_tokens": 3,
+        "accepted_by_depth": [4, 1],
+        "drafted_by_depth": [5, 2],
+    }
+    repair_metrics = {
+        "verify_calls": 2,
+        "correction_tokens": 3,
+        "bonus_tokens": 4,
+        "accepted_by_depth": [6],
+        "drafted_by_depth": [7],
+    }
+
+    class _UsageEngine(_Engine):
+        async def chat(self, *, messages, **kwargs):
+            self.chat_calls.append({"messages": messages, "kwargs": kwargs})
+            return GenerationOutput(
+                text=_INVALID_PAYLOAD_WRONG_KEY,
+                prompt_tokens=4,
+                completion_tokens=5,
+                cached_tokens=3,
+                spec_decode_metrics=first_metrics,
+            )
+
+        async def generate_with_schema(self, *, messages, json_schema, **kwargs):
+            self.guided_calls.append(
+                {"messages": messages, "json_schema": json_schema, "kwargs": kwargs}
+            )
+            return GenerationOutput(
+                text=_VALID_PAYLOAD,
+                raw_text=_VALID_PAYLOAD,
+                reasoning_text="abcd",
+                prompt_tokens=4,
+                completion_tokens=5,
+                cached_tokens=2,
+                spec_decode_metrics=repair_metrics,
+            )
+
+    engine = _UsageEngine(supports_guided=True)
+    if surface == "chat":
+        client = _make_client(engine)
+        from rapid_mlx.config import get_config
+
+        get_config().reasoning_parser_name = "qwen3"
+        response = client.post("/v1/chat/completions", json=_chat_tools_payload())
+        body = response.json()
+        usage = body["usage"]
+    else:
+        client = _make_responses_client(engine, _rate_limiter_state)
+        from rapid_mlx.config import get_config
+
+        get_config().reasoning_parser_name = "qwen3"
+        response = client.post("/v1/responses", json=_responses_tools_payload())
+        body = response.json()
+        usage = {
+            "prompt_tokens": body["usage"]["input_tokens"],
+            "completion_tokens": body["usage"]["output_tokens"],
+            "prompt_tokens_details": body["usage"]["input_tokens_details"],
+            "completion_tokens_details": body["usage"]["output_tokens_details"],
+        }
+
+    assert response.status_code == 200, response.text
+    assert usage["prompt_tokens"] == 8
+    assert usage["completion_tokens"] == 10
+    assert usage["prompt_tokens_details"]["cached_tokens"] == 5
+    assert usage["completion_tokens_details"]["reasoning_tokens"] == 1
+    assert body["metrics"]["speculative_decoding"] == {
+        "verify_calls": 3,
+        "correction_tokens": 5,
+        "bonus_tokens": 7,
+        "accepted_by_depth": [10, 1],
+        "drafted_by_depth": [12, 2],
+    }
 
 
 @pytest.mark.parametrize("surface", ["chat", "responses"])

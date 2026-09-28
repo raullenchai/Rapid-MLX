@@ -81,11 +81,12 @@ from ..api.utils import (
     validate_content_blocks_for_capabilities,
 )
 from ..config import get_config
-from ..engine import BaseEngine
+from ..engine import BaseEngine, GenerationOutput
 from ..middleware.auth import check_rate_limit, verify_api_key
 from ..reasoning import finalize_streaming_compat
 from ..service.helpers import (
     SSE_RESPONSE_HEADERS,
+    _aggregate_generation_attempts,
     _apply_reasoning_cutoff_notice,
     _build_response_metrics,
     _build_usage,
@@ -1903,6 +1904,8 @@ async def _non_stream(
     if output is None:
         return Response(status_code=499)
 
+    usage_detail_output = None
+
     # A strict schema applies only to the assistant's final text. Tool-call
     # turns retain the ordinary parser and wire representation unchanged.
     _strict_tool_turn = False
@@ -1931,6 +1934,7 @@ async def _non_stream(
     ):
         ok, failure_details = validate_and_envelope(output.text or "", _strict_schema)
         attempts = 1
+        repair_attempted = False
         if not ok and repair_retry_enabled():
             repair_messages = build_repair_messages(
                 messages,
@@ -1982,6 +1986,7 @@ async def _non_stream(
             else:
                 incr_strict_repair_attempt()
                 attempts = 2
+                repair_attempted = True
                 logger.info(
                     "R12-4 strict json_schema first attempt failed on "
                     "/v1/responses (%s); attempting repair retry.",
@@ -2064,19 +2069,8 @@ async def _non_stream(
                     # swapping ``output`` so the client-facing
                     # response reports the full prompt + completion
                     # cost the server billed.
-                    from dataclasses import replace as _dc_replace
-
-                    initial_prompt_tokens = output.prompt_tokens
-                    initial_completion_tokens = output.completion_tokens
-                    output = _dc_replace(
-                        repair_output,
-                        prompt_tokens=(
-                            initial_prompt_tokens + repair_output.prompt_tokens
-                        ),
-                        completion_tokens=(
-                            initial_completion_tokens + repair_output.completion_tokens
-                        ),
-                    )
+                    usage_detail_output = repair_output
+                    output = _aggregate_generation_attempts(output, repair_output)
                     ok = True
                     failure_details = None
                 else:
@@ -2088,7 +2082,7 @@ async def _non_stream(
                 param="text.format",
                 attempts=attempts,
             )
-            if openai_request.tools:
+            if openai_request.tools and repair_attempted:
                 envelope["error"]["code"] = "strict_schema_violation"
             logger.warning(
                 "R12-4 /v1/responses strict json_schema validation "
@@ -2098,7 +2092,7 @@ async def _non_stream(
             )
             _record_nonstream_failure(engine, request, "strict_schema_violation")
             raise HTTPException(
-                status_code=502 if openai_request.tools else 422,
+                status_code=(502 if openai_request.tools and repair_attempted else 422),
                 detail=envelope,
             )
 
@@ -2420,7 +2414,11 @@ async def _non_stream(
                 finish_reason=finish_reason,
             )
         ],
-        usage=_build_usage(output, reasoning_text),
+        usage=_build_usage(
+            output,
+            reasoning_text,
+            detail_output=usage_detail_output,
+        ),
         metrics=_build_response_metrics(output),
     )
 
@@ -2466,134 +2464,111 @@ def _sse(event: str, data: dict) -> str:
 async def _stream_buffered_responses_response(
     body: bytes | memoryview,
 ) -> AsyncIterator[str]:
-    """Replay a validated buffered result through the normal Responses SSE ladder."""
+    """Replay a validated result through the ordinary Responses state machine."""
     response = json.loads(bytes(body))
-    output = list(response.get("output", []))
-    if any(item.get("type") == "message" for item in output):
-        output.insert(
-            0,
-            {
-                "type": "reasoning",
-                "id": f"rs_{uuid.uuid4().hex[:24]}",
-                "status": "completed",
-                "summary": [],
-            },
-        )
-        response = {**response, "output": output}
-    sequence = 0
+    response_output = response.get("output", [])
+    item_ids: dict[str, list[str]] = {}
+    outputs: list[GenerationOutput] = []
 
-    def emit(event: str, data: dict) -> str:
-        nonlocal sequence
-        data["sequence_number"] = sequence
-        sequence += 1
-        return _sse(event, data)
-
-    initial = {**response, "status": "in_progress", "output": []}
-    yield emit("response.created", {"type": "response.created", "response": initial})
-    yield emit(
-        "response.in_progress",
-        {"type": "response.in_progress", "response": initial},
-    )
-    for output_index, item in enumerate(response.get("output", [])):
+    for item in response_output:
         item_type = item.get("type")
-        if item_type == "message":
-            added = {**item, "status": "in_progress", "content": []}
-            yield emit(
-                "response.output_item.added",
-                {
-                    "type": "response.output_item.added",
-                    "output_index": output_index,
-                    "item": added,
-                },
+        item_id = item.get("id")
+        if isinstance(item_id, str):
+            item_ids.setdefault(item_type, []).append(item_id)
+        if item_type == "reasoning":
+            reasoning = "".join(
+                str(part.get("text") or "")
+                for part in item.get("summary", [])
+                if isinstance(part, dict) and part.get("type") == "summary_text"
             )
-            for content_index, part in enumerate(item.get("content", [])):
-                if part.get("type") != "output_text":
-                    continue
-                empty_part = {**part, "text": ""}
-                yield emit(
-                    "response.content_part.added",
-                    {
-                        "type": "response.content_part.added",
-                        "item_id": item["id"],
-                        "output_index": output_index,
-                        "content_index": content_index,
-                        "part": empty_part,
-                    },
-                )
-                text = part.get("text", "")
-                if text:
-                    yield emit(
-                        "response.output_text.delta",
-                        {
-                            "type": "response.output_text.delta",
-                            "item_id": item["id"],
-                            "output_index": output_index,
-                            "content_index": content_index,
-                            "delta": text,
-                            "logprobs": [],
-                        },
+            if reasoning:
+                outputs.append(
+                    GenerationOutput(
+                        text=reasoning,
+                        new_text=reasoning,
+                        channel="reasoning",
+                        finished=False,
+                        finish_reason=None,
                     )
-                yield emit(
-                    "response.output_text.done",
-                    {
-                        "type": "response.output_text.done",
-                        "item_id": item["id"],
-                        "output_index": output_index,
-                        "content_index": content_index,
-                        "text": text,
-                        "logprobs": [],
-                    },
                 )
-                yield emit(
-                    "response.content_part.done",
-                    {
-                        "type": "response.content_part.done",
-                        "item_id": item["id"],
-                        "output_index": output_index,
-                        "content_index": content_index,
-                        "part": part,
-                    },
+        elif item_type == "message":
+            text = "".join(
+                str(part.get("text") or "")
+                for part in item.get("content", [])
+                if isinstance(part, dict) and part.get("type") == "output_text"
+            )
+            if text:
+                outputs.append(
+                    GenerationOutput(
+                        text=text,
+                        new_text=text,
+                        channel="content",
+                        finished=False,
+                        finish_reason=None,
+                    )
                 )
         elif item_type == "function_call":
-            added = {**item, "status": "in_progress", "arguments": ""}
-            yield emit(
-                "response.output_item.added",
-                {
-                    "type": "response.output_item.added",
-                    "output_index": output_index,
-                    "item": added,
-                },
+            outputs.append(
+                GenerationOutput(
+                    text=" ",
+                    new_text=" ",
+                    channel="tool_call",
+                    tool_calls=[
+                        {
+                            "id": item.get("call_id"),
+                            "name": item.get("name"),
+                            "arguments": item.get("arguments", ""),
+                        }
+                    ],
+                    finished=False,
+                    finish_reason=None,
+                )
             )
-            yield emit(
-                "response.function_call_arguments.delta",
-                {
-                    "type": "response.function_call_arguments.delta",
-                    "item_id": item["id"],
-                    "output_index": output_index,
-                    "delta": item.get("arguments", ""),
-                },
-            )
-        else:
-            yield emit(
-                "response.output_item.added",
-                {
-                    "type": "response.output_item.added",
-                    "output_index": output_index,
-                    "item": {**item, "status": "in_progress"},
-                },
-            )
-        yield emit(
-            "response.output_item.done",
-            {
-                "type": "response.output_item.done",
-                "output_index": output_index,
-                "item": item,
-            },
-        )
-    yield emit(
-        "response.completed",
-        {"type": "response.completed", "response": response},
+
+    if not outputs:
+        outputs.append(GenerationOutput(text="", new_text="", finished=False))
+    terminal = outputs[-1]
+    terminal.finished = True
+    terminal.finish_reason = (
+        "length" if response.get("status") == "incomplete" else "stop"
     )
+    usage = response.get("usage") or {}
+    terminal.prompt_tokens = int(usage.get("input_tokens") or 0)
+    terminal.completion_tokens = int(usage.get("output_tokens") or 0)
+    input_details = usage.get("input_tokens_details") or {}
+    terminal.cached_tokens = int(input_details.get("cached_tokens") or 0)
+    metrics = (response.get("metrics") or {}).get("speculative_decoding")
+    if isinstance(metrics, dict):
+        terminal.spec_decode_metrics = metrics
+
+    class _ReplayEngine:
+        tokenizer = None
+
+        async def stream_chat(self, **_kwargs):
+            for replay_output in outputs:
+                yield replay_output
+
+    responses_request = ResponsesRequest.model_validate(
+        {
+            "model": response.get("model") or "model",
+            "input": "buffered replay",
+            "stream": True,
+            "parallel_tool_calls": response.get("parallel_tool_calls", True),
+            "tool_choice": response.get("tool_choice", "auto"),
+            "tools": response.get("tools", []),
+        }
+    )
+    openai_request = responses_to_openai(responses_request)
+    async for event in _stream_responses(
+        _ReplayEngine(),
+        openai_request,
+        responses_request,
+        response_id_override=response.get("id"),
+        created_at_override=response.get("created_at"),
+        replay_item_ids=item_ids,
+        emit_telemetry=False,
+    ):
+        yield event
 
 
 def _responses_keepalive_sse(state: dict[str, object]) -> str:
@@ -2989,6 +2964,8 @@ async def _stream_responses(
     caller_client: str | None = None,
     served_telemetry_id: str | None = None,
     deferred_failure: list[str | None] | None = None,
+    replay_item_ids: dict[str, list[str]] | None = None,
+    emit_telemetry: bool = True,
 ) -> AsyncIterator[str]:
     """Stream a Responses-API SSE event sequence Codex CLI can parse.
 
@@ -3049,6 +3026,8 @@ async def _stream_responses(
             # may never see.
             deferred_failure[:] = [error_class]
             return
+        if not emit_telemetry:
+            return
         from rapid_mlx.telemetry import inference as _telemetry_inference
 
         _telemetry_inference.emit_completed_request(
@@ -3059,6 +3038,12 @@ async def _stream_responses(
             result="failed",
             error_class=error_class,
         )
+
+    def _item_id(item_type: str, prefix: str) -> str:
+        ids = (replay_item_ids or {}).get(item_type)
+        if ids:
+            return ids.pop(0)
+        return f"{prefix}_{uuid.uuid4().hex[:24]}"
 
     # response.created — Codex needs this before any deltas.
     # R10-C3: include the same top-level fields the non-streaming response
@@ -3524,7 +3509,7 @@ async def _stream_responses(
             nonlocal reasoning_item_id, reasoning_output_index, reasoning_item_added
             events: list[str] = []
             if not reasoning_item_added:
-                reasoning_item_id = f"rs_{uuid.uuid4().hex[:24]}"
+                reasoning_item_id = _item_id("reasoning", "rs")
                 # Leading items occupy the lowest output indices. The
                 # message item (and any post-message tool_call items)
                 # take strictly later indices, computed in
@@ -3665,8 +3650,7 @@ async def _stream_responses(
                 content_part_open
             # Flush any leading items first — the ordering invariant.
             leading_events = _emit_pending_leading_items()
-            leading_events.extend(_close_reasoning_before_message())
-            message_item_id = f"msg_{uuid.uuid4().hex[:24]}"
+            message_item_id = _item_id("message", "msg")
             # Leading-item count drives the message's output_index. Today
             # the only leading item is reasoning (index 0 when emitted), so
             # the message lands at index 1; pre-fix (and when no leading
@@ -4601,10 +4585,10 @@ async def _stream_responses(
                 if reasoning_output_index is None:
                     reasoning_output_index = 0
                 if reasoning_item_id is None:
-                    reasoning_item_id = f"rs_{uuid.uuid4().hex[:24]}"
+                    reasoning_item_id = _item_id("reasoning", "rs")
             elif accumulated_reasoning_text:
                 reasoning_output_index = len(completed_output)
-                reasoning_item_id = f"rs_{uuid.uuid4().hex[:24]}"
+                reasoning_item_id = _item_id("reasoning", "rs")
                 reasoning_item_added = True
                 events.append(
                     _emit(
@@ -4930,7 +4914,7 @@ async def _stream_responses(
             )
             if rescue_text:
                 rescue_output_index = len(completed_output)
-                rescue_item_id = f"msg_{uuid.uuid4().hex[:24]}"
+                rescue_item_id = _item_id("message", "msg")
                 rescue_part = {
                     "type": "output_text",
                     "text": rescue_text,
@@ -5041,7 +5025,7 @@ async def _stream_responses(
                 # a circular import at module load time.
                 from ..api.responses_adapter import _parse_computer_action
 
-                cu_id = f"cu_{uuid.uuid4().hex[:24]}"
+                cu_id = _item_id("computer_call", "cu")
                 action = _parse_computer_action(tc.function.arguments or "")
                 yield _emit(
                     "response.output_item.added",
@@ -5076,7 +5060,7 @@ async def _stream_responses(
                 )
                 completed_output.append(cu_done_item)
             else:
-                fc_id = f"fc_{uuid.uuid4().hex[:24]}"
+                fc_id = _item_id("function_call", "fc")
                 # issue #2114: re-attach the originating MCP namespace so
                 # Codex routes the call to the right server. Absent for
                 # direct tools and ambiguous name collisions (the mapping
@@ -5245,15 +5229,16 @@ async def _stream_responses(
                 "response": completed_response_payload,
             },
         )
-        from rapid_mlx.telemetry import inference as _telemetry_inference
+        if emit_telemetry:
+            from rapid_mlx.telemetry import inference as _telemetry_inference
 
-        _telemetry_inference.emit_completed_request(
-            model=served_telemetry_id or "<custom>",
-            endpoint="/v1/responses",
-            caller_agent=caller_agent,
-            caller_client=caller_client,
-            result="ok",
-        )
+            _telemetry_inference.emit_completed_request(
+                model=served_telemetry_id or "<custom>",
+                endpoint="/v1/responses",
+                caller_agent=caller_agent,
+                caller_client=caller_client,
+                result="ok",
+            )
 
         elapsed = time.perf_counter() - start_time
         tokens_per_sec = completion_tokens / elapsed if elapsed > 0 else 0

@@ -319,8 +319,6 @@
     "reject_reason": {
       "_about": "Closed reason for structured-output and context-budget capability rejections.",
       "values": [
-        "strict_with_tools",
-        "strict_with_stream",
         "format_type_unsupported",
         "prompt_over_window",
         "operational_cap",
