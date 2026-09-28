@@ -503,11 +503,20 @@ def is_proven_public(repo_id: str) -> bool:
     window — including a non-finite stamp — is not proof until a fresh
     anonymous fetch re-proves it.
 
-    This answers "does fresh proof exist", NOT "may we report this id" —
-    the token check lives in :func:`telemetry_model_id`, which is the only
-    place that decides what goes on the wire.
+    Proof is also invalid while the ambient Hub network path is untrusted.
+    This read-side check is required for warm-cache starts that do not make a
+    new Hub request (and therefore never call :func:`note_hub_fetch`). Any
+    older marker is revoked so it cannot reappear when the override is later
+    removed.
+
+    This answers "does usable proof exist", NOT "may we report this id" — the
+    token check lives in :func:`telemetry_model_id`, which is the only place
+    that decides what goes on the wire.
     """
     try:
+        if not _hub_connection_can_prove_public():
+            _revoke_proof(repo_id)
+            return False
         now = time.time()
         with _proven_lock:
             remembered = _proven_public.get(repo_id)

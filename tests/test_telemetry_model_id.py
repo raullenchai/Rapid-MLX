@@ -394,6 +394,40 @@ def test_network_override_revokes_older_proof(monkeypatch):
     assert mid.telemetry_model_id(repo) == "<custom>"
 
 
+def test_warm_cache_proof_fails_closed_when_network_override_appears(monkeypatch):
+    """No new Hub call occurs on this path, so the read itself must guard."""
+    repo = "someone/public-community-mlx"
+    mid.note_hub_fetch(repo)
+    marker = mid._marker_path(repo)
+    assert marker is not None and mid.os.path.exists(marker)
+    assert mid.is_proven_public(repo) is True
+
+    # Simulate a warm-cache restart behind a TLS-intercepting proxy. There is
+    # no note_hub_fetch call to revoke the old marker.
+    mid._reset_for_tests()
+    monkeypatch.setenv("HTTPS_PROXY", "https://proxy.example")
+
+    assert mid.is_proven_public(repo) is False  # direct callers fail closed
+    assert mid.telemetry_model_id(repo) == "<custom>"
+    assert not mid.os.path.exists(marker)
+
+
+def test_auth_still_outranks_the_read_side_network_probe(monkeypatch):
+    """A visible token rejects the id before stored-proof inspection."""
+    probes = 0
+
+    def _network_probe() -> bool:
+        nonlocal probes
+        probes += 1
+        return True
+
+    monkeypatch.setattr(mid, "hf_auth_state", lambda: True)
+    monkeypatch.setattr(mid, "_hub_connection_can_prove_public", _network_probe)
+
+    assert mid.telemetry_model_id("acme-corp/gated-weights") == "<custom>"
+    assert probes == 0
+
+
 # ------------------------------------------------- latch / never-raise (r2)
 
 
