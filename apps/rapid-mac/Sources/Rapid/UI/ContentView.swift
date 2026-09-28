@@ -1,11 +1,42 @@
 import SwiftUI
 
+actor StartupModelLinkMaintenanceCoordinator {
+    private var inFlight: (generation: UInt, id: UUID, task: Task<Void, Never>)?
+    private var completedGeneration: UInt?
+
+    func run(generation: UInt, _ operation: @escaping @Sendable () -> Void) async {
+        if let completedGeneration, completedGeneration >= generation { return }
+        if let current = inFlight {
+            await current.task.value
+            if inFlight?.id == current.id {
+                completedGeneration = max(completedGeneration ?? 0, current.generation)
+                inFlight = nil
+            }
+            if !Task.isCancelled,
+               (completedGeneration ?? 0) < generation {
+                await run(generation: generation, operation)
+            }
+            return
+        }
+        let id = UUID()
+        let task = Task.detached(priority: .utility) { operation() }
+        inFlight = (generation, id, task)
+        await task.value
+        if inFlight?.id == id {
+            completedGeneration = max(completedGeneration ?? 0, generation)
+            inFlight = nil
+        }
+    }
+}
+
 /// Main window content. Minimal menu-bar app: a model picker at the
 /// top, the chat transcript in the middle, a status footer at the
 /// bottom. The chat surface is gated on ``ServerState`` — before the
 /// server is ready the picker's Start button owns the flow, and a
 /// brand-new user with no model on disk sees the Quickstart card.
 struct ContentView: View {
+    private static let startupModelLinkMaintenance =
+        StartupModelLinkMaintenanceCoordinator()
     enum RestoredChatAlias: Equatable {
         case pendingCatalog
         /// The bounded catalog retry also failed. The persisted key remains
@@ -1038,6 +1069,8 @@ struct ContentView: View {
     private func refreshCatalogSnapshot() async {
         guard let binary = server.binaryPath else { return }
         let generation = downloads.cacheGeneration
+        await Self.ensureStartupModelLinks(generation: generation)
+        guard !Task.isCancelled, generation == downloads.cacheGeneration else { return }
         var loaded = await ModelCatalogCache.shared.entries(
             binary: binary,
             generation: generation
@@ -1788,8 +1821,15 @@ struct ContentView: View {
             if case .pendingCatalog = restoredChatAlias { return true }
             return false
         }()
-        _ = BundledModel.installBundledSnapshotSymlink()
-        _ = QuickstartModel.installAllSnapshotSymlinks()
+        // Cache repair can cross a user-selected or symlinked removable
+        // volume. Keep its ordering before catalog discovery, but never run
+        // that potentially blocking filesystem work on MainActor: the main
+        // window and model-free Computer Use must remain usable while macOS
+        // resolves volume access.
+        let maintenanceGeneration = downloads.cacheGeneration
+        await Self.ensureStartupModelLinks(generation: maintenanceGeneration)
+        guard !Task.isCancelled,
+              maintenanceGeneration == downloads.cacheGeneration else { return }
         let sessionCatalog: [ModelEntry]
         if let suppliedCatalog {
             sessionCatalog = suppliedCatalog
@@ -1846,6 +1886,13 @@ struct ContentView: View {
         await dictation.finishDeferredBootstrap(
             waitingForPrimaryLaunch: chatRestoreOutcome == .primaryLaunchPending
         )
+    }
+
+    private static func ensureStartupModelLinks(generation: UInt) async {
+        await startupModelLinkMaintenance.run(generation: generation) {
+            _ = BundledModel.installBundledSnapshotSymlink()
+            _ = QuickstartModel.installAllSnapshotSymlinks()
+        }
     }
 
     private enum LaunchAutoStartOutcome {
