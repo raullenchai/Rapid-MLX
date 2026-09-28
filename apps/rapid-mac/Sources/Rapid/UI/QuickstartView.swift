@@ -1559,6 +1559,7 @@ struct QuickstartView: View {
             // it with an eligible cached model, but an immediate Skip can
             // never leak the static 16 GB starter onto a smaller Mac.
             .onAppear {
+                DesktopFunnelReporter.enqueue(.onboardingShown)
                 coordinator.applyDefaultChoice(
                     hardware: hardware,
                     catalog: catalogLoaded ? cachedModels : []
@@ -4634,22 +4635,26 @@ struct QuickstartView: View {
         switch action {
         case .switchDownloadSource:
             beginDownloadPhase()
+            let started: Bool
             if downloads.job(for: coordinator.selection.alias) != nil {
-                _ = downloads.retryDownload(
+                started = downloads.retryDownload(
                     alias: coordinator.selection.alias,
                     source: .huggingFace
                 )
             } else {
-                _ = downloads.startDownload(
+                started = downloads.startDownload(
                     alias: coordinator.selection.alias,
                     hfPath: coordinator.selection.hfRepo,
                     source: .huggingFace
                 )
             }
+            if started { DesktopFunnelReporter.enqueue(.modelDownloadStarted) }
         case .retry:
             if downloads.job(for: coordinator.selection.alias) != nil {
                 beginDownloadPhase()
-                _ = downloads.retryDownload(alias: coordinator.selection.alias)
+                if downloads.retryDownload(alias: coordinator.selection.alias) {
+                    DesktopFunnelReporter.enqueue(.modelDownloadStarted)
+                }
             } else {
                 startQuickstart()
             }
@@ -4818,6 +4823,7 @@ struct QuickstartView: View {
             hfPath: coordinator.selection.hfRepo,
             totalBytes: coordinator.selection.downloadBytes
         )
+        if started { DesktopFunnelReporter.enqueue(.modelDownloadStarted) }
         // ``startDownload`` returns ``false`` either because the
         // binary is missing (the synthetic ``.failed`` job already
         // landed and our ``.task(id:)`` observer will pick it up) or
@@ -4834,6 +4840,7 @@ struct QuickstartView: View {
         case .running:
             return
         case .completed:
+            DesktopFunnelReporter.enqueue(.modelDownloadCompleted)
             // Codex r2 BLOCKING: if the server is already engaged with
             // a DIFFERENT alias (user used the still-visible picker
             // mid-download), don't fire ``server.start(gemma...)`` —
@@ -4884,6 +4891,7 @@ struct QuickstartView: View {
                 origin: .download
             )
         case .failed(let message):
+            DesktopFunnelReporter.enqueue(.modelDownloadFailed)
             enterRecovery(
                 kind: job.failureKind ?? FailureDiagnoser.downloadFailureKind(
                     raw: message,

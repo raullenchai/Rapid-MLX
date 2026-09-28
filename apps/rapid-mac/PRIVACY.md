@@ -1,6 +1,6 @@
 # Rapid-MLX Desktop — Privacy Policy
 
-Last updated: 2026-09-25.
+Last updated: 2026-09-28.
 
 Rapid-MLX Desktop ("the App") is a local-first SwiftUI Mac client for the
 `rapid-mlx` inference server. We designed it so that your prompts,
@@ -126,6 +126,27 @@ derives a coarse two-letter country code from connection metadata for aggregate
 reporting (`XX` when unavailable), strips client IPs, and writes events to R2;
 the IP address is never stored. Source is open at
 `github.com/raullenchai/rapidmlx.com` under `telemetry-worker/`.
+
+## Anonymous first-run funnel
+
+Official Desktop builds send a separate one-time milestone request to measure
+where first setup stops. It is sent at most once per install for each of:
+`onboarding_shown`, `model_download_started`, `model_download_completed`,
+`model_download_failed`, `engine_ready`, `engine_start_failed`, and
+`first_chat_reply`.
+
+The request is `POST https://rapidmlx.com/api/desktop-funnel` with exactly
+`{"v":"<app version>","m":"<milestone>"}`. It contains no install ID, device,
+OS, chip, RAM, timestamp, model name, error text, query parameter, prompt, or
+response. The service keeps aggregate per-version counters only. It never
+stores the IP address and does not derive or store a country for this endpoint.
+This measures aggregate first-run step conversion, not retention or individual
+paths.
+
+The request is off after telemetry is declined in Settings → Privacy or with
+`rapid-mlx telemetry off`. It is also skipped when update checks are disabled,
+or when `RAPID_MLX_TELEMETRY=0`, `RAPIDMLX_NO_UPDATE_CHECK=1`, or
+`DO_NOT_TRACK=1` is set. Test, development, and dogfood builds never send it.
 
 ## Opt out
 

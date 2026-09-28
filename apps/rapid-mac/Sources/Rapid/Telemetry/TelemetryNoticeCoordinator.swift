@@ -62,6 +62,9 @@ final class TelemetryNoticeCoordinator {
     }
 
     func productValueDelivered(_ kind: ProductValueKind) {
+        if kind == .chatReply {
+            DesktopFunnelReporter.enqueue(.firstChatReply)
+        }
         Task { await reportActivation(kind) }
     }
 }
