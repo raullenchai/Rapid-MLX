@@ -811,14 +811,36 @@ def test_cli_run_dispatch_and_planner_error(capsys, config_dir, monkeypatch, tmp
 
 
 class _FakeResponse:
-    def __init__(self, content=None, status_error=False):
+    def __init__(
+        self,
+        content=None,
+        status_error=False,
+        *,
+        finish_reason="stop",
+        reasoning_content=None,
+        completion_tokens=20,
+    ):
         self._content = content
         self.is_error = status_error
         self.status_code = 500 if status_error else 200
         self.text = "server exploded" if status_error else ""
+        self.finish_reason = finish_reason
+        self.reasoning_content = reasoning_content
+        self.completion_tokens = completion_tokens
 
     def json(self):
-        return {"choices": [{"message": {"content": self._content}}]}
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": self._content,
+                        "reasoning_content": self.reasoning_content,
+                    },
+                    "finish_reason": self.finish_reason,
+                }
+            ],
+            "usage": {"completion_tokens": self.completion_tokens},
+        }
 
 
 def _make_planner(monkeypatch, responses):
@@ -852,6 +874,191 @@ def test_plan_repairs_invalid_then_accepts(monkeypatch, fake_backend):
     )
     assert plan["element_index"] == 1
     assert len(attempts) == 2 and attempts[0]["error"]
+
+
+def test_plan_retries_null_length_with_grounded_prompt_and_larger_budget(
+    monkeypatch, fake_backend
+):
+    import asyncio
+
+    from rapid_mlx.cua import planner as planner_mod
+
+    snapshot = fake_backend.get_app_state("Finder", screenshot=False)
+    planner = planner_mod.Planner(
+        url="http://127.0.0.1:9/v1/chat/completions", model="m", text_only=True
+    )
+    calls = []
+    responses = [
+        _FakeResponse(
+            None,
+            finish_reason="length",
+            reasoning_content="private chain of thought",
+            completion_tokens=900,
+        ),
+        _FakeResponse(
+            '{"action":"click","step_instruction":"retry","element_index":1,'
+            '"text":"","key":"","direction":"","final_summary":""}'
+        ),
+    ]
+
+    async def fake_post(url, json=None, **_kwargs):
+        calls.append(json)
+        return responses.pop(0)
+
+    monkeypatch.setattr(planner.client, "post", fake_post)
+    plan, _raw, _latency, attempts = asyncio.run(
+        planner.plan("create a folder", snapshot, [])
+    )
+
+    assert plan["action"] == "click"
+    assert [call["max_tokens"] for call in calls] == [900, 1600]
+    retry_parts = calls[1]["messages"][0]["content"]
+    assert "Goal: create a folder" in retry_parts[0]["text"]
+    assert "[1] AXTextField Search" in retry_parts[0]["text"]
+    assert "previous response had no assistant content" in retry_parts[-1]["text"]
+    assert attempts[0]["finish_reason"] == "length"
+    assert attempts[0]["reasoning_present"] == "true"
+    assert "private chain of thought" not in str(attempts)
+
+
+def test_plan_retries_transient_null_once_without_raising_budget(
+    monkeypatch, fake_backend
+):
+    import asyncio
+
+    from rapid_mlx.cua import planner as planner_mod
+
+    snapshot = fake_backend.get_app_state("Finder", screenshot=False)
+    planner = planner_mod.Planner(
+        url="http://127.0.0.1:9/v1/chat/completions", model="m", text_only=True
+    )
+    calls = []
+    responses = [
+        _FakeResponse(None, finish_reason="stop"),
+        _FakeResponse(
+            '{"action":"wait","step_instruction":"settle","element_index":-1,'
+            '"text":"","key":"","direction":"","final_summary":""}'
+        ),
+    ]
+
+    async def fake_post(url, json=None, **_kwargs):
+        calls.append(json)
+        return responses.pop(0)
+
+    monkeypatch.setattr(planner.client, "post", fake_post)
+    plan, *_ = asyncio.run(planner.plan("wait", snapshot, []))
+
+    assert plan["action"] == "wait"
+    assert [call["max_tokens"] for call in calls] == [900, 900]
+
+
+def test_plan_repeated_null_is_bounded_and_does_not_expose_reasoning(
+    monkeypatch, fake_backend
+):
+    import asyncio
+
+    from rapid_mlx.cua import planner as planner_mod
+
+    snapshot = fake_backend.get_app_state("Finder", screenshot=False)
+    planner = planner_mod.Planner(
+        url="http://127.0.0.1:9/v1/chat/completions", model="m", text_only=True
+    )
+    calls = []
+
+    async def fake_post(url, json=None, **_kwargs):
+        calls.append(json)
+        return _FakeResponse(
+            None,
+            finish_reason="length",
+            reasoning_content="do not expose this reasoning",
+            completion_tokens=900,
+        )
+
+    monkeypatch.setattr(planner.client, "post", fake_post)
+    with pytest.raises(planner_mod.EmptyPlannerResponseError) as excinfo:
+        asyncio.run(planner.plan("wait", snapshot, []))
+
+    assert len(calls) == 2
+    assert "finish_reason=length" in str(excinfo.value)
+    assert "reasoning_present=true" in str(excinfo.value)
+    assert "do not expose" not in str(excinfo.value)
+
+
+def test_planner_metadata_and_content_parts_reject_untrusted_values(monkeypatch):
+    import asyncio
+
+    from rapid_mlx.cua import planner as planner_mod
+
+    planner = planner_mod.Planner(
+        url="http://127.0.0.1:9/v1/chat/completions", model="m", text_only=True
+    )
+
+    class Response:
+        is_error = False
+        status_code = 200
+
+        def json(self):
+            return {
+                "choices": [
+                    {
+                        "finish_reason": "secret-finish-value",
+                        "message": {
+                            "content": [
+                                {"type": "text", "text": None},
+                                {"type": "text", "text": '{"ok":true}'},
+                            ],
+                            "reasoning_content": None,
+                        },
+                    }
+                ],
+                "usage": {"completion_tokens": "secret-token-value"},
+            }
+
+    async def fake_post(*_args, **_kwargs):
+        return Response()
+
+    monkeypatch.setattr(planner.client, "post", fake_post)
+    text = asyncio.run(planner._ask([], 5, {}, "test"))
+
+    assert text == '{"ok":true}'
+    assert planner.last_response_metadata["finish_reason"] == "unknown"
+    assert planner.last_response_metadata["completion_tokens"] == "unknown"
+    assert "secret" not in str(planner.last_response_metadata)
+    assert planner_mod._safe_finish_reason([]) == "unknown"
+    assert planner_mod._safe_finish_reason({"finish": "length"}) == "unknown"
+
+
+def test_malformed_plan_repair_retains_goal_and_snapshot(monkeypatch, fake_backend):
+    import asyncio
+
+    from rapid_mlx.cua import planner as planner_mod
+
+    snapshot = fake_backend.get_app_state("Finder", screenshot=False)
+    planner = planner_mod.Planner(
+        url="http://127.0.0.1:9/v1/chat/completions", model="m", text_only=True
+    )
+    calls = []
+    responses = [
+        _FakeResponse("not json", finish_reason="length", completion_tokens=900),
+        _FakeResponse(
+            '{"action":"click","step_instruction":"grounded","element_index":1,'
+            '"text":"","key":"","direction":"","final_summary":""}'
+        ),
+    ]
+
+    async def fake_post(url, json=None, **_kwargs):
+        calls.append(json)
+        return responses.pop(0)
+
+    monkeypatch.setattr(planner.client, "post", fake_post)
+    plan, *_ = asyncio.run(planner.plan("create a folder", snapshot, []))
+
+    assert plan["element_index"] == 1
+    assert [call["max_tokens"] for call in calls] == [900, 1600]
+    repair_parts = calls[1]["messages"][0]["content"]
+    assert "Goal: create a folder" in repair_parts[0]["text"]
+    assert "[1] AXTextField Search" in repair_parts[0]["text"]
+    assert "Repair this invalid plan" in repair_parts[-1]["text"]
 
 
 def test_plan_http_error_raises(monkeypatch, fake_backend):

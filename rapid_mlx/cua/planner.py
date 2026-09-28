@@ -62,6 +62,34 @@ SENSITIVE_RE = re.compile(
 )
 
 
+class EmptyPlannerResponseError(ValueError):
+    """The endpoint returned no assistant content that can contain an action."""
+
+    def __init__(self, metadata: dict[str, str]):
+        self.metadata = metadata
+        details = ", ".join(f"{key}={value}" for key, value in metadata.items())
+        super().__init__(f"planner returned empty assistant content ({details})")
+
+
+def _safe_finish_reason(value: Any) -> str:
+    return (
+        value
+        if isinstance(value, str)
+        and value in {"stop", "length", "tool_calls", "content_filter"}
+        else "unknown"
+    )
+
+
+def _safe_token_count(value: Any) -> str:
+    if (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and 0 <= value <= 10_000_000
+    ):
+        return str(value)
+    return "unknown"
+
+
 def data_url(png: bytes, max_size: tuple[int, int] = (960, 600)) -> str:
     try:
         from PIL import Image
@@ -198,6 +226,7 @@ class Planner:
         self.text_only = text_only
         self.api_key = api_key
         self.guided_json = True
+        self.last_response_metadata: dict[str, str] = {}
         # Ambient HTTP_PROXY can route a loopback planner through a remote proxy.
         # Endpoint selection and remote-data consent must control the transport.
         self.client = httpx.AsyncClient(timeout=timeout, trust_env=False)
@@ -260,7 +289,44 @@ class Planner:
             if self.api_key:
                 detail = detail.replace(self.api_key, "***")
             raise RuntimeError(f"planner HTTP {response.status_code}: {detail}")
-        return str(response.json()["choices"][0]["message"]["content"])
+        body = response.json()
+        try:
+            choice = body["choices"][0]
+            message = choice["message"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise RuntimeError("planner response omitted choices[0].message") from exc
+        if not isinstance(choice, dict) or not isinstance(message, dict):
+            raise RuntimeError("planner response omitted choices[0].message")
+
+        reasoning = message.get("reasoning_content")
+        usage = body.get("usage") if isinstance(body, dict) else None
+        self.last_response_metadata = {
+            "finish_reason": _safe_finish_reason(choice.get("finish_reason")),
+            "content_type": type(message.get("content")).__name__,
+            "reasoning_present": str(bool(reasoning)).lower(),
+            "reasoning_chars": _safe_token_count(
+                len(reasoning) if isinstance(reasoning, str) else 0
+            ),
+            "completion_tokens": _safe_token_count(
+                usage.get("completion_tokens") if isinstance(usage, dict) else None
+            ),
+        }
+        content_value = message.get("content")
+        if isinstance(content_value, str):
+            text = content_value
+        elif isinstance(content_value, list):
+            text = "".join(
+                part["text"]
+                for part in content_value
+                if isinstance(part, dict)
+                and part.get("type") == "text"
+                and isinstance(part.get("text"), str)
+            )
+        else:
+            text = ""
+        if not text.strip():
+            raise EmptyPlannerResponseError(dict(self.last_response_metadata))
+        return text
 
     def build_prompt(
         self,
@@ -333,13 +399,40 @@ Return JSON only:
         if not self.text_only and png:
             content.append({"type": "image_url", "image_url": {"url": data_url(png)}})
         started = time.perf_counter()
-        text = await self._ask(content, 900, PLAN_SCHEMA, "computer_decision")
         attempts: list[dict[str, str]] = []
+        try:
+            text = await self._ask(content, 900, PLAN_SCHEMA, "computer_decision")
+        except EmptyPlannerResponseError as exc:
+            attempts.append({"raw": "", "error": str(exc), **exc.metadata})
+            retry_tokens = (
+                1600 if exc.metadata.get("finish_reason") == "length" else 900
+            )
+            retry_content = list(content) + [
+                {
+                    "type": "text",
+                    "text": (
+                        "The previous response had no assistant content. Re-evaluate the "
+                        "original goal and accessibility snapshot above. Respond with ONLY "
+                        "one grounded JSON action matching the required schema."
+                    ),
+                }
+            ]
+            text = await self._ask(
+                retry_content,
+                retry_tokens,
+                PLAN_SCHEMA,
+                "computer_decision",
+            )
         valid_indexes = {e["index"] for e in snapshot.get("elements", [])}
         try:
             plan = validate_plan(extract_json(text), valid_indexes)
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             attempts.append({"raw": text, "error": str(exc)})
+            repair_tokens = (
+                1600
+                if self.last_response_metadata.get("finish_reason") == "length"
+                else 500
+            )
             repair_prompt = f"""Repair this invalid plan as JSON only.
 Validation error: {exc}
 Invalid response:
@@ -350,8 +443,8 @@ press key must be one of {sorted(ALLOWED_KEYS)}; done needs a non-empty
 final_summary; never reference credentials or payment secrets.
 """
             text = await self._ask(
-                [{"type": "text", "text": repair_prompt}],
-                500,
+                list(content) + [{"type": "text", "text": repair_prompt[:2400]}],
+                repair_tokens,
                 PLAN_SCHEMA,
                 "computer_decision",
             )
