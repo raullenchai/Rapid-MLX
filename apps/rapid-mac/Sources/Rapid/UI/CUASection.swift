@@ -3,6 +3,7 @@ import SwiftUI
 struct CUAResultPresentation: Equatable {
     let answer: String
     let evidence: String?
+    let detailLabel: String
 
     var displayedAnswer: String {
         answer.isEmpty ? "The task completed without a result summary." : answer
@@ -27,16 +28,41 @@ struct CUAResultPresentation: Equatable {
             let trailing = normalized[match.upperBound...]
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             if !leading.isEmpty, !trailing.isEmpty {
-                answer = leading
-                evidence = trailing
+                if leading.count > Self.answerLimit {
+                    answer = Self.boundedAnswer(leading)
+                    evidence = normalized
+                    detailLabel = "Full result"
+                } else {
+                    answer = leading
+                    evidence = trailing
+                    detailLabel = "Supporting evidence"
+                }
                 return
             }
         }
-        // Planner summaries are free-form. If no known evidence boundary is
-        // present, preserve the complete result rather than guessing and
-        // hiding user-visible content.
-        answer = normalized
-        evidence = nil
+        if normalized.count > Self.answerLimit {
+            answer = Self.boundedAnswer(normalized)
+            evidence = normalized
+            detailLabel = "Full result"
+        } else {
+            answer = normalized
+            evidence = nil
+            detailLabel = "Supporting evidence"
+        }
+    }
+
+    private static let answerLimit = 220
+
+    private static func boundedAnswer(_ value: String) -> String {
+        let limit = value.index(value.startIndex, offsetBy: answerLimit)
+        let candidate = value[..<limit]
+        if let sentenceEnd = candidate.lastIndex(where: { ".!?".contains($0) }),
+           value.distance(from: value.startIndex, to: sentenceEnd) >= 60 {
+            return String(candidate[...sentenceEnd])
+        }
+        let ellipsisLimit = value.index(value.startIndex, offsetBy: answerLimit - 1)
+        return value[..<ellipsisLimit]
+            .trimmingCharacters(in: .whitespacesAndNewlines) + "…"
     }
 }
 
@@ -569,7 +595,7 @@ struct CUASection: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityIdentifier("ComputerUse.Agent.Summary.Answer")
             if result.evidence != nil || !viewModel.events.isEmpty {
-                runDetails(evidence: result.evidence)
+                runDetails(evidence: result.evidence, evidenceLabel: result.detailLabel)
             }
         }
         .padding(14)
@@ -640,7 +666,9 @@ struct CUASection: View {
         .accessibilityIdentifier("ComputerUse.Agent.Failure")
     }
 
-    private func runDetails(evidence: String?) -> some View {
+    private func runDetails(
+        evidence: String?, evidenceLabel: String = "Supporting evidence"
+    ) -> some View {
         DisclosureGroup {
             VStack(alignment: .leading, spacing: 10) {
                 if let evidence, !evidence.isEmpty {
@@ -649,6 +677,7 @@ struct CUASection: View {
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityLabel(evidenceLabel)
                         .accessibilityIdentifier("ComputerUse.Agent.Evidence")
                 }
                 if !viewModel.events.isEmpty {
@@ -657,16 +686,16 @@ struct CUASection: View {
             }
             .padding(.top, 6)
         } label: {
-            Text(detailsLabel(hasEvidence: evidence != nil))
+            Text(detailsLabel(hasEvidence: evidence != nil, evidenceLabel: evidenceLabel))
                 .font(.caption.weight(.semibold))
         }
         .tint(.secondary)
         .accessibilityIdentifier("ComputerUse.Agent.History")
     }
 
-    private func detailsLabel(hasEvidence: Bool) -> String {
-        if viewModel.events.isEmpty { return "Supporting evidence" }
-        if hasEvidence { return "Evidence and run history (\(viewModel.events.count) events)" }
+    private func detailsLabel(hasEvidence: Bool, evidenceLabel: String) -> String {
+        if viewModel.events.isEmpty { return evidenceLabel }
+        if hasEvidence { return "\(evidenceLabel) and run history (\(viewModel.events.count) events)" }
         return "Run history (\(viewModel.events.count) events)"
     }
 

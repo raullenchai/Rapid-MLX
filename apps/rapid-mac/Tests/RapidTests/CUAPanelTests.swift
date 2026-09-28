@@ -1554,6 +1554,7 @@ struct CUATargetUISourceTests {
 
         #expect(result.answer == "Created the folder and moved 3 files.")
         #expect(result.evidence == "Finder shows all 3 files.")
+        #expect(result.detailLabel == "Supporting evidence")
     }
 
     @Test("Free-form completed result remains intact")
@@ -1565,6 +1566,42 @@ struct CUATargetUISourceTests {
         #expect(result.evidence == nil)
     }
 
+    @Test("Long free-form result is concise without losing the original")
+    func longFreeFormCompletedResultPresentation() {
+        let summary = "The selected folder is tmp. "
+            + "The accessibility snapshot reports the title, selection count, sidebar locations, storage volumes, tags, and status details. "
+            + String(repeating: "Additional raw accessibility context remains available. ", count: 4)
+        let result = CUAResultPresentation(summary: summary)
+
+        #expect(result.answer.count <= 220)
+        #expect(result.answer.hasPrefix("The selected folder is tmp."))
+        #expect(result.answer != summary.trimmingCharacters(in: .whitespacesAndNewlines))
+        #expect(result.evidence == summary.trimmingCharacters(in: .whitespacesAndNewlines))
+        #expect(result.detailLabel == "Full result")
+    }
+
+    @Test("Long structured result keeps its complete text in details")
+    func longStructuredCompletedResultPresentation() {
+        let answer = String(repeating: "Confirmed the requested state with the selected window. ", count: 6)
+        let summary = answer + "Supporting evidence: AX title and status values matched."
+        let result = CUAResultPresentation(summary: summary)
+
+        #expect(result.answer.count <= 220)
+        #expect(result.evidence == summary)
+        #expect(result.detailLabel == "Full result")
+    }
+
+    @Test("Long unpunctuated result reserves room for its ellipsis")
+    func longUnpunctuatedCompletedResultPresentation() {
+        let summary = String(repeating: "状态已确认", count: 60)
+        let result = CUAResultPresentation(summary: summary)
+
+        #expect(result.answer.count <= 220)
+        #expect(result.answer.hasSuffix("…"))
+        #expect(result.evidence == summary)
+        #expect(result.detailLabel == "Full result")
+    }
+
     @Test("Completed task without a summary retains a visible result")
     func emptyCompletedResultPresentation() {
         let result = CUAResultPresentation(summary: "  \n")
@@ -1572,6 +1609,7 @@ struct CUATargetUISourceTests {
         #expect(result.answer.isEmpty)
         #expect(result.displayedAnswer == "The task completed without a result summary.")
         #expect(result.evidence == nil)
+        #expect(result.detailLabel == "Supporting evidence")
     }
 
     @Test("Planner payload is folded behind a readable failure summary")
