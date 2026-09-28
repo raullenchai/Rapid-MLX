@@ -158,6 +158,14 @@ class CUAGateDecision(BaseModel):
     approved: bool = True
 
 
+class CUACapabilityFeatures(BaseModel):
+    app_discovery: bool = True
+    window_discovery: bool = True
+    window_selection: bool = False
+    visual_observation: bool = False
+    approval_gate_id: bool = True
+
+
 class CUACapabilities(BaseModel):
     protocol_version: int = 1
     available: bool
@@ -165,6 +173,7 @@ class CUACapabilities(BaseModel):
     discovery: list[str]
     run_operations: list[str]
     max_concurrent_runs: int
+    features: CUACapabilityFeatures
 
 
 class CUAPermissions(BaseModel):
@@ -247,6 +256,7 @@ async def get_capabilities() -> CUACapabilities:
         discovery=["permissions", "apps", "windows"],
         run_operations=["create", "poll", "approve", "deny", "cancel"],
         max_concurrent_runs=cua_service.MAX_CONCURRENT_RUNS,
+        features=CUACapabilityFeatures(),
     )
 
 

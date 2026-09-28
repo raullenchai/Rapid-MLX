@@ -90,6 +90,9 @@ events and host discovery without transferring captured private content.
 Window discovery returns an opaque `window_id` such as `cg:123`, resolved
 against the target process ID. Discovery is currently informational: run
 creation targets the app's front window and has no `window_id` selector yet.
+Clients should inspect the versioned capability response instead of inferring
+support from route presence. In this revision, `window_selection` and
+`visual_observation` are false, while `approval_gate_id` is true.
 
 ## SDK
 

@@ -17,6 +17,9 @@ paths. Raw click/type endpoints and screenshots are outside this change.
 
 - Every new endpoint inherits the fail-closed bearer and rate-limit router
   dependencies from PR #3824.
+- The versioned capability response has explicit feature flags. It advertises
+  app/window discovery and gate IDs, and reports window selection and visual
+  observation as unsupported in this revision.
 - Discovery covers protocol capabilities, macOS permissions, regular apps, and
   on-screen windows. Backend work runs off the async event loop and imports are
   lazy, preserving Linux server import safety. Window discovery no longer

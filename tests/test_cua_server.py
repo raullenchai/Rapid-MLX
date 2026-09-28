@@ -184,6 +184,13 @@ def test_discovery_contract(client):
         "deny",
         "cancel",
     ]
+    assert capabilities.json()["features"] == {
+        "app_discovery": True,
+        "window_discovery": True,
+        "window_selection": False,
+        "visual_observation": False,
+        "approval_gate_id": True,
+    }
 
     permissions = client.get("/v1/cua/permissions", headers=AUTH)
     assert permissions.json()["accessibility"] is True
