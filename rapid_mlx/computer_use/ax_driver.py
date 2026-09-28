@@ -331,6 +331,8 @@ def collect(
     window_index: int = 0,
     window_frame: tuple[float, float, float, float] | None = None,
     expected_pid: int | None = None,
+    retry_web_content: bool = False,
+    partial_out: list[dict] | None = None,
 ) -> list[dict]:
     if window_index < 0:
         raise ValueError("window_index must be non-negative")
@@ -339,9 +341,10 @@ def collect(
         if expected_pid is not None
         else _app_element(app_name)
     )
-    targets: list[dict] = []
+    targets: list[dict] = partial_out if partial_out is not None else []
     counter = [0]
-    for attempt in range(4):
+    attempts = 4 if retry_web_content else 1
+    for attempt in range(attempts):
         windows = _as_list(_get(app, "AXWindows"))
         if window_frame is not None:
             tolerance = 0.5
@@ -360,13 +363,17 @@ def collect(
             selected_windows = matching
         else:
             selected_windows = windows[window_index : window_index + max_windows]
-        targets = []
+        targets.clear()
         counter = [0]
         for window in selected_windows:
             _walk(window, 0, targets, counter)
             if counter[0] >= MAX_NODES:
                 break
-        if any(t["role"] == "AXWebArea" for t in targets) or attempt == 3:
+        if (
+            not retry_web_content
+            or any(t["role"] == "AXWebArea" for t in targets)
+            or attempt == attempts - 1
+        ):
             break
         # Chrome builds the web-content AX tree lazily; _app_element has
         # already enabled manual accessibility for Chromium apps. Repeating

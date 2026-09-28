@@ -4,6 +4,7 @@
 
 import json
 import sys
+import threading
 import types
 
 import pytest
@@ -1119,6 +1120,51 @@ def test_collect_watchdog_translates_missing_pid_to_typed_error(monkeypatch):
     assert "pid missing" in excinfo.value.message
 
 
+def test_collect_watchdog_returns_completed_priority_prefix_when_tail_blocks(
+    monkeypatch,
+):
+    release = threading.Event()
+    priority = _target(element="cpu-tab", role="AXRadioButton")
+    priority["text"] = "CPU"
+    priority.pop("center")
+
+    def slow_tail(*args, partial_out, **kwargs):
+        partial_out.append(priority)
+        release.wait(1)
+        return partial_out
+
+    monkeypatch.setattr(backend.ax_driver, "collect", slow_tail)
+    status = {}
+    try:
+        collected = backend._collect_with_timeout(
+            "Activity Monitor", timeout_s=0.01, collection_status=status
+        )
+    finally:
+        release.set()
+
+    assert len(collected) == 1
+    assert collected[0]["text"] == "CPU"
+    assert collected[0] is not priority
+    assert collected[0]["element"] == "cpu-tab"
+    assert collected[0]["center"] == [6, 12]
+    assert status == {"partial": True}
+
+
+@pytest.mark.parametrize(
+    ("bundle", "expected"),
+    [
+        ("com.google.Chrome", True),
+        ("org.chromium.Chromium", True),
+        ("com.microsoft.edgemac", True),
+        ("com.apple.ActivityMonitor", False),
+        ("com.apple.TextEdit", False),
+        ("com.apple.Safari", False),
+    ],
+)
+def test_web_content_retry_is_explicitly_limited_to_chromium(bundle, expected):
+    assert backend._needs_web_content_retry({"bundleId": bundle}) is expected
+
+
 def test_element_click_ax_and_fallback(monkeypatch):
     snapshot = {"elements": [{"index": 0, "center": [6, 12], "actions": ["AXPress"]}]}
     monkeypatch.setattr(backend, "get_app_state", lambda *a, **k: snapshot)
@@ -1598,7 +1644,13 @@ def test_ax_driver_app_collect_retries_and_press(monkeypatch):
     monkeypatch.setattr(ax_driver, "_walk", walk)
     sets_before_collect = list(sets)
     collected = ax_driver.collect("A", keep_elements=True)
+    assert collected and attempts["n"] == 1
+    assert collected[0]["role"] == "AXButton"
+    collected = ax_driver.collect(
+        "A", keep_elements=True, retry_web_content=True
+    )
     assert collected and attempts["n"] == 2
+    assert collected[0]["role"] == "AXWebArea"
     assert sets == sets_before_collect
 
     monkeypatch.setattr(ax_driver, "_app_element", lambda _: "app")

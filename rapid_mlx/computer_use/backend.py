@@ -66,6 +66,13 @@ MODIFIER_FLAGS = {
 }
 
 
+def _needs_web_content_retry(app_info: dict) -> bool:
+    """Only Chromium-family AX trees need the lazy web-content retry loop."""
+
+    bundle = str(app_info.get("bundleId") or app_info.get("bundle_id") or "").lower()
+    return any(marker in bundle for marker in ("chrome", "chromium", "edge"))
+
+
 def _resolve_app(app: str, *, activate: bool = True) -> tuple[object, dict]:
     """Find a running app by name substring, bundle id, or pid:N."""
     try:
@@ -391,11 +398,14 @@ def get_app_state(
         ):
             return cached
     resolved_index = window["index"]
+    collection_status: dict[str, bool] = {}
     targets = _collect_with_timeout(
         app_info["name"] or app,
         window_index=resolved_index,
         window=window,
         expected_pid=app_info["pid"],
+        retry_web_content=_needs_web_content_retry(app_info),
+        collection_status=collection_status,
     )
     if not targets and resolved_index:
         raise ComputerUseError(
@@ -437,7 +447,8 @@ def get_app_state(
         "elements": elements,
         "element_count": len(elements),
         "tree_text": "\n".join(tree_lines),
-        "truncated": len(elements) >= ax_driver.MAX_NODES,
+        "truncated": collection_status.get("partial", False)
+        or len(elements) >= ax_driver.MAX_NODES,
     }
     png = (
         screenshot_window(
@@ -543,6 +554,8 @@ def _collect_with_timeout(
     window: dict | None = None,
     expected_pid: int | None = None,
     timeout_s: float | None = None,
+    retry_web_content: bool = False,
+    collection_status: dict[str, bool] | None = None,
 ) -> list[dict]:
     """ax_driver.collect with a watchdog.
 
@@ -557,6 +570,7 @@ def _collect_with_timeout(
 
     timeout_s = AX_COLLECT_TIMEOUT_S if timeout_s is None else timeout_s
     outcome: dict[str, Any] = {}
+    partial_targets: list[dict] = []
 
     def worker() -> None:
         try:
@@ -576,6 +590,8 @@ def _collect_with_timeout(
                     else None
                 ),
                 expected_pid=expected_pid,
+                retry_web_content=retry_web_content,
+                partial_out=partial_targets,
             )
         except SystemExit as exc:
             outcome["error"] = ComputerUseError("app_not_found", str(exc))
@@ -586,6 +602,22 @@ def _collect_with_timeout(
     worker_thread.start()
     worker_thread.join(timeout_s)
     if worker_thread.is_alive():
+        if partial_targets:
+            # The daemon may remain blocked in a target app's AX call. Copy
+            # fully appended entries so the returned snapshot is immutable
+            # while that abandoned worker eventually unwinds.
+            completed = [dict(target) for target in partial_targets]
+            for target in completed:
+                rect = target.get("rect")
+                if rect and "center" not in target:
+                    target["center"] = [
+                        round(rect[0] + rect[2] / 2),
+                        round(rect[1] + rect[3] / 2),
+                    ]
+            if completed:
+                if collection_status is not None:
+                    collection_status["partial"] = True
+                return completed
         raise ComputerUseError(
             "ax_unavailable",
             f"accessibility tree collection for {app_name!r} timed out "
@@ -613,6 +645,7 @@ def _live_element(snapshot: dict, element_index: int) -> object:
         window_index=current_window["index"],
         window=current_window,
         expected_pid=int(snapshot["app"]["pid"]),
+        retry_web_content=_needs_web_content_retry(snapshot["app"]),
     )
     for target in fresh:
         if int(target["target_id"][1:]) == element_index:
@@ -857,6 +890,7 @@ def _synthetic_fill(snapshot: dict, element_index: int, value: str) -> dict:
             window_index=current_window["index"],
             window=current_window,
             expected_pid=int(snapshot["app"]["pid"]),
+            retry_web_content=_needs_web_content_retry(snapshot["app"]),
         )
         for target in fresh:
             if target.get("element") is None or target["role"] not in FILL_ROLES:
