@@ -84,6 +84,7 @@ class CUARun:
         self.tracker = NoProgressTracker()
         self._last_execution_failed = False
         self._failed_completion_rejections = 0
+        self._trusted_transient_window_id: str | None = None
         self._empty_snapshots = 0
         self._terminal_emitted = False
         self.ranker = (
@@ -167,7 +168,7 @@ class CUARun:
             return None
         return tuple(
             json.dumps(target.get(field), ensure_ascii=False, sort_keys=True)
-            for field in (*required, "subrole", "actions")
+            for field in (*required, "subrole", "actions", "source_window_id")
         )
 
     @staticmethod
@@ -204,11 +205,23 @@ class CUARun:
             )
         return None
 
-    def _get_app_state(self, *, screenshot: bool) -> dict:
+    def _get_app_state(
+        self, *, screenshot: bool, transient_baseline: set[str] | None = None
+    ) -> dict:
         kwargs: dict[str, Any] = {"screenshot": screenshot, "use_cache": False}
         if self.window_id is not None:
             kwargs["window_id"] = self.window_id
+            if self._trusted_transient_window_id is not None:
+                kwargs["trusted_transient_window_id"] = (
+                    self._trusted_transient_window_id
+                )
+            if transient_baseline is not None:
+                kwargs["transient_baseline_window_ids"] = transient_baseline
         snapshot = backend.get_app_state(self.backend_app, **kwargs)
+        transient = snapshot.get("transient_window")
+        self._trusted_transient_window_id = (
+            str(transient["window_id"]) if isinstance(transient, dict) else None
+        )
         if self.expected_app is not None:
             observed = snapshot.get("app") or {}
             for key in ("pid", "bundleId", "name"):
@@ -239,13 +252,19 @@ class CUARun:
                     )
                 )
             elif action == "press":
-                backend.click(self.backend_app, index, expected_snapshot=snapshot)
+                backend.click(
+                    self.backend_app,
+                    index,
+                    expected_snapshot=snapshot,
+                    focus_only=True,
+                )
                 await asyncio.sleep(0.2)
                 result.update(
                     backend.press_key(
                         self.backend_app,
                         plan.get("key", "Enter"),
                         expected_snapshot=snapshot,
+                        element_index=index,
                     )
                 )
             elif action == "scroll":
@@ -541,7 +560,10 @@ class CUARun:
         executed = await self._execute(plan, snapshot)
         await asyncio.sleep(1.2)
         try:
-            after = self._get_app_state(screenshot=False)
+            after = self._get_app_state(
+                screenshot=False,
+                transient_baseline=set(snapshot.get("visible_window_ids", [])),
+            )
         except ComputerUseError as exc:
             if self.window_id is None:
                 raise

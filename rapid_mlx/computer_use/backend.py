@@ -26,6 +26,7 @@ SNAPSHOT_TTL_S = 120.0
 AX_COLLECT_TIMEOUT_S = 20.0
 FILL_ROLES = {"AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"}
 SNAPSHOT_CACHE_MAX = 32
+MAX_TRANSIENT_TARGETS = 64
 from . import ax_driver
 
 KEY_ALIASES: dict[str, int] = {
@@ -276,6 +277,106 @@ def _same_window(lhs: dict, rhs: dict) -> bool:
     )
 
 
+def _focused_ax_window(app_info: dict) -> object | None:
+    app_element = ax_driver._app_element(
+        app_info["name"], expected_pid=int(app_info["pid"])
+    )
+    app_windows = ax_driver._as_list(ax_driver._get(app_element, "AXWindows"))
+    focused = ax_driver._get(app_element, "AXFocusedWindow")
+    if focused is None:
+        focused = ax_driver._get(app_element, "AXFocusedUIElement")
+        if focused is not None and any(focused == window for window in app_windows):
+            return focused
+        seen: set[int] = set()
+        for _ in range(12):
+            if focused is None or id(focused) in seen:
+                focused = None
+                break
+            seen.add(id(focused))
+            if ax_driver._get(focused, "AXRole") == "AXWindow":
+                break
+            focused = ax_driver._get(focused, "AXParent")
+        else:
+            focused = None
+    if focused is None or not any(focused == window for window in app_windows):
+        return None
+    return focused
+
+
+def _ax_cg_frames_match(
+    ax_frame: tuple[float, float, float, float],
+    cg_frame: tuple[float, float, float, float],
+) -> bool:
+    ax_x, ax_y, ax_w, ax_h = ax_frame
+    cg_x, cg_y, cg_w, cg_h = cg_frame
+    return all(
+        abs(actual - expected) <= 4.0
+        for actual, expected in (
+            (ax_x, cg_x),
+            (ax_y, cg_y),
+            (ax_x + ax_w, cg_x + cg_w),
+            (ax_y + ax_h, cg_y + cg_h),
+        )
+    )
+
+
+def _focused_transient_window(
+    app_info: dict,
+    anchor: dict,
+    *,
+    trusted_window_id: int | str | None = None,
+    baseline_window_ids: set[str] | None = None,
+) -> dict | None:
+    """Return one tightly bounded same-process focused companion window.
+
+    The selected window remains the authorization anchor. A companion is only
+    admitted when it contains the app's exact focused AX element, maps
+    one-to-one to a same-PID layer-zero CG window, sits in front of and inside
+    the anchor, and is either new or already trusted by ID.
+    """
+    focused = _focused_ax_window(app_info)
+    frame = ax_driver._point_size(focused) if focused is not None else None
+    if frame is None:
+        return None
+    anchor_frame = tuple(float(anchor[key]) for key in ("x", "y", "width", "height"))
+    if _ax_cg_frames_match(frame, anchor_frame):
+        return None
+    matches = []
+    for candidate in _window_records(app_info):
+        candidate_frame = tuple(
+            float(candidate[key]) for key in ("x", "y", "width", "height")
+        )
+        if _ax_cg_frames_match(frame, candidate_frame):
+            matches.append(candidate)
+    if len(matches) != 1:
+        return None
+    candidate = matches[0]
+    candidate_id = str(candidate["window_id"])
+    if trusted_window_id is not None:
+        if _cg_window_id(candidate_id) != _cg_window_id(trusted_window_id):
+            return None
+    elif baseline_window_ids is None or candidate_id in baseline_window_ids:
+        return None
+    if int(candidate["index"]) >= int(anchor["index"]):
+        return None
+    ax, ay, aw, ah = anchor_frame
+    cx, cy, cw, ch = frame
+    tolerance = 2.0
+    if (
+        cw <= 0
+        or ch <= 0
+        or aw <= 0
+        or ah <= 0
+        or cx < ax - tolerance
+        or cy < ay - tolerance
+        or cx + cw > ax + aw + tolerance
+        or cy + ch > ay + ah + tolerance
+        or cw * ch > aw * ah * 0.25
+    ):
+        return None
+    return candidate
+
+
 def _validate_snapshot_window(
     snapshot: dict, *, point: tuple[float, float] | None = None
 ) -> dict:
@@ -377,6 +478,8 @@ def get_app_state(
     window_id: int | str | None = None,
     *,
     activate: bool = True,
+    trusted_transient_window_id: int | str | None = None,
+    transient_baseline_window_ids: set[str] | None = None,
 ) -> dict:
     """Snapshot one window: elements with indexes, tree text, optional PNG."""
     # Keep the historical action-path behavior by default. Read-only callers
@@ -386,7 +489,11 @@ def get_app_state(
         _resolve_app(app) if activate else _resolve_app(app, activate=False)
     )
     window = _select_window(app_info, window_index=window_index, window_id=window_id)
-    if use_cache:
+    if (
+        use_cache
+        and trusted_transient_window_id is None
+        and transient_baseline_window_ids is None
+    ):
         cached = _CACHE.get(
             app, window_index, screenshot=screenshot, window_id=window_id
         )
@@ -407,6 +514,39 @@ def get_app_state(
         retry_web_content=_needs_web_content_retry(app_info),
         collection_status=collection_status,
     )
+    for target in targets:
+        target["source_window_id"] = window["window_id"]
+    transient_window = (
+        _focused_transient_window(
+            app_info,
+            window,
+            trusted_window_id=trusted_transient_window_id,
+            baseline_window_ids=transient_baseline_window_ids,
+        )
+        if trusted_transient_window_id is not None
+        or transient_baseline_window_ids is not None
+        else None
+    )
+    if transient_window is not None:
+        transient_targets = _collect_with_timeout(
+            app_info["name"] or app,
+            window_index=transient_window["index"],
+            window=transient_window,
+            expected_pid=app_info["pid"],
+            collection_status=collection_status,
+            window_frame_tolerance=4.0,
+        )
+        if len(transient_targets) > MAX_TRANSIENT_TARGETS:
+            transient_targets = transient_targets[:MAX_TRANSIENT_TARGETS]
+            collection_status["partial"] = True
+        if len(targets) + len(transient_targets) > ax_driver.MAX_NODES:
+            targets = targets[: max(0, ax_driver.MAX_NODES - len(transient_targets))]
+            collection_status["partial"] = True
+        offset = len(targets)
+        for position, target in enumerate(transient_targets):
+            target["target_id"] = f"t{offset + position:03d}"
+            target["source_window_id"] = transient_window["window_id"]
+        targets.extend(transient_targets)
     if not targets and resolved_index:
         raise ComputerUseError(
             "window_not_found", f"window index {resolved_index} is not available"
@@ -430,6 +570,7 @@ def get_app_state(
                 "height": round(rect[3]),
                 "center": target.get("center")
                 or [round(rect[0] + rect[2] / 2), round(rect[1] + rect[3] / 2)],
+                "source_window_id": target["source_window_id"],
             }
         )
     tree_lines = [
@@ -449,7 +590,12 @@ def get_app_state(
         "tree_text": "\n".join(tree_lines),
         "truncated": collection_status.get("partial", False)
         or len(elements) >= ax_driver.MAX_NODES,
+        "visible_window_ids": [
+            str(record["window_id"]) for record in _window_records(app_info)
+        ],
     }
+    if transient_window is not None:
+        snapshot["transient_window"] = transient_window
     png = (
         screenshot_window(
             app_info["name"] or app,
@@ -462,7 +608,10 @@ def get_app_state(
     )
     if png is not None:
         snapshot["screenshot_png"] = png
-    _CACHE.put(app, window_index, snapshot, screenshot=screenshot, window_id=window_id)
+    if transient_window is None:
+        _CACHE.put(
+            app, window_index, snapshot, screenshot=screenshot, window_id=window_id
+        )
     return snapshot
 
 
@@ -556,6 +705,7 @@ def _collect_with_timeout(
     timeout_s: float | None = None,
     retry_web_content: bool = False,
     collection_status: dict[str, bool] | None = None,
+    window_frame_tolerance: float = 0.5,
 ) -> list[dict]:
     """ax_driver.collect with a watchdog.
 
@@ -589,6 +739,7 @@ def _collect_with_timeout(
                     if window is not None
                     else None
                 ),
+                window_frame_tolerance=window_frame_tolerance,
                 expected_pid=expected_pid,
                 retry_web_content=retry_web_content,
                 partial_out=partial_targets,
@@ -639,20 +790,61 @@ def _live_element(
 ) -> object:
     """Re-collect and return the live AX ref for an index, if still present."""
     expected = _element(snapshot, element_index)
+    source_window_id = expected.get("source_window_id", snapshot.get("window_id"))
+    is_transient = source_window_id != snapshot.get("window_id")
     center = expected.get("center")
     point = tuple(center) if isinstance(center, list) and len(center) == 2 else None
-    current_window = _validate_snapshot_window(
-        snapshot, point=point if validate_point else None
-    )
+    anchor = _validate_snapshot_window(snapshot)
+    if is_transient:
+        observed_transient = snapshot.get("transient_window")
+        if not isinstance(observed_transient, dict):
+            raise ComputerUseError(
+                "target_drift", "transient target has no trusted window identity"
+            )
+        current_window = _focused_transient_window(
+            snapshot["app"],
+            anchor,
+            trusted_window_id=source_window_id,
+        )
+        if current_window is None or not _same_window(
+            observed_transient, current_window
+        ):
+            raise ComputerUseError(
+                "target_drift", "transient companion changed or lost focus; re-observe"
+            )
+        if validate_point:
+            raise ComputerUseError(
+                "synthetic_input_blocked",
+                "transient companion targets require an exact Accessibility action",
+                (
+                    "Use an exact editable or pressable control from the fresh snapshot.",
+                ),
+            )
+    else:
+        current_window = _validate_snapshot_window(
+            snapshot, point=point if validate_point else None
+        )
     fresh = _collect_with_timeout(
         snapshot["app"]["name"],
         window_index=current_window["index"],
         window=current_window,
         expected_pid=int(snapshot["app"]["pid"]),
         retry_web_content=_needs_web_content_retry(snapshot["app"]),
+        window_frame_tolerance=4.0 if is_transient else 0.5,
     )
     for target in fresh:
-        if int(target["target_id"][1:]) == element_index:
+        fresh_index = int(target["target_id"][1:])
+        expected_local_index = (
+            element_index
+            - sum(
+                1
+                for entry in snapshot.get("elements", [])
+                if entry.get("source_window_id") == snapshot.get("window_id")
+            )
+            if is_transient
+            else element_index
+        )
+        if fresh_index == expected_local_index:
             comparisons = (
                 ("role", "role"),
                 ("label", "text"),
@@ -724,7 +916,9 @@ def _window_center(snapshot: dict) -> tuple[float, float]:
     )
 
 
-def _validate_focused_window(snapshot: dict) -> None:
+def _validate_focused_window(
+    snapshot: dict, expected_window: dict | None = None
+) -> None:
     workspace = ax_driver.AS.NSWorkspace.sharedWorkspace() if ax_driver.AS else None
     frontmost = workspace.frontmostApplication() if workspace is not None else None
     if frontmost is None or int(frontmost.processIdentifier()) != int(
@@ -734,25 +928,28 @@ def _validate_focused_window(snapshot: dict) -> None:
             "target_drift",
             f"pid {snapshot['app']['pid']} is no longer frontmost; re-observe",
         )
-    app_element = ax_driver._app_element(
-        snapshot["app"]["name"], expected_pid=int(snapshot["app"]["pid"])
-    )
-    focused = ax_driver._get(app_element, "AXFocusedWindow")
+    focused = _focused_ax_window(snapshot["app"])
     focused_frame = ax_driver._point_size(focused) if focused is not None else None
-    expected = snapshot["window"]
+    expected = expected_window or snapshot["window"]
     expected_frame = (
         float(expected["x"]),
         float(expected["y"]),
         float(expected["width"]),
         float(expected["height"]),
     )
-    if focused_frame is None or any(
-        abs(actual - wanted) > 0.5
-        for actual, wanted in zip(focused_frame, expected_frame, strict=True)
-    ):
+    anchor_focus = expected.get("window_id") == snapshot.get("window_id")
+    frame_matches = focused_frame is not None and (
+        all(
+            abs(actual - wanted) <= 0.5
+            for actual, wanted in zip(focused_frame, expected_frame, strict=True)
+        )
+        if anchor_focus
+        else _ax_cg_frames_match(focused_frame, expected_frame)
+    )
+    if not frame_matches:
         raise ComputerUseError(
             "target_drift",
-            f"window {snapshot['window_id']} is not the focused AX window; re-observe",
+            f"window {expected['window_id']} is not the focused AX window; re-observe",
         )
 
 
@@ -766,21 +963,25 @@ def click(
     expected_snapshot: dict | None = None,
     window_id: int | str | None = None,
     include_post_state: bool = False,
+    focus_only: bool = False,
 ) -> dict:
     if element_index is not None:
         snapshot = expected_snapshot or get_app_state(
             app, screenshot=False, use_cache=False, window_id=window_id
         )
         entry = _element(snapshot, element_index)
+        is_transient = entry.get(
+            "source_window_id", snapshot.get("window_id")
+        ) != snapshot.get("window_id")
         center = entry["center"]
         live = None
-        if "AXPress" in entry["actions"]:
+        if "AXPress" in entry["actions"] or is_transient:
             # Menus and popovers can be owned by the selected app/window while
             # appearing outside the window's content bounds. Revalidate the
             # exact window and AX target identity, then prefer AXPress on that
             # live object. Coordinate fallbacks remain bounded below.
             live = _live_element(snapshot, element_index, validate_point=False)
-        if live is not None:
+        if live is not None and "AXPress" in entry["actions"]:
             import ApplicationServices as AS  # type: ignore[import-untyped]  # noqa: N813, N817  # camelcase pyobjc module, alias is conventional
             from ApplicationServices import AXUIElementPerformAction
 
@@ -794,6 +995,29 @@ def click(
                     verification="action accepted by Accessibility; outcome not asserted",
                     include_post_state=include_post_state,
                 )
+        if (
+            live is not None
+            and is_transient
+            and focus_only
+            and entry.get("role") in FILL_ROLES
+            and (
+                ax_driver._get(live, "AXFocused") is True
+                or live == _focused_ax_window(snapshot["app"])
+            )
+        ):
+            return _finish_action(
+                app,
+                snapshot,
+                {"mode": "AXFocusVerified", "element_index": element_index},
+                verified=True,
+                verification="exact transient Accessibility element remained focused",
+                include_post_state=include_post_state,
+            )
+        if is_transient:
+            raise ComputerUseError(
+                "synthetic_input_blocked",
+                "transient companion target is not exactly pressable or focused",
+            )
         _validate_snapshot_window(snapshot, point=tuple(center))
         ax_driver._cg_click(float(center[0]), float(center[1]), clicks=click_count)
         return _finish_action(
@@ -840,8 +1064,11 @@ def set_value(
     snapshot = expected_snapshot or get_app_state(
         app, screenshot=False, use_cache=False, window_id=window_id
     )
-    _element(snapshot, element_index)
-    live = _live_element(snapshot, element_index)
+    entry = _element(snapshot, element_index)
+    is_transient = entry.get(
+        "source_window_id", snapshot.get("window_id")
+    ) != snapshot.get("window_id")
+    live = _live_element(snapshot, element_index, validate_point=not is_transient)
     if live is not None:
         from ApplicationServices import (  # type: ignore[import-untyped]
             AXUIElementSetAttributeValue,
@@ -860,6 +1087,12 @@ def set_value(
                     verification="exact AX value readback matched requested text",
                     include_post_state=include_post_state,
                 )
+    if is_transient:
+        raise ComputerUseError(
+            "synthetic_input_blocked",
+            "transient companion rejected exact AXSetValue; synthetic typing is disabled",
+            ("Re-observe the control or use a safe exact Accessibility action.",),
+        )
     # AX write either failed or did not land; degrade to synthetic typing.
     result = _synthetic_fill(snapshot, element_index, value)
     verified = result.pop("verified", None)
@@ -925,13 +1158,51 @@ def _synthetic_fill(snapshot: dict, element_index: int, value: str) -> dict:
 
 
 def _prepare_synthetic_action(
-    app: str, window_id: int | str | None, expected_snapshot: dict | None = None
+    app: str,
+    window_id: int | str | None,
+    expected_snapshot: dict | None = None,
+    element_index: int | None = None,
 ) -> dict:
     snapshot = expected_snapshot or get_app_state(
         app, screenshot=False, use_cache=False, window_id=window_id
     )
-    _validate_snapshot_window(snapshot, point=_window_center(snapshot))
-    _validate_focused_window(snapshot)
+    if element_index is not None:
+        entry = _element(snapshot, element_index)
+        if entry.get("source_window_id", snapshot.get("window_id")) != snapshot.get(
+            "window_id"
+        ):
+            live = _live_element(snapshot, element_index, validate_point=False)
+            focused_element = _focused_ax_window(snapshot["app"])
+            if live is None or not (
+                ax_driver._get(live, "AXFocused") is True or live == focused_element
+            ):
+                raise ComputerUseError(
+                    "target_drift",
+                    "transient target changed or lost focus before key dispatch",
+                )
+            anchor = _validate_snapshot_window(snapshot)
+            transient = snapshot.get("transient_window")
+            if not isinstance(transient, dict):
+                raise ComputerUseError(
+                    "target_drift", "transient window identity is missing"
+                )
+            current = _focused_transient_window(
+                snapshot["app"], anchor, trusted_window_id=entry["source_window_id"]
+            )
+            if current is None or not _same_window(transient, current):
+                raise ComputerUseError(
+                    "target_drift", "transient companion changed or lost focus"
+                )
+            expected_window = current
+        else:
+            expected_window = _validate_snapshot_window(
+                snapshot, point=_window_center(snapshot)
+            )
+    else:
+        expected_window = _validate_snapshot_window(
+            snapshot, point=_window_center(snapshot)
+        )
+    _validate_focused_window(snapshot, expected_window)
     return snapshot
 
 
@@ -959,10 +1230,23 @@ def press_key(
     window_id: int | str | None = None,
     include_post_state: bool = False,
     expected_snapshot: dict | None = None,
+    element_index: int | None = None,
 ) -> dict:
     normalized = key.strip().lower()
+    if expected_snapshot is not None and element_index is not None:
+        entry = _element(expected_snapshot, element_index)
+        is_transient = entry.get(
+            "source_window_id", expected_snapshot.get("window_id")
+        ) != expected_snapshot.get("window_id")
+        if is_transient and normalized != "enter":
+            raise ComputerUseError(
+                "unsupported_key",
+                "transient companion targets only allow Enter after exact focus validation",
+            )
     if normalized in KEY_ALIASES:
-        snapshot = _prepare_synthetic_action(app, window_id, expected_snapshot)
+        snapshot = _prepare_synthetic_action(
+            app, window_id, expected_snapshot, element_index
+        )
         ax_driver._press_key(KEY_ALIASES[normalized])
         return _finish_action(
             app,
@@ -973,7 +1257,9 @@ def press_key(
             include_post_state=include_post_state,
         )
     if normalized in ax_driver.KEYCODE_MAP:
-        snapshot = _prepare_synthetic_action(app, window_id, expected_snapshot)
+        snapshot = _prepare_synthetic_action(
+            app, window_id, expected_snapshot, element_index
+        )
         ax_driver._press_key(ax_driver._keycode_for(normalized))
         return _finish_action(
             app,

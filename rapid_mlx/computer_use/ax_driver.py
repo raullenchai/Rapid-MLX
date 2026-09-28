@@ -330,6 +330,7 @@ def collect(
     max_windows: int = 3,
     window_index: int = 0,
     window_frame: tuple[float, float, float, float] | None = None,
+    window_frame_tolerance: float = 0.5,
     expected_pid: int | None = None,
     retry_web_content: bool = False,
     partial_out: list[dict] | None = None,
@@ -347,15 +348,23 @@ def collect(
     for attempt in range(attempts):
         windows = _as_list(_get(app, "AXWindows"))
         if window_frame is not None:
-            tolerance = 0.5
             matching = []
             for window in windows:
                 frame = _point_size(window)
-                if frame is not None and all(
-                    abs(actual - expected) <= tolerance
-                    for actual, expected in zip(frame, window_frame, strict=True)
-                ):
-                    matching.append(window)
+                if frame is not None:
+                    ax_x, ax_y, ax_w, ax_h = frame
+                    cg_x, cg_y, cg_w, cg_h = window_frame
+                    edges_match = all(
+                        abs(actual - expected) <= window_frame_tolerance
+                        for actual, expected in (
+                            (ax_x, cg_x),
+                            (ax_y, cg_y),
+                            (ax_x + ax_w, cg_x + cg_w),
+                            (ax_y + ax_h, cg_y + cg_h),
+                        )
+                    )
+                    if edges_match:
+                        matching.append(window)
             if len(matching) != 1:
                 raise RuntimeError(
                     "selected CGWindow does not map to exactly one AX window"

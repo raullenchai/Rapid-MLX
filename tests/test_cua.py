@@ -2083,6 +2083,45 @@ def test_execution_failure_is_authoritative_and_reaches_planner_history(
     assert runner.tracker.should_intervene()
 
 
+def test_selected_run_trusts_only_discovered_transient_companion(tmp_path, monkeypatch):
+    from rapid_mlx.cua import loop as loop_mod
+
+    calls = []
+
+    def get_state(app, **kwargs):
+        calls.append(kwargs)
+        snapshot = {
+            "app": {"name": "Finder", "bundleId": "com.apple.finder", "pid": 716},
+            "window_id": "cg:1647",
+            "window_index": 1,
+            "window": {"window_id": "cg:1647"},
+            "elements": [{"index": 0}],
+            "tree_text": "",
+            "visible_window_ids": ["cg:1803", "cg:1647"],
+        }
+        if (
+            kwargs.get("transient_baseline_window_ids") == {"cg:1647"}
+            or kwargs.get("trusted_transient_window_id") == "cg:1803"
+        ):
+            snapshot["transient_window"] = {"window_id": "cg:1803"}
+        return snapshot
+
+    monkeypatch.setattr(loop_mod.backend, "get_app_state", get_state)
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path),
+        "pid:716",
+        "create a named folder",
+        tmp_path / "transient-run",
+        window_id="cg:1647",
+    )
+
+    discovered = runner._get_app_state(screenshot=False, transient_baseline={"cg:1647"})
+    assert discovered["transient_window"]["window_id"] == "cg:1803"
+    runner._get_app_state(screenshot=False)
+    assert calls[1]["trusted_transient_window_id"] == "cg:1803"
+    assert calls[1]["window_id"] == "cg:1647"
+
+
 def test_done_cannot_turn_failed_execution_into_success(
     fake_backend, tmp_path, monkeypatch
 ):

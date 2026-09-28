@@ -385,6 +385,54 @@ def test_get_app_state_uses_requested_window_without_screenshot(monkeypatch):
     assert captured["expected_pid"] == 7
 
 
+def test_get_app_state_merges_only_verified_transient_targets(monkeypatch):
+    app_info = {"name": "Finder", "bundleId": "com.apple.finder", "pid": 716}
+    anchor = _window(window_id=1647, index=1, x=986, y=538, width=920, height=436)
+    popup = _window(window_id=1803, index=0, x=1288, y=926, width=88, height=21)
+    monkeypatch.setattr(backend, "_resolve_app", lambda app: (object(), app_info))
+    monkeypatch.setattr(backend, "_select_window", lambda *a, **k: anchor)
+    monkeypatch.setattr(backend, "_window_records", lambda app: [popup, anchor])
+    monkeypatch.setattr(backend, "_focused_transient_window", lambda *a, **k: popup)
+
+    def collect(app, **kwargs):
+        if kwargs["window"]["window_id"] == "cg:1803":
+            return [
+                {
+                    "target_id": "t000",
+                    "role": "AXTextField",
+                    "text": "untitled folder",
+                    "actions": [],
+                    "rect": [1291, 929, 82, 15],
+                }
+            ]
+        return [
+            {
+                "target_id": "t000",
+                "role": "AXButton",
+                "text": "Action",
+                "actions": ["AXPress"],
+                "rect": [1000, 550, 20, 20],
+            }
+        ]
+
+    monkeypatch.setattr(backend, "_collect_with_timeout", collect)
+    state = backend.get_app_state(
+        "pid:716",
+        screenshot=False,
+        use_cache=False,
+        window_id="cg:1647",
+        transient_baseline_window_ids={"cg:1647"},
+    )
+
+    assert state["window_id"] == "cg:1647"
+    assert state["transient_window"]["window_id"] == "cg:1803"
+    assert [(e["index"], e["source_window_id"]) for e in state["elements"]] == [
+        (0, "cg:1647"),
+        (1, "cg:1803"),
+    ]
+    assert state["elements"][1]["label"] == "untitled folder"
+
+
 def test_select_window_id_is_bound_to_resolved_app_pid(monkeypatch):
     monkeypatch.setattr(
         backend,
@@ -1037,7 +1085,13 @@ def test_focused_window_and_post_action_state_contract(monkeypatch):
     monkeypatch.setattr(
         backend.ax_driver, "_app_element", lambda app, **kwargs: "application"
     )
-    monkeypatch.setattr(backend.ax_driver, "_get", lambda *a: "focused")
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_get",
+        lambda element, attribute: (
+            ["focused"] if attribute == "AXWindows" else "focused"
+        ),
+    )
     monkeypatch.setattr(
         backend.ax_driver, "_point_size", lambda *a: (0.0, 0.0, 100.0, 100.0)
     )
@@ -1298,6 +1352,323 @@ def test_click_keeps_outside_window_coordinate_fallback_fail_closed(monkeypatch)
 
     assert excinfo.value.code == "target_drift"
     assert "outside selected window" in excinfo.value.message
+
+
+def test_finder_inline_editor_is_admitted_as_new_contained_focused_companion(
+    monkeypatch,
+):
+    anchor = {
+        "index": 1,
+        "window_id": "cg:1647",
+        "x": 986,
+        "y": 538,
+        "width": 920,
+        "height": 436,
+    }
+    popup = {
+        "index": 0,
+        "window_id": "cg:1803",
+        "x": 1288,
+        "y": 926,
+        "width": 88,
+        "height": 21,
+    }
+    focused = object()
+    monkeypatch.setattr(backend, "_focused_ax_window", lambda app: focused)
+    monkeypatch.setattr(
+        backend.ax_driver, "_point_size", lambda element: (1291, 929, 82, 15)
+    )
+    monkeypatch.setattr(backend, "_window_records", lambda app: [popup, anchor])
+
+    assert (
+        backend._focused_transient_window(
+            {"name": "Finder", "pid": 716},
+            anchor,
+            baseline_window_ids={"cg:1647"},
+        )
+        == popup
+    )
+    assert (
+        backend._focused_transient_window(
+            {"name": "Finder", "pid": 716},
+            anchor,
+            baseline_window_ids={"cg:1803", "cg:1647"},
+        )
+        is None
+    )
+
+
+def test_focused_ax_window_accepts_exact_focused_ui_element_listed_as_window(
+    monkeypatch,
+):
+    application = object()
+    inline_editor = object()
+    monkeypatch.setattr(backend.ax_driver, "_app_element", lambda *a, **k: application)
+
+    def get(element, attribute):
+        if attribute == "AXFocusedWindow":
+            return None
+        if attribute == "AXFocusedUIElement":
+            return inline_editor
+        if attribute == "AXWindows":
+            return [inline_editor, object()]
+        return None
+
+    monkeypatch.setattr(backend.ax_driver, "_get", get)
+
+    assert backend._focused_ax_window({"name": "Finder", "pid": 716}) is inline_editor
+
+
+@pytest.mark.parametrize(
+    "popup",
+    [
+        {
+            "index": 0,
+            "window_id": "cg:2",
+            "x": 610,
+            "y": 210,
+            "width": 88,
+            "height": 21,
+        },
+        {
+            "index": 2,
+            "window_id": "cg:2",
+            "x": 110,
+            "y": 110,
+            "width": 88,
+            "height": 21,
+        },
+        {
+            "index": 0,
+            "window_id": "cg:2",
+            "x": 100,
+            "y": 100,
+            "width": 600,
+            "height": 400,
+        },
+    ],
+)
+def test_transient_companion_rejects_outside_behind_or_oversized(monkeypatch, popup):
+    anchor = {
+        "index": 1,
+        "window_id": "cg:1",
+        "x": 100,
+        "y": 100,
+        "width": 500,
+        "height": 400,
+    }
+    monkeypatch.setattr(backend, "_focused_ax_window", lambda app: object())
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_point_size",
+        lambda element: (
+            popup["x"],
+            popup["y"],
+            popup["width"],
+            popup["height"],
+        ),
+    )
+    monkeypatch.setattr(backend, "_window_records", lambda app: [popup, anchor])
+
+    assert (
+        backend._focused_transient_window(
+            {"name": "Finder", "pid": 4},
+            anchor,
+            baseline_window_ids={"cg:1"},
+        )
+        is None
+    )
+
+
+def test_transient_exact_set_value_never_falls_back_to_synthetic(monkeypatch):
+    snapshot = _stable_snapshot(
+        elements=[
+            {
+                "index": 0,
+                "role": "AXTextField",
+                "label": "untitled folder",
+                "center": [1332, 936],
+                "actions": [],
+                "source_window_id": "cg:1803",
+            }
+        ]
+    )
+    snapshot["transient_window"] = {
+        "index": 0,
+        "window_id": "cg:1803",
+        "x": 1288,
+        "y": 926,
+        "width": 88,
+        "height": 21,
+    }
+    live = object()
+    monkeypatch.setattr(backend, "_live_element", lambda *a, **k: live)
+    monkeypatch.setattr(
+        backend,
+        "_synthetic_fill",
+        lambda *a, **k: pytest.fail("transient target must not synthesize typing"),
+    )
+    module = _install_module(
+        monkeypatch,
+        "ApplicationServices",
+        AXUIElementSetAttributeValue=lambda *a: 1,
+        kAXValueAttribute="AXValue",
+    )
+
+    with pytest.raises(errors.ComputerUseError) as excinfo:
+        backend.set_value("pid:4", 0, "named folder", expected_snapshot=snapshot)
+
+    assert module is not None
+    assert excinfo.value.code == "synthetic_input_blocked"
+
+
+def test_transient_exact_set_value_succeeds_with_readback(monkeypatch):
+    snapshot = _stable_snapshot(
+        elements=[
+            {
+                "index": 0,
+                "role": "AXTextField",
+                "label": "untitled folder",
+                "center": [1332, 936],
+                "actions": [],
+                "source_window_id": "cg:1803",
+            }
+        ]
+    )
+    snapshot["transient_window"] = {
+        "index": 0,
+        "window_id": "cg:1803",
+        "x": 1288,
+        "y": 926,
+        "width": 88,
+        "height": 21,
+    }
+    live = object()
+    monkeypatch.setattr(backend, "_live_element", lambda *a, **k: live)
+    monkeypatch.setattr(backend, "_read_value", lambda element: "named folder")
+    _install_module(
+        monkeypatch,
+        "ApplicationServices",
+        AXUIElementSetAttributeValue=lambda *a: 0,
+        kAXValueAttribute="AXValue",
+    )
+
+    result = backend.set_value("pid:4", 0, "named folder", expected_snapshot=snapshot)
+
+    assert result["mode"] == "AXSetValue"
+    assert result["verified"] is True
+
+
+def test_transient_enter_requires_same_focused_companion(monkeypatch):
+    snapshot = _stable_snapshot(
+        elements=[
+            {
+                "index": 0,
+                "role": "AXTextField",
+                "label": "named folder",
+                "center": [1332, 936],
+                "actions": [],
+                "source_window_id": "cg:1803",
+            }
+        ]
+    )
+    transient = {
+        "index": 0,
+        "window_id": "cg:1803",
+        "x": 1288,
+        "y": 926,
+        "width": 88,
+        "height": 21,
+    }
+    snapshot["transient_window"] = transient
+    monkeypatch.setattr(
+        backend, "_validate_snapshot_window", lambda *a, **k: snapshot["window"]
+    )
+    monkeypatch.setattr(backend, "_focused_transient_window", lambda *a, **k: transient)
+    live = object()
+    monkeypatch.setattr(backend, "_live_element", lambda *a, **k: live)
+    monkeypatch.setattr(backend, "_focused_ax_window", lambda *a, **k: live)
+    monkeypatch.setattr(backend.ax_driver, "_get", lambda *a, **k: False)
+    monkeypatch.setattr(
+        backend, "_validate_focused_window", lambda snap, expected: None
+    )
+    pressed = []
+    monkeypatch.setattr(
+        backend.ax_driver, "_press_key", lambda key: pressed.append(key)
+    )
+
+    result = backend.press_key(
+        "pid:4", "Enter", expected_snapshot=snapshot, element_index=0
+    )
+
+    assert result["mode"] == "CGEvent-keycode"
+    assert pressed == [backend.KEY_ALIASES["enter"]]
+
+    monkeypatch.setattr(backend, "_focused_ax_window", lambda *a, **k: object())
+    with pytest.raises(errors.ComputerUseError) as excinfo:
+        backend.press_key("pid:4", "Enter", expected_snapshot=snapshot, element_index=0)
+    assert excinfo.value.code == "target_drift"
+    assert pressed == [backend.KEY_ALIASES["enter"]]
+
+
+def test_transient_companion_rejects_non_enter_key_before_dispatch(monkeypatch):
+    snapshot = _stable_snapshot(
+        elements=[
+            {
+                "index": 0,
+                "role": "AXTextField",
+                "label": "named folder",
+                "center": [1332, 936],
+                "actions": [],
+                "source_window_id": "cg:1803",
+            }
+        ]
+    )
+    snapshot["transient_window"] = {"window_id": "cg:1803"}
+    pressed = []
+    monkeypatch.setattr(
+        backend.ax_driver, "_press_key", lambda key: pressed.append(key)
+    )
+
+    with pytest.raises(errors.ComputerUseError) as excinfo:
+        backend.press_key("pid:4", "a", expected_snapshot=snapshot, element_index=0)
+
+    assert excinfo.value.code == "unsupported_key"
+    assert pressed == []
+
+
+def test_transient_focused_editable_is_only_successful_for_press_focus_phase(
+    monkeypatch,
+):
+    live = object()
+    snapshot = _stable_snapshot(
+        elements=[
+            {
+                "index": 0,
+                "role": "AXTextField",
+                "label": "named folder",
+                "center": [1332, 936],
+                "actions": [],
+                "source_window_id": "cg:1803",
+            }
+        ]
+    )
+    snapshot["transient_window"] = {"window_id": "cg:1803"}
+    monkeypatch.setattr(backend, "_live_element", lambda *a, **k: live)
+    monkeypatch.setattr(backend, "_focused_ax_window", lambda *a, **k: live)
+    monkeypatch.setattr(backend.ax_driver, "_get", lambda *a, **k: False)
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_cg_click",
+        lambda *a, **k: pytest.fail("transient target must not use coordinates"),
+    )
+
+    with pytest.raises(errors.ComputerUseError) as excinfo:
+        backend.click("pid:4", 0, expected_snapshot=snapshot)
+    assert excinfo.value.code == "synthetic_input_blocked"
+
+    result = backend.click("pid:4", 0, expected_snapshot=snapshot, focus_only=True)
+    assert result["mode"] == "AXFocusVerified"
 
 
 def test_set_value_and_synthetic_fill_paths(monkeypatch):
@@ -1617,6 +1988,22 @@ def test_ax_driver_tree_collect_and_events(monkeypatch):
         window_frame=(100.0, 100.0, 80.0, 60.0),
     )
     assert selected[0]["element"] == "selected"
+    monkeypatch.setattr(
+        ax_driver,
+        "_point_size",
+        lambda window: {
+            "front": (1291.0, 929.0, 82.0, 15.0),
+            "selected": (100.0, 100.0, 80.0, 60.0),
+        }[window],
+    )
+    inset = ax_driver.collect(
+        "A",
+        keep_elements=True,
+        max_windows=1,
+        window_frame=(1288.0, 926.0, 88.0, 21.0),
+        window_frame_tolerance=4.0,
+    )
+    assert inset[0]["element"] == "front"
     with pytest.raises(RuntimeError, match="exactly one AX window"):
         ax_driver.collect("A", window_frame=(10.0, 10.0, 10.0, 10.0))
 
