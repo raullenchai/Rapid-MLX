@@ -1481,3 +1481,31 @@ def test_preset_name_conflicts(tmp_path, monkeypatch):
         config_mod.save_user_preset("my-cloud", "https://b.example/v1", "m")
     with pytest.raises(ValueError, match="built-in"):
         config_mod.save_user_preset("Local-27B", "https://b.example/v1", "m")
+
+
+def test_planner_error_redacts_api_key(monkeypatch):
+    """Upstream error bodies must never carry the configured key into the
+    exception text that reaches traces (codex MAJOR #6)."""
+    import asyncio
+
+    from rapid_mlx.cua import planner as planner_mod
+
+    state = {"calls": 0}
+
+    class _Err:
+        status_code = 400
+        is_error = True
+        text = "bad request Authorization: Bearer sk-very-secret"
+
+    async def post(url, json=None, headers=None, **_kwargs):
+        state["calls"] += 1
+        return _Err()
+
+    planner = planner_mod.Planner(
+        url="http://127.0.0.1:9/v1", model="m", api_key="sk-very-secret"
+    )
+    monkeypatch.setattr(planner.client, "post", post)
+    with pytest.raises(RuntimeError, match="\\*\\*\\*") as excinfo:
+        asyncio.run(planner._ask([], 5, {}, "test"))
+    assert "sk-very-secret" not in str(excinfo.value)
+    assert state["calls"] == 2  # initial + one degradation retry
