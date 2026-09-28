@@ -1601,7 +1601,9 @@ def test_validate_url_accepts_domain_names():
     # assert_loopback_url (fast-thinking endpoints) only ever accepts IPs
     from rapid_mlx.cua.planner import assert_loopback_url
 
-    assert assert_loopback_url("http://127.0.0.1:18700/v1") == "http://127.0.0.1:18700/v1"
+    assert (
+        assert_loopback_url("http://127.0.0.1:18700/v1") == "http://127.0.0.1:18700/v1"
+    )
     with pytest.raises(ValueError, match="literal IP"):
         assert_loopback_url("http://rabbit.example/v1")
     with pytest.raises(ValueError, match="must be loopback"):
