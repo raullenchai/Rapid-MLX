@@ -1509,3 +1509,76 @@ def test_planner_error_redacts_api_key(monkeypatch):
         asyncio.run(planner._ask([], 5, {}, "test"))
     assert "sk-very-secret" not in str(excinfo.value)
     assert state["calls"] == 2  # initial + one degradation retry
+
+
+def test_save_preset_input_validation(tmp_path, monkeypatch, config_dir):
+    from rapid_mlx.cua import config as config_mod
+
+    cfg_path = tmp_path / "cua-config.json"
+    monkeypatch.setattr(config_mod, "CONFIG_PATH", cfg_path)
+    with pytest.raises(ValueError, match="1-32 chars"):
+        config_mod.save_user_preset("Bad Name!", "http://a/v1", "m")
+    with pytest.raises(ValueError, match="http"):
+        config_mod.save_user_preset("ok", "ftp://a/v1", "m")
+    with pytest.raises(ValueError, match="HTTPS"):
+        config_mod.save_user_preset("ok", "http://api.x.com/v1", "m", api_key="k")
+    with pytest.raises(ValueError, match="model"):
+        config_mod.save_user_preset("ok", "http://127.0.0.1:9/v1", "  ")
+    # a pre-existing stored entry without the user_created flag is reserved
+    cfg_path.write_text(
+        json.dumps({"presets": {"legacy": {"url": "http://127.0.0.1:1"}}})
+    )
+    with pytest.raises(ValueError, match="reserved"):
+        config_mod.save_user_preset("legacy", "http://127.0.0.1:9/v1", "m")
+
+
+def test_write_stored_cleanup_on_failure(tmp_path, monkeypatch, config_dir):
+    from rapid_mlx.cua import config as config_mod
+
+    cfg_path = tmp_path / "cua-config.json"
+    monkeypatch.setattr(config_mod, "CONFIG_PATH", cfg_path)
+
+    def boom(*_a, **_kw):
+        raise OSError("disk full")
+
+    real_os_replace = __import__("os").replace
+
+    def replace_then_fail(src, dst):
+        # the tmp file must exist at failure time so the cleanup path runs
+        src_path = Path(src)
+        assert src_path.exists() and src_path.stat().st_mode & 0o777 == 0o600
+        raise OSError("disk full")
+
+    monkeypatch.setattr("os.replace", replace_then_fail)
+    with pytest.raises(OSError, match="disk full"):
+        config_mod.save_user_preset("ok", "http://127.0.0.1:9/v1", "m")
+    monkeypatch.setattr("os.replace", real_os_replace)
+    leftovers = [p.name for p in tmp_path.iterdir() if p.name.startswith(".cua-config")]
+    assert leftovers == []  # tmp file cleaned up, no partial config
+    assert not cfg_path.exists()
+
+
+def test_delete_preset_unknown(tmp_path, monkeypatch, config_dir):
+    from rapid_mlx.cua import config as config_mod
+
+    monkeypatch.setattr(config_mod, "CONFIG_PATH", tmp_path / "cua-config.json")
+    with pytest.raises(ValueError, match="unknown preset"):
+        config_mod.delete_user_preset("nope")
+
+
+def test_write_stored_survives_unlink_failure(tmp_path, monkeypatch, config_dir):
+    """Even if tmp cleanup fails, the original error must propagate."""
+    from rapid_mlx.cua import config as config_mod
+
+    monkeypatch.setattr(config_mod, "CONFIG_PATH", tmp_path / "cua-config.json")
+
+    def replace_fail(*_a, **_kw):
+        raise OSError("disk full")
+
+    def unlink_fail(_p):
+        raise OSError("locked")
+
+    monkeypatch.setattr("os.replace", replace_fail)
+    monkeypatch.setattr("os.unlink", unlink_fail)
+    with pytest.raises(OSError, match="disk full"):
+        config_mod.save_user_preset("ok", "http://127.0.0.1:9/v1", "m")
