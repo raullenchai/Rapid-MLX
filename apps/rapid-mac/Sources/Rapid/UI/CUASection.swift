@@ -356,10 +356,17 @@ struct CUASection: View {
                 Button("Approve and Continue") { Task { await viewModel.approve() } }
                     .buttonStyle(.borderedProminent)
                     .tint(.orange)
+                    .disabled(!viewModel.canApprove)
                     .accessibilityIdentifier("ComputerUse.Agent.Approve")
                 Button("Stop Task") { Task { await viewModel.cancel() } }
                     .buttonStyle(.bordered)
                     .accessibilityIdentifier("ComputerUse.Agent.StopAtApproval")
+            }
+            if !viewModel.canApprove {
+                Text("This approval is missing its gate identity. Stop the task and retry.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .accessibilityIdentifier("ComputerUse.Agent.ApprovalUnavailable")
             }
         }
         .padding(10)

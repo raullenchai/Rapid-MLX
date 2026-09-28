@@ -9,7 +9,7 @@ protocol CUAAPI: Sendable {
     func create(_ request: CUARunRequest) async throws -> String
     func permissions() async throws -> CUAPermissionStatus
     func events(runID: String, after: Int) async throws -> CUARunView
-    func approve(runID: String, gateID: String?) async throws
+    func approve(runID: String, gateID: String) async throws
     func cancel(runID: String) async throws
 }
 
@@ -106,6 +106,10 @@ final class CUAViewModel: ObservableObject {
         !goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !phase.isBusy
             && !appName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var canApprove: Bool {
+        phase == .awaitingApproval && pendingApproval?.gateID != nil
     }
 
     var activeProgress: CUAProgressPresentation? {
@@ -244,9 +248,9 @@ final class CUAViewModel: ObservableObject {
     }
 
     func approve() async {
-        guard let runID, phase == .awaitingApproval else { return }
+        guard let runID, canApprove, let gateID = pendingApproval?.gateID else { return }
         do {
-            try await api.approve(runID: runID, gateID: pendingApproval?.gateID)
+            try await api.approve(runID: runID, gateID: gateID)
             pendingGateReason = nil
             pendingApproval = nil
             actionError = nil
@@ -350,6 +354,7 @@ final class CUAViewModel: ObservableObject {
                         }
                         pendingGateReason = nil
                         pendingApproval = nil
+                        phase = .running
                     }
                 }
                 for event in view.events where event.isTerminal {
@@ -460,7 +465,7 @@ private struct NullCUAAPI: CUAAPI {
         throw Unavailable()
     }
 
-    func approve(runID: String, gateID: String?) async throws {
+    func approve(runID: String, gateID: String) async throws {
         throw Unavailable()
     }
 

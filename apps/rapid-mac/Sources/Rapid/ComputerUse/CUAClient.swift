@@ -259,10 +259,10 @@ struct CUAClient: CUAAPI, Sendable {
         return try decode(CUARunView.self, from: data, response: response)
     }
 
-    func approve(runID: String, gateID: String?) async throws {
-        let body = try gateID.map {
-            try JSONEncoder().encode(CUAApprovalRequest(gateID: $0, approved: true))
-        }
+    func approve(runID: String, gateID: String) async throws {
+        let body = try JSONEncoder().encode(
+            CUAApprovalRequest(gateID: gateID, approved: true)
+        )
         let (data, response) = try await send(
             path: "/v1/cua/runs/\(runID)/approval", method: "POST", body: body
         )

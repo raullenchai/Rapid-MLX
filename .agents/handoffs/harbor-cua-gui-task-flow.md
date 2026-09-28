@@ -29,7 +29,8 @@ assets, or claim complete delegated-workflow parity.
   reconnect remains safe after the gate event has fallen behind the cursor.
   Optional `gate_id` is decoded and retained in pending state. Approvals with
   an ID send `{gate_id, approved}` so a delayed request cannot approve a later
-  gate; legacy events without an ID retain the empty-body request.
+  gate. Legacy events without an ID remain visible with Stop available, but
+  approval is disabled because an unbound request could approve a later gate.
   Legacy events without those optional fields remain usable and no prose is
   parsed to guess missing details. Approve and Stop are separate actions.
 - Verifier results use honest labels: Observed expected change, No effect

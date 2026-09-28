@@ -77,7 +77,7 @@ private final class MockAgentAPI: CUAAPI, @unchecked Sendable {
         )
     }
 
-    func approve(runID: String, gateID: String?) async throws {
+    func approve(runID: String, gateID: String) async throws {
         approveCalls += 1
         approvedGateIDs.append(gateID)
         if approveShouldFail { throw Failure.requested }
@@ -178,6 +178,9 @@ struct CUAViewModelTests {
         #expect(viewModel.pendingApproval?.action == nil)
         #expect(viewModel.pendingApproval?.target == nil)
         #expect(viewModel.pendingApproval?.reason == "sign-in")
+        #expect(!viewModel.canApprove)
+        await viewModel.approve()
+        #expect(api.approveCalls == 0)
     }
 
     @Test("Canonical pending gate survives a missed gate event")
@@ -221,6 +224,25 @@ struct CUAViewModelTests {
         #expect(viewModel.pendingApproval?.gateID == "gate-current")
     }
 
+    @Test("Matching gate resolution removes the stale approval card")
+    func matchingResolutionResumesRun() async {
+        let api = MockAgentAPI()
+        api.scriptedEvents = [
+            makeEvent(seq: 2, kind: "gate", gateID: "gate-current"),
+            makeEvent(seq: 3, kind: "gate_resolved", gateID: "gate-current"),
+        ]
+        let viewModel = CUAViewModel(api: api, pollIntervalNanos: 5_000_000)
+        viewModel.goal = "continue safely"
+        await viewModel.start()
+        await drain()
+
+        #expect(viewModel.phase == .running)
+        #expect(viewModel.pendingApproval == nil)
+        #expect(!viewModel.canApprove)
+        await viewModel.approve()
+        #expect(api.approveCalls == 0)
+    }
+
     @Test("Active progress reports structured step and honest verifier outcome")
     func activeProgressPresentation() {
         let viewModel = CUAViewModel(api: MockAgentAPI())
@@ -245,7 +267,7 @@ struct CUAViewModelTests {
     @Test("Approval failure keeps the active run controllable")
     func gateApprovalFailure() async throws {
         let api = MockAgentAPI()
-        api.scriptedEvents = [makeEvent(seq: 2, kind: "gate")]
+        api.scriptedEvents = [makeEvent(seq: 2, kind: "gate", gateID: "gate-7")]
         let viewModel = CUAViewModel(api: api, pollIntervalNanos: 5_000_000)
         viewModel.goal = "check flights"
         await viewModel.start()
@@ -452,18 +474,6 @@ struct CUAClientTests {
         #expect(json["approved"] as? Bool == true)
     }
 
-    @Test("Legacy approval keeps an empty request body when no gate ID exists")
-    func legacyApprovalRequestBody() async throws {
-        RecordingURLProtocol.stubResponse(path: "/v1/cua/runs/abc/approval")
-        let client = makeClient()
-        try await client.approve(runID: "abc", gateID: nil)
-
-        let captured = try #require(
-            RecordingURLProtocol.captured["/v1/cua/runs/abc/approval"]
-        )
-        #expect(captured.body.isEmpty)
-    }
-
     @Test("Permissions decode the executor process status")
     func permissionsDecode() async throws {
         RecordingURLProtocol.stubResponse(
@@ -485,7 +495,7 @@ struct CUAClientTests {
         )
         let client = makeClient()
         do {
-            try await client.approve(runID: "abc", gateID: nil)
+            try await client.approve(runID: "abc", gateID: "gate-7")
             Issue.record("expected throw")
         } catch let error as CUAClientError {
             #expect(error == .http(409, "run is not awaiting approval"))
