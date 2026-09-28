@@ -1168,7 +1168,8 @@ def test_web_content_retry_is_explicitly_limited_to_chromium(bundle, expected):
 def test_element_click_ax_and_fallback(monkeypatch):
     snapshot = {"elements": [{"index": 0, "center": [6, 12], "actions": ["AXPress"]}]}
     monkeypatch.setattr(backend, "get_app_state", lambda *a, **k: snapshot)
-    monkeypatch.setattr(backend, "_live_element", lambda *a: "live")
+    monkeypatch.setattr(backend, "_live_element", lambda *a, **k: "live")
+    monkeypatch.setattr(backend, "_validate_snapshot_window", lambda *a, **k: {})
     fake_as = _install_module(
         monkeypatch,
         "ApplicationServices",
@@ -1185,7 +1186,7 @@ def test_element_click_ax_and_fallback(monkeypatch):
     monkeypatch.setattr(
         backend,
         "_live_element",
-        lambda *a: (_ for _ in ()).throw(
+        lambda *a, **k: (_ for _ in ()).throw(
             errors.ComputerUseError("element_not_found", "gone")
         ),
     )
@@ -1234,11 +1235,76 @@ def test_click_recollects_ax_element_from_snapshot_pid(monkeypatch):
     assert pressed == [("pid-4-element", "AXPress")]
 
 
+def test_click_allows_exact_axpress_menu_outside_selected_window(monkeypatch):
+    target = {
+        "index": 0,
+        "role": "AXMenuItem",
+        "label": "New Folder",
+        "center": [1928, 602],
+        "actions": ["AXPress"],
+    }
+    snapshot = _stable_snapshot(elements=[target])
+    fresh = _target(0, role="AXMenuItem", element="menu-item")
+    fresh.update({"text": "New Folder", "center": [1928, 602]})
+    monkeypatch.setattr(backend.time, "time", lambda: 100.0)
+    monkeypatch.setattr(backend, "_select_window", lambda *a, **k: snapshot["window"])
+    monkeypatch.setattr(backend, "_collect_with_timeout", lambda *a, **k: [fresh])
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_cg_click",
+        lambda *a, **k: pytest.fail("exact AXPress must not synthesize a click"),
+    )
+    _install_module(
+        monkeypatch,
+        "ApplicationServices",
+        kAXErrorSuccess=0,
+        AXUIElementPerformAction=lambda element, action: 0,
+    )
+
+    result = backend.click("pid:4", element_index=0, expected_snapshot=snapshot)
+
+    assert result["mode"] == "AXPress"
+    assert result["element_index"] == 0
+
+
+def test_click_keeps_outside_window_coordinate_fallback_fail_closed(monkeypatch):
+    target = {
+        "index": 0,
+        "role": "AXMenuItem",
+        "label": "New Folder",
+        "center": [1928, 602],
+        "actions": ["AXPress"],
+    }
+    snapshot = _stable_snapshot(elements=[target])
+    fresh = _target(0, role="AXMenuItem", element="menu-item")
+    fresh.update({"text": "New Folder", "center": [1928, 602]})
+    monkeypatch.setattr(backend.time, "time", lambda: 100.0)
+    monkeypatch.setattr(backend, "_select_window", lambda *a, **k: snapshot["window"])
+    monkeypatch.setattr(backend, "_collect_with_timeout", lambda *a, **k: [fresh])
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_cg_click",
+        lambda *a, **k: pytest.fail("outside-window fallback must not click"),
+    )
+    _install_module(
+        monkeypatch,
+        "ApplicationServices",
+        kAXErrorSuccess=0,
+        AXUIElementPerformAction=lambda element, action: 1,
+    )
+
+    with pytest.raises(errors.ComputerUseError) as excinfo:
+        backend.click("pid:4", element_index=0, expected_snapshot=snapshot)
+
+    assert excinfo.value.code == "target_drift"
+    assert "outside selected window" in excinfo.value.message
+
+
 def test_set_value_and_synthetic_fill_paths(monkeypatch):
     synthetic_fill = backend._synthetic_fill
     snapshot = _stable_snapshot(elements=[{"index": 0, "center": [1, 2]}])
     monkeypatch.setattr(backend, "get_app_state", lambda *a, **k: snapshot)
-    monkeypatch.setattr(backend, "_live_element", lambda *a: "live")
+    monkeypatch.setattr(backend, "_live_element", lambda *a, **k: "live")
     module = _install_module(
         monkeypatch,
         "ApplicationServices",
@@ -1334,7 +1400,7 @@ def test_press_hotkey_scroll_and_secondary_paths(monkeypatch):
 
     snapshot = snapshot_for_input
     monkeypatch.setattr(backend, "get_app_state", lambda *a, **k: snapshot)
-    monkeypatch.setattr(backend, "_live_element", lambda *a: "live")
+    monkeypatch.setattr(backend, "_live_element", lambda *a, **k: "live")
     assert (
         backend.perform_secondary_action("A", 0, "AXShowMenu")["mode"]
         == "AXPerformAction"

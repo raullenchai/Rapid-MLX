@@ -671,7 +671,10 @@ def test_loop_reports_invalid_plan_and_runtime_failures(
         )
     )
     assert trace["status"] == "stopped"
-    assert "bad element" in trace["final_summary"]
+    assert trace["final_summary"] == (
+        "planner did not return a valid action after one repair attempt"
+    )
+    assert trace["planner_error"] == "bad element"
     assert invalid_events[-1]["status"] == "stopped"
     assert invalid.closed is True
 
@@ -1797,6 +1800,171 @@ def test_loop_ranker_success_and_unavailable(fake_backend, tmp_path, monkeypatch
     assert runner.trace["steps"][-1]["state_delta"]["fast_outcome"] == {
         "outcome": "unavailable"
     }
+
+
+def test_execution_failure_is_authoritative_and_reaches_planner_history(
+    fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.computer_use.errors import ComputerUseError
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    monkeypatch.setattr(
+        fake_backend,
+        "click",
+        lambda *a, **k: (_ for _ in ()).throw(
+            ComputerUseError(
+                "target_drift",
+                "point is outside selected window",
+                ("Use the keyboard shortcut from the fresh snapshot.",),
+            )
+        ),
+    )
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(loop_mod.asyncio, "sleep", no_sleep)
+    events = []
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path),
+        "Finder",
+        "create a folder",
+        tmp_path / "execution-failure",
+        event_sink=events.append,
+    )
+    runner.tracker.stall_limit = 1
+
+    class Ranker:
+        calls = 0
+
+        async def assess(self, *args):
+            self.calls += 1
+            return {"outcome": "success", "confidence": 1.0}, 0.01
+
+    ranker = Ranker()
+    runner.ranker = ranker
+    planner = _FakePlanner(
+        [
+            {
+                "action": "click",
+                "step_instruction": "choose New Folder",
+                "element_index": 1,
+                "final_summary": "",
+            }
+        ]
+    )
+
+    assert asyncio.run(runner.step(planner, 1)) is None
+    record = runner.trace["steps"][-1]
+    executed_event = next(event for event in events if event["kind"] == "executed")
+    assert ranker.calls == 0
+    assert record["execution"]["executed"] is False
+    assert record["execution"]["error_code"] == "target_drift"
+    assert record["protocol_outcome"] == "no_effect"
+    assert record["state_delta"]["fast_outcome"]["source"] == "execution"
+    assert executed_event["outcome"] == "no_effect"
+    assert executed_event["error_code"] == "target_drift"
+    assert runner.history[-1]["executed"] is False
+    assert runner.history[-1]["error_code"] == "target_drift"
+    assert "outside selected window" in runner.history[-1]["error"]
+    assert runner.history[-1]["recovery"] == [
+        "Use the keyboard shortcut from the fresh snapshot."
+    ]
+    assert runner.tracker.should_intervene()
+
+
+def test_done_cannot_turn_failed_execution_into_success(
+    fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.computer_use.errors import ComputerUseError
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    monkeypatch.setattr(
+        fake_backend,
+        "click",
+        lambda *a, **k: (_ for _ in ()).throw(
+            ComputerUseError("target_drift", "target was not executed")
+        ),
+    )
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(loop_mod.asyncio, "sleep", no_sleep)
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path),
+        "Finder",
+        "create a folder",
+        tmp_path / "failed-then-done",
+    )
+    planner = _FakePlanner(
+        [
+            {
+                "action": "click",
+                "step_instruction": "choose New Folder",
+                "element_index": 1,
+                "final_summary": "",
+            },
+            {
+                "action": "done",
+                "step_instruction": "claim completion",
+                "element_index": -1,
+                "final_summary": "folder created",
+            },
+        ]
+    )
+
+    assert asyncio.run(runner.step(planner, 1)) is None
+    assert asyncio.run(runner.step(planner, 2)) is None
+    assert "final_summary" not in runner.trace
+    assert runner.history[-1]["action"] == "done"
+    assert runner.history[-1]["outcome"] == "no_effect"
+    assert "previous action failed" in runner.history[-1]["error"]
+
+
+def test_invalid_planner_response_stays_in_trace_not_terminal_summary(
+    config_dir, fake_backend, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    events = []
+
+    class InvalidPlanner:
+        text_only = True
+
+        async def plan(self, *args, **kwargs):
+            raise ValueError('model returned no JSON object: \'{"private":"raw"}\'')
+
+        async def close(self):
+            pass
+
+    trace = asyncio.run(
+        loop_mod.run(
+            _make_config(config_dir),
+            "Finder",
+            "create a folder",
+            planner=InvalidPlanner(),
+            event_sink=events.append,
+        )
+    )
+
+    assert trace["status"] == "stopped"
+    assert trace["final_summary"] == (
+        "planner did not return a valid action after one repair attempt"
+    )
+    assert "private" not in trace["final_summary"]
+    assert "private" in trace["planner_error"]
+    terminal = next(event for event in events if event["kind"] == "terminal")
+    assert terminal["reason"] == trace["final_summary"]
 
 
 def test_run_constructs_clients_opens_url_and_closes(
