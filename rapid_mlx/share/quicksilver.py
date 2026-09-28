@@ -1519,9 +1519,7 @@ def _run_share(
         t.split("=", 1)[0] == "--default-reasoning-effort" for t in passthrough
     ):
         extra += ["--default-reasoning-effort", default_effort]
-    explicit_prompt_cap = _passthrough_option_value(
-        passthrough, "--max-prompt-tokens"
-    )
+    explicit_prompt_cap = _passthrough_option_value(passthrough, "--max-prompt-tokens")
     prompt_cap: int | str | None = (
         explicit_prompt_cap
         if explicit_prompt_cap is not None

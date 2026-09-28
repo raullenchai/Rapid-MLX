@@ -5087,6 +5087,45 @@ def enforce_context_length(
     )
 
 
+def _raise_prompt_count_unavailable() -> None:
+    """Fail closed when an operational prompt ceiling cannot be enforced."""
+    cap = get_config().max_prompt_tokens
+    raise HTTPException(
+        status_code=400,
+        detail={
+            "error": {
+                "message": (
+                    "This server could not determine the prompt token count "
+                    f"required to enforce its {cap}-token admission limit. "
+                    "The request was rejected before prefill."
+                ),
+                "type": "invalid_request_error",
+                "code": "context_length_exceeded",
+                "param": "messages",
+            }
+        },
+    )
+
+
+def _tokenized_prompt_length(tokenized) -> int:
+    """Return sequence length from tokenizer list, batch, or tensor output."""
+    if isinstance(tokenized, dict):
+        tokenized = tokenized.get("input_ids")
+    if tokenized is None:
+        return 0
+    if isinstance(tokenized, list):
+        if tokenized and isinstance(tokenized[0], list):
+            return max((len(row) for row in tokenized), default=0)
+        return len(tokenized)
+    shape = getattr(tokenized, "shape", None)
+    if shape and len(shape) > 0:
+        return int(shape[-1])
+    try:
+        return len(tokenized)
+    except TypeError:
+        return 0
+
+
 def _build_prompt_with_thinking_compat(
     build_prompt,
     messages: list,
@@ -5233,13 +5272,13 @@ def enforce_context_length_for_messages(
         # preparation belongs to their processor. The processor's tokenizer
         # can still render and count the text/tool prompt without touching
         # Metal, which is exactly what this admission gate needs.
-        tokenizer = getattr(engine, "tokenizer", None) or getattr(
-            engine, "_tokenizer", None
-        )
-        apply_template = getattr(tokenizer, "apply_chat_template", None)
-        if not callable(apply_template):
-            return None
         try:
+            tokenizer = getattr(engine, "tokenizer", None) or getattr(
+                engine, "_tokenizer", None
+            )
+            apply_template = getattr(tokenizer, "apply_chat_template", None)
+            if not callable(apply_template):
+                _raise_prompt_count_unavailable()
             template_kwargs = dict(chat_template_kwargs or {})
             if enable_thinking is not None:
                 template_kwargs.setdefault("enable_thinking", enable_thinking)
@@ -5250,14 +5289,14 @@ def enforce_context_length_for_messages(
                 add_generation_prompt=True,
                 **template_kwargs,
             )
-            if isinstance(prompt_ids, dict):
-                prompt_ids = prompt_ids.get("input_ids")
-            prompt_tokens = len(prompt_ids) if prompt_ids is not None else 0
+            prompt_tokens = _tokenized_prompt_length(prompt_ids)
+        except HTTPException:
+            raise
         except Exception:
             logger.debug("MLLM prompt admission tokenization failed", exc_info=True)
-            return None
+            _raise_prompt_count_unavailable()
         if prompt_tokens <= 0:
-            return None
+            _raise_prompt_count_unavailable()
         enforce_context_length(
             engine,
             prompt_tokens,
@@ -5269,6 +5308,8 @@ def enforce_context_length_for_messages(
         return prompt_tokens
     build_prompt = getattr(engine, "build_prompt", None)
     if build_prompt is None:
+        if get_config().max_prompt_tokens is not None:
+            _raise_prompt_count_unavailable()
         return None
     try:
         prompt = _build_prompt_with_thinking_compat(
@@ -5300,11 +5341,15 @@ def enforce_context_length_for_messages(
                 status_code=400,
                 detail=f"Chat template error: {err_msg}",
             )
+        if get_config().max_prompt_tokens is not None:
+            _raise_prompt_count_unavailable()
         return None
     if not prompt:
         return None
     prompt_tokens = count_prompt_tokens(engine, prompt)
     if prompt_tokens <= 0:
+        if get_config().max_prompt_tokens is not None:
+            _raise_prompt_count_unavailable()
         return None
     enforce_context_length(
         engine,
@@ -5416,12 +5461,14 @@ def enforce_context_length_for_prompt(
     handles both shapes; see its docstring for the codex round-2
     BLOCKING #3 rationale on non-string prompts.
     """
-    if getattr(engine, "is_mllm", False):
+    if getattr(engine, "is_mllm", False) and get_config().max_prompt_tokens is None:
         return
     if not prompt:
         return
     prompt_tokens = count_prompt_tokens(engine, prompt)
     if prompt_tokens <= 0:
+        if get_config().max_prompt_tokens is not None:
+            _raise_prompt_count_unavailable()
         return
     enforce_context_length(
         engine,

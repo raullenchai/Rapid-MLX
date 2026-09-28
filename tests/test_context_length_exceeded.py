@@ -420,6 +420,79 @@ def test_operational_prompt_cap_counts_mllm_text_without_prefill():
     assert excinfo.value.detail["error"]["code"] == "context_length_exceeded"
 
 
+def test_operational_prompt_cap_counts_batched_mllm_tokenizer_output():
+    from fastapi import HTTPException
+
+    from rapid_mlx.config import get_config
+    from rapid_mlx.service.helpers import enforce_context_length_for_messages
+
+    class _Tokenizer:
+        def apply_chat_template(self, messages, **kwargs):  # noqa: ARG002
+            return {"input_ids": [[0] * 16_385]}
+
+    class _MLLMEngine:
+        is_mllm = True
+        tokenizer = _Tokenizer()
+
+    get_config().max_prompt_tokens = 16_384
+    with pytest.raises(HTTPException) as excinfo:
+        enforce_context_length_for_messages(
+            _MLLMEngine(), [{"role": "user", "content": "large prompt"}]
+        )
+    assert excinfo.value.detail["error"]["code"] == "context_length_exceeded"
+
+
+@pytest.mark.parametrize("failure", ["missing", "raises", "empty"])
+def test_operational_prompt_cap_fails_closed_when_mllm_count_unavailable(failure):
+    """An enabled safety ceiling must never fall through to Metal uncounted."""
+    from fastapi import HTTPException
+
+    from rapid_mlx.config import get_config
+    from rapid_mlx.service.helpers import enforce_context_length_for_messages
+
+    class _Tokenizer:
+        def apply_chat_template(self, messages, **kwargs):  # noqa: ARG002
+            if failure == "raises":
+                raise RuntimeError("cannot render")
+            return []
+
+    class _MLLMEngine:
+        is_mllm = True
+        tokenizer = object() if failure == "missing" else _Tokenizer()
+
+    get_config().max_prompt_tokens = 16_384
+    with pytest.raises(HTTPException) as excinfo:
+        enforce_context_length_for_messages(
+            _MLLMEngine(), [{"role": "user", "content": "prompt"}]
+        )
+
+    assert excinfo.value.status_code == 400
+    err = excinfo.value.detail["error"]
+    assert err["code"] == "context_length_exceeded"
+    assert "rejected before prefill" in err["message"]
+
+
+def test_operational_prompt_cap_fails_closed_when_text_count_unavailable():
+    from fastapi import HTTPException
+
+    from rapid_mlx.config import get_config
+    from rapid_mlx.service.helpers import enforce_context_length_for_messages
+
+    class _Engine:
+        is_mllm = False
+        tokenizer = None
+
+        def build_prompt(self, messages, **kwargs):  # noqa: ARG002
+            return "rendered but uncountable"
+
+    get_config().max_prompt_tokens = 16_384
+    with pytest.raises(HTTPException) as excinfo:
+        enforce_context_length_for_messages(
+            _Engine(), [{"role": "user", "content": "prompt"}]
+        )
+    assert excinfo.value.detail["error"]["code"] == "context_length_exceeded"
+
+
 def test_max_prompt_tokens_cli_is_positive_and_shared_by_entrypoints():
     from rapid_mlx import cli, server
 
