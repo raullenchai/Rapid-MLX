@@ -1351,8 +1351,24 @@ def test_domain_is_rechecked_after_planning_before_any_action(
     from rapid_mlx.cua import loop as loop_mod
 
     monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    snapshot = {
+        "app": {"name": "Chrome"},
+        "window_id": "cg:404",
+        "elements": [{"index": 1, "label": "Article", "role": "AXLink"}],
+        "tree_text": "[1] AXLink Article",
+    }
+    monkeypatch.setattr(
+        fake_backend, "get_app_state", lambda *args, **kwargs: dict(snapshot)
+    )
     urls = iter(["https://allowed.example/start", "https://outside.example/"])
-    monkeypatch.setattr(fake_backend, "read_url", lambda _app: next(urls))
+    observed_window_ids: list[str | None] = []
+    monkeypatch.setattr(
+        fake_backend,
+        "read_url",
+        lambda _app, window_id=None: (
+            observed_window_ids.append(window_id) or next(urls)
+        ),
+    )
     clicks: list[int] = []
     monkeypatch.setattr(
         fake_backend,
@@ -1381,6 +1397,7 @@ def test_domain_is_rechecked_after_planning_before_any_action(
     assert result["status"] == "stopped"
     assert "outside --allowed-domain" in result["reason"]
     assert clicks == []
+    assert observed_window_ids == ["cg:404", "cg:404"]
 
 
 def test_loop_ranker_success_and_unavailable(fake_backend, tmp_path, monkeypatch):

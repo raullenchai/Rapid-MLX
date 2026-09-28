@@ -367,7 +367,7 @@ class CUARun:
                     {"step": step_no, "plan": plan, "gate": "stale", "stop": reason}
                 )
                 return {"status": "stopped", "reason": reason}
-            fresh_url = backend.read_url(self.app)
+            fresh_url = backend.read_url(self.app, window_id=fresh.get("window_id"))
             fresh_guard = self._check_domain(fresh_url)
             fresh_target = self._target(fresh, plan.get("element_index", -1))
             fresh_label = str(fresh_target.get("label", ""))
@@ -405,7 +405,7 @@ class CUARun:
         # Planning and human approval are await points during which the active
         # browser location can change. Enforce the domain boundary again at
         # the last possible moment before any input is dispatched.
-        pre_action_url = backend.read_url(self.app)
+        pre_action_url = backend.read_url(self.app, window_id=snapshot.get("window_id"))
         pre_action_guard = self._check_domain(pre_action_url)
         if pre_action_guard:
             self.trace["guard_stop"] = pre_action_guard
