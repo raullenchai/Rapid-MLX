@@ -2098,7 +2098,9 @@ async def test_buffered_chat_stream_matches_normal_state_machine_sdk_shape():
         ChatCompletionRequest,
         ChatCompletionResponse,
         FunctionCall,
+        PerRequestMetrics,
         PromptTokensDetails,
+        SpeculativeDecodingMetrics,
         ToolCall,
         Usage,
     )
@@ -2145,6 +2147,7 @@ async def test_buffered_chat_stream_matches_normal_state_machine_sdk_shape():
             prompt_tokens=4,
             completion_tokens=5,
             cached_tokens=3,
+            spec_decode_metrics={"verify_calls": 2},
             finished=True,
             finish_reason="tool_calls",
         ),
@@ -2193,6 +2196,9 @@ async def test_buffered_chat_stream_matches_normal_state_machine_sdk_shape():
             completion_tokens=5,
             total_tokens=9,
             prompt_tokens_details=PromptTokensDetails(cached_tokens=3),
+        ),
+        metrics=PerRequestMetrics(
+            speculative_decoding=SpeculativeDecodingMetrics(verify_calls=2)
         ),
     )
 
@@ -2256,6 +2262,7 @@ async def test_buffered_responses_stream_matches_normal_state_machine_sdk_shape(
             prompt_tokens=4,
             completion_tokens=5,
             cached_tokens=3,
+            spec_decode_metrics={"verify_calls": 2},
             finished=True,
             finish_reason="tool_calls",
         ),
@@ -2321,6 +2328,177 @@ async def test_buffered_responses_stream_matches_normal_state_machine_sdk_shape(
         event["item"]["id"]
         for event in sorted(done, key=lambda event: event["output_index"])
     ]
+
+
+@pytest.mark.asyncio
+async def test_buffered_replay_covers_empty_and_failure_protocol_shapes():
+    from rapid_mlx.api.models import (
+        AssistantMessage,
+        ChatCompletionChoice,
+        ChatCompletionRequest,
+        ChatCompletionResponse,
+        Usage,
+    )
+    from rapid_mlx.api.responses_adapter import responses_to_openai
+    from rapid_mlx.api.responses_models import ResponsesRequest
+    from rapid_mlx.routes.chat import _stream_buffered_chat_response
+    from rapid_mlx.routes.responses import (
+        _stream_buffered_responses_response,
+        _stream_responses,
+    )
+
+    chat_request = ChatCompletionRequest(
+        model="test-model",
+        messages=[{"role": "user", "content": "hi"}],
+        stream=True,
+    )
+    chat_response = ChatCompletionResponse(
+        id="chatcmpl-empty",
+        created=1,
+        model="test-model",
+        choices=[
+            ChatCompletionChoice(
+                message=AssistantMessage(content=None), finish_reason="stop"
+            )
+        ],
+        usage=Usage(),
+    )
+    chat_events = [
+        event
+        async for event in _stream_buffered_chat_response(chat_response, chat_request)
+    ]
+    assert chat_events[-1] == "data: [DONE]\n\n"
+
+    empty_response = {
+        "id": "resp_empty",
+        "object": "response",
+        "created_at": 1,
+        "status": "completed",
+        "model": "test-model",
+        "output": [],
+        "usage": {"input_tokens": 0, "output_tokens": 0},
+    }
+    response_events = [
+        event
+        async for event in _stream_buffered_responses_response(
+            json.dumps(empty_response).encode()
+        )
+    ]
+    assert json.loads(response_events[-1].splitlines()[1][6:])["type"] == (
+        "response.completed"
+    )
+
+    responses_request = ResponsesRequest.model_validate(
+        {"model": "test-model", "input": "hi", "stream": True}
+    )
+    openai_request = responses_to_openai(responses_request)
+
+    class _LateReasoningEngine:
+        tokenizer = None
+
+        async def stream_chat(self, **_kwargs):
+            yield GenerationOutput(text="answer", new_text="answer", channel="content")
+            yield GenerationOutput(
+                text="too late",
+                new_text="too late",
+                channel="reasoning",
+                finished=True,
+                finish_reason="stop",
+            )
+
+    failed_events = [
+        event
+        async for event in _stream_responses(
+            _LateReasoningEngine(),
+            openai_request,
+            responses_request,
+            emit_telemetry=False,
+        )
+    ]
+    assert any("response.failed" in event for event in failed_events)
+
+
+@pytest.mark.asyncio
+async def test_responses_replay_id_builder_covers_rescue_and_computer_items(
+    monkeypatch,
+):
+    from rapid_mlx.api.responses_adapter import responses_to_openai
+    from rapid_mlx.api.responses_models import ResponsesRequest
+    from rapid_mlx.routes import responses as responses_route
+
+    monkeypatch.setattr(
+        responses_route,
+        "_apply_reasoning_cutoff_notice",
+        lambda *_args, **_kwargs: "generation stopped during reasoning",
+    )
+
+    async def collect(request_payload, outputs):
+        request = ResponsesRequest.model_validate(request_payload)
+
+        class _ScriptedEngine:
+            tokenizer = None
+
+            async def stream_chat(self, **_kwargs):
+                for output in outputs:
+                    yield output
+
+        return [
+            event
+            async for event in responses_route._stream_responses(
+                _ScriptedEngine(),
+                responses_to_openai(request),
+                request,
+                emit_telemetry=False,
+            )
+        ]
+
+    rescue_events = await collect(
+        {"model": "test-model", "input": "hi", "stream": True},
+        [
+            GenerationOutput(
+                text="unfinished reasoning",
+                new_text="unfinished reasoning",
+                channel="reasoning",
+                finished=True,
+                finish_reason="length",
+            )
+        ],
+    )
+    assert any('"type": "message"' in event for event in rescue_events)
+
+    computer_events = await collect(
+        {
+            "model": "test-model",
+            "input": "click",
+            "stream": True,
+            "tools": [
+                {
+                    "type": "computer_20251022",
+                    "name": "computer",
+                    "display_width": 1280,
+                    "display_height": 800,
+                    "environment": "linux",
+                }
+            ],
+        },
+        [
+            GenerationOutput(
+                text="",
+                new_text="",
+                channel="tool_call",
+                tool_calls=[
+                    {
+                        "id": "call_computer",
+                        "name": "computer",
+                        "arguments": '{"action":"click","start_box":[128,128]}',
+                    }
+                ],
+                finished=True,
+                finish_reason="tool_calls",
+            )
+        ],
+    )
+    assert any('"type": "computer_call"' in event for event in computer_events)
 
 
 @pytest.mark.parametrize("surface", ["chat", "responses"])
