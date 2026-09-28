@@ -21,7 +21,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, NoReturn, cast
 
 from fastapi import HTTPException
 from starlette.requests import Request
@@ -5087,7 +5087,7 @@ def enforce_context_length(
     )
 
 
-def _raise_prompt_count_unavailable() -> None:
+def _raise_prompt_count_unavailable() -> NoReturn:
     """Fail closed when an operational prompt ceiling cannot be enforced."""
     cap = get_config().max_prompt_tokens
     raise HTTPException(
