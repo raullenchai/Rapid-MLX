@@ -1724,6 +1724,54 @@ def _responses_payload(*, strict: bool, stream: bool = False) -> dict:
     }
 
 
+def _chat_tools_payload(*, stream: bool = False) -> dict:
+    return {
+        "model": "test-model",
+        "messages": [{"role": "user", "content": "hi"}],
+        "stream": stream,
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "noop",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "NumberOnly",
+                "schema": _VALID_SCHEMA,
+                "strict": True,
+            },
+        },
+    }
+
+
+def _responses_tools_payload(*, stream: bool = False) -> dict:
+    return {
+        "model": "test-model",
+        "input": "hi",
+        "stream": stream,
+        "tools": [
+            {
+                "type": "function",
+                "name": "noop",
+                "parameters": {"type": "object", "properties": {}},
+            }
+        ],
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "NumberOnly",
+                "schema": _VALID_SCHEMA,
+                "strict": True,
+            }
+        },
+    }
+
+
 def test_responses_strict_true_guided_unavailable_runs_postgen_validation(
     _rate_limiter_state,
 ):
@@ -1806,26 +1854,25 @@ def test_responses_strict_true_post_decode_violation_returns_502(_rate_limiter_s
     assert snap["strict_violations_total"] == 1
 
 
-def test_responses_strict_true_stream_rejected_with_400(_rate_limiter_state):
-    """Codex r2 BLOCKING #2 parity: /v1/responses + strict + stream
-    is rejected with a clear 400 because constrained decoding on
-    the Responses surface is buffered-only — there is no
-    guided-streaming SSE helper for the Responses event shape
-    today. The error message names both escape hatches (drop
-    stream=true, or use /v1/chat/completions)."""
+def test_responses_strict_true_stream_emits_valid_normal_sse(_rate_limiter_state):
     engine = _Engine(supports_guided=True, guided_text=_VALID_PAYLOAD)
     client = _make_responses_client(engine, _rate_limiter_state)
     resp = client.post(
         "/v1/responses",
         json=_responses_payload(strict=True, stream=True),
     )
-    assert resp.status_code == 400, resp.text
-    body = resp.json()
-    assert body["error"]["code"] == "strict_stream_unsupported"
-    assert "stream=true" in body["error"]["message"]
-    assert "/v1/chat/completions" in body["error"]["message"]
-    # The counter still ticks — clients asking for strict+stream
-    # are reflected in the strict-traffic series even though we 400.
+    assert resp.status_code == 200, resp.text
+    events = []
+    for block in resp.text.strip().split("\n\n"):
+        lines = block.splitlines()
+        events.append((lines[0].removeprefix("event: "), json.loads(lines[1][6:])))
+    assert events[0][0] == "response.created"
+    assert events[-1][0] == "response.completed"
+    text = "".join(
+        data["delta"] for name, data in events if name == "response.output_text.delta"
+    )
+    assert json.loads(text) == {"value": 42}
+    assert events[-1][1]["response"]["usage"]["total_tokens"] == 9
     snap = response_format_metrics.snapshot()
     assert snap["strict_requests_total"] == 1
 
@@ -1882,14 +1929,7 @@ def test_responses_guided_cancellation_is_lifecycle_not_schema_failure(
     assert response_format_metrics.snapshot()["strict_violations_total"] == 0
 
 
-def test_strict_true_with_tools_returns_400_chat():
-    """Codex r3 BLOCKING #2 hole — strict + tools: the existing
-    ``if response_format and not request.tools`` guard around the
-    guided dispatch silently dropped strict mode when tools were
-    set, so a strict request with tools fell through to
-    unconstrained generation. The new gate fails closed with
-    ``strict_with_tools_unsupported`` because constrained-decoding
-    grammar and tool-call grammar are mutually exclusive."""
+def test_strict_true_with_tools_returns_valid_final_text_chat():
     engine = _Engine(supports_guided=True)
     client = _make_client(engine)
     payload = {
@@ -1914,20 +1954,17 @@ def test_strict_true_with_tools_returns_400_chat():
         },
     }
     resp = client.post("/v1/chat/completions", json=payload)
-    assert resp.status_code == 400, resp.text
-    body = resp.json()
-    assert body["error"]["code"] == "strict_with_tools_unsupported"
-    # Strict counter ticks so operators see the malformed-strict rate.
+    assert resp.status_code == 200, resp.text
+    assert json.loads(resp.json()["choices"][0]["message"]["content"]) == {"value": 42}
     snap = response_format_metrics.snapshot()
     assert snap["strict_requests_total"] == 1
-    # Neither guided nor chat path was hit.
     assert engine.guided_calls == []
-    assert engine.chat_calls == []
+    assert len(engine.chat_calls) == 1
 
 
-def test_responses_strict_true_with_tools_returns_400(_rate_limiter_state):
-    """Codex r3 BLOCKING #3 parity: /v1/responses + strict + tools
-    must also 400 ``strict_with_tools_unsupported``."""
+def test_responses_strict_true_with_tools_returns_valid_final_text(
+    _rate_limiter_state,
+):
     engine = _Engine(supports_guided=True)
     client = _make_responses_client(engine, _rate_limiter_state)
     payload = {
@@ -1950,11 +1987,136 @@ def test_responses_strict_true_with_tools_returns_400(_rate_limiter_state):
         },
     }
     resp = client.post("/v1/responses", json=payload)
-    assert resp.status_code == 400, resp.text
-    body = resp.json()
-    assert body["error"]["code"] == "strict_with_tools_unsupported"
+    assert resp.status_code == 200, resp.text
+    assert json.loads(resp.json()["output"][0]["content"][0]["text"]) == {"value": 42}
     assert engine.guided_calls == []
-    assert engine.chat_calls == []
+    assert len(engine.chat_calls) == 1
+
+
+@pytest.mark.parametrize("surface", ["chat", "responses"])
+def test_strict_tools_tool_call_is_returned_without_schema_repair(
+    surface, _rate_limiter_state
+):
+    class _ToolCallEngine(_Engine):
+        async def chat(self, *, messages, **kwargs):
+            self.chat_calls.append({"messages": messages, "kwargs": kwargs})
+            return GenerationOutput(
+                text="",
+                prompt_tokens=4,
+                completion_tokens=3,
+                finish_reason="tool_calls",
+                tool_calls=[{"id": "call_exact", "name": "noop", "arguments": "{}"}],
+            )
+
+    engine = _ToolCallEngine(supports_guided=True)
+    if surface == "chat":
+        response = _make_client(engine).post(
+            "/v1/chat/completions", json=_chat_tools_payload()
+        )
+        call = response.json()["choices"][0]["message"]["tool_calls"][0]
+        assert call["id"] == "call_exact"
+        assert call["function"] == {"name": "noop", "arguments": "{}"}
+    else:
+        response = _make_responses_client(engine, _rate_limiter_state).post(
+            "/v1/responses", json=_responses_tools_payload()
+        )
+        call = response.json()["output"][0]
+        assert call["call_id"] == "call_exact"
+        assert call["name"] == "noop"
+        assert call["arguments"] == "{}"
+    assert response.status_code == 200, response.text
+    assert engine.guided_calls == []
+
+
+@pytest.mark.parametrize("surface", ["chat", "responses"])
+def test_strict_tools_invalid_final_text_uses_one_constrained_repair(
+    surface, _rate_limiter_state
+):
+    engine = _Engine(
+        supports_guided=True,
+        chat_text=_INVALID_PAYLOAD_WRONG_KEY,
+        guided_text=_VALID_PAYLOAD,
+    )
+    if surface == "chat":
+        response = _make_client(engine).post(
+            "/v1/chat/completions", json=_chat_tools_payload()
+        )
+        text = response.json()["choices"][0]["message"]["content"]
+    else:
+        response = _make_responses_client(engine, _rate_limiter_state).post(
+            "/v1/responses", json=_responses_tools_payload()
+        )
+        text = response.json()["output"][0]["content"][0]["text"]
+    assert response.status_code == 200, response.text
+    assert json.loads(text) == {"value": 42}
+    assert len(engine.chat_calls) == 1
+    assert len(engine.guided_calls) == 1
+    assert "tools" not in engine.guided_calls[0]["kwargs"]
+
+
+@pytest.mark.parametrize("surface", ["chat", "responses"])
+def test_strict_tools_invalid_constrained_repair_returns_502(
+    surface, _rate_limiter_state
+):
+    engine = _Engine(
+        supports_guided=True,
+        chat_text=_INVALID_PAYLOAD_WRONG_KEY,
+        guided_text=_INVALID_PAYLOAD_OUT_OF_RANGE,
+    )
+    if surface == "chat":
+        response = _make_client(engine).post(
+            "/v1/chat/completions", json=_chat_tools_payload()
+        )
+    else:
+        response = _make_responses_client(engine, _rate_limiter_state).post(
+            "/v1/responses", json=_responses_tools_payload()
+        )
+    assert response.status_code == 502, response.text
+    assert response.json()["error"]["code"] == "strict_schema_violation"
+    assert len(engine.chat_calls) == 1
+    assert len(engine.guided_calls) == 1
+
+
+@pytest.mark.parametrize("surface", ["chat", "responses"])
+def test_strict_tools_valid_final_stream_is_buffered_then_normal_sse(
+    surface, _rate_limiter_state
+):
+    engine = _Engine(supports_guided=True, chat_text=_VALID_PAYLOAD)
+    if surface == "chat":
+        response = _make_client(engine).post(
+            "/v1/chat/completions", json=_chat_tools_payload(stream=True)
+        )
+        payloads = [
+            json.loads(line[6:])
+            for line in response.text.splitlines()
+            if line.startswith("data: {")
+        ]
+        text = "".join(
+            choice["delta"].get("content", "")
+            for payload in payloads
+            for choice in payload.get("choices", [])
+        )
+        assert response.text.rstrip().endswith("data: [DONE]")
+    else:
+        response = _make_responses_client(engine, _rate_limiter_state).post(
+            "/v1/responses", json=_responses_tools_payload(stream=True)
+        )
+        blocks = response.text.strip().split("\n\n")
+        events = [
+            (block.splitlines()[0][7:], json.loads(block.splitlines()[1][6:]))
+            for block in blocks
+        ]
+        text = "".join(
+            data["delta"]
+            for name, data in events
+            if name == "response.output_text.delta"
+        )
+        assert events[0][0] == "response.created"
+        assert events[-1][0] == "response.completed"
+    assert response.status_code == 200, response.text
+    assert json.loads(text) == {"value": 42}
+    assert len(engine.chat_calls) == 1
+    assert engine.guided_calls == []
 
 
 def test_responses_strict_true_guided_unavailable_disable_flag_skips_enforcement(

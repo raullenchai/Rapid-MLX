@@ -277,6 +277,36 @@ def test_capability_rejected_accepts_closed_model_and_caller_context():
     assert reg.validate("capability_rejected", props) == props
 
 
+@pytest.mark.parametrize(
+    "capability", ["structured_output_unsupported", "context_length_exceeded"]
+)
+def test_capability_rejected_accepts_closed_reject_reason(capability):
+    props = {
+        "capability": capability,
+        "model_type": "llm",
+        "reject_reason": "other",
+    }
+    assert reg.validate("capability_rejected", props) == props
+
+
+def test_capability_rejected_reason_only_when_supported_capability():
+    props = {
+        "capability": "image_input_unsupported",
+        "model_type": "llm",
+        "reject_reason": "other",
+    }
+    assert reg.validate("capability_rejected", props) is None
+
+
+def test_capability_rejected_reason_is_closed_enum():
+    props = {
+        "capability": "context_length_exceeded",
+        "model_type": "llm",
+        "reject_reason": "some free-form reason",
+    }
+    assert reg.validate("capability_rejected", props) is None
+
+
 def test_malformed_conditional_property_fails_closed():
     loaded = reg.load_registry()
     assert (

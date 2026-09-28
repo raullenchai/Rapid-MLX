@@ -125,8 +125,6 @@ def test_max_context_from_local_tokenizer_config_for_gpt_oss(tmp_path):
     the permissive DoS sentinel so over-context requests are rejected
     before their expensive prefill (issue #1084).
     """
-    from fastapi import HTTPException
-
     from rapid_mlx.service.helpers import (
         enforce_context_length,
         get_model_max_context,
@@ -149,14 +147,14 @@ def test_max_context_from_local_tokenizer_config_for_gpt_oss(tmp_path):
     eng = _StubEngine(model=_StubModel(args=_StubArgs()), tokenizer=tok)
 
     assert get_model_max_context(eng) == 131_072
-    with pytest.raises(HTTPException) as excinfo:
+    assert (
         enforce_context_length(
             eng,
             prompt_tokens=116_650,
             max_tokens=32_768,
         )
-    assert excinfo.value.status_code == 400
-    assert excinfo.value.detail["error"]["code"] == "context_length_exceeded"
+        == 14_422
+    )
 
 
 def test_max_context_ignores_malformed_local_tokenizer_config(tmp_path):
@@ -337,21 +335,11 @@ def test_enforce_over_cap_raises_400_context_length_exceeded():
 
 
 def test_enforce_includes_max_tokens_in_budget():
-    """Prompt fits alone but ``prompt + max_tokens`` exceeds the cap.
-    OpenAI's own ``context_length_exceeded`` fires in this case so we
-    mirror it — rejecting now avoids a mid-generation truncation."""
-    from fastapi import HTTPException
-
+    """A completion budget larger than remaining context is clamped."""
     from rapid_mlx.service.helpers import enforce_context_length
 
     eng = _StubEngine(model=_StubModel(args=_StubArgs(max_position_embeddings=4096)))
-    with pytest.raises(HTTPException) as excinfo:
-        enforce_context_length(eng, prompt_tokens=3500, max_tokens=1000)
-
-    err = excinfo.value.detail["error"]
-    assert err["code"] == "context_length_exceeded"
-    # Requested = 3500 + 1000 = 4500
-    assert "4500" in err["message"]
+    assert enforce_context_length(eng, prompt_tokens=3500, max_tokens=1000) == 596
 
 
 def test_enforce_tolerates_none_max_tokens():
@@ -360,7 +348,18 @@ def test_enforce_tolerates_none_max_tokens():
     from rapid_mlx.service.helpers import enforce_context_length
 
     eng = _StubEngine(model=_StubModel(args=_StubArgs(max_position_embeddings=2048)))
-    enforce_context_length(eng, prompt_tokens=2048, max_tokens=None)  # equal → ok
+    assert enforce_context_length(eng, prompt_tokens=2047, max_tokens=None) is None
+
+
+def test_enforce_rejects_prompt_that_leaves_no_completion_room():
+    from fastapi import HTTPException
+
+    from rapid_mlx.service.helpers import enforce_context_length
+
+    eng = _StubEngine(model=_StubModel(args=_StubArgs(max_position_embeddings=2048)))
+    with pytest.raises(HTTPException) as excinfo:
+        enforce_context_length(eng, prompt_tokens=2048, max_tokens=None)
+    assert excinfo.value.detail["error"]["code"] == "context_length_exceeded"
 
 
 def test_operational_prompt_cap_rejects_before_model_context_limit():

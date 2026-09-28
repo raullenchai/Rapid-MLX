@@ -2333,6 +2333,7 @@ def test_context_length_rejection_emits_capability(monkeypatch):
             {
                 "capability": "context_length_exceeded",
                 "model_type": "llm",
+                "reject_reason": "prompt_over_window",
                 "model": "qwen3.5-4b-4bit",
                 "caller": "rapid-desktop",
             },

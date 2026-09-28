@@ -316,6 +316,17 @@
         "other"
       ]
     },
+    "reject_reason": {
+      "_about": "Closed reason for structured-output and context-budget capability rejections.",
+      "values": [
+        "strict_with_tools",
+        "strict_with_stream",
+        "format_type_unsupported",
+        "prompt_over_window",
+        "operational_cap",
+        "other"
+      ]
+    },
     "inference_error_class": {
       "_about": [
         "Why a counted inference failed (inference_bucket_reached, result=failed).",
@@ -562,12 +573,27 @@
       }
     },
     "capability_rejected": {
-      "_about": "Features people reach for that we do not have.",
+      "_about": [
+        "Features people reach for that we do not have.",
+        "reject_reason is present only for structured_output_unsupported and",
+        "context_length_exceeded, and contains no free-form text."
+      ],
       "props": {
         "capability": {"kind": "enum", "enum": "capability", "required": true},
         "model_type": {"kind": "enum", "enum": "model_type", "required": true},
         "model": {"kind": "model_id", "required": false},
-        "caller": {"kind": "enum", "enum": "caller", "required": false}
+        "caller": {"kind": "enum", "enum": "caller", "required": false},
+        "reject_reason": {
+          "kind": "enum",
+          "enum": "reject_reason",
+          "required": false,
+          "only_when": {
+            "capability": [
+              "structured_output_unsupported",
+              "context_length_exceeded"
+            ]
+          }
+        }
       }
     },
     "inference_bucket_reached": {

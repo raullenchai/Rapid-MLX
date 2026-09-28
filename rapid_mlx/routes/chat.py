@@ -123,6 +123,7 @@ from ..service.helpers import (
     _wait_with_disconnect,
     build_extended_sampling_kwargs,
     enable_thinking_warning_header,
+    enforce_context_length,
     enforce_context_length_for_messages,
     ensure_engine_ready,
     get_engine,
@@ -4969,6 +4970,17 @@ async def _create_chat_completion_impl(
         caller_agent=_caller_agent,
         caller_client=_caller_client,
     )
+    if _line1_prompt_tokens is not None and chat_kwargs.get("max_tokens") is not None:
+        _clamped_max_tokens = enforce_context_length(
+            engine,
+            _line1_prompt_tokens,
+            max_tokens=chat_kwargs["max_tokens"],
+            telemetry_model=served_telemetry_id,
+            caller_agent=_caller_agent,
+            caller_client=_caller_client,
+        )
+        if _clamped_max_tokens is not None:
+            chat_kwargs["max_tokens"] = _clamped_max_tokens
 
     # LINE① (#558, codex r4 #1) — HARD context-window allowance check. With
     # ``max_tokens=None`` the guard above only proved ``prompt_tokens <= window``
@@ -5360,41 +5372,14 @@ async def _create_chat_completion_impl(
                 },
             )
         if request.tools:
-            # Strict + tools is mutually exclusive on this engine:
-            # the constrained-decoding path is grammar-driven and
-            # cannot coexist with the tool-call grammar. OpenAI's
-            # cloud API treats this combination as 400 too. Surface
-            # the conflict explicitly so clients see the choice.
-            from rapid_mlx.telemetry.inference import (
-                emit_capability_rejected,
-                model_type_token,
-            )
-
-            emit_capability_rejected(
-                "structured_output_unsupported",
-                model_type=model_type_token(engine),
-                model=served_telemetry_id,
-                caller_agent=_caller_agent,
-                caller_client=_caller_client,
-            )
+            # Deliberate local-engine policy: tools own the first decode so a
+            # tool-call turn stays byte-for-byte identical to ordinary tool
+            # calling.  Final-text turns are buffered and schema-validated;
+            # only an invalid final answer pays for one tools-disabled,
+            # grammar-constrained repair pass.
+            json_schema = _strict_schema_check
+            use_strict_postgen_validation = strict_enforcement_active
             incr_strict_request()
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "error": {
-                        "message": (
-                            "response_format.json_schema.strict=true "
-                            "cannot be combined with 'tools' — the "
-                            "constrained-decoding grammar is mutually "
-                            "exclusive with the tool-call grammar. "
-                            "Drop one or the other and retry."
-                        ),
-                        "type": "invalid_request_error",
-                        "code": "strict_with_tools_unsupported",
-                        "param": "response_format.json_schema.strict",
-                    }
-                },
-            )
 
     if response_format and not request.tools:
         json_schema = extract_json_schema_for_guided(response_format)
@@ -5513,7 +5498,8 @@ async def _create_chat_completion_impl(
                     type(engine).__name__,
                 )
 
-    if request.stream:
+    _buffer_strict_tool_stream = bool(request.stream and strict_mode and request.tools)
+    if request.stream and not _buffer_strict_tool_stream:
         # Validate chat template eagerly so template errors return 400
         if not engine.is_mllm:
             try:
@@ -5953,6 +5939,19 @@ async def _create_chat_completion_impl(
         f"Chat completion: {output.completion_tokens} tokens in {elapsed:.2f}s ({tokens_per_sec:.1f} tok/s)"
     )
 
+    # Strict structured output constrains final answers, not tool-call turns.
+    # Detect calls with the same parser used below and leave their wire payload
+    # untouched; only a genuine final-text turn enters schema validation.
+    _strict_tool_turn = False
+    if strict_mode and request.tools:
+        _engine_calls = getattr(output, "tool_calls", None)
+        _unused_text, _detected_calls = _parse_tool_calls_with_parser(
+            output.text,
+            request,
+            structured_tool_calls=_engine_calls,
+        )
+        _strict_tool_turn = bool(_detected_calls)
+
     # H-06: when the client asked for strict json_schema mode and we
     # routed through guided decoding, validate the buffered text
     # against the schema. llguidance should make this unreachable; a
@@ -6003,13 +6002,17 @@ async def _create_chat_completion_impl(
     # UNCONSTRAINED above; now we validate the buffered output and
     # — if it doesn't validate — attempt ONE repair retry with a
     # system-prompt-injected hint naming the failing path. If the
-    # repair also fails we surface 422 with a structured envelope so
+    # repair also fails we surface a structured violation envelope so
     # SDK consumers (pydantic-ai) can read ``error.details.failing_path``
     # / ``expected`` / ``got`` instead of looping against an opaque
-    # error. Strict + tools is already rejected by the upstream
-    # ``strict_with_tools_unsupported`` gate, so we can assume no
-    # tool_calls path here.
-    if use_strict_postgen_validation and json_schema and output is not None:
+    # error. For strict + tools, tool-call turns bypass this block and
+    # invalid final-text turns use constrained generation for the repair.
+    if (
+        use_strict_postgen_validation
+        and json_schema
+        and output is not None
+        and not _strict_tool_turn
+    ):
         ok, failure_details = validate_and_envelope(output.text or "", json_schema)
         attempts = 1
         if not ok and repair_retry_enabled():
@@ -6104,8 +6107,19 @@ async def _create_chat_completion_impl(
                     failure_details.get("reason") if failure_details else "?",
                 )
                 try:
+                    if request.tools:
+                        repair_coro = engine.generate_with_schema(
+                            messages=repair_messages,
+                            json_schema=json_schema,
+                            raise_on_failure=True,
+                            **repair_kwargs,
+                        )
+                    else:
+                        repair_coro = engine.chat(
+                            messages=repair_messages, **repair_kwargs
+                        )
                     repair_output = await _wait_with_disconnect(
-                        engine.chat(messages=repair_messages, **repair_kwargs),
+                        repair_coro,
                         raw_request,
                         timeout=timeout,
                     )
@@ -6206,6 +6220,8 @@ async def _create_chat_completion_impl(
                 failure_details or {"reason": "schema_violation"},
                 attempts=attempts,
             )
+            if request.tools:
+                envelope["error"]["code"] = "strict_schema_violation"
             logger.warning(
                 "R12-4 strict json_schema validation failed after %d attempt(s): %s",
                 attempts,
@@ -6214,7 +6230,10 @@ async def _create_chat_completion_impl(
             _record_nonstream_failure(
                 raw_request, served_telemetry_id, "strict_schema_violation"
             )
-            raise HTTPException(status_code=422, detail=envelope)
+            raise HTTPException(
+                status_code=502 if request.tools else 422,
+                detail=envelope,
+            )
 
     # Parse tool calls from output using configured parser.
     # ``output.tool_calls`` is non-None when the engine's
@@ -6812,11 +6831,18 @@ async def _create_chat_completion_impl(
     # error the client sees — not as a "successful inference" we already
     # counted. ``model_dump_json`` can raise; the activation emit below must be
     # reached only when the 2xx body is actually built.
-    response = Response(
-        content=chat_response.model_dump_json(exclude_none=True),
-        media_type="application/json",
-        headers=response_headers or None,
-    )
+    if _buffer_strict_tool_stream:
+        response = StreamingResponse(
+            _stream_buffered_chat_response(chat_response, request),
+            media_type="text/event-stream",
+            headers={**SSE_RESPONSE_HEADERS, **response_headers},
+        )
+    else:
+        response = Response(
+            content=chat_response.model_dump_json(exclude_none=True),
+            media_type="application/json",
+            headers=response_headers or None,
+        )
 
     from rapid_mlx.telemetry import inference as _telemetry_inference
 
@@ -6832,6 +6858,42 @@ async def _create_chat_completion_impl(
     )
 
     return response
+
+
+async def _stream_buffered_chat_response(
+    response: ChatCompletionResponse,
+    request: ChatCompletionRequest,
+) -> AsyncIterator[str]:
+    """Emit a buffered strict turn with the ordinary Chat SSE protocol."""
+    payload = response.model_dump(exclude_none=True)
+    choice = payload["choices"][0]
+    message = choice["message"]
+    base = {
+        "id": payload["id"],
+        "object": "chat.completion.chunk",
+        "created": payload["created"],
+        "model": payload["model"],
+    }
+
+    def chunk(delta: dict, finish_reason=None) -> str:
+        body = {
+            **base,
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+        }
+        return f"data: {json.dumps(body, separators=(',', ':'))}\n\n"
+
+    yield chunk({"role": "assistant"})
+    if message.get("content") is not None:
+        yield chunk({"content": message["content"]})
+    if message.get("reasoning_content") is not None:
+        yield chunk({"reasoning_content": message["reasoning_content"]})
+    if message.get("tool_calls"):
+        yield chunk({"tool_calls": message["tool_calls"]})
+    yield chunk({}, choice.get("finish_reason"))
+    if request.stream_options and request.stream_options.include_usage:
+        usage = payload.get("usage")
+        yield f"data: {json.dumps({**base, 'choices': [], 'usage': usage}, separators=(',', ':'))}\n\n"
+    yield "data: [DONE]\n\n"
 
 
 async def stream_chat_completion(
@@ -8867,11 +8929,9 @@ async def stream_chat_completion_strict_postgen(
                             # accumulate ``delta.reasoning_content``
                             # (a separate thinking-channel surface
                             # that is NOT included in the schema's
-                            # scope) or ``delta.tool_calls`` (which
-                            # is forbidden in strict mode by the
-                            # ``strict_with_tools_unsupported`` gate
-                            # in the chat route — line ~2310 — so it
-                            # cannot legally appear here). Any future
+                            # scope) or ``delta.tool_calls``. Strict tool
+                            # requests use the separate buffered path, so
+                            # tool deltas cannot reach this helper. Any future
                             # delta surface that carries user-visible
                             # text MUST be added here, OR the route
                             # gate must reject strict mode for that

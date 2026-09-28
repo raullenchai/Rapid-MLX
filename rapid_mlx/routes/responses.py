@@ -1147,84 +1147,6 @@ async def create_response(request: Request):
                         }
                     },
                 )
-            if openai_request.tools:
-                # Parity with the chat-route ``strict_with_tools_unsupported``
-                # gate: constrained-decoding grammar and tool-call grammar
-                # are mutually exclusive on this engine.
-                from rapid_mlx.telemetry.inference import (
-                    emit_capability_rejected,
-                    model_type_token,
-                )
-
-                emit_capability_rejected(
-                    "structured_output_unsupported",
-                    model_type=model_type_token(engine),
-                    model=_served_telemetry_id,
-                    caller_agent=_caller_agent,
-                    caller_client=_caller_client,
-                )
-                raise HTTPException(
-                    status_code=400,
-                    detail={
-                        "error": {
-                            "message": (
-                                "text.format strict=true cannot be combined "
-                                "with 'tools' — the constrained-decoding "
-                                "grammar is mutually exclusive with the "
-                                "tool-call grammar. Drop one or the other "
-                                "and retry."
-                            ),
-                            "type": "invalid_request_error",
-                            "code": "strict_with_tools_unsupported",
-                            "param": "text.format.strict",
-                        }
-                    },
-                )
-            # Codex r4 NIT #4: check the strict+stream gate BEFORE
-            # the missing-extra gate. Strict streaming on
-            # /v1/responses is structurally unsupported here
-            # regardless of whether [guided] is installed (the
-            # constrained-decoding path is buffered-only on this
-            # surface), so telling a strict+stream caller to
-            # ``pip install rapid-mlx[guided]`` would be
-            # misleading — installing the extra still wouldn't
-            # let them use strict+stream on /v1/responses. Naming
-            # the actual escape hatches first (drop stream=true,
-            # or switch to /v1/chat/completions) is more
-            # actionable.
-            if responses_request.stream:
-                from rapid_mlx.telemetry.inference import (
-                    emit_capability_rejected,
-                    model_type_token,
-                )
-
-                emit_capability_rejected(
-                    "structured_output_unsupported",
-                    model_type=model_type_token(engine),
-                    model=_served_telemetry_id,
-                    caller_agent=_caller_agent,
-                    caller_client=_caller_client,
-                )
-                raise HTTPException(
-                    status_code=400,
-                    detail={
-                        "error": {
-                            "message": (
-                                "text.format strict=true with stream=true "
-                                "is not supported on /v1/responses — "
-                                "constrained decoding on this surface is "
-                                "buffered-only. Either drop stream=true "
-                                "(non-stream strict response is honored) "
-                                "or use /v1/chat/completions which "
-                                "supports strict+streaming via the "
-                                "buffered-guided SSE helper."
-                            ),
-                            "type": "invalid_request_error",
-                            "code": "strict_stream_unsupported",
-                            "param": "text.format.strict",
-                        }
-                    },
-                )
             if not engine.supports_guided_generation:
                 # R12-4: pre-R12-4 this branch raised 400
                 # ``guided_extra_required``. The new path falls
@@ -1460,24 +1382,8 @@ async def create_response(request: Request):
             caller_agent=_caller_agent,
             caller_client=_caller_client,
         )
-        if _resp_implicit_max_tokens:
-            if _resp_ctx_prompt_tokens is None:
-                # If prompt accounting is unavailable, do not apply the
-                # context-room clamp: re-run the old strict admission check
-                # with the resolved default completion budget so this path
-                # cannot silently weaken the pre-existing DoS gate.
-                enforce_context_length_for_messages(
-                    engine,
-                    _ctx_messages,
-                    tools=openai_request.tools,
-                    max_tokens=_resp_resolved_max_tokens,
-                    enable_thinking=_resp_resolved_thinking,
-                    chat_template_kwargs=_resp_ctk,
-                    telemetry_model=_served_telemetry_id,
-                    caller_agent=_caller_agent,
-                    caller_client=_caller_client,
-                )
-            else:
+        if _resp_ctx_prompt_tokens is not None:
+            if _resp_implicit_max_tokens:
                 _resp_resolved_max_tokens = (
                     _resolve_context_safe_implicit_responses_max_tokens(
                         engine,
@@ -1485,21 +1391,39 @@ async def create_response(request: Request):
                         _resp_resolved_max_tokens,
                     )
                 )
-                enforce_context_length(
-                    engine,
-                    _resp_ctx_prompt_tokens,
-                    max_tokens=_resp_resolved_max_tokens,
-                    telemetry_model=_served_telemetry_id,
-                    caller_agent=_caller_agent,
-                    caller_client=_caller_client,
-                )
-                # Thread the clamped default through the downstream
-                # ``_resolve_max_tokens`` calls in ``_non_stream`` /
-                # ``_stream_responses`` so the scheduler sees the same
-                # context-safe budget the admission gate accepted.
-                openai_request.max_tokens = _resp_resolved_max_tokens
+            _resp_clamped_max_tokens = enforce_context_length(
+                engine,
+                _resp_ctx_prompt_tokens,
+                max_tokens=_resp_resolved_max_tokens,
+                telemetry_model=_served_telemetry_id,
+                caller_agent=_caller_agent,
+                caller_client=_caller_client,
+            )
+            if _resp_clamped_max_tokens is not None:
+                _resp_resolved_max_tokens = _resp_clamped_max_tokens
+            openai_request.max_tokens = _resp_resolved_max_tokens
+        if _resp_implicit_max_tokens and _resp_ctx_prompt_tokens is None:
+            # If prompt accounting is unavailable, do not apply the
+            # context-room clamp: re-run the old strict admission check
+            # with the resolved default completion budget so this path
+            # cannot silently weaken the pre-existing DoS gate.
+            enforce_context_length_for_messages(
+                engine,
+                _ctx_messages,
+                tools=openai_request.tools,
+                max_tokens=_resp_resolved_max_tokens,
+                enable_thinking=_resp_resolved_thinking,
+                chat_template_kwargs=_resp_ctk,
+                telemetry_model=_served_telemetry_id,
+                caller_agent=_caller_agent,
+                caller_client=_caller_client,
+            )
 
-        if responses_request.stream:
+        _buffer_strict_stream = bool(
+            responses_request.stream
+            and is_strict_json_schema(getattr(openai_request, "response_format", None))
+        )
+        if responses_request.stream and not _buffer_strict_stream:
             _admission_committed = True
             # C-01 force-abort: holder list the engine populates with
             # the admitted scheduler request id; the disconnect_guard
@@ -1536,7 +1460,7 @@ async def create_response(request: Request):
                 headers={**SSE_RESPONSE_HEADERS, "Connection": "keep-alive"},
             )
 
-        return await _non_stream(
+        _buffered_response = await _non_stream(
             engine,
             openai_request,
             responses_request,
@@ -1544,6 +1468,13 @@ async def create_response(request: Request):
             explicit_no_thinking=explicit_no_thinking,
             namespace_by_tool=namespace_by_tool,
         )
+        if _buffer_strict_stream and _buffered_response.status_code == 200:
+            return StreamingResponse(
+                _stream_buffered_responses_response(_buffered_response.body),
+                media_type="text/event-stream",
+                headers={**SSE_RESPONSE_HEADERS, "Connection": "keep-alive"},
+            )
+        return _buffered_response
     except asyncio.CancelledError as exc:
         _raise_lifecycle_cancel_or_reraise(engine, exc)
     finally:
@@ -1788,7 +1719,11 @@ async def _non_stream(
     # test in test_response_format_json_schema_strict.py pins
     # this behavior so any future refactor that moves the call
     # outside the try is caught.
-    if _strict_schema and engine.supports_guided_generation:
+    if (
+        _strict_schema
+        and engine.supports_guided_generation
+        and not openai_request.tools
+    ):
         # Codex r5 BLOCKING: ``chat_kwargs`` is the merged
         # ``_resolved_sampling_kwargs`` + tools/thinking flags blob.
         # If any upstream resolver ever surfaces a ``raise_on_failure``
@@ -1970,18 +1905,31 @@ async def _non_stream(
     if output is None:
         return Response(status_code=499)
 
+    # A strict schema applies only to the assistant's final text. Tool-call
+    # turns retain the ordinary parser and wire representation unchanged.
+    _strict_tool_turn = False
+    if _strict_schema and openai_request.tools:
+        _engine_calls = getattr(output, "tool_calls", None)
+        _unused_text, _detected_calls = _parse_tool_calls_with_parser(
+            output.text,
+            openai_request,
+            structured_tool_calls=_engine_calls,
+        )
+        _strict_tool_turn = bool(_detected_calls)
+
     # R12-4: when the strict path took the unconstrained branch
     # (i.e. ``_strict_schema`` was set but ``supports_guided_generation``
     # was False — the route gate now lets us through instead of
     # raising ``guided_extra_required``), run the same post-generate
     # validation + single repair retry the chat route runs. On
-    # validation failure we surface 422 with the structured
+    # validation failure we surface the structured
     # ``json_schema_violation`` envelope so SDK consumers can read
     # ``error.details.failing_path`` programmatically.
     if (
         _strict_schema
-        and not engine.supports_guided_generation
+        and (not engine.supports_guided_generation or bool(openai_request.tools))
         and strict_enforcement_enabled()
+        and not _strict_tool_turn
     ):
         ok, failure_details = validate_and_envelope(output.text or "", _strict_schema)
         attempts = 1
@@ -2042,8 +1990,19 @@ async def _non_stream(
                     (failure_details or {}).get("reason", "?"),
                 )
                 try:
+                    if openai_request.tools:
+                        repair_coro = engine.generate_with_schema(
+                            messages=repair_messages,
+                            json_schema=_strict_schema,
+                            raise_on_failure=True,
+                            **repair_kwargs,
+                        )
+                    else:
+                        repair_coro = engine.chat(
+                            messages=repair_messages, **repair_kwargs
+                        )
                     repair_output = await _wait_with_disconnect(
-                        engine.chat(messages=repair_messages, **repair_kwargs),
+                        repair_coro,
                         request,
                         timeout=timeout,
                     )
@@ -2131,6 +2090,8 @@ async def _non_stream(
                 param="text.format",
                 attempts=attempts,
             )
+            if openai_request.tools:
+                envelope["error"]["code"] = "strict_schema_violation"
             logger.warning(
                 "R12-4 /v1/responses strict json_schema validation "
                 "failed after %d attempt(s): %s",
@@ -2138,7 +2099,10 @@ async def _non_stream(
                 (failure_details or {}).get("message"),
             )
             _record_nonstream_failure(engine, request, "strict_schema_violation")
-            raise HTTPException(status_code=422, detail=envelope)
+            raise HTTPException(
+                status_code=502 if openai_request.tools else 422,
+                detail=envelope,
+            )
 
     # r6-A R6-C2: detect a degenerate engine output — no text, no
     # reasoning, no tool_calls, zero output_tokens, AND
@@ -2256,7 +2220,12 @@ async def _non_stream(
     # only" and then the unconditional 502 at this site fired
     # regardless, breaking parity with /v1/chat/completions. Match
     # chat's gate exactly: only the guided path runs this validator.
-    if _strict_schema and engine.supports_guided_generation and output is not None:
+    if (
+        _strict_schema
+        and engine.supports_guided_generation
+        and not openai_request.tools
+        and output is not None
+    ):
         ok, err = validate_output_against_schema(output.text or "", _strict_schema)
         if not ok:
             incr_strict_violation()
@@ -2494,6 +2463,137 @@ def _sse(event: str, data: dict) -> str:
     that sentinel is chat-completions-only.
     """
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+async def _stream_buffered_responses_response(body: bytes) -> AsyncIterator[str]:
+    """Replay a validated buffered result through the normal Responses SSE ladder."""
+    response = json.loads(body)
+    output = list(response.get("output", []))
+    if any(item.get("type") == "message" for item in output):
+        output.insert(
+            0,
+            {
+                "type": "reasoning",
+                "id": f"rs_{uuid.uuid4().hex[:24]}",
+                "status": "completed",
+                "summary": [],
+            },
+        )
+        response = {**response, "output": output}
+    sequence = 0
+
+    def emit(event: str, data: dict) -> str:
+        nonlocal sequence
+        data["sequence_number"] = sequence
+        sequence += 1
+        return _sse(event, data)
+
+    initial = {**response, "status": "in_progress", "output": []}
+    yield emit("response.created", {"type": "response.created", "response": initial})
+    yield emit(
+        "response.in_progress",
+        {"type": "response.in_progress", "response": initial},
+    )
+    for output_index, item in enumerate(response.get("output", [])):
+        item_type = item.get("type")
+        if item_type == "message":
+            added = {**item, "status": "in_progress", "content": []}
+            yield emit(
+                "response.output_item.added",
+                {
+                    "type": "response.output_item.added",
+                    "output_index": output_index,
+                    "item": added,
+                },
+            )
+            for content_index, part in enumerate(item.get("content", [])):
+                if part.get("type") != "output_text":
+                    continue
+                empty_part = {**part, "text": ""}
+                yield emit(
+                    "response.content_part.added",
+                    {
+                        "type": "response.content_part.added",
+                        "item_id": item["id"],
+                        "output_index": output_index,
+                        "content_index": content_index,
+                        "part": empty_part,
+                    },
+                )
+                text = part.get("text", "")
+                if text:
+                    yield emit(
+                        "response.output_text.delta",
+                        {
+                            "type": "response.output_text.delta",
+                            "item_id": item["id"],
+                            "output_index": output_index,
+                            "content_index": content_index,
+                            "delta": text,
+                            "logprobs": [],
+                        },
+                    )
+                yield emit(
+                    "response.output_text.done",
+                    {
+                        "type": "response.output_text.done",
+                        "item_id": item["id"],
+                        "output_index": output_index,
+                        "content_index": content_index,
+                        "text": text,
+                        "logprobs": [],
+                    },
+                )
+                yield emit(
+                    "response.content_part.done",
+                    {
+                        "type": "response.content_part.done",
+                        "item_id": item["id"],
+                        "output_index": output_index,
+                        "content_index": content_index,
+                        "part": part,
+                    },
+                )
+        elif item_type == "function_call":
+            added = {**item, "status": "in_progress", "arguments": ""}
+            yield emit(
+                "response.output_item.added",
+                {
+                    "type": "response.output_item.added",
+                    "output_index": output_index,
+                    "item": added,
+                },
+            )
+            yield emit(
+                "response.function_call_arguments.delta",
+                {
+                    "type": "response.function_call_arguments.delta",
+                    "item_id": item["id"],
+                    "output_index": output_index,
+                    "delta": item.get("arguments", ""),
+                },
+            )
+        else:
+            yield emit(
+                "response.output_item.added",
+                {
+                    "type": "response.output_item.added",
+                    "output_index": output_index,
+                    "item": {**item, "status": "in_progress"},
+                },
+            )
+        yield emit(
+            "response.output_item.done",
+            {
+                "type": "response.output_item.done",
+                "output_index": output_index,
+                "item": item,
+            },
+        )
+    yield emit(
+        "response.completed",
+        {"type": "response.completed", "response": response},
+    )
 
 
 def _responses_keepalive_sse(state: dict[str, object]) -> str:

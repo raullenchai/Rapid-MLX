@@ -941,6 +941,7 @@ def _convert_output_config(
 
         emit_capability_rejected(
             "structured_output_unsupported",
+            reject_reason="format_type_unsupported",
             model=telemetry_model,
             caller_agent=caller_agent,
             caller_client=caller_client,

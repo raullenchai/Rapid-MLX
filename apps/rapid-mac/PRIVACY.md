@@ -43,7 +43,9 @@ counted as two installs. The 0.15.0 engine reports:
 * `app_opened` and `active_day`;
 * `model_pulled`, `model_pull_failed`, `model_served`, and
   `model_serve_failed`;
-* `capability_rejected` and `inference_bucket_reached`;
+* `capability_rejected` (closed `capability`, `model_type`, optional model and
+  caller, plus a closed `reject_reason` only for structured-output/context
+  rejections) and `inference_bucket_reached`;
 * `agent_configured` and `agent_configure_failed`; and
 * `telemetry_opted_in` and `telemetry_opted_out`.
 
