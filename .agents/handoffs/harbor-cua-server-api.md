@@ -28,9 +28,9 @@ paths. Raw click/type endpoints and screenshots are outside this change.
   so a delayed approval cannot resolve a later gate in the same run. Decisions
   are one-shot under the run lock: identical retries are idempotent and a
   conflicting second decision fails with 409 without changing the first.
-- Window discovery returns the integer Core Graphics `window_id` that stays
-  stable for the lifetime of that on-screen window, alongside its current list
-  index. Windows are matched to the resolved process PID rather than owner name.
+- Window discovery returns an opaque `cg:<CGWindowID>` string that stays stable
+  for the lifetime of that on-screen window, alongside its current list index.
+  Windows are matched to the resolved process PID rather than owner name.
 - `run_dir` is removed from run responses and stripped from public start events.
 - Focused verification: `96 passed, 2 deselected` in `tests/test_cua_server.py`
   and `tests/test_cua.py`

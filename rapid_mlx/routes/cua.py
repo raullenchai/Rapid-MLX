@@ -182,7 +182,7 @@ class CUAApp(BaseModel):
 
 
 class CUAWindow(BaseModel):
-    window_id: int
+    window_id: str
     index: int
     title: str
     x: float | None = None

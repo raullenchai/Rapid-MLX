@@ -62,7 +62,7 @@ def client(monkeypatch, tmp_path, authorized):
         "list_windows",
         lambda app: [
             {
-                "window_id": 123,
+                "window_id": "cg:123",
                 "index": 0,
                 "title": f"{app} window",
                 "x": 1,
@@ -194,7 +194,7 @@ def test_discovery_contract(client):
         {"name": "Finder", "bundle_id": "com.apple.finder", "pid": 42}
     ]
     windows = client.get("/v1/cua/apps/Finder/windows", headers=AUTH)
-    assert windows.json()[0]["window_id"] == 123
+    assert windows.json()[0]["window_id"] == "cg:123"
     assert windows.json()[0]["title"] == "Finder window"
 
 
