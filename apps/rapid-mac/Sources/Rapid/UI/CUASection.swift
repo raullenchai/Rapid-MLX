@@ -43,10 +43,14 @@ struct CUAResultPresentation: Equatable {
 struct CUAFailurePresentation: Equatable {
     let summary: String
     let technicalDetails: String
+    let changeWarning: String?
 
-    init(message: String) {
+    init(message: String, hasExecutedActions: Bool = false) {
         let normalized = message.trimmingCharacters(in: .whitespacesAndNewlines)
         technicalDetails = normalized.isEmpty ? "No failure details were provided." : normalized
+        changeWarning = hasExecutedActions
+            ? "Some changes may have been made; check the target app."
+            : nil
 
         let payloadMarkers = [": {", ": [", "\n{", "\n["]
         let payloadStart = payloadMarkers.compactMap { marker in
@@ -77,6 +81,13 @@ struct CUAFailurePresentation: Equatable {
             return String(candidate[...sentenceEnd])
         }
         return candidate.trimmingCharacters(in: .whitespacesAndNewlines) + "…"
+    }
+
+    static func hasPotentialSideEffects(in events: [CUAEvent]) -> Bool {
+        let actionKinds = Set(["click", "fill", "press", "scroll"])
+        return events.contains { event in
+            event.kind == "executed" && event.action.map(actionKinds.contains) == true
+        }
     }
 }
 
@@ -523,7 +534,12 @@ struct CUASection: View {
     }
 
     private func failureCard(message: String) -> some View {
-        let failure = CUAFailurePresentation(message: message)
+        let failure = CUAFailurePresentation(
+            message: message,
+            hasExecutedActions: CUAFailurePresentation.hasPotentialSideEffects(
+                in: viewModel.events
+            )
+        )
         return VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
                 Label("Task failed", systemImage: "exclamationmark.triangle.fill")
@@ -542,6 +558,12 @@ struct CUASection: View {
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityIdentifier("ComputerUse.Agent.Failure.Summary")
+            if let changeWarning = failure.changeWarning {
+                Label(changeWarning, systemImage: "exclamationmark.circle")
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(.orange)
+                    .accessibilityIdentifier("ComputerUse.Agent.Failure.ChangeWarning")
+            }
             DisclosureGroup {
                 VStack(alignment: .leading, spacing: 10) {
                     Text(failure.technicalDetails)

@@ -1547,6 +1547,30 @@ struct CUATargetUISourceTests {
         #expect(failure.technicalDetails == "No failure details were provided.")
     }
 
+    @Test("Executed actions add a truthful partial-change warning")
+    func executedActionFailureWarning() {
+        func event(_ action: String) -> CUAEvent {
+            CUAEvent(
+                seq: 1, kind: "executed", step: 1, action: action,
+                stepInstruction: nil, outcome: nil, targetLabel: nil,
+                status: nil, finalSummary: nil, reason: nil
+            )
+        }
+        let withAction = CUAFailurePresentation(
+            message: "The task stopped.", hasExecutedActions: true
+        )
+        let withoutAction = CUAFailurePresentation(message: "The task stopped.")
+
+        #expect(withAction.changeWarning == "Some changes may have been made; check the target app.")
+        #expect(withoutAction.changeWarning == nil)
+        #expect(CUAFailurePresentation.hasPotentialSideEffects(in: [
+            event("click"),
+        ]))
+        #expect(!CUAFailurePresentation.hasPotentialSideEffects(in: [
+            event("observe"), event("wait"),
+        ]))
+    }
+
     @Test("Window controls are addressable and privacy copy distinguishes execution")
     func targetControlsAndPrivacyCopy() throws {
         let root = URL(fileURLWithPath: #filePath)
@@ -1578,6 +1602,7 @@ struct CUATargetUISourceTests {
         #expect(section.contains("ComputerUse.Agent.Summary.Answer"))
         #expect(section.contains("ComputerUse.Agent.Failure.Summary"))
         #expect(section.contains("ComputerUse.Agent.Failure.Details"))
+        #expect(section.contains("ComputerUse.Agent.Failure.ChangeWarning"))
         #expect(section.contains("ComputerUse.Agent.Evidence"))
         #expect(section.contains("ComputerUse.Agent.History"))
         #expect(section.contains("DisclosureGroup"))
