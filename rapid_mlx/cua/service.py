@@ -15,6 +15,7 @@ import uuid
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
+from rapid_mlx.computer_use import backend
 from rapid_mlx.cua.config import CUAConfig, PlannerConfig, load_config, resolve_planner
 from rapid_mlx.cua.loop import run as run_loop
 from rapid_mlx.cua.planner import assert_loopback_url, validate_planner_url
@@ -45,6 +46,7 @@ class CUAServiceRun:
     app: str
     goal: str
     config: CUAConfig
+    window_id: str | None = None
     status: str = "running"
     final_summary: str = ""
     error: str = ""
@@ -181,9 +183,10 @@ class CUAServiceRun:
                 "planner": self.config.planner.describe() if self.config else "n/a",
                 "events_after_seq": delivered_through,
                 "events": events,
-                "pending_gate": dict(self._pending_gate)
-                if self._pending_gate
-                else None,
+                "pending_gate": (
+                    dict(self._pending_gate) if self._pending_gate else None
+                ),
+                "window_id": self.window_id,
             }
 
 
@@ -203,6 +206,7 @@ class CUAService:
                 "goal": r.goal,
                 "status": r.status,
                 "created_at": r.created_at,
+                "window_id": r.window_id,
             }
             for r in self._runs.values()
         ]
@@ -224,6 +228,7 @@ class CUAService:
         allowed_domain: str = "",
         max_steps: int = 12,
         human_login: bool = False,
+        window_id: str | None = None,
     ) -> CUAServiceRun:
         if self._closing:
             raise CUARunConflictError("CUA service is shutting down")
@@ -238,6 +243,8 @@ class CUAService:
                 or not parsed_open_url.hostname
             ):
                 raise ValueError("open_url must be an absolute HTTP(S) URL")
+        if window_id is not None and open_url:
+            raise ValueError("open_url cannot be used with a selected window")
         active_tasks = [task for task in self._tasks.values() if not task.done()]
         active_runs = [
             run
@@ -270,8 +277,18 @@ class CUAService:
             allowed_domain=allowed_domain,
             human_login=human_login,
         )
+        selected_window_id: str | None = None
+        if window_id is not None:
+            selection = await asyncio.to_thread(backend.validate_window, app, window_id)
+            selected_window_id = str(selection["window_id"])
         run_id = uuid.uuid4().hex[:12]
-        run = CUAServiceRun(run_id=run_id, app=app, goal=goal, config=config)
+        run = CUAServiceRun(
+            run_id=run_id,
+            app=app,
+            goal=goal,
+            config=config,
+            window_id=selected_window_id,
+        )
         run.run_dir = ""
         self._prune_runs()
         self._runs[run_id] = run
@@ -286,6 +303,7 @@ class CUAService:
                 event_sink=run.emit,
                 gate=lambda reason: run.wait_for_approval(reason, config.pause_timeout),
                 stop_event=run._stop_event,
+                window_id=selected_window_id,
             )
         )
         self._tasks[run_id] = task

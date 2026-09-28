@@ -1400,6 +1400,67 @@ def test_domain_is_rechecked_after_planning_before_any_action(
     assert observed_window_ids == ["cg:404", "cg:404"]
 
 
+def test_selected_window_is_revalidated_before_action_and_fails_on_move(
+    fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    windows = iter(
+        [
+            {"window_id": "cg:404", "index": 0, "x": 10, "y": 10},
+            {"window_id": "cg:404", "index": 0, "x": 20, "y": 10},
+        ]
+    )
+    calls: list[str | None] = []
+
+    def state(app, **kwargs):
+        calls.append(kwargs.get("window_id"))
+        return {
+            "app": {"name": app, "pid": 9},
+            "window_id": "cg:404",
+            "window_index": 0,
+            "window": next(windows),
+            "elements": [{"index": 1, "label": "Open", "role": "AXButton"}],
+            "tree_text": "[1] AXButton Open",
+        }
+
+    monkeypatch.setattr(fake_backend, "get_app_state", state)
+    clicks: list[int] = []
+    monkeypatch.setattr(
+        fake_backend,
+        "click",
+        lambda app, index, **kwargs: clicks.append(index) or {"ok": True},
+    )
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path),
+        "Browser",
+        "open",
+        tmp_path / "selected-moved",
+        window_id="cg:404",
+    )
+    planner = _FakePlanner(
+        [
+            {
+                "action": "click",
+                "step_instruction": "open",
+                "element_index": 1,
+                "final_summary": "",
+            }
+        ]
+    )
+    result = asyncio.run(runner.step(planner, 1))
+    assert result == {
+        "status": "stopped",
+        "reason": "selected window moved or was replaced before action",
+        "error": "window_stale",
+    }
+    assert calls == ["cg:404", "cg:404"]
+    assert clicks == []
+
+
 def test_loop_ranker_success_and_unavailable(fake_backend, tmp_path, monkeypatch):
     import asyncio
 

@@ -1138,3 +1138,10 @@ def list_windows(app: str) -> list[dict]:
             "window_not_found", f"{app_info['name']!r} has no on-screen windows"
         )
     return out
+
+
+def validate_window(app: str, window_id: int | str) -> dict:
+    """Resolve an opaque window ID against an app PID without activating it."""
+    _, app_info = _resolve_app(app, activate=False)
+    window = _select_window(app_info, window_id=window_id)
+    return {"app": app_info, "window_id": window["window_id"], "window": window}

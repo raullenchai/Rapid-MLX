@@ -82,11 +82,13 @@ class CUARunCreateRequest(BaseModel):
     allowed_domain: str = Field(default="", max_length=200)
     max_steps: int = Field(default=12, ge=1, le=40)
     human_login: bool = False
+    window_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class CUARunCreated(BaseModel):
     run_id: str
     status: str
+    window_id: str | None = None
 
 
 class CUAEvent(BaseModel):
@@ -138,6 +140,7 @@ class CUARunView(BaseModel):
     events_after_seq: int
     events: list[CUAEvent]
     pending_gate: CUAPendingGate | None = None
+    window_id: str | None = None
 
 
 class CUARunSummary(BaseModel):
@@ -146,6 +149,7 @@ class CUARunSummary(BaseModel):
     goal: str
     status: str
     created_at: float
+    window_id: str | None = None
 
 
 class CUARunList(BaseModel):
@@ -165,7 +169,7 @@ class CUAGateDecision(BaseModel):
 class CUACapabilityFeatures(BaseModel):
     app_discovery: bool = True
     window_discovery: bool = True
-    window_selection: bool = False
+    window_selection: bool = True
     visual_observation: bool = False
     approval_gate_id: bool = True
 
@@ -360,10 +364,11 @@ async def create_run(request: CUARunCreateRequest) -> CUARunCreated:
             allowed_domain=request.allowed_domain,
             max_steps=request.max_steps,
             human_login=request.human_login,
+            window_id=request.window_id,
         )
-    except (ValueError, cua_service.CUARunConflictError) as exc:
+    except (ValueError, cua_service.CUARunConflictError, ComputerUseError) as exc:
         raise _http_error(exc) from exc
-    return CUARunCreated(run_id=run.run_id, status=run.status)
+    return CUARunCreated(run_id=run.run_id, status=run.status, window_id=run.window_id)
 
 
 @router.get("/runs", response_model=CUARunList)

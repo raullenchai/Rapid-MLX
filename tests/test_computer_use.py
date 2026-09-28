@@ -332,6 +332,42 @@ def test_get_app_state_uses_requested_window_without_screenshot(monkeypatch):
     assert captured["window_frame"] == (4.0, 5.0, 100.0, 100.0)
 
 
+def test_select_window_id_is_bound_to_resolved_app_pid(monkeypatch):
+    monkeypatch.setattr(
+        backend,
+        "_window_records",
+        lambda app_info: ([_window(window_id=303)] if app_info["pid"] == 7 else []),
+    )
+    assert (
+        backend._select_window({"pid": 7}, window_id="cg:303")["window_id"] == "cg:303"
+    )
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend._select_window({"pid": 8}, window_id="cg:303")
+    assert exc.value.code == "window_not_found"
+    assert "owned by pid 8" in exc.value.message
+
+
+def test_validate_window_is_read_only_and_returns_canonical_id(monkeypatch):
+    resolved: list[tuple[str, bool]] = []
+    monkeypatch.setattr(
+        backend,
+        "_resolve_app",
+        lambda app, activate=True: (
+            resolved.append((app, activate))
+            or (object(), {"name": app, "bundleId": "b", "pid": 7})
+        ),
+    )
+    monkeypatch.setattr(
+        backend,
+        "_select_window",
+        lambda app_info, **kwargs: _window(window_id=303),
+    )
+    selection = backend.validate_window("Target App", "opaque")
+    assert resolved == [("Target App", False)]
+    assert selection["window_id"] == "cg:303"
+    assert selection["app"]["pid"] == 7
+
+
 def test_cli_capabilities_and_error_envelope(capsys):
     from rapid_mlx.computer_use import cli
 

@@ -58,6 +58,7 @@ class CUARun:
         event_sink: Callable[[dict], None] | None = None,
         gate: Callable[[str], Any] | None = None,
         stop_event: asyncio.Event | None = None,
+        window_id: str | None = None,
     ):
         self.config = config
         self.app = app
@@ -66,6 +67,7 @@ class CUARun:
         self.event_sink = event_sink
         self.gate = gate
         self.stop_event = stop_event or asyncio.Event()
+        self.window_id = window_id
         run_dir.mkdir(parents=True, exist_ok=True)
         self.history: list[dict] = []
         self.trace: dict = {
@@ -73,6 +75,7 @@ class CUARun:
             "goal": goal,
             "planner": config.planner.describe(),
             "steps": [],
+            "window_id": window_id,
         }
         self.tracker = NoProgressTracker()
         self._empty_snapshots = 0
@@ -195,6 +198,12 @@ class CUARun:
             )
         return None
 
+    def _get_app_state(self, *, screenshot: bool) -> dict:
+        kwargs: dict[str, Any] = {"screenshot": screenshot, "use_cache": False}
+        if self.window_id is not None:
+            kwargs["window_id"] = self.window_id
+        return backend.get_app_state(self.app, **kwargs)
+
     async def _execute(self, plan: dict, snapshot: dict) -> dict:
         action = plan["action"]
         index = plan.get("element_index", -1)
@@ -252,10 +261,22 @@ class CUARun:
             self._emit({"kind": "terminal", "status": "stopped"})
             return {"status": "stopped", "reason": "cancelled by client"}
         try:
-            snapshot = backend.get_app_state(
-                self.app, screenshot=not planner.text_only, use_cache=False
-            )
+            snapshot = self._get_app_state(screenshot=not planner.text_only)
         except ComputerUseError as exc:
+            if self.window_id is not None:
+                reason = f"selected window unavailable: {exc.message}"
+                self.trace["status"] = "stopped"
+                self.trace["final_summary"] = reason
+                self._record({"step": step_no, "stop": reason, "error_code": exc.code})
+                self._emit(
+                    {
+                        "kind": "terminal",
+                        "status": "stopped",
+                        "reason": reason,
+                        "error": exc.code,
+                    }
+                )
+                return {"status": "stopped", "reason": reason, "error": exc.code}
             # AX watchdog tripped (wedged app accessibility service): treat as
             # an unusable snapshot and let the honest-stop path handle it.
             snapshot = {
@@ -292,7 +313,9 @@ class CUARun:
                 return {"status": "stopped", "reason": reason}
             return None
         self._empty_snapshots = 0
-        url_now = backend.read_url(self.app, window_id=snapshot.get("window_id"))
+        url_now = backend.read_url(
+            self.app, window_id=self.window_id or snapshot.get("window_id")
+        )
         guard = self._check_domain(url_now)
         if guard:
             self.trace["guard_stop"] = guard
@@ -358,16 +381,26 @@ class CUARun:
             # Approval binds to the observed target. Re-observe after the human
             # pause and fail closed if the indexed control or domain changed.
             try:
-                fresh = backend.get_app_state(
-                    self.app, screenshot=not planner.text_only, use_cache=False
-                )
+                fresh = self._get_app_state(screenshot=not planner.text_only)
             except ComputerUseError as exc:
-                reason = f"could not revalidate approved target: {exc}"
-                self._record(
-                    {"step": step_no, "plan": plan, "gate": "stale", "stop": reason}
+                reason = (
+                    f"selected window unavailable after approval: {exc.message}"
+                    if self.window_id is not None
+                    else f"could not revalidate approved target: {exc}"
                 )
-                return {"status": "stopped", "reason": reason}
-            fresh_url = backend.read_url(self.app, window_id=fresh.get("window_id"))
+                self._record(
+                    {
+                        "step": step_no,
+                        "plan": plan,
+                        "gate": "stale",
+                        "stop": reason,
+                        "error_code": exc.code,
+                    }
+                )
+                return {"status": "stopped", "reason": reason, "error": exc.code}
+            fresh_url = backend.read_url(
+                self.app, window_id=self.window_id or fresh.get("window_id")
+            )
             fresh_guard = self._check_domain(fresh_url)
             fresh_target = self._target(fresh, plan.get("element_index", -1))
             fresh_label = str(fresh_target.get("label", ""))
@@ -383,6 +416,7 @@ class CUARun:
                     original_window_identity is None,
                     fresh_window_identity is None,
                     original_window_identity != fresh_window_identity,
+                    snapshot.get("window") != fresh.get("window"),
                     fresh_url != url_now,
                     _tree_signature(fresh) != _tree_signature(snapshot),
                 )
@@ -398,14 +432,40 @@ class CUARun:
                 self._record(
                     {"step": step_no, "plan": plan, "gate": "stale", "stop": reason}
                 )
-                return {"status": "stopped", "reason": reason}
+                result = {"status": "stopped", "reason": reason}
+                if self.window_id is not None and stale:
+                    result["error"] = "window_stale"
+                return result
             snapshot = fresh
             url_now = fresh_url
 
         # Planning and human approval are await points during which the active
         # browser location can change. Enforce the domain boundary again at
         # the last possible moment before any input is dispatched.
-        pre_action_url = backend.read_url(self.app, window_id=snapshot.get("window_id"))
+        if self.window_id is not None and approval is None:
+            try:
+                fresh = self._get_app_state(screenshot=not planner.text_only)
+            except ComputerUseError as exc:
+                reason = f"selected window unavailable before action: {exc.message}"
+                self._record(
+                    {
+                        "step": step_no,
+                        "plan": plan,
+                        "stop": reason,
+                        "error_code": exc.code,
+                    }
+                )
+                return {"status": "stopped", "reason": reason, "error": exc.code}
+            if self._window_identity(snapshot) != self._window_identity(
+                fresh
+            ) or snapshot.get("window") != fresh.get("window"):
+                reason = "selected window moved or was replaced before action"
+                self._record({"step": step_no, "plan": plan, "stop": reason})
+                return {"status": "stopped", "reason": reason, "error": "window_stale"}
+            snapshot = fresh
+        pre_action_url = backend.read_url(
+            self.app, window_id=self.window_id or snapshot.get("window_id")
+        )
         pre_action_guard = self._check_domain(pre_action_url)
         if pre_action_guard:
             self.trace["guard_stop"] = pre_action_guard
@@ -422,9 +482,20 @@ class CUARun:
         before_sig = _tree_signature(snapshot)
         executed = await self._execute(plan, snapshot)
         await asyncio.sleep(1.2)
-        after = backend.get_app_state(self.app, screenshot=False, use_cache=False)
+        try:
+            after = self._get_app_state(screenshot=False)
+        except ComputerUseError as exc:
+            if self.window_id is None:
+                raise
+            reason = f"selected window unavailable after action: {exc.message}"
+            self._record(
+                {"step": step_no, "plan": plan, "stop": reason, "error_code": exc.code}
+            )
+            return {"status": "stopped", "reason": reason, "error": exc.code}
         after_sig = _tree_signature(after)
-        url_after = backend.read_url(self.app, window_id=after.get("window_id"))
+        url_after = backend.read_url(
+            self.app, window_id=self.window_id or after.get("window_id")
+        )
         delta = {
             "executed": executed,
             "tree_changed": before_sig != after_sig,
@@ -494,6 +565,7 @@ async def run(
     event_sink: Callable[[dict], None] | None = None,
     gate: Callable[[str], Any] | None = None,
     stop_event: asyncio.Event | None = None,
+    window_id: str | None = None,
 ) -> dict:
     """Run the loop. Pass `planner` to inject a custom brain (SDK/testing use)."""
     run_dir = config_mod.RUNS_DIR / (
@@ -520,8 +592,11 @@ async def run(
         event_sink=event_sink,
         gate=gate,
         stop_event=stop_event,
+        window_id=window_id,
     )
-    cua_run._emit({"kind": "started", "app": app, "run_dir": str(run_dir)})
+    cua_run._emit(
+        {"kind": "started", "app": app, "run_dir": str(run_dir), "window_id": window_id}
+    )
     limit = max_steps or config.max_steps
     terminal: dict = {"status": "incomplete"}
     try:
@@ -557,6 +632,7 @@ async def run(
     finally:
         cua_run.trace["status"] = terminal.get("status", "incomplete")
         reason = str(terminal.get("reason", ""))
+        error = str(terminal.get("error", ""))
         if reason and not cua_run.trace.get("final_summary"):
             cua_run.trace["final_summary"] = reason
         if not cua_run._terminal_emitted:
@@ -570,6 +646,7 @@ async def run(
                     "status": public_status,
                     "final_summary": str(cua_run.trace.get("final_summary", "")),
                     **({"reason": reason} if reason else {}),
+                    **({"error": error} if error else {}),
                 }
             )
         (run_dir / "trace.json").write_text(

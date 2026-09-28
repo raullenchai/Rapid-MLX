@@ -187,7 +187,7 @@ def test_discovery_contract(client):
     assert capabilities.json()["features"] == {
         "app_discovery": True,
         "window_discovery": True,
-        "window_selection": False,
+        "window_selection": True,
         "visual_observation": False,
         "approval_gate_id": True,
     }
@@ -206,6 +206,33 @@ def test_discovery_contract(client):
 
     event_schema = client.app.openapi()["components"]["schemas"]["CUAEvent"]
     assert "target" in event_schema["properties"]
+
+
+def test_create_run_freezes_selected_window_and_rejects_open_url(client, monkeypatch):
+    from rapid_mlx.computer_use import backend as backend_mod
+
+    observed: list[tuple[str, str | None]] = []
+
+    def validate_window(app, window_id):
+        observed.append((app, window_id))
+        return {
+            "app": {"name": app, "pid": 42},
+            "window_id": "cg:123",
+            "window": {"window_id": "cg:123", "index": 0},
+        }
+
+    monkeypatch.setattr(backend_mod, "validate_window", validate_window)
+    response = _post_run(client, window_id="opaque-client-id")
+    assert response.status_code == 202
+    assert response.json()["window_id"] == "cg:123"
+    run_id = response.json()["run_id"]
+    view = client.get(f"/v1/cua/runs/{run_id}", headers=AUTH).json()
+    assert view["window_id"] == "cg:123"
+    assert observed == [("Google Chrome", "opaque-client-id")]
+
+    rejected = _post_run(client, window_id="cg:123", open_url="https://example.com")
+    assert rejected.status_code == 400
+    assert "cannot be used" in rejected.json()["detail"]
 
 
 def test_planner_crud_roundtrip(client):
