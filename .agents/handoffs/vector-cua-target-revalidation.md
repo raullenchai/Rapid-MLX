@@ -9,3 +9,5 @@
 - Reference check: existing Rapid target/window identity helpers and last-moment domain check were retained; only the redundant whole-tree equality requirement was removed from the non-gated selected-window branch.
 - Verification: regression changes live table values across initial, pre-action, and post-action observations while keeping CPU target stable and proves one click. A second swaps CPU/Memory indices and proves no click. Approval and domain regressions remain green.
 - Risk: target identity is based on exposed AX metadata rather than an OS-persistent element token. Identical replacement controls at exactly the same geometry are not distinguishable across fresh AX snapshots; backend snapshot/window validation still runs at dispatch.
+- Studio dogfood: with the live Activity Monitor process table changing, the planner selected CPU index 4 and the run executed `AXPress`. Independent AXValue readback showed CPU=1 and Memory=0 (Memory had previously been selected). The terminal `stalled` status was expected from the intentional one-step cap.
+- Draft PR: https://github.com/raullenchai/Rapid-MLX/pull/3854 (not Ready and not merged).
