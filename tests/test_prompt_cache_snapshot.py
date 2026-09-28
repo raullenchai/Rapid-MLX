@@ -566,9 +566,7 @@ class TestBoundarySnapshot:
         scheduler.config.hybrid_cache_entries = 4
         scheduler._extract_cache_states = MagicMock(return_value=[{"k": "v"}])
         reconstructed = [object(), object()]
-        scheduler._reconstruct_cache_from_states = MagicMock(
-            return_value=reconstructed
-        )
+        scheduler._reconstruct_cache_from_states = MagicMock(return_value=reconstructed)
         scheduler.memory_aware_cache.store = MagicMock(return_value=True)
         record = MagicMock(return_value=True)
         monkeypatch.setattr(scheduler_module, "_state_checkpoint_max", lambda: 4)

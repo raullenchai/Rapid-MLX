@@ -113,9 +113,7 @@ class TestStateCheckpoints:
             anchor=True,
         )
         for pos in (24576, 26624, 28672, 30720, 32768):
-            holder = holder.with_checkpoint(
-                pos, (_Array(pos),), max_count=4, stride=1
-            )
+            holder = holder.with_checkpoint(pos, (_Array(pos),), max_count=4, stride=1)
 
         assert holder.anchor_position == 22819
         assert 22819 in holder.positions
@@ -129,6 +127,26 @@ class TestStateCheckpoints:
         holder = holder.with_checkpoint(200, (_Array(200),), max_count=1, stride=1)
         assert holder.positions == (100,)
         assert holder.anchor_position == 100
+
+    def test_later_session_boundary_cannot_replace_established_anchor(self):
+        holder = StateCheckpoints().with_checkpoint(
+            100, (_Array(100),), max_count=3, stride=1, anchor=True
+        )
+        holder = holder.with_checkpoint(
+            200,
+            (_Array(200),),
+            max_count=3,
+            stride=1,
+            force=True,
+            anchor=True,
+        )
+        for pos in (300, 400, 500):
+            holder = holder.with_checkpoint(pos, (_Array(pos),), max_count=3, stride=1)
+
+        assert holder.anchor_position == 100
+        assert len(holder) == 3
+        assert holder.positions[0] == 100
+        assert holder.positions[-1] == 500
 
     def test_max_count_zero_disables_recording(self):
         holder = StateCheckpoints().with_checkpoint(2048, (), max_count=0, stride=1)
@@ -172,8 +190,13 @@ class TestRecordAndRestore:
     def test_forced_record_marks_exact_boundary_as_anchor(self):
         holders = collect_checkpoints(_cache(0))
         assert record_checkpoints(
-            _cache(1), holders, 22819, max_count=4, stride=2048,
-            force=True, anchor=True,
+            _cache(1),
+            holders,
+            22819,
+            max_count=4,
+            stride=2048,
+            force=True,
+            anchor=True,
         )
         assert holders[1].positions == holders[2].positions == (22819,)
         assert holders[1].anchor_position == holders[2].anchor_position == 22819

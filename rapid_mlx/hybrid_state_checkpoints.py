@@ -160,17 +160,17 @@ class StateCheckpoints:
             if position < newest or (position - newest < stride and not force):
                 return self
             if position == newest:
-                if not anchor or self._anchor_position == position:
+                if not anchor or self._anchor_position is not None:
                     return self
                 return StateCheckpoints(self._items, anchor_position=position)
         items = list(self._items) + [(position, tuple(arrays))]
-        anchor_position = position if anchor else self._anchor_position
+        anchor_position = self._anchor_position
+        if anchor and anchor_position is None:
+            anchor_position = position
         while len(items) > max_count:
             # gap of item i = items[i].pos - items[i-1].pos (first item: pos)
             candidates = [
-                i
-                for i in range(len(items) - 1)
-                if items[i][0] != anchor_position
+                i for i in range(len(items) - 1) if items[i][0] != anchor_position
             ]
             if not candidates:
                 # With a one-checkpoint bound, an anchor wins over recency.

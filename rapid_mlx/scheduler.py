@@ -5574,8 +5574,7 @@ class Scheduler:
                     prefix_boundary,
                     force=True,
                     anchor=not any(
-                        h is not None and h.anchor_position is not None
-                        for h in holders
+                        h is not None and h.anchor_position is not None for h in holders
                     ),
                 ):
                     self._hybrid_checkpoints[uid] = holders
