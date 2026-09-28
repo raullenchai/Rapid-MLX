@@ -40,7 +40,7 @@ applied. This note is private and must not be copied into external PR text.
 
 ## Coordination and remaining action
 
-The Orca agent mailbox was not available in this session, so start/completion
+The team FYI channel was not available in this session, so start/completion
 FYIs could not be delivered. Atlas should cherry-pick the local commit onto the
 final linearized base, resolve any API model overlap, rerun the focused tests,
 then start the normal review loop. No push or PR was created.

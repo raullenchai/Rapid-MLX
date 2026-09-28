@@ -462,6 +462,14 @@ class CUARun:
                 reason = "selected window moved or was replaced before action"
                 self._record({"step": step_no, "plan": plan, "stop": reason})
                 return {"status": "stopped", "reason": reason, "error": "window_stale"}
+            original_target = self._target(snapshot, plan.get("element_index", -1))
+            fresh_target = self._target(fresh, plan.get("element_index", -1))
+            if self._target_identity(original_target) != self._target_identity(
+                fresh_target
+            ) or _tree_signature(snapshot) != _tree_signature(fresh):
+                reason = "planned target changed before action"
+                self._record({"step": step_no, "plan": plan, "stop": reason})
+                return {"status": "stopped", "reason": reason, "error": "target_stale"}
             snapshot = fresh
         pre_action_url = backend.read_url(
             self.app, window_id=self.window_id or snapshot.get("window_id")

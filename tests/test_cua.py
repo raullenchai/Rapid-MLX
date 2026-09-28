@@ -1461,6 +1461,73 @@ def test_selected_window_is_revalidated_before_action_and_fails_on_move(
     assert clicks == []
 
 
+def test_selected_window_fails_closed_when_planned_index_changes(
+    fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    window = {"window_id": "cg:404", "index": 0, "x": 10, "y": 10}
+    labels = iter(["Open", "Delete"])
+
+    def state(app, **kwargs):
+        label = next(labels)
+        return {
+            "app": {"name": app, "pid": 9},
+            "window_id": "cg:404",
+            "window_index": 0,
+            "window": dict(window),
+            "elements": [
+                {
+                    "index": 1,
+                    "label": label,
+                    "role": "AXButton",
+                    "actions": ["AXPress"],
+                    "x": 10,
+                    "y": 10,
+                    "width": 50,
+                    "height": 20,
+                    "center": [35, 20],
+                }
+            ],
+            "tree_text": f"[1] AXButton* {label}",
+        }
+
+    monkeypatch.setattr(fake_backend, "get_app_state", state)
+    clicks: list[int] = []
+    monkeypatch.setattr(
+        fake_backend,
+        "click",
+        lambda app, index, **kwargs: clicks.append(index) or {"ok": True},
+    )
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path),
+        "Browser",
+        "open",
+        tmp_path / "selected-target-stale",
+        window_id="cg:404",
+    )
+    planner = _FakePlanner(
+        [
+            {
+                "action": "click",
+                "step_instruction": "open",
+                "element_index": 1,
+                "final_summary": "",
+            }
+        ]
+    )
+    result = asyncio.run(runner.step(planner, 1))
+    assert result == {
+        "status": "stopped",
+        "reason": "planned target changed before action",
+        "error": "target_stale",
+    }
+    assert clicks == []
+
+
 def test_loop_ranker_success_and_unavailable(fake_backend, tmp_path, monkeypatch):
     import asyncio
 

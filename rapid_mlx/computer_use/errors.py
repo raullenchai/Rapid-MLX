@@ -54,6 +54,10 @@ RECOVERY_HINTS: dict[str, tuple[str, ...]] = {
         "The selected window moved, resized, or lost focus;",
         "re-run list-windows and get-app-state before retrying.",
     ),
+    "target_stale": (
+        "The planned control changed before input could be dispatched;",
+        "re-observe the selected window and create a fresh plan.",
+    ),
     "target_occluded": (
         "Another window covers the action point; bring the selected window",
         "to the foreground, re-run get-app-state, and retry.",
