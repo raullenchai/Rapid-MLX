@@ -3,6 +3,7 @@
 - Owner: Harbor (Robert), coordinating Pixel UI and Vector server contracts
 - Branch/worktree: `harbor/cua-brain-config`, `/private/tmp/harbor-desk-cua-brain`
 - Base: `origin/main` at `6be91bab`
+- Draft PR: https://github.com/raullenchai/Rapid-MLX/pull/3826
 - FYI recipients: Atlas, Pixel, Vector, Echo, ds0731. Orca role mailbox was
   unavailable (`terminal_not_found`), so the required start/completion FYI is
   recorded here for later delivery.
@@ -67,3 +68,6 @@ this scoped consent fix; no secret is returned by the planner API. A future
 credential migration can move keys to Keychain. Atlas should decide whether
 encrypted LAN HTTP is ever supported through a separate trust/pinning design;
 this PR fails closed for it.
+
+Implementation is complete and the draft PR is ready for the normal review
+loop. No production rollout or merge has been performed.
