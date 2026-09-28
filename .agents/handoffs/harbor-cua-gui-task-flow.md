@@ -46,7 +46,7 @@ workflow model.
 
 ## Verification
 
-- Focused CUA and permission Swift suites: 29 tests passed across panel, client,
+- Focused CUA and permission Swift suites: 30 tests passed across panel, client,
   brain, decode, and TCC readiness suites; the complete Rapid target compiled.
 - Existing Mac automation permission model remains the single source of truth.
 - `git diff --check` passed.

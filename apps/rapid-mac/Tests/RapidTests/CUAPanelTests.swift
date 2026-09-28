@@ -73,7 +73,6 @@ private final class MockAgentAPI: CUAAPI, @unchecked Sendable {
             planner: "local-9b [local]",
             eventsAfterSeq: after,
             events: events,
-            runDir: "/tmp/runs/x",
             pendingGate: pendingGateResult
         )
     }
@@ -188,6 +187,7 @@ struct CUAViewModelTests {
             gateID: "gate-reconnect", reason: "Confirm submission",
             action: "submit", target: "Expense report"
         )
+        api.scriptedEvents = [makeEvent(seq: 2, kind: "gate_resolved")]
         let viewModel = CUAViewModel(api: api, pollIntervalNanos: 5_000_000)
         viewModel.goal = "submit my report"
         viewModel.appName = "Safari"
@@ -203,6 +203,22 @@ struct CUAViewModelTests {
         )
         await viewModel.approve()
         #expect(api.approvedGateIDs.first == "gate-reconnect")
+    }
+
+    @Test("Legacy resolution cannot clear a different identified gate")
+    func legacyResolutionMatchesGateIdentity() async {
+        let api = MockAgentAPI()
+        api.scriptedEvents = [
+            makeEvent(seq: 2, kind: "gate", gateID: "gate-current"),
+            makeEvent(seq: 3, kind: "gate_resolved", gateID: "gate-previous"),
+        ]
+        let viewModel = CUAViewModel(api: api, pollIntervalNanos: 5_000_000)
+        viewModel.goal = "continue safely"
+        await viewModel.start()
+        await drain()
+
+        #expect(viewModel.phase == .awaitingApproval)
+        #expect(viewModel.pendingApproval?.gateID == "gate-current")
     }
 
     @Test("Active progress reports structured step and honest verifier outcome")
@@ -405,7 +421,7 @@ struct CUAClientTests {
          "pending_gate":{"gate_id":"gate-7","reason":"sign-in","action":"sign_in","target":"Account"},
          "events":[{"seq":2,"kind":"gate","step":1,"step_instruction":"click it",
                     "gate_id":"gate-7","app":"Safari","action":"sign_in","target":"Account",
-                    "latency_s":0.4}],"run_dir":"/tmp/x"}
+                    "latency_s":0.4}]}
         """
         RecordingURLProtocol.stubResponse(path: "/v1/cua/runs/abc/events", body: Data(payload.utf8))
         let client = makeClient()

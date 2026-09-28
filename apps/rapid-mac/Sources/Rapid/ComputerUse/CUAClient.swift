@@ -140,7 +140,6 @@ struct CUARunView: Codable, Equatable, Sendable {
     var planner: String
     var eventsAfterSeq: Int
     var events: [CUAEvent]
-    var runDir: String
     var pendingGate: CUAPendingGate? = nil
 
     enum CodingKeys: String, CodingKey {
@@ -148,7 +147,6 @@ struct CUARunView: Codable, Equatable, Sendable {
         case app, goal, status, error, planner, events
         case finalSummary = "final_summary"
         case eventsAfterSeq = "events_after_seq"
-        case runDir = "run_dir"
         case pendingGate = "pending_gate"
     }
 }

@@ -340,9 +340,17 @@ final class CUAViewModel: ObservableObject {
                         )
                     }
                 }
-                for event in view.events where event.kind == "gate_resolved" {
-                    pendingGateReason = nil
-                    pendingApproval = nil
+                if view.pendingGate == nil {
+                    for event in view.events where event.kind == "gate_resolved" {
+                        if let resolvedID = event.gateID,
+                           let currentID = pendingApproval?.gateID,
+                           resolvedID != currentID
+                        {
+                            continue
+                        }
+                        pendingGateReason = nil
+                        pendingApproval = nil
+                    }
                 }
                 for event in view.events where event.isTerminal {
                     switch event.status {
