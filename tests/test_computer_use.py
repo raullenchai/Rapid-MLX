@@ -11,6 +11,32 @@ import pytest
 from rapid_mlx.computer_use import ax_driver, backend, errors
 
 
+def _window(window_id=101, index=0, x=0, y=0, width=100, height=100):
+    opaque_id = window_id if isinstance(window_id, str) else f"cg:{window_id}"
+    return {
+        "index": index,
+        "window_id": opaque_id,
+        "title": "Main",
+        "x": x,
+        "y": y,
+        "width": width,
+        "height": height,
+    }
+
+
+def _stable_snapshot(*, window_id=101, elements=None, observed_at=100.0):
+    window = _window(window_id=window_id)
+    return {
+        "snapshot_id": "planned",
+        "observed_at": observed_at,
+        "app": {"name": "A", "bundleId": "b", "pid": 4},
+        "window_index": 0,
+        "window_id": window["window_id"],
+        "window": window,
+        "elements": elements or [],
+    }
+
+
 def test_error_payload_carries_recovery_hints():
     exc = errors.ComputerUseError("element_not_found", "element 5 vanished")
     payload = exc.to_payload()
@@ -102,89 +128,152 @@ def test_snapshot_cache_ttl_and_eviction(monkeypatch):
     assert len(cache._entries) <= backend.SNAPSHOT_CACHE_MAX
 
 
-def test_read_url_uses_axvalue_and_escapes_app_name(monkeypatch):
-    import types
-
-    class _FakeElement:
-        pass
-
-    state = {"axvalue": "https://example.com/x"}
-
-    def fake_get(_element, attr):
-        return state["axvalue"] if attr == "AXValue" else None
-
-    def fake_collect(app, keep_elements=True, max_windows=1, **kwargs):
-        return [{"element": _FakeElement()}]
-
-    monkeypatch.setattr(backend.ax_driver, "_get", fake_get)
-    monkeypatch.setattr(backend.ax_driver, "collect", fake_collect)
-    assert backend.read_url("Google Chrome") == "https://example.com/x"
-
-    # no AXValue anywhere -> AppleScript fallback with escaped app name
-    state["axvalue"] = None
-    captured = {}
-
-    def fake_run(cmd, **kwargs):
-        captured["cmd"] = cmd
-        return types.SimpleNamespace(stdout="", stderr="", returncode=1)
-
-    monkeypatch.setattr(backend.subprocess, "run", fake_run)
-    assert backend.read_url('Weird "App"') == ""
-    script = captured["cmd"][2]
-    assert 'Weird \\"App\\"' in script  # quotes escaped, no injection
-    assert captured["cmd"][0] == "osascript"
-
-
-def test_read_url_empty_value_without_osascript_result(monkeypatch):
-    import types
-
-    class _FakeElement:
-        pass
-
-    monkeypatch.setattr(backend.ax_driver, "_get", lambda e, a: None)
+def test_read_url_ignores_page_controlled_axvalue_spoof(monkeypatch):
+    window = _window()
     monkeypatch.setattr(
-        backend.ax_driver, "collect", lambda *a, **k: [{"element": _FakeElement()}]
+        backend,
+        "_resolve_app",
+        lambda app, **kwargs: (
+            object(),
+            {"name": "browser", "bundleId": "com.google.Chrome", "pid": 4},
+        ),
     )
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "collect",
+        lambda *a, **k: pytest.fail("domain guard must not inspect AX values"),
+    )
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_get",
+        lambda *a: "https://allowed.example/spoofed-by-page",
+    )
+    monkeypatch.setattr(backend, "_select_window", lambda *a, **k: window)
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a: None)
     monkeypatch.setattr(
         backend.subprocess,
         "run",
         lambda cmd, **k: types.SimpleNamespace(
-            stdout="https://ok.example", stderr="", returncode=0
+            stdout="https://evil.example/actual-tab", stderr="", returncode=0
         ),
     )
-    assert backend.read_url("Safari") == "https://ok.example"
+    assert (
+        backend.read_url("Browser", window_id=window["window_id"])
+        == "https://evil.example/actual-tab"
+    )
 
 
-def test_coordinate_click_activates_target_without_snapshot(monkeypatch):
-    calls = []
-    monkeypatch.setattr(backend, "_resolve_app", lambda app: calls.append(app))
+def test_read_url_uses_trusted_active_tab_and_fails_closed(monkeypatch):
+    captured = {}
+    app_info = {"name": "safari", "bundleId": "com.apple.Safari", "pid": 4}
     monkeypatch.setattr(
-        backend,
-        "get_app_state",
-        lambda *args, **kwargs: pytest.fail(
-            "coordinate click must not take a snapshot"
+        backend, "_resolve_app", lambda app, **kwargs: (object(), app_info)
+    )
+    monkeypatch.setattr(backend, "_select_window", lambda *a, **k: _window())
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a: None)
+
+    def trusted_url(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return types.SimpleNamespace(
+            stdout="https://ok.example", stderr="", returncode=0
+        )
+
+    monkeypatch.setattr(backend.subprocess, "run", trusted_url)
+    assert backend.read_url("Safari") == "https://ok.example"
+    assert captured["cmd"] == [
+        "osascript",
+        "-e",
+        'tell application id "com.apple.Safari" to get URL of current tab of front window',
+    ]
+
+    monkeypatch.setattr(
+        backend.subprocess,
+        "run",
+        lambda cmd, **k: types.SimpleNamespace(
+            stdout="", stderr="denied", returncode=1
         ),
+    )
+    assert backend.read_url("Safari") == ""
+
+    app_info["bundleId"] = "com.example.unsupported"
+    monkeypatch.setattr(
+        backend.subprocess,
+        "run",
+        lambda *a, **k: pytest.fail("unsupported browser must fail before osascript"),
+    )
+    assert backend.read_url("Unsupported") == ""
+
+
+def test_read_url_rejects_active_tab_from_different_selected_window(monkeypatch):
+    app_info = {"name": "browser", "bundleId": "com.example.browser", "pid": 4}
+    background_window = _window(window_id=202, index=1)
+    monkeypatch.setattr(
+        backend, "_resolve_app", lambda app, **kwargs: (object(), app_info)
+    )
+    monkeypatch.setattr(backend, "_select_window", lambda *a, **k: background_window)
+    monkeypatch.setattr(
+        backend.subprocess,
+        "run",
+        lambda *a, **k: pytest.fail(
+            "front-tab URL must not authorize a different selected window"
+        ),
+    )
+    assert backend.read_url("Browser", window_id="cg:202") == ""
+
+    app_info["bundleId"] = 'com.bad"\nscript'
+    monkeypatch.setattr(backend, "_select_window", lambda *a, **k: _window())
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a: None)
+    monkeypatch.setattr(
+        backend.subprocess,
+        "run",
+        lambda *a, **k: pytest.fail("invalid bundle id must fail before osascript"),
+    )
+    assert backend.read_url("Safari") == ""
+
+
+def test_coordinate_click_binds_to_selected_window(monkeypatch):
+    snapshot = _stable_snapshot(elements=[])
+    monkeypatch.setattr(backend, "get_app_state", lambda *a, **k: snapshot)
+    monkeypatch.setattr(
+        backend, "_validate_snapshot_window", lambda *a, **k: snapshot["window"]
     )
     monkeypatch.setattr(backend.ax_driver, "_cg_click", lambda *args, **kwargs: None)
-    assert backend.click("Target App", x=4, y=9)["at"] == [4, 9]
-    assert calls == ["Target App"]
+    result = backend.click("Target App", x=4, y=9, window_id=101)
+    assert result["at"] == [4, 9]
+    assert result["window_id"] == "cg:101"
+    assert result["verified"] is None
 
 
 def test_synthetic_keyboard_actions_activate_target_app(monkeypatch):
+    snapshot = _stable_snapshot()
     calls = []
-    monkeypatch.setattr(backend, "_resolve_app", lambda app: calls.append(app))
+    monkeypatch.setattr(
+        backend,
+        "_prepare_synthetic_action",
+        lambda app, window_id, *a: calls.append((app, window_id)) or snapshot,
+    )
     monkeypatch.setattr(backend.ax_driver, "_type_text", lambda text: None)
     monkeypatch.setattr(backend.ax_driver, "_press_key", lambda *args, **kwargs: None)
 
     backend.type_text("Target App", "secret")
     backend.press_key("Target App", "return")
-    assert calls == ["Target App", "Target App"]
+    assert calls == [("Target App", None), ("Target App", None)]
 
 
 def test_hotkey_and_scroll_activate_target_before_posting(monkeypatch):
+    snapshot = _stable_snapshot()
     calls = []
     scroll_events = []
-    monkeypatch.setattr(backend, "_resolve_app", lambda app: calls.append(app))
+    monkeypatch.setattr(
+        backend,
+        "_prepare_synthetic_action",
+        lambda app, window_id: calls.append(app) or snapshot,
+    )
+    monkeypatch.setattr(backend, "get_app_state", lambda *a, **k: snapshot)
+    monkeypatch.setattr(
+        backend, "_validate_snapshot_window", lambda *a, **k: snapshot["window"]
+    )
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a: None)
     fake_quartz = types.SimpleNamespace(
         CGEventCreateKeyboardEvent=lambda *_args: object(),
         CGEventSetFlags=lambda *_args: None,
@@ -192,6 +281,7 @@ def test_hotkey_and_scroll_activate_target_before_posting(monkeypatch):
         CGEventCreateScrollWheelEvent=lambda *_args: (
             scroll_events.append(_args) or object()
         ),
+        CGEventSetLocation=lambda *_args: None,
         kCGHIDEventTap=0,
         kCGScrollEventUnitLine=0,
     )
@@ -199,7 +289,7 @@ def test_hotkey_and_scroll_activate_target_before_posting(monkeypatch):
 
     backend.hotkey("Target App", "Cmd+A")
     backend.scroll("Target App", "down")
-    assert calls == ["Target App", "Target App"]
+    assert calls == ["Target App"]
     assert scroll_events == [(None, 0, 1, -10)]
 
     scroll_events.clear()
@@ -228,11 +318,18 @@ def test_get_app_state_uses_requested_window_without_screenshot(monkeypatch):
         ]
 
     monkeypatch.setattr(backend.ax_driver, "collect", fake_collect)
+    monkeypatch.setattr(
+        backend,
+        "_select_window",
+        lambda *a, **k: _window(window_id=303, index=2, x=4, y=5),
+    )
     state = backend.get_app_state(
         "Target App", window_index=2, screenshot=False, use_cache=False
     )
     assert state["window_index"] == 2
+    assert state["window_id"] == "cg:303"
     assert captured["window_index"] == 2
+    assert captured["window_frame"] == (4.0, 5.0, 100.0, 100.0)
 
 
 def test_cli_capabilities_and_error_envelope(capsys):
@@ -404,8 +501,8 @@ def test_cli_stdin_empty_and_mouse_button_guards(monkeypatch, capsys):
     from rapid_mlx.computer_use import cli
 
     monkeypatch.setattr(sys, "stdin", types.SimpleNamespace(read=lambda: "stdin-value"))
-    monkeypatch.setattr(backend, "set_value", lambda *a: {"mode": "set"})
-    monkeypatch.setattr(backend, "type_text", lambda *a: {"mode": "type"})
+    monkeypatch.setattr(backend, "set_value", lambda *a, **k: {"mode": "set"})
+    monkeypatch.setattr(backend, "type_text", lambda *a, **k: {"mode": "type"})
     assert (
         cli.main(["set-value", "--app", "A", "--element-index", "1", "--text-stdin"])
         == 0
@@ -440,7 +537,9 @@ def test_resolve_app_by_name_bundle_and_pid(monkeypatch):
         monkeypatch, "ApplicationServices", NSWorkspace=_NSWorkspace
     )
     monkeypatch.setattr(
-        backend, "_ax_app_element", lambda app: ("ax", app.processIdentifier())
+        backend,
+        "_ax_app_element",
+        lambda app, **kwargs: ("ax", app.processIdentifier()),
     )
 
     assert backend._resolve_app("target")[1]["pid"] == 42
@@ -494,13 +593,18 @@ def test_get_app_state_cache_snapshot_and_window_errors(monkeypatch):
         lambda app: (object(), {"name": "A", "bundleId": "b", "pid": 4}),
     )
     monkeypatch.setattr(backend.ax_driver, "collect", lambda *a, **k: [_target()])
-    monkeypatch.setattr(backend, "screenshot_window", lambda *a: b"png-data")
+    monkeypatch.setattr(backend, "_select_window", lambda *a, **k: _window())
+    monkeypatch.setattr(backend, "screenshot_window", lambda *a, **k: b"png-data")
     monkeypatch.setattr(backend.time, "time", lambda: 10.0)
     state = backend.get_app_state("A", screenshot=True, use_cache=False)
     assert state["element_count"] == 1
     assert state["tree_text"] == "[0] AXButton* Label"
     assert state["screenshot_png"] == b"png-data"
-    monkeypatch.setattr(backend, "_resolve_app", lambda _: pytest.fail("cache missed"))
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "collect",
+        lambda *a, **k: pytest.fail("valid cache should skip AX collection"),
+    )
     assert backend.get_app_state("A", screenshot=True) is state
 
     backend._CACHE.clear()
@@ -509,16 +613,63 @@ def test_get_app_state_cache_snapshot_and_window_errors(monkeypatch):
         "_resolve_app",
         lambda app: (object(), {"name": "A", "bundleId": "b", "pid": 4}),
     )
+    monkeypatch.setattr(
+        backend,
+        "_select_window",
+        lambda *a, **k: (_ for _ in ()).throw(
+            errors.ComputerUseError(
+                "window_not_found", "window index 2 is not available"
+            )
+        ),
+    )
     monkeypatch.setattr(backend.ax_driver, "collect", lambda *a, **k: [])
     with pytest.raises(errors.ComputerUseError, match="window index"):
         backend.get_app_state("A", window_index=2, screenshot=False, use_cache=False)
+
+
+def test_get_app_state_cache_revalidates_reorder_and_closed_window(monkeypatch):
+    backend._CACHE.clear()
+    app_info = {"name": "A", "bundleId": "b", "pid": 4}
+    monkeypatch.setattr(backend, "_resolve_app", lambda app: (object(), app_info))
+    selected = {"window": _window(window_id=101, index=0)}
+    monkeypatch.setattr(backend, "_select_window", lambda *a, **k: selected["window"])
+    monkeypatch.setattr(backend.ax_driver, "collect", lambda *a, **k: [_target()])
+    first = backend.get_app_state("A", screenshot=False, use_cache=False)
+    assert first["window_id"] == "cg:101"
+
+    selected["window"] = _window(window_id=202, index=0)
+    reordered = backend.get_app_state("A", screenshot=False, use_cache=True)
+    assert reordered["window_id"] == "cg:202"
+    assert reordered["snapshot_id"] != first["snapshot_id"]
+
+    backend._CACHE.put("A", 0, reordered, screenshot=False, window_id=202)
+    monkeypatch.setattr(
+        backend,
+        "_select_window",
+        lambda *a, **k: (_ for _ in ()).throw(
+            errors.ComputerUseError("window_not_found", "window id 202 closed")
+        ),
+    )
+    with pytest.raises(errors.ComputerUseError, match="closed"):
+        backend.get_app_state("A", screenshot=False, window_id=202)
 
 
 def test_screenshot_window_success_and_failures(monkeypatch):
     windows = [
         {"kCGWindowOwnerName": "Other", "kCGWindowLayer": 0, "kCGWindowNumber": 1},
         {"kCGWindowOwnerName": "Target App", "kCGWindowLayer": 2, "kCGWindowNumber": 2},
-        {"kCGWindowOwnerName": "Target App", "kCGWindowLayer": 0, "kCGWindowNumber": 3},
+        {
+            "kCGWindowOwnerName": "Target App",
+            "kCGWindowOwnerPID": 41,
+            "kCGWindowLayer": 0,
+            "kCGWindowNumber": 3,
+        },
+        {
+            "kCGWindowOwnerName": "Target App",
+            "kCGWindowOwnerPID": 42,
+            "kCGWindowLayer": 0,
+            "kCGWindowNumber": 4,
+        },
     ]
     quartz = _install_module(
         monkeypatch,
@@ -537,8 +688,14 @@ def test_screenshot_window_success_and_failures(monkeypatch):
 
     monkeypatch.setattr(backend.subprocess, "run", run_ok)
     assert len(backend.screenshot_window("Target")) == 9000
-    with pytest.raises(errors.ComputerUseError, match="index 1"):
-        backend.screenshot_window("Target", 1)
+    assert (
+        len(backend.screenshot_window("Target", window_id="cg:4", expected_pid=42))
+        == 9000
+    )
+    with pytest.raises(errors.ComputerUseError, match="window id cg:3"):
+        backend.screenshot_window("Target", window_id="cg:3", expected_pid=42)
+    with pytest.raises(errors.ComputerUseError, match="index 2"):
+        backend.screenshot_window("Target", 2)
     quartz.CGWindowListCopyWindowInfo = lambda *_: []
     with pytest.raises(errors.ComputerUseError, match="no on-screen"):
         backend.screenshot_window("Target")
@@ -551,12 +708,15 @@ def test_screenshot_window_success_and_failures(monkeypatch):
 
 
 def test_element_live_and_read_helpers(monkeypatch):
-    snapshot = {"snapshot_id": "s", "app": {"name": "A"}, "elements": [{"index": 2}]}
+    snapshot = _stable_snapshot(elements=[{"index": 2}])
     assert backend._element(snapshot, 2)["index"] == 2
     with pytest.raises(errors.ComputerUseError, match="element 3"):
         backend._element(snapshot, 3)
     monkeypatch.setattr(
         backend.ax_driver, "collect", lambda *a, **k: [_target(2, element="live")]
+    )
+    monkeypatch.setattr(
+        backend, "_validate_snapshot_window", lambda *a, **k: snapshot["window"]
     )
     assert backend._live_element(snapshot, 2) == "live"
     with pytest.raises(errors.ComputerUseError, match="not in the current snapshot"):
@@ -568,24 +728,245 @@ def test_element_live_and_read_helpers(monkeypatch):
 
 
 def test_live_element_rejects_snapshot_index_drift(monkeypatch):
-    snapshot = {
-        "snapshot_id": "planned",
-        "app": {"name": "A"},
-        "window_index": 0,
-        "elements": [
+    snapshot = _stable_snapshot(
+        elements=[
             {
                 "index": 2,
                 "role": "AXButton",
                 "label": "Safe target",
                 "center": [10, 20],
             }
-        ],
-    }
+        ]
+    )
     drifted = _target(2, role="AXButton", element="wrong-live-element")
     drifted["text"] = "Different target"
     monkeypatch.setattr(backend, "_collect_with_timeout", lambda *a, **k: [drifted])
+    monkeypatch.setattr(
+        backend, "_validate_snapshot_window", lambda *a, **k: snapshot["window"]
+    )
     with pytest.raises(errors.ComputerUseError, match="changed since snapshot"):
         backend._live_element(snapshot, 2)
+
+
+def test_window_id_survives_window_reorder(monkeypatch):
+    app = {"name": "A", "pid": 4}
+    first = [_window(window_id=101, index=0), _window(window_id=202, index=1)]
+    reordered = [_window(window_id=202, index=0), _window(window_id=101, index=1)]
+    states = iter((first, reordered))
+    monkeypatch.setattr(backend, "_window_records", lambda _: next(states))
+
+    assert backend._select_window(app, window_id=202)["index"] == 1
+    assert backend._select_window(app, window_id=202)["index"] == 0
+
+
+def test_window_selector_and_snapshot_validation_fail_closed(monkeypatch):
+    app = {"name": "A", "pid": 4}
+    windows = [_window(window_id=101, index=0), _window(window_id=202, index=1)]
+    monkeypatch.setattr(backend, "_window_records", lambda _: windows)
+    assert backend._select_window(app, window_index=1)["window_id"] == "cg:202"
+    with pytest.raises(errors.ComputerUseError, match="not an on-screen window"):
+        backend._select_window(app, window_id="cg:303")
+    for invalid in ("not-a-window", "cg:0"):
+        with pytest.raises(errors.ComputerUseError) as excinfo:
+            backend._cg_window_id(invalid)
+        assert excinfo.value.code == "invalid_argument"
+
+    monkeypatch.setattr(backend.time, "time", lambda: 100.0)
+    incomplete = _stable_snapshot(observed_at=100.0)
+    incomplete.pop("window")
+    with pytest.raises(errors.ComputerUseError) as excinfo:
+        backend._validate_snapshot_window(incomplete)
+    assert excinfo.value.code == "stale_observation"
+
+    snapshot = _stable_snapshot(observed_at=100.0)
+    moved = {**snapshot["window"], "x": 1}
+    monkeypatch.setattr(backend, "_select_window", lambda *a, **k: moved)
+    with pytest.raises(errors.ComputerUseError) as excinfo:
+        backend._validate_snapshot_window(snapshot)
+    assert excinfo.value.code == "target_drift"
+
+    invalid_bounds = {**snapshot["window"], "width": None}
+    monkeypatch.setattr(backend, "_select_window", lambda *a, **k: invalid_bounds)
+    snapshot["window"] = invalid_bounds
+    with pytest.raises(errors.ComputerUseError, match="invalid bounds"):
+        backend._validate_snapshot_window(snapshot, point=(5, 5))
+
+    snapshot = _stable_snapshot(observed_at=100.0)
+    monkeypatch.setattr(backend, "_select_window", lambda *a, **k: snapshot["window"])
+    monkeypatch.setattr(backend, "_topmost_window_id_at", lambda *a: 999)
+    with pytest.raises(errors.ComputerUseError) as excinfo:
+        backend._validate_snapshot_window(snapshot, point=(5, 5))
+    assert excinfo.value.code == "target_occluded"
+    monkeypatch.setattr(backend, "_topmost_window_id_at", lambda *a: 101)
+    assert (
+        backend._validate_snapshot_window(snapshot, point=(5, 5)) == snapshot["window"]
+    )
+
+
+def test_window_records_and_topmost_probe_skip_invalid_entries(monkeypatch):
+    raw = [
+        {"kCGWindowOwnerPID": 4, "kCGWindowLayer": 0},
+        {
+            "kCGWindowOwnerPID": 4,
+            "kCGWindowLayer": 0,
+            "kCGWindowNumber": 101,
+            "kCGWindowAlpha": 0,
+            "kCGWindowBounds": {"X": 0, "Y": 0, "Width": 100, "Height": 100},
+        },
+        {
+            "kCGWindowOwnerPID": 4,
+            "kCGWindowLayer": 0,
+            "kCGWindowNumber": 202,
+            "kCGWindowBounds": {"X": None, "Y": 0, "Width": 100, "Height": 100},
+        },
+        {
+            "kCGWindowOwnerPID": 4,
+            "kCGWindowLayer": 0,
+            "kCGWindowNumber": 303,
+            "kCGWindowBounds": {"X": 200, "Y": 200, "Width": 50, "Height": 50},
+        },
+        {
+            "kCGWindowOwnerPID": 4,
+            "kCGWindowLayer": 0,
+            "kCGWindowNumber": 404,
+            "kCGWindowBounds": {"X": 0, "Y": 0, "Width": 100, "Height": 100},
+        },
+    ]
+    _install_module(
+        monkeypatch,
+        "Quartz",
+        CGWindowListCopyWindowInfo=lambda *_: raw,
+        kCGNullWindowID=0,
+        kCGWindowListExcludeDesktopElements=1,
+        kCGWindowListOptionOnScreenOnly=2,
+    )
+    records = backend._window_records({"pid": 4})
+    assert [record["window_id"] for record in records] == [
+        "cg:101",
+        "cg:202",
+        "cg:303",
+        "cg:404",
+    ]
+    assert backend._topmost_window_id_at(5, 5) == 404
+    assert backend._topmost_window_id_at(150, 150) is None
+
+
+def test_stale_snapshot_rejected_before_input(monkeypatch):
+    snapshot = _stable_snapshot(observed_at=10.0)
+    monkeypatch.setattr(
+        backend.time,
+        "time",
+        lambda: 10.0 + backend.SNAPSHOT_TTL_S + 0.1,
+    )
+    with pytest.raises(errors.ComputerUseError) as excinfo:
+        backend._validate_snapshot_window(snapshot)
+    assert excinfo.value.code == "stale_observation"
+
+
+def test_coordinate_action_rejects_point_outside_selected_window(monkeypatch):
+    snapshot = _stable_snapshot(observed_at=100.0)
+    monkeypatch.setattr(backend.time, "time", lambda: 100.0)
+    monkeypatch.setattr(backend, "_select_window", lambda *a, **k: snapshot["window"])
+    with pytest.raises(errors.ComputerUseError) as excinfo:
+        backend._validate_snapshot_window(snapshot, point=(101, 50))
+    assert excinfo.value.code == "target_drift"
+
+
+def test_synthetic_input_reports_attempted_but_unverified(monkeypatch):
+    snapshot = _stable_snapshot()
+    monkeypatch.setattr(backend, "_prepare_synthetic_action", lambda *a: snapshot)
+    monkeypatch.setattr(backend.ax_driver, "_type_text", lambda text: None)
+    result = backend.type_text("A", "hello", window_id=101)
+    assert result["attempted"] is True
+    assert result["verified"] is None
+    assert "synthetic text emitted" in result["verification"]
+
+
+def test_synthetic_input_rejects_background_process(monkeypatch):
+    snapshot = _stable_snapshot()
+    background = types.SimpleNamespace(processIdentifier=lambda: 99)
+    workspace = types.SimpleNamespace(frontmostApplication=lambda: background)
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "AS",
+        types.SimpleNamespace(
+            NSWorkspace=types.SimpleNamespace(sharedWorkspace=lambda: workspace)
+        ),
+    )
+    with pytest.raises(errors.ComputerUseError) as excinfo:
+        backend._validate_focused_window(snapshot)
+    assert excinfo.value.code == "target_drift"
+
+
+def test_focused_window_and_post_action_state_contract(monkeypatch):
+    snapshot = _stable_snapshot()
+    frontmost = types.SimpleNamespace(processIdentifier=lambda: 4)
+    workspace = types.SimpleNamespace(frontmostApplication=lambda: frontmost)
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "AS",
+        types.SimpleNamespace(
+            NSWorkspace=types.SimpleNamespace(sharedWorkspace=lambda: workspace)
+        ),
+    )
+    monkeypatch.setattr(backend.ax_driver, "_app_element", lambda app: "application")
+    monkeypatch.setattr(backend.ax_driver, "_get", lambda *a: "focused")
+    monkeypatch.setattr(
+        backend.ax_driver, "_point_size", lambda *a: (0.0, 0.0, 100.0, 100.0)
+    )
+    backend._validate_focused_window(snapshot)
+    monkeypatch.setattr(
+        backend.ax_driver, "_point_size", lambda *a: (1.0, 0.0, 100.0, 100.0)
+    )
+    with pytest.raises(errors.ComputerUseError, match="not the focused AX window"):
+        backend._validate_focused_window(snapshot)
+
+    fresh = {"snapshot_id": "fresh"}
+    monkeypatch.setattr(backend, "get_app_state", lambda *a, **k: fresh)
+    result = backend._finish_action(
+        "A",
+        snapshot,
+        {"mode": "test"},
+        verified=None,
+        verification="test",
+        include_post_state=True,
+    )
+    assert result["post_action_state"] is fresh
+
+    def failed_state(*args, **kwargs):
+        raise errors.ComputerUseError("window_not_found", "closed")
+
+    monkeypatch.setattr(backend, "get_app_state", failed_state)
+    result = backend._finish_action(
+        "A",
+        snapshot,
+        {"mode": "test"},
+        verified=None,
+        verification="test",
+        include_post_state=True,
+    )
+    assert result["post_action_state"] is None
+    assert result["post_action_state_error"]["code"] == "window_not_found"
+
+
+def test_prepare_synthetic_action_observes_and_validates(monkeypatch):
+    snapshot = _stable_snapshot()
+    calls = []
+    monkeypatch.setattr(
+        backend,
+        "get_app_state",
+        lambda *a, **k: calls.append((a, k)) or snapshot,
+    )
+    monkeypatch.setattr(
+        backend,
+        "_validate_snapshot_window",
+        lambda *a, **k: calls.append("window") or snapshot["window"],
+    )
+    monkeypatch.setattr(
+        backend, "_validate_focused_window", lambda *a: calls.append("focus")
+    )
+    assert backend._prepare_synthetic_action("A", "cg:101") is snapshot
+    assert calls[1:] == ["window", "focus"]
 
 
 def test_collect_watchdog_preserves_structured_errors(monkeypatch):
@@ -631,11 +1012,7 @@ def test_element_click_ax_and_fallback(monkeypatch):
 
 def test_set_value_and_synthetic_fill_paths(monkeypatch):
     synthetic_fill = backend._synthetic_fill
-    snapshot = {
-        "app": {"name": "A"},
-        "window_index": 0,
-        "elements": [{"index": 0, "center": [1, 2]}],
-    }
+    snapshot = _stable_snapshot(elements=[{"index": 0, "center": [1, 2]}])
     monkeypatch.setattr(backend, "get_app_state", lambda *a, **k: snapshot)
     monkeypatch.setattr(backend, "_live_element", lambda *a: "live")
     module = _install_module(
@@ -662,6 +1039,9 @@ def test_set_value_and_synthetic_fill_paths(monkeypatch):
         backend.ax_driver, "_type_text", lambda *a: events.append("type")
     )
     monkeypatch.setattr(backend.time, "sleep", lambda _: None)
+    monkeypatch.setattr(backend, "_select_window", lambda *a, **k: _window())
+    monkeypatch.setattr(backend, "_validate_snapshot_window", lambda *a, **k: _window())
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a: None)
     monkeypatch.setattr(
         backend.ax_driver,
         "collect",
@@ -693,12 +1073,24 @@ def test_press_hotkey_scroll_and_secondary_paths(monkeypatch):
         CGEventSetFlags=lambda *a: None,
         CGEventPost=lambda *a: None,
         CGEventCreateScrollWheelEvent=lambda *a: object(),
+        CGEventSetLocation=lambda *a: None,
         kCGHIDEventTap=0,
         kCGScrollEventUnitLine=0,
     )
-    monkeypatch.setattr(
-        backend, "_resolve_app", lambda app: calls.append(("resolve", app))
+    snapshot_for_input = _stable_snapshot(
+        elements=[{"index": 0, "actions": ["AXShowMenu"], "center": [6, 12]}]
     )
+    monkeypatch.setattr(
+        backend,
+        "_prepare_synthetic_action",
+        lambda app, window_id, *a: calls.append(("resolve", app)) or snapshot_for_input,
+    )
+    monkeypatch.setattr(
+        backend,
+        "_validate_snapshot_window",
+        lambda *a, **k: snapshot_for_input["window"],
+    )
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a: None)
     monkeypatch.setattr(
         backend.ax_driver, "_press_key", lambda *a, **k: calls.append(("key", a, k))
     )
@@ -713,9 +1105,10 @@ def test_press_hotkey_scroll_and_secondary_paths(monkeypatch):
         backend.hotkey("A", "Cmd+?")
     with pytest.raises(errors.ComputerUseError, match="unsupported direction"):
         backend.scroll("A", "around")
+    monkeypatch.setattr(backend, "get_app_state", lambda *a, **k: snapshot_for_input)
     backend.scroll("A", "up", x=3, y=4)
 
-    snapshot = {"elements": [{"index": 0, "actions": ["AXShowMenu"]}]}
+    snapshot = snapshot_for_input
     monkeypatch.setattr(backend, "get_app_state", lambda *a, **k: snapshot)
     monkeypatch.setattr(backend, "_live_element", lambda *a: "live")
     assert (
@@ -759,20 +1152,36 @@ def test_permissions_apps_windows_and_read_url_failures(monkeypatch):
     ]
 
     monkeypatch.setattr(
-        backend, "_resolve_app", lambda app: (object(), {"name": "target app"})
+        backend,
+        "_resolve_app",
+        lambda app, **kwargs: (object(), {"name": "target app", "pid": 42}),
     )
     windows = [
-        {"kCGWindowOwnerName": "other", "kCGWindowLayer": 0},
-        {"kCGWindowOwnerName": "target app", "kCGWindowLayer": 1},
+        {"kCGWindowOwnerName": "other", "kCGWindowOwnerPID": 9, "kCGWindowLayer": 0},
         {
             "kCGWindowOwnerName": "target app",
+            "kCGWindowOwnerPID": 42,
+            "kCGWindowLayer": 1,
+        },
+        {
+            "kCGWindowOwnerName": "target app",
+            "kCGWindowOwnerPID": 42,
             "kCGWindowLayer": 0,
+            "kCGWindowNumber": 77,
             "kCGWindowName": "Main",
             "kCGWindowBounds": {"X": 1, "Y": 2, "Width": 3, "Height": 4},
         },
     ]
     quartz.CGWindowListCopyWindowInfo = lambda *_: windows
-    assert backend.list_windows("A")[0]["title"] == "Main"
+    listed = backend.list_windows("A")[0]
+    assert listed["title"] == "Main"
+    assert listed["window_id"] == "cg:77"
+    assert (
+        backend._select_window(
+            {"name": "target app", "pid": 42}, window_id=listed["window_id"]
+        )["window_id"]
+        == "cg:77"
+    )
     quartz.CGWindowListCopyWindowInfo = lambda *_: []
     with pytest.raises(errors.ComputerUseError, match="no on-screen"):
         backend.list_windows("A")
@@ -853,6 +1262,29 @@ def test_ax_driver_tree_collect_and_events(monkeypatch):
     assert "element" not in ax_driver.collect("A", keep_elements=False)[0]
     with pytest.raises(ValueError):
         ax_driver.collect("A", window_index=-1)
+
+    monkeypatch.setattr(
+        ax_driver,
+        "_get",
+        lambda e, a: ["front", "selected"] if a == "AXWindows" else None,
+    )
+    monkeypatch.setattr(
+        ax_driver,
+        "_point_size",
+        lambda window: {
+            "front": (0.0, 0.0, 50.0, 50.0),
+            "selected": (100.0, 100.0, 80.0, 60.0),
+        }[window],
+    )
+    selected = ax_driver.collect(
+        "A",
+        keep_elements=True,
+        max_windows=1,
+        window_frame=(100.0, 100.0, 80.0, 60.0),
+    )
+    assert selected[0]["element"] == "selected"
+    with pytest.raises(RuntimeError, match="exactly one AX window"):
+        ax_driver.collect("A", window_frame=(10.0, 10.0, 10.0, 10.0))
 
     events = []
     monkeypatch.setattr(ax_driver.time, "sleep", lambda _: None)
@@ -989,11 +1421,14 @@ def test_remaining_small_backend_branches(monkeypatch):
     hidden = _RunningApp("Hidden", pid=7, active=False, policy=1)
     _NSWorkspace.workspace = _Workspace([hidden])
     _install_module(monkeypatch, "ApplicationServices", NSWorkspace=_NSWorkspace)
-    monkeypatch.setattr(backend, "_ax_app_element", lambda app: object())
+    monkeypatch.setattr(backend, "_ax_app_element", lambda app, **kwargs: object())
     with pytest.raises(errors.ComputerUseError, match="no running app"):
         backend._resolve_app("pid:8")
 
-    snapshot = {"app": {"name": "A"}, "elements": [{"index": 0, "center": [1, 2]}]}
+    snapshot = _stable_snapshot(elements=[{"index": 0, "center": [1, 2]}])
+    monkeypatch.setattr(backend, "_validate_snapshot_window", lambda *a, **k: _window())
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a: None)
+    monkeypatch.setattr(backend, "_select_window", lambda *a, **k: _window())
     monkeypatch.setattr(backend.ax_driver, "_cg_click", lambda *a, **k: None)
     monkeypatch.setattr(backend.ax_driver, "_press_key", lambda *a, **k: None)
     monkeypatch.setattr(backend.ax_driver, "_type_text", lambda *a: None)

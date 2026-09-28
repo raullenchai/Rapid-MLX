@@ -46,6 +46,18 @@ RECOVERY_HINTS: dict[str, tuple[str, ...]] = {
     "stale_snapshot": (
         "The cached snapshot expired; re-run get-app-state for fresh indexes.",
     ),
+    "stale_observation": (
+        "The observation is too old or lacks a stable window identity;",
+        "re-run get-app-state and retry with its window_id and element index.",
+    ),
+    "target_drift": (
+        "The selected window moved, resized, or lost focus;",
+        "re-run list-windows and get-app-state before retrying.",
+    ),
+    "target_occluded": (
+        "Another window covers the action point; bring the selected window",
+        "to the foreground, re-run get-app-state, and retry.",
+    ),
     "unsupported_platform": ("Run computer-use on a Mac with PyObjC installed.",),
 }
 

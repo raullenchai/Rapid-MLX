@@ -8,8 +8,8 @@ Commands:
   capabilities / permissions                 TCC status
   list-apps                                  running regular apps
   list-windows --app <app>                   windows of one app
-  get-app-state --app <app> [--no-screenshot] [--json-indent]
-  click --app <app> (--element-index N | --x N --y N)
+  get-app-state --app <app> [--window-id ID] [--no-screenshot]
+  click --app <app> [--window-id ID] (--element-index N | --x N --y N)
          [--click-count N] [--mouse-button left|right|middle]
   set-value --app <app> --element-index N --text V   (read-back verified)
   type-text --app <app> (--text V | --text-stdin)
@@ -17,6 +17,10 @@ Commands:
   hotkey --app <app> --key "Cmd+A"
   scroll --app <app> --direction up|down|left|right [--pages N] [--x --y]
   perform-secondary-action --app <app> --element-index N --action NAME
+
+Prefer the stable window_id returned by list-windows for multi-window apps.
+CLI actions return attempted/verified metadata and a fresh post_action_state.
+Synthetic input remains unverified unless an exact Accessibility readback exists.
 """
 
 from __future__ import annotations
@@ -49,6 +53,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="computer", description=__doc__)
     sub = parser.add_subparsers(dest="subcommand", required=True)
 
+    def add_window_id(command: argparse.ArgumentParser) -> None:
+        command.add_argument(
+            "--window-id",
+            default=None,
+            help="opaque window_id from list-windows (for example cg:123)",
+        )
+
     sub.add_parser("capabilities", help="Report computer-use provider capabilities")
     sub.add_parser("permissions", help="Report accessibility / screen-recording status")
     sub.add_parser("list-apps", help="List running apps available to computer-use")
@@ -61,6 +72,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     state.add_argument("--app", required=True)
     state.add_argument("--window-index", type=int, default=0)
+    add_window_id(state)
     state.add_argument("--no-screenshot", action="store_true")
     state.add_argument(
         "--refresh", action="store_true", help="bypass the snapshot cache"
@@ -71,6 +83,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     click = sub.add_parser("click", help="Click an element or coordinate")
     click.add_argument("--app", required=True)
+    add_window_id(click)
     click.add_argument("--element-index", type=int, default=None)
     click.add_argument("--x", type=int, default=None)
     click.add_argument("--y", type=int, default=None)
@@ -81,25 +94,30 @@ def build_parser() -> argparse.ArgumentParser:
 
     set_value = sub.add_parser("set-value", help="Write + verify a value on an element")
     set_value.add_argument("--app", required=True)
+    add_window_id(set_value)
     set_value.add_argument("--element-index", type=int, required=True)
     set_value.add_argument("--text", default=None)
     set_value.add_argument("--text-stdin", action="store_true")
 
     typing = sub.add_parser("type-text", help="Type literal text at current focus")
     typing.add_argument("--app", required=True)
+    add_window_id(typing)
     typing.add_argument("--text", default=None)
     typing.add_argument("--text-stdin", action="store_true")
 
     press = sub.add_parser("press-key", help="Press a single key")
     press.add_argument("--app", required=True)
+    add_window_id(press)
     press.add_argument("--key", required=True)
 
     hotkey = sub.add_parser("hotkey", help="Press a modifier chord, e.g. Cmd+A")
     hotkey.add_argument("--app", required=True)
+    add_window_id(hotkey)
     hotkey.add_argument("--key", required=True)
 
     scroll = sub.add_parser("scroll", help="Scroll a window or coordinate")
     scroll.add_argument("--app", required=True)
+    add_window_id(scroll)
     scroll.add_argument(
         "--direction", required=True, choices=("up", "down", "left", "right")
     )
@@ -111,6 +129,7 @@ def build_parser() -> argparse.ArgumentParser:
         "perform-secondary-action", help="Perform an advertised secondary AX action"
     )
     secondary.add_argument("--app", required=True)
+    add_window_id(secondary)
     secondary.add_argument("--element-index", type=int, required=True)
     secondary.add_argument("--action", required=True)
     return parser
@@ -155,6 +174,7 @@ def main(argv: list[str] | None = None) -> int:
                 window_index=args.window_index,
                 screenshot=not args.no_screenshot,
                 use_cache=not args.refresh,
+                window_id=args.window_id,
             )
             if args.png_out and snapshot.get("screenshot_png"):
                 Path(args.png_out).write_bytes(snapshot["screenshot_png"])
@@ -174,6 +194,8 @@ def main(argv: list[str] | None = None) -> int:
                 x=args.x,
                 y=args.y,
                 click_count=args.click_count,
+                window_id=args.window_id,
+                include_post_state=True,
             )
             _emit({"ok": True, **result})
             return 0
@@ -183,7 +205,13 @@ def main(argv: list[str] | None = None) -> int:
                 raise ComputerUseError(
                     "invalid_argument", "set-value requires --text or --text-stdin"
                 )
-            result = backend.set_value(args.app, args.element_index, text)
+            result = backend.set_value(
+                args.app,
+                args.element_index,
+                text,
+                window_id=args.window_id,
+                include_post_state=True,
+            )
             _emit({"ok": True, **result})
             return 0
         if args.subcommand == "type-text":
@@ -192,20 +220,56 @@ def main(argv: list[str] | None = None) -> int:
                 raise ComputerUseError(
                     "invalid_argument", "type-text requires --text or --text-stdin"
                 )
-            _emit({"ok": True, **backend.type_text(args.app, text)})
+            _emit(
+                {
+                    "ok": True,
+                    **backend.type_text(
+                        args.app,
+                        text,
+                        args.window_id,
+                        include_post_state=True,
+                    ),
+                }
+            )
             return 0
         if args.subcommand == "press-key":
-            _emit({"ok": True, **backend.press_key(args.app, args.key)})
+            _emit(
+                {
+                    "ok": True,
+                    **backend.press_key(
+                        args.app,
+                        args.key,
+                        args.window_id,
+                        include_post_state=True,
+                    ),
+                }
+            )
             return 0
         if args.subcommand == "hotkey":
-            _emit({"ok": True, **backend.hotkey(args.app, args.key)})
+            _emit(
+                {
+                    "ok": True,
+                    **backend.hotkey(
+                        args.app,
+                        args.key,
+                        args.window_id,
+                        include_post_state=True,
+                    ),
+                }
+            )
             return 0
         if args.subcommand == "scroll":
             _emit(
                 {
                     "ok": True,
                     **backend.scroll(
-                        args.app, args.direction, pages=args.pages, x=args.x, y=args.y
+                        args.app,
+                        args.direction,
+                        pages=args.pages,
+                        x=args.x,
+                        y=args.y,
+                        window_id=args.window_id,
+                        include_post_state=True,
                     ),
                 }
             )
@@ -215,7 +279,11 @@ def main(argv: list[str] | None = None) -> int:
                 {
                     "ok": True,
                     **backend.perform_secondary_action(
-                        args.app, args.element_index, args.action
+                        args.app,
+                        args.element_index,
+                        args.action,
+                        args.window_id,
+                        include_post_state=True,
                     ),
                 }
             )

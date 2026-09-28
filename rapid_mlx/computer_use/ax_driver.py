@@ -277,6 +277,7 @@ def collect(
     keep_elements: bool = False,
     max_windows: int = 3,
     window_index: int = 0,
+    window_frame: tuple[float, float, float, float] | None = None,
 ) -> list[dict]:
     if window_index < 0:
         raise ValueError("window_index must be non-negative")
@@ -285,9 +286,26 @@ def collect(
     counter = [0]
     for attempt in range(4):
         windows = _as_list(_get(app, "AXWindows"))
+        if window_frame is not None:
+            tolerance = 0.5
+            matching = []
+            for window in windows:
+                frame = _point_size(window)
+                if frame is not None and all(
+                    abs(actual - expected) <= tolerance
+                    for actual, expected in zip(frame, window_frame, strict=True)
+                ):
+                    matching.append(window)
+            if len(matching) != 1:
+                raise RuntimeError(
+                    "selected CGWindow does not map to exactly one AX window"
+                )
+            selected_windows = matching
+        else:
+            selected_windows = windows[window_index : window_index + max_windows]
         targets = []
         counter = [0]
-        for window in windows[window_index : window_index + max_windows]:
+        for window in selected_windows:
             _walk(window, 0, targets, counter)
             if counter[0] >= MAX_NODES:
                 break
@@ -298,7 +316,7 @@ def collect(
         # that write here restarts the tree build, and writing it for native
         # apps can temporarily hide their deep children.
         time.sleep(1.5)
-    if not targets and window_index == 0:  # menu-bar-only apps
+    if not targets and window_index == 0 and window_frame is None:  # menu-bar-only apps
         _walk(AXUIElementCreateSystemWide(), 0, targets, counter)
     if not keep_elements:
         for entry in targets:

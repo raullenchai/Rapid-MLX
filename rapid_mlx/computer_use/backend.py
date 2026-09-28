@@ -16,6 +16,7 @@ import re
 import subprocess
 import tempfile
 import time
+import uuid
 from pathlib import Path
 from typing import Any, cast
 
@@ -65,7 +66,7 @@ MODIFIER_FLAGS = {
 }
 
 
-def _resolve_app(app: str) -> tuple[object, dict]:
+def _resolve_app(app: str, *, activate: bool = True) -> tuple[object, dict]:
     """Find a running app by name substring, bundle id, or pid:N."""
     try:
         import ApplicationServices as AS  # type: ignore[import-untyped]  # noqa: N813, N817
@@ -96,14 +97,14 @@ def _resolve_app(app: str) -> tuple[object, dict]:
         pid = int(running.processIdentifier())
         if wanted_pid is not None:
             if pid == wanted_pid:
-                return _ax_app_element(running), {
+                return _ax_app_element(running, activate=activate), {
                     "name": name,
                     "bundleId": bundle,
                     "pid": pid,
                 }
             continue
         if lowered in (name, bundle) or lowered in name or lowered in bundle:
-            return _ax_app_element(running), {
+            return _ax_app_element(running, activate=activate), {
                 "name": name,
                 "bundleId": bundle,
                 "pid": pid,
@@ -141,10 +142,18 @@ class SnapshotCache:
     """TTL cache of AX snapshots keyed by (app spec, window index)."""
 
     def __init__(self) -> None:
-        self._entries: dict[tuple[str, int, bool], tuple[float, dict]] = {}
+        self._entries: dict[
+            tuple[str, int, int | str | None, bool], tuple[float, dict]
+        ] = {}
 
-    def get(self, app: str, window_index: int, screenshot: bool = False) -> dict | None:
-        key = (app, window_index, screenshot)
+    def get(
+        self,
+        app: str,
+        window_index: int,
+        screenshot: bool = False,
+        window_id: int | str | None = None,
+    ) -> dict | None:
+        key = (app, window_index, window_id, screenshot)
         entry = self._entries.get(key)
         if entry is None:
             return None
@@ -155,9 +164,17 @@ class SnapshotCache:
         return snapshot
 
     def put(
-        self, app: str, window_index: int, snapshot: dict, screenshot: bool = False
+        self,
+        app: str,
+        window_index: int,
+        snapshot: dict,
+        screenshot: bool = False,
+        window_id: int | str | None = None,
     ) -> None:
-        self._entries[(app, window_index, screenshot)] = (time.time(), snapshot)
+        self._entries[(app, window_index, window_id, screenshot)] = (
+            time.time(),
+            snapshot,
+        )
         if len(self._entries) > SNAPSHOT_CACHE_MAX:
             oldest = min(self._entries, key=lambda key: self._entries[key][0])
             self._entries.pop(oldest, None)
@@ -169,25 +186,208 @@ class SnapshotCache:
 _CACHE = SnapshotCache()
 
 
-def get_app_state(
-    app: str, window_index: int = 0, screenshot: bool = True, use_cache: bool = True
-) -> dict:
-    """Snapshot one window: elements with indexes, tree text, optional PNG."""
-    if use_cache:
-        cached = _CACHE.get(app, window_index, screenshot)
-        if cached is not None:
-            return cached
-    ax_element, app_info = _resolve_app(app)
-    targets = _collect_with_timeout(
-        app_info["name"] or app,
-        window_index=window_index,
+def _window_records(app_info: dict) -> list[dict]:
+    """Return this process's visible layer-zero windows in CG front-to-back order."""
+    from Quartz import (
+        CGWindowListCopyWindowInfo,
+        kCGNullWindowID,
+        kCGWindowListExcludeDesktopElements,
+        kCGWindowListOptionOnScreenOnly,
     )
-    if not targets and window_index:
+
+    raw = CGWindowListCopyWindowInfo(
+        kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
+        kCGNullWindowID,
+    )
+    records: list[dict[str, Any]] = []
+    for window in raw or []:
+        if int(window.get("kCGWindowOwnerPID", -1)) != int(app_info["pid"]):
+            continue
+        if int(window.get("kCGWindowLayer", 99)) != 0:
+            continue
+        number = window.get("kCGWindowNumber")
+        bounds = window.get("kCGWindowBounds") or {}
+        if number is None:
+            continue
+        records.append(
+            {
+                "index": len(records),
+                "window_id": f"cg:{int(number)}",
+                "title": window.get("kCGWindowName") or "",
+                "x": bounds.get("X"),
+                "y": bounds.get("Y"),
+                "width": bounds.get("Width"),
+                "height": bounds.get("Height"),
+            }
+        )
+    return records
+
+
+def _select_window(
+    app_info: dict, *, window_index: int = 0, window_id: int | str | None = None
+) -> dict:
+    windows = _window_records(app_info)
+    if window_id is not None:
+        wanted = _cg_window_id(window_id)
+        for window in windows:
+            if _cg_window_id(window["window_id"]) == wanted:
+                return window
+        raise ComputerUseError(
+            "window_not_found",
+            f"window id {window_id} is not an on-screen window owned by pid "
+            f"{app_info['pid']}",
+        )
+    if window_index < 0 or window_index >= len(windows):
         raise ComputerUseError(
             "window_not_found", f"window index {window_index} is not available"
         )
-    # collect() enumerates all windows; emulate per-window slicing cheaply by
-    # keeping the first window's worth (POC) and flag truncation.
+    return windows[window_index]
+
+
+def _cg_window_id(window_id: int | str) -> int:
+    raw = (
+        window_id[3:]
+        if isinstance(window_id, str) and window_id.startswith("cg:")
+        else window_id
+    )
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ComputerUseError(
+            "invalid_argument", f"invalid CG window id {window_id!r}"
+        ) from exc
+    if value <= 0:
+        raise ComputerUseError(
+            "invalid_argument", f"invalid CG window id {window_id!r}"
+        )
+    return value
+
+
+def _same_window(lhs: dict, rhs: dict) -> bool:
+    return _cg_window_id(lhs["window_id"]) == _cg_window_id(rhs["window_id"]) and all(
+        lhs.get(key) == rhs.get(key) for key in ("x", "y", "width", "height")
+    )
+
+
+def _validate_snapshot_window(
+    snapshot: dict, *, point: tuple[float, float] | None = None
+) -> dict:
+    """Fail closed when an observation is old or its exact CGWindow drifted."""
+    observed_at = snapshot.get("observed_at")
+    if (
+        not isinstance(observed_at, (int, float))
+        or time.time() - observed_at > SNAPSHOT_TTL_S
+    ):
+        raise ComputerUseError(
+            "stale_observation",
+            f"snapshot {snapshot.get('snapshot_id')} is stale; re-observe before acting",
+        )
+    expected = snapshot.get("window")
+    app_info = snapshot.get("app") or {}
+    if (
+        not isinstance(expected, dict)
+        or "window_id" not in expected
+        or "pid" not in app_info
+    ):
+        raise ComputerUseError(
+            "stale_observation", "snapshot has no stable window identity; re-observe"
+        )
+    current = _select_window(app_info, window_id=expected["window_id"])
+    if not _same_window(expected, current):
+        raise ComputerUseError(
+            "target_drift",
+            f"window {expected['window_id']} moved or resized since snapshot "
+            f"{snapshot.get('snapshot_id')}; re-observe before acting",
+        )
+    if point is not None:
+        x, y = point
+        left, top = current.get("x"), current.get("y")
+        width, height = current.get("width"), current.get("height")
+        if (
+            not isinstance(left, (int, float))
+            or not isinstance(top, (int, float))
+            or not isinstance(width, (int, float))
+            or not isinstance(height, (int, float))
+        ):
+            raise ComputerUseError("target_drift", "selected window has invalid bounds")
+        if not (left <= x < left + width and top <= y < top + height):
+            raise ComputerUseError(
+                "target_drift",
+                f"point ({x}, {y}) is outside selected window {expected['window_id']}",
+            )
+        if _topmost_window_id_at(x, y) != _cg_window_id(expected["window_id"]):
+            raise ComputerUseError(
+                "target_occluded",
+                f"selected window {expected['window_id']} is not topmost at ({x}, {y})",
+            )
+    return current
+
+
+def _topmost_window_id_at(x: float, y: float) -> int | None:
+    from Quartz import (
+        CGWindowListCopyWindowInfo,
+        kCGNullWindowID,
+        kCGWindowListExcludeDesktopElements,
+        kCGWindowListOptionOnScreenOnly,
+    )
+
+    windows = CGWindowListCopyWindowInfo(
+        kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
+        kCGNullWindowID,
+    )
+    for window in windows or []:
+        if float(window.get("kCGWindowAlpha", 1)) <= 0:
+            continue
+        bounds = window.get("kCGWindowBounds") or {}
+        left, top = bounds.get("X"), bounds.get("Y")
+        width, height = bounds.get("Width"), bounds.get("Height")
+        number = window.get("kCGWindowNumber")
+        if (
+            number is None
+            or not isinstance(left, (int, float))
+            or not isinstance(top, (int, float))
+            or not isinstance(width, (int, float))
+            or not isinstance(height, (int, float))
+        ):
+            continue
+        if left <= x < left + width and top <= y < top + height:
+            return int(number)
+    return None
+
+
+def get_app_state(
+    app: str,
+    window_index: int = 0,
+    screenshot: bool = True,
+    use_cache: bool = True,
+    window_id: int | str | None = None,
+) -> dict:
+    """Snapshot one window: elements with indexes, tree text, optional PNG."""
+    ax_element, app_info = _resolve_app(app)
+    window = _select_window(app_info, window_index=window_index, window_id=window_id)
+    if use_cache:
+        cached = _CACHE.get(
+            app, window_index, screenshot=screenshot, window_id=window_id
+        )
+        if (
+            cached is not None
+            and cached.get("app", {}).get("pid") == app_info["pid"]
+            and isinstance(cached.get("window"), dict)
+            and _same_window(cached["window"], window)
+        ):
+            return cached
+    resolved_index = window["index"]
+    targets = _collect_with_timeout(
+        app_info["name"] or app,
+        window_index=resolved_index,
+        window=window,
+    )
+    if not targets and resolved_index:
+        raise ComputerUseError(
+            "window_not_found", f"window index {resolved_index} is not available"
+        )
+    # collect() is bound to the single AX window whose frame uniquely matches
+    # the selected CGWindow record.
     elements = []
     for target in targets:
         index = int(target["target_id"][1:])
@@ -212,9 +412,12 @@ def get_app_state(
         for e in elements
     ]
     snapshot = {
-        "snapshot_id": f"{app_info['pid']}:{window_index}:{int(time.time())}",
+        "snapshot_id": f"{app_info['pid']}:{window['window_id']}:{uuid.uuid4().hex}",
+        "observed_at": time.time(),
         "app": app_info,
-        "window_index": window_index,
+        "window_index": resolved_index,
+        "window_id": window["window_id"],
+        "window": window,
         "coordinate_space": "screen",
         "elements": elements,
         "element_count": len(elements),
@@ -222,15 +425,28 @@ def get_app_state(
         "truncated": len(elements) >= ax_driver.MAX_NODES,
     }
     png = (
-        screenshot_window(app_info["name"] or app, window_index) if screenshot else None
+        screenshot_window(
+            app_info["name"] or app,
+            resolved_index,
+            window_id=_cg_window_id(window["window_id"]),
+            expected_pid=app_info["pid"],
+        )
+        if screenshot
+        else None
     )
     if png is not None:
         snapshot["screenshot_png"] = png
-    _CACHE.put(app, window_index, snapshot, screenshot)
+    _CACHE.put(app, window_index, snapshot, screenshot=screenshot, window_id=window_id)
     return snapshot
 
 
-def screenshot_window(app_name: str, window_index: int = 0) -> bytes | None:
+def screenshot_window(
+    app_name: str,
+    window_index: int = 0,
+    *,
+    window_id: int | str | None = None,
+    expected_pid: int | None = None,
+) -> bytes | None:
     """Capture the app's front window via screencapture (needs Screen Recording)."""
     from Quartz import (
         CGWindowListCopyWindowInfo,
@@ -250,6 +466,11 @@ def screenshot_window(app_name: str, window_index: int = 0) -> bytes | None:
             continue
         if window.get("kCGWindowLayer", 99) != 0:
             continue
+        if (
+            expected_pid is not None
+            and int(window.get("kCGWindowOwnerPID", -1)) != expected_pid
+        ):
+            continue
         window_number = window.get("kCGWindowNumber")
         if window_number is not None:
             candidates.append(int(window_number))
@@ -257,11 +478,19 @@ def screenshot_window(app_name: str, window_index: int = 0) -> bytes | None:
         raise ComputerUseError(
             "window_not_found", f"no on-screen window for {app_name!r}"
         )
-    if window_index >= len(candidates):
+    if window_id is not None:
+        numeric_window_id = _cg_window_id(window_id)
+        if numeric_window_id not in candidates:
+            raise ComputerUseError(
+                "window_not_found", f"window id {window_id} is not available"
+            )
+        window_number = numeric_window_id
+    elif window_index >= len(candidates):
         raise ComputerUseError(
             "window_not_found", f"window index {window_index} is not available"
         )
-    window_number = candidates[window_index]
+    else:
+        window_number = candidates[window_index]
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as handle:
         out_path = handle.name
     try:
@@ -296,6 +525,7 @@ def _collect_with_timeout(
     app_name: str,
     *,
     window_index: int = 0,
+    window: dict | None = None,
     timeout_s: float | None = None,
 ) -> list[dict]:
     """ax_driver.collect with a watchdog.
@@ -319,6 +549,16 @@ def _collect_with_timeout(
                 keep_elements=True,
                 max_windows=1,
                 window_index=window_index,
+                window_frame=(
+                    (
+                        float(window["x"]),
+                        float(window["y"]),
+                        float(window["width"]),
+                        float(window["height"]),
+                    )
+                    if window is not None
+                    else None
+                ),
             )
         except Exception as exc:  # noqa: BLE001 - surfaced below
             outcome["error"] = exc
@@ -346,9 +586,13 @@ def _collect_with_timeout(
 def _live_element(snapshot: dict, element_index: int) -> object:
     """Re-collect and return the live AX ref for an index, if still present."""
     expected = _element(snapshot, element_index)
+    center = expected.get("center")
+    point = tuple(center) if isinstance(center, list) and len(center) == 2 else None
+    current_window = _validate_snapshot_window(snapshot, point=point)
     fresh = _collect_with_timeout(
         snapshot["app"]["name"],
-        window_index=snapshot.get("window_index", 0),
+        window_index=current_window["index"],
+        window=current_window,
     )
     for target in fresh:
         if int(target["target_id"][1:]) == element_index:
@@ -379,6 +623,80 @@ def _read_value(live_element: object) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def _finish_action(
+    app: str,
+    snapshot: dict,
+    result: dict,
+    *,
+    verified: bool | None,
+    verification: str,
+    include_post_state: bool = False,
+) -> dict:
+    """Return honest outcome metadata plus a best-effort fresh local state."""
+    result.update(
+        {
+            "attempted": True,
+            "verified": verified,
+            "verification": verification,
+            "window_id": snapshot.get("window_id"),
+        }
+    )
+    if not include_post_state:
+        return result
+    try:
+        result["post_action_state"] = get_app_state(
+            app,
+            screenshot=False,
+            use_cache=False,
+            window_id=snapshot.get("window_id"),
+        )
+    except ComputerUseError as exc:
+        result["post_action_state"] = None
+        result["post_action_state_error"] = {
+            "code": exc.code,
+            "message": exc.message,
+        }
+    return result
+
+
+def _window_center(snapshot: dict) -> tuple[float, float]:
+    window = snapshot["window"]
+    return (
+        float(window["x"]) + float(window["width"]) / 2,
+        float(window["y"]) + float(window["height"]) / 2,
+    )
+
+
+def _validate_focused_window(snapshot: dict) -> None:
+    workspace = ax_driver.AS.NSWorkspace.sharedWorkspace() if ax_driver.AS else None
+    frontmost = workspace.frontmostApplication() if workspace is not None else None
+    if frontmost is None or int(frontmost.processIdentifier()) != int(
+        snapshot["app"]["pid"]
+    ):
+        raise ComputerUseError(
+            "target_drift",
+            f"pid {snapshot['app']['pid']} is no longer frontmost; re-observe",
+        )
+    app_element = ax_driver._app_element(snapshot["app"]["name"])
+    focused = ax_driver._get(app_element, "AXFocusedWindow")
+    focused_frame = ax_driver._point_size(focused) if focused is not None else None
+    expected = snapshot["window"]
+    expected_frame = (
+        float(expected["x"]),
+        float(expected["y"]),
+        float(expected["width"]),
+        float(expected["height"]),
+    )
+    if focused_frame is None or any(
+        abs(actual - wanted) > 0.5
+        for actual, wanted in zip(focused_frame, expected_frame, strict=True)
+    ):
+        raise ComputerUseError(
+            "target_drift",
+            f"window {snapshot['window_id']} is not the focused AX window; re-observe",
+        )
+
+
 def click(
     app: str,
     element_index: int | None = None,
@@ -387,10 +705,12 @@ def click(
     click_count: int = 1,
     mouse_button: str = "left",
     expected_snapshot: dict | None = None,
+    window_id: int | str | None = None,
+    include_post_state: bool = False,
 ) -> dict:
     if element_index is not None:
         snapshot = expected_snapshot or get_app_state(
-            app, screenshot=False, use_cache=False
+            app, screenshot=False, use_cache=False, window_id=window_id
         )
         entry = _element(snapshot, element_index)
         center = entry["center"]
@@ -401,16 +721,40 @@ def click(
 
             err = AXUIElementPerformAction(live, "AXPress")
             if err == AS.kAXErrorSuccess:
-                return {"mode": "AXPress", "element_index": element_index}
+                return _finish_action(
+                    app,
+                    snapshot,
+                    {"mode": "AXPress", "element_index": element_index},
+                    verified=None,
+                    verification="action accepted by Accessibility; outcome not asserted",
+                    include_post_state=include_post_state,
+                )
         ax_driver._cg_click(float(center[0]), float(center[1]), clicks=click_count)
-        return {"mode": "CGEvent-click", "element_index": element_index, "at": center}
+        return _finish_action(
+            app,
+            snapshot,
+            {"mode": "CGEvent-click", "element_index": element_index, "at": center},
+            verified=None,
+            verification="synthetic click emitted; outcome not asserted",
+            include_post_state=include_post_state,
+        )
     if x is None or y is None:
         raise ComputerUseError(
             "invalid_argument", "click requires --element-index or both --x and --y"
         )
-    _resolve_app(app)
+    snapshot = expected_snapshot or get_app_state(
+        app, screenshot=False, use_cache=False, window_id=window_id
+    )
+    _validate_snapshot_window(snapshot, point=(x, y))
     ax_driver._cg_click(float(x), float(y), clicks=click_count)
-    return {"mode": "CGEvent-click", "at": [x, y]}
+    return _finish_action(
+        app,
+        snapshot,
+        {"mode": "CGEvent-click", "at": [x, y]},
+        verified=None,
+        verification="synthetic click emitted; outcome not asserted",
+        include_post_state=include_post_state,
+    )
 
 
 def set_value(
@@ -418,6 +762,8 @@ def set_value(
     element_index: int,
     value: str,
     expected_snapshot: dict | None = None,
+    window_id: int | str | None = None,
+    include_post_state: bool = False,
 ) -> dict:
     """Write a value into a settable element; verify by reading it back.
 
@@ -426,7 +772,7 @@ def set_value(
     the agent whether the value landed exactly.
     """
     snapshot = expected_snapshot or get_app_state(
-        app, screenshot=False, use_cache=False
+        app, screenshot=False, use_cache=False, window_id=window_id
     )
     _element(snapshot, element_index)
     live = _live_element(snapshot, element_index)
@@ -440,20 +786,38 @@ def set_value(
         if err == 0:
             readback = _read_value(live)
             if readback == value:
-                return {
-                    "mode": "AXSetValue",
-                    "element_index": element_index,
-                    "verified": True,
-                }
+                return _finish_action(
+                    app,
+                    snapshot,
+                    {"mode": "AXSetValue", "element_index": element_index},
+                    verified=True,
+                    verification="exact AX value readback matched requested text",
+                    include_post_state=include_post_state,
+                )
     # AX write either failed or did not land; degrade to synthetic typing.
-    return _synthetic_fill(snapshot, element_index, value)
+    result = _synthetic_fill(snapshot, element_index, value)
+    verified = result.pop("verified", None)
+    return _finish_action(
+        app,
+        snapshot,
+        result,
+        verified=verified,
+        verification=(
+            "exact AX value readback matched requested text"
+            if verified is True
+            else "synthetic typing emitted; exact readback unavailable"
+        ),
+        include_post_state=include_post_state,
+    )
 
 
 def _synthetic_fill(snapshot: dict, element_index: int, value: str) -> dict:
     entry = _element(snapshot, element_index)
     center = entry["center"]
+    _validate_snapshot_window(snapshot, point=(float(center[0]), float(center[1])))
     ax_driver._cg_click(float(center[0]), float(center[1]))
     time.sleep(0.3)
+    _validate_focused_window(snapshot)
     ax_driver._press_key(ax_driver._keycode_for("a"), modifiers=ax_driver.FLAG_COMMAND)
     time.sleep(0.1)
     ax_driver._press_key(KEY_ALIASES["delete"])
@@ -463,9 +827,13 @@ def _synthetic_fill(snapshot: dict, element_index: int, value: str) -> dict:
     # tree rebuilds with shifted indexes (a runtime element identity would
     # remove this class of staleness; snapshots are refreshed instead).
     try:
+        current_window = _select_window(
+            snapshot["app"], window_id=snapshot["window_id"]
+        )
         fresh = _collect_with_timeout(
             snapshot["app"]["name"],
-            window_index=snapshot.get("window_index", 0),
+            window_index=current_window["index"],
+            window=current_window,
         )
         for target in fresh:
             if target.get("element") is None or target["role"] not in FILL_ROLES:
@@ -488,26 +856,74 @@ def _synthetic_fill(snapshot: dict, element_index: int, value: str) -> dict:
     }
 
 
-def type_text(app: str, text: str) -> dict:
-    _resolve_app(app)
+def _prepare_synthetic_action(
+    app: str, window_id: int | str | None, expected_snapshot: dict | None = None
+) -> dict:
+    snapshot = expected_snapshot or get_app_state(
+        app, screenshot=False, use_cache=False, window_id=window_id
+    )
+    _validate_snapshot_window(snapshot, point=_window_center(snapshot))
+    _validate_focused_window(snapshot)
+    return snapshot
+
+
+def type_text(
+    app: str,
+    text: str,
+    window_id: int | str | None = None,
+    include_post_state: bool = False,
+) -> dict:
+    snapshot = _prepare_synthetic_action(app, window_id)
     ax_driver._type_text(text)
-    return {"mode": "CGEvent-unicode", "characters": len(text)}
+    return _finish_action(
+        app,
+        snapshot,
+        {"mode": "CGEvent-unicode", "characters": len(text)},
+        verified=None,
+        verification="synthetic text emitted; focused value was not readable",
+        include_post_state=include_post_state,
+    )
 
 
-def press_key(app: str, key: str) -> dict:
+def press_key(
+    app: str,
+    key: str,
+    window_id: int | str | None = None,
+    include_post_state: bool = False,
+    expected_snapshot: dict | None = None,
+) -> dict:
     normalized = key.strip().lower()
     if normalized in KEY_ALIASES:
-        _resolve_app(app)
+        snapshot = _prepare_synthetic_action(app, window_id, expected_snapshot)
         ax_driver._press_key(KEY_ALIASES[normalized])
-        return {"mode": "CGEvent-keycode", "key": normalized}
+        return _finish_action(
+            app,
+            snapshot,
+            {"mode": "CGEvent-keycode", "key": normalized},
+            verified=None,
+            verification="synthetic key emitted; outcome not asserted",
+            include_post_state=include_post_state,
+        )
     if normalized in ax_driver.KEYCODE_MAP:
-        _resolve_app(app)
+        snapshot = _prepare_synthetic_action(app, window_id, expected_snapshot)
         ax_driver._press_key(ax_driver._keycode_for(normalized))
-        return {"mode": "CGEvent-keycode", "key": normalized}
+        return _finish_action(
+            app,
+            snapshot,
+            {"mode": "CGEvent-keycode", "key": normalized},
+            verified=None,
+            verification="synthetic key emitted; outcome not asserted",
+            include_post_state=include_post_state,
+        )
     raise ComputerUseError("unsupported_key", f"unsupported single key {key!r}")
 
 
-def hotkey(app: str, key: str) -> dict:
+def hotkey(
+    app: str,
+    key: str,
+    window_id: int | str | None = None,
+    include_post_state: bool = False,
+) -> dict:
     """Modifier chord like 'Cmd+A', 'Ctrl+Shift+Tab'."""
     parts = [p.strip().lower() for p in key.split("+") if p.strip()]
     if len(parts) < 2:
@@ -528,7 +944,7 @@ def hotkey(app: str, key: str) -> dict:
         raise ComputerUseError(
             "unsupported_key", f"unsupported hotkey key {key_part!r}"
         )
-    _resolve_app(app)
+    snapshot = _prepare_synthetic_action(app, window_id)
     import Quartz
 
     down = Quartz.CGEventCreateKeyboardEvent(None, keycode, True)
@@ -538,7 +954,14 @@ def hotkey(app: str, key: str) -> dict:
     Quartz.CGEventPost(Quartz.kCGHIDEventTap, down)
     time.sleep(0.02)
     Quartz.CGEventPost(Quartz.kCGHIDEventTap, up)
-    return {"mode": "CGEvent-hotkey", "key": key}
+    return _finish_action(
+        app,
+        snapshot,
+        {"mode": "CGEvent-hotkey", "key": key},
+        verified=None,
+        verification="synthetic hotkey emitted; outcome not asserted",
+        include_post_state=include_post_state,
+    )
 
 
 def scroll(
@@ -547,18 +970,24 @@ def scroll(
     pages: float = 1.0,
     x: int | None = None,
     y: int | None = None,
+    window_id: int | str | None = None,
+    include_post_state: bool = False,
+    expected_snapshot: dict | None = None,
 ) -> dict:
     if direction not in {"up", "down", "left", "right"}:
         raise ComputerUseError(
             "invalid_argument", f"unsupported direction {direction!r}"
         )
-    _resolve_app(app)
+    snapshot = expected_snapshot or get_app_state(
+        app, screenshot=False, use_cache=False, window_id=window_id
+    )
+    point = (x, y) if x is not None and y is not None else _window_center(snapshot)
+    _validate_snapshot_window(snapshot, point=point)
+    _validate_focused_window(snapshot)
     import Quartz
 
     lines = int(max(1, round(pages * 10)))
     delta = lines if direction in {"up", "left"} else -lines
-    if x is not None and y is not None:
-        ax_driver._cg_click(float(x), float(y))  # position pointer for scroll target
     if direction in {"up", "down"}:
         event = Quartz.CGEventCreateScrollWheelEvent(
             None, Quartz.kCGScrollEventUnitLine, 1, delta
@@ -567,16 +996,32 @@ def scroll(
         event = Quartz.CGEventCreateScrollWheelEvent(
             None, Quartz.kCGScrollEventUnitLine, 2, 0, delta
         )
+    Quartz.CGEventSetLocation(event, point)
     Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
     time.sleep(0.05)
-    return {"mode": "CGEvent-scroll", "direction": direction, "lines": lines}
+    return _finish_action(
+        app,
+        snapshot,
+        {"mode": "CGEvent-scroll", "direction": direction, "lines": lines},
+        verified=None,
+        verification="synthetic scroll emitted; resulting position was not asserted",
+        include_post_state=include_post_state,
+    )
 
 
-def perform_secondary_action(app: str, element_index: int, action: str) -> dict:
+def perform_secondary_action(
+    app: str,
+    element_index: int,
+    action: str,
+    window_id: int | str | None = None,
+    include_post_state: bool = False,
+) -> dict:
     import ApplicationServices as AS  # type: ignore[import-untyped]  # noqa: N813, N817  # camelcase pyobjc module, alias is conventional
     from ApplicationServices import AXUIElementPerformAction
 
-    snapshot = get_app_state(app, screenshot=False, use_cache=False)
+    snapshot = get_app_state(
+        app, screenshot=False, use_cache=False, window_id=window_id
+    )
     entry = _element(snapshot, element_index)
     live = _live_element(snapshot, element_index)
     if live is None or action not in entry["actions"]:
@@ -590,7 +1035,14 @@ def perform_secondary_action(app: str, element_index: int, action: str) -> dict:
         raise ComputerUseError(
             "accessibility_error", f"AXPerformAction {action} failed: {err}"
         )
-    return {"mode": "AXPerformAction", "action": action, "element_index": element_index}
+    return _finish_action(
+        app,
+        snapshot,
+        {"mode": "AXPerformAction", "action": action, "element_index": element_index},
+        verified=None,
+        verification="action accepted by Accessibility; outcome not asserted",
+        include_post_state=include_post_state,
+    )
 
 
 def permissions() -> dict:
@@ -632,36 +1084,44 @@ def list_apps() -> list[dict]:
     return apps
 
 
-def read_url(app: str) -> str:
-    """Best-effort URL of the front tab for the domain guard.
+def read_url(app: str, window_id: int | str | None = None) -> str:
+    """Read the browser's active-tab URL from a trusted application API.
 
-    Chrome's active-tab address bar often exposes an empty AXValue, so after
-    the AX scan we try AppleScript (needs Automation TCC); both may fail, in
-    which case the guard sees an empty URL and stays inert.
+    Accessibility values are page-controlled and must never authorize a domain
+    guard. Automation permission or browser support failures return an empty
+    URL; callers with an allowed-domain policy fail closed on that value.
     """
     try:
-        targets = _collect_with_timeout(app)
-    except Exception:  # noqa: BLE001 - guard must never crash the loop
-        targets = []
-    for entry in targets:
-        live = entry.get("element")
-        if live is None:
-            continue
-        value = ax_driver._get(live, "AXValue")
-        if isinstance(value, str) and value.startswith(("http://", "https://")):
-            return value
-    safe_app = app.replace("\\", "\\\\").replace('"', '\\"')
-    try:
+        _, app_info = _resolve_app(app, activate=False)
+        window = _select_window(app_info, window_id=window_id)
+        if window["index"] != 0:
+            return ""
+        _validate_focused_window(
+            {"app": app_info, "window": window, "window_id": window["window_id"]}
+        )
+        bundle_id = str(app_info.get("bundleId") or "")
+        if not re.fullmatch(r"[A-Za-z0-9.-]+", bundle_id):
+            return ""
+        if bundle_id in {"com.apple.Safari", "com.apple.SafariTechnologyPreview"}:
+            tab_property = "current tab"
+        elif bundle_id.startswith(
+            ("com.google.Chrome", "com.microsoft.edgemac", "org.chromium.Chromium")
+        ):
+            tab_property = "active tab"
+        else:
+            return ""
         result = subprocess.run(
             [
                 "osascript",
                 "-e",
-                f'tell application "{safe_app}" to get URL of active tab of front window',
+                f'tell application id "{bundle_id}" to get URL of {tab_property} of front window',
             ],
             capture_output=True,
             text=True,
             timeout=5,
         )
+        if result.returncode != 0:
+            return ""
         url = result.stdout.strip()
         if url.startswith(("http://", "https://")):
             return url
@@ -671,40 +1131,8 @@ def read_url(app: str) -> str:
 
 
 def list_windows(app: str) -> list[dict]:
-    from Quartz import (
-        CGWindowListCopyWindowInfo,
-        kCGNullWindowID,
-        kCGWindowListExcludeDesktopElements,
-        kCGWindowListOptionOnScreenOnly,
-    )
-
-    _, app_info = _resolve_app(app)
-    windows = CGWindowListCopyWindowInfo(
-        kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
-        kCGNullWindowID,
-    )
-    out = []
-    index = 0
-    for window in windows:
-        if (
-            str(window.get("kCGWindowOwnerName", "")).lower()
-            != app_info["name"].lower()
-        ):
-            continue
-        if window.get("kCGWindowLayer", 99) != 0:
-            continue
-        bounds = window.get("kCGWindowBounds", {})
-        out.append(
-            {
-                "index": index,
-                "title": window.get("kCGWindowName") or "",
-                "x": bounds.get("X"),
-                "y": bounds.get("Y"),
-                "width": bounds.get("Width"),
-                "height": bounds.get("Height"),
-            }
-        )
-        index += 1
+    _, app_info = _resolve_app(app, activate=False)
+    out = _window_records(app_info)
     if not out:
         raise ComputerUseError(
             "window_not_found", f"{app_info['name']!r} has no on-screen windows"

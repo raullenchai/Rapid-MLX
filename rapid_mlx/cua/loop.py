@@ -157,10 +157,21 @@ class CUARun:
             elif action == "press":
                 backend.click(self.app, index, expected_snapshot=snapshot)
                 await asyncio.sleep(0.2)
-                result.update(backend.press_key(self.app, plan.get("key", "Enter")))
+                result.update(
+                    backend.press_key(
+                        self.app,
+                        plan.get("key", "Enter"),
+                        expected_snapshot=snapshot,
+                    )
+                )
             elif action == "scroll":
                 result.update(
-                    backend.scroll(self.app, plan.get("direction", "down"), 1.0)
+                    backend.scroll(
+                        self.app,
+                        plan.get("direction", "down"),
+                        1.0,
+                        expected_snapshot=snapshot,
+                    )
                 )
             elif action == "wait":
                 await asyncio.sleep(2.0)
@@ -222,7 +233,7 @@ class CUARun:
                 return {"status": "stopped", "reason": reason}
             return None
         self._empty_snapshots = 0
-        url_now = backend.read_url(self.app)
+        url_now = backend.read_url(self.app, window_id=snapshot.get("window_id"))
         guard = self._check_domain(url_now)
         if guard:
             self.trace["guard_stop"] = guard
@@ -283,7 +294,7 @@ class CUARun:
         await asyncio.sleep(1.2)
         after = backend.get_app_state(self.app, screenshot=False, use_cache=False)
         after_sig = _tree_signature(after)
-        url_after = backend.read_url(self.app)
+        url_after = backend.read_url(self.app, window_id=after.get("window_id"))
         delta = {
             "executed": executed,
             "tree_changed": before_sig != after_sig,

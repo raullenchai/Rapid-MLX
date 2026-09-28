@@ -246,7 +246,9 @@ def fake_backend(monkeypatch):
 
     monkeypatch.setattr(backend_mod, "get_app_state", fake_get_app_state)
     monkeypatch.setattr(
-        backend_mod, "read_url", lambda app: "https://www.wikipedia.org/"
+        backend_mod,
+        "read_url",
+        lambda app, **kwargs: "https://www.wikipedia.org/",
     )
     monkeypatch.setattr(
         backend_mod,
@@ -263,7 +265,9 @@ def fake_backend(monkeypatch):
         },
     )
     monkeypatch.setattr(
-        backend_mod, "press_key", lambda app, key: {"ok": True, "key": key}
+        backend_mod,
+        "press_key",
+        lambda app, key, **kw: {"ok": True, "key": key},
     )
     return backend_mod
 
@@ -383,7 +387,7 @@ def test_loop_empty_ax_tree_stops_honestly(
         return {"app": {"name": app}, "elements": [], "tree_text": ""}
 
     monkeypatch.setattr(loop_mod.backend, "get_app_state", empty_state)
-    monkeypatch.setattr(loop_mod.backend, "read_url", lambda app: "")
+    monkeypatch.setattr(loop_mod.backend, "read_url", lambda app, **kwargs: "")
     config = _make_config(tmp_path)
     planner = _FakePlanner(
         [{"action": "done", "step_instruction": "x", "final_summary": "y"}],
@@ -414,11 +418,30 @@ def test_loop_domain_guard(config_dir, fake_backend, tmp_path, monkeypatch):
     from rapid_mlx.cua import loop as loop_mod
 
     monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    observed_window_ids = []
+
+    def state_with_window(app, screenshot=True, use_cache=True):
+        return {
+            "app": {"name": app},
+            "window_id": "cg:202",
+            "elements": [{"index": 1, "label": "Search", "role": "AXTextField"}],
+            "tree_text": "[1] AXTextField Search",
+        }
+
+    monkeypatch.setattr(fake_backend, "get_app_state", state_with_window)
+    monkeypatch.setattr(
+        fake_backend,
+        "read_url",
+        lambda app, window_id=None: (
+            observed_window_ids.append(window_id) or "https://www.wikipedia.org/"
+        ),
+    )
     config = _make_config(tmp_path)
     config.allowed_domain = "example.com"
     trace = asyncio.run(loop_mod.run(config, "Google Chrome", "goal", max_steps=3))
     assert trace["status"] == "stopped"
     assert "domain guard" in trace.get("guard_stop", "")
+    assert observed_window_ids == ["cg:202"]
 
 
 def test_loop_writes_trace(config_dir, fake_backend, tmp_path, monkeypatch):
@@ -960,7 +983,7 @@ def test_execute_all_action_variants(fake_backend, tmp_path, monkeypatch):
     monkeypatch.setattr(
         fake_backend,
         "scroll",
-        lambda app, direction, pages: {"ok": True, "direction": direction},
+        lambda app, direction, pages, **kw: {"ok": True, "direction": direction},
     )
 
     async def no_sleep(_seconds):
@@ -1286,9 +1309,22 @@ def test_loop_ax_watchdog_stops_honestly(config_dir, tmp_path, monkeypatch):
 
     monkeypatch.setattr(loop_mod.backend.ax_driver, "collect", wedged_collect)
     monkeypatch.setattr(loop_mod.backend, "AX_COLLECT_TIMEOUT_S", 0.01)
-    monkeypatch.setattr(loop_mod.backend, "read_url", lambda app: "")
+    monkeypatch.setattr(loop_mod.backend, "read_url", lambda app, **kwargs: "")
     monkeypatch.setattr(
         loop_mod.backend, "_resolve_app", lambda app: (None, {"name": app, "pid": 1})
+    )
+    monkeypatch.setattr(
+        loop_mod.backend,
+        "_select_window",
+        lambda *a, **k: {
+            "index": 0,
+            "window_id": 1,
+            "title": "Test",
+            "x": 0,
+            "y": 0,
+            "width": 100,
+            "height": 100,
+        },
     )
     config = _make_config(tmp_path)
     planner = _FakePlanner(
