@@ -154,6 +154,22 @@ EDITABLE_ROLES = {"AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"}
 MAX_NODES = 600
 MAX_DEPTH = 22
 CLICKABLE_SUBSTRINGS = ("button", "link", "menuitem", "tab", "checkbox", "radio")
+PRIORITY_CONTAINER_ROLES = {"AXToolbar", "AXTabGroup", "AXMenuBar"}
+PRIORITY_CONTROL_ROLES = {
+    "AXButton",
+    "AXCheckBox",
+    "AXComboBox",
+    "AXMenuButton",
+    "AXPopUpButton",
+    "AXRadioButton",
+    "AXSearchField",
+    "AXTextField",
+}
+REPETITIVE_CONTAINER_ROLES = {"AXTable", "AXOutline", "AXList"}
+# Sorting every row in a huge virtualized table would add an AX role lookup per
+# child before collection. Small sibling groups cover window-level regions and
+# toolbars without turning prioritization into an unbounded IPC pre-scan.
+PRIORITY_SORT_MAX_CHILDREN = 64
 
 
 def _get(element: object, attribute: str) -> object:
@@ -176,6 +192,28 @@ def _as_list(raw: object) -> list[object]:
 def _action_names(element: object) -> list[str]:
     err, names = AXUIElementCopyActionNames(element, None)
     return list(names) if err == kAXErrorSuccess and names else []
+
+
+def _priority_children(element: object) -> list[object]:
+    """Return stable, bounded region ordering with navigation before tables."""
+
+    children = _as_list(_get(element, "AXChildren"))
+    if len(children) < 2 or len(children) > PRIORITY_SORT_MAX_CHILDREN:
+        return children
+
+    def priority(child: object) -> int:
+        role = _get(child, "AXRole")
+        if role in PRIORITY_CONTAINER_ROLES:
+            return 0
+        if role in PRIORITY_CONTROL_ROLES:
+            return 1
+        if role in REPETITIVE_CONTAINER_ROLES:
+            return 3
+        return 2
+
+    # Python's stable sort preserves the original AX order inside each region,
+    # so repeated observations of an unchanged tree keep identical target IDs.
+    return sorted(children, key=priority)
 
 
 def _point_size(element: object) -> tuple[float, float, float, float] | None:
@@ -237,7 +275,7 @@ def _walk(element: object, depth: int, out: list[dict], counter: list[int]) -> N
                 "element": element,  # live ref, popped before serialization
             }
         )
-    for child in _as_list(_get(element, "AXChildren")):
+    for child in _priority_children(element):
         _walk(child, depth + 1, out, counter)
         if counter[0] >= MAX_NODES:
             return

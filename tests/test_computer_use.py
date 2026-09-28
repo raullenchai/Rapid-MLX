@@ -1719,6 +1719,81 @@ def test_ax_walk_keeps_blank_editable_control_without_adding_empty_structure(
     assert targets[0]["rect"] == (10, 20, 300, 200)
 
 
+def test_ax_walk_prioritizes_top_controls_before_long_table(monkeypatch):
+    cells = [f"cell-{index}" for index in range(20)]
+    attributes = {
+        "root": {"AXRole": "AXWindow", "AXChildren": ["table", "toolbar"]},
+        "table": {"AXRole": "AXTable", "AXChildren": cells},
+        "toolbar": {"AXRole": "AXToolbar", "AXChildren": ["cpu", "memory"]},
+        "cpu": {"AXRole": "AXRadioButton", "AXTitle": "CPU", "AXChildren": []},
+        "memory": {
+            "AXRole": "AXRadioButton",
+            "AXTitle": "Memory",
+            "AXChildren": [],
+        },
+        **{
+            cell: {
+                "AXRole": "AXStaticText",
+                "AXValue": f"process {index}",
+                "AXChildren": [],
+            }
+            for index, cell in enumerate(cells)
+        },
+    }
+    monkeypatch.setattr(ax_driver, "MAX_NODES", 4)
+    monkeypatch.setattr(
+        ax_driver,
+        "_get",
+        lambda element, attribute: attributes.get(element, {}).get(attribute),
+    )
+    monkeypatch.setattr(ax_driver, "_action_names", lambda _element: [])
+    monkeypatch.setattr(ax_driver, "_point_size", lambda _element: None)
+
+    targets = []
+    ax_driver._walk("root", 0, targets, [0])
+
+    assert [target["text"] for target in targets] == [
+        "CPU",
+        "Memory",
+        "process 0",
+        "process 1",
+    ]
+    assert [target["target_id"] for target in targets] == [
+        "t000",
+        "t001",
+        "t002",
+        "t003",
+    ]
+
+
+def test_ax_walk_does_not_prescan_large_sibling_collections(monkeypatch):
+    children = [f"cell-{index}" for index in range(65)]
+    role_reads = []
+
+    def get_attribute(element, attribute):
+        if element == "root":
+            return "AXWindow" if attribute == "AXRole" else (
+                children if attribute == "AXChildren" else None
+            )
+        if attribute == "AXRole":
+            role_reads.append(element)
+            return "AXStaticText"
+        if attribute == "AXValue":
+            return element
+        return [] if attribute == "AXChildren" else None
+
+    monkeypatch.setattr(ax_driver, "MAX_NODES", 2)
+    monkeypatch.setattr(ax_driver, "_get", get_attribute)
+    monkeypatch.setattr(ax_driver, "_action_names", lambda _element: [])
+    monkeypatch.setattr(ax_driver, "_point_size", lambda _element: None)
+
+    targets = []
+    ax_driver._walk("root", 0, targets, [0])
+
+    assert [target["text"] for target in targets] == ["cell-0", "cell-1"]
+    assert set(role_reads) == {"cell-0", "cell-1"}
+
+
 def test_cli_unreachable_fallback_and_module_entry(monkeypatch, capsys):
     import runpy
 
