@@ -3381,6 +3381,7 @@ async def _stream_responses(
         reasoning_item_added = False
         reasoning_item_finalized = False
         reasoning_item_payload_done: dict | None = None
+        late_reasoning_after_message = False
 
         # Per-request reasoning parser instance (matches anthropic.py).
         reasoning_parser = None
@@ -3902,6 +3903,8 @@ async def _stream_responses(
                     # of an empty one. Cap reclassification still wins
                     # over accumulation for overflow bytes (those leave
                     # as ``content`` per the original contract).
+                    if message_open:
+                        late_reasoning_after_message = True
                     kept_reasoning, overflow, _ = _account_for_reasoning(delta_text)
                     if kept_reasoning:
                         async for ev in _emit_reasoning_fragment(kept_reasoning):
@@ -4792,9 +4795,9 @@ async def _stream_responses(
 
         # A reasoning parser that returns to the reasoning channel after
         # public content has started violates the Responses item ordering
-        # contract. The reasoning item is already closed at that point and
-        # Codex cannot accept another summary ladder after the message item.
-        # Fail explicitly instead of silently dropping the late bytes.
+        # contract. The reasoning item stays open until the message closes,
+        # but its contents are fixed once public output begins. Fail explicitly
+        # instead of silently folding late bytes into the deferred summary.
         emitted_reasoning = ""
         if reasoning_item_payload_done is not None:
             emitted_reasoning = "".join(
@@ -4802,7 +4805,9 @@ async def _stream_responses(
                 for part in reasoning_item_payload_done.get("summary", [])
                 if isinstance(part, dict)
             )
-        if reasoning_item_finalized and emitted_reasoning != accumulated_reasoning_text:
+        if late_reasoning_after_message or (
+            reasoning_item_finalized and emitted_reasoning != accumulated_reasoning_text
+        ):
             _record_failed("output_contract_unmet")
             yield _emit(
                 "response.failed",

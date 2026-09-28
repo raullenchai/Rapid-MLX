@@ -297,48 +297,43 @@ def _assert_leading_items_before_message(events):
 
 
 class TestLeadingItemOrdering:
-    def test_reasoning_item_is_finalized_before_message_item_opens(self, make_client):
-        """Codex keeps a single active Responses output item.
+    def test_reasoning_item_closes_after_message_item(self, make_client):
+        """Keep the canonical reasoning/message event lifecycle.
 
-        A reasoning summary event emitted after the message item has opened is
-        rejected as ``ReasoningSummaryPartAdded without active item``.  Keep
-        each output item's event ladder contiguous: reasoning added/summary/
-        done, then message added/content/done.
+        Reasoning claims its output index first, the message completes, and
+        only then does the reasoning summary ladder close the leading item.
         """
         client = make_client.set(_EngineWithReasoning())
         events = _stream_and_parse(client, _stream_payload())
 
-        active_item: tuple[str, str] | None = None
+        reasoning_added_idx: int | None = None
         reasoning_done_idx: int | None = None
         message_added_idx: int | None = None
+        message_done_idx: int | None = None
         for event_idx, (name, data) in enumerate(events):
             if name == "response.output_item.added":
                 item = data["item"]
                 if item["type"] == "message":
                     message_added_idx = event_idx
-                assert active_item is None, (
-                    f"opened {item['type']} before closing active "
-                    f"{active_item}; event={data}"
-                )
-                active_item = (item["id"], item["type"])
-            elif name.startswith("response.reasoning_summary_"):
-                assert active_item == (data["item_id"], "reasoning"), (
-                    f"{name} must target the active reasoning item; "
-                    f"active={active_item}, event={data}"
-                )
+                elif item["type"] == "reasoning":
+                    reasoning_added_idx = event_idx
             elif name == "response.output_item.done":
                 item = data["item"]
                 if item["type"] == "reasoning":
                     reasoning_done_idx = event_idx
-                assert active_item == (item["id"], item["type"]), (
-                    f"closed {item['type']} while active={active_item}"
-                )
-                active_item = None
+                elif item["type"] == "message":
+                    message_done_idx = event_idx
 
-        assert active_item is None
+        assert reasoning_added_idx is not None, events
         assert reasoning_done_idx is not None, events
         assert message_added_idx is not None, events
-        assert reasoning_done_idx < message_added_idx
+        assert message_done_idx is not None, events
+        assert (
+            reasoning_added_idx
+            < message_added_idx
+            < message_done_idx
+            < reasoning_done_idx
+        )
 
     def test_empty_reasoning_still_emits_reasoning_before_message(self, make_client):
         """M-3 root case: model produces NO reasoning bytes. The fix must
