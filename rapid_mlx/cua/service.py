@@ -76,9 +76,12 @@ class CUAServiceRun:
                 self._pending_gate = {
                     "gate_id": uuid.uuid4().hex,
                     "kind": "approval",
-                    "reason": str(event.get("reason", "approval required")),
+                    "reason": str(event.get("reason") or "approval required"),
                     "requested_at": time.time(),
                 }
+                for key in ("action", "target"):
+                    if event.get(key):
+                        self._pending_gate[key] = event[key]
                 self._resolved_gate_id = None
                 event["gate_id"] = self._pending_gate["gate_id"]
                 self._awaiting = True

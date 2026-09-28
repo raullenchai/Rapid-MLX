@@ -474,9 +474,23 @@ def test_gate_events_share_id_and_fast_decision_is_not_lost(client):
         config=None,  # type: ignore[arg-type]
     )
     client.fresh_service._runs[active.run_id] = active
-    active.emit({"kind": "gate", "reason": "external_commit", "target": "Send"})
+    active.emit(
+        {
+            "kind": "gate",
+            "reason": "external_commit",
+            "action": "click",
+            "target": "Send",
+        }
+    )
     gate_event = active.events[-1]
     gate_id = gate_event["gate_id"]
+    assert active.view()["pending_gate"]["target"] == "Send"
+    http_gate = client.get(f"/v1/cua/runs/{active.run_id}", headers=AUTH).json()[
+        "pending_gate"
+    ]
+    assert http_gate["gate_id"] == gate_id
+    assert http_gate["action"] == "click"
+    assert http_gate["target"] == "Send"
 
     # A custom GUI can decide as soon as the gate event is visible, before the
     # loop coroutine enters wait_for_approval.

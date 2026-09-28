@@ -123,6 +123,8 @@ class CUAPendingGate(BaseModel):
     reason: str
     requested_at: float | None = None
     expires_at: float | None = None
+    action: str | None = None
+    target: str | None = None
 
 
 class CUARunView(BaseModel):
