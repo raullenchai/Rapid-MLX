@@ -87,10 +87,25 @@ def test_cached_known_aliases_maps_sorts_and_drops_unmapped(monkeypatch):
     # ``cli`` reference here can go stale. Patching by dotted path re-resolves
     # the live module object and stays effective regardless of import churn.
     monkeypatch.setattr("rapid_mlx.cli._scan_hf_cache_models", lambda: fake_rows)
+    monkeypatch.setattr("rapid_mlx.cli._cache_entry_is_runnable", lambda _repo: True)
     monkeypatch.setattr("rapid_mlx.model_aliases.list_profiles", lambda: fake_profiles)
 
     rows = fr.cached_known_aliases()
     assert [a for a, _ in rows] == ["qwen3.5-4b-4bit", "gpt-oss-20b-mxfp4-q8"]
+
+
+def test_cached_known_aliases_drops_incomplete_entries(monkeypatch):
+    class _P:
+        hf_path = "org/model"
+
+    monkeypatch.setattr(
+        "rapid_mlx.cli._scan_hf_cache_models", lambda: [("org/model", 0, 1.0)]
+    )
+    monkeypatch.setattr("rapid_mlx.cli._cache_entry_is_runnable", lambda _repo: False)
+    monkeypatch.setattr(
+        "rapid_mlx.model_aliases.list_profiles", lambda: {"model": _P()}
+    )
+    assert fr.cached_known_aliases() == []
 
 
 def test_cached_known_aliases_fail_silent(monkeypatch):
@@ -154,28 +169,43 @@ def test_detected_agents_detect_error_is_safe(monkeypatch):
 def test_nameplate_cold_cache_no_agent(monkeypatch):
     monkeypatch.setattr(fr, "cached_known_aliases", lambda: [])
     monkeypatch.setattr(fr, "preferred_agent", lambda: None)
+    monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: 8.0)
     out = fr.build_nameplate("9.9.9")
-    assert "Rapid-MLX 9.9.9" in out
-    assert "rapid-mlx chat" in out
-    assert "rapid-mlx recipe" in out
-    assert "Smart + Fast" in out
-    assert fr.FIRST_RUN_MODEL in out
-    assert fr.FIRST_RUN_MODEL_SIZE in out
-    assert "launch --all" in out  # generic signpost when no agent
-    assert "Found in your cache" not in out
+    assert out.startswith(fr._IDENTITY)
+    assert "8 GB RAM detected" in out
+    assert "Recommended model: lfm2.5-1b-4bit" in out
+    assert "rapid-mlx chat lfm2.5-1b-4bit" in out
+    assert "the server starts automatically" in out
+    assert "Use it from your coding agent (separate stable server on :8000):" in out
+    assert "rapid-mlx serve lfm2.5-1b-4bit --port 8000" in out
+    assert "rapid-mlx launch --all --model lfm2.5-1b-4bit" in out
+    assert "serve exits if :8000 is busy; use another port in both commands:" in out
+    assert "rapid-mlx serve lfm2.5-1b-4bit --port 8001" in out
+    assert (
+        "rapid-mlx launch --all --model lfm2.5-1b-4bit "
+        "--server-url http://127.0.0.1:8001"
+    ) in out
+    assert out.count("rapid-mlx launch") == 2
+    assert out.endswith("Docs: https://rapidmlx.com/docs/")
 
 
 def test_nameplate_with_cache_and_agent(monkeypatch):
-    # A cached (possibly non-chat) model is LISTED, but the chat suggestion
-    # still points at the known-good starter — never the arbitrary cached alias.
-    monkeypatch.setattr(fr, "cached_known_aliases", lambda: [("qwen3.5-9b-4bit", 10.0)])
+    monkeypatch.setattr(
+        fr, "cached_known_aliases", lambda: [("qwen3.8-27b-4bit", 10.0)]
+    )
     monkeypatch.setattr(fr, "preferred_agent", lambda: "claude-code")
+    monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: 32.0)
     out = fr.build_nameplate("9.9.9")
-    assert "Found in your cache: qwen3.5-9b-4bit" in out
-    assert "rapid-mlx chat qwen3.5-9b-4bit" not in out
-    assert fr.FIRST_RUN_MODEL in out  # chat target is the starter
-    assert "rapid-mlx chat <model>" in out  # "pick a cached one" hint
-    assert "launch claude-code" in out  # named agent signpost
+    assert "32 GB RAM detected" in out
+    assert "Recommended model: qwen3.8-27b-4bit (already cached)" in out
+    assert "rapid-mlx chat qwen3.8-27b-4bit" in out
+    assert "rapid-mlx serve qwen3.8-27b-4bit --port 8000" in out
+    assert (
+        "rapid-mlx launch claude-code --model qwen3.8-27b-4bit  # detected ✓"
+    ) in out
+    assert "--server-url http://127.0.0.1:8001" in out
+    assert "rapid-mlx launch --all" not in out
+    assert out.count("rapid-mlx launch") == 2
 
 
 def test_nameplate_starter_cached_says_already_downloaded(monkeypatch):
@@ -183,9 +213,25 @@ def test_nameplate_starter_cached_says_already_downloaded(monkeypatch):
         fr, "cached_known_aliases", lambda: [(fr.FIRST_RUN_MODEL, 10.0)]
     )
     monkeypatch.setattr(fr, "preferred_agent", lambda: None)
+    monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: 16.0)
     out = fr.build_nameplate("9.9.9")
-    assert "already downloaded" in out
+    assert "already cached" in out
     assert "launch --all" in out
+
+
+def test_nameplate_ram_probe_failure_is_explicit_and_conservative(monkeypatch):
+    monkeypatch.setattr(
+        fr, "cached_known_aliases", lambda: [("lfm2.5-2.6b-4bit", 10.0)]
+    )
+    monkeypatch.setattr(fr, "preferred_agent", lambda: None)
+    monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: 0.0)
+
+    out = fr.build_nameplate("9.9.9")
+
+    assert "RAM detection unavailable" in out
+    assert "0 GB RAM detected" not in out
+    assert "Recommended model: lfm2.5-1b-4bit" in out
+    assert "already cached" not in out
 
 
 # ======================================================================
@@ -217,9 +263,11 @@ def test_state_dir_env_override(monkeypatch, tmp_path):
 
 def test_tip_text_with_and_without_agent(monkeypatch):
     monkeypatch.setattr(fr, "preferred_agent", lambda: "claude-code")
-    assert "launch claude-code" in fr.chat_agent_tip_text()
+    assert "separate stable server for claude-code" in fr.chat_agent_tip_text()
+    assert "rapid-mlx launch --help" in fr.chat_agent_tip_text()
     monkeypatch.setattr(fr, "preferred_agent", lambda: None)
-    assert "launch --all" in fr.chat_agent_tip_text()
+    assert "separate stable agent server" in fr.chat_agent_tip_text()
+    assert "rapid-mlx launch --help" in fr.chat_agent_tip_text()
 
 
 # ======================================================================
@@ -446,7 +494,53 @@ def test_bare_command_interactive_shows_nameplate(capsys):
     assert "NAMEPLATE-OK" in capsys.readouterr().out
 
 
-def test_bare_command_non_tty_falls_back_to_help():
+def test_bare_command_interactive_welcome_is_offline_and_load_free(monkeypatch, capsys):
+    monkeypatch.setattr(fr, "cached_known_aliases", lambda: [])
+    monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: 18.0)
+    monkeypatch.setattr(
+        cli,
+        "_ensure_model_downloaded",
+        lambda *_args, **_kwargs: pytest.fail("bare welcome tried to load a model"),
+    )
+    monkeypatch.setattr(
+        "socket.socket.connect",
+        lambda *_args, **_kwargs: pytest.fail("bare welcome tried the network"),
+    )
+    monkeypatch.setattr(sys, "argv", ["rapid-mlx"])
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert fr._IDENTITY in out
+    assert "Recommended model: qwen3.5-4b-4bit" in out
+    assert "rapid-mlx chat qwen3.5-4b-4bit" in out
+    from rapid_mlx.model_aliases import list_aliases
+
+    assert "qwen3.5-4b-4bit" in list_aliases()
+
+
+def test_bare_command_non_tty_falls_back_to_help(capsys):
     np, code = _run_bare(stdout_tty=False, stdin_tty=True)
     assert np.called is False  # nameplate never built off a TTY
     assert code == 1  # unchanged: help + exit 1
+    out = capsys.readouterr().out
+    assert fr._IDENTITY in out
+    assert "usage: rapid-mlx" in out
+    assert "Commands" in out
+
+
+def test_top_level_help_keeps_full_argparse_structure(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["rapid-mlx", "--help"])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert out.startswith("usage: rapid-mlx")
+    assert fr._IDENTITY in out
+    assert "Commands" in out
+    for command in ("serve", "chat", "pull", "models", "launch", "doctor"):
+        assert command in out

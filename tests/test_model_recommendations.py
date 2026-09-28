@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import rapid_mlx.recommendations as recommendations
 from rapid_mlx import cli
 from rapid_mlx.model_aliases import list_aliases
 from rapid_mlx.recommendations import (
@@ -149,6 +150,18 @@ def test_every_tier_has_exactly_smart_and_fast() -> None:
         assert [pick.role for pick in tier.picks] == ["smart", "fast"]
         assert all(pick.alias in aliases for pick in tier.picks)
         assert all(pick.footprint_gb < tier.floor_gb * 0.75 for pick in tier.picks)
+
+
+def test_display_fast_path_matches_catalog_validated_tiers() -> None:
+    assert load_recommendation_tiers(validate_catalog=False) == (
+        load_recommendation_tiers(validate_catalog=True)
+    )
+
+
+def test_display_fast_path_rejects_non_object_policy(monkeypatch) -> None:
+    monkeypatch.setattr(recommendations.json, "loads", lambda _text: [])
+    with pytest.raises(ValueError, match="must be a JSON object"):
+        recommendations._read_recommendation_policy()
 
 
 def test_tier_rounds_down_and_clamps() -> None:

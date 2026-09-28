@@ -13094,7 +13094,11 @@ def build_parser() -> argparse.ArgumentParser:
     _version = _resolve_cli_version()
 
     parser = _PortContextArgumentParser(
-        description="Rapid-MLX: AI inference for Apple Silicon",
+        description=(
+            "Rapid-MLX — OpenAI- and Anthropic-compatible LLM server and Mac app "
+            "for Apple Silicon, built on MLX, focused on reliable tool calling "
+            "for coding agents."
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 Examples:

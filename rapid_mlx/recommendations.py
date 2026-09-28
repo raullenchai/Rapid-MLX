@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from dataclasses import asdict, dataclass
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
-
-from .catalog.legacy import load_product_recommendation_policy
 
 
 @dataclass(frozen=True)
@@ -27,11 +27,33 @@ class RecommendationTier:
     picks: tuple[Recommendation, Recommendation]
 
 
-@lru_cache(maxsize=1)
-def load_recommendation_tiers() -> tuple[RecommendationTier, ...]:
+def load_product_recommendation_policy() -> dict[str, Any]:
+    """Load and catalog-validate the policy without taxing module import."""
+    from .catalog.legacy import load_product_recommendation_policy as load
+
+    return load()
+
+
+def _read_recommendation_policy() -> dict[str, Any]:
+    """Read the same checked-in policy for latency-sensitive display paths."""
+    path = Path(__file__).with_name("model_recommendations.json")
+    payload: object = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("recommendation policy must be a JSON object")
+    return payload
+
+
+@lru_cache(maxsize=2)
+def load_recommendation_tiers(
+    *, validate_catalog: bool = True
+) -> tuple[RecommendationTier, ...]:
     """Decode the validated atomic policy into the stable public API."""
 
-    payload = load_product_recommendation_policy()
+    payload = (
+        load_product_recommendation_policy()
+        if validate_catalog
+        else _read_recommendation_policy()
+    )
     if payload.get("task_type") != "text_generation":
         raise ValueError("default recommendation policy must target text_generation")
     if payload.get("machine_dimension") != "physical_memory_mib":
@@ -121,13 +143,61 @@ def physical_ram_gb() -> float:
         return 0.0
 
 
-def recommendation_tier(ram_gb: float) -> RecommendationTier:
-    tiers = load_recommendation_tiers()
+def recommendation_tier(
+    ram_gb: float, *, validate_catalog: bool = True
+) -> RecommendationTier:
+    tiers = load_recommendation_tiers(validate_catalog=validate_catalog)
     chosen = tiers[0]
     for tier in tiers:
         if ram_gb >= tier.floor_gb:
             chosen = tier
     return chosen
+
+
+def starter_baseline_for_ram(ram_gb: float, *, validate_catalog: bool = True) -> str:
+    """Return the installer/Desktop first-chat baseline for ``ram_gb``.
+
+    The aliases come from the recommendation policy rather than a second
+    Python table: small Macs use the lowest tier's fast pick, while 16 GB and
+    larger Macs use the 16 GB tier's smart pick.
+    """
+    tiers = load_recommendation_tiers(validate_catalog=validate_catalog)
+    low_memory = tiers[0].picks[1].alias
+    standard = recommendation_tier(16, validate_catalog=validate_catalog).picks[0].alias
+    return standard if ram_gb >= 16 else low_memory
+
+
+def starter_model_candidates(
+    ram_gb: float, *, validate_catalog: bool = True
+) -> tuple[str, ...]:
+    """Return RAM-safe cached-model preferences in installer order.
+
+    This derives the existing ``install.sh`` policy from the curated RAM-tier
+    picks. The shell copy is required before Rapid-MLX/Python is installed;
+    cross-language contract tests report any disagreement.
+    """
+    tiers = load_recommendation_tiers(validate_catalog=validate_catalog)
+    if ram_gb < tiers[0].floor_gb:
+        return (starter_baseline_for_ram(ram_gb, validate_catalog=validate_catalog),)
+
+    current = recommendation_tier(ram_gb, validate_catalog=validate_catalog)
+    ordered = [
+        pick.alias
+        for tier in reversed(tiers)
+        if tier.floor_gb <= current.floor_gb
+        for pick in tier.picks
+    ]
+    return tuple(dict.fromkeys(ordered))
+
+
+def select_starter_model(
+    ram_gb: float, cached_aliases: set[str], *, validate_catalog: bool = True
+) -> str:
+    """Prefer the best RAM-safe cached starter, else the small baseline."""
+    for alias in starter_model_candidates(ram_gb, validate_catalog=validate_catalog):
+        if alias in cached_aliases:
+            return alias
+    return starter_baseline_for_ram(ram_gb, validate_catalog=validate_catalog)
 
 
 def recommendation_footprint_gb(alias: str) -> float | None:
@@ -163,8 +233,10 @@ def is_recommended_alias(alias: str, ram_gb: float) -> bool:
     )
 
 
-def recommendation_payload(ram_gb: float) -> dict[str, Any]:
-    tier = recommendation_tier(ram_gb)
+def recommendation_payload(
+    ram_gb: float, *, validate_catalog: bool = True
+) -> dict[str, Any]:
+    tier = recommendation_tier(ram_gb, validate_catalog=validate_catalog)
     return {
         "schema_version": 1,
         "physical_ram_gb": round(ram_gb, 1),

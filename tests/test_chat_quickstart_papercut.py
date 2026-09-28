@@ -55,7 +55,7 @@ def test_installer_recommends_a_command_that_works_on_a_base_install():
     lines = _chat_echo_lines()
     assert lines, "quick-start no longer prints any chat command at all"
     first = lines[0]
-    assert "rapid-mlx chat " in first and "--port 8000" in first, (
+    assert "rapid-mlx chat " in first and "starts its own server" in first, (
         "the first chat command the installer prints must be the terminal "
         f"REPL (works on a base install); got: {first!r}"
     )
