@@ -2029,6 +2029,66 @@ def test_strict_tools_tool_call_is_returned_without_schema_repair(
 
 
 @pytest.mark.parametrize("surface", ["chat", "responses"])
+def test_strict_tools_tool_call_stream_uses_normal_protocol(
+    surface, _rate_limiter_state
+):
+    class _ToolCallEngine(_Engine):
+        async def chat(self, *, messages, **kwargs):
+            self.chat_calls.append({"messages": messages, "kwargs": kwargs})
+            return GenerationOutput(
+                text="",
+                prompt_tokens=4,
+                completion_tokens=3,
+                finish_reason="tool_calls",
+                tool_calls=[{"id": "call_exact", "name": "noop", "arguments": "{}"}],
+            )
+
+    engine = _ToolCallEngine(supports_guided=True)
+    if surface == "chat":
+        response = _make_client(engine).post(
+            "/v1/chat/completions", json=_chat_tools_payload(stream=True)
+        )
+        payloads = [
+            json.loads(line[6:])
+            for line in response.text.splitlines()
+            if line.startswith("data: {")
+        ]
+        calls = [
+            call
+            for payload in payloads
+            for choice in payload.get("choices", [])
+            for call in choice["delta"].get("tool_calls", [])
+        ]
+        assert calls[0]["id"] == "call_exact"
+        assert calls[0]["function"] == {"name": "noop", "arguments": "{}"}
+        assert payloads[-1]["choices"][0]["finish_reason"] == "tool_calls"
+        assert response.text.rstrip().endswith("data: [DONE]")
+    else:
+        response = _make_responses_client(engine, _rate_limiter_state).post(
+            "/v1/responses", json=_responses_tools_payload(stream=True)
+        )
+        events = [
+            (block.splitlines()[0][7:], json.loads(block.splitlines()[1][6:]))
+            for block in response.text.strip().split("\n\n")
+        ]
+        assert [name for name, _data in events] == [
+            "response.created",
+            "response.in_progress",
+            "response.output_item.added",
+            "response.function_call_arguments.delta",
+            "response.output_item.done",
+            "response.completed",
+        ]
+        added = events[2][1]["item"]
+        assert added["call_id"] == "call_exact"
+        assert added["name"] == "noop"
+        assert events[3][1]["delta"] == "{}"
+    assert response.status_code == 200, response.text
+    assert len(engine.chat_calls) == 1
+    assert engine.guided_calls == []
+
+
+@pytest.mark.parametrize("surface", ["chat", "responses"])
 def test_strict_tools_invalid_final_text_uses_one_constrained_repair(
     surface, _rate_limiter_state
 ):
@@ -2297,8 +2357,7 @@ def test_strict_true_invalid_schema_returns_400_chat():
     assert body["error"]["code"] == "invalid_strict_schema"
     assert body["error"]["type"] == "invalid_request_error"
     assert body["error"]["param"] == "response_format.json_schema.schema"
-    # Strict counter still ticks so operators see the malformed-strict
-    # rate (parity with strict_schema_required + strict_with_tools_unsupported).
+    # Strict counter still ticks so operators see the malformed-strict rate.
     snap = response_format_metrics.snapshot()
     assert snap["strict_requests_total"] == 1
     # Generation must NOT have run — the gate fires before the

@@ -6831,6 +6831,7 @@ async def _create_chat_completion_impl(
     # error the client sees — not as a "successful inference" we already
     # counted. ``model_dump_json`` can raise; the activation emit below must be
     # reached only when the 2xx body is actually built.
+    response: Response
     if _buffer_strict_tool_stream:
         response = StreamingResponse(
             _stream_buffered_chat_response(chat_response, request),

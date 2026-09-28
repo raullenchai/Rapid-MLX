@@ -327,11 +327,14 @@ def test_strict_stream_returns_normal_sse_without_capability_rejection(
     events = _parse_sse(response.text)
     assert events[0][0] == "response.created"
     assert events[-1][0] == "response.completed"
-    assert "".join(
-        payload["delta"]
-        for event, payload in events
-        if event == "response.output_text.delta"
-    ) == '{"answer":"ok"}'
+    assert (
+        "".join(
+            payload["delta"]
+            for event, payload in events
+            if event == "response.output_text.delta"
+        )
+        == '{"answer":"ok"}'
+    )
     assert calls == []
 
 

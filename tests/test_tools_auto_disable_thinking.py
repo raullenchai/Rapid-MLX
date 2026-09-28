@@ -676,17 +676,11 @@ class TestResponsesRouteAutoDisableForTools:
 
 
 # ---------------------------------------------------------------------------
-# (4) Combined trigger: tools + strict json_schema (helper-level only)
+# (4) Combined trigger: tools + strict json_schema
 # ---------------------------------------------------------------------------
 #
-# At the surface level the two are mutually exclusive on /v1/responses
-# (``strict_with_tools_unsupported`` 400) and on /v1/chat/completions
-# (``strict_with_tools_unsupported`` 400 — see chat.py around the
-# strict_mode gate). But the helper itself must be idempotent: a future
-# surface that lifts the mutual-exclusion gate (or a request that
-# bypasses the gate via a back door we haven't found yet) should still
-# resolve to ``enable_thinking=False`` exactly once, with both auto-
-# disable triggers firing through the same merge path.
+# Both API surfaces accept this combination, so the shared helper must be
+# idempotent when the strict and tool auto-disable triggers compose.
 
 
 class TestCombinedTriggersHelperLevel:

@@ -2463,9 +2463,11 @@ def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
-async def _stream_buffered_responses_response(body: bytes) -> AsyncIterator[str]:
+async def _stream_buffered_responses_response(
+    body: bytes | memoryview,
+) -> AsyncIterator[str]:
     """Replay a validated buffered result through the normal Responses SSE ladder."""
-    response = json.loads(body)
+    response = json.loads(bytes(body))
     output = list(response.get("output", []))
     if any(item.get("type") == "message" for item in output):
         output.insert(

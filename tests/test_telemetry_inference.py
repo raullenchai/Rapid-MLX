@@ -2341,6 +2341,42 @@ def test_context_length_rejection_emits_capability(monkeypatch):
     ]
 
 
+def test_operational_prompt_cap_rejection_emits_closed_reason(monkeypatch):
+    from fastapi import HTTPException
+
+    from rapid_mlx.service import helpers
+    from rapid_mlx.telemetry import inference
+
+    engine = SimpleNamespace(modality="text", supports_image_input=False)
+    monkeypatch.setattr(helpers, "get_model_max_context", lambda _engine: 100)
+    monkeypatch.setattr(
+        helpers, "get_config", lambda: SimpleNamespace(max_prompt_tokens=7)
+    )
+    calls: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(inference.track_module, "_upload_allowed", lambda: True)
+    monkeypatch.setattr(inference, "_submit", lambda work: work())
+    monkeypatch.setattr(
+        inference.track_module,
+        "track",
+        lambda event, props: calls.append((event, dict(props))),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        helpers.enforce_context_length(engine, 8, max_tokens=1)
+
+    assert exc_info.value.status_code == 400
+    assert calls == [
+        (
+            "capability_rejected",
+            {
+                "capability": "context_length_exceeded",
+                "model_type": "llm",
+                "reject_reason": "operational_cap",
+            },
+        )
+    ]
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("fields", "capability"),
