@@ -29,7 +29,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--goal", required=True, help="what the agent should accomplish")
     run_p.add_argument(
         "--planner",
-        default="cloud-glm",
+        default="local-27b",
         help="slow-thinking preset (cloud-glm | local-27b | local-9b) or a loopback URL",
     )
     run_p.add_argument("--planner-model", default=None, help="model name override")
@@ -80,7 +80,16 @@ def _cmd_config(args) -> int:
                 return 2
         save_config(config)
     if args.show or not args.set:
-        print(json.dumps(config, ensure_ascii=False, indent=2))
+        masked = {
+            **config,
+            "presets": {
+                name: (
+                    {**preset, "api_key": "***"} if preset.get("api_key") else preset
+                )
+                for name, preset in config["presets"].items()
+            },
+        }
+        print(json.dumps(masked, ensure_ascii=False, indent=2))
     return 0
 
 

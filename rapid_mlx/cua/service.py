@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 
 from rapid_mlx.cua.config import CUAConfig, PlannerConfig, load_config, resolve_planner
 from rapid_mlx.cua.loop import run as run_loop
-from rapid_mlx.cua.planner import assert_loopback_url
+from rapid_mlx.cua.planner import assert_loopback_url, validate_planner_url
 
 MAX_CONCURRENT_RUNS = 1
 MAX_RETAINED_RUNS = 100
@@ -172,8 +172,11 @@ class CUAService:
         except ValueError as exc:
             raise ValueError(f"bad planner: {exc}") from exc
         # Fail synchronously with HTTP 400 instead of accepting a run that is
-        # guaranteed to die in its background task.
-        assert_loopback_url(planner_cfg.url)
+        # guaranteed to die in its background task. User-consented cloud
+        # brains (keyed presets) are allowed non-loopback HTTPS endpoints;
+        # validate_planner_url enforces that inside Planner — this pre-flight
+        # only catches the synchronous error early.
+        validate_planner_url(planner_cfg.url, allow_remote=planner_cfg.allow_remote)
         stored_config = load_config()
         fast_ranker_url = str(stored_config.get("fast_ranker_url", ""))
         if fast_ranker_url:

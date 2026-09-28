@@ -79,15 +79,29 @@ def _read_stored() -> dict:
 
 
 def _write_stored(stored: dict) -> None:
-    """Persist raw config; 0600 because presets may carry API keys."""
+    """Persist raw config atomically; 0600 because presets may carry keys."""
+    import fcntl
+    import os
+    import tempfile
+
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    CONFIG_PATH.write_text(
-        json.dumps(stored, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    try:
-        CONFIG_PATH.chmod(0o600)
-    except OSError:  # pragma: no cover - filesystems without posix perms
-        pass
+    lock_path = CONFIG_PATH.with_suffix(".lock")
+    with lock_path.open("w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        fd, tmp_name = tempfile.mkstemp(
+            dir=CONFIG_PATH.parent, prefix=".cua-config-", suffix=".tmp"
+        )
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(json.dumps(stored, ensure_ascii=False, indent=2))
+            os.replace(tmp_name, CONFIG_PATH)
+        except BaseException:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
 
 
 def load_config() -> dict:
@@ -119,6 +133,13 @@ def resolve_planner(
     if spec in presets:
         preset = presets[spec]
         api_key = preset.get("api_key")
+        if url_override and api_key:
+            # A URL override would send the preset's credential to a
+            # different endpoint than the one the user consented to.
+            raise ValueError(
+                "planner URL override is not allowed for a brain saved with "
+                "an API key; create a separate brain instead"
+            )
         return PlannerConfig(
             preset=spec,
             url=url_override or preset["url"],
@@ -182,8 +203,16 @@ def save_user_preset(
         )
     if not (model or "").strip():
         raise ValueError("brain model is required")
+    if name in DEFAULT_PRESETS:
+        raise ValueError(f"{name!r} is a built-in brain; choose a different name")
     stored = _read_stored()
     presets = stored.setdefault("presets", {})
+    if name in presets and not presets[name].get("user_created"):
+        raise ValueError(f"preset name {name!r} is reserved")
+    if name in presets:
+        raise ValueError(
+            f"brain {name!r} already exists; delete it first to replace it"
+        )
     presets[name] = {
         "url": url,
         "model": model.strip(),

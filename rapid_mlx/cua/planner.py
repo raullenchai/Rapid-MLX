@@ -255,9 +255,12 @@ class Planner:
             ]
             response = await self.client.post(self.url, json=bare, headers=headers)
         if response.is_error:
-            raise RuntimeError(
-                f"planner HTTP {response.status_code}: {response.text[:800]}"
-            )
+            detail = response.text[:800]
+            # Upstream error bodies occasionally echo request headers; never
+            # let the configured key land in exceptions that reach traces.
+            if self.api_key:
+                detail = detail.replace(self.api_key, "***")
+            raise RuntimeError(f"planner HTTP {response.status_code}: {detail}")
         return str(response.json()["choices"][0]["message"]["content"])
 
     def build_prompt(

@@ -368,6 +368,8 @@ async def run(
             reasoning_effort=config.planner.reasoning_effort,
             text_only=config.planner.text_only,
             timeout=config.planner.timeout,
+            api_key=config.planner.api_key,
+            allow_remote=config.planner.allow_remote,
         )
     cua_run = CUARun(
         config,

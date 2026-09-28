@@ -188,6 +188,23 @@ struct CUASection: View {
             }
             .padding(20)
             .frame(width: 460)
+            .onAppear {
+                brainDraftName = ""
+                brainDraftURL = ""
+                brainDraftModel = ""
+                brainDraftAPIKey = ""
+                brainDraftTextOnly = false
+                viewModel.brainError = nil
+            }
+            .onDisappear {
+                // Never reuse a stale draft (an old key must not ride along
+                // into a different endpoint).
+                brainDraftName = ""
+                brainDraftURL = ""
+                brainDraftModel = ""
+                brainDraftAPIKey = ""
+                brainDraftTextOnly = false
+            }
         }
     }
 }

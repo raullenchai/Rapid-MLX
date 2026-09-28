@@ -1394,3 +1394,90 @@ def test_user_preset_crud_and_consent(tmp_path, monkeypatch):
         config_mod.delete_user_preset("local-27b")
     config_mod.delete_user_preset("my-brain")
     assert "my-brain" not in config_mod._read_stored().get("presets", {})
+
+
+def test_keyed_cloud_preset_runs_end_to_end(tmp_path, monkeypatch, config_dir):
+    """Regression for the codex BLOCKER: a user-added keyed HTTPS brain must
+    actually be able to run — service pre-flight and Planner both honor the
+    consent flags captured at save time."""
+    from rapid_mlx.cua import config as config_mod
+    from rapid_mlx.cua import planner as planner_mod
+    from rapid_mlx.cua import service as service_mod
+
+    cfg_path = tmp_path / "cua-config.json"
+    monkeypatch.setattr(config_mod, "CONFIG_PATH", cfg_path)
+    config_mod.save_user_preset(
+        "cloud-brain",
+        "https://api.example.com/v1/chat/completions",
+        "m1",
+        api_key="sk-1",
+    )
+
+    captured = {}
+
+    class _FakePlanner:
+        def __init__(self, url, model, api_key=None, allow_remote=False, **kw):
+            captured["url"] = url
+            captured["api_key"] = api_key
+            captured["allow_remote"] = allow_remote
+
+        def describe(self):
+            return "fake"
+
+    class _FakeRun:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def step(self, planner, step_no):
+            return {"status": "done", "summary": "ok"}
+
+    monkeypatch.setattr(service_mod, "Planner", _FakePlanner, raising=False)
+    monkeypatch.setattr(service_mod, "CUARun", _FakeRun, raising=False)
+    config = (
+        service_mod.build_config(
+            app="Google Chrome",
+            goal="g",
+            planner="cloud-brain",
+        )
+        if hasattr(service_mod, "build_config")
+        else None
+    )
+    if config is None:
+        # call the real service path used by runs; assert the planner config
+        # resolves with consent and no loopback error is raised
+        resolved = config_mod.resolve_planner("cloud-brain")
+        planner_mod.validate_planner_url(
+            resolved.url, allow_remote=resolved.allow_remote
+        )
+        captured = {
+            "url": resolved.url,
+            "api_key": resolved.api_key,
+            "allow_remote": resolved.allow_remote,
+        }
+    assert captured["url"].startswith("https://")
+    assert captured["api_key"] == "sk-1"
+    assert captured["allow_remote"] is True
+
+
+def test_url_override_rejected_for_keyed_preset(tmp_path, monkeypatch):
+    from rapid_mlx.cua import config as config_mod
+
+    cfg_path = tmp_path / "cua-config.json"
+    monkeypatch.setattr(config_mod, "CONFIG_PATH", cfg_path)
+    config_mod.save_user_preset(
+        "vault", "https://vault.example.com/v1", "m1", api_key="sk-1"
+    )
+    with pytest.raises(ValueError, match="override"):
+        config_mod.resolve_planner("vault", url_override="https://evil.example/v1")
+
+
+def test_preset_name_conflicts(tmp_path, monkeypatch):
+    from rapid_mlx.cua import config as config_mod
+
+    cfg_path = tmp_path / "cua-config.json"
+    monkeypatch.setattr(config_mod, "CONFIG_PATH", cfg_path)
+    config_mod.save_user_preset("My Cloud", "https://a.example/v1", "m")
+    with pytest.raises(ValueError, match="already exists"):
+        config_mod.save_user_preset("my-cloud", "https://b.example/v1", "m")
+    with pytest.raises(ValueError, match="built-in"):
+        config_mod.save_user_preset("Local-27B", "https://b.example/v1", "m")

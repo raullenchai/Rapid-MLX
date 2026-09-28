@@ -52,7 +52,7 @@ class CUAPlannerCreateRequest(BaseModel):
 class CUARunCreateRequest(BaseModel):
     app: str = Field(min_length=1, max_length=120)
     goal: str = Field(min_length=1, max_length=4000)
-    planner: str = Field(default="cloud-glm", min_length=1, max_length=2000)
+    planner: str = Field(default="local-27b", min_length=1, max_length=2000)
     planner_model: str | None = Field(default=None, max_length=500)
     planner_url: str | None = Field(default=None, max_length=2000)
     open_url: str = Field(default="", max_length=2000)
