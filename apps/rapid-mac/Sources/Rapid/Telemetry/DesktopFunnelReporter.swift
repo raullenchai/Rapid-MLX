@@ -5,6 +5,10 @@ import Foundation
 /// funnel. The wire body is deliberately limited to app version + a closed
 /// milestone enum; no telemetry identity is read or created.
 actor DesktopFunnelReporter {
+    struct FlowToken: Hashable, Sendable {
+        let id: UUID
+    }
+
     enum Milestone: String, CaseIterable, Sendable {
         case onboardingShown = "onboarding_shown"
         case modelDownloadStarted = "model_download_started"
@@ -16,7 +20,7 @@ actor DesktopFunnelReporter {
     }
 
     typealias Enabled = @Sendable () -> Bool
-    typealias Send = @Sendable (URLRequest) async -> Int?
+    typealias Send = @Sendable (URLRequest) async -> Void
     typealias ClaimMarker = @Sendable (URL) -> Bool
 
     static let shared = DesktopFunnelReporter()
@@ -45,8 +49,6 @@ actor DesktopFunnelReporter {
     private let markerDirectory: URL
     private let version: String
     private let claimMarkerOverride: ClaimMarker?
-    private var attemptedThisProcess: Set<Milestone> = []
-
     private nonisolated static let processState = DesktopFunnelProcessState()
     private nonisolated static let engineAttemptGate = DesktopFunnelEngineAttemptGate()
 
@@ -67,9 +69,12 @@ actor DesktopFunnelReporter {
     /// The UI-facing entry point. Creating the task is immediate; eligibility,
     /// disk access, JSON encoding, and networking all happen away from the main
     /// actor and can never delay a view or lifecycle transition.
-    nonisolated static func enqueue(_ milestone: Milestone) {
+    nonisolated static func enqueue(
+        _ milestone: Milestone,
+        flowToken: FlowToken? = nil
+    ) {
         Task.detached(priority: .utility) {
-            await shared.report(milestone)
+            await shared.report(milestone, flowToken: flowToken)
         }
     }
 
@@ -85,16 +90,39 @@ actor DesktopFunnelReporter {
         processState.reset()
     }
 
-    /// Arms exactly the first engine start initiated by onboarding. The token
-    /// lets its caller disarm only its own attempt when `ServerManager.start`
-    /// returns without a ready/failure terminal state.
+    /// Enrols one genuine first-run flow in this process. A remounted view can
+    /// recover the same token, but a later process or re-onboarding flow cannot
+    /// derive one from the durable cohort marker alone.
+    nonisolated static func beginFirstRunFlow(isFirstRun: Bool) -> FlowToken? {
+        guard isFirstRun else { return nil }
+        let directory = TelemetryIdentity.sharedTelemetryDirectory()
+        let cohort = directory.appendingPathComponent(cohortMarkerName, isDirectory: false)
+        return processState.enrollFlow(cohortPath: cohort.path) {
+            claimMarker(at: cohort, in: directory)
+        }
+    }
+
+    /// Arms exactly the first engine start initiated by the active first-run
+    /// flow. Re-onboarding has no flow token and therefore cannot arm it.
     @discardableResult
-    nonisolated static func armOnboardingEngineAttempt(alias: String) -> UUID {
-        engineAttemptGate.arm(alias: alias)
+    nonisolated static func armOnboardingEngineAttempt(
+        alias: String,
+        flowToken: FlowToken?
+    ) -> UUID? {
+        guard let flowToken, processState.contains(flowToken) else { return nil }
+        return engineAttemptGate.arm(alias: alias, flowToken: flowToken)
     }
 
     nonisolated static func disarmOnboardingEngineAttempt(_ token: UUID) {
         engineAttemptGate.disarm(token: token)
+    }
+
+    nonisolated static func retainOnboardingEngineAttempt(_ token: UUID) {
+        engineAttemptGate.retain(token: token)
+    }
+
+    nonisolated static func releaseOnboardingEngineAttempt(_ token: UUID) {
+        engineAttemptGate.release(token: token)
     }
 
     /// ServerManager routes every lifecycle terminal through this seam. Only a
@@ -104,80 +132,50 @@ actor DesktopFunnelReporter {
         _ milestone: Milestone,
         alias: String
     ) {
-        guard engineAttemptGate.consume(milestone: milestone, alias: alias) else { return }
-        enqueue(milestone)
+        guard let flowToken = engineAttemptGate.consume(
+            milestone: milestone,
+            alias: alias
+        ) else { return }
+        enqueue(milestone, flowToken: flowToken)
     }
 
     /// Enrols only a genuinely new install. The empty cohort marker is local
     /// state, written before and independently of consent or network delivery,
     /// so later milestones cannot accidentally include upgrading installs.
-    nonisolated static func enqueueOnboardingShown(isFirstRun: Bool) {
+    nonisolated static func enqueueOnboardingShown(flowToken: FlowToken) {
         Task.detached(priority: .utility) {
-            await shared.reportOnboardingShown(isFirstRun: isFirstRun)
+            await shared.report(.onboardingShown, flowToken: flowToken)
         }
     }
 
-    func reportOnboardingShown(isFirstRun: Bool) async {
-        guard isFirstRun else { return }
+    func beginFirstRunFlow(isFirstRun: Bool) -> FlowToken? {
+        guard isFirstRun else { return nil }
         let cohort = cohortMarkerURL
-        guard FileManager.default.fileExists(atPath: cohort.path)
-                || claimMarker(at: cohort) else { return }
-        await report(.onboardingShown)
+        return Self.processState.enrollFlow(cohortPath: cohort.path) {
+            claimMarker(at: cohort)
+        }
     }
 
-    func report(_ milestone: Milestone) async {
-        // `onboardingShown` is reached only through
-        // `reportOnboardingShown(isFirstRun:)`, which creates this marker.
-        // Every downstream event must belong to the same locally enrolled
-        // cohort; an upgrade that never saw first-run setup stays silent.
+    func report(_ milestone: Milestone, flowToken: FlowToken? = nil) async {
         guard FileManager.default.fileExists(atPath: cohortMarkerURL.path) else { return }
-        guard !attemptedThisProcess.contains(milestone),
-              Self.processState.allowsSending,
+        if milestone != .firstChatReply {
+            guard let flowToken,
+                  Self.processState.matches(
+                      flowToken,
+                      cohortPath: cohortMarkerURL.path
+                  ) else { return }
+        }
+        guard Self.processState.allowsSending,
               isEnabled() else { return }
 
         let marker = markerURL(for: milestone)
-        if FileManager.default.fileExists(atPath: marker.path)
-            || Self.processState.isResolved(marker.path) {
-            attemptedThisProcess.insert(milestone)
-            return
-        }
-
-        // Claim the process-local attempt before suspending in the sender.
-        // Repeated UI notifications therefore cannot create a retry loop.
-        attemptedThisProcess.insert(milestone)
+        guard !FileManager.default.fileExists(atPath: marker.path) else { return }
         guard let request = Self.request(version: version, milestone: milestone) else { return }
         guard Self.processState.allowsSending, isEnabled() else { return }
-        let statusCode = await send(request)
-        switch Self.delivery(for: statusCode) {
-        case .accepted, .discard:
-            // Permanent client/protocol rejections are resolved just like an
-            // accepted response: retrying an unchanged request every launch
-            // cannot succeed. Transient failures deliberately remain open.
-            // SingleInstanceGuard prevents another Desktop process racing this
-            // request. Remember the resolution process-wide even if the durable
-            // write fails, so a second reporter cannot re-send this launch.
-            // A crash/relaunch after a 2xx but before a successful marker write
-            // remains an intentional at-least-once delivery edge.
-            Self.processState.resolve(marker.path)
-            _ = claimMarker(at: marker)
-        case .retry:
-            return
-        }
-    }
-
-    enum Delivery: Equatable {
-        case accepted
-        case discard
-        case retry
-    }
-
-    nonisolated static func delivery(for statusCode: Int?) -> Delivery {
-        guard let statusCode else { return .retry }
-        if (200..<300).contains(statusCode) { return .accepted }
-        if (400..<500).contains(statusCode), statusCode != 408, statusCode != 429 {
-            return .discard
-        }
-        return .retry
+        // The durable claim is the delivery boundary. Once it succeeds this
+        // milestone is never attempted again, even if transport fails.
+        guard claimMarker(at: marker) else { return }
+        await send(request)
     }
 
     nonisolated static func request(version: String, milestone: Milestone) -> URLRequest? {
@@ -253,12 +251,11 @@ actor DesktopFunnelReporter {
         )
     }
 
-    nonisolated private static func sendRequest(_ request: URLRequest) async -> Int? {
+    nonisolated private static func sendRequest(_ request: URLRequest) async {
         do {
-            let (_, response) = try await session.data(for: request)
-            return (response as? HTTPURLResponse)?.statusCode
+            _ = try await session.data(for: request)
         } catch {
-            return nil
+            return
         }
     }
 
@@ -275,9 +272,13 @@ actor DesktopFunnelReporter {
 
     private func claimMarker(at url: URL) -> Bool {
         if let claimMarkerOverride { return claimMarkerOverride(url) }
+        return Self.claimMarker(at: url, in: markerDirectory)
+    }
+
+    nonisolated private static func claimMarker(at url: URL, in directory: URL) -> Bool {
         do {
             try FileManager.default.createDirectory(
-                at: markerDirectory,
+                at: directory,
                 withIntermediateDirectories: true,
                 attributes: [.posixPermissions: 0o700]
             )
@@ -295,12 +296,10 @@ actor DesktopFunnelReporter {
 }
 
 /// Small lock-protected process state shared by every reporter instance.
-/// Tests use unique marker paths, so resolved delivery state cannot leak
-/// between cases even though production intentionally keeps it for app life.
 final class DesktopFunnelProcessState: @unchecked Sendable {
     private let lock = NSLock()
     private var optedOut = false
-    private var resolvedMarkers: Set<String> = []
+    private var flowsByCohortPath: [String: DesktopFunnelReporter.FlowToken] = [:]
 
     var allowsSending: Bool { lock.withLock { !optedOut } }
 
@@ -308,18 +307,31 @@ final class DesktopFunnelProcessState: @unchecked Sendable {
         lock.withLock { optedOut = true }
     }
 
-    func isResolved(_ markerPath: String) -> Bool {
-        lock.withLock { resolvedMarkers.contains(markerPath) }
+    func enrollFlow(
+        cohortPath: String,
+        claim: () -> Bool
+    ) -> DesktopFunnelReporter.FlowToken? {
+        lock.withLock {
+            if let existing = flowsByCohortPath[cohortPath] { return existing }
+            guard claim() else { return nil }
+            let token = DesktopFunnelReporter.FlowToken(id: UUID())
+            flowsByCohortPath[cohortPath] = token
+            return token
+        }
     }
 
-    func resolve(_ markerPath: String) {
-        lock.withLock { _ = resolvedMarkers.insert(markerPath) }
+    func contains(_ token: DesktopFunnelReporter.FlowToken) -> Bool {
+        lock.withLock { flowsByCohortPath.values.contains(token) }
+    }
+
+    func matches(_ token: DesktopFunnelReporter.FlowToken, cohortPath: String) -> Bool {
+        lock.withLock { flowsByCohortPath[cohortPath] == token }
     }
 
     func reset() {
         lock.withLock {
             optedOut = false
-            resolvedMarkers.removeAll()
+            flowsByCohortPath.removeAll()
         }
     }
 }
@@ -329,33 +341,54 @@ final class DesktopFunnelEngineAttemptGate: @unchecked Sendable {
     private struct Attempt {
         let token: UUID
         let alias: String
+        let flowToken: DesktopFunnelReporter.FlowToken
+        var retained = false
     }
 
     private let lock = NSLock()
     private var attempt: Attempt?
 
     @discardableResult
-    func arm(alias: String) -> UUID {
+    func arm(alias: String, flowToken: DesktopFunnelReporter.FlowToken) -> UUID {
         let token = UUID()
         lock.withLock {
-            attempt = Attempt(token: token, alias: Self.normalized(alias))
+            attempt = Attempt(
+                token: token,
+                alias: Self.normalized(alias),
+                flowToken: flowToken
+            )
         }
         return token
     }
 
     func disarm(token: UUID) {
         lock.withLock {
+            if attempt?.token == token, attempt?.retained == false { attempt = nil }
+        }
+    }
+
+    func retain(token: UUID) {
+        lock.withLock {
+            if attempt?.token == token { attempt?.retained = true }
+        }
+    }
+
+    func release(token: UUID) {
+        lock.withLock {
             if attempt?.token == token { attempt = nil }
         }
     }
 
-    func consume(milestone: DesktopFunnelReporter.Milestone, alias: String) -> Bool {
-        guard milestone == .engineReady || milestone == .engineStartFailed else { return false }
+    func consume(
+        milestone: DesktopFunnelReporter.Milestone,
+        alias: String
+    ) -> DesktopFunnelReporter.FlowToken? {
+        guard milestone == .engineReady || milestone == .engineStartFailed else { return nil }
         return lock.withLock {
             guard let current = attempt,
-                  current.alias == Self.normalized(alias) else { return false }
+                  current.alias == Self.normalized(alias) else { return nil }
             attempt = nil
-            return true
+            return current.flowToken
         }
     }
 

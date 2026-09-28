@@ -26,7 +26,8 @@ can actually understand.
   version and a closed milestone name, honors telemetry and update-check
   opt-outs, and is documented in `PRIVACY.md`. Existing and incomplete installs
   are durably excluded, only the engine start caused by first-run setup is
-  counted, and development or dogfood packages cannot enable the sender.
+  counted, failed milestone requests are not retried, and development or
+  dogfood packages cannot enable the sender.
 
 ## [0.15.2] — 2026-09-24
 

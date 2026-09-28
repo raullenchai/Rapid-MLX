@@ -56,6 +56,7 @@ final class MemoryLoadConfirmationQueue {
 
         var warning: ModelSizing.MemoryWarning
         var requestID: UUID?
+        var onboardingEngineAttemptToken: UUID?
         var phase: Phase = .awaitingDecision
         var launchComplete = false
     }
@@ -68,8 +69,20 @@ final class MemoryLoadConfirmationQueue {
         return pending.first?.warning
     }
 
-    func enqueue(warning: ModelSizing.MemoryWarning, requestID: UUID?) {
-        pending.append(Pending(warning: warning, requestID: requestID))
+    func enqueue(
+        warning: ModelSizing.MemoryWarning,
+        requestID: UUID?,
+        onboardingEngineAttemptToken: UUID? = nil
+    ) {
+        pending.append(Pending(
+            warning: warning,
+            requestID: requestID,
+            onboardingEngineAttemptToken: onboardingEngineAttemptToken
+        ))
+    }
+
+    func onboardingEngineAttemptToken(warningID: UUID) -> UUID? {
+        pending.first { $0.warning.id == warningID }?.onboardingEngineAttemptToken
     }
 
     /// Replace the measured facts for the visible decision without changing
@@ -2446,6 +2459,9 @@ final class ServerManager {
     private func activatePendingMemoryLoad(
         _ warning: ModelSizing.MemoryWarning
     ) async {
+        let onboardingAttemptToken = memoryConfirmations.onboardingEngineAttemptToken(
+            warningID: warning.id
+        )
         let provider = memorySnapshotProvider
         let snapshot = await Task.detached(priority: .utility) {
             provider()
@@ -2464,6 +2480,9 @@ final class ServerManager {
         } ?? false
         if plannedReleaseChanged {
             memoryConfirmations.cancelChecking(warningID: warning.id)
+            if let onboardingAttemptToken {
+                DesktopFunnelReporter.releaseOnboardingEngineAttempt(onboardingAttemptToken)
+            }
             return
         }
 
@@ -2499,8 +2518,12 @@ final class ServerManager {
             isAutoRespawn: currentWarning.isAutoRespawn,
             bypassMemoryGuard: true,
             videoOutputDirectory: currentWarning.videoOutputDirectory,
-            estimatedMemoryGB: currentWarning.footprintGB
+            estimatedMemoryGB: currentWarning.footprintGB,
+            onboardingEngineAttemptToken: onboardingAttemptToken
         )
+        if let onboardingAttemptToken {
+            DesktopFunnelReporter.releaseOnboardingEngineAttempt(onboardingAttemptToken)
+        }
         memoryConfirmRunning.remove(seq)
         memoryConfirmations.completeConfirmedLaunch(warningID: currentWarning.id)
     }
@@ -2519,10 +2542,16 @@ final class ServerManager {
         // load that was never started, so any launch still in flight belongs
         // to an EARLIER confirmation and its waiter must not be told it
         // finished.
-        _ = memoryConfirmations.resolveCurrent(
+        let onboardingAttemptToken = memoryConfirmations.onboardingEngineAttemptToken(
+            warningID: warning.id
+        )
+        let cancelled = memoryConfirmations.resolveCurrent(
             warningID: warning.id,
             decision: .cancelled
         )
+        if cancelled != nil, let onboardingAttemptToken {
+            DesktopFunnelReporter.releaseOnboardingEngineAttempt(onboardingAttemptToken)
+        }
     }
 
     func start(
@@ -2535,7 +2564,8 @@ final class ServerManager {
         memoryAdmission: MemoryAdmissionContext? = nil,
         catalogEntryHint: CatalogEntryHint? = nil,
         videoOutputDirectory: String? = nil,
-        estimatedMemoryGB: Double? = nil
+        estimatedMemoryGB: Double? = nil,
+        onboardingEngineAttemptToken: UUID? = nil
     ) async {
         guard !communityBenchmarkReserved else { return }
         // Issue #278: a manual restart is the user taking over the
@@ -2656,8 +2686,14 @@ final class ServerManager {
                 )
                 memoryConfirmations.enqueue(
                     warning: warning,
-                    requestID: memoryRequestID
+                    requestID: memoryRequestID,
+                    onboardingEngineAttemptToken: onboardingEngineAttemptToken
                 )
+                if let onboardingEngineAttemptToken {
+                    DesktopFunnelReporter.retainOnboardingEngineAttempt(
+                        onboardingEngineAttemptToken
+                    )
+                }
                 // The user is now the decision-maker for this alias, so a
                 // queued auto-respawn must not answer for them. Parking a
                 // load leaves ``state`` untouched — still ``.crashed`` when

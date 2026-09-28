@@ -795,6 +795,12 @@ Open the picker any time to switch models.
     /// intentionally independent of the resettable onboarding eligibility.
     private(set) var hasPriorUse: Bool
 
+    /// Process-only capability for milestones caused by this install's genuine
+    /// first-run flow. It deliberately lives with the coordinator so a SwiftUI
+    /// remount cannot manufacture or accidentally preserve eligibility.
+    @ObservationIgnored
+    private(set) var desktopFunnelFlowToken: DesktopFunnelReporter.FlowToken?
+
     /// True once the seeded assistant message has been appended to the
     /// active session. Stops ``markReady`` from double-seeding when the
     /// observation pipeline fires multiple ``.ready`` transitions for
@@ -966,6 +972,7 @@ Open the picker any time to switch models.
         self.done = storedDone
         self.legacyDone = storedLegacyDone
         self.hasPriorUse = storedPriorUse
+        self.desktopFunnelFlowToken = nil
         // History only. Nothing below reconstructs a phase, a selection or a
         // job from it — a relaunch always starts at ``.idle``, which is what
         // makes "never restore a fake active transfer" true by construction
@@ -1039,6 +1046,19 @@ Open the picker any time to switch models.
         setupBegun = false
     }
 
+    func enrollDesktopFunnelFlowIfNeeded() -> DesktopFunnelReporter.FlowToken? {
+        guard !hasPriorUse else {
+            desktopFunnelFlowToken = nil
+            return nil
+        }
+        if desktopFunnelFlowToken == nil {
+            desktopFunnelFlowToken = DesktopFunnelReporter.beginFirstRunFlow(
+                isFirstRun: true
+            )
+        }
+        return desktopFunnelFlowToken
+    }
+
     /// Put the wizard back to the state a Mac has before it has ever run.
     ///
     /// Quickstart is one-shot per Mac by design, and no shipping UI offers a
@@ -1055,6 +1075,7 @@ Open the picker any time to switch models.
         // reset clears the completion and served-model signals from which it
         // would otherwise be inferred on the next launch.
         hasPriorUse = true
+        desktopFunnelFlowToken = nil
         defaults.set(true, forKey: Self.priorUseStorageKey)
         done = false
         phase = .idle
@@ -1535,6 +1556,13 @@ struct QuickstartView: View {
     /// handle exists solely to propagate SwiftUI teardown cancellation.
     @State private var foregroundMemoryRefreshTask: Task<Void, Never>?
 
+    /// Exists only for the genuinely new-install flow that created the local
+    /// cohort marker in this process. A later guided-setup run never receives
+    /// it, even when this install belongs to the historical cohort.
+    private var activeFunnelFlowToken: DesktopFunnelReporter.FlowToken? {
+        coordinator.hasPriorUse ? nil : coordinator.desktopFunnelFlowToken
+    }
+
     /// First-run setup should present a decision, not mirror every cached
     /// quantization of that decision.  Sibling variants stay reachable behind
     /// one explicit disclosure; Settings → Models and Browse all remain the
@@ -1598,9 +1626,9 @@ struct QuickstartView: View {
             // it with an eligible cached model, but an immediate Skip can
             // never leak the static 16 GB starter onto a smaller Mac.
             .onAppear {
-                DesktopFunnelReporter.enqueueOnboardingShown(
-                    isFirstRun: !coordinator.hasPriorUse
-                )
+                if let token = coordinator.enrollDesktopFunnelFlowIfNeeded() {
+                    DesktopFunnelReporter.enqueueOnboardingShown(flowToken: token)
+                }
                 coordinator.applyDefaultChoice(
                     hardware: hardware,
                     catalog: catalogLoaded ? cachedModels : []
@@ -4689,12 +4717,20 @@ struct QuickstartView: View {
                     source: .huggingFace
                 )
             }
-            if started { DesktopFunnelReporter.enqueue(.modelDownloadStarted) }
+            if started {
+                DesktopFunnelReporter.enqueue(
+                    .modelDownloadStarted,
+                    flowToken: activeFunnelFlowToken
+                )
+            }
         case .retry:
             if downloads.job(for: coordinator.selection.alias) != nil {
                 beginDownloadPhase()
                 if downloads.retryDownload(alias: coordinator.selection.alias) {
-                    DesktopFunnelReporter.enqueue(.modelDownloadStarted)
+                    DesktopFunnelReporter.enqueue(
+                        .modelDownloadStarted,
+                        flowToken: activeFunnelFlowToken
+                    )
                 }
             } else {
                 startQuickstart()
@@ -4830,12 +4866,18 @@ struct QuickstartView: View {
         hfPath: String? = nil,
         catalogEntryHint: ServerManager.CatalogEntryHint? = nil
     ) async {
-        let token = DesktopFunnelReporter.armOnboardingEngineAttempt(alias: alias)
-        defer { DesktopFunnelReporter.disarmOnboardingEngineAttempt(token) }
+        let token = DesktopFunnelReporter.armOnboardingEngineAttempt(
+            alias: alias,
+            flowToken: activeFunnelFlowToken
+        )
+        defer {
+            if let token { DesktopFunnelReporter.disarmOnboardingEngineAttempt(token) }
+        }
         await server.start(
             alias: alias,
             hfPath: hfPath,
-            catalogEntryHint: catalogEntryHint
+            catalogEntryHint: catalogEntryHint,
+            onboardingEngineAttemptToken: token
         )
     }
 
@@ -4882,7 +4924,12 @@ struct QuickstartView: View {
             hfPath: coordinator.selection.hfRepo,
             totalBytes: coordinator.selection.downloadBytes
         )
-        if started { DesktopFunnelReporter.enqueue(.modelDownloadStarted) }
+        if started {
+            DesktopFunnelReporter.enqueue(
+                .modelDownloadStarted,
+                flowToken: activeFunnelFlowToken
+            )
+        }
         // ``startDownload`` returns ``false`` either because the
         // binary is missing (the synthetic ``.failed`` job already
         // landed and our ``.task(id:)`` observer will pick it up) or
@@ -4899,7 +4946,10 @@ struct QuickstartView: View {
         case .running:
             return
         case .completed:
-            DesktopFunnelReporter.enqueue(.modelDownloadCompleted)
+            DesktopFunnelReporter.enqueue(
+                .modelDownloadCompleted,
+                flowToken: activeFunnelFlowToken
+            )
             // Codex r2 BLOCKING: if the server is already engaged with
             // a DIFFERENT alias (user used the still-visible picker
             // mid-download), don't fire ``server.start(gemma...)`` —
@@ -4950,7 +5000,10 @@ struct QuickstartView: View {
                 origin: .download
             )
         case .failed(let message):
-            DesktopFunnelReporter.enqueue(.modelDownloadFailed)
+            DesktopFunnelReporter.enqueue(
+                .modelDownloadFailed,
+                flowToken: activeFunnelFlowToken
+            )
             enterRecovery(
                 kind: job.failureKind ?? FailureDiagnoser.downloadFailureKind(
                     raw: message,

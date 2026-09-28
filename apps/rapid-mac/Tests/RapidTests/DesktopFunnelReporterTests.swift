@@ -63,26 +63,34 @@ struct DesktopFunnelReporterTests {
         ) == nil)
     }
 
-    @Test("Accepted milestone is marked and never repeats across reporters")
-    func acceptedThenMarked() async throws {
+    @Test("Milestone is durably claimed before transport and never repeats")
+    func claimedBeforeTransport() async throws {
         let directory = temporaryDirectory("accepted")
         defer { try? FileManager.default.removeItem(at: directory) }
-        let probe = FunnelSendProbe(results: [204])
+        let probe = FunnelSendProbe()
 
         func makeReporter() -> DesktopFunnelReporter {
             DesktopFunnelReporter(
                 isEnabled: { true },
-                send: { request in await probe.send(request) },
+                send: { request in
+                    #expect(FileManager.default.fileExists(
+                        atPath: directory.appendingPathComponent(
+                            "desktop_funnel_onboarding_shown"
+                        ).path
+                    ))
+                    await probe.send(request)
+                },
                 markerDirectory: directory,
                 version: "0.15.3"
             )
         }
 
         let first = makeReporter()
-        await first.reportOnboardingShown(isFirstRun: true)
-        await first.reportOnboardingShown(isFirstRun: true)
+        let token = try #require(await first.beginFirstRunFlow(isFirstRun: true))
+        await first.report(.onboardingShown, flowToken: token)
+        await first.report(.onboardingShown, flowToken: token)
         let second = makeReporter()
-        await second.reportOnboardingShown(isFirstRun: true)
+        await second.report(.onboardingShown, flowToken: token)
 
         #expect(await probe.count == 1)
         #expect(FileManager.default.fileExists(
@@ -92,29 +100,33 @@ struct DesktopFunnelReporterTests {
         ))
     }
 
-    @Test("A resolved response is not resent this process when marker persistence fails")
-    func postSuccessMarkerFailureStaysResolvedInProcess() async throws {
+    @Test("A milestone is not sent when its durable claim fails")
+    func markerFailureBlocksTransport() async throws {
         let directory = temporaryDirectory("marker-failure")
         defer { try? FileManager.default.removeItem(at: directory) }
-        try enroll(directory)
-        let probe = FunnelSendProbe(results: [204, 204])
+        let probe = FunnelSendProbe()
+        let reporter = DesktopFunnelReporter(
+            isEnabled: { true },
+            send: { request in await probe.send(request) },
+            markerDirectory: directory,
+            version: "0.15.3",
+            claimMarker: { url in
+                guard url.lastPathComponent == DesktopFunnelReporter.cohortMarkerName else {
+                    return false
+                }
+                try? FileManager.default.createDirectory(
+                    at: directory,
+                    withIntermediateDirectories: true
+                )
+                return FileManager.default.createFile(atPath: url.path, contents: Data())
+            }
+        )
+        let token = try #require(await reporter.beginFirstRunFlow(isFirstRun: true))
+        await reporter.report(.modelDownloadStarted, flowToken: token)
 
-        func makeReporter() -> DesktopFunnelReporter {
-            DesktopFunnelReporter(
-                isEnabled: { true },
-                send: { request in await probe.send(request) },
-                markerDirectory: directory,
-                version: "0.15.3",
-                claimMarker: { _ in false }
-            )
-        }
-
-        await makeReporter().report(.firstChatReply)
-        await makeReporter().report(.firstChatReply)
-
-        #expect(await probe.count == 1)
+        #expect(await probe.count == 0)
         #expect(!FileManager.default.fileExists(
-            atPath: marker("desktop_funnel_first_chat_reply", in: directory).path
+            atPath: marker("desktop_funnel_model_download_started", in: directory).path
         ))
     }
 
@@ -151,13 +163,16 @@ struct DesktopFunnelReporterTests {
             version: "0.15.3"
         )
 
-        await reporter.reportOnboardingShown(isFirstRun: true)
+        let token = await reporter.beginFirstRunFlow(isFirstRun: true)
+        #expect(token != nil)
+        guard let token else { return }
+        await reporter.report(.onboardingShown, flowToken: token)
         #expect(FileManager.default.fileExists(
             atPath: marker(DesktopFunnelReporter.cohortMarkerName, in: directory).path
         ))
         for milestone in DesktopFunnelReporter.Milestone.allCases
             where milestone != .onboardingShown {
-            await reporter.report(milestone)
+            await reporter.report(milestone, flowToken: token)
         }
 
         #expect(await probe.count == DesktopFunnelReporter.Milestone.allCases.count)
@@ -185,12 +200,52 @@ struct DesktopFunnelReporterTests {
             version: "0.15.3"
         )
 
-        await reporter.reportOnboardingShown(isFirstRun: !coordinator.hasPriorUse)
+        let token = await reporter.beginFirstRunFlow(isFirstRun: !coordinator.hasPriorUse)
+        #expect(token == nil)
 
         #expect(await probe.count == 0)
         #expect(!FileManager.default.fileExists(
             atPath: marker(DesktopFunnelReporter.cohortMarkerName, in: directory).path
         ))
+    }
+
+    @Test("A cohort install re-running guided setup cannot send download or engine milestones")
+    func reonboardingCohortHasNoFlowToken() async throws {
+        let directory = temporaryDirectory("cohort-reonboarding")
+        defer {
+            DesktopFunnelReporter.resetProcessStateForTesting()
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let probe = FunnelSendProbe()
+        let reporter = DesktopFunnelReporter(
+            isEnabled: { true },
+            send: { request in await probe.send(request) },
+            markerDirectory: directory,
+            version: "0.15.3"
+        )
+
+        let firstRunToken = try #require(
+            await reporter.beginFirstRunFlow(isFirstRun: true)
+        )
+        await reporter.report(.onboardingShown, flowToken: firstRunToken)
+        #expect(await probe.count == 1)
+
+        // A new process can see the durable cohort but cannot reconstruct the
+        // active first-run flow capability from it.
+        DesktopFunnelReporter.resetProcessStateForTesting()
+        let reonboardingToken = await reporter.beginFirstRunFlow(isFirstRun: false)
+        #expect(reonboardingToken == nil)
+        for milestone in [
+            DesktopFunnelReporter.Milestone.modelDownloadStarted,
+            .modelDownloadCompleted,
+            .modelDownloadFailed,
+            .engineReady,
+            .engineStartFailed,
+        ] {
+            await reporter.report(milestone, flowToken: reonboardingToken)
+        }
+
+        #expect(await probe.count == 1)
     }
 
     @Test("Upgrade with untouched onboarding is durably excluded before InstallTracker rollover")
@@ -239,25 +294,15 @@ struct DesktopFunnelReporterTests {
         #expect(defaults.bool(forKey: QuickstartCoordinator.priorUseStorageKey))
     }
 
-    @Test("Transport and transient HTTP failures retry on a later launch", arguments: [
-        nil,
-        100,
-        199,
-        300,
-        301,
-        302,
-        399,
-        408,
-        429,
-        500,
-        599,
-        600,
-    ] as [Int?])
-    func transientRequestRetriesOnlyInNewReporter(firstStatus: Int?) async throws {
-        let directory = temporaryDirectory("retry")
-        defer { try? FileManager.default.removeItem(at: directory) }
+    @Test("A failed request is at most once and is not retried by a later reporter")
+    func failedRequestIsNotRetried() async throws {
+        let directory = temporaryDirectory("at-most-once")
+        defer {
+            DesktopFunnelReporter.resetProcessStateForTesting()
+            try? FileManager.default.removeItem(at: directory)
+        }
         try enroll(directory)
-        let probe = FunnelSendProbe(results: [firstStatus, 204])
+        let probe = FunnelSendProbe()
 
         func makeReporter() -> DesktopFunnelReporter {
             DesktopFunnelReporter(
@@ -269,87 +314,30 @@ struct DesktopFunnelReporterTests {
         }
 
         let firstLaunch = makeReporter()
-        await firstLaunch.report(.modelDownloadFailed)
-        await firstLaunch.report(.modelDownloadFailed)
+        await firstLaunch.report(.firstChatReply)
         #expect(await probe.count == 1)
-        #expect(!FileManager.default.fileExists(
+        #expect(FileManager.default.fileExists(
             atPath: directory.appendingPathComponent(
-                "desktop_funnel_model_download_failed"
+                "desktop_funnel_first_chat_reply"
             ).path
         ))
 
+        DesktopFunnelReporter.resetProcessStateForTesting()
         let laterLaunch = makeReporter()
-        await laterLaunch.report(.modelDownloadFailed)
-        await laterLaunch.report(.modelDownloadFailed)
-        #expect(await probe.count == 2)
+        await laterLaunch.report(.firstChatReply)
+        #expect(await probe.count == 1)
         #expect(FileManager.default.fileExists(
             atPath: directory.appendingPathComponent(
-                "desktop_funnel_model_download_failed"
+                "desktop_funnel_first_chat_reply"
             ).path
         ))
     }
 
-    @Test("Permanent HTTP rejections are marked and never retried", arguments: [
-        400,
-        404,
-        405,
-        410,
-    ])
-    func permanentRejectionIsDiscarded(status: Int) async throws {
-        let directory = temporaryDirectory("discard")
-        defer { try? FileManager.default.removeItem(at: directory) }
-        try enroll(directory)
-        let probe = FunnelSendProbe(results: [status, 204])
-
-        func makeReporter() -> DesktopFunnelReporter {
-            DesktopFunnelReporter(
-                isEnabled: { true },
-                send: { request in await probe.send(request) },
-                markerDirectory: directory,
-                version: "0.15.3"
-            )
-        }
-
-        await makeReporter().report(.engineStartFailed)
-        await makeReporter().report(.engineStartFailed)
-
-        #expect(await probe.count == 1)
-        #expect(FileManager.default.fileExists(
-            atPath: marker("desktop_funnel_engine_start_failed", in: directory).path
-        ))
-    }
-
-    @Test("HTTP status boundaries classify only 2xx as accepted and permanent 4xx as discard")
-    func statusBoundaries() {
-        let cases: [(Int?, DesktopFunnelReporter.Delivery)] = [
-            (nil, .retry),
-            (199, .retry),
-            (200, .accepted),
-            (299, .accepted),
-            (300, .retry),
-            (399, .retry),
-            (400, .discard),
-            (407, .discard),
-            (408, .retry),
-            (409, .discard),
-            (428, .discard),
-            (429, .retry),
-            (430, .discard),
-            (499, .discard),
-            (500, .retry),
-            (599, .retry),
-            (600, .retry),
-        ]
-        for (status, expected) in cases {
-            #expect(DesktopFunnelReporter.delivery(for: status) == expected)
-        }
-    }
-
-    @Test("Cohort enrollment survives a failed onboarding delivery")
-    func cohortMarkerIsIndependentOfNetwork() async {
+    @Test("Cohort enrollment and milestone claim survive a failed onboarding delivery")
+    func cohortMarkerIsIndependentOfNetwork() async throws {
         let directory = temporaryDirectory("offline-enrollment")
         defer { try? FileManager.default.removeItem(at: directory) }
-        let probe = FunnelSendProbe(results: [nil])
+        let probe = FunnelSendProbe()
         let reporter = DesktopFunnelReporter(
             isEnabled: { true },
             send: { request in await probe.send(request) },
@@ -357,13 +345,14 @@ struct DesktopFunnelReporterTests {
             version: "0.15.3"
         )
 
-        await reporter.reportOnboardingShown(isFirstRun: true)
+        let token = try #require(await reporter.beginFirstRunFlow(isFirstRun: true))
+        await reporter.report(.onboardingShown, flowToken: token)
 
         #expect(await probe.count == 1)
         #expect(FileManager.default.fileExists(
             atPath: marker(DesktopFunnelReporter.cohortMarkerName, in: directory).path
         ))
-        #expect(!FileManager.default.fileExists(
+        #expect(FileManager.default.fileExists(
             atPath: marker("desktop_funnel_onboarding_shown", in: directory).path
         ))
     }
@@ -569,19 +558,20 @@ struct DesktopFunnelReporterTests {
     @Test("Only the armed onboarding engine attempt emits a terminal outcome")
     func engineAttemptCausalityExcludesLaterManualRestartAndModelSwitch() {
         let gate = DesktopFunnelEngineAttemptGate()
-        let first = gate.arm(alias: "starter")
+        let flowToken = DesktopFunnelReporter.FlowToken(id: UUID())
+        let first = gate.arm(alias: "starter", flowToken: flowToken)
 
-        #expect(gate.consume(milestone: .engineReady, alias: "starter"))
-        #expect(!gate.consume(milestone: .engineReady, alias: "starter"),
+        #expect(gate.consume(milestone: .engineReady, alias: "starter") == flowToken)
+        #expect(gate.consume(milestone: .engineReady, alias: "starter") == nil,
                 "later manual start must be silent")
-        #expect(!gate.consume(milestone: .engineStartFailed, alias: "starter"),
+        #expect(gate.consume(milestone: .engineStartFailed, alias: "starter") == nil,
                 "later restart must be silent")
 
-        let switched = gate.arm(alias: "starter")
-        #expect(!gate.consume(milestone: .engineStartFailed, alias: "larger-model"),
+        let switched = gate.arm(alias: "starter", flowToken: flowToken)
+        #expect(gate.consume(milestone: .engineStartFailed, alias: "larger-model") == nil,
                 "a model-switch failure is not the armed onboarding start")
         gate.disarm(token: switched)
-        #expect(!gate.consume(milestone: .engineStartFailed, alias: "starter"))
+        #expect(gate.consume(milestone: .engineStartFailed, alias: "starter") == nil)
         gate.disarm(token: first)
     }
 
@@ -649,16 +639,10 @@ struct DesktopFunnelReporterTests {
 
 private actor FunnelSendProbe {
     private var requests: [URLRequest] = []
-    private var results: [Int?]
-
-    init(results: [Int?] = []) {
-        self.results = results
-    }
 
     var count: Int { requests.count }
 
-    func send(_ request: URLRequest) -> Int? {
+    func send(_ request: URLRequest) {
         requests.append(request)
-        return results.isEmpty ? 204 : results.removeFirst()
     }
 }
