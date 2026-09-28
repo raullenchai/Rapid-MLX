@@ -3,8 +3,8 @@
 
 from __future__ import annotations
 
-import json
 import errno
+import json
 import os
 from pathlib import Path, PurePosixPath
 
@@ -58,11 +58,7 @@ def _missing_index_shards(root: Path) -> list[str]:
             except OSError:
                 present = False
             if not present:
-                try:
-                    relative = candidate.relative_to(root).as_posix()
-                except ValueError:
-                    continue
-                missing.add(relative)
+                missing.add(candidate.relative_to(root).as_posix())
     return sorted(missing)
 
 

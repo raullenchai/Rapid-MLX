@@ -4,10 +4,16 @@
 from __future__ import annotations
 
 import json
+import sys
+from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
+import pytest
 from huggingface_hub.errors import HfHubHTTPError
 
+from rapid_mlx import cli
+from rapid_mlx import local_model_path as local_paths
 from rapid_mlx.local_model_path import (
     MAX_MISSING_LOCAL_MODEL_FILES,
     local_model_failure_message,
@@ -78,3 +84,141 @@ def test_remote_file_not_found_and_hub_http_error_remain_download_failed(tmp_pat
         serve_error_class(hub_error, model_ref=str(tmp_path / "local-looking"))
         == "download_failed"
     )
+    local_wrapper = FileNotFoundError("snapshot shard missing")
+    local_wrapper.__cause__ = hub_error
+    assert (
+        serve_error_class(local_wrapper, model_ref=str(tmp_path / "local-looking"))
+        == "download_failed"
+    )
+
+
+def test_local_path_helpers_fail_closed_on_hostile_inputs(monkeypatch, tmp_path):
+    assert local_paths._safe_relative_name(None) is None
+    assert local_paths._safe_relative_name("../secret.safetensors") is None
+    assert missing_local_model_files("owner/model") == ()
+    assert missing_local_model_files(str(tmp_path / "missing")) == ()
+
+    monkeypatch.setattr(
+        local_paths.os.path, "exists", lambda _value: (_ for _ in ()).throw(OSError())
+    )
+    assert local_paths.is_local_model_ref("plain-name") is True
+
+
+def test_index_diagnostics_ignore_invalid_and_unreadable_entries(monkeypatch, tmp_path):
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    invalid = model_dir / "a.safetensors.index.json"
+    invalid.write_text("not-json", encoding="utf-8")
+    assert local_paths._missing_index_shards(model_dir) == []
+
+    invalid.write_text(json.dumps(["not", "a", "mapping"]), encoding="utf-8")
+    assert local_paths._missing_index_shards(model_dir) == []
+
+    invalid.write_text(
+        json.dumps({"weight_map": {"bad": "../outside.safetensors"}}),
+        encoding="utf-8",
+    )
+    assert local_paths._missing_index_shards(model_dir) == []
+
+    invalid.write_text(
+        json.dumps({"weight_map": {"weight": "missing.safetensors"}}),
+        encoding="utf-8",
+    )
+    original_is_file = Path.is_file
+
+    def unreliable_is_file(path):
+        if path.name == "missing.safetensors":
+            raise OSError
+        return original_is_file(path)
+
+    monkeypatch.setattr(Path, "is_file", unreliable_is_file)
+    assert local_paths._missing_index_shards(model_dir) == ["missing.safetensors"]
+
+
+def test_local_diagnostics_handle_filename_causes_and_filesystem_errors(
+    monkeypatch, tmp_path
+):
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    (model_dir / "present.safetensors").write_bytes(b"weights")
+
+    relative = FileNotFoundError(2, "missing", "nested/shard.safetensors")
+    assert missing_local_model_files(str(model_dir), relative) == (
+        "nested/shard.safetensors",
+    )
+    outside = FileNotFoundError(2, "missing", str(tmp_path / "outside.safetensors"))
+    assert missing_local_model_files(str(model_dir), outside) == ()
+    assert local_model_failure_message(str(model_dir)) == (
+        "The local model directory is missing required model files."
+    )
+
+    monkeypatch.setattr(local_paths, "is_local_model_ref", lambda _value: True)
+    original_exists = Path.exists
+
+    def unreliable_exists(path):
+        if path == model_dir.absolute():
+            raise OSError
+        return original_exists(path)
+
+    monkeypatch.setattr(Path, "exists", unreliable_exists)
+    assert local_model_failure_message(str(model_dir)) == (
+        "The local model path does not exist."
+    )
+    with pytest.raises(FileNotFoundError):
+        local_paths.raise_if_missing_local_model(str(model_dir))
+
+
+def test_index_scan_oserror_is_an_empty_diagnostic(monkeypatch, tmp_path):
+    original_rglob = Path.rglob
+
+    def unreliable_rglob(path, pattern):
+        if path == tmp_path:
+            raise OSError
+        return original_rglob(path, pattern)
+
+    monkeypatch.setattr(Path, "rglob", unreliable_rglob)
+    assert local_paths._missing_index_shards(tmp_path) == []
+    assert missing_local_model_files(str(tmp_path)) == ("model.safetensors",)
+
+
+@pytest.mark.parametrize(
+    ("exc", "stream", "expected"),
+    [
+        (ValueError("404"), "out", "not found on HuggingFace"),
+        (ValueError("decoder failed"), "out", "Error loading model: decoder failed"),
+    ],
+)
+def test_cli_model_load_error_remote_messages(exc, stream, expected, capsys):
+    cli._print_model_load_error(SimpleNamespace(model="owner/model"), exc)
+    captured = capsys.readouterr()
+    assert expected in getattr(captured, stream)
+
+
+def test_cli_model_load_error_local_message_uses_typed_path(tmp_path, capsys):
+    missing = tmp_path / "missing-model"
+    cli._print_model_load_error(
+        SimpleNamespace(model="resolved", _original_alias=str(missing)),
+        FileNotFoundError(2, "missing", str(missing)),
+    )
+    captured = capsys.readouterr()
+    assert str(missing) in captured.err
+    assert captured.out == ""
+
+
+def test_cli_main_missing_local_serve_path_exits_one_and_emits_failure(
+    monkeypatch, tmp_path, capsys
+):
+    missing = tmp_path / "missing-model"
+    emitted = []
+    monkeypatch.setattr(sys, "argv", ["rapid-mlx", "serve", str(missing)])
+    monkeypatch.setattr(
+        "rapid_mlx.telemetry.model_events.emit_model_serve_failed",
+        lambda exc, *, alias_or_path: emitted.append((exc, alias_or_path)),
+    )
+
+    with pytest.raises(SystemExit) as caught:
+        cli.main()
+
+    assert caught.value.code == 1
+    assert emitted and emitted[0][1] == str(missing)
+    assert str(missing) in capsys.readouterr().err

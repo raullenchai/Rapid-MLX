@@ -207,9 +207,12 @@ def serve_error_class(exc: BaseException, *, model_ref: object = None) -> str:
         # the full explicit cause chain before consulting message text so an
         # outer relay that happens to mention memory or corruption cannot
         # overwrite the concrete Hub/file failure beneath it.
+        if any(
+            isinstance(current, (HfHubHTTPError, RepositoryNotFoundError))
+            for current in chain
+        ):
+            return "download_failed"
         for current in chain:
-            if isinstance(current, (HfHubHTTPError, RepositoryNotFoundError)):
-                return "download_failed"
             # A missing Hub shard is an availability failure; a missing path or
             # shard under a user-supplied local model is not a download failure.
             # ModuleNotFoundError is handled separately below because mlx-lm
