@@ -117,6 +117,26 @@ def test_cli_broken_runtime_stays_on_vision_and_desktop_does_not_warn(
     assert capsys.readouterr().err == ""
 
 
+def test_desktop_suppresses_resolved_text_only_degrade_warning(
+    monkeypatch, capsys
+) -> None:
+    from rapid_mlx import cli
+    from rapid_mlx.model_aliases import resolve_profile
+
+    profile = resolve_profile("qwen3.5-4b-4bit")
+    assert profile is not None
+    monkeypatch.setattr(
+        cli, "_alias_text_degrades_without_vision", lambda *_a, **_kw: True
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.runtime.optional_runtime._running_in_desktop_sidecar",
+        lambda: True,
+    )
+
+    assert cli._warn_vision_text_only_degrade(profile) is False
+    assert capsys.readouterr().err == ""
+
+
 def test_pull_is_storage_only_and_never_emits_serve_failure(monkeypatch) -> None:
     from rapid_mlx import cli
 
