@@ -5039,18 +5039,29 @@ def enforce_context_length(
     max_context = get_model_max_context(engine)
     completion = int(max_tokens) if max_tokens else 0
     requested_total = int(prompt_tokens) + max(0, completion)
-    if requested_total <= max_context:
+    operational_cap = get_config().max_prompt_tokens
+    prompt_over_operational_cap = (
+        operational_cap is not None and int(prompt_tokens) > operational_cap
+    )
+    if not prompt_over_operational_cap and requested_total <= max_context:
         return
 
     # Format the message in the OpenAI shape so SDKs can branch on the
     # ``code`` field. The exception handler in ``rapid_mlx/server.py``
     # wraps the ``detail`` payload back into the OpenAI envelope.
-    detail = (
-        f"This model's maximum context length is {max_context} tokens. "
-        f"However, you requested {requested_total} tokens "
-        f"({int(prompt_tokens)} prompt + {max(0, completion)} completion). "
-        "Please reduce the length of the messages or completion."
-    )
+    if prompt_over_operational_cap:
+        detail = (
+            f"This server's maximum admitted prompt length is "
+            f"{operational_cap} tokens. However, your prompt contains "
+            f"{int(prompt_tokens)} tokens. Please reduce the length of the prompt."
+        )
+    else:
+        detail = (
+            f"This model's maximum context length is {max_context} tokens. "
+            f"However, you requested {requested_total} tokens "
+            f"({int(prompt_tokens)} prompt + {max(0, completion)} completion). "
+            "Please reduce the length of the messages or completion."
+        )
     from rapid_mlx.telemetry.inference import (
         emit_capability_rejected,
         model_type_token,
@@ -5216,7 +5227,46 @@ def enforce_context_length_for_messages(
     applies regardless of which compatibility surface the client uses.
     """
     if getattr(engine, "is_mllm", False):
-        return None
+        if get_config().max_prompt_tokens is None:
+            return None
+        # MLLM engines deliberately reject ``build_prompt`` because media
+        # preparation belongs to their processor. The processor's tokenizer
+        # can still render and count the text/tool prompt without touching
+        # Metal, which is exactly what this admission gate needs.
+        tokenizer = getattr(engine, "tokenizer", None) or getattr(
+            engine, "_tokenizer", None
+        )
+        apply_template = getattr(tokenizer, "apply_chat_template", None)
+        if not callable(apply_template):
+            return None
+        try:
+            template_kwargs = dict(chat_template_kwargs or {})
+            if enable_thinking is not None:
+                template_kwargs.setdefault("enable_thinking", enable_thinking)
+            prompt_ids = apply_template(
+                messages,
+                tools=tools,
+                tokenize=True,
+                add_generation_prompt=True,
+                **template_kwargs,
+            )
+            if isinstance(prompt_ids, dict):
+                prompt_ids = prompt_ids.get("input_ids")
+            prompt_tokens = len(prompt_ids) if prompt_ids is not None else 0
+        except Exception:
+            logger.debug("MLLM prompt admission tokenization failed", exc_info=True)
+            return None
+        if prompt_tokens <= 0:
+            return None
+        enforce_context_length(
+            engine,
+            prompt_tokens,
+            max_tokens=max_tokens,
+            telemetry_model=telemetry_model,
+            caller_agent=caller_agent,
+            caller_client=caller_client,
+        )
+        return prompt_tokens
     build_prompt = getattr(engine, "build_prompt", None)
     if build_prompt is None:
         return None

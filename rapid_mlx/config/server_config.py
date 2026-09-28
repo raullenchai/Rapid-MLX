@@ -104,6 +104,11 @@ class ServerConfig:
     default_presence_penalty: float | None = None
     default_frequency_penalty: float | None = None
 
+    # Optional operational ceiling for prompt admission, independent of the
+    # checkpoint's positional limit. Pool operators use this to bound prefill
+    # memory and first-token latency. ``None`` keeps model-derived behavior.
+    max_prompt_tokens: int | None = None
+
     # --- Sampling overlay (layers 3 & 4 of the resolve chain) ---
     # Resolve order for every sampling param:
     #   1. request body

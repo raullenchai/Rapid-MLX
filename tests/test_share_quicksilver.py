@@ -1555,6 +1555,50 @@ def test_run_share_first_run_registers_caches_and_prints_keyless_banner(capsys):
     serve.terminate.assert_called_once()
 
 
+def test_glm_flash_banner_prints_prompt_envelope(capsys):
+    tunnel = _fake_tunnel()
+    serve, ctrl_c = _patched_run_env(None)
+    ctxs = _run_patches(serve, lambda **kw: tunnel, ctrl_c) + (
+        patch.object(
+            qs,
+            "_open",
+            lambda req, timeout=None: _FakeResp(
+                _register_payload(model="glm-5.3-flash")
+            ),
+        ),
+        patch.object(qs, "_Heartbeat", return_value=_fake_heartbeat_class()),
+    )
+    with _enter(*ctxs):
+        qs.run_share(_make_args(model="glm-5.3-flash", provider_key=PROVIDER_KEY))
+
+    assert "max prompt 16384 tokens" in capsys.readouterr().out
+
+
+def test_glm_flash_banner_prints_explicit_prompt_override(capsys):
+    tunnel = _fake_tunnel()
+    serve, ctrl_c = _patched_run_env(None)
+    ctxs = _run_patches(serve, lambda **kw: tunnel, ctrl_c) + (
+        patch.object(
+            qs,
+            "_open",
+            lambda req, timeout=None: _FakeResp(
+                _register_payload(model="glm-5.3-flash")
+            ),
+        ),
+        patch.object(qs, "_Heartbeat", return_value=_fake_heartbeat_class()),
+    )
+    with _enter(*ctxs):
+        qs.run_share(
+            _make_args(
+                model="glm-5.3-flash",
+                provider_key=PROVIDER_KEY,
+                _passthrough=["--max-prompt-tokens=8192"],
+            )
+        )
+
+    assert "max prompt 8192 tokens" in capsys.readouterr().out
+
+
 def test_run_share_serve_uses_served_model_name_catalog_id():
     """§5.4 + readiness: the pool addresses the node by its catalog id while the
     serve alias differs, so serve is spawned with --served-model-name=<catalog
@@ -2997,6 +3041,8 @@ def test_glm_flash_never_gets_no_thinking_injected():
         "2",
         "--default-reasoning-effort",
         "low",
+        "--max-prompt-tokens",
+        "16384",
         "--served-model-name",
         "glm-5.3-flash",
     ]
@@ -3057,6 +3103,22 @@ def test_glm_flash_default_effort_last_occurrence_wins_for_the_guard():
 def test_other_catalogs_get_no_default_reasoning_effort():
     extra = _run_share_capture_extra(model="qwen3.6-35b")
     assert "--default-reasoning-effort" not in extra
+
+
+def test_glm_flash_gets_safe_prompt_cap_and_explicit_override_wins():
+    default = _run_share_capture_extra(model="glm-5.3-flash")
+    assert default[default.index("--max-prompt-tokens") + 1] == "16384"
+
+    explicit = _run_share_capture_extra(
+        model="glm-5.3-flash", _passthrough=["--max-prompt-tokens=8192"]
+    )
+    assert "--max-prompt-tokens" not in explicit
+    assert explicit.count("--max-prompt-tokens=8192") == 1
+
+
+def test_other_catalogs_get_no_prompt_cap():
+    extra = _run_share_capture_extra(model="qwen3.6-35b")
+    assert not any(t.startswith("--max-prompt-tokens") for t in extra)
 
 
 def test_glm_flash_explicit_no_thinking_passthrough_is_rejected(capsys):

@@ -1246,6 +1246,7 @@ def _serve_audio_mode(args, entry) -> None:
     # added ``--api-key`` to their ``rapid-mlx serve kokoro`` command.
     server._api_key = server._resolve_api_key(args.api_key)
     server._default_timeout = args.timeout
+    server._max_prompt_tokens = getattr(args, "max_prompt_tokens", None)
 
     _max_body_arg = getattr(args, "max_request_bytes", None)
     if _max_body_arg is not None:
@@ -5531,6 +5532,7 @@ def serve_command(args):
     # a deprecation warning when argv is used) lands in one place.
     server._api_key = server._resolve_api_key(args.api_key)
     server._default_timeout = args.timeout
+    server._max_prompt_tokens = getattr(args, "max_prompt_tokens", None)
 
     # Per-request body-size cap. Resolution order:
     #   1. ``--max-request-bytes`` (explicit CLI flag, including 0 to disable)
@@ -14034,6 +14036,17 @@ Examples:
             "8388608). Requests over this cap are rejected with HTTP 413 "
             "before JSON parsing or tokenization runs. 0 disables the cap. "
             "Falls back to the RAPID_MLX_MAX_REQUEST_BYTES env var if unset."
+        ),
+    )
+    serve_parser.add_argument(
+        "--max-prompt-tokens",
+        type=positive_int,
+        default=None,
+        metavar="TOKENS",
+        help=(
+            "Operational prompt-token admission ceiling. Requests above this "
+            "limit are rejected with HTTP 400 context_length_exceeded before "
+            "prefill, even when the model supports a larger context window."
         ),
     )
     serve_parser.add_argument(
