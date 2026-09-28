@@ -6,7 +6,9 @@ full license texts are reproduced in the linked repositories and — so
 the notices travel with the binary as BSD/MIT ask — inside the shipped
 app itself: the Swift packages linked into the executable under
 `Contents/Resources/Licenses/`, and the bundled Python payload under
-`Contents/Resources/rapid-mlx/site-packages/*.dist-info/licenses/`.
+`Contents/Resources/rapid-mlx/site-packages/*.dist-info/licenses/` or
+`Contents/Resources/rapid-mlx/licenses/` when a wheel does not carry its own
+notice.
 `scripts/build.sh` stages the Swift set from each package's resolved
 checkout and fails the build if any linked package has no license file,
 so this document and the shipped bundle cannot silently disagree (#1596).
@@ -174,6 +176,16 @@ full. The ranges below are the **root manifest's**; the sidecar build pins
 | websockets | `>=12.0` | BSD-3-Clause | https://github.com/python-websockets/websockets |
 | openai-harmony | `>=0.0.8` | Apache-2.0 | https://github.com/openai/harmony |
 | llguidance | `>=1.7.6` | MIT | https://github.com/microsoft/llguidance |
+| pyobjc-core | `==12.2.2` (Darwin `[computer-use]`) | MIT | https://github.com/ronaldoussoren/pyobjc |
+| pyobjc-framework-ApplicationServices | `==12.2.2` (Darwin `[computer-use]`) | MIT | https://github.com/ronaldoussoren/pyobjc |
+| pyobjc-framework-Cocoa | `==12.2.2` (resolved framework closure) | MIT | https://github.com/ronaldoussoren/pyobjc |
+| pyobjc-framework-CoreText | `==12.2.2` (resolved framework closure) | MIT | https://github.com/ronaldoussoren/pyobjc |
+| pyobjc-framework-Quartz | `==12.2.2` (Darwin `[computer-use]`) | MIT | https://github.com/ronaldoussoren/pyobjc |
+
+The five PyObjC distributions share the project MIT notice. Because the core
+and ApplicationServices wheels do not carry a standalone license file, the
+complete copyright and permission notice is staged explicitly at
+`Contents/Resources/rapid-mlx/licenses/PyObjC-MIT.txt`.
 
 Additionally installed by name with `--no-deps`, providing the bounded Desktop
 vision, image, and video runtime paths without their unused heavyweight

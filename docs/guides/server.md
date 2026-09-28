@@ -157,6 +157,17 @@ are marked; multimodal and MCP surfaces link to their own guides.
 
 ### Custom computer-use clients
 
+The Desktop sidecar includes the native macOS framework bindings. Standalone
+Python installs that use local macOS Computer Use should install the matching
+extra:
+
+```bash
+pip install 'rapid-mlx[computer-use]'
+```
+
+The extra is Darwin-only. Remote or Linux servers remain import-safe and report
+the local desktop capability as unavailable.
+
 A client can target one discovered window by taking its opaque `window_id` from
 `GET /v1/cua/apps/{app}/windows` and including it in the run request:
 
