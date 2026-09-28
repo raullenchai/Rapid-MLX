@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+from itertools import product
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,21 @@ REPO = Path(__file__).resolve().parents[1]
 INSTALL_SH = REPO / "install.sh"
 RECOMMENDATIONS = REPO / "rapid_mlx/model_recommendations.json"
 README = REPO / "README.md"
+
+
+def _starter_selection_cases() -> list[tuple[int, tuple[str, ...]]]:
+    payload = json.loads(RECOMMENDATIONS.read_text())
+    ram_tiers = [tier["minimum_memory_mib"] // 1024 for tier in payload["tiers"]]
+    aliases = tuple(
+        dict.fromkeys(
+            pick["alias"] for tier in payload["tiers"] for pick in tier["picks"]
+        )
+    )
+    cached_subsets = [
+        tuple(alias for bit, alias in enumerate(aliases) if mask & (1 << bit))
+        for mask in range(1 << len(aliases))
+    ]
+    return list(product(ram_tiers, cached_subsets))
 
 
 def _select_installer_starter(ram_gb: int, cached: tuple[str, ...] = ()) -> str:
@@ -116,20 +132,10 @@ def test_cached_choice_considers_both_picks_from_fitting_tiers(
     assert _select_installer_starter(ram_gb, cached) == expected
 
 
-@pytest.mark.parametrize(
-    ("ram_gb", "cached"),
-    [
-        (8, ()),
-        (8, ("lfm2.5-2.6b-4bit",)),
-        (16, ()),
-        (16, ("lfm2.5-1b-4bit",)),
-        (18, ("lfm2.5-2.6b-4bit",)),
-        (24, ("qwen3.5-9b-4bit", "qwen3.5-4b-4bit")),
-        (32, ("qwen3.8-27b-4bit",)),
-        (48, ("qwen3.6-35b-4bit", "qwen3.8-27b-4bit")),
-    ],
-)
-def test_installer_and_python_starter_selection_agree(ram_gb, cached):
+@pytest.mark.parametrize(("ram_gb", "cached"), _starter_selection_cases())
+def test_installer_and_python_starter_selection_agree_for_every_cached_subset(
+    ram_gb, cached
+):
     """Report cross-language drift instead of silently choosing a side."""
     from rapid_mlx.recommendations import select_starter_model
 
