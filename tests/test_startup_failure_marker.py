@@ -11,16 +11,12 @@ from collections import namedtuple
 
 import pytest
 
+from rapid_mlx.runtime.optional_runtime import optional_extra_install_hint
+
 MARKER_PREFIX = "RAPID-MLX-STARTUP-FAILURE:"
 VISION_PYTHON = shlex.quote(sys.executable)
-VISION_INSTALL_HINT = (
-    "Install the validated vision stack into this runtime with:\n"
-    f"    {VISION_PYTHON} -m pip install --upgrade --force-reinstall "
-    "'rapid-mlx[vision]'\n"
-    "or repair mlx-vlm directly (pinned to Rapid-MLX's validated set):\n"
-    f"    {VISION_PYTHON} -m pip install --upgrade --force-reinstall "
-    "'mlx-vlm==0.7.2'"
-)
+VISION_INSTALL_HINT = optional_extra_install_hint("vision")
+BROKEN_VISION_INSTALL_HINT = optional_extra_install_hint("vision", status="broken")
 
 
 def _run_guard(source: str) -> subprocess.CompletedProcess[str]:
@@ -62,7 +58,7 @@ def test_video_extra_guard_emits_one_stderr_marker_without_changing_cli_error() 
     assert result.returncode == 2
     assert result.stdout == ""
     assert result.stderr.startswith(human)
-    assert "pip install 'rapid-mlx[video]'" in result.stderr
+    assert "pip install 'rapid-mlx[video]==" in result.stderr
     assert result.stderr.endswith(marker + "\n")
     assert result.stderr.count(marker) == 1
 
@@ -82,7 +78,7 @@ def test_video_extra_guard_emits_one_stderr_marker_without_changing_cli_error() 
                 lane.require_image_runtime_or_exit("flux2-klein-4b")
             """,
             "\n  Error: image generation requires the `rapid-mlx[image]` "
-            "Python extra (`pip install 'rapid-mlx[image]'`).\n\n",
+            "Python extra. " + optional_extra_install_hint("image") + "\n\n",
             f"{MARKER_PREFIX} runtime_extra_missing extra=image",
         ),
         (
@@ -95,7 +91,8 @@ def test_video_extra_guard_emits_one_stderr_marker_without_changing_cli_error() 
             """,
             "error: model 'kokoro' is an audio alias and requires the optional "
             "`mlx-audio` dependency (shipped with the [audio] extra).\n"
-            "Install with: pip install 'rapid-mlx[audio]'\n",
+            + optional_extra_install_hint("audio")
+            + "\n",
             f"{MARKER_PREFIX} runtime_extra_missing extra=audio",
         ),
         (
@@ -206,7 +203,7 @@ def test_sibling_extra_guards_emit_closed_marker_once(
             "but the vision runtime cannot load.\n"
             "`mlx-vlm` is installed but its dependency 'PIL' is not, so the "
             "vision runtime cannot load. "
-            + VISION_INSTALL_HINT
+            + BROKEN_VISION_INSTALL_HINT
             + "\nAlternatively, repair just the missing dependency in this "
             "runtime:\n"
             f"    {VISION_PYTHON} -m pip install pillow\n",

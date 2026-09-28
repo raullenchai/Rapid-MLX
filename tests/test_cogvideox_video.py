@@ -211,6 +211,8 @@ def test_cogvideox_runtime_guard_checks_transitive_modules(monkeypatch, capsys) 
     error = exc.value.format_user_message()
     assert "mlx-arsenal" in error
     assert "Pillow" in error
+    assert exc.value.status == "broken"
+    assert "--upgrade --force-reinstall" in exc.value.install_hint
 
 
 @pytest.mark.asyncio

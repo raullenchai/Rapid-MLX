@@ -198,10 +198,16 @@ def test_tty_timeout_defaults_no_without_reading_stdin(monkeypatch) -> None:
         lambda *_args, **_kwargs: pytest.fail("pip must not run"),
     )
 
+    outcomes: list[str] = []
+    monkeypatch.setattr(
+        "rapid_mlx.telemetry.model_events.emit_model_serve_failed",
+        lambda *_args, **kwargs: outcomes.append(kwargs["extra_recovery"]),
+    )
     with pytest.raises(SystemExit, match="2"):
         optional_runtime.handle_optional_runtime_missing(_failure(extra="video"))
 
     assert "Install rapid-mlx[video] now? [y/N] \n" in stderr.getvalue()
+    assert outcomes == ["no_answer"]
 
 
 def test_posix_partial_response_at_deadline_defaults_no(monkeypatch) -> None:
@@ -218,6 +224,23 @@ def test_posix_eof_defaults_no(monkeypatch) -> None:
     monkeypatch.setattr(optional_runtime.os, "read", lambda _fd, _size: b"")
 
     assert optional_runtime._read_posix_prompt_response(_TTY(), 0.1) is None
+
+
+def test_posix_prompt_keyboard_interrupt_returns_interrupted(monkeypatch) -> None:
+    stderr = io.StringIO()
+    monkeypatch.setattr(sys, "stderr", stderr)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(
+        optional_runtime,
+        "_read_posix_prompt_response",
+        lambda *_args: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+
+    assert (
+        optional_runtime._prompt_to_install("vision")
+        is optional_runtime.PromptResult.INTERRUPTED
+    )
+    assert stderr.getvalue() == ("Install rapid-mlx[vision] now? (~322 MB) [y/N] \n")
 
 
 def test_closed_stdin_exception_defaults_no(monkeypatch) -> None:
@@ -247,7 +270,10 @@ def test_windows_console_yes_uses_polled_characters(monkeypatch) -> None:
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(optional_runtime, "_INSTALL_PROMPT_TIMEOUT_SECONDS", 0.01)
 
-    assert optional_runtime._prompt_to_install("vision") is True
+    assert (
+        optional_runtime._prompt_to_install("vision")
+        is optional_runtime.PromptResult.ACCEPTED
+    )
 
 
 def test_windows_console_timeout_never_reads_fake_stdin(monkeypatch) -> None:
@@ -265,7 +291,10 @@ def test_windows_console_timeout_never_reads_fake_stdin(monkeypatch) -> None:
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(optional_runtime, "_INSTALL_PROMPT_TIMEOUT_SECONDS", 0.01)
 
-    assert optional_runtime._prompt_to_install("vision") is False
+    assert (
+        optional_runtime._prompt_to_install("vision")
+        is optional_runtime.PromptResult.NO_ANSWER
+    )
 
 
 def test_windows_console_exception_defaults_no(monkeypatch) -> None:
@@ -279,7 +308,10 @@ def test_windows_console_exception_defaults_no(monkeypatch) -> None:
     )
     monkeypatch.setattr(sys, "platform", "win32")
 
-    assert optional_runtime._prompt_to_install("vision") is False
+    assert (
+        optional_runtime._prompt_to_install("vision")
+        is optional_runtime.PromptResult.NO_ANSWER
+    )
 
 
 def test_non_tty_without_yes_prints_automatic_install_guidance(monkeypatch) -> None:
@@ -438,7 +470,7 @@ def test_real_tty_timeout_does_not_consume_later_prompt_input() -> None:
         """
     )
     proc, master = _pty_child(script)
-    before = _read_until(master, b"TIMEOUT False")
+    before = _read_until(master, b"TIMEOUT PromptResult.NO_ANSWER")
     os.write(master, b"FIRST\nSECOND\n")
     after = _read_until(master, b"LATER_GOT=")
     proc.wait(timeout=3)
@@ -458,7 +490,7 @@ def test_real_tty_process_exits_cleanly_after_timeout() -> None:
         """
     )
     proc, master = _pty_child(script)
-    output = _read_until(master, b"RESULT False")
+    output = _read_until(master, b"RESULT PromptResult.NO_ANSWER")
     proc.wait(timeout=3)
     output += _read_until(master, b"never", timeout=0.2)
     os.close(master)
@@ -480,7 +512,7 @@ def test_real_tty_stdin_closes_cleanly_after_timeout() -> None:
         """
     )
     proc, master = _pty_child(script)
-    output = _read_until(master, b"RESULT False")
+    output = _read_until(master, b"RESULT PromptResult.NO_ANSWER")
     output += _read_until(master, b"CLOSED", timeout=0.2)
     proc.wait(timeout=3)
     os.close(master)
@@ -513,7 +545,7 @@ def test_raw_tty_one_byte_cannot_bypass_prompt_deadline() -> None:
     os.close(master)
 
     assert b"RAW_READY" in before
-    assert b"RESULT=False" in after, (before + after).decode(errors="replace")
+    assert b"PromptResult.NO_ANSWER" in after, (before + after).decode(errors="replace")
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="requires POSIX pty")
@@ -538,7 +570,7 @@ def test_canonical_partial_line_ctrl_d_defaults_no_at_deadline() -> None:
     proc.wait(timeout=3)
     os.close(master)
 
-    assert b"RESULT=False" in after, (before + after).decode(errors="replace")
+    assert b"PromptResult.NO_ANSWER" in after, (before + after).decode(errors="replace")
 
 
 def test_all_optional_runtime_handler_call_sites_forward_assume_yes() -> None:
@@ -630,3 +662,200 @@ def test_serve_yes_flag_and_help() -> None:
     assert "assume yes for prompts such as installing a missing optional extra" in (
         " ".join(help_text.split())
     )
+
+
+@pytest.mark.parametrize(
+    ("method", "expected"),
+    [
+        (
+            "pip",
+            "/tmp/runtime/bin/python -m pip install 'rapid-mlx[vision]==1.2.3'",
+        ),
+        (
+            "install_sh",
+            "/tmp/runtime/bin/python -m pip install 'rapid-mlx[vision]==1.2.3'",
+        ),
+        ("uv", "uv tool install --force 'rapid-mlx[vision]==1.2.3'"),
+        ("pipx", "pipx install --force 'rapid-mlx[vision]==1.2.3'"),
+    ],
+)
+def test_repair_command_matches_detected_install_method(
+    monkeypatch, method, expected
+) -> None:
+    monkeypatch.setattr(sys, "executable", "/tmp/runtime/bin/python")
+    monkeypatch.setattr(
+        "rapid_mlx._version_check.detect_install_method",
+        lambda: SimpleNamespace(method=method),
+    )
+
+    assert (
+        optional_runtime.optional_extra_repair_command("vision", version="1.2.3")
+        == expected
+    )
+
+
+def test_brew_repair_is_honest_and_switches_to_isolated_uv(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "rapid_mlx._version_check.detect_install_method",
+        lambda: SimpleNamespace(method="brew"),
+    )
+
+    command = optional_runtime.optional_extra_repair_command("audio", version="1.2.3")
+
+    assert "cannot add Python optional extras in place" in command
+    assert (
+        "brew uninstall rapid-mlx && uv tool install 'rapid-mlx[audio]==1.2.3'"
+    ) in command
+
+
+def test_global_pipx_repair_preserves_global_scope(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "rapid_mlx._version_check.detect_install_method",
+        lambda: SimpleNamespace(
+            method="unknown",
+            upgrade_command="sudo pipx upgrade --global rapid-mlx",
+        ),
+    )
+
+    assert (
+        optional_runtime.optional_extra_repair_command("vision", version="1.2.3")
+        == "sudo pipx install --global --force 'rapid-mlx[vision]==1.2.3'"
+    )
+
+
+def test_http_visible_repair_hides_interpreter_path(monkeypatch) -> None:
+    monkeypatch.setattr(sys, "executable", "/Users/alice/private/bin/python")
+    monkeypatch.setattr(
+        "rapid_mlx._version_check.detect_install_method",
+        lambda: SimpleNamespace(method="pip"),
+    )
+
+    command = optional_runtime.optional_extra_repair_command(
+        "vision", version="1.2.3", include_paths=False
+    )
+
+    assert command == "python -m pip install 'rapid-mlx[vision]==1.2.3'"
+    assert "/Users/alice" not in command
+
+
+@pytest.mark.parametrize(
+    ("method", "stdin", "assume_yes", "status", "expected"),
+    [
+        ("pip", _TTY("y\n"), False, "absent", "accepted"),
+        ("pip", _TTY("n\n"), False, "absent", "declined"),
+        ("pip", _NotTTY(), False, "absent", "non_interactive"),
+        ("pip", _NotTTY(), True, "absent", "assume_yes"),
+        ("uv", _TTY("y\n"), False, "absent", "no_installer"),
+        ("pipx", _TTY("y\n"), False, "absent", "no_installer"),
+        ("pip", _TTY("y\n"), False, "broken", "broken_runtime"),
+    ],
+)
+def test_recovery_outcome_emits_before_install(
+    monkeypatch, method, stdin, assume_yes, status, expected
+) -> None:
+    order = _isolate_handler(monkeypatch, stdin=stdin, stderr=_TTY())
+    monkeypatch.setattr(
+        "rapid_mlx._version_check.detect_install_method",
+        lambda: SimpleNamespace(method=method),
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.telemetry.model_events.emit_model_serve_failed",
+        lambda *_args, **kwargs: order.append(("failure", kwargs)),
+    )
+    monkeypatch.setattr(
+        optional_runtime,
+        "_install_optional_extra",
+        lambda _exc: order.append("install"),
+    )
+
+    with pytest.raises(SystemExit, match="2"):
+        optional_runtime.handle_optional_runtime_missing(
+            _failure(status=status), assume_yes=assume_yes
+        )
+
+    failure_index = next(
+        i
+        for i, item in enumerate(order)
+        if isinstance(item, tuple) and item[0] == "failure"
+    )
+    assert order[failure_index][1]["extra_recovery"] == expected
+    if expected in {"accepted", "assume_yes"}:
+        assert order[failure_index + 1] == "install"
+    else:
+        assert "install" not in order
+
+
+def test_install_method_detection_failure_disables_automatic_install(
+    monkeypatch,
+) -> None:
+    stderr = _TTY()
+    order = _isolate_handler(monkeypatch, stdin=_TTY("y\n"), stderr=stderr)
+    outcomes: list[str] = []
+    monkeypatch.setattr(
+        "rapid_mlx._version_check.detect_install_method",
+        lambda: (_ for _ in ()).throw(RuntimeError("detection failed")),
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.telemetry.model_events.emit_model_serve_failed",
+        lambda *_args, **kwargs: outcomes.append(kwargs["extra_recovery"]),
+    )
+    monkeypatch.setattr(
+        optional_runtime,
+        "_prompt_to_install",
+        lambda _extra: pytest.fail("detection failure must not prompt"),
+    )
+    monkeypatch.setattr(
+        optional_runtime,
+        "_install_optional_extra",
+        lambda _exc: pytest.fail("detection failure must not install"),
+    )
+
+    with pytest.raises(SystemExit, match="2"):
+        optional_runtime.handle_optional_runtime_missing(_failure(), assume_yes=True)
+
+    assert "pip install 'rapid-mlx[vision]'" in stderr.getvalue()
+    assert outcomes == ["no_installer"]
+
+
+def test_keyboard_interrupt_emits_once_then_preserves_interrupt(monkeypatch) -> None:
+    order = _isolate_handler(monkeypatch, stdin=_TTY(), stderr=_TTY())
+    monkeypatch.setattr(
+        "rapid_mlx._version_check.detect_install_method",
+        lambda: SimpleNamespace(method="pip"),
+    )
+    monkeypatch.setattr(
+        optional_runtime,
+        "_prompt_to_install",
+        lambda _extra: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.telemetry.model_events.emit_model_serve_failed",
+        lambda *_args, **kwargs: order.append(kwargs),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        optional_runtime.handle_optional_runtime_missing(_failure())
+
+    failures = [item for item in order if isinstance(item, dict)]
+    assert len(failures) == 1
+    assert failures[0]["extra_recovery"] == "interrupted"
+
+
+def test_broken_pip_runtime_uses_forced_reinstall_but_absent_does_not(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(sys, "executable", "/tmp/runtime/bin/python")
+    monkeypatch.setattr(
+        "rapid_mlx._version_check.detect_install_method",
+        lambda: SimpleNamespace(method="pip"),
+    )
+
+    broken = optional_runtime.optional_extra_repair_command(
+        "vision", version="1.2.3", status="broken"
+    )
+    absent = optional_runtime.optional_extra_repair_command(
+        "vision", version="1.2.3", status="absent"
+    )
+
+    assert "--upgrade --force-reinstall" in broken
+    assert "--force-reinstall" not in absent

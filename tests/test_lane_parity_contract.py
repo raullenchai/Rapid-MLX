@@ -318,6 +318,13 @@ def test_lane_selection_precedence_and_runtime_matrix(
     monkeypatch.setattr(api_utils, "mllm_backbone_cache_mode", lambda _name: cache_mode)
     monkeypatch.setattr(api_utils, "physical_ram_gb", lambda: memory_gb)
     monkeypatch.setattr(api_utils, "version", lambda _name: runtime_version)
+    from rapid_mlx.models import mllm as mllm_mod
+
+    monkeypatch.setattr(
+        mllm_mod,
+        "vision_runtime_status",
+        lambda: (mllm_mod.VisionRuntimeStatus.OK, None),
+    )
     monkeypatch.setattr(
         api_utils,
         "mllm_arch_unsupported_but_text_vendored",

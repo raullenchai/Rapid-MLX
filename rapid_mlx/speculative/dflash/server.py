@@ -2402,11 +2402,11 @@ def run_dflash_server(
     not pointing it at a MoE model. Documented in CALLERS.md.
     """
     if not have_runtime():
+        from rapid_mlx.runtime.optional_runtime import optional_extra_install_hint
+
         raise RuntimeError(
-            "DFlash server requires mlx-vlm 0.5.0+ — install with "
-            "pip install 'rapid-mlx[dflash]'. Homebrew installs the "
-            "text-only package; switch to an isolated uv tool install "
-            "for optional extras."
+            "DFlash server requires mlx-vlm 0.5.0+. "
+            + optional_extra_install_hint("dflash")
         )
 
     from .eligibility import (

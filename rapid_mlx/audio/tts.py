@@ -1086,10 +1086,12 @@ class TTSEngine:
         try:
             import soundfile as sf
         except ImportError as e:  # pragma: no cover — covered by extras
+            from rapid_mlx.runtime.optional_runtime import optional_extra_install_hint
+
             raise UnsupportedAudioFormatError(
                 requested=fmt,
                 supported=["wav", "pcm"],
-                hint="Install with: pip install 'rapid-mlx[audio]'",
+                hint=optional_extra_install_hint("audio", include_paths=False),
             ) from e
 
         # Map our OpenAI-style ``response_format`` values onto the

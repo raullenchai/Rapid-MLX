@@ -29,7 +29,7 @@ def test_vlm_extra_install_hint_is_pinned_and_conflict_free():
     # Primary path stays the extra.
     assert "rapid-mlx[vision]" in VLM_EXTRA_INSTALL_HINT
     # Bare fallback is pinned to the transformers-compatible version.
-    assert "mlx-vlm==0.7.2" in VLM_EXTRA_INSTALL_HINT
+    assert "rapid-mlx[vision]==" in VLM_EXTRA_INSTALL_HINT
     # And the unpinned form that produces the transformers conflict is gone.
     assert "mlx-vlm>=0.6.3" not in VLM_EXTRA_INSTALL_HINT
 
@@ -50,7 +50,7 @@ def test_boot_guard_absent_hint_names_pinned_install(monkeypatch, capsys):
 
     err = caught.value.format_user_message()
     assert "rapid-mlx[vision]" in err
-    assert "mlx-vlm==0.7.2" in err
+    assert "rapid-mlx[vision]==" in err
     assert "mlx-vlm>=0.6.3" not in err
 
 
@@ -100,7 +100,7 @@ def test_diffusion_lane_import_error_hint_is_pinned(monkeypatch):
     msg = str(exc_info.value)
     assert eng._load_error is not None
     assert "rapid-mlx[vision]" in msg
-    assert "mlx-vlm==0.7.2" in msg
+    assert "rapid-mlx[vision]==" in msg
     assert "mlx-vlm>=0.6.3" not in msg
     # The conflict-producing forced-upgrade flag is gone.
     assert "-U 'mlx-vlm" not in msg

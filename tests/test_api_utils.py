@@ -980,6 +980,13 @@ class TestMllmBackboneIsHybrid:
         # takes its supported text fallback on every CI machine.
         monkeypatch.setattr(utils_mod, "physical_ram_gb", lambda: 256.0)
         monkeypatch.setattr(utils_mod, "mllm_hybrid_runtime_supported", lambda: False)
+        from rapid_mlx.models import mllm as mllm_mod
+
+        monkeypatch.setattr(
+            mllm_mod,
+            "vision_runtime_status",
+            lambda: (mllm_mod.VisionRuntimeStatus.OK, None),
+        )
 
         routing_config_inputs: list[str] = []
         real_ensure_routing_config = server._ensure_routing_config
@@ -1182,6 +1189,7 @@ class TestResolveServingLane:
         self, monkeypatch, *, is_mllm, hybrid, hybrid_runtime_supported=False
     ):
         from rapid_mlx.api import utils as utils_mod
+        from rapid_mlx.models import mllm as mllm_mod
 
         monkeypatch.setattr(utils_mod, "is_mllm_model", lambda n: is_mllm)
         monkeypatch.setattr(
@@ -1195,6 +1203,11 @@ class TestResolveServingLane:
             lambda: hybrid_runtime_supported,
         )
         monkeypatch.setattr(utils_mod, "physical_ram_gb", lambda: 64.0)
+        monkeypatch.setattr(
+            mllm_mod,
+            "vision_runtime_status",
+            lambda: (mllm_mod.VisionRuntimeStatus.OK, None),
+        )
 
     def test_hybrid_vlm_auto_downgrades_to_text(self, monkeypatch):
         from rapid_mlx.api.utils import resolve_serving_lane

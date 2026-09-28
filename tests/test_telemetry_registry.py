@@ -158,6 +158,39 @@ def test_model_serve_failed_rejects_unknown_error_class():
     )
 
 
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        "accepted",
+        "declined",
+        "no_answer",
+        "interrupted",
+        "non_interactive",
+        "assume_yes",
+        "no_installer",
+        "managed_runtime",
+        "broken_runtime",
+    ],
+)
+def test_model_serve_failed_accepts_closed_extra_recovery(outcome):
+    props = {
+        "error_class": "missing_extra",
+        "extra": "vision",
+        "extra_recovery": outcome,
+    }
+    assert reg.validate("model_serve_failed", props) == props
+
+
+def test_extra_recovery_is_rejected_outside_missing_extra():
+    assert (
+        reg.validate(
+            "model_serve_failed",
+            {"error_class": "other", "extra_recovery": "declined"},
+        )
+        is None
+    )
+
+
 def test_missing_extra_property_is_closed_and_conditional():
     assert reg.validate(
         "model_serve_failed",

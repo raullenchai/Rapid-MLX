@@ -407,7 +407,7 @@ struct ImageInputAvailability: Equatable, Sendable {
             // carries the same floor. Only a different vision-capable model
             // is a remedy the user can actually apply.
             return .visionMemoryInsufficient
-        case "vision_hybrid_runtime_unsupported":
+        case "vision_hybrid_runtime_unsupported", "vision_runtime_absent":
             return .visionRuntimeUnsupported
         case "vision_architecture_unavailable", "vision_hybrid_cache_unsupported",
              "vision_weights_unavailable":

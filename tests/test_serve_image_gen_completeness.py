@@ -77,6 +77,10 @@ def _drive_serve(monkeypatch, *, alias=_ALIAS, download_hook=None):
     monkeypatch.setattr(cli, "_check_disk_space", lambda *_a, **_kw: None)
     monkeypatch.setattr(cli, "_check_memory_capacity", lambda *_a, **_kw: None)
     monkeypatch.setattr(cli, "_check_alias_min_memory", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        "rapid_mlx.runtime.image_lane.require_image_runtime_or_exit",
+        lambda _name: None,
+    )
     monkeypatch.setattr(cli, "_resolve_audio_model_for_serve", lambda _n: None)
     monkeypatch.setattr("rapid_mlx.api.utils.is_mllm_model", lambda _n: False)
     monkeypatch.setattr("rapid_mlx.audio.probe.is_audio_model_alias", lambda _n: False)

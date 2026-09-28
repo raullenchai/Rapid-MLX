@@ -101,7 +101,7 @@ class TestEmbeddingsExtraProbe:
         err = capsys.readouterr().err
         assert "--embedding-model" in err
         assert "[embeddings]" in err
-        assert "pip install 'rapid-mlx[embeddings]'" in err
+        assert "pip install 'rapid-mlx[embeddings]==" in err
 
     def test_require_or_exit_noop_when_installed(self):
         """Sanity: when the extra IS installed the CLI helper returns
@@ -340,7 +340,7 @@ class TestEmbeddingsRouteGuard:
         # hint verbatim so the operator can copy-paste the fix.
         assert "No embedding model loaded" in msg
         assert "--embedding-model" in msg
-        assert "pip install 'rapid-mlx[embeddings]'" in msg
+        assert "pip install 'rapid-mlx[embeddings]==" in msg
         # The engine must NOT have been touched — guard fires before
         # any model load (no silent chat-model fallback).
         engine.embed.assert_not_called()

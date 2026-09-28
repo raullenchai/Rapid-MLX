@@ -3496,11 +3496,13 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
         # path the probe doesn't cover (or the cached verdict is stale
         # in some edge case), still surface a meaningful 503 instead
         # of leaking a stack trace through the catch-all 500.
+        from rapid_mlx.runtime.optional_runtime import optional_extra_install_hint
+
         raise HTTPException(
             status_code=503,
             detail=(
                 f"mlx-audio import failed at runtime: {e}. "
-                "Install with: pip install 'rapid-mlx[audio]'"
+                + optional_extra_install_hint("audio", include_paths=False)
             ),
         )
     except Exception as e:
@@ -3784,11 +3786,13 @@ async def create_music(request: AudioMusicRequest = Body(...)):
     except HTTPException:
         raise
     except ImportError as e:
+        from rapid_mlx.runtime.optional_runtime import optional_extra_install_hint
+
         raise HTTPException(
             status_code=503,
             detail=(
                 f"music engine dependencies unavailable at runtime: {e}. "
-                "Install with: pip install 'rapid-mlx[audio]'"
+                + optional_extra_install_hint("audio", include_paths=False)
             ),
         )
     except Exception as e:

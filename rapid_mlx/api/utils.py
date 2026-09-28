@@ -1384,6 +1384,7 @@ SERVING_LANE_REASONS = frozenset(
         "vision_hybrid_cache_unsupported",
         "vision_hybrid_runtime_supported",
         "vision_hybrid_runtime_unsupported",
+        "vision_runtime_absent",
         "vision_memory_insufficient",
         "vision_supported",
         # spec_decode/dspark/server.py — exact qualified companion pair
@@ -1407,6 +1408,7 @@ AUTO_TEXT_FALLBACK_REASONS = frozenset(
         "vision_architecture_unavailable",
         "vision_hybrid_cache_unsupported",
         "vision_hybrid_runtime_unsupported",
+        "vision_runtime_absent",
         "vision_memory_insufficient",
     }
 )
@@ -1554,6 +1556,19 @@ def resolve_serving_lane_decision(
             False, "vision_hybrid_cache_unsupported", auto_text_fallback=True
         )
     if cache_mode == "arrays":
+        if vision_min_memory_gb is not None:
+            from ..models.mllm import VisionRuntimeStatus, vision_runtime_status
+
+            runtime_status, _ = vision_runtime_status()
+            if runtime_status is VisionRuntimeStatus.ABSENT:
+                return ServingLaneDecision(
+                    False, "vision_runtime_absent", auto_text_fallback=True
+                )
+            if runtime_status is not VisionRuntimeStatus.OK:
+                # Only a genuinely absent optional runtime may degrade. A broken or
+                # incompatible install must reach the vision guard and report its
+                # repair instead of silently hiding the damaged environment.
+                return ServingLaneDecision(True, "vision_supported")
         if mllm_hybrid_runtime_supported():
             return ServingLaneDecision(True, "vision_hybrid_runtime_supported")
         return ServingLaneDecision(

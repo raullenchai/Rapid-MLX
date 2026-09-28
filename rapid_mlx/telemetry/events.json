@@ -217,6 +217,20 @@
       "_about": "Optional serving runtime required by the selected model lane.",
       "values": ["vision", "video", "audio", "image"]
     },
+    "extra_recovery": {
+      "_about": [
+        "Closed outcome of the missing-extra recovery decision, recorded only",
+        "after the prompt result is known and before any installer or exec.",
+        "declined means an explicit no; no_answer covers timeout, EOF, or",
+        "read failure; interrupted preserves Ctrl-C after the event is emitted.",
+        "Contains no command, path, package version, or other free text."
+      ],
+      "values": [
+        "accepted", "declined", "no_answer", "interrupted",
+        "non_interactive", "assume_yes",
+        "no_installer", "managed_runtime", "broken_runtime"
+      ]
+    },
     "agent": {
       "_about": [
         "Exactly the agent profiles `rapid-mlx agents` can configure — one YAML",
@@ -522,7 +536,9 @@
         "allow-list to close it against, so shipping it would mean either a",
         "free-form string (forbidden by sec 1.5) or an invented enum. It lands",
         "when a real allow-list exists; error_class already separates",
-        "unsupported_architecture from the other failure modes."
+        "unsupported_architecture from the other failure modes. For",
+        "missing_extra only, extra_recovery records the closed recovery",
+        "decision after prompting and before any installer runs."
       ],
       "twin_of": "model_served",
       "props": {
@@ -534,6 +550,12 @@
         "extra": {
           "kind": "enum",
           "enum": "optional_extra",
+          "required": false,
+          "only_when": {"error_class": ["missing_extra"]}
+        },
+        "extra_recovery": {
+          "kind": "enum",
+          "enum": "extra_recovery",
           "required": false,
           "only_when": {"error_class": ["missing_extra"]}
         }

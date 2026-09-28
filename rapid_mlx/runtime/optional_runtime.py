@@ -6,14 +6,27 @@ from __future__ import annotations
 import importlib.util
 import os
 import select
+import shlex
 import subprocess
 import sys
 import time
+from enum import Enum
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, cast
 
 OptionalExtra = Literal["vision", "video", "audio", "image"]
 OptionalRuntimeStatus = Literal["absent", "broken", "incompatible"]
+ExtraRecovery = Literal[
+    "accepted",
+    "declined",
+    "no_answer",
+    "interrupted",
+    "non_interactive",
+    "assume_yes",
+    "no_installer",
+    "managed_runtime",
+    "broken_runtime",
+]
 
 _EXTRA_INSTALL_SIZE_MB: dict[OptionalExtra, int] = {
     "vision": 322,
@@ -24,6 +37,15 @@ _INSTALL_PROMPT_TIMEOUT_SECONDS = 30.0
 
 class _PromptInput(Protocol):
     def fileno(self) -> int: ...
+
+
+class PromptResult(str, Enum):
+    """Closed result of the bounded optional-runtime consent prompt."""
+
+    ACCEPTED = "accepted"
+    DECLINED = "declined"
+    NO_ANSWER = "no_answer"
+    INTERRUPTED = "interrupted"
 
 
 _assume_yes = False
@@ -43,6 +65,62 @@ def _reset_assume_yes_for_tests() -> None:
 def assume_yes() -> bool:
     """Return the process-wide optional-runtime prompt policy."""
     return _assume_yes
+
+
+def optional_extra_repair_command(
+    extra: str,
+    *,
+    version: str | None = None,
+    include_paths: bool = True,
+    status: OptionalRuntimeStatus = "absent",
+) -> str:
+    """Return the install-method-aware command for one pinned optional extra.
+
+    The detector is shared with ``rapid-mlx upgrade`` so tool-managed installs
+    are never mistaken for ordinary virtual environments.  ``include_paths``
+    keeps HTTP-visible guidance free of local filesystem paths.
+    """
+    from rapid_mlx import __version__
+    from rapid_mlx._version_check import detect_install_method
+
+    pinned = f"rapid-mlx[{extra}]=={version or __version__}"
+    try:
+        install_info = detect_install_method()
+        method = install_info.method
+        global_pipx = method == "unknown" and getattr(
+            install_info, "upgrade_command", ""
+        ).startswith("sudo pipx ")
+    except Exception:  # noqa: BLE001 - repair guidance must never mask the error
+        method = "unknown"
+        global_pipx = False
+    if method == "uv":
+        return f"uv tool install --force {shlex.quote(pinned)}"
+    if method == "pipx":
+        return f"pipx install --force {shlex.quote(pinned)}"
+    if global_pipx:
+        return f"sudo pipx install --global --force {shlex.quote(pinned)}"
+    if method == "brew":
+        return (
+            "The Homebrew build cannot add Python optional extras in place. "
+            "Switch to an isolated tool install with:\n"
+            f"    brew uninstall rapid-mlx && uv tool install {shlex.quote(pinned)}"
+        )
+    python = shlex.quote(sys.executable) if include_paths else "python"
+    reinstall = "--upgrade --force-reinstall " if status == "broken" else ""
+    return f"{python} -m pip install {reinstall}{shlex.quote(pinned)}"
+
+
+def optional_extra_install_hint(
+    extra: str,
+    *,
+    version: str | None = None,
+    include_paths: bool = True,
+    status: OptionalRuntimeStatus = "absent",
+) -> str:
+    """Return consistent human-facing repair guidance for an optional extra."""
+    return "Install the optional runtime with:\n    " + optional_extra_repair_command(
+        extra, version=version, include_paths=include_paths, status=status
+    )
 
 
 def format_startup_failure_marker(
@@ -111,7 +189,7 @@ def _prompt_to_install(
     extra: OptionalExtra,
     *,
     timeout_seconds: float | None = None,
-) -> bool:
+) -> PromptResult:
     """Wait at most 30 seconds for an explicit interactive opt-in."""
     size_mb = _EXTRA_INSTALL_SIZE_MB.get(extra)
     size = f" (~{size_mb} MB)" if size_mb is not None else ""
@@ -124,15 +202,21 @@ def _prompt_to_install(
     timeout = (
         _INSTALL_PROMPT_TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds
     )
-    response = (
-        _read_windows_prompt_response(timeout)
-        if sys.platform == "win32"
-        else _read_posix_prompt_response(sys.stdin, timeout)
-    )
+    try:
+        response = (
+            _read_windows_prompt_response(timeout)
+            if sys.platform == "win32"
+            else _read_posix_prompt_response(sys.stdin, timeout)
+        )
+    except KeyboardInterrupt:
+        print(file=sys.stderr)
+        return PromptResult.INTERRUPTED
     if response is None:
         print(file=sys.stderr)
-        return False
-    return response.strip().lower() in {"y", "yes"}
+        return PromptResult.NO_ANSWER
+    if response.strip().lower() in {"y", "yes"}:
+        return PromptResult.ACCEPTED
+    return PromptResult.DECLINED
 
 
 def _read_posix_prompt_response(
@@ -254,9 +338,26 @@ def handle_optional_runtime_missing(
 ) -> None:
     """Render and record the sole terminal result for an unavailable extra."""
     print(exc.format_user_message(), file=sys.stderr)
-    can_install = (
+    managed_runtime = _running_in_desktop_sidecar()
+    install_detection_failed = False
+    try:
+        from rapid_mlx._version_check import detect_install_method
+
+        install_info = detect_install_method()
+        install_method = install_info.method
+        globally_managed_pipx = install_method == "unknown" and getattr(
+            install_info, "upgrade_command", ""
+        ).startswith("sudo pipx ")
+    except Exception:  # noqa: BLE001 - the original typed failure still wins
+        install_detection_failed = True
+        install_method = "unknown"
+        globally_managed_pipx = False
+    can_install = bool(
         exc.status == "absent"
-        and not _running_in_desktop_sidecar()
+        and not managed_runtime
+        and not install_detection_failed
+        and not globally_managed_pipx
+        and install_method in {"pip", "install_sh", "unknown"}
         and importlib.util.find_spec("pip") is not None
     )
     is_interactive = (
@@ -276,6 +377,26 @@ def handle_optional_runtime_missing(
     from rapid_mlx.telemetry.server_start import failed
 
     failed("preflight")
+    accepted = False
+    if managed_runtime:
+        extra_recovery: ExtraRecovery = "managed_runtime"
+    elif exc.status != "absent":
+        extra_recovery = "broken_runtime"
+    elif not can_install:
+        extra_recovery = "no_installer"
+    elif assume_yes:
+        accepted = True
+        extra_recovery = "assume_yes"
+    elif not is_interactive:
+        extra_recovery = "non_interactive"
+    else:
+        try:
+            prompt_result = _prompt_to_install(exc.extra)
+        except KeyboardInterrupt:
+            print(file=sys.stderr)
+            prompt_result = PromptResult.INTERRUPTED
+        accepted = prompt_result is PromptResult.ACCEPTED
+        extra_recovery = cast(ExtraRecovery, prompt_result.value)
     from rapid_mlx.telemetry.model_events import emit_model_serve_failed
 
     emit_model_serve_failed(
@@ -283,9 +404,10 @@ def handle_optional_runtime_missing(
         engine=engine,
         alias_or_path=alias_or_path,
         auto_selected=auto_selected,
+        extra_recovery=extra_recovery,
     )
-    if can_install and (
-        assume_yes or (is_interactive and _prompt_to_install(exc.extra))
-    ):
+    if accepted:
         _install_optional_extra(exc)
+    if extra_recovery == "interrupted":
+        raise KeyboardInterrupt
     raise SystemExit(2)

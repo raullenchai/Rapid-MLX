@@ -43,6 +43,7 @@ from requests.adapters import HTTPAdapter
 
 from rapid_mlx.mllm_cache import MLLMPrefixCacheManager
 from rapid_mlx.model_metadata import MULTIMODAL_TENSOR_PREFIXES
+from rapid_mlx.runtime.optional_runtime import OptionalRuntimeStatus
 
 logger = logging.getLogger(__name__)
 
@@ -217,7 +218,9 @@ def _managed_desktop_runtime_root() -> Path:
     return Path(sys.executable).resolve().parents[2]
 
 
-def _vision_install_hint(*, include_paths: bool = True) -> str:
+def _vision_install_hint(
+    *, include_paths: bool = True, status: OptionalRuntimeStatus = "absent"
+) -> str:
     """Return a repair path that cannot accidentally target another Python.
 
     A signed Desktop runtime is immutable product state: mutating it with pip
@@ -247,14 +250,10 @@ def _vision_install_hint(*, include_paths: bool = True) -> str:
             "Reinstall Rapid-MLX Desktop.app to restore its validated vision "
             "runtime. Do not pip-install into the code-signed bundled sidecar."
         )
-    python = shlex.quote(sys.executable) if include_paths else "python"
-    return (
-        "Install the validated vision stack into this runtime with:\n"
-        f"    {python} -m pip install --upgrade --force-reinstall "
-        "'rapid-mlx[vision]'\n"
-        "or repair mlx-vlm directly (pinned to Rapid-MLX's validated set):\n"
-        f"    {python} -m pip install --upgrade --force-reinstall "
-        f"'mlx-vlm=={VALIDATED_MLX_VLM_VERSION}'"
+    from rapid_mlx.runtime.optional_runtime import optional_extra_install_hint
+
+    return optional_extra_install_hint(
+        "vision", include_paths=include_paths, status=status
     )
 
 
@@ -407,7 +406,7 @@ def _vlm_broken_install_hint(detail: str | None) -> str:
         pip_name = _pip_name_for_module(detail)
         hint = (
             f"`mlx-vlm` is installed but its dependency {detail!r} is not, so "
-            f"the vision runtime cannot load. {_vision_install_hint()}"
+            f"the vision runtime cannot load. {_vision_install_hint(status='broken')}"
         )
         if _managed_desktop_runtime():
             return hint
@@ -418,7 +417,7 @@ def _vlm_broken_install_hint(detail: str | None) -> str:
     suffix = f" ({detail})" if detail else ""
     return (
         f"`mlx-vlm` is installed but its import chain is broken, so the "
-        f"vision runtime cannot load{suffix}. {_vision_install_hint()}"
+        f"vision runtime cannot load{suffix}. {_vision_install_hint(status='broken')}"
     )
 
 
@@ -513,7 +512,7 @@ def require_mlx_vlm_or_exit(model_name: str, *, text_diffusion: bool = False) ->
         runtime_status = "absent"
     raise OptionalRuntimeMissing(
         extra="vision",
-        install_hint=_vision_install_hint(),
+        install_hint=_vision_install_hint(status=runtime_status),
         detail=message,
         status=runtime_status,
         marker_reason=marker_reason,
@@ -1744,9 +1743,11 @@ class MLXMultimodalLM:
                 logger.info("Native video pipeline enabled (temporal 3D conv + M-RoPE)")
 
         except ImportError:
+            from rapid_mlx.runtime.optional_runtime import optional_extra_install_hint
+
             raise ImportError(
                 "Vision dependencies are required for multimodal inference. "
-                "Install with: pip install 'rapid-mlx[vision]'"
+                + optional_extra_install_hint("vision")
             )
         except ValueError as e:
             # mlx's strict `load_weights` raises `ValueError: Missing N

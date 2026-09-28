@@ -31,7 +31,10 @@ async def create_embeddings(
     request: EmbeddingRequest, raw_request: Request
 ) -> EmbeddingResponse:
     """Create embeddings for the given input text(s)."""
-    from ..embedding import EMBEDDINGS_EXTRA_INSTALL_HINT, EmbeddingInputTooLongError
+    from ..embedding import (
+        EMBEDDINGS_EXTRA_HTTP_INSTALL_HINT,
+        EmbeddingInputTooLongError,
+    )
     from ..server import load_embedding_model
 
     cfg = get_config()
@@ -86,7 +89,7 @@ async def create_embeddings(
                     "message": (
                         "No embedding model loaded. Restart the server "
                         "with --embedding-model <hf-id> to enable "
-                        "/v1/embeddings. " + EMBEDDINGS_EXTRA_INSTALL_HINT
+                        "/v1/embeddings. " + EMBEDDINGS_EXTRA_HTTP_INSTALL_HINT
                     ),
                     "type": "invalid_request_error",
                     "code": "no_embedding_model",
@@ -312,9 +315,14 @@ async def create_embeddings(
             caller_agent=caller_agent,
             caller_client=caller_client,
         )
+        from rapid_mlx.runtime.optional_runtime import optional_extra_install_hint
+
         raise HTTPException(
             status_code=503,
-            detail="mlx-embeddings not installed. Install with: pip install 'rapid-mlx[embeddings]'",
+            detail=(
+                "mlx-embeddings not installed. "
+                + optional_extra_install_hint("embeddings", include_paths=False)
+            ),
         )
     except HTTPException:
         raise

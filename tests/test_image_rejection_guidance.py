@@ -170,7 +170,7 @@ def test_hybrid_runtime_unsupported_reuses_the_vision_install_hint():
         f"{_BASE} The installed vision runtime (mlx-vlm) is missing or too old "
         f"for this model's hybrid backbone, so it started text-only. {hint}"
     )
-    assert "'rapid-mlx[vision]'" in message
+    assert "rapid-mlx[vision]==" in message
 
 
 _FORCED_TEXT = (

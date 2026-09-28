@@ -697,6 +697,10 @@ def test_pull_uses_exact_revision_and_data_allowlist(
         "_pull_repository",
         lambda args, **kwargs: calls.append((args.model, kwargs)),
     )
+    monkeypatch.setattr(
+        "rapid_mlx.runtime.image_lane.require_image_runtime_or_exit",
+        lambda _name: None,
+    )
     args = SimpleNamespace(model=requested)
 
     cli.pull_command(args)
