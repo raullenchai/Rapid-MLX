@@ -911,7 +911,7 @@ def test_plan_retries_null_length_with_grounded_prompt_and_larger_budget(
     )
 
     assert plan["action"] == "click"
-    assert [call["max_tokens"] for call in calls] == [900, 1600]
+    assert [call["max_tokens"] for call in calls] == [900, 4096]
     retry_parts = calls[1]["messages"][0]["content"]
     assert "Goal: create a folder" in retry_parts[0]["text"]
     assert "[1] AXTextField Search" in retry_parts[0]["text"]
@@ -979,6 +979,10 @@ def test_plan_repeated_null_is_bounded_and_does_not_expose_reasoning(
         asyncio.run(planner.plan("wait", snapshot, []))
 
     assert len(calls) == 2
+    assert [call["max_tokens"] for call in calls] == [900, 4096]
+    retry_parts = calls[1]["messages"][0]["content"]
+    assert "Goal: wait" in retry_parts[0]["text"]
+    assert "[1] AXTextField Search" in retry_parts[0]["text"]
     assert "finish_reason=length" in str(excinfo.value)
     assert "reasoning_present=true" in str(excinfo.value)
     assert "do not expose" not in str(excinfo.value)

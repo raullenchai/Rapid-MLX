@@ -405,7 +405,7 @@ Return JSON only:
         except EmptyPlannerResponseError as exc:
             attempts.append({"raw": "", "error": str(exc), **exc.metadata})
             retry_tokens = (
-                1600 if exc.metadata.get("finish_reason") == "length" else 900
+                4096 if exc.metadata.get("finish_reason") == "length" else 900
             )
             retry_content = list(content) + [
                 {
