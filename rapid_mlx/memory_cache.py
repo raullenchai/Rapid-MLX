@@ -262,16 +262,22 @@ def _save_checkpoints_sidecar(path: str, cache: list[Any]) -> bool:
     import mlx.core as mx
 
     arrays: dict[str, Any] = {}
+    anchor_positions: set[int] = set()
     for layer_idx, holder in enumerate(collect_checkpoints(cache)):
         if holder is None:
             continue
+        if holder.anchor_position is not None:
+            anchor_positions.add(holder.anchor_position)
         for position in holder.positions:
             for k, arr in enumerate(holder.arrays_at(position) or ()):
                 arrays[f"{layer_idx}.{position}.{k}"] = arr
     if not arrays:
         return False
     try:
-        mx.save_safetensors(path, arrays)
+        metadata = {}
+        if len(anchor_positions) == 1:
+            metadata["anchor_position"] = str(next(iter(anchor_positions)))
+        mx.save_safetensors(path, arrays, metadata)
         _fsync_file(path)
     except Exception as exc:
         logger.warning(f"[cache_persist] checkpoint sidecar not saved: {exc}")
@@ -299,7 +305,9 @@ def _attach_checkpoints_sidecar(path: str, cache: list[Any], num_tokens: int) ->
         # must be refused before any array is trusted (same rule as entries).
         if not _safetensors_is_complete(path):
             raise ValueError("body is short of its header's data range")
-        loaded = mx.load(path)
+        loaded, metadata = mx.load(path, return_metadata=True)
+        anchor_raw = metadata.get("anchor_position") if metadata else None
+        anchor_position = int(anchor_raw) if anchor_raw is not None else None
         grouped: dict[int, dict[int, dict[int, Any]]] = {}
         for key, arr in loaded.items():
             layer_s, pos_s, k_s = key.split(".")
@@ -324,7 +332,9 @@ def _attach_checkpoints_sidecar(path: str, cache: list[Any], num_tokens: int) ->
                     if ref is None or arr.shape != ref.shape or arr.dtype != ref.dtype:
                         raise ValueError(f"layer {layer_idx} slot {k} shape/dtype")
                 items.append((position, tuple(by_k[k] for k in range(len(live)))))
-            holders[layer_idx] = StateCheckpoints(items)
+            holders[layer_idx] = StateCheckpoints(
+                items, anchor_position=anchor_position
+            )
             position_sets.add(frozenset(by_pos))
         recurrent = [i for i, layer in enumerate(cache) if is_recurrent_layer(layer)]
         if len(position_sets) != 1 or sorted(grouped) != recurrent:
