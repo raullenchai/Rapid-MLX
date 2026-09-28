@@ -167,7 +167,8 @@ starter_baseline_for_ram() {
 
 starter_cached_order_for_ram() {
     local ram="$1"
-    if [ "$ram" -ge 48 ]; then printf '%s\n' qwen3.8-27b-4bit qwen3.6-35b-4bit qwen3.5-4b-4bit bonsai-27b-2bit qwen3.5-9b-4bit lfm2.5-1b-4bit lfm2.5-2.6b-4bit
+    if [ "$ram" -le 0 ]; then printf '%s\n' lfm2.5-1b-4bit
+    elif [ "$ram" -ge 48 ]; then printf '%s\n' qwen3.8-27b-4bit qwen3.6-35b-4bit qwen3.5-4b-4bit bonsai-27b-2bit qwen3.5-9b-4bit lfm2.5-1b-4bit lfm2.5-2.6b-4bit
     elif [ "$ram" -ge 32 ]; then printf '%s\n' qwen3.8-27b-4bit qwen3.5-4b-4bit bonsai-27b-2bit qwen3.5-9b-4bit lfm2.5-1b-4bit lfm2.5-2.6b-4bit
     elif [ "$ram" -ge 24 ]; then printf '%s\n' bonsai-27b-2bit qwen3.5-4b-4bit qwen3.5-9b-4bit lfm2.5-1b-4bit lfm2.5-2.6b-4bit
     elif [ "$ram" -ge 18 ]; then printf '%s\n' qwen3.5-9b-4bit qwen3.5-4b-4bit lfm2.5-1b-4bit lfm2.5-2.6b-4bit
@@ -226,10 +227,10 @@ print_quick_start_commands() {
     echo ""
     dim "Use it from your coding agent (separate stable server on :8000):"
     echo ""
-    echo "    rapid-mlx serve ${RECOMMENDED_MODEL}${RECOMMENDED_FLAGS}"
+    echo "    rapid-mlx serve ${RECOMMENDED_MODEL}${RECOMMENDED_FLAGS} --port 8000"
     echo "    rapid-mlx launch --all --model ${RECOMMENDED_MODEL}"
     echo ""
-    dim "If :8000 is busy, serve exits; choose a free port in both commands:"
+    dim "serve exits if :8000 is busy; use another port in both commands:"
     echo ""
     echo "    rapid-mlx serve ${RECOMMENDED_MODEL}${RECOMMENDED_FLAGS} --port 8001"
     echo "    rapid-mlx launch --all --model ${RECOMMENDED_MODEL} --server-url http://127.0.0.1:8001"

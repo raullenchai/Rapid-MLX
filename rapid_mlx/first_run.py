@@ -200,9 +200,9 @@ def build_nameplate(version: str) -> str:
         f"  rapid-mlx chat {model}",
         "",
         "Use it from your coding agent (separate stable server on :8000):",
-        f"  rapid-mlx serve {model}",
+        f"  rapid-mlx serve {model} --port 8000",
         f"  rapid-mlx launch {launch_target} --model {model}{detected_badge}",
-        "If :8000 is busy, serve exits; choose a free port in both commands:",
+        "serve exits if :8000 is busy; use another port in both commands:",
         f"  rapid-mlx serve {model} --port 8001",
         (
             f"  rapid-mlx launch {launch_target} --model {model} "

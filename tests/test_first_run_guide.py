@@ -177,9 +177,9 @@ def test_nameplate_cold_cache_no_agent(monkeypatch):
     assert "rapid-mlx chat lfm2.5-1b-4bit" in out
     assert "the server starts automatically" in out
     assert "Use it from your coding agent (separate stable server on :8000):" in out
-    assert "rapid-mlx serve lfm2.5-1b-4bit" in out
+    assert "rapid-mlx serve lfm2.5-1b-4bit --port 8000" in out
     assert "rapid-mlx launch --all --model lfm2.5-1b-4bit" in out
-    assert "If :8000 is busy, serve exits; choose a free port in both commands:" in out
+    assert "serve exits if :8000 is busy; use another port in both commands:" in out
     assert "rapid-mlx serve lfm2.5-1b-4bit --port 8001" in out
     assert (
         "rapid-mlx launch --all --model lfm2.5-1b-4bit "
@@ -199,7 +199,7 @@ def test_nameplate_with_cache_and_agent(monkeypatch):
     assert "32 GB RAM detected" in out
     assert "Recommended model: qwen3.8-27b-4bit (already cached)" in out
     assert "rapid-mlx chat qwen3.8-27b-4bit" in out
-    assert "rapid-mlx serve qwen3.8-27b-4bit" in out
+    assert "rapid-mlx serve qwen3.8-27b-4bit --port 8000" in out
     assert (
         "rapid-mlx launch claude-code --model qwen3.8-27b-4bit  # detected ✓"
     ) in out

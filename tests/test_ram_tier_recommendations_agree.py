@@ -141,6 +141,16 @@ def test_installer_and_python_starter_selection_agree(ram_gb, cached):
     )
 
 
+def test_unknown_ram_ignores_cached_larger_model_in_both_selectors():
+    from rapid_mlx.recommendations import select_starter_model
+
+    cached = ("lfm2.5-2.6b-4bit",)
+    expected = "lfm2.5-1b-4bit"
+
+    assert select_starter_model(0, set(cached)) == expected
+    assert _select_installer_starter(0, cached) == expected
+
+
 def test_the_banner_prints_a_bare_command_where_no_flags_are_needed():
     text = INSTALL_SH.read_text()
     serve_line = next(
