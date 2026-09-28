@@ -32,6 +32,10 @@ def _isolated_hub_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(tmp_path / "hub"))
     for var in mid._HF_TOKEN_ENV_VARS:
         monkeypatch.delenv(var, raising=False)
+    for var in mid._HF_NETWORK_OVERRIDE_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+        monkeypatch.delenv(var.lower(), raising=False)
+    monkeypatch.setattr(mid, "getproxies", lambda: {})
     # Patch the tri-state PROBE, not the boolean read-side: that keeps the
     # latch and the fail-closed mapping under test instead of stubbed out.
     monkeypatch.setattr(mid, "hf_auth_state", lambda: False)
@@ -331,6 +335,114 @@ def test_unreadable_hub_constants_fall_back_to_the_env(monkeypatch):
     monkeypatch.setitem(sys.modules, "huggingface_hub", None)
     monkeypatch.setenv("HF_ENDPOINT", "https://elsewhere.invalid")
     assert mid.hub_endpoint_is_canonical() is False
+
+
+@pytest.mark.parametrize(
+    "var",
+    [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "https_proxy",
+    ],
+)
+def test_network_overrides_cannot_mint_public_proof(monkeypatch, var):
+    """A canonical URL is not a canonical peer behind a proxy/custom CA."""
+    import huggingface_hub.constants as hf_constants
+
+    repo = "acme-corp/secret-internal-finetune"
+    monkeypatch.setattr(hf_constants, "ENDPOINT", "https://huggingface.co")
+    monkeypatch.setenv(var, "configured")
+
+    assert mid.hub_endpoint_is_canonical() is True
+    assert mid._hub_connection_can_prove_public() is False
+    mid.note_hub_fetch(repo)
+
+    marker = mid._marker_path(repo)
+    assert marker is not None and not mid.os.path.exists(marker)
+    assert mid.telemetry_model_id(repo) == "<custom>"
+
+
+def test_empty_network_override_does_not_disable_proof(monkeypatch):
+    """Empty proxy variables are ignored by the supported HTTP client."""
+    monkeypatch.setenv("HTTPS_PROXY", "")
+    assert mid._hub_connection_can_prove_public() is True
+
+
+def test_system_proxy_cannot_mint_public_proof(monkeypatch):
+    """HTTPX also inherits system proxy settings through urllib."""
+    monkeypatch.setattr(
+        mid, "getproxies", lambda: {"https": "http://proxy.example:8080"}
+    )
+    assert mid._hub_connection_can_prove_public() is False
+
+
+def test_unreadable_system_proxy_configuration_fails_closed(monkeypatch):
+    """A platform proxy lookup failure cannot become permission to report."""
+
+    def _unreadable():
+        raise OSError("system proxy configuration is unreadable")
+
+    monkeypatch.setattr(mid, "getproxies", _unreadable)
+    assert mid._hub_connection_can_prove_public() is False
+
+
+def test_network_configuration_probe_preserves_keyboard_interrupt(monkeypatch):
+    """The fail-closed wrapper must still preserve user cancellation."""
+    monkeypatch.setattr(mid, "getproxies", _raise_keyboard_interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        mid._hub_connection_can_prove_public()
+
+
+def test_network_override_revokes_older_proof(monkeypatch):
+    repo = "someone/public-community-mlx"
+    mid.note_hub_fetch(repo)
+    marker = mid._marker_path(repo)
+    assert marker is not None and mid.os.path.exists(marker)
+
+    monkeypatch.setenv("HTTPS_PROXY", "https://proxy.example")
+    mid.note_hub_fetch(repo)
+
+    assert not mid.os.path.exists(marker)
+    assert mid.telemetry_model_id(repo) == "<custom>"
+
+
+def test_warm_cache_proof_fails_closed_when_network_override_appears(monkeypatch):
+    """No new Hub call occurs on this path, so the read itself must guard."""
+    repo = "someone/public-community-mlx"
+    mid.note_hub_fetch(repo)
+    marker = mid._marker_path(repo)
+    assert marker is not None and mid.os.path.exists(marker)
+    assert mid.is_proven_public(repo) is True
+
+    # Simulate a warm-cache restart behind a TLS-intercepting proxy. There is
+    # no note_hub_fetch call to revoke the old marker.
+    mid._reset_for_tests()
+    monkeypatch.setenv("HTTPS_PROXY", "https://proxy.example")
+
+    assert mid.is_proven_public(repo) is False  # direct callers fail closed
+    assert mid.telemetry_model_id(repo) == "<custom>"
+    assert not mid.os.path.exists(marker)
+
+
+def test_auth_still_outranks_the_read_side_network_probe(monkeypatch):
+    """A visible token rejects the id before stored-proof inspection."""
+    probes = 0
+
+    def _network_probe() -> bool:
+        nonlocal probes
+        probes += 1
+        return True
+
+    monkeypatch.setattr(mid, "hf_auth_state", lambda: True)
+    monkeypatch.setattr(mid, "_hub_connection_can_prove_public", _network_probe)
+
+    assert mid.telemetry_model_id("acme-corp/gated-weights") == "<custom>"
+    assert probes == 0
 
 
 # ------------------------------------------------- latch / never-raise (r2)

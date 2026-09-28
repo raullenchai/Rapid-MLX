@@ -60,6 +60,16 @@ endpoint is ``https://huggingface.co``; on any other endpoint we record
 nothing and the model reports ``<custom>``. Revocation is deliberately not
 gated this way: dropping proof is always safe.
 
+The endpoint string is not peer attestation. Configured proxies and custom CA
+bundles can make ``https://huggingface.co`` terminate somewhere an
+operator controls. When one of those overrides is present, an anonymous
+success therefore records no proof and revokes any older marker for the repo.
+This deliberately sacrifices demand data for developers behind benign
+corporate proxies. It still cannot detect a hosts-file or split-horizon DNS
+override that presents a certificate trusted by the machine's default trust
+store; pinning Hub certificates or issuers would merely trade that gap for
+breakage on legitimate certificate rotation.
+
 *Not from cache.* The two remaining ``note_hub_fetch`` call sites —
 ``_download_gate._model_info_with_timeout`` and
 ``server._prefetch_routing_metadata`` — both go through
@@ -106,6 +116,7 @@ import re
 import tempfile
 import threading
 import time
+from urllib.request import getproxies
 
 #: Model is local, or we cannot prove anything about it.
 LOCAL = "<local>"
@@ -131,6 +142,23 @@ _HF_TOKEN_ENV_VARS: tuple[str, ...] = (
     "HUGGING_FACE_HUB_TOKEN",
     "HUGGINGFACE_HUB_TOKEN",
     "HF_API_TOKEN",
+)
+
+# Network configuration that can change the peer or trust roots used for an
+# ostensibly canonical Hub request. Environment names are matched
+# case-insensitively because HTTPX/urllib accept their lower-case spellings on
+# Unix too. HTTP_PROXY is included because a redirect may cross from HTTPS to
+# HTTP even though the configured Hub endpoint itself is HTTPS.
+_HF_NETWORK_OVERRIDE_ENV_VARS: frozenset[str] = frozenset(
+    {
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+    }
 )
 
 _PUBLIC_MARKER_NAME = "public-anon-fetch"
@@ -183,7 +211,7 @@ _auth_seen = False
 
 
 def hub_endpoint_is_canonical() -> bool:
-    """Whether the Hub calls that carry proof go to the real Hub.
+    """Whether the configured Hub endpoint names the canonical Hub.
 
     ``huggingface_hub`` routes every request through ``constants.ENDPOINT``
     (seeded from ``HF_ENDPOINT``), so an operator can point the whole
@@ -192,8 +220,11 @@ def hub_endpoint_is_canonical() -> bool:
     "anonymous success" evidence about *that* host, not about public
     readability on huggingface.co.
 
-    Fail-closed: anything we cannot read, or cannot recognise as the
-    canonical endpoint, answers ``False`` and no proof is recorded.
+    This checks configuration, not the connected peer. Call
+    :func:`_hub_connection_can_prove_public` before recording proof.
+
+    Fail-closed: anything we cannot read, or cannot recognise as the canonical
+    endpoint, answers ``False``.
     """
     raw = ""
     try:
@@ -215,6 +246,36 @@ def hub_endpoint_is_canonical() -> bool:
         # Neither set: huggingface_hub's own default is the canonical Hub.
         return True
     return normalised == _CANONICAL_HF_ENDPOINT
+
+
+def _hub_connection_can_prove_public() -> bool:
+    """Whether ambient Hub networking is safe enough to mint public proof.
+
+    A canonical endpoint string alone does not establish which peer served a
+    request. Proxies can terminate TLS, and custom CA bundles can make their
+    certificates trusted. Refuse proof whenever either is configured rather
+    than pinning a certificate chain that Hugging Face may legitimately
+    rotate.
+
+    This is intentionally a conservative configuration check, not peer
+    verification. It cannot detect hosts-file or split-horizon DNS overrides
+    backed by a certificate trusted by the machine's default trust store.
+    """
+    try:
+        for name, value in os.environ.items():
+            if name.upper() in _HF_NETWORK_OVERRIDE_ENV_VARS and value.strip():
+                return False
+        # HTTPX obtains proxies through urllib, which also includes macOS and
+        # Windows system proxy settings. Checking only environment variables
+        # would miss the common corporate configuration on those platforms.
+        proxies = getproxies()
+        if any(proxies.get(scheme) for scheme in ("http", "https", "all")):
+            return False
+        return hub_endpoint_is_canonical()
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except Exception:
+        return False
 
 
 def hf_auth_state() -> bool | None:
@@ -417,11 +478,12 @@ def note_hub_fetch(repo_id: str) -> None:
             # unreadable-token-file error delete, for every future
             # process, a marker that a genuinely anonymous pull earned.
             return
-        if not hub_endpoint_is_canonical():
-            # Anonymous 200 from an endpoint we do not control is not
-            # evidence of public readability on huggingface.co. Revocation
-            # above is deliberately NOT gated on this — that direction is
-            # always safe.
+        if not _hub_connection_can_prove_public():
+            # An anonymous 200 from an endpoint or network path we cannot
+            # trust is not evidence of public readability on huggingface.co.
+            # Remove any older marker too: it may have been minted through
+            # the same untrusted path before this guard existed.
+            _revoke_proof(repo_id)
             return
         now = time.time()
         with _proven_lock:
@@ -441,11 +503,20 @@ def is_proven_public(repo_id: str) -> bool:
     window — including a non-finite stamp — is not proof until a fresh
     anonymous fetch re-proves it.
 
-    This answers "does fresh proof exist", NOT "may we report this id" —
-    the token check lives in :func:`telemetry_model_id`, which is the only
-    place that decides what goes on the wire.
+    Proof is also invalid while the ambient Hub network path is untrusted.
+    This read-side check is required for warm-cache starts that do not make a
+    new Hub request (and therefore never call :func:`note_hub_fetch`). Any
+    older marker is revoked so it cannot reappear when the override is later
+    removed.
+
+    This answers "does usable proof exist", NOT "may we report this id" — the
+    token check lives in :func:`telemetry_model_id`, which is the only place
+    that decides what goes on the wire.
     """
     try:
+        if not _hub_connection_can_prove_public():
+            _revoke_proof(repo_id)
+            return False
         now = time.time()
         with _proven_lock:
             remembered = _proven_public.get(repo_id)
