@@ -58,6 +58,12 @@ paths. Raw click/type endpoints and screenshots are outside this change.
 - Jan, Cherry Studio, and LM Studio were checked conceptually for local server
   discovery/OpenAI compatibility; none offers a closer native macOS CUA host
   permission/window contract than the existing model-free backend.
+- The installed Orca CLI was inspected read-only. `orca computer capabilities
+  --json` reports protocol/provider versions and granular support flags;
+  observation and action help use explicit app plus window ID/index and optional
+  session selectors; permissions have a structured JSON status. This informed
+  versioned feature discovery and opaque stable selectors. No proprietary code
+  or assets were copied.
 
 ## Risks and next actions
 
