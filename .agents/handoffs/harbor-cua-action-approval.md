@@ -55,14 +55,13 @@
 
 ## Follow-up
 
-- This draft depends on the pending local action-contract/snapshot PR. Current `main`
-  does not expose a stable CGWindowID, so PID + window index + target geometry cannot
-  distinguish an identical replacement window. This code compares `window_id` as soon
-  as the dependency supplies it; do not mark merge-ready until the dependency lands and
-  the branch is rebased/tested.
-- The final pre-input domain check depends on #3827 for a trusted browser URL source and
-  fail-closed reads. The loop now rechecks after planner/approval await points so a tab
-  navigation during planning cannot dispatch input on an outside domain.
+- This draft is stacked on #3827 at `2c742b4a`, itself based on the #3824 auth
+  contract, and supplies stable CGWindowID
+  snapshots and trusted, fail-closed browser URL reads. Fresh post-approval and final
+  pre-input URL checks pass the selected snapshot's `window_id`; do not retarget to
+  `main` until that dependency lands.
+- The loop rechecks after planner/approval await points so a tab navigation during
+  planning cannot dispatch input on an outside domain.
 - User-facing claims must say "recognized labeled consequential controls." Unlabeled
   controls and synonyms outside the deterministic multilingual policy are not reliably
   classified until the action contract provides stronger semantics.
