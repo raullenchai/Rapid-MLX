@@ -150,6 +150,7 @@ def test_cua_routes_fail_closed_without_server_api_key(client, api_key):
         ("get", "/v1/cua/permissions"),
         ("get", "/v1/cua/apps"),
         ("get", "/v1/cua/apps/Finder/windows"),
+        ("post", "/v1/cua/observations"),
         ("post", "/v1/cua/planners"),
         ("delete", "/v1/cua/planners/custom"),
         ("get", "/v1/cua/runs"),
@@ -188,7 +189,9 @@ def test_discovery_contract(client):
         "app_discovery": True,
         "window_discovery": True,
         "window_selection": True,
-        "visual_observation": False,
+        "visual_observation": cua_routes.sys.platform == "darwin",
+        "screenshot_observation": False,
+        "observation_without_activation": cua_routes.sys.platform == "darwin",
         "approval_gate_id": True,
     }
 

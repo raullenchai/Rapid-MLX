@@ -361,9 +361,16 @@ def get_app_state(
     screenshot: bool = True,
     use_cache: bool = True,
     window_id: int | str | None = None,
+    *,
+    activate: bool = True,
 ) -> dict:
     """Snapshot one window: elements with indexes, tree text, optional PNG."""
-    ax_element, app_info = _resolve_app(app)
+    # Keep the historical action-path behavior by default. Read-only callers
+    # can explicitly forbid activation; this is a security boundary because an
+    # observation request must not steal focus or expose a different window.
+    ax_element, app_info = (
+        _resolve_app(app) if activate else _resolve_app(app, activate=False)
+    )
     window = _select_window(app_info, window_index=window_index, window_id=window_id)
     if use_cache:
         cached = _CACHE.get(

@@ -9,10 +9,12 @@ exactly one run may be active.
 
 from __future__ import annotations
 
+import base64
+import os
 import sys
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
@@ -171,6 +173,8 @@ class CUACapabilityFeatures(BaseModel):
     window_discovery: bool = True
     window_selection: bool = True
     visual_observation: bool = False
+    screenshot_observation: bool = False
+    observation_without_activation: bool = False
     approval_gate_id: bool = True
 
 
@@ -208,6 +212,72 @@ class CUAWindow(BaseModel):
     height: float | None = None
 
 
+class CUAObservationRequest(BaseModel):
+    """Request a fresh observation of one PID-bound, opaque window ID."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    app: str = Field(min_length=1, max_length=120)
+    pid: int = Field(gt=0)
+    window_id: str = Field(min_length=1, max_length=64)
+    screenshot: bool = False
+
+
+class CUAObservationApp(BaseModel):
+    name: str | None
+    bundle_id: str | None = Field(alias="bundleId")
+    pid: int
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class CUAObservationElement(BaseModel):
+    index: int
+    role: str
+    subrole: str = ""
+    label: str
+    actions: list[str] = Field(default_factory=list)
+    x: int
+    y: int
+    width: int
+    height: int
+    center: list[int]
+
+
+class CUAObservationImage(BaseModel):
+    media_type: Literal["image/png"] = "image/png"
+    encoding: Literal["base64"] = "base64"
+    data: str
+    byte_count: int
+
+
+class CUAObservation(BaseModel):
+    snapshot_id: str
+    observed_at: float
+    app: CUAObservationApp
+    window_id: str
+    window_index: int
+    window: CUAWindow
+    coordinate_space: Literal["screen"]
+    elements: list[CUAObservationElement]
+    element_count: int
+    truncated: bool
+    screenshot: CUAObservationImage | None = None
+
+
+MAX_OBSERVATION_PNG_BYTES = 4 * 1024 * 1024
+
+
+def _screenshots_enabled() -> bool:
+    """Screenshots are sensitive and require an explicit server opt-in."""
+    return os.getenv("RAPID_MLX_CUA_EXPOSE_SCREENSHOTS", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 def _service() -> cua_service.CUAService:
     return cua_service.get_cua_service()
 
@@ -229,6 +299,10 @@ def _http_error(exc: Exception) -> HTTPException:
             "window_not_found": status.HTTP_404_NOT_FOUND,
             "unsupported_platform": status.HTTP_501_NOT_IMPLEMENTED,
             "permission_denied": status.HTTP_403_FORBIDDEN,
+            "app_mismatch": status.HTTP_409_CONFLICT,
+            "window_stale": status.HTTP_409_CONFLICT,
+            "target_drift": status.HTTP_409_CONFLICT,
+            "screenshot_too_large": status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
         }
         return HTTPException(
             status_code=code_to_status.get(exc.code, status.HTTP_400_BAD_REQUEST),
@@ -256,15 +330,40 @@ def _discovery_error(exc: Exception) -> HTTPException:
     return _http_error(exc)
 
 
+def _observation_error(exc: Exception) -> HTTPException:
+    error = _discovery_error(exc)
+    error.headers = {"Cache-Control": "no-store", "Pragma": "no-cache"}
+    return error
+
+
 @router.get("/capabilities", response_model=CUACapabilities)
 async def get_capabilities() -> CUACapabilities:
+    native_observation = sys.platform == "darwin"
+    accessibility_ready = False
+    screen_recording_ready = False
+    if native_observation:
+        try:
+            permission_state = await run_in_threadpool(_backend().permissions)
+            accessibility_ready = permission_state.get("accessibility") is True
+            screen_recording_ready = permission_state.get("screen_recording") is True
+        except (ComputerUseError, ImportError):
+            pass
     return CUACapabilities(
-        available=sys.platform == "darwin",
+        available=native_observation,
         platform=sys.platform,
         discovery=["permissions", "apps", "windows"],
         run_operations=["create", "poll", "approve", "deny", "cancel"],
         max_concurrent_runs=cua_service.MAX_CONCURRENT_RUNS,
-        features=CUACapabilityFeatures(),
+        features=CUACapabilityFeatures(
+            visual_observation=native_observation and accessibility_ready,
+            screenshot_observation=(
+                native_observation
+                and accessibility_ready
+                and screen_recording_ready
+                and _screenshots_enabled()
+            ),
+            observation_without_activation=native_observation and accessibility_ready,
+        ),
     )
 
 
@@ -299,6 +398,105 @@ async def list_windows(app: str) -> list[CUAWindow]:
         return [CUAWindow(**window) for window in windows]
     except (ComputerUseError, ImportError) as exc:
         raise _discovery_error(exc) from exc
+
+
+@router.post("/observations", response_model=CUAObservation)
+async def create_observation(
+    request: CUAObservationRequest, response: Response
+) -> CUAObservation:
+    """Observe an exact app window without activating it or consulting cache."""
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+
+    if sys.platform != "darwin":
+        raise _observation_error(
+            ComputerUseError(
+                "unsupported_platform", "visual observation requires macOS with PyObjC"
+            )
+        )
+    if request.screenshot and not _screenshots_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "screenshot_disabled",
+                "message": "screenshot exposure is disabled by server policy",
+                "recovery": [],
+            },
+            headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+        )
+
+    try:
+        permission_state = await run_in_threadpool(_backend().permissions)
+        if permission_state.get("accessibility") is not True:
+            raise ComputerUseError(
+                "permission_denied",
+                "Accessibility permission is required to observe UI elements",
+            )
+        if request.screenshot and permission_state.get("screen_recording") is not True:
+            raise ComputerUseError(
+                "permission_denied",
+                "Screen Recording permission is required for screenshots",
+            )
+
+        snapshot = await run_in_threadpool(
+            _backend().get_app_state,
+            f"pid:{request.pid}",
+            screenshot=request.screenshot,
+            use_cache=False,
+            window_id=request.window_id,
+            activate=False,
+        )
+        app_info = snapshot.get("app") or {}
+        canonical_names = {
+            str(app_info.get("name") or "").casefold(),
+            str(app_info.get("bundleId") or "").casefold(),
+        }
+        if (
+            app_info.get("pid") != request.pid
+            or request.app.casefold() not in canonical_names
+        ):
+            raise ComputerUseError(
+                "app_mismatch",
+                "the requested app identity does not match the target process",
+            )
+        if snapshot.get("window_id") != request.window_id:
+            raise ComputerUseError(
+                "window_stale",
+                "the observed window does not match the requested window",
+            )
+
+        png = snapshot.get("screenshot_png")
+        image = None
+        if request.screenshot:
+            if not isinstance(png, bytes):
+                raise ComputerUseError(
+                    "screenshot_failed",
+                    "the selected window produced no PNG screenshot",
+                )
+            if len(png) > MAX_OBSERVATION_PNG_BYTES:
+                raise ComputerUseError(
+                    "screenshot_too_large",
+                    f"PNG exceeds the {MAX_OBSERVATION_PNG_BYTES}-byte observation limit",
+                )
+            image = CUAObservationImage(
+                data=base64.b64encode(png).decode("ascii"), byte_count=len(png)
+            )
+
+        return CUAObservation(
+            snapshot_id=snapshot["snapshot_id"],
+            observed_at=snapshot["observed_at"],
+            app=CUAObservationApp(**app_info),
+            window_id=snapshot["window_id"],
+            window_index=snapshot["window_index"],
+            window=CUAWindow(**snapshot["window"]),
+            coordinate_space=snapshot["coordinate_space"],
+            elements=[CUAObservationElement(**item) for item in snapshot["elements"]],
+            element_count=snapshot["element_count"],
+            truncated=snapshot["truncated"],
+            screenshot=image,
+        )
+    except (ComputerUseError, ImportError) as exc:
+        raise _observation_error(exc) from exc
 
 
 @router.get("/planners", response_model=list[CUAPlannerInfo])
