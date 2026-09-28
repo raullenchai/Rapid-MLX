@@ -40,3 +40,32 @@ Four production failure modes found and fixed on this branch (commits through `2
 **Unresolved**:
 - Dogfood matrix T4 (form via panel with openURL binding), T5 (commerce consent gate), and T3 (Finder dry-run) are still pending. AX setValue does not sync every SwiftUI TextField binding; those controls need a focus/commit fix or real-keyboard typing fallback.
 - Chrome AX wedges repeatedly under load (watchdog now degrades honestly; self-heal via AXManualAccessibility reset is a candidate tool-layer PR).
+
+## Round 4 — Brain settings merged (PR #3820, squash-merged 2026-09-28)
+
+- **Shipped**: user-defined cloud brains in the GUI ("+" sheet), full CRUD
+  REST (`/v1/cua/planners`), consent model (keyed preset ⇒ remote allowed,
+  HTTPS enforced, loopback always open), Bearer auth, guided-JSON one-shot
+  degradation, 0600 atomic config writes, key masking everywhere.
+- **Adversarial round (codex) fixed**: consent flags not wired into the
+  service pre-flight/loop (cloud brains could not run at all), stale sheet
+  drafts carrying an old key to a new endpoint, URL override with keyed
+  preset, name conflicts/built-in reservation, atomic+locked writes, key
+  redaction in CLI `--show` and planner error bodies, defaults moved to
+  `local-27b`.
+- **Gates added by CI**: AX identifier registry (every button needs an
+  identifier — sheet Cancel button was missing), changed-lines 100% coverage
+  (config.py + planner.py now fully covered), mypy shrink-only budget (2 new
+  findings in config.py fixed).
+- **Handoff to Pixel (bugs, not from this PR)**:
+  1. SwiftUI `TextField` AX-write (`AXValue` set + `AXConfirm`) displays but
+     does not sync the binding — Save stays disabled for VoiceOver/AX
+     drivers. Blocks AX-driven form flows (e.g. openURL fields).
+  2. After a rebuild+restart, `ComputerUse.Agent.Goal` (TextEditor)
+     intermittently vanishes from the AX snapshot while sibling controls
+     (Brain picker, App field) remain — reproduction flaky, seen once
+     post-restart with 288 elements collected. Needs investigation
+     (lazy removal? focus state? update banner interaction?).
+- **Config on this machine**: `~/.rapid-mlx/cua-config.json` still carries
+  the user-created `glm-tunnel` preset (loopback tunnel) — kept as a working
+  example; safe to delete via GUI/DELETE.
