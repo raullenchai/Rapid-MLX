@@ -68,7 +68,7 @@ final class CUAViewModel: ObservableObject {
         plannerOptions = (try? await api.planners()) ?? []
     }
 
-    // MARK: Add-brain settings (product behavior: users bring their own cloud brain)
+    // MARK: Add-brain settings
 
     @Published var showAddBrain = false
     @Published var newBrainName = ""
@@ -76,6 +76,7 @@ final class CUAViewModel: ObservableObject {
     @Published var newBrainModel = ""
     @Published var newBrainAPIKey = ""
     @Published var newBrainTextOnly = false
+    @Published var newBrainAllowRemote = false
     @Published var brainError: String?
 
     var addBrainIsValid: Bool {
@@ -95,7 +96,8 @@ final class CUAViewModel: ObservableObject {
                     model: newBrainModel.trimmingCharacters(in: .whitespaces),
                     apiKey: newBrainAPIKey.isEmpty ? nil : newBrainAPIKey,
                     reasoningEffort: nil,
-                    textOnly: newBrainTextOnly
+                    textOnly: newBrainTextOnly,
+                    allowRemote: newBrainAllowRemote
                 )
             )
             newBrainName = ""
@@ -103,11 +105,41 @@ final class CUAViewModel: ObservableObject {
             newBrainModel = ""
             newBrainAPIKey = ""
             newBrainTextOnly = false
+            newBrainAllowRemote = false
             showAddBrain = false
             await loadPlanners()
         } catch {
             brainError = String(describing: error)
         }
+    }
+
+    var selectedPlanner: CUAPlannerOption? {
+        plannerOptions.first { $0.name == plannerName }
+    }
+
+    var plannerDisclosure: String {
+        guard let planner = selectedPlanner else {
+            return "Actions run on this Mac. Select a brain to review what it receives."
+        }
+        if Self.isLoopbackEndpoint(planner.url) {
+            return planner.textOnly
+                ? "Actions and brain run on this Mac. The brain receives the goal and Accessibility snapshot."
+                : "Actions and brain run on this Mac. The brain receives the goal, Accessibility snapshot, and screenshot."
+        }
+        return planner.textOnly
+            ? "Actions run on this Mac. This external brain receives the goal and Accessibility snapshot over HTTPS."
+            : "Actions run on this Mac. This external brain receives the goal, Accessibility snapshot, and screenshot over HTTPS."
+    }
+
+    static func isLoopbackEndpoint(_ value: String) -> Bool {
+        guard
+            let url = URL(string: value),
+            url.scheme == "http" || url.scheme == "https",
+            var host = url.host?.lowercased()
+        else { return false }
+        while host.hasSuffix(".") { host.removeLast() }
+        return host == "localhost" || host == "127.0.0.1"
+            || host == "::1" || host == "[::1]"
     }
 
     func start() async {

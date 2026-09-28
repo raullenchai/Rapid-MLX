@@ -11,6 +11,7 @@ struct CUASection: View {
     @State private var brainDraftModel = ""
     @State private var brainDraftAPIKey = ""
     @State private var brainDraftTextOnly = false
+    @State private var brainDraftAllowRemote = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.md) {
@@ -55,7 +56,7 @@ struct CUASection: View {
                             Image(systemName: "plus.circle")
                         }
                         .buttonStyle(.borderless)
-                        .help("Add a cloud brain (OpenAI-compatible endpoint)")
+                        .help("Add an OpenAI-compatible brain")
                         .accessibilityIdentifier("ComputerUse.Agent.AddBrain")
                     }
                 }
@@ -72,6 +73,11 @@ struct CUASection: View {
                         .accessibilityIdentifier("ComputerUse.Agent.MaxSteps")
                 }
             }
+
+            Label(viewModel.plannerDisclosure, systemImage: "desktopcomputer")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("ComputerUse.Agent.BrainDisclosure")
 
             HStack(spacing: 12) {
                 Button(viewModel.phase.isBusy ? "Stop" : "Start") {
@@ -149,9 +155,9 @@ struct CUASection: View {
         }
         .sheet(isPresented: $viewModel.showAddBrain) {
             VStack(alignment: .leading, spacing: 12) {
-                Text("Add a cloud brain").font(.headline)
+                Text("Add a Brain").font(.headline)
                 Text(
-                    "Your task goal and a compact screen snapshot are sent to this OpenAI-compatible endpoint. Use HTTPS; the API key is stored locally (0600)."
+                    "Rapid always executes actions on this Mac. Choose where the planning model runs and exactly what it may receive."
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -160,12 +166,29 @@ struct CUASection: View {
                         .accessibilityIdentifier("ComputerUse.Agent.BrainName")
                     TextField("Model (e.g. deepseek-reasoner)", text: $brainDraftModel)
                         .accessibilityIdentifier("ComputerUse.Agent.BrainModel")
-                    TextField("Base URL", text: $brainDraftURL)
+                    TextField("Endpoint URL", text: $brainDraftURL)
                         .accessibilityIdentifier("ComputerUse.Agent.BrainURL")
-                    SecureField("API key", text: $brainDraftAPIKey)
+                        .onChange(of: brainDraftURL) { _, _ in
+                            brainDraftAllowRemote = false
+                        }
+                    SecureField("API key (optional)", text: $brainDraftAPIKey)
                         .accessibilityIdentifier("ComputerUse.Agent.BrainKey")
-                    Toggle("Text-only (no screenshots)", isOn: $brainDraftTextOnly)
+                    Toggle("Text only — do not send screenshots", isOn: $brainDraftTextOnly)
                         .accessibilityIdentifier("ComputerUse.Agent.BrainTextOnly")
+                    if !brainDraftURL.isEmpty && !CUAViewModel.isLoopbackEndpoint(brainDraftURL) {
+                        Toggle(
+                            "Allow this endpoint to receive the task goal, Accessibility snapshot\(brainDraftTextOnly ? "" : ", and screenshot")",
+                            isOn: $brainDraftAllowRemote
+                        )
+                        .accessibilityIdentifier("ComputerUse.Agent.BrainRemoteConsent")
+                        Text("External endpoints must use HTTPS. LAN addresses are also treated as external.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else if !brainDraftURL.isEmpty {
+                        Text("This loopback endpoint runs on this Mac and does not require an API key.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 if let error = viewModel.brainError {
                     Text(error).font(.caption).foregroundStyle(.red)
@@ -180,6 +203,7 @@ struct CUASection: View {
                         viewModel.newBrainModel = brainDraftModel
                         viewModel.newBrainAPIKey = brainDraftAPIKey
                         viewModel.newBrainTextOnly = brainDraftTextOnly
+                        viewModel.newBrainAllowRemote = brainDraftAllowRemote
                         Task { await viewModel.saveBrain() }
                     }
                     .buttonStyle(.borderedProminent)
@@ -195,6 +219,7 @@ struct CUASection: View {
                 brainDraftModel = ""
                 brainDraftAPIKey = ""
                 brainDraftTextOnly = false
+                brainDraftAllowRemote = false
                 viewModel.brainError = nil
             }
             .onDisappear {
@@ -205,6 +230,7 @@ struct CUASection: View {
                 brainDraftModel = ""
                 brainDraftAPIKey = ""
                 brainDraftTextOnly = false
+                brainDraftAllowRemote = false
             }
         }
     }

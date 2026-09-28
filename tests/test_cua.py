@@ -1360,15 +1360,14 @@ def test_planner_remote_url_consent_rules():
     assert planner_mod.validate_planner_url(
         "https://api.example.com/v1", allow_remote=True
     )
-    with pytest.raises(ValueError, match="credentials"):
+    with pytest.raises(ValueError, match="explicitly allowed"):
         planner_mod.validate_planner_url("https://api.example.com/v1")
     with pytest.raises(ValueError, match="HTTPS"):
         planner_mod.validate_planner_url("http://api.example.com/v1", allow_remote=True)
 
 
 def test_user_preset_crud_and_consent(tmp_path, monkeypatch):
-    """save/delete user presets; api_key implies remote consent; defaults
-    protected; file written 0600."""
+    """Remote consent is independent of credentials; defaults are protected."""
     from rapid_mlx.cua import config as config_mod
 
     cfg = tmp_path / "cua-config.json"
@@ -1378,12 +1377,14 @@ def test_user_preset_crud_and_consent(tmp_path, monkeypatch):
         "https://api.example.com/v1/chat/completions",
         "deepseek-r1",
         api_key="sk-x",
+        allow_remote=True,
     )
     stored = config_mod._read_stored()
     preset = stored["presets"]["my-brain"]
     assert preset["model"] == "deepseek-r1"
     assert preset["api_key"] == "sk-x"
     assert preset["user_created"] is True
+    assert preset["allow_remote"] is True
     assert (cfg.stat().st_mode & 0o777) == 0o600
 
     resolved = config_mod.resolve_planner("my-brain")
@@ -1421,7 +1422,9 @@ def test_user_preset_base_url_reaches_chat_completions(
     from rapid_mlx.cua.planner import Planner
 
     monkeypatch.setattr(config_mod, "CONFIG_PATH", tmp_path / "cua-config.json")
-    config_mod.save_user_preset("cloud", base_url, "m", api_key="sk-test")
+    config_mod.save_user_preset(
+        "cloud", base_url, "m", api_key="sk-test", allow_remote=True
+    )
     resolved = config_mod.resolve_planner("cloud")
     assert resolved.url == expected_url
 
@@ -1460,6 +1463,7 @@ def test_keyed_cloud_preset_runs_end_to_end(tmp_path, monkeypatch, config_dir):
         "https://api.example.com/v1/chat/completions",
         "m1",
         api_key="sk-1",
+        allow_remote=True,
     )
 
     captured = {}
@@ -1514,10 +1518,46 @@ def test_url_override_rejected_for_keyed_preset(tmp_path, monkeypatch):
     cfg_path = tmp_path / "cua-config.json"
     monkeypatch.setattr(config_mod, "CONFIG_PATH", cfg_path)
     config_mod.save_user_preset(
-        "vault", "https://vault.example.com/v1", "m1", api_key="sk-1"
+        "vault", "https://vault.example.com/v1", "m1", api_key="sk-1",
+        allow_remote=True,
     )
     with pytest.raises(ValueError, match="override"):
         config_mod.resolve_planner("vault", url_override="https://evil.example/v1")
+
+
+def test_url_override_rejected_for_keyless_remote_consent(tmp_path, monkeypatch):
+    from rapid_mlx.cua import config as config_mod
+
+    monkeypatch.setattr(config_mod, "CONFIG_PATH", tmp_path / "cua-config.json")
+    config_mod.save_user_preset(
+        "remote", "https://planner.example/v1", "m", allow_remote=True
+    )
+    with pytest.raises(ValueError, match="override"):
+        config_mod.resolve_planner(
+            "remote", url_override="https://different.example/v1"
+        )
+
+
+def test_legacy_keyless_preset_does_not_gain_remote_consent(tmp_path, monkeypatch):
+    from rapid_mlx.cua import config as config_mod
+
+    cfg_path = tmp_path / "cua-config.json"
+    monkeypatch.setattr(config_mod, "CONFIG_PATH", cfg_path)
+    cfg_path.write_text(
+        json.dumps(
+            {
+                "presets": {
+                    "legacy": {
+                        "url": "https://planner.example/v1/chat/completions",
+                        "model": "m",
+                        "user_created": True,
+                    }
+                }
+            }
+        )
+    )
+    resolved = config_mod.resolve_planner("legacy")
+    assert resolved.allow_remote is False
 
 
 def test_preset_name_conflicts(tmp_path, monkeypatch):
@@ -1525,11 +1565,17 @@ def test_preset_name_conflicts(tmp_path, monkeypatch):
 
     cfg_path = tmp_path / "cua-config.json"
     monkeypatch.setattr(config_mod, "CONFIG_PATH", cfg_path)
-    config_mod.save_user_preset("My Cloud", "https://a.example/v1", "m")
+    config_mod.save_user_preset(
+        "My Cloud", "https://a.example/v1", "m", allow_remote=True
+    )
     with pytest.raises(ValueError, match="already exists"):
-        config_mod.save_user_preset("my-cloud", "https://b.example/v1", "m")
+        config_mod.save_user_preset(
+            "my-cloud", "https://b.example/v1", "m", allow_remote=True
+        )
     with pytest.raises(ValueError, match="built-in"):
-        config_mod.save_user_preset("Local-27B", "https://b.example/v1", "m")
+        config_mod.save_user_preset(
+            "Local-27B", "https://b.example/v1", "m", allow_remote=True
+        )
 
 
 def test_planner_error_redacts_api_key(monkeypatch):
@@ -1570,7 +1616,9 @@ def test_save_preset_input_validation(tmp_path, monkeypatch, config_dir):
     with pytest.raises(ValueError, match="http"):
         config_mod.save_user_preset("ok", "ftp://a/v1", "m")
     with pytest.raises(ValueError, match="HTTPS"):
-        config_mod.save_user_preset("ok", "http://api.x.com/v1", "m", api_key="k")
+        config_mod.save_user_preset(
+            "ok", "http://api.x.com/v1", "m", api_key="k", allow_remote=True
+        )
     with pytest.raises(ValueError, match="model"):
         config_mod.save_user_preset("ok", "http://127.0.0.1:9/v1", "  ")
     # a pre-existing stored entry without the user_created flag is reserved
@@ -1647,6 +1695,9 @@ def test_validate_url_accepts_domain_names():
             "http://api.example.com/v1/chat/completions", allow_remote=True
         )
     assert validate_planner_url("http://127.0.0.1:18888/v1", allow_remote=False)
+    assert validate_planner_url("http://localhost:18888/v1", allow_remote=False)
+    assert validate_planner_url("http://localhost.:18888/v1", allow_remote=False)
+    assert validate_planner_url("http://[::1]:18888/v1", allow_remote=False)
     # assert_loopback_url (fast-thinking endpoints) only ever accepts IPs
     from rapid_mlx.cua.planner import assert_loopback_url
 

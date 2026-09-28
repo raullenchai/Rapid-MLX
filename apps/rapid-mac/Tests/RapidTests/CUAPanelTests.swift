@@ -397,10 +397,12 @@ struct CUAAddBrainTests {
         vm.newBrainURL = "https://api.example.com/v1/chat/completions"
         vm.newBrainModel = "deepseek-reasoner"
         vm.newBrainAPIKey = "sk-test"
+        vm.newBrainAllowRemote = true
         await vm.saveBrain()
         #expect(api.addedPlanners.count == 1)
         #expect(api.addedPlanners[0].name == "deepseek")
         #expect(api.addedPlanners[0].apiKey == "sk-test")
+        #expect(api.addedPlanners[0].allowRemote == true)
         #expect(vm.showAddBrain == false)
         #expect(vm.brainError == nil)
         #expect(vm.newBrainName.isEmpty)
@@ -431,6 +433,35 @@ struct CUAAddBrainTests {
         vm.newBrainModel = "m"
         #expect(vm.addBrainIsValid == true)
     }
+
+    @MainActor
+    @Test func plannerDisclosureSeparatesMacExecutionFromExternalBrainData() {
+        let vm = CUAViewModel(api: MockAgentAPI())
+        vm.plannerName = "external"
+        vm.plannerOptions = [
+            CUAPlannerOption(
+                name: "external", model: "m", url: "https://planner.example/v1",
+                textOnly: false, allowRemote: true
+            )
+        ]
+        #expect(vm.plannerDisclosure.contains("Actions run on this Mac"))
+        #expect(vm.plannerDisclosure.contains("external brain"))
+        #expect(vm.plannerDisclosure.contains("screenshot"))
+
+        vm.plannerOptions[0].textOnly = true
+        #expect(!vm.plannerDisclosure.contains("screenshot"))
+        #expect(vm.plannerDisclosure.contains("Accessibility snapshot"))
+    }
+
+    @MainActor
+    @Test func loopbackEndpointClassificationMatchesServerRules() {
+        #expect(CUAViewModel.isLoopbackEndpoint("http://localhost:1234/v1"))
+        #expect(CUAViewModel.isLoopbackEndpoint("http://localhost.:1234/v1"))
+        #expect(CUAViewModel.isLoopbackEndpoint("http://127.0.0.1:1234/v1"))
+        #expect(CUAViewModel.isLoopbackEndpoint("http://[::1]:1234/v1"))
+        #expect(!CUAViewModel.isLoopbackEndpoint("https://planner.example/v1"))
+        #expect(!CUAViewModel.isLoopbackEndpoint("not a url"))
+    }
 }
 
 @Suite(.serialized)
@@ -447,9 +478,10 @@ struct CUAPlannerDecodeTests {
     }
 
     @Test func decodesSnakeCaseFields() throws {
-        let full = #"{"name":"my-cloud","model":"m","url":"https://x/v1","text_only":false,"note":"","has_api_key":true,"user_created":true}"#
+        let full = #"{"name":"my-cloud","model":"m","url":"https://x/v1","text_only":false,"note":"","has_api_key":true,"user_created":true,"allow_remote":true}"#
         let option = try JSONDecoder().decode(CUAPlannerOption.self, from: Data(full.utf8))
         #expect(option.hasApiKey == true)
         #expect(option.userCreated == true)
+        #expect(option.allowRemote == true)
     }
 }

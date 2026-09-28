@@ -158,22 +158,19 @@ def validate_planner_url(url: str, allow_remote: bool = False) -> str:
     task screenshots and goals leave the machine, so plaintext HTTP to a
     remote brain is rejected outright.
     """
-    import ipaddress
     from urllib.parse import urlparse
+
+    from .config import is_loopback_url
 
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise ValueError(f"planner URL must be HTTP(S): {url!r}")
-    try:
-        address = ipaddress.ip_address(parsed.hostname)
-    except ValueError:
-        address = None  # hostname (api.example.com): remote by definition
-    if address is not None and address.is_loopback:
+    if is_loopback_url(url):
         return url
     if not allow_remote:
         raise ValueError(
-            "planner URL must be loopback unless the user configured this "
-            f"brain with credentials: {url!r}"
+            "planner URL must be loopback unless the user explicitly allowed "
+            f"task data to leave this Mac: {url!r}"
         )
     if parsed.scheme != "https":
         raise ValueError(

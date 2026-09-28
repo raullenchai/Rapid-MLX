@@ -126,12 +126,14 @@ def test_planner_crud_roundtrip(client):
             "model": "deepseek-reasoner",
             "api_key": "sk-secret",
             "text_only": True,
+            "allow_remote": True,
         },
     )
     assert created.status_code == 201
     assert created.json()["name"] == "my-cloud"
     assert created.json()["has_api_key"] is True
     assert created.json()["user_created"] is True
+    assert created.json()["allow_remote"] is True
 
     listed = test_client.get("/v1/cua/planners", headers=AUTH).json()
     entry = next(p for p in listed if p["name"] == "my-cloud")
@@ -159,6 +161,7 @@ def test_planner_created_from_settings_base_url_is_runnable(client):
             "url": "https://api.example.com/v1",
             "model": "m",
             "api_key": "sk-secret",
+            "allow_remote": True,
         },
     )
     assert created.status_code == 201
@@ -179,10 +182,53 @@ def test_planner_create_rejects_plaintext_remote(client):
             "url": "http://api.example.com/v1/chat/completions",
             "model": "m",
             "api_key": "sk-x",
+            "allow_remote": True,
         },
     )
     assert response.status_code == 422
     assert "HTTPS" in response.json()["detail"]
+
+
+def test_keyless_https_planner_requires_and_preserves_remote_consent(client):
+    denied = client.post(
+        "/v1/cua/planners",
+        headers=AUTH,
+        json={"name": "keyless", "url": "https://planner.example/v1", "model": "m"},
+    )
+    assert denied.status_code == 422
+    assert "explicit consent" in denied.json()["detail"]
+
+    created = client.post(
+        "/v1/cua/planners",
+        headers=AUTH,
+        json={
+            "name": "keyless",
+            "url": "https://planner.example/v1",
+            "model": "m",
+            "allow_remote": True,
+            "text_only": True,
+        },
+    )
+    assert created.status_code == 201
+    assert created.json()["has_api_key"] is False
+    assert created.json()["allow_remote"] is True
+    assert _post_run(client, planner="keyless").status_code == 202
+
+
+def test_loopback_planner_needs_neither_key_nor_remote_consent(client):
+    created = client.post(
+        "/v1/cua/planners",
+        headers=AUTH,
+        json={
+            "name": "local-custom",
+            "url": "http://localhost:1234/v1",
+            "model": "m",
+        },
+    )
+    assert created.status_code == 201
+    assert created.json()["has_api_key"] is False
+    assert created.json()["allow_remote"] is False
+    assert _post_run(client, planner="local-custom").status_code == 202
 
 
 def test_run_lifecycle_done(client):

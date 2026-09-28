@@ -32,14 +32,11 @@ class CUAPlannerInfo(BaseModel):
     note: str = ""
     has_api_key: bool = False
     user_created: bool = False
+    allow_remote: bool = False
 
 
 class CUAPlannerCreateRequest(BaseModel):
-    """User adds a cloud brain from the app settings.
-
-    Providing api_key is the user's explicit consent to send task data to
-    this endpoint; remote URLs must be HTTPS (validated on save).
-    """
+    """User adds an OpenAI-compatible planner endpoint from app settings."""
 
     name: str = Field(min_length=1, max_length=32)
     url: str = Field(min_length=8, max_length=2000)
@@ -47,6 +44,7 @@ class CUAPlannerCreateRequest(BaseModel):
     api_key: str | None = Field(default=None, max_length=2000)
     reasoning_effort: str | None = Field(default=None, max_length=20)
     text_only: bool = False
+    allow_remote: bool = False
 
 
 class CUARunCreateRequest(BaseModel):
@@ -114,6 +112,9 @@ async def list_planners() -> list[CUAPlannerInfo]:
             note=preset.get("note", ""),
             has_api_key=bool(preset.get("api_key")),
             user_created=bool(preset.get("user_created", False)),
+            allow_remote=bool(
+                preset.get("allow_remote", bool(preset.get("api_key")))
+            ),
         )
         for name, preset in sorted(presets.items())
     ]
@@ -129,6 +130,7 @@ async def create_planner(request: CUAPlannerCreateRequest) -> CUAPlannerInfo:
             api_key=request.api_key or None,
             reasoning_effort=request.reasoning_effort,
             text_only=request.text_only,
+            allow_remote=request.allow_remote,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -140,6 +142,7 @@ async def create_planner(request: CUAPlannerCreateRequest) -> CUAPlannerInfo:
         note=preset.get("note", ""),
         has_api_key=bool(preset.get("api_key")),
         user_created=True,
+        allow_remote=bool(preset.get("allow_remote", False)),
     )
 
 

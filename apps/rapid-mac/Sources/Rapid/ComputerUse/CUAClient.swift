@@ -9,6 +9,7 @@ struct CUAPlannerOption: Codable, Equatable, Identifiable, Sendable {
     var note: String
     var hasApiKey: Bool
     var userCreated: Bool
+    var allowRemote: Bool
 
     var id: String { name }
 
@@ -23,7 +24,8 @@ struct CUAPlannerOption: Codable, Equatable, Identifiable, Sendable {
         textOnly: Bool,
         note: String = "",
         hasApiKey: Bool = false,
-        userCreated: Bool = false
+        userCreated: Bool = false,
+        allowRemote: Bool = false
     ) {
         self.name = name
         self.model = model
@@ -32,6 +34,7 @@ struct CUAPlannerOption: Codable, Equatable, Identifiable, Sendable {
         self.note = note
         self.hasApiKey = hasApiKey
         self.userCreated = userCreated
+        self.allowRemote = allowRemote
     }
 
     init(from decoder: Decoder) throws {
@@ -44,6 +47,7 @@ struct CUAPlannerOption: Codable, Equatable, Identifiable, Sendable {
         // Tolerate older sidecars that predate the settings feature.
         hasApiKey = try container.decodeIfPresent(Bool.self, forKey: .hasApiKey) ?? false
         userCreated = try container.decodeIfPresent(Bool.self, forKey: .userCreated) ?? false
+        allowRemote = try container.decodeIfPresent(Bool.self, forKey: .allowRemote) ?? false
     }
 
     enum CodingKeys: String, CodingKey {
@@ -51,11 +55,11 @@ struct CUAPlannerOption: Codable, Equatable, Identifiable, Sendable {
         case textOnly = "text_only"
         case hasApiKey = "has_api_key"
         case userCreated = "user_created"
+        case allowRemote = "allow_remote"
     }
 }
 
-/// Body for `POST /v1/cua/planners` (user adds a cloud brain in settings).
-/// Supplying apiKey is the user's consent to send task data to that endpoint.
+/// Body for `POST /v1/cua/planners` (user adds a planner endpoint in settings).
 struct CUAPlannerCreateRequest: Codable, Equatable, Sendable {
     var name: String
     var url: String
@@ -63,12 +67,14 @@ struct CUAPlannerCreateRequest: Codable, Equatable, Sendable {
     var apiKey: String?
     var reasoningEffort: String?
     var textOnly: Bool
+    var allowRemote: Bool
 
     enum CodingKeys: String, CodingKey {
         case name, url, model
         case apiKey = "api_key"
         case reasoningEffort = "reasoning_effort"
         case textOnly = "text_only"
+        case allowRemote = "allow_remote"
     }
 }
 
