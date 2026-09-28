@@ -847,6 +847,63 @@ def test_fast_ranker_rejects_non_loopback():
         FastOutcomeRanker("https://ranker.example/v1/rank")
 
 
+def test_cua_http_clients_ignore_ambient_proxy(monkeypatch):
+    """A local planner/ranker must not send task data through HTTP_PROXY."""
+    import asyncio
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    import httpx
+
+    from rapid_mlx.cua.fast import FastOutcomeRanker
+    from rapid_mlx.cua.planner import Planner
+
+    intercepted = []
+
+    class Proxy(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802 - stdlib handler protocol
+            intercepted.append(self.rfile.read(int(self.headers["Content-Length"])))
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, *_args):
+            pass
+
+    proxy = ThreadingHTTPServer(("127.0.0.1", 0), Proxy)
+    worker = threading.Thread(target=proxy.serve_forever, daemon=True)
+    worker.start()
+    monkeypatch.setenv("HTTP_PROXY", f"http://127.0.0.1:{proxy.server_port}")
+    monkeypatch.setenv("ALL_PROXY", f"http://127.0.0.1:{proxy.server_port}")
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.delenv("no_proxy", raising=False)
+
+    async def exercise():
+        # Prove this environment routes an ordinary httpx client to the proxy.
+        async with httpx.AsyncClient() as default_client:
+            await default_client.post("http://127.0.0.1:1/v1", json={"probe": True})
+        assert len(intercepted) == 1
+
+        clients = [
+            Planner(url="http://127.0.0.1:1/v1", model="local"),
+            FastOutcomeRanker(url="http://127.0.0.1:1/v1/rank"),
+        ]
+        try:
+            for client in clients:
+                with pytest.raises(httpx.ConnectError):
+                    await client.client.post(client.url, json={"private": "task data"})
+            assert len(intercepted) == 1
+        finally:
+            for client in clients:
+                await client.close()
+
+    try:
+        asyncio.run(exercise())
+    finally:
+        proxy.shutdown()
+        proxy.server_close()
+        worker.join(timeout=2)
+
+
 def test_data_url_roundtrip():
     import base64
     import io as _io

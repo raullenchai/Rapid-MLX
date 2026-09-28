@@ -198,7 +198,9 @@ class Planner:
         self.text_only = text_only
         self.api_key = api_key
         self.guided_json = True
-        self.client = httpx.AsyncClient(timeout=timeout)
+        # Ambient HTTP_PROXY can route a loopback planner through a remote proxy.
+        # Endpoint selection and remote-data consent must control the transport.
+        self.client = httpx.AsyncClient(timeout=timeout, trust_env=False)
 
     async def close(self) -> None:
         await self.client.aclose()

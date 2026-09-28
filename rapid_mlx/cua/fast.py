@@ -31,7 +31,8 @@ class FastOutcomeRanker:
     def __init__(self, url: str, model: str = RANKER_MODEL, timeout: float = 10.0):
         self.url = assert_loopback_url(url)
         self.model = model
-        self.client = httpx.AsyncClient(timeout=timeout)
+        # The ranker is local-only; never inherit an ambient HTTP proxy.
+        self.client = httpx.AsyncClient(timeout=timeout, trust_env=False)
 
     async def close(self) -> None:
         await self.client.aclose()

@@ -49,10 +49,14 @@ copy, and build integration.
   Legacy keyless remote presets stay denied until deleted/re-saved with explicit
   consent. This is intentional because they never ran under the previous code.
 - Planner list responses expose only `has_api_key`, never key material.
+- Planner and local ranker HTTP clients ignore ambient proxy variables. A
+  loopback URL is contacted directly, so `HTTP_PROXY` cannot route task data
+  out of the machine without the configured remote endpoint consent.
 
 ## Verification evidence
 
-- `python3.12 -m pytest tests/test_cua.py -q`: 77 passed.
+- `python3.12 -m pytest tests/test_cua.py -q`: 78 passed, including a local
+  proxy interception regression for both HTTP clients.
 - `python3.12 -m pytest tests/test_cua_server.py -q -k 'not real_server'`:
   19 passed, 2 deselected. The two real-server import tests abort in the local
   MLX native import path; all route/config tests completed.
