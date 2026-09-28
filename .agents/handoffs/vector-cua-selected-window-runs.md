@@ -3,7 +3,7 @@
 - Owner: Vector
 - Branch: `vector/cua-selected-window-runs`
 - Worktree: `/private/tmp/harbor-desk-cua-selected-window-runs`
-- Base: `7acf2e9b455d08864ce3fd7f88dddffdd933334e`
+- Base: `77470c78ff8d51b72867deddbf85ad86c962c290`
 - Receiving role: Atlas for integration sequencing
 
 ## Scope and verified behavior
@@ -16,7 +16,9 @@ window after planning and after approval, and stop with a typed window error if
 the window closes, is replaced, or moves. `open_url` is rejected when a window
 is selected. The validated PID is also frozen for state collection, trusted URL
 reads, focused-window checks, AX element recollection, and actions; app identity
-drift fails closed. Runs without `window_id` retain their existing call shape.
+drift fails closed. Trusted browser URL matching accepts the normalized bundle
+IDs produced by discovery and rejects duplicate same-bundle processes. Runs
+without `window_id` retain their existing call shape.
 
 Capability `features.window_selection` is now true. Visual observation and a
 raw action API remain outside this branch.
@@ -32,9 +34,7 @@ applied. This note is private and must not be copied into external PR text.
 ## Verification
 
 - `ruff check` on all changed Python files: passed.
-- `pytest tests/test_cua_server.py -q -k 'not real_server'`: 30 passed,
-  2 deselected.
-- `pytest tests/test_cua.py tests/test_computer_use.py -q`: 145 passed.
+- Combined computer-use, loop, and server suite: 173 passed, 2 deselected.
 - The two real-server import tests abort in the local native MLX extension
   during module import; all server tests before that point and the isolated
   selected-window contract tests pass.

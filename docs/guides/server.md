@@ -154,6 +154,36 @@ are marked; multimodal and MCP surfaces link to their own guides.
 | `/v1/cua/runs/{id}/approval` | POST | Resolve the current gate with `{"gate_id": "...", "approved": true|false}` |
 | `/v1/cua/runs/{id}/cancel` | POST | Cancel a run |
 
+### Custom computer-use clients
+
+A client can target one discovered window by taking its opaque `window_id` from
+`GET /v1/cua/apps/{app}/windows` and including it in the run request:
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/cua/runs \
+  -H "Authorization: Bearer $RAPID_MLX_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "app": "Safari",
+    "window_id": "cg:12345",
+    "goal": "Open the account settings",
+    "allowed_domain": "example.com"
+  }'
+```
+
+The server validates that the window belongs to the resolved app process before
+accepting the run, freezes the canonical ID, and returns `window_id` in create,
+list, run-view, and event-poll responses. Keep the ID opaque and rediscover
+windows before retrying a stopped run.
+
+Selected-window runs fail closed if the app identity changes or the window is
+closed, replaced, moved, or resized. They also stop if the planned control
+changes before input is dispatched. Domain-restricted browser runs stop when a
+trusted URL cannot be tied unambiguously to the selected browser process,
+including when multiple browser processes expose the same application bundle.
+`open_url` cannot be combined with `window_id`, because opening a URL can change
+which window is targeted.
+
 For lazy or idle-unload deployments, `/metrics` always exposes primary-model
 residency and lifecycle series even while the engine is in standby:
 `rapid_mlx_model_loaded`, the one-hot `rapid_mlx_model_lifecycle_state`, load

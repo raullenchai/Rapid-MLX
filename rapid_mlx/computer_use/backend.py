@@ -1111,6 +1111,7 @@ def read_url(app: str, window_id: int | str | None = None) -> str:
         bundle_id = str(app_info.get("bundleId") or "")
         if not re.fullmatch(r"[A-Za-z0-9.-]+", bundle_id):
             return ""
+        bundle_key = bundle_id.lower()
         if app.startswith("pid:"):
             workspace = (
                 ax_driver.AS.NSWorkspace.sharedWorkspace() if ax_driver.AS else None
@@ -1120,15 +1121,18 @@ def read_url(app: str, window_id: int | str | None = None) -> str:
             same_bundle_pids = {
                 int(running.processIdentifier())
                 for running in workspace.runningApplications()
-                if (running.bundleIdentifier() or "").lower() == bundle_id.lower()
+                if (running.bundleIdentifier() or "").lower() == bundle_key
                 and running.activationPolicy() == 0
             }
             if same_bundle_pids != {int(app_info["pid"])}:
                 return ""
-        if bundle_id in {"com.apple.Safari", "com.apple.SafariTechnologyPreview"}:
+        if bundle_key in {
+            "com.apple.safari",
+            "com.apple.safaritechnologypreview",
+        }:
             tab_property = "current tab"
-        elif bundle_id.startswith(
-            ("com.google.Chrome", "com.microsoft.edgemac", "org.chromium.Chromium")
+        elif bundle_key.startswith(
+            ("com.google.chrome", "com.microsoft.edgemac", "org.chromium.chromium")
         ):
             tab_property = "active tab"
         else:

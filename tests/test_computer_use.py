@@ -186,6 +186,24 @@ def test_read_url_uses_trusted_active_tab_and_fails_closed(monkeypatch):
         'tell application id "com.apple.Safari" to get URL of current tab of front window',
     ]
 
+    # _resolve_app normalizes bundle IDs to lowercase; supported-browser
+    # matching must use the same normalization.
+    app_info["bundleId"] = "com.apple.safari"
+    assert backend.read_url("Safari") == "https://ok.example"
+    assert captured["cmd"] == [
+        "osascript",
+        "-e",
+        'tell application id "com.apple.safari" to get URL of current tab of front window',
+    ]
+
+    app_info["bundleId"] = "com.google.chrome"
+    assert backend.read_url("Chrome") == "https://ok.example"
+    assert captured["cmd"] == [
+        "osascript",
+        "-e",
+        'tell application id "com.google.chrome" to get URL of active tab of front window',
+    ]
+
     monkeypatch.setattr(
         backend.subprocess,
         "run",
