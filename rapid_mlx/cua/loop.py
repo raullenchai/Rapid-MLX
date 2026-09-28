@@ -395,8 +395,25 @@ class CUARun:
                 "latency_s": round(latency, 2),
             }
         )
-        if plan["action"] == "done":
+        if plan["action"] in {"done", "partial", "blocked"}:
             if self._last_execution_failed:
+                if plan["action"] != "done":
+                    summary = plan["final_summary"]
+                    self.trace["final_summary"] = summary
+                    self.trace["completion_disposition"] = plan["action"]
+                    self._record(
+                        {
+                            "step": step_no,
+                            "plan": plan,
+                            "latency_s": latency,
+                            "completion_disposition": plan["action"],
+                        }
+                    )
+                    return {
+                        "status": "stalled",
+                        "reason": summary,
+                        "completion_disposition": plan["action"],
+                    }
                 self._failed_completion_rejections += 1
                 reason = (
                     "the previous action failed; use the fresh observation to recover"
@@ -423,8 +440,22 @@ class CUARun:
                     return {"status": "stopped", "reason": reason}
                 return None
             self.trace["final_summary"] = plan["final_summary"]
-            self._record({"step": step_no, "plan": plan, "latency_s": latency})
-            return {"status": "done", "summary": plan["final_summary"]}
+            self.trace["completion_disposition"] = plan["action"]
+            self._record(
+                {
+                    "step": step_no,
+                    "plan": plan,
+                    "latency_s": latency,
+                    "completion_disposition": plan["action"],
+                }
+            )
+            if plan["action"] == "done":
+                return {"status": "done", "summary": plan["final_summary"]}
+            return {
+                "status": "stalled",
+                "reason": plan["final_summary"],
+                "completion_disposition": plan["action"],
+            }
 
         if self.config.human_login and gates.looks_like_sign_in(snapshot):
             approved = await self._request_signin_approval()

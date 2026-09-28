@@ -103,6 +103,20 @@ def test_done_requires_summary():
         validate_plan({"action": "done", "step_instruction": "x", "final_summary": ""})
 
 
+@pytest.mark.parametrize("action", ["partial", "blocked"])
+def test_incomplete_terminal_dispositions_require_summary(action):
+    with pytest.raises(ValueError, match=action):
+        validate_plan({"action": action, "step_instruction": "x", "final_summary": ""})
+    plan = validate_plan(
+        {
+            "action": action,
+            "step_instruction": "stop honestly",
+            "final_summary": "The edit succeeded, but saving could not be verified.",
+        }
+    )
+    assert plan["action"] == action
+
+
 def test_sensitive_plan_rejected():
     with pytest.raises(ValueError, match="credentials"):
         validate_plan(
@@ -364,6 +378,76 @@ def test_loop_done_path(config_dir, fake_backend, tmp_path, monkeypatch):
     assert trace["status"] == "done"
     assert trace["final_summary"] == "opened Apple Silicon"
     assert len(trace["steps"]) == 2
+
+
+@pytest.mark.parametrize("disposition", ["partial", "blocked"])
+def test_incomplete_disposition_never_becomes_completed(
+    disposition, config_dir, fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    events: list[dict] = []
+    summary = (
+        "The text was updated, but saving could not be verified; persistence "
+        "is unconfirmed."
+    )
+    planner = _FakePlanner(
+        [
+            {
+                "action": "fill",
+                "step_instruction": "update the document text",
+                "element_index": 1,
+                "text": "updated text",
+                "final_summary": "",
+            },
+            {
+                "action": "click",
+                "step_instruction": "open document actions",
+                "element_index": 1,
+                "final_summary": "",
+            },
+            {
+                "action": "click",
+                "step_instruction": "open document actions",
+                "element_index": 1,
+                "final_summary": "",
+            },
+            {
+                "action": disposition,
+                "step_instruction": "report the incomplete task",
+                "final_summary": summary,
+            },
+        ]
+    )
+
+    trace = asyncio.run(
+        loop_mod.run(
+            _make_config(tmp_path),
+            "TextEdit",
+            "update and save the document",
+            max_steps=5,
+            planner=planner,
+            event_sink=events.append,
+        )
+    )
+
+    assert trace["status"] == "stalled"
+    assert trace["completion_disposition"] == disposition
+    assert trace["final_summary"] == summary
+    executed = [event for event in events if event["kind"] == "executed"]
+    assert [event["outcome"] for event in executed] == [
+        "success",
+        "uncertain",
+        "uncertain",
+    ]
+    assert [event["action"] for event in executed] == ["fill", "click", "click"]
+    terminal = next(event for event in events if event["kind"] == "terminal")
+    assert terminal["status"] == "stalled"
+    assert terminal["reason"] == summary
+    assert terminal["final_summary"] == summary
 
 
 def test_loop_honors_a_preexisting_stop_request(

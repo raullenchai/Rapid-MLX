@@ -460,6 +460,46 @@ def test_run_lifecycle_done(client):
     assert listed.json()["runs"][0]["run_id"] == run_id
 
 
+def test_stalled_completion_disposition_never_counts_as_completed(client, monkeypatch):
+    from rapid_mlx.cua import service as cua_service
+
+    summary = "The edit succeeded, but persistence could not be verified."
+
+    async def partial_run(*args, **kwargs):
+        sink = kwargs.get("event_sink")
+        if sink is not None:
+            sink(
+                {
+                    "kind": "terminal",
+                    "status": "stalled",
+                    "reason": summary,
+                    "final_summary": summary,
+                }
+            )
+        return {
+            "status": "stalled",
+            "final_summary": summary,
+            "completion_disposition": "partial",
+        }
+
+    monkeypatch.setattr(cua_service, "run_loop", partial_run)
+    created = _post_run(client)
+    run_id = created.json()["run_id"]
+
+    import time
+
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        view = client.get(f"/v1/cua/runs/{run_id}", headers=AUTH).json()
+        if view["status"] != "running":
+            break
+        time.sleep(0.05)
+
+    assert view["status"] == "stalled"
+    assert view["final_summary"] == summary
+    assert view["events"][-1]["status"] == "stalled"
+
+
 def test_create_rejects_bad_planner_and_concurrency(client):
     test_client = client
     fresh = client.fresh_service

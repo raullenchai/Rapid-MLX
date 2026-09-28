@@ -21,7 +21,16 @@ PLAN_SCHEMA = {
     "properties": {
         "action": {
             "type": "string",
-            "enum": ["click", "fill", "press", "scroll", "wait", "done"],
+            "enum": [
+                "click",
+                "fill",
+                "press",
+                "scroll",
+                "wait",
+                "done",
+                "partial",
+                "blocked",
+            ],
         },
         "step_instruction": {"type": "string"},
         "element_index": {"type": "integer"},
@@ -128,7 +137,16 @@ def validate_plan(
     raw: dict[str, Any], valid_indexes: set[int] | None = None
 ) -> dict[str, Any]:
     action = str(raw.get("action", "")).lower()
-    if action not in {"click", "fill", "press", "scroll", "wait", "done"}:
+    if action not in {
+        "click",
+        "fill",
+        "press",
+        "scroll",
+        "wait",
+        "done",
+        "partial",
+        "blocked",
+    }:
         raise ValueError(f"unsupported action: {action!r}")
     raw["action"] = action
     raw["step_instruction"] = str(raw.get("step_instruction", "")).strip()
@@ -157,8 +175,8 @@ def validate_plan(
         raw["direction"] = "up" if raw.get("direction") == "up" else "down"
     else:
         raw["direction"] = ""
-    if action == "done" and not raw["final_summary"]:
-        raise ValueError("done requires a non-empty final_summary")
+    if action in {"done", "partial", "blocked"} and not raw["final_summary"]:
+        raise ValueError(f"{action} requires a non-empty final_summary")
     return raw
 
 
@@ -357,7 +375,9 @@ Actions:
 - press: focus an element then send one key (Enter/Escape/Tab/ArrowDown/ArrowUp/Space); use press Enter after fill to submit a search or form
 - scroll: direction up/down
 - wait: settle (popups, loads)
-- done: finish. final_summary must state what was accomplished with concrete evidence from the page.
+- done: every required part of the goal is verified complete. final_summary must state concrete evidence.
+- partial: some work succeeded, but a required part is unmet or unverified. final_summary must state both progress and the blocker.
+- blocked: no safe path remains. final_summary must state the blocker and any app changes already made.
 
 {guard_text}
 {domain_text}
@@ -376,7 +396,7 @@ Accessibility snapshot (element indexes + labels):
 {snapshot.get("tree_text", "")[:7000]}
 
 Return JSON only:
-{{"action":"click|fill|press|scroll|wait|done",
+{{"action":"click|fill|press|scroll|wait|done|partial|blocked",
   "step_instruction":"...",
   "element_index":0, "text":"", "key":"", "direction":"down",
   "final_summary":""}}
@@ -439,8 +459,8 @@ Invalid response:
 {text}
 
 Rules: click/fill/press need a valid element_index from the snapshot;
-press key must be one of {sorted(ALLOWED_KEYS)}; done needs a non-empty
-final_summary; never reference credentials or payment secrets.
+press key must be one of {sorted(ALLOWED_KEYS)}; done/partial/blocked need a
+non-empty final_summary; never reference credentials or payment secrets.
 """
             text = await self._ask(
                 list(content) + [{"type": "text", "text": repair_prompt[:2400]}],
