@@ -65,4 +65,12 @@
   classified until the action contract provides stronger semantics.
 - Pixel should render gate event `action` and `target` in the existing approval UI. The
   backend event is backward compatible, but the present panel was intentionally untouched.
-- Next action: independent diff review against this contract, then commit/push and draft PR.
+- Draft PR: https://github.com/raullenchai/Rapid-MLX/pull/3825. Atlas independently
+  reviewed the classifier, gate/service races, and positive/negative tests. Keep Draft
+  until the stable-window dependency lands.
+- The required automated reviewer on `spark2` could not run because that host's Codex
+  refresh token is expired (HTTP 401). Retry the review loop after host authentication is
+  restored; no review verdict was produced.
+- Completion FYI for Atlas, Pixel, Vector, Echo, and ds0731: implementation and focused
+  tests are complete; affected subsystem is local CUA approval only; known rollout risk is
+  the missing stable window ID on current `main`; Pixel owns the separate display follow-up.
