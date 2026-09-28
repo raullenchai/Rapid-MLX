@@ -130,8 +130,10 @@ the IP address is never stored. Source is open at
 ## Anonymous first-run funnel
 
 Official Desktop builds send a separate one-time milestone request to measure
-where first setup stops. Each milestone is sent at most once per install. A
-failed request is not retried. The milestones are:
+where first setup stops. Each milestone's first eligible occurrence is consumed
+whether or not sending is allowed then; a later occurrence is never substituted.
+When allowed, it is attempted at most once per install, and a failed request is
+not retried. The milestones are:
 `onboarding_shown`, `model_download_started`, `model_download_completed`,
 `model_download_failed`, `engine_ready`, `engine_start_failed`, and
 `first_chat_reply`.

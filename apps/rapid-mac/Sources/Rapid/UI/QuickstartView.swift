@@ -1626,13 +1626,15 @@ struct QuickstartView: View {
             // it with an eligible cached model, but an immediate Skip can
             // never leak the static 16 GB starter onto a smaller Mac.
             .onAppear {
-                if let token = coordinator.enrollDesktopFunnelFlowIfNeeded() {
-                    DesktopFunnelReporter.enqueueOnboardingShown(flowToken: token)
-                }
                 coordinator.applyDefaultChoice(
                     hardware: hardware,
                     catalog: catalogLoaded ? cachedModels : []
                 )
+            }
+            .onAppear {
+                if let token = coordinator.enrollDesktopFunnelFlowIfNeeded() {
+                    DesktopFunnelReporter.enqueueOnboardingShown(flowToken: token)
+                }
             }
             // Observe serve transitions so we can flip to ``.ready`` (and
             // seed the welcome message) as soon as the sidecar comes

@@ -165,17 +165,18 @@ actor DesktopFunnelReporter {
                       cohortPath: cohortMarkerURL.path
                   ) else { return }
         }
-        guard Self.processState.allowsSending,
-              isEnabled() else { return }
-
         let marker = markerURL(for: milestone)
         guard !FileManager.default.fileExists(atPath: marker.path) else { return }
-        guard let request = Self.request(version: version, milestone: milestone) else { return }
-        guard Self.processState.allowsSending, isEnabled() else { return }
-        // The durable claim is the delivery boundary. Once it succeeds this
-        // milestone is never attempted again, even if transport fails.
+        // The first eligible occurrence is the measurement boundary, even
+        // when a privacy or environment gate blocks transport at that moment.
+        // Claim before evaluating those gates so a later opt-in cannot turn a
+        // later occurrence into a misleading "first" milestone.
         guard claimMarker(at: marker) else { return }
-        guard Self.processState.allowsSending, isEnabled() else { return }
+        guard let request = Self.request(version: version, milestone: milestone) else { return }
+        // Read the synchronous latch last: evaluating the other gates may race
+        // with (or itself observe) a Settings opt-out, which must still stop
+        // transport after the milestone has been consumed.
+        guard isEnabled(), Self.processState.allowsSending else { return }
         await send(request)
     }
 

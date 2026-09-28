@@ -333,6 +333,44 @@ struct DesktopFunnelReporterTests {
         ))
     }
 
+    @Test("Every milestone consumes its first opportunity while sending is gated off")
+    func gatedFirstOpportunityIsNeverReplacedByALaterEvent() async throws {
+        let directory = temporaryDirectory("first-opportunity")
+        defer {
+            DesktopFunnelReporter.resetProcessStateForTesting()
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let probe = FunnelSendProbe()
+        let blocked = DesktopFunnelReporter(
+            isEnabled: { false },
+            send: { request in await probe.send(request) },
+            markerDirectory: directory,
+            version: "0.15.3"
+        )
+        let token = try #require(await blocked.beginFirstRunFlow(isFirstRun: true))
+
+        for milestone in DesktopFunnelReporter.Milestone.allCases {
+            await blocked.report(milestone, flowToken: token)
+        }
+
+        let optedInLater = DesktopFunnelReporter(
+            isEnabled: { true },
+            send: { request in await probe.send(request) },
+            markerDirectory: directory,
+            version: "0.15.3"
+        )
+        for milestone in DesktopFunnelReporter.Milestone.allCases {
+            await optedInLater.report(milestone, flowToken: token)
+        }
+
+        #expect(await probe.count == 0)
+        for milestone in DesktopFunnelReporter.Milestone.allCases {
+            #expect(FileManager.default.fileExists(
+                atPath: marker("desktop_funnel_\(milestone.rawValue)", in: directory).path
+            ))
+        }
+    }
+
     @Test("Cohort enrollment and milestone claim survive a failed onboarding delivery")
     func cohortMarkerIsIndependentOfNetwork() async throws {
         let directory = temporaryDirectory("offline-enrollment")
@@ -553,6 +591,12 @@ struct DesktopFunnelReporterTests {
         await blockedAtSecondGate.report(.firstChatReply)
 
         #expect(await probe.count == 0)
+        #expect(FileManager.default.fileExists(
+            atPath: marker("desktop_funnel_first_chat_reply", in: firstDirectory).path
+        ))
+        #expect(FileManager.default.fileExists(
+            atPath: marker("desktop_funnel_first_chat_reply", in: secondDirectory).path
+        ))
     }
 
     @Test("Settings opt-out latch flipping during claim blocks transport")
@@ -659,7 +703,7 @@ struct DesktopFunnelReporterTests {
         await reporter.report(.firstChatReply)
 
         #expect(await probe.count == 0)
-        #expect(!FileManager.default.fileExists(
+        #expect(FileManager.default.fileExists(
             atPath: marker("desktop_funnel_first_chat_reply", in: directory).path
         ))
     }
