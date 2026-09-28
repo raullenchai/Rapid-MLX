@@ -24,7 +24,9 @@ can actually understand.
   never enter the cohort. The counters measure aggregate onboarding, download,
   engine-start, and first-reply drop-off. The request contains only the app
   version and a closed milestone name, honors telemetry and update-check
-  opt-outs, and is documented in `PRIVACY.md`.
+  opt-outs, and is documented in `PRIVACY.md`. Existing and incomplete installs
+  are durably excluded, only the engine start caused by first-run setup is
+  counted, and development or dogfood packages cannot enable the sender.
 
 ## [0.15.2] — 2026-09-24
 

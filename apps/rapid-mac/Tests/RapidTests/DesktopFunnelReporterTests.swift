@@ -92,6 +92,32 @@ struct DesktopFunnelReporterTests {
         ))
     }
 
+    @Test("A resolved response is not resent this process when marker persistence fails")
+    func postSuccessMarkerFailureStaysResolvedInProcess() async throws {
+        let directory = temporaryDirectory("marker-failure")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try enroll(directory)
+        let probe = FunnelSendProbe(results: [204, 204])
+
+        func makeReporter() -> DesktopFunnelReporter {
+            DesktopFunnelReporter(
+                isEnabled: { true },
+                send: { request in await probe.send(request) },
+                markerDirectory: directory,
+                version: "0.15.3",
+                claimMarker: { _ in false }
+            )
+        }
+
+        await makeReporter().report(.firstChatReply)
+        await makeReporter().report(.firstChatReply)
+
+        #expect(await probe.count == 1)
+        #expect(!FileManager.default.fileExists(
+            atPath: marker("desktop_funnel_first_chat_reply", in: directory).path
+        ))
+    }
+
     @Test("Existing installs without a cohort send none of the six downstream milestones")
     func existingInstallIsNotBackfilled() async {
         let directory = temporaryDirectory("existing")
@@ -167,11 +193,65 @@ struct DesktopFunnelReporterTests {
         ))
     }
 
+    @Test("Upgrade with untouched onboarding is durably excluded before InstallTracker rollover")
+    @MainActor
+    func untouchedUpgradeIsExcluded() {
+        let suite = TestDefaultsScope.mintSuiteName(prefix: "desktop-funnel-upgrade-untouched")
+        defer { TestDefaultsScope.cleanup(suiteNames: [suite]) }
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.set("0.14.0", forKey: InstallTracker.lastSeenVersionKey)
+
+        let hadPreviousLaunch = defaults.string(
+            forKey: InstallTracker.lastSeenVersionKey
+        ) != nil
+        _ = InstallTracker(
+            currentVersion: "0.15.3",
+            currentInfoPlistMtime: Date(),
+            currentBundleURL: URL(fileURLWithPath: "/Applications/Rapid-MLX Desktop.app"),
+            defaults: defaults
+        )
+        let coordinator = QuickstartCoordinator(
+            defaults: defaults,
+            hadPreviousLaunch: hadPreviousLaunch
+        )
+
+        #expect(defaults.string(forKey: InstallTracker.lastSeenVersionKey) == "0.15.3")
+        #expect(coordinator.hasPriorUse)
+        #expect(defaults.bool(forKey: QuickstartCoordinator.priorUseStorageKey))
+        #expect(QuickstartCoordinator(defaults: defaults).hasPriorUse)
+    }
+
+    @Test("Upgrade with incomplete onboarding is durably excluded")
+    @MainActor
+    func incompleteOnboardingUpgradeIsExcluded() {
+        let suite = TestDefaultsScope.mintSuiteName(prefix: "desktop-funnel-upgrade-incomplete")
+        defer { TestDefaultsScope.cleanup(suiteNames: [suite]) }
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.set(true, forKey: QuickstartCoordinator.setupBegunKey)
+
+        let coordinator = QuickstartCoordinator(
+            defaults: defaults,
+            hadPreviousLaunch: false
+        )
+
+        #expect(coordinator.setupBegun)
+        #expect(coordinator.hasPriorUse)
+        #expect(defaults.bool(forKey: QuickstartCoordinator.priorUseStorageKey))
+    }
+
     @Test("Transport and transient HTTP failures retry on a later launch", arguments: [
         nil,
+        100,
+        199,
+        300,
+        301,
+        302,
+        399,
         408,
         429,
         500,
+        599,
+        600,
     ] as [Int?])
     func transientRequestRetriesOnlyInNewReporter(firstStatus: Int?) async throws {
         let directory = temporaryDirectory("retry")
@@ -239,6 +319,32 @@ struct DesktopFunnelReporterTests {
         ))
     }
 
+    @Test("HTTP status boundaries classify only 2xx as accepted and permanent 4xx as discard")
+    func statusBoundaries() {
+        let cases: [(Int?, DesktopFunnelReporter.Delivery)] = [
+            (nil, .retry),
+            (199, .retry),
+            (200, .accepted),
+            (299, .accepted),
+            (300, .retry),
+            (399, .retry),
+            (400, .discard),
+            (407, .discard),
+            (408, .retry),
+            (409, .discard),
+            (428, .discard),
+            (429, .retry),
+            (430, .discard),
+            (499, .discard),
+            (500, .retry),
+            (599, .retry),
+            (600, .retry),
+        ]
+        for (status, expected) in cases {
+            #expect(DesktopFunnelReporter.delivery(for: status) == expected)
+        }
+    }
+
     @Test("Cohort enrollment survives a failed onboarding delivery")
     func cohortMarkerIsIndependentOfNetwork() async {
         let directory = temporaryDirectory("offline-enrollment")
@@ -300,13 +406,193 @@ struct DesktopFunnelReporterTests {
         await expectBlocked(bundleIdentifier: bundleIdentifier)
     }
 
+    @Test("Normal development packaging omits the release-only marker")
+    func developmentPackagingIsIneligible() throws {
+        let appRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let directory = temporaryDirectory("packaging")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let plist = directory.appendingPathComponent("Info.plist")
+        try FileManager.default.copyItem(
+            at: appRoot.appendingPathComponent("Resources/Info.plist"),
+            to: plist
+        )
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = [
+            appRoot.appendingPathComponent(
+                "scripts/configure-desktop-funnel-build.sh"
+            ).path,
+            plist.path,
+            "0",
+        ]
+        try process.run()
+        process.waitUntilExit()
+
+        #expect(process.terminationStatus == 0)
+        let packaged = try PropertyListSerialization.propertyList(
+            from: Data(contentsOf: plist),
+            format: nil
+        ) as? [String: Any]
+        #expect(packaged?[DesktopFunnelReporter.releaseBuildInfoKey] == nil)
+        let buildScript = try String(
+            contentsOf: appRoot.appendingPathComponent("scripts/build.sh"),
+            encoding: .utf8
+        )
+        #expect(buildScript.contains(#""${RAPID_MLX_OFFICIAL_RELEASE:-0}""#),
+                "the actual build.sh default must execute the tested development path")
+        #expect(!DesktopFunnelReporter.gatesAllowSending(
+            telemetryDeclined: false,
+            updateChecksEnabled: true,
+            environment: [:],
+            bundleIdentifier: DesktopFunnelReporter.productionBundleIdentifier,
+            releaseBuild: false
+        ))
+    }
+
+    @Test("Canonical release packaging injects the release-only marker")
+    func releasePackagingIsEligible() throws {
+        let appRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let directory = temporaryDirectory("release-packaging")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let plist = directory.appendingPathComponent("Info.plist")
+        try FileManager.default.copyItem(
+            at: appRoot.appendingPathComponent("Resources/Info.plist"),
+            to: plist
+        )
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = [
+            appRoot.appendingPathComponent(
+                "scripts/configure-desktop-funnel-build.sh"
+            ).path,
+            plist.path,
+            "1",
+            "developer-id-fixture",
+            "TEAMFIXTURE",
+        ]
+        try process.run()
+        process.waitUntilExit()
+
+        #expect(process.terminationStatus == 0)
+        let packaged = try PropertyListSerialization.propertyList(
+            from: Data(contentsOf: plist),
+            format: nil
+        ) as? [String: Any]
+        #expect(packaged?[DesktopFunnelReporter.releaseBuildInfoKey] as? Bool == true)
+    }
+
+    @Test("Ad-hoc packaging cannot inject the release-only marker")
+    func adHocPackagingCannotBecomeEligible() throws {
+        let appRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let directory = temporaryDirectory("adhoc-packaging")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let plist = directory.appendingPathComponent("Info.plist")
+        try FileManager.default.copyItem(
+            at: appRoot.appendingPathComponent("Resources/Info.plist"),
+            to: plist
+        )
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = [
+            appRoot.appendingPathComponent(
+                "scripts/configure-desktop-funnel-build.sh"
+            ).path,
+            plist.path,
+            "1",
+            "-",
+            "",
+        ]
+        process.standardError = Pipe()
+        try process.run()
+        process.waitUntilExit()
+
+        #expect(process.terminationStatus != 0)
+        let packaged = try PropertyListSerialization.propertyList(
+            from: Data(contentsOf: plist),
+            format: nil
+        ) as? [String: Any]
+        #expect(packaged?[DesktopFunnelReporter.releaseBuildInfoKey] == nil)
+    }
+
+    @Test("Settings opt-out latch blocks both report gate evaluations")
+    func immediateOptOutLatchBlocksBeforeAndImmediatelyBeforeTransport() async throws {
+        let firstDirectory = temporaryDirectory("latched-before-report")
+        let secondDirectory = temporaryDirectory("latched-between-gates")
+        defer {
+            DesktopFunnelReporter.resetProcessStateForTesting()
+            try? FileManager.default.removeItem(at: firstDirectory)
+            try? FileManager.default.removeItem(at: secondDirectory)
+        }
+        try enroll(firstDirectory)
+        try enroll(secondDirectory)
+        let probe = FunnelSendProbe()
+
+        DesktopFunnelReporter.latchProcessOptOut()
+        let blockedAtFirstGate = DesktopFunnelReporter(
+            isEnabled: { true },
+            send: { request in await probe.send(request) },
+            markerDirectory: firstDirectory,
+            version: "0.15.3"
+        )
+        await blockedAtFirstGate.report(.firstChatReply)
+
+        DesktopFunnelReporter.resetProcessStateForTesting()
+        let blockedAtSecondGate = DesktopFunnelReporter(
+            isEnabled: {
+                DesktopFunnelReporter.latchProcessOptOut()
+                return true
+            },
+            send: { request in await probe.send(request) },
+            markerDirectory: secondDirectory,
+            version: "0.15.3"
+        )
+        await blockedAtSecondGate.report(.firstChatReply)
+
+        #expect(await probe.count == 0)
+    }
+
+    @Test("Only the armed onboarding engine attempt emits a terminal outcome")
+    func engineAttemptCausalityExcludesLaterManualRestartAndModelSwitch() {
+        let gate = DesktopFunnelEngineAttemptGate()
+        let first = gate.arm(alias: "starter")
+
+        #expect(gate.consume(milestone: .engineReady, alias: "starter"))
+        #expect(!gate.consume(milestone: .engineReady, alias: "starter"),
+                "later manual start must be silent")
+        #expect(!gate.consume(milestone: .engineStartFailed, alias: "starter"),
+                "later restart must be silent")
+
+        let switched = gate.arm(alias: "starter")
+        #expect(!gate.consume(milestone: .engineStartFailed, alias: "larger-model"),
+                "a model-switch failure is not the armed onboarding start")
+        gate.disarm(token: switched)
+        #expect(!gate.consume(milestone: .engineStartFailed, alias: "starter"))
+        gate.disarm(token: first)
+    }
+
     @Test("Undecided or enabled production install passes all gates")
     func eligibleProductionInstall() {
         #expect(DesktopFunnelReporter.gatesAllowSending(
             telemetryDeclined: false,
             updateChecksEnabled: true,
             environment: [:],
-            bundleIdentifier: DesktopFunnelReporter.productionBundleIdentifier
+            bundleIdentifier: DesktopFunnelReporter.productionBundleIdentifier,
+            releaseBuild: true
         ))
     }
 
@@ -330,7 +616,8 @@ struct DesktopFunnelReporterTests {
         telemetryDeclined: Bool = false,
         updateChecksEnabled: Bool = true,
         environment: [String: String] = [:],
-        bundleIdentifier: String? = DesktopFunnelReporter.productionBundleIdentifier
+        bundleIdentifier: String? = DesktopFunnelReporter.productionBundleIdentifier,
+        releaseBuild: Bool = true
     ) async {
         let directory = temporaryDirectory("blocked")
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -342,7 +629,8 @@ struct DesktopFunnelReporterTests {
                     telemetryDeclined: telemetryDeclined,
                     updateChecksEnabled: updateChecksEnabled,
                     environment: environment,
-                    bundleIdentifier: bundleIdentifier
+                    bundleIdentifier: bundleIdentifier,
+                    releaseBuild: releaseBuild
                 )
             },
             send: { request in await probe.send(request) },

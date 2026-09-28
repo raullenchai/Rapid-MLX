@@ -136,7 +136,9 @@ where first setup stops. It is sent at most once per install for each of:
 `first_chat_reply`.
 These counters are sent only by installs whose first-run setup started on this
 version or later; existing installs never send them, including when setup is
-shown again.
+shown again. The engine result is counted only for the first engine start
+directly initiated by that setup flow; a later manual start, restart, or model
+switch is not counted as an onboarding result.
 
 The request is `POST https://rapidmlx.com/api/desktop-funnel` with exactly
 `{"v":"<app version>","m":"<milestone>"}`. It contains no install ID, device,
@@ -153,13 +155,15 @@ or when `RAPID_MLX_TELEMETRY=0`, `RAPIDMLX_NO_UPDATE_CHECK=1`, or
 
 ## Opt out
 
-Settings → Privacy → "Send anonymous usage data" → off. Takes effect
-immediately for both the desktop app and its embedded engine; no further
-events are sent. Already-sent events cannot be retroactively deleted because
-they are not associated with your identity, but the rolling 30-day raw-event
-storage window means they age out. `reset` deletes your stored preference and
-rotates the install id; the desktop clears its answer; the next run is treated
-as a new install. On 0.15.0 that next run shows the notice and uses the
+Settings → Privacy → "Send anonymous usage data" → off. The anonymous
+first-run funnel is blocked immediately in the running desktop process, before
+the shared preference is written. The app then writes the opt-out shared with
+the embedded engine; Settings reports if that write fails. A request already
+in transport may still complete. Already-sent events cannot be retroactively
+deleted because they are not associated with your identity, but the rolling
+30-day raw-event storage window means they age out. `reset` deletes your stored
+preference and rotates the install id; the desktop clears its answer; the next
+run is treated as a new install. On 0.15.0 that next run shows the notice and uses the
 default-on policy. `reset` emits no telemetry event. `reset-id` rotates only
 the install id and keeps the stored preference.
 

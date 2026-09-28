@@ -945,12 +945,19 @@ Open the picker any time to switch models.
     /// unchanged.
     private let defaults: UserDefaults
 
-    init(defaults: UserDefaults = .standard, hasChatHistory: Bool = false) {
+    init(
+        defaults: UserDefaults = .standard,
+        hasChatHistory: Bool = false,
+        hadPreviousLaunch: Bool = false
+    ) {
         let storedDone = defaults.bool(forKey: Self.storageKey)
         let storedLegacyDone = defaults.bool(forKey: Self.legacyStorageKey)
+        let storedSetupBegun = defaults.bool(forKey: Self.setupBegunKey)
         let storedPriorUse = defaults.bool(forKey: Self.priorUseStorageKey)
             || storedDone
             || storedLegacyDone
+            || storedSetupBegun
+            || hadPreviousLaunch
             || ServerManager.lastServedAlias(defaults: defaults) != nil
             || hasChatHistory
         self.defaults = defaults
@@ -963,7 +970,7 @@ Open the picker any time to switch models.
         // job from it — a relaunch always starts at ``.idle``, which is what
         // makes "never restore a fake active transfer" true by construction
         // rather than by remembering to avoid it.
-        self.setupBegun = defaults.bool(forKey: Self.setupBegunKey)
+        self.setupBegun = storedSetupBegun
         // Codex r5: read the persisted awaiting-seed flag so a
         // quit-mid-deferred-flow relaunch can resume the welcome
         // injection once an active session lands. (Assigning a stored
@@ -4799,7 +4806,7 @@ struct QuickstartView: View {
         )
         Task { @MainActor in
             await coordinator.afterSkippingDownloadBeat(duration: Self.skippingDownloadBeat) {
-                await server.start(
+                await startFirstOnboardingEngine(
                     alias: cached.alias,
                     hfPath: cached.hfRepo,
                     catalogEntryHint: catalogEntryHint
@@ -4813,6 +4820,24 @@ struct QuickstartView: View {
     /// constant (rather than an inline literal) so the test suite can assert
     /// on it directly instead of re-deriving "long enough to read".
     static let skippingDownloadBeat: Duration = .milliseconds(650)
+
+    /// The only engine lifecycle eligible for funnel reporting is the first
+    /// start kicked off by onboarding itself. The causal token exists only for
+    /// this awaited call and is consumed by its first matching terminal state;
+    /// a later retry/restart/model switch therefore cannot inherit eligibility.
+    private func startFirstOnboardingEngine(
+        alias: String,
+        hfPath: String? = nil,
+        catalogEntryHint: ServerManager.CatalogEntryHint? = nil
+    ) async {
+        let token = DesktopFunnelReporter.armOnboardingEngineAttempt(alias: alias)
+        defer { DesktopFunnelReporter.disarmOnboardingEngineAttempt(token) }
+        await server.start(
+            alias: alias,
+            hfPath: hfPath,
+            catalogEntryHint: catalogEntryHint
+        )
+    }
 
     /// Pure adapter mapping a ``DiskSpaceProbe.Decision`` onto the
     /// Quickstart coordinator + kickoff closure. Lifted out of
@@ -4907,7 +4932,7 @@ struct QuickstartView: View {
                 )
             }
             Task { @MainActor in
-                await server.start(
+                await startFirstOnboardingEngine(
                     alias: coordinator.selection.alias,
                     hfPath: coordinator.selection.hfRepo,
                     catalogEntryHint: catalogEntryHint
