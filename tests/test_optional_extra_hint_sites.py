@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -234,6 +235,12 @@ async def test_http_lazy_failures_hide_local_python_paths(
         "load_embedding_model",
         lambda *_a, **_kw: (_ for _ in ()).throw(ImportError("missing")),
     )
+    embedding_stub = types.ModuleType("rapid_mlx.embedding")
+    embedding_stub.EMBEDDINGS_EXTRA_INSTALL_HINT = "install embeddings"
+    embedding_stub.EmbeddingInputTooLongError = type(
+        "EmbeddingInputTooLongError", (Exception,), {}
+    )
+    monkeypatch.setitem(sys.modules, "rapid_mlx.embedding", embedding_stub)
     raw = Request({"type": "http", "headers": []})
     with pytest.raises(HTTPException) as embedding:
         await embeddings.create_embeddings(
