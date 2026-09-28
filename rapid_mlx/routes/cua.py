@@ -112,9 +112,7 @@ async def list_planners() -> list[CUAPlannerInfo]:
             note=preset.get("note", ""),
             has_api_key=bool(preset.get("api_key")),
             user_created=bool(preset.get("user_created", False)),
-            allow_remote=bool(
-                preset.get("allow_remote", bool(preset.get("api_key")))
-            ),
+            allow_remote=bool(preset.get("allow_remote", bool(preset.get("api_key")))),
         )
         for name, preset in sorted(presets.items())
     ]

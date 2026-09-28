@@ -1518,7 +1518,10 @@ def test_url_override_rejected_for_keyed_preset(tmp_path, monkeypatch):
     cfg_path = tmp_path / "cua-config.json"
     monkeypatch.setattr(config_mod, "CONFIG_PATH", cfg_path)
     config_mod.save_user_preset(
-        "vault", "https://vault.example.com/v1", "m1", api_key="sk-1",
+        "vault",
+        "https://vault.example.com/v1",
+        "m1",
+        api_key="sk-1",
         allow_remote=True,
     )
     with pytest.raises(ValueError, match="override"):
