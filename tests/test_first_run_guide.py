@@ -168,6 +168,7 @@ def test_detected_agents_detect_error_is_safe(monkeypatch):
 # ======================================================================
 def test_nameplate_cold_cache_no_agent(monkeypatch):
     monkeypatch.setattr(fr, "cached_known_aliases", lambda: [])
+    monkeypatch.setattr(fr, "preferred_agent", lambda: None)
     monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: 8.0)
     out = fr.build_nameplate("9.9.9")
     assert out.startswith(fr._IDENTITY)
@@ -175,25 +176,34 @@ def test_nameplate_cold_cache_no_agent(monkeypatch):
     assert "Recommended model: lfm2.5-1b-4bit" in out
     assert "rapid-mlx chat lfm2.5-1b-4bit" in out
     assert "the server starts automatically" in out
-    assert "rapid-mlx launch --all" in out
-    assert out.endswith("rapid-mlx --help for everything")
+    assert "Then connect your coding agent:\n  rapid-mlx launch --all" in out
+    assert out.count("rapid-mlx launch") == 1
+    assert out.endswith("Docs: https://rapidmlx.com/docs/")
 
 
 def test_nameplate_with_cache_and_agent(monkeypatch):
     monkeypatch.setattr(
         fr, "cached_known_aliases", lambda: [("qwen3.8-27b-4bit", 10.0)]
     )
+    monkeypatch.setattr(fr, "preferred_agent", lambda: "claude-code")
     monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: 32.0)
     out = fr.build_nameplate("9.9.9")
     assert "32 GB RAM detected" in out
     assert "Recommended model: qwen3.8-27b-4bit (already cached)" in out
     assert "rapid-mlx chat qwen3.8-27b-4bit" in out
+    assert (
+        "Then connect your coding agent:\n"
+        "  rapid-mlx launch claude-code      # connect your agent (detected ✓)"
+    ) in out
+    assert "rapid-mlx launch --all" not in out
+    assert out.count("rapid-mlx launch") == 1
 
 
 def test_nameplate_starter_cached_says_already_downloaded(monkeypatch):
     monkeypatch.setattr(
         fr, "cached_known_aliases", lambda: [(fr.FIRST_RUN_MODEL, 10.0)]
     )
+    monkeypatch.setattr(fr, "preferred_agent", lambda: None)
     monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: 16.0)
     out = fr.build_nameplate("9.9.9")
     assert "already cached" in out

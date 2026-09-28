@@ -52,6 +52,7 @@ _IDENTITY = (
     "Rapid-MLX — OpenAI- and Anthropic-compatible LLM server and Mac app for "
     "Apple Silicon, built on MLX, focused on reliable tool calling for coding agents."
 )
+_DOCS_URL = "https://rapidmlx.com/docs/"
 
 
 def _state_dir() -> Path:
@@ -182,6 +183,13 @@ def build_nameplate(version: str) -> str:
     model = select_starter_model(ram_gb, cached, validate_catalog=False)
     cached_badge = " (already cached)" if model in cached else ""
     ram_label = f"{payload['physical_ram_gb']:g} GB RAM detected"
+    agent = preferred_agent()
+    if agent is not None:
+        agent_command = (
+            f"  rapid-mlx launch {agent}      # connect your agent (detected ✓)"
+        )
+    else:
+        agent_command = "  rapid-mlx launch --all"
 
     lines = [
         _IDENTITY,
@@ -191,15 +199,19 @@ def build_nameplate(version: str) -> str:
         "Next — start chatting (the server starts automatically):",
         f"  rapid-mlx chat {model}",
         "",
+        "Then connect your coding agent:",
+        agent_command,
+        "",
         "Useful commands:",
         f"  rapid-mlx serve {model}",
         "  rapid-mlx chat <model>",
         "  rapid-mlx pull <model>",
         "  rapid-mlx models",
-        "  rapid-mlx launch --all",
         "  rapid-mlx doctor",
         "",
         "rapid-mlx --help for everything",
+        "",
+        f"Docs: {_DOCS_URL}",
     ]
     return "\n".join(lines)
 
