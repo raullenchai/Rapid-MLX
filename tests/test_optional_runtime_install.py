@@ -226,6 +226,23 @@ def test_posix_eof_defaults_no(monkeypatch) -> None:
     assert optional_runtime._read_posix_prompt_response(_TTY(), 0.1) is None
 
 
+def test_posix_prompt_keyboard_interrupt_returns_interrupted(monkeypatch) -> None:
+    stderr = io.StringIO()
+    monkeypatch.setattr(sys, "stderr", stderr)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(
+        optional_runtime,
+        "_read_posix_prompt_response",
+        lambda *_args: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+
+    assert (
+        optional_runtime._prompt_to_install("vision")
+        is optional_runtime.PromptResult.INTERRUPTED
+    )
+    assert stderr.getvalue() == ("Install rapid-mlx[vision] now? (~322 MB) [y/N] \n")
+
+
 def test_closed_stdin_exception_defaults_no(monkeypatch) -> None:
     stdin = _TTY("y\n")
     stdin.close()
