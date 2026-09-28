@@ -34,14 +34,30 @@ struct CUASection: View {
                 permissionReadiness
             }
 
-            TextEditor(text: $viewModel.goal)
-                .frame(minHeight: 52, maxHeight: 96)
-                .font(.body)
-                .scrollContentBackground(.hidden)
-                .padding(8)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Task")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                ZStack(alignment: .topLeading) {
+                    if viewModel.goal.isEmpty {
+                        Text("Describe what you want Rapid to do…")
+                            .foregroundStyle(.tertiary)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 10)
+                            .allowsHitTesting(false)
+                            .accessibilityHidden(true)
+                    }
+                    TextEditor(text: $viewModel.goal)
+                        .frame(minHeight: 52, maxHeight: 96)
+                        .font(.body)
+                        .scrollContentBackground(.hidden)
+                        .padding(8)
+                        .accessibilityLabel("Task goal")
+                        .accessibilityIdentifier("ComputerUse.Agent.Goal")
+                }
                 .background(RapidTheme.surfaceRaised, in: RoundedRectangle(cornerRadius: 10))
                 .overlay(RoundedRectangle(cornerRadius: 10).stroke(.secondary.opacity(0.2)))
-                .accessibilityIdentifier("ComputerUse.Agent.Goal")
+            }
 
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {

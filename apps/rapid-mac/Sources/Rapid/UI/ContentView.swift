@@ -1250,23 +1250,7 @@ struct ContentView: View {
             if computerUseEnabled {
                 ComputerUseView(
                     cuaServer: cuaServer,
-                    cuaViewModel: cuaServer.viewModel,
-                    languageRuntime: DraftPostLanguageRuntime(
-                        profile: server.activeModelProfile,
-                        selectedAlias: alias,
-                        host: server.host,
-                        port: server.activePort,
-                        bearerToken: server.activeBearer,
-                        liveServer: server
-                    ),
-                    visualRuntime: DraftPostVisualRuntime(
-                        profile: server.activeModelProfile,
-                        selectedAlias: alias,
-                        host: server.host,
-                        port: server.activePort,
-                        bearerToken: server.activeBearer,
-                        liveServer: server
-                    )
+                    cuaViewModel: cuaServer.viewModel
                 )
             } else {
                 mainArea

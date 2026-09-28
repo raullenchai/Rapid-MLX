@@ -1497,17 +1497,31 @@ struct CUATargetUISourceTests {
             contentsOf: root.appendingPathComponent("Sources/Rapid/UI/ComputerUseView.swift"),
             encoding: .utf8
         )
+        let content = try String(
+            contentsOf: root.appendingPathComponent("Sources/Rapid/UI/ContentView.swift"),
+            encoding: .utf8
+        )
 
         #expect(section.contains("ComputerUse.Agent.Target.Process"))
         #expect(section.contains("ComputerUse.Agent.Target.Window"))
         #expect(section.contains("ComputerUse.Agent.Target.Refresh"))
         #expect(section.contains("ComputerUse.Agent.Target.Error"))
         #expect(section.contains("Retry Recovery"))
+        #expect(section.contains("Describe what you want Rapid to do"))
+        #expect(section.contains("accessibilityLabel(\"Task goal\")"))
         #expect(page.contains("ComputerUse.Server.Starting"))
         #expect(page.contains("ComputerUse.Server.Error"))
         #expect(page.contains("ComputerUse.Server.Retry"))
         #expect(page.contains("Actions run on this Mac"))
         #expect(page.contains("choose the brain endpoint"))
         #expect(!page.contains("Everything runs locally"))
+        #expect(page.contains("CUASection(viewModel: cuaViewModel)"))
+        #expect(!page.contains("Start with a flow"))
+        #expect(!page.contains("CREATE YOUR OWN"))
+        #expect(!page.contains("ComputerUseStarter"))
+        #expect(!page.contains("DraftPostFlowSheet"))
+        #expect(!page.contains("FreeUpSpaceFlowSheet"))
+        #expect(!content.contains("languageRuntime: DraftPostLanguageRuntime"))
+        #expect(!content.contains("visualRuntime: DraftPostVisualRuntime"))
     }
 }
