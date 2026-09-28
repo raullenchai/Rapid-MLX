@@ -4,6 +4,7 @@ struct CUAResultPresentation: Equatable {
     let answer: String
     let evidence: String?
     let detailLabel: String
+    let completionNote: String?
 
     var displayedAnswer: String {
         answer.isEmpty ? "The task completed without a result summary." : answer
@@ -32,10 +33,12 @@ struct CUAResultPresentation: Equatable {
                     answer = Self.boundedAnswer(leading)
                     evidence = normalized
                     detailLabel = "Full result"
+                    completionNote = Self.completionNote(in: normalized, answer: answer)
                 } else {
                     answer = leading
                     evidence = trailing
                     detailLabel = "Supporting evidence"
+                    completionNote = nil
                 }
                 return
             }
@@ -44,14 +47,17 @@ struct CUAResultPresentation: Equatable {
             answer = Self.boundedAnswer(normalized)
             evidence = normalized
             detailLabel = "Full result"
+            completionNote = Self.completionNote(in: normalized, answer: answer)
         } else {
             answer = normalized
             evidence = nil
             detailLabel = "Supporting evidence"
+            completionNote = nil
         }
     }
 
     private static let answerLimit = 220
+    private static let completionNoteLimit = 180
 
     private static func boundedAnswer(_ value: String) -> String {
         let limit = value.index(value.startIndex, offsetBy: answerLimit)
@@ -63,6 +69,26 @@ struct CUAResultPresentation: Equatable {
         let ellipsisLimit = value.index(value.startIndex, offsetBy: answerLimit - 1)
         return value[..<ellipsisLimit]
             .trimmingCharacters(in: .whitespacesAndNewlines) + "…"
+    }
+
+    private static func completionNote(in value: String, answer: String) -> String? {
+        var searchEnd = value.endIndex
+        if let last = value.last, ".!?".contains(last) {
+            searchEnd = value.index(before: searchEnd)
+        }
+        let prefix = value[..<searchEnd]
+        guard let boundary = prefix.lastIndex(where: { ".!?\n".contains($0) }) else {
+            return nil
+        }
+        let start = value.index(after: boundary)
+        let sentence = value[start...]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !sentence.isEmpty, !answer.contains(sentence) else { return nil }
+        guard sentence.count > completionNoteLimit else { return sentence }
+        let suffixStart = sentence.index(
+            sentence.endIndex, offsetBy: -(completionNoteLimit - 1)
+        )
+        return "…" + sentence[suffixStart...]
     }
 }
 
@@ -594,6 +620,19 @@ struct CUASection: View {
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityIdentifier("ComputerUse.Agent.Summary.Answer")
+            if let completionNote = result.completionNote {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Completion note")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text(completionNote)
+                        .font(.callout)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("ComputerUse.Agent.Summary.CompletionNote")
+            }
             if result.evidence != nil || !viewModel.events.isEmpty {
                 runDetails(evidence: result.evidence, evidenceLabel: result.detailLabel)
             }

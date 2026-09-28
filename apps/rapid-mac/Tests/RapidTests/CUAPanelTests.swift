@@ -1555,6 +1555,7 @@ struct CUATargetUISourceTests {
         #expect(result.answer == "Created the folder and moved 3 files.")
         #expect(result.evidence == "Finder shows all 3 files.")
         #expect(result.detailLabel == "Supporting evidence")
+        #expect(result.completionNote == nil)
     }
 
     @Test("Free-form completed result remains intact")
@@ -1564,6 +1565,7 @@ struct CUATargetUISourceTests {
 
         #expect(result.answer == summary)
         #expect(result.evidence == nil)
+        #expect(result.completionNote == nil)
     }
 
     @Test("Long free-form result is concise without losing the original")
@@ -1578,6 +1580,7 @@ struct CUATargetUISourceTests {
         #expect(result.answer != summary.trimmingCharacters(in: .whitespacesAndNewlines))
         #expect(result.evidence == summary.trimmingCharacters(in: .whitespacesAndNewlines))
         #expect(result.detailLabel == "Full result")
+        #expect(result.completionNote == nil)
     }
 
     @Test("Long structured result keeps its complete text in details")
@@ -1589,6 +1592,7 @@ struct CUATargetUISourceTests {
         #expect(result.answer.count <= 220)
         #expect(result.evidence == summary)
         #expect(result.detailLabel == "Full result")
+        #expect(result.completionNote == "Supporting evidence: AX title and status values matched.")
     }
 
     @Test("Long unpunctuated result reserves room for its ellipsis")
@@ -1600,6 +1604,19 @@ struct CUATargetUISourceTests {
         #expect(result.answer.hasSuffix("…"))
         #expect(result.evidence == summary)
         #expect(result.detailLabel == "Full result")
+        #expect(result.completionNote == nil)
+    }
+
+    @Test("Long final sentence is bounded from its conclusion")
+    func longFinalSentenceIsBounded() {
+        let summary = String(repeating: "Verified context. ", count: 14)
+            + String(repeating: "persistence remains unconfirmed ", count: 12)
+        let result = CUAResultPresentation(summary: summary)
+
+        #expect(result.completionNote?.count == 180)
+        #expect(result.completionNote?.hasPrefix("…") == true)
+        #expect(result.completionNote?.hasSuffix("unconfirmed") == true)
+        #expect(result.evidence == summary.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
     @Test("Completed task without a summary retains a visible result")
@@ -1610,6 +1627,32 @@ struct CUATargetUISourceTests {
         #expect(result.displayedAnswer == "The task completed without a result summary.")
         #expect(result.evidence == nil)
         #expect(result.detailLabel == "Supporting evidence")
+        #expect(result.completionNote == nil)
+    }
+
+    @Test("Long completed result keeps its final completion condition visible")
+    func longCompletedResultShowsCompletionNote() {
+        let summary = "The text area [4] now contains both lines: 'CUA SOTA TextEdit test.' followed by 'Rapid-MLX CUA SOTA verified.' (first line unchanged). However, the 'document actions' menu button [3] was clicked three times without revealing a Save option in the accessibility snapshot, so the save could not be confirmed via the UI. The document title [6] shows 'harbor-desk-cua-textedit-sota-test.txt'. Honest blocker: Save action could not be verified; the appended text is present but persistence is unconfirmed."
+        let result = CUAResultPresentation(summary: summary)
+
+        #expect(result.answer.hasPrefix("The text area [4] now contains both lines"))
+        #expect(
+            result.completionNote
+                == "Honest blocker: Save action could not be verified; the appended text is present but persistence is unconfirmed."
+        )
+        #expect(result.evidence == summary)
+    }
+
+    @Test("Completion note does not repeat an already visible answer")
+    func completionNoteDoesNotRepeatAnswer() {
+        let repeated = "The requested result remains unconfirmed."
+        let summary = String(repeating: repeated + " ", count: 8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let result = CUAResultPresentation(summary: summary)
+
+        #expect(result.answer.contains(repeated))
+        #expect(result.completionNote == nil)
+        #expect(result.evidence == summary)
     }
 
     @Test("Planner payload is folded behind a readable failure summary")
