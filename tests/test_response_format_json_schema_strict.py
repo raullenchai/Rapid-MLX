@@ -2313,8 +2313,8 @@ async def test_buffered_responses_stream_matches_normal_state_machine_sdk_shape(
         (2, "function_call"),
     ]
     assert [(event["output_index"], event["item"]["type"]) for event in done] == [
-        (1, "message"),
         (0, "reasoning"),
+        (1, "message"),
         (2, "function_call"),
     ]
     assert event_types.index("response.output_item.added") < event_types.index(

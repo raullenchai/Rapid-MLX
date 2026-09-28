@@ -1,0 +1,40 @@
+{
+  "reasoning_then_content": [
+    {"type": "response.created", "sequence_number": 0, "response_id": "resp_111111111111111111111111", "output": []},
+    {"type": "response.in_progress", "sequence_number": 1, "response_id": "resp_111111111111111111111111", "output": []},
+    {"type": "response.output_item.added", "sequence_number": 2, "output_index": 0, "item": {"type": "reasoning", "id": "rs_222222222222222222222222"}},
+    {"type": "response.reasoning_summary_part.added", "sequence_number": 3, "output_index": 0, "summary_index": 0, "item_id": "rs_222222222222222222222222"},
+    {"type": "response.reasoning_summary_text.delta", "sequence_number": 4, "output_index": 0, "summary_index": 0, "item_id": "rs_222222222222222222222222"},
+    {"type": "response.reasoning_summary_text.done", "sequence_number": 5, "output_index": 0, "summary_index": 0, "item_id": "rs_222222222222222222222222"},
+    {"type": "response.reasoning_summary_part.done", "sequence_number": 6, "output_index": 0, "summary_index": 0, "item_id": "rs_222222222222222222222222"},
+    {"type": "response.output_item.done", "sequence_number": 7, "output_index": 0, "item": {"type": "reasoning", "id": "rs_222222222222222222222222"}},
+    {"type": "response.output_item.added", "sequence_number": 8, "output_index": 1, "item": {"type": "message", "id": "msg_333333333333333333333333"}},
+    {"type": "response.content_part.added", "sequence_number": 9, "output_index": 1, "content_index": 0, "item_id": "msg_333333333333333333333333"},
+    {"type": "response.output_text.delta", "sequence_number": 10, "output_index": 1, "content_index": 0, "item_id": "msg_333333333333333333333333"},
+    {"type": "response.output_text.done", "sequence_number": 11, "output_index": 1, "content_index": 0, "item_id": "msg_333333333333333333333333"},
+    {"type": "response.content_part.done", "sequence_number": 12, "output_index": 1, "content_index": 0, "item_id": "msg_333333333333333333333333"},
+    {"type": "response.output_item.done", "sequence_number": 13, "output_index": 1, "item": {"type": "message", "id": "msg_333333333333333333333333"}},
+    {"type": "response.completed", "sequence_number": 14, "response_id": "resp_111111111111111111111111", "output": [{"type": "reasoning", "id": "rs_222222222222222222222222"}, {"type": "message", "id": "msg_333333333333333333333333"}]}
+  ],
+  "content_only": [
+    {"type": "response.created", "sequence_number": 0, "response_id": "resp_111111111111111111111111", "output": []},
+    {"type": "response.in_progress", "sequence_number": 1, "response_id": "resp_111111111111111111111111", "output": []},
+    {"type": "response.output_item.added", "sequence_number": 2, "output_index": 0, "item": {"type": "reasoning", "id": "rs_222222222222222222222222"}},
+    {"type": "response.output_item.done", "sequence_number": 3, "output_index": 0, "item": {"type": "reasoning", "id": "rs_222222222222222222222222"}},
+    {"type": "response.output_item.added", "sequence_number": 4, "output_index": 1, "item": {"type": "message", "id": "msg_333333333333333333333333"}},
+    {"type": "response.content_part.added", "sequence_number": 5, "output_index": 1, "content_index": 0, "item_id": "msg_333333333333333333333333"},
+    {"type": "response.output_text.delta", "sequence_number": 6, "output_index": 1, "content_index": 0, "item_id": "msg_333333333333333333333333"},
+    {"type": "response.output_text.done", "sequence_number": 7, "output_index": 1, "content_index": 0, "item_id": "msg_333333333333333333333333"},
+    {"type": "response.content_part.done", "sequence_number": 8, "output_index": 1, "content_index": 0, "item_id": "msg_333333333333333333333333"},
+    {"type": "response.output_item.done", "sequence_number": 9, "output_index": 1, "item": {"type": "message", "id": "msg_333333333333333333333333"}},
+    {"type": "response.completed", "sequence_number": 10, "response_id": "resp_111111111111111111111111", "output": [{"type": "reasoning", "id": "rs_222222222222222222222222"}, {"type": "message", "id": "msg_333333333333333333333333"}]}
+  ],
+  "tool_calls": [
+    {"type": "response.created", "sequence_number": 0, "response_id": "resp_111111111111111111111111", "output": []},
+    {"type": "response.in_progress", "sequence_number": 1, "response_id": "resp_111111111111111111111111", "output": []},
+    {"type": "response.output_item.added", "sequence_number": 2, "output_index": 0, "item": {"type": "function_call", "id": "fc_222222222222222222222222", "call_id": "call_golden"}},
+    {"type": "response.function_call_arguments.delta", "sequence_number": 3, "output_index": 0, "item_id": "fc_222222222222222222222222"},
+    {"type": "response.output_item.done", "sequence_number": 4, "output_index": 0, "item": {"type": "function_call", "id": "fc_222222222222222222222222", "call_id": "call_golden"}},
+    {"type": "response.completed", "sequence_number": 5, "response_id": "resp_111111111111111111111111", "output": [{"type": "function_call", "id": "fc_222222222222222222222222", "call_id": "call_golden"}]}
+  ]
+}
