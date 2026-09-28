@@ -336,6 +336,17 @@ def _observation_error(exc: Exception) -> HTTPException:
     return error
 
 
+def _public_observation_element(item: dict) -> CUAObservationElement:
+    """Remove secret field contents before an AX element crosses HTTP."""
+    public = dict(item)
+    if (
+        public.get("role") == "AXSecureTextField"
+        or public.get("subrole") == "AXSecureTextField"
+    ):
+        public["label"] = "[secure text redacted]"
+    return CUAObservationElement(**public)
+
+
 @router.get("/capabilities", response_model=CUACapabilities)
 async def get_capabilities() -> CUACapabilities:
     native_observation = sys.platform == "darwin"
@@ -490,7 +501,9 @@ async def create_observation(
             window_index=snapshot["window_index"],
             window=CUAWindow(**snapshot["window"]),
             coordinate_space=snapshot["coordinate_space"],
-            elements=[CUAObservationElement(**item) for item in snapshot["elements"]],
+            elements=[
+                _public_observation_element(item) for item in snapshot["elements"]
+            ],
             element_count=snapshot["element_count"],
             truncated=snapshot["truncated"],
             screenshot=image,

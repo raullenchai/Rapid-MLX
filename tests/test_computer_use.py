@@ -388,7 +388,7 @@ def test_select_window_id_is_bound_to_resolved_app_pid(monkeypatch):
     monkeypatch.setattr(
         backend,
         "_window_records",
-        lambda app_info: ([_window(window_id=303)] if app_info["pid"] == 7 else []),
+        lambda app_info: [_window(window_id=303)] if app_info["pid"] == 7 else [],
     )
     assert (
         backend._select_window({"pid": 7}, window_id="cg:303")["window_id"] == "cg:303"
@@ -1338,6 +1338,50 @@ def test_permissions_apps_windows_and_read_url_failures(monkeypatch):
     )
     assert backend.read_url("A") == ""
     assert app_services.NSWorkspace is _NSWorkspace
+
+
+def test_secure_ax_subrole_is_redacted_before_snapshot_and_tree(monkeypatch):
+    secret = "hunter2-private"
+    accessed = []
+
+    def get_attribute(_element, attribute):
+        accessed.append(attribute)
+        return {
+            "AXRole": "AXTextField",
+            "AXSubrole": "AXSecureTextField",
+            "AXValue": secret,
+            "AXChildren": [],
+        }.get(attribute)
+
+    monkeypatch.setattr(ax_driver, "_get", get_attribute)
+    monkeypatch.setattr(ax_driver, "_action_names", lambda _element: [])
+    monkeypatch.setattr(ax_driver, "_point_size", lambda _element: (1, 2, 3, 4))
+    targets = []
+    ax_driver._walk("secure", 0, targets, [0])
+
+    assert targets[0]["role"] == "AXTextField"
+    assert targets[0]["subrole"] == "AXSecureTextField"
+    assert targets[0]["text"] == "[secure text redacted]"
+    assert "AXValue" not in accessed
+    assert secret not in repr(targets)
+
+    app_info = {"name": "A", "bundleId": "a.test", "pid": 42}
+    window = {
+        "window_id": "cg:123",
+        "index": 0,
+        "title": "Window",
+        "x": 0,
+        "y": 0,
+        "width": 100,
+        "height": 100,
+    }
+    monkeypatch.setattr(backend, "_resolve_app", lambda *a, **k: (object(), app_info))
+    monkeypatch.setattr(backend, "_select_window", lambda *a, **k: window)
+    monkeypatch.setattr(backend, "_collect_with_timeout", lambda *a, **k: targets)
+    snapshot = backend.get_app_state("pid:42", screenshot=False, use_cache=False)
+    assert secret not in repr(snapshot)
+    assert secret not in snapshot["tree_text"]
+    assert "[secure text redacted]" in snapshot["tree_text"]
 
 
 def test_ax_driver_tree_collect_and_events(monkeypatch):

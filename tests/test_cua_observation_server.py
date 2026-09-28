@@ -109,6 +109,34 @@ def test_observation_is_fresh_pid_window_bound_and_has_no_screenshot_by_default(
     assert payload["window_id"] == "cg:123"
 
 
+@pytest.mark.parametrize(
+    ("role", "subrole"),
+    [
+        ("AXTextField", "AXSecureTextField"),
+        ("AXSecureTextField", ""),
+    ],
+)
+def test_observation_redacts_secure_text_labels(
+    observation_client, monkeypatch, role, subrole
+):
+    client, backend = observation_client
+    snapshot = _snapshot()
+    snapshot["elements"][0].update(
+        {
+            "role": role,
+            "subrole": subrole,
+            "label": "hunter2-private",
+        }
+    )
+    monkeypatch.setattr(backend, "get_app_state", lambda *a, **k: snapshot)
+
+    response = client.post("/v1/cua/observations", headers=AUTH, json=REQUEST)
+
+    assert response.status_code == 200
+    assert response.json()["elements"][0]["label"] == "[secure text redacted]"
+    assert "hunter2-private" not in response.text
+
+
 def test_observation_ax_tree_stays_on_requested_pid_with_same_named_apps(
     observation_client, monkeypatch
 ):

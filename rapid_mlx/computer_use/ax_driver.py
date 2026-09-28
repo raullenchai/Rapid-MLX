@@ -203,7 +203,13 @@ def _walk(element: object, depth: int, out: list[dict], counter: list[int]) -> N
         return
     raw_role = _get(element, "AXRole")
     role = raw_role if isinstance(raw_role, str) else ""
-    label = _label(element)
+    raw_subrole = _get(element, "AXSubrole")
+    subrole = raw_subrole if isinstance(raw_subrole, str) else ""
+    # Never read AXDescription/AXTitle/AXValue from a secure field. Redacting
+    # after _label() would already have copied a credential into process memory,
+    # planner context, traces, or an HTTP observation.
+    secure_text = role == "AXSecureTextField" or subrole == "AXSecureTextField"
+    label = "[secure text redacted]" if secure_text else _label(element)
     actions = _action_names(element)
     geom = _point_size(element)
     actionable = "AXPress" in actions or "AXPick" in actions or "AXIncrement" in actions
@@ -219,7 +225,7 @@ def _walk(element: object, depth: int, out: list[dict], counter: list[int]) -> N
             {
                 "target_id": f"t{counter[0] - 1:03d}",
                 "role": role,
-                "subrole": _get(element, "AXSubrole") or "",
+                "subrole": subrole,
                 "text": label,
                 "actions": actions[:6],
                 "rect": geom,

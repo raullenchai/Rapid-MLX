@@ -28,6 +28,10 @@ focus, activation, click, typing, or native GUI work is included.
   `screenshot=true`; raw PNGs above 4 MiB are rejected before base64 encoding.
 - The response omits backend `tree_text` and raw `screenshot_png`; observation
   responses use `Cache-Control: no-store` and `Pragma: no-cache`.
+- Secure text is redacted at AX collection before description/title/value is
+  read, for both secure roles and secure subroles. The route repeats the check
+  as defense in depth, preventing credentials from entering planner context,
+  traces, structured observations, or screenshot-independent HTTP fields.
 - Capability flags reflect platform, current TCC readiness, and screenshot
   server policy. Public server and CUA docs describe the exact request,
   response, privacy headers, opt-in, TCC, and payload-limit contract.
@@ -44,7 +48,7 @@ public repository.
 
 ## Verification
 
-- Combined computer-use, CUA, server, and observation suites: 186 passed,
+- Combined computer-use, CUA, server, and observation suites: 189 passed,
   2 real-server import tests deselected because importing MLX aborts in this
   isolated test environment.
 - Ruff check and format check pass for all touched Python files

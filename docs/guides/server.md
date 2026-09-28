@@ -204,7 +204,8 @@ curl -X POST http://127.0.0.1:8000/v1/cua/observations \
 The response contains `snapshot_id`, `observed_at`, canonical app identity,
 window identity and geometry, coordinate space, typed accessibility elements,
 element count, and truncation status. It deliberately omits the backend's raw
-tree text. `screenshot` defaults to `false` and the response image is `null`.
+tree text and redacts secure-text-field labels. `screenshot` defaults to
+`false` and the response image is `null`.
 
 Accessibility permission is required for every observation. PNG output also
 requires Screen Recording permission, request field `"screenshot": true`, and
