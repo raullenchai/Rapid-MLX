@@ -402,6 +402,23 @@ class CUARun:
             snapshot = fresh
             url_now = fresh_url
 
+        # Planning and human approval are await points during which the active
+        # browser location can change. Enforce the domain boundary again at
+        # the last possible moment before any input is dispatched.
+        pre_action_url = backend.read_url(self.app)
+        pre_action_guard = self._check_domain(pre_action_url)
+        if pre_action_guard:
+            self.trace["guard_stop"] = pre_action_guard
+            self._record(
+                {
+                    "step": step_no,
+                    "plan": plan,
+                    "stop": pre_action_guard,
+                    "url": pre_action_url,
+                }
+            )
+            return {"status": "stopped", "reason": pre_action_guard}
+        url_now = pre_action_url
         before_sig = _tree_signature(snapshot)
         executed = await self._execute(plan, snapshot)
         await asyncio.sleep(1.2)

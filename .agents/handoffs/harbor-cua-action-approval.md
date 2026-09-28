@@ -60,6 +60,9 @@
   distinguish an identical replacement window. This code compares `window_id` as soon
   as the dependency supplies it; do not mark merge-ready until the dependency lands and
   the branch is rebased/tested.
+- The final pre-input domain check depends on #3827 for a trusted browser URL source and
+  fail-closed reads. The loop now rechecks after planner/approval await points so a tab
+  navigation during planning cannot dispatch input on an outside domain.
 - User-facing claims must say "recognized labeled consequential controls." Unlabeled
   controls and synonyms outside the deterministic multilingual policy are not reliably
   classified until the action contract provides stronger semantics.

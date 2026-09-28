@@ -1343,6 +1343,46 @@ def test_approved_action_executes_only_after_stable_revalidation(
     assert clicks == [1]
 
 
+def test_domain_is_rechecked_after_planning_before_any_action(
+    fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    urls = iter(["https://allowed.example/start", "https://outside.example/"])
+    monkeypatch.setattr(fake_backend, "read_url", lambda _app: next(urls))
+    clicks: list[int] = []
+    monkeypatch.setattr(
+        fake_backend,
+        "click",
+        lambda app, index, **kwargs: clicks.append(index) or {"ok": True},
+    )
+    config = _make_config(tmp_path)
+    config.allowed_domain = "allowed.example"
+    runner = loop_mod.CUARun(
+        config, "Chrome", "open article", tmp_path / "domain-changed-during-plan"
+    )
+    planner = _FakePlanner(
+        [
+            {
+                "action": "click",
+                "step_instruction": "open the article",
+                "element_index": 1,
+                "final_summary": "",
+            }
+        ]
+    )
+
+    result = asyncio.run(runner.step(planner, 1))
+
+    assert result is not None
+    assert result["status"] == "stopped"
+    assert "outside --allowed-domain" in result["reason"]
+    assert clicks == []
+
+
 def test_loop_ranker_success_and_unavailable(fake_backend, tmp_path, monkeypatch):
     import asyncio
 
