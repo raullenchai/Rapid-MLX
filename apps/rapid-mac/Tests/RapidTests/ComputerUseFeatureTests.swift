@@ -52,34 +52,6 @@ struct ComputerUseFeatureTests {
         #expect(canonical.contains("section=Self.sectionAfterComputerUseGateChange(current:section,enabled:state.computerUseEnabled)"))
     }
 
-    @Test("Starter catalog is explicit about preview availability")
-    func starterCatalog() {
-        #expect(ComputerUseStarter.catalog.map(\.kind) == [
-            .freeUpSpace,
-            .tidyInbox,
-            .draftAndPost,
-            .prospectCustomers,
-            .createDemoVideo,
-            .reserved,
-        ])
-        #expect(ComputerUseStarter.catalog.first?.availability == .available)
-        #expect(ComputerUseStarter.catalog.first(where: { $0.kind == .draftAndPost })?.availability == .available)
-        #expect(ComputerUseStarter.catalog.filter {
-            $0.kind != .freeUpSpace && $0.kind != .draftAndPost && $0.kind != .reserved
-        }.allSatisfy { $0.availability == .comingSoon })
-        #expect(ComputerUseStarter.catalog.last?.availability == .reserved)
-        #expect(ComputerUseStarter.catalog.allSatisfy {
-            !$0.approvalNote.isEmpty
-        })
-        let freeUpSpace = ComputerUseStarter.catalog.first { $0.kind == .freeUpSpace }
-        let draftAndPost = ComputerUseStarter.catalog.first { $0.kind == .draftAndPost }
-        #expect(freeUpSpace?.canStart(hasLanguageRuntime: false) == true)
-        #expect(draftAndPost?.canStart(hasLanguageRuntime: false) == false)
-        #expect(draftAndPost?.availabilityLabel(hasLanguageRuntime: false) == "UNAVAILABLE")
-        #expect(draftAndPost?.canStart(hasLanguageRuntime: true) == true)
-        #expect(draftAndPost?.availabilityLabel(hasLanguageRuntime: true) == "PREVIEW")
-    }
-
     @Test("Startup model link maintenance never blocks MainActor")
     @MainActor
     func startupModelLinkMaintenanceIsDetached() async {

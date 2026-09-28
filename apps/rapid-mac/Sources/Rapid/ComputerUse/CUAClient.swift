@@ -290,11 +290,10 @@ enum CUAClientError: LocalizedError, Equatable {
 
 /// Loopback-only HTTP client for the server's `/v1/cua` surface.
 ///
-/// The guard mirrors `DraftPostLanguageRuntime`: the CUA API drives the local
-/// computer, so it must never be reachable through a non-loopback host, and a
-/// bearer token is required. The app-owned server inherits the app's TCC
-/// grants (Accessibility, Screen Recording, Automation), which standalone
-/// processes do not have.
+/// The CUA API drives the local computer, so it must never be reachable through
+/// a non-loopback host, and a bearer token is required. The app-owned server
+/// inherits the app's TCC grants (Accessibility, Screen Recording,
+/// Automation), which standalone processes do not have.
 struct CUAClient: CUAAPI, Sendable {
     let baseURL: URL
     let bearerToken: String
