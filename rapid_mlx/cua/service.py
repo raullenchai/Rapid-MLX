@@ -56,6 +56,7 @@ class CUAServiceRun:
     _stop_event: asyncio.Event = field(default_factory=asyncio.Event)
     _awaiting: bool = False
     _pending_gate: dict | None = None
+    _resolved_gate_id: str | None = None
 
     def emit(self, event: dict) -> None:
         with self._lock:
@@ -66,41 +67,67 @@ class CUAServiceRun:
             # Trace paths are host-private implementation details.  Custom GUI
             # clients receive the event, but never the local filesystem path.
             event = {key: value for key, value in event.items() if key != "run_dir"}
-            event = {**event, "seq": len(self.events) + 1, "ts": time.time()}
-            self.events.append(event)
             kind = event.get("kind")
             if kind == "gate":
+                # Allocate the event and identity before publishing the gate.
+                # A GUI may decide immediately after observing this event, so
+                # wait_for_approval must reuse both objects.
+                self._approve_event = asyncio.Event()
+                self._pending_gate = {
+                    "gate_id": uuid.uuid4().hex,
+                    "kind": "approval",
+                    "reason": str(event.get("reason", "approval required")),
+                    "requested_at": time.time(),
+                }
+                self._resolved_gate_id = None
+                event["gate_id"] = self._pending_gate["gate_id"]
                 self._awaiting = True
                 self.status = "awaiting_approval"
-            elif kind == "gate_resolved":
+            elif kind == "gate_detail" and self._pending_gate is not None:
+                event["gate_id"] = self._pending_gate["gate_id"]
+            elif kind == "gate_resolved" and self._resolved_gate_id is not None:
+                event["gate_id"] = self._resolved_gate_id
+                self._resolved_gate_id = None
+            event = {**event, "seq": len(self.events) + 1, "ts": time.time()}
+            self.events.append(event)
+            if kind == "gate_resolved":
                 self._awaiting = False
                 if self.status == "awaiting_approval":
                     self.status = "running"
 
     async def wait_for_approval(self, reason: str, timeout: float) -> bool:
-        gate = {
-            "gate_id": uuid.uuid4().hex,
-            "kind": "approval",
-            "reason": reason,
-            "requested_at": time.time(),
-            "expires_at": time.time() + timeout,
-        }
         with self._lock:
-            self._awaiting = True
-            self._pending_gate = gate
+            # Production emits ``gate`` first. Direct SDK/test callers still
+            # receive a fresh one-shot event and identity here.
+            if not self._awaiting or self._pending_gate is None:
+                self._approve_event = asyncio.Event()
+                self._pending_gate = {
+                    "gate_id": uuid.uuid4().hex,
+                    "kind": "approval",
+                    "reason": reason,
+                    "requested_at": time.time(),
+                }
+                self._resolved_gate_id = None
+                self._awaiting = True
+            gate = self._pending_gate
+            approval_event = self._approve_event
+            gate["reason"] = reason
+            gate["expires_at"] = time.time() + timeout
             self.status = "awaiting_approval"
         self.emit({"kind": "gate_detail", "reason": reason, "timeout_s": timeout})
         try:
-            await asyncio.wait_for(self._approve_event.wait(), timeout=timeout)
+            await asyncio.wait_for(approval_event.wait(), timeout=timeout)
             with self._lock:
-                return bool(self._pending_gate and self._pending_gate.get("approved"))
+                return bool(gate.get("approved"))
         except (asyncio.TimeoutError, TimeoutError):
             return False
         finally:
             with self._lock:
-                self._awaiting = False
-                self._pending_gate = None
-            self._approve_event.clear()
+                if self._approve_event is approval_event and self._pending_gate is gate:
+                    self._awaiting = False
+                    self._pending_gate = None
+                    self._resolved_gate_id = str(gate["gate_id"])
+            approval_event.clear()
 
     def resolve_gate(self, approved: bool, *, gate_id: str | None = None) -> bool:
         with self._lock:
@@ -124,7 +151,8 @@ class CUAServiceRun:
                     f"approval gate {current_gate_id!r} already has a different decision"
                 )
             self._pending_gate["approved"] = approved
-        self._approve_event.set()
+            approval_event = self._approve_event
+        approval_event.set()
         return True
 
     def approve(self) -> bool:

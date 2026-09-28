@@ -466,6 +466,35 @@ def test_gate_decision_is_idempotent_and_first_decision_wins(client):
     assert asyncio.run(scenario()) is True
 
 
+def test_gate_events_share_id_and_fast_decision_is_not_lost(client):
+    active = cua_service.CUAServiceRun(
+        run_id="gate-fast",
+        app="A",
+        goal="g",
+        config=None,  # type: ignore[arg-type]
+    )
+    client.fresh_service._runs[active.run_id] = active
+    active.emit({"kind": "gate", "reason": "external_commit", "target": "Send"})
+    gate_event = active.events[-1]
+    gate_id = gate_event["gate_id"]
+
+    # A custom GUI can decide as soon as the gate event is visible, before the
+    # loop coroutine enters wait_for_approval.
+    assert active.resolve_gate(True, gate_id=gate_id) is True
+
+    async def scenario():
+        assert await active.wait_for_approval("external_commit", timeout=5) is True
+        active.emit({"kind": "gate_resolved", "approved": True})
+
+    asyncio.run(scenario())
+    relevant = [
+        event
+        for event in active.events
+        if event["kind"] in {"gate", "gate_detail", "gate_resolved"}
+    ]
+    assert [event["gate_id"] for event in relevant] == [gate_id, gate_id, gate_id]
+
+
 def test_approval_timeout(client):
     active = cua_service.CUAServiceRun(
         run_id="timeout1",

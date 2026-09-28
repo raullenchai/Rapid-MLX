@@ -88,6 +88,10 @@ Local trace paths are intentionally omitted from HTTP responses. Screenshots
 are not returned by this API; clients use structured events and host discovery
 without transferring captured private content.
 
+Every `gate`, `gate_detail`, and `gate_resolved` event for one decision carries
+the same `gate_id` as `pending_gate`. New clients should always send that ID in
+their decision request.
+
 Window discovery returns an opaque `window_id` such as `cg:123`, resolved
 against the target process ID. Discovery is currently informational: run
 creation targets the app's front window and has no `window_id` selector yet.

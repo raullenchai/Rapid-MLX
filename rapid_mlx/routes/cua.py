@@ -97,6 +97,7 @@ class CUAEvent(BaseModel):
     kind: str
     seq: int
     ts: float
+    gate_id: str | None = None
     app: str | None = None
     step: int | None = None
     action: str | None = None
