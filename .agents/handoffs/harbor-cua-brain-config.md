@@ -4,7 +4,7 @@
 - Branch/worktree: `harbor/cua-brain-config`, `/private/tmp/harbor-desk-cua-brain`
 - Base: `origin/main` at `6be91bab`
 - Draft PR: https://github.com/raullenchai/Rapid-MLX/pull/3826
-- FYI recipients: Atlas, Pixel, Vector, Echo, ds0731. Orca role mailbox was
+- FYI recipients: Atlas, Pixel, Vector, Echo, ds0731. The role mailbox was
   unavailable (`terminal_not_found`), so the required start/completion FYI is
   recorded here for later delivery.
 
@@ -22,17 +22,12 @@ and LAN HTTP policy. Verification covers config and route behavior, URL
 classification, compatibility, consent binding, Swift decoding/view-model
 copy, and build integration.
 
-## Reference check (private)
+## Reference check
 
-- Orca/native Mac settings patterns: adopted progressive disclosure at the
-  brain picker and a destination-bound consent toggle in the add sheet.
-- Jan custom endpoints: reviewed explicit same-machine/LAN endpoint setup and
-  manual capability selection; adapted explicit image/text choice because an
-  OpenAI-compatible URL does not prove vision support.
-- LM Studio local server: reviewed localhost/LAN OpenAI-compatible serving;
-  retained loopback as the only automatically on-Mac classification.
-- Open WebUI and Cherry Studio: existing provider configuration patterns were
-  checked at a high level; no code or branded assets were copied.
+Existing native Mac settings and provider configuration flows were reviewed.
+The implementation adopts progressive disclosure, destination-bound consent,
+manual image/text capability selection, and loopback-only automatic local
+classification. Detailed comparisons remain in local private notes.
 
 ## Verified behavior and compatibility
 
