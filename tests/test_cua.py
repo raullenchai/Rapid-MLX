@@ -1582,3 +1582,31 @@ def test_write_stored_survives_unlink_failure(tmp_path, monkeypatch, config_dir)
     monkeypatch.setattr("os.unlink", unlink_fail)
     with pytest.raises(OSError, match="disk full"):
         config_mod.save_user_preset("ok", "http://127.0.0.1:9/v1", "m")
+
+
+def test_validate_url_accepts_domain_names():
+    """Hostnames (api.example.com) are remote by definition — they must pass
+    validation with allow_remote and fail without it."""
+    from rapid_mlx.cua.planner import validate_planner_url
+
+    url = "https://api.example.com/v1/chat/completions"
+    assert validate_planner_url(url, allow_remote=True) == url
+    with pytest.raises(ValueError, match="loopback unless"):
+        validate_planner_url(url, allow_remote=False)
+    with pytest.raises(ValueError, match="leaves the machine"):
+        validate_planner_url(
+            "http://api.example.com/v1/chat/completions", allow_remote=True
+        )
+    assert validate_planner_url("http://127.0.0.1:18888/v1", allow_remote=False)
+    # assert_loopback_url (fast-thinking endpoints) only ever accepts IPs
+    from rapid_mlx.cua.planner import assert_loopback_url
+
+    assert assert_loopback_url("http://127.0.0.1:18700/v1") == "http://127.0.0.1:18700/v1"
+    with pytest.raises(ValueError, match="literal IP"):
+        assert_loopback_url("http://rabbit.example/v1")
+    with pytest.raises(ValueError, match="must be loopback"):
+        assert_loopback_url("http://8.8.8.8/v1")
+    with pytest.raises(ValueError, match="HTTP\\(S\\)"):
+        assert_loopback_url("not-a-url")
+    with pytest.raises(ValueError, match="HTTP\\(S\\)"):
+        validate_planner_url("not-a-url", allow_remote=False)
