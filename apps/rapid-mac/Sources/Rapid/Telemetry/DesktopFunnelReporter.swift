@@ -22,6 +22,7 @@ actor DesktopFunnelReporter {
     nonisolated static let endpoint = URL(string: "https://rapidmlx.com/api/desktop-funnel")!
     nonisolated static let productionBundleIdentifier = "com.rapidmlx.rapid"
     nonisolated static let maxBodyBytes = 256
+    nonisolated static let cohortMarkerName = "desktop_funnel_cohort"
 
     private static let session: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
@@ -64,7 +65,29 @@ actor DesktopFunnelReporter {
         }
     }
 
+    /// Enrols only a genuinely new install. The empty cohort marker is local
+    /// state, written before and independently of consent or network delivery,
+    /// so later milestones cannot accidentally include upgrading installs.
+    nonisolated static func enqueueOnboardingShown(isFirstRun: Bool) {
+        Task.detached(priority: .utility) {
+            await shared.reportOnboardingShown(isFirstRun: isFirstRun)
+        }
+    }
+
+    func reportOnboardingShown(isFirstRun: Bool) async {
+        guard isFirstRun else { return }
+        let cohort = cohortMarkerURL
+        guard FileManager.default.fileExists(atPath: cohort.path)
+                || claimMarker(at: cohort) else { return }
+        await report(.onboardingShown)
+    }
+
     func report(_ milestone: Milestone) async {
+        // `onboardingShown` is reached only through
+        // `reportOnboardingShown(isFirstRun:)`, which creates this marker.
+        // Every downstream event must belong to the same locally enrolled
+        // cohort; an upgrade that never saw first-run setup stays silent.
+        guard FileManager.default.fileExists(atPath: cohortMarkerURL.path) else { return }
         guard !attemptedThisProcess.contains(milestone), isEnabled() else { return }
 
         let marker = markerURL(for: milestone)
@@ -78,9 +101,31 @@ actor DesktopFunnelReporter {
         attemptedThisProcess.insert(milestone)
         guard let request = Self.request(version: version, milestone: milestone) else { return }
         guard isEnabled() else { return }
-        guard let statusCode = await send(request),
-              (200..<300).contains(statusCode) else { return }
-        _ = claimMarker(at: marker)
+        let statusCode = await send(request)
+        switch Self.delivery(for: statusCode) {
+        case .accepted, .discard:
+            // Permanent client/protocol rejections are resolved just like an
+            // accepted response: retrying an unchanged request every launch
+            // cannot succeed. Transient failures deliberately remain open.
+            _ = claimMarker(at: marker)
+        case .retry:
+            return
+        }
+    }
+
+    private enum Delivery {
+        case accepted
+        case discard
+        case retry
+    }
+
+    private nonisolated static func delivery(for statusCode: Int?) -> Delivery {
+        guard let statusCode else { return .retry }
+        if (200..<300).contains(statusCode) { return .accepted }
+        if statusCode == 408 || statusCode == 429 || (500..<600).contains(statusCode) {
+            return .retry
+        }
+        return .discard
     }
 
     nonisolated static func request(version: String, milestone: Milestone) -> URLRequest? {
@@ -165,6 +210,10 @@ actor DesktopFunnelReporter {
             "desktop_funnel_\(milestone.rawValue)",
             isDirectory: false
         )
+    }
+
+    private var cohortMarkerURL: URL {
+        markerDirectory.appendingPathComponent(Self.cohortMarkerName, isDirectory: false)
     }
 
     private func claimMarker(at url: URL) -> Bool {

@@ -367,7 +367,9 @@ struct RapidApp: App {
         _downloads = State(initialValue: downloadsInstance)
         _shareCompute = State(initialValue: shareComputeManager)
         _installTracker = State(initialValue: InstallTracker())
-        _quickstart = State(initialValue: QuickstartCoordinator())
+        _quickstart = State(initialValue: QuickstartCoordinator(
+            hasChatHistory: !chat.conversations.isEmpty
+        ))
         let dockPrompt = DockVisibilityPromptStore()
         _dockPromptStore = State(initialValue: dockPrompt)
         AppDelegate.shared.dockPromptStore = dockPrompt

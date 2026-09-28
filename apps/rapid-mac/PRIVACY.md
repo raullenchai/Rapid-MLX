@@ -134,6 +134,9 @@ where first setup stops. It is sent at most once per install for each of:
 `onboarding_shown`, `model_download_started`, `model_download_completed`,
 `model_download_failed`, `engine_ready`, `engine_start_failed`, and
 `first_chat_reply`.
+These counters are sent only by installs whose first-run setup started on this
+version or later; existing installs never send them, including when setup is
+shown again.
 
 The request is `POST https://rapidmlx.com/api/desktop-funnel` with exactly
 `{"v":"<app version>","m":"<milestone>"}`. It contains no install ID, device,

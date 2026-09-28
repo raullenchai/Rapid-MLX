@@ -402,6 +402,14 @@ final class QuickstartCoordinator {
     /// more; it exists so a user who dismissed under v1 stays dismissed.
     static let legacyStorageKey: String = "rapid.quickstart.v1.done"
 
+    /// Durable evidence that this installation used Rapid before the current
+    /// onboarding presentation. Unlike the completion keys, this is never
+    /// cleared by Settings → Run guided setup again: that path may re-show the
+    /// UI, but it must never turn an existing installation into a first-run
+    /// analytics cohort. Existing installs migrate from completion, served-
+    /// model, or chat-history evidence at coordinator initialization.
+    static let priorUseStorageKey: String = "rapid.quickstart.v1.priorUse"
+
     /// Welcome message seeded into the active session after the sidecar
     /// comes online, so the user always lands in chat with a friendly
     /// intro rather than an empty transcript. Interpolates the chosen
@@ -781,6 +789,12 @@ Open the picker any time to switch models.
     /// Snapshot of ``legacyStorageKey`` taken at init. Never written.
     let legacyDone: Bool
 
+    /// Stable first-run discriminator for the anonymous Desktop funnel.
+    /// `false` means there was no app-owned evidence of prior use when this
+    /// coordinator was created. It becomes true on completion or reset and is
+    /// intentionally independent of the resettable onboarding eligibility.
+    private(set) var hasPriorUse: Bool
+
     /// True once the seeded assistant message has been appended to the
     /// active session. Stops ``markReady`` from double-seeding when the
     /// observation pipeline fires multiple ``.ready`` transitions for
@@ -931,12 +945,20 @@ Open the picker any time to switch models.
     /// unchanged.
     private let defaults: UserDefaults
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, hasChatHistory: Bool = false) {
+        let storedDone = defaults.bool(forKey: Self.storageKey)
+        let storedLegacyDone = defaults.bool(forKey: Self.legacyStorageKey)
+        let storedPriorUse = defaults.bool(forKey: Self.priorUseStorageKey)
+            || storedDone
+            || storedLegacyDone
+            || ServerManager.lastServedAlias(defaults: defaults) != nil
+            || hasChatHistory
         self.defaults = defaults
         self.baselineStarterAlias = defaults.string(forKey: Self.baselineStarterAliasKey)
             ?? Self.defaultChoice.alias
-        self.done = defaults.bool(forKey: Self.storageKey)
-        self.legacyDone = defaults.bool(forKey: Self.legacyStorageKey)
+        self.done = storedDone
+        self.legacyDone = storedLegacyDone
+        self.hasPriorUse = storedPriorUse
         // History only. Nothing below reconstructs a phase, a selection or a
         // job from it — a relaunch always starts at ``.idle``, which is what
         // makes "never restore a fake active transfer" true by construction
@@ -970,6 +992,9 @@ Open the picker any time to switch models.
             self.selectionUsesAutomaticPolicy = false
             self.stage = .chooseModel
         }
+        if storedPriorUse {
+            defaults.set(true, forKey: Self.priorUseStorageKey)
+        }
     }
 
     /// Resolve a wizard choice from a persisted alias — used to restore
@@ -997,6 +1022,8 @@ Open the picker any time to switch models.
     func markDone() {
         done = true
         defaults.set(true, forKey: Self.storageKey)
+        hasPriorUse = true
+        defaults.set(true, forKey: Self.priorUseStorageKey)
         // Setup is finished, so there is no unfinished setup to resume.
         // Retired rather than left set: ``isResumingIncompleteSetup`` already
         // guards on ``done``, but a stale true here would come back to life if
@@ -1017,6 +1044,11 @@ Open the picker any time to switch models.
     /// true first-run state must stop the server too; ``ReonboardingReset``
     /// does exactly that.
     internal func resetForReonboarding() {
+        // Re-showing setup is not a new install. Record that fact before the
+        // reset clears the completion and served-model signals from which it
+        // would otherwise be inferred on the next launch.
+        hasPriorUse = true
+        defaults.set(true, forKey: Self.priorUseStorageKey)
         done = false
         phase = .idle
         stage = .welcome
@@ -1559,7 +1591,9 @@ struct QuickstartView: View {
             // it with an eligible cached model, but an immediate Skip can
             // never leak the static 16 GB starter onto a smaller Mac.
             .onAppear {
-                DesktopFunnelReporter.enqueue(.onboardingShown)
+                DesktopFunnelReporter.enqueueOnboardingShown(
+                    isFirstRun: !coordinator.hasPriorUse
+                )
                 coordinator.applyDefaultChoice(
                     hardware: hardware,
                     catalog: catalogLoaded ? cachedModels : []

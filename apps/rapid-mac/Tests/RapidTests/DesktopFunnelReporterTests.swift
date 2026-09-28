@@ -9,6 +9,15 @@ struct DesktopFunnelReporterTests {
             .appendingPathComponent("rapid-desktop-funnel-\(label)-\(UUID().uuidString)")
     }
 
+    private func marker(_ name: String, in directory: URL) -> URL {
+        directory.appendingPathComponent(name, isDirectory: false)
+    }
+
+    private func enroll(_ directory: URL) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data().write(to: marker(DesktopFunnelReporter.cohortMarkerName, in: directory))
+    }
+
     @Test("Milestone raw values exactly match the shared contract")
     func milestoneRawValues() {
         #expect(DesktopFunnelReporter.Milestone.allCases.map(\.rawValue) == [
@@ -70,10 +79,10 @@ struct DesktopFunnelReporterTests {
         }
 
         let first = makeReporter()
-        await first.report(.onboardingShown)
-        await first.report(.onboardingShown)
+        await first.reportOnboardingShown(isFirstRun: true)
+        await first.reportOnboardingShown(isFirstRun: true)
         let second = makeReporter()
-        await second.report(.onboardingShown)
+        await second.reportOnboardingShown(isFirstRun: true)
 
         #expect(await probe.count == 1)
         #expect(FileManager.default.fileExists(
@@ -83,13 +92,91 @@ struct DesktopFunnelReporterTests {
         ))
     }
 
-    @Test("Network failure and non-2xx stay retryable once on a later launch", arguments: [
+    @Test("Existing installs without a cohort send none of the six downstream milestones")
+    func existingInstallIsNotBackfilled() async {
+        let directory = temporaryDirectory("existing")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let probe = FunnelSendProbe()
+        let reporter = DesktopFunnelReporter(
+            isEnabled: { true },
+            send: { request in await probe.send(request) },
+            markerDirectory: directory,
+            version: "0.15.3"
+        )
+
+        for milestone in DesktopFunnelReporter.Milestone.allCases
+            where milestone != .onboardingShown {
+            await reporter.report(milestone)
+        }
+
+        #expect(await probe.count == 0)
+        #expect(!FileManager.default.fileExists(atPath: directory.path))
+    }
+
+    @Test("A first-run cohort sends all six downstream milestones")
+    func cohortSendsEveryDownstreamMilestone() async {
+        let directory = temporaryDirectory("cohort")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let probe = FunnelSendProbe()
+        let reporter = DesktopFunnelReporter(
+            isEnabled: { true },
+            send: { request in await probe.send(request) },
+            markerDirectory: directory,
+            version: "0.15.3"
+        )
+
+        await reporter.reportOnboardingShown(isFirstRun: true)
+        #expect(FileManager.default.fileExists(
+            atPath: marker(DesktopFunnelReporter.cohortMarkerName, in: directory).path
+        ))
+        for milestone in DesktopFunnelReporter.Milestone.allCases
+            where milestone != .onboardingShown {
+            await reporter.report(milestone)
+        }
+
+        #expect(await probe.count == DesktopFunnelReporter.Milestone.allCases.count)
+        for milestone in DesktopFunnelReporter.Milestone.allCases {
+            #expect(FileManager.default.fileExists(
+                atPath: marker("desktop_funnel_\(milestone.rawValue)", in: directory).path
+            ))
+        }
+    }
+
+    @Test("Re-onboarding an install with chat history does not create a cohort")
+    @MainActor
+    func reonboardingIsNotANewInstall() async {
+        let directory = temporaryDirectory("reonboarding")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let suite = TestDefaultsScope.mintSuiteName(prefix: "desktop-funnel-reonboarding")
+        defer { TestDefaultsScope.cleanup(suiteNames: [suite]) }
+        let defaults = UserDefaults(suiteName: suite)!
+        let coordinator = QuickstartCoordinator(defaults: defaults, hasChatHistory: true)
+        let probe = FunnelSendProbe()
+        let reporter = DesktopFunnelReporter(
+            isEnabled: { true },
+            send: { request in await probe.send(request) },
+            markerDirectory: directory,
+            version: "0.15.3"
+        )
+
+        await reporter.reportOnboardingShown(isFirstRun: !coordinator.hasPriorUse)
+
+        #expect(await probe.count == 0)
+        #expect(!FileManager.default.fileExists(
+            atPath: marker(DesktopFunnelReporter.cohortMarkerName, in: directory).path
+        ))
+    }
+
+    @Test("Transport and transient HTTP failures retry on a later launch", arguments: [
         nil,
-        400,
+        408,
+        429,
+        500,
     ] as [Int?])
-    func rejectedRequestRetriesOnlyInNewReporter(firstStatus: Int?) async throws {
+    func transientRequestRetriesOnlyInNewReporter(firstStatus: Int?) async throws {
         let directory = temporaryDirectory("retry")
         defer { try? FileManager.default.removeItem(at: directory) }
+        try enroll(directory)
         let probe = FunnelSendProbe(results: [firstStatus, 204])
 
         func makeReporter() -> DesktopFunnelReporter {
@@ -119,6 +206,59 @@ struct DesktopFunnelReporterTests {
             atPath: directory.appendingPathComponent(
                 "desktop_funnel_model_download_failed"
             ).path
+        ))
+    }
+
+    @Test("Permanent HTTP rejections are marked and never retried", arguments: [
+        400,
+        404,
+        405,
+        410,
+    ])
+    func permanentRejectionIsDiscarded(status: Int) async throws {
+        let directory = temporaryDirectory("discard")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try enroll(directory)
+        let probe = FunnelSendProbe(results: [status, 204])
+
+        func makeReporter() -> DesktopFunnelReporter {
+            DesktopFunnelReporter(
+                isEnabled: { true },
+                send: { request in await probe.send(request) },
+                markerDirectory: directory,
+                version: "0.15.3"
+            )
+        }
+
+        await makeReporter().report(.engineStartFailed)
+        await makeReporter().report(.engineStartFailed)
+
+        #expect(await probe.count == 1)
+        #expect(FileManager.default.fileExists(
+            atPath: marker("desktop_funnel_engine_start_failed", in: directory).path
+        ))
+    }
+
+    @Test("Cohort enrollment survives a failed onboarding delivery")
+    func cohortMarkerIsIndependentOfNetwork() async {
+        let directory = temporaryDirectory("offline-enrollment")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let probe = FunnelSendProbe(results: [nil])
+        let reporter = DesktopFunnelReporter(
+            isEnabled: { true },
+            send: { request in await probe.send(request) },
+            markerDirectory: directory,
+            version: "0.15.3"
+        )
+
+        await reporter.reportOnboardingShown(isFirstRun: true)
+
+        #expect(await probe.count == 1)
+        #expect(FileManager.default.fileExists(
+            atPath: marker(DesktopFunnelReporter.cohortMarkerName, in: directory).path
+        ))
+        #expect(!FileManager.default.fileExists(
+            atPath: marker("desktop_funnel_onboarding_shown", in: directory).path
         ))
     }
 
@@ -194,6 +334,7 @@ struct DesktopFunnelReporterTests {
     ) async {
         let directory = temporaryDirectory("blocked")
         defer { try? FileManager.default.removeItem(at: directory) }
+        try? enroll(directory)
         let probe = FunnelSendProbe()
         let reporter = DesktopFunnelReporter(
             isEnabled: {
@@ -212,7 +353,9 @@ struct DesktopFunnelReporterTests {
         await reporter.report(.firstChatReply)
 
         #expect(await probe.count == 0)
-        #expect(!FileManager.default.fileExists(atPath: directory.path))
+        #expect(!FileManager.default.fileExists(
+            atPath: marker("desktop_funnel_first_chat_reply", in: directory).path
+        ))
     }
 }
 
