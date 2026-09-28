@@ -150,6 +150,25 @@ def test_planner_crud_roundtrip(client):
     )
 
 
+def test_planner_created_from_settings_base_url_is_runnable(client):
+    created = client.post(
+        "/v1/cua/planners",
+        headers=AUTH,
+        json={
+            "name": "My Cloud",
+            "url": "https://api.example.com/v1",
+            "model": "m",
+            "api_key": "sk-secret",
+        },
+    )
+    assert created.status_code == 201
+    assert created.json()["url"] == "https://api.example.com/v1/chat/completions"
+    assert "api_key" not in created.json()
+
+    run = _post_run(client, planner="my-cloud")
+    assert run.status_code == 202
+
+
 def test_planner_create_rejects_plaintext_remote(client):
     test_client = client
     response = test_client.post(

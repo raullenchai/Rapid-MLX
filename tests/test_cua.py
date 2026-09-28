@@ -1396,6 +1396,55 @@ def test_user_preset_crud_and_consent(tmp_path, monkeypatch):
     assert "my-brain" not in config_mod._read_stored().get("presets", {})
 
 
+@pytest.mark.parametrize(
+    ("base_url", "expected_url"),
+    [
+        ("https://api.example.com", "https://api.example.com/v1/chat/completions"),
+        ("https://api.example.com/v1", "https://api.example.com/v1/chat/completions"),
+        (
+            "https://api.example.com/proxy/v1/",
+            "https://api.example.com/proxy/v1/chat/completions",
+        ),
+        (
+            "https://api.example.com/v1/chat/completions",
+            "https://api.example.com/v1/chat/completions",
+        ),
+    ],
+)
+def test_user_preset_base_url_reaches_chat_completions(
+    tmp_path, monkeypatch, base_url, expected_url
+):
+    """The settings form asks for a base URL, while Planner posts directly."""
+    import asyncio
+
+    from rapid_mlx.cua import config as config_mod
+    from rapid_mlx.cua.planner import Planner
+
+    monkeypatch.setattr(config_mod, "CONFIG_PATH", tmp_path / "cua-config.json")
+    config_mod.save_user_preset("cloud", base_url, "m", api_key="sk-test")
+    resolved = config_mod.resolve_planner("cloud")
+    assert resolved.url == expected_url
+
+    planner = Planner(
+        resolved.url,
+        resolved.model,
+        api_key=resolved.api_key,
+        allow_remote=resolved.allow_remote,
+    )
+    posted = []
+
+    async def fake_post(url, **kwargs):
+        posted.append((url, kwargs["headers"]))
+        return _FakeResponse('{"ok":true}')
+
+    monkeypatch.setattr(planner.client, "post", fake_post)
+    try:
+        asyncio.run(planner._ask([], 5, {"type": "object"}, "test"))
+    finally:
+        asyncio.run(planner.close())
+    assert posted == [(expected_url, {"Authorization": "Bearer sk-test"})]
+
+
 def test_keyed_cloud_preset_runs_end_to_end(tmp_path, monkeypatch, config_dir):
     """Regression for the codex BLOCKER: a user-added keyed HTTPS brain must
     actually be able to run — service pre-flight and Planner both honor the

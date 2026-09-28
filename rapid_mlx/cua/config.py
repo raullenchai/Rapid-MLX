@@ -171,6 +171,18 @@ def resolve_planner(
 PRESET_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 
 
+def _chat_completions_url(url: str) -> str:
+    """Accept an OpenAI-compatible base URL or an explicit chat endpoint."""
+    from urllib.parse import urlsplit, urlunsplit
+
+    parts = urlsplit(url)
+    if parts.path.rstrip("/").endswith("/chat/completions"):
+        return url
+    base_path = parts.path.rstrip("/") or "/v1"
+    path = base_path + "/chat/completions"
+    return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
+
+
 def save_user_preset(
     name: str,
     url: str,
@@ -204,6 +216,7 @@ def save_user_preset(
         )
     if not (model or "").strip():
         raise ValueError("brain model is required")
+    url = _chat_completions_url(url)
     if name in DEFAULT_PRESETS:
         raise ValueError(f"{name!r} is a built-in brain; choose a different name")
     stored = _read_stored()
