@@ -25,11 +25,14 @@ paths. Raw click/type endpoints and screenshots are outside this change.
   event fields. `pending_gate` carries reason and expiry. The existing approval
   route preserves empty-body approval for the existing Swift client. New clients
   echo the stable `gate_id` with an explicit decision; stale IDs fail with 409,
-  so a delayed approval cannot resolve a later gate in the same run.
-- Window discovery returns a Core Graphics-backed `window_id` that stays stable
-  for the lifetime of that on-screen window, alongside its current list index.
+  so a delayed approval cannot resolve a later gate in the same run. Decisions
+  are one-shot under the run lock: identical retries are idempotent and a
+  conflicting second decision fails with 409 without changing the first.
+- Window discovery returns the integer Core Graphics `window_id` that stays
+  stable for the lifetime of that on-screen window, alongside its current list
+  index. Windows are matched to the resolved process PID rather than owner name.
 - `run_dir` is removed from run responses and stripped from public start events.
-- Focused verification: `95 passed, 2 deselected` in `tests/test_cua_server.py`
+- Focused verification: `96 passed, 2 deselected` in `tests/test_cua_server.py`
   and `tests/test_cua.py`
   under Python 3.12. The two real-server import tests were excluded because the
   local MLX/tokenizer import aborts this host Python process; this is unrelated
@@ -65,6 +68,11 @@ paths. Raw click/type endpoints and screenshots are outside this change.
   sufficient for the first custom GUI API.
 - Run storage remains in-process and is lost on server restart; persistence or
   resumable runs require a separate architecture decision.
+- Run creation still targets the app's front window; it cannot bind a discovered
+  non-front `window_id`. Atlas should define whether `window_id` is immutable
+  for a run and how disappearance/replacement fails. Vector can then thread the
+  selected ID through snapshots, screenshots, and every semantic action without
+  exposing raw action endpoints.
 - Team FYI transport was unavailable to this worker. Atlas should send the
   required start/completion FYIs when preparing the PR.
 - Next action: Atlas reviews the intention contract and diff, then decides

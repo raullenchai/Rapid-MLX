@@ -87,6 +87,11 @@ event-specific fields, terminal status and summary, and the current
 responses. Screenshots are not returned by this API; clients use structured
 events and host discovery without transferring captured private content.
 
+Window discovery returns the macOS Core Graphics integer `window_id`, resolved
+against the target process ID. Run creation currently targets the app's front
+window; selecting a discovered non-front window is not yet part of the run
+contract.
+
 ## SDK
 
 ```python

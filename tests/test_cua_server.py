@@ -62,7 +62,7 @@ def client(monkeypatch, tmp_path, authorized):
         "list_windows",
         lambda app: [
             {
-                "window_id": "cg:123",
+                "window_id": 123,
                 "index": 0,
                 "title": f"{app} window",
                 "x": 1,
@@ -194,7 +194,7 @@ def test_discovery_contract(client):
         {"name": "Finder", "bundle_id": "com.apple.finder", "pid": 42}
     ]
     windows = client.get("/v1/cua/apps/Finder/windows", headers=AUTH)
-    assert windows.json()[0]["window_id"] == "cg:123"
+    assert windows.json()[0]["window_id"] == 123
     assert windows.json()[0]["title"] == "Finder window"
 
 
@@ -425,6 +425,35 @@ def test_stale_gate_decision_cannot_resolve_current_gate(client):
         return await waiter
 
     assert asyncio.run(scenario()) is False
+
+
+def test_gate_decision_is_idempotent_and_first_decision_wins(client):
+    active = cua_service.CUAServiceRun(
+        run_id="gate-once",
+        app="A",
+        goal="g",
+        config=None,  # type: ignore[arg-type]
+    )
+    client.fresh_service._runs[active.run_id] = active
+
+    async def scenario():
+        waiter = asyncio.create_task(active.wait_for_approval("sign in", timeout=5))
+        await asyncio.sleep(0.01)
+        gate_id = active.view()["pending_gate"]["gate_id"]
+        path = f"/v1/cua/runs/{active.run_id}/approval"
+        decision = {"gate_id": gate_id, "approved": True}
+        assert client.post(path, headers=AUTH, json=decision).status_code == 200
+        assert client.post(path, headers=AUTH, json=decision).status_code == 200
+        conflict = client.post(
+            path,
+            headers=AUTH,
+            json={"gate_id": gate_id, "approved": False},
+        )
+        assert conflict.status_code == 409
+        assert active.view()["pending_gate"]["approved"] is True
+        return await waiter
+
+    assert asyncio.run(scenario()) is True
 
 
 def test_approval_timeout(client):

@@ -182,7 +182,7 @@ class CUAApp(BaseModel):
 
 
 class CUAWindow(BaseModel):
-    window_id: str
+    window_id: int
     index: int
     title: str
     x: float | None = None
@@ -201,6 +201,8 @@ def _http_error(exc: Exception) -> HTTPException:
     if isinstance(exc, cua_service.CUARunConflictError):
         return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     if isinstance(exc, cua_service.CUAGateMismatchError):
+        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    if isinstance(exc, cua_service.CUAGateDecisionConflictError):
         return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     if isinstance(exc, ValueError):
         return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
@@ -386,7 +388,11 @@ async def approve_run(
                 requested, gate_id=None if decision is None else decision.gate_id
             )
         )
-    except (cua_service.CUARunNotFoundError, cua_service.CUAGateMismatchError) as exc:
+    except (
+        cua_service.CUARunNotFoundError,
+        cua_service.CUAGateMismatchError,
+        cua_service.CUAGateDecisionConflictError,
+    ) as exc:
         raise _http_error(exc) from exc
     if not resolved:
         raise HTTPException(

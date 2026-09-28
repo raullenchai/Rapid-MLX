@@ -35,6 +35,10 @@ class CUAGateMismatchError(RuntimeError):
     pass
 
 
+class CUAGateDecisionConflictError(RuntimeError):
+    pass
+
+
 @dataclass
 class CUAServiceRun:
     run_id: str
@@ -112,6 +116,12 @@ class CUAServiceRun:
             if gate_id is not None and gate_id != current_gate_id:
                 raise CUAGateMismatchError(
                     f"approval gate {gate_id!r} is stale; current gate is {current_gate_id!r}"
+                )
+            if "approved" in self._pending_gate:
+                if bool(self._pending_gate["approved"]) == approved:
+                    return True
+                raise CUAGateDecisionConflictError(
+                    f"approval gate {current_gate_id!r} already has a different decision"
                 )
             self._pending_gate["approved"] = approved
         self._approve_event.set()
