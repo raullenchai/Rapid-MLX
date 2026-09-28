@@ -202,6 +202,20 @@ struct CUARunView: Codable, Equatable, Sendable {
     }
 }
 
+struct CUARunCreated: Codable, Equatable, Sendable {
+    var runID: String
+    var status: String
+    var windowID: String?
+    var clientRequestID: String?
+
+    enum CodingKeys: String, CodingKey {
+        case runID = "run_id"
+        case status
+        case windowID = "window_id"
+        case clientRequestID = "client_request_id"
+    }
+}
+
 /// Create-run request body for `POST /v1/cua/runs`.
 struct CUARunRequest: Codable, Equatable, Sendable {
     var app: String
@@ -212,6 +226,23 @@ struct CUARunRequest: Codable, Equatable, Sendable {
     var maxSteps: Int
     var humanLogin: Bool
     var windowID: String
+    var clientRequestID: String
+
+    init(
+        app: String, goal: String, planner: String, openURL: String,
+        allowedDomain: String, maxSteps: Int, humanLogin: Bool, windowID: String,
+        clientRequestID: String = UUID().uuidString.lowercased()
+    ) {
+        self.app = app
+        self.goal = goal
+        self.planner = planner
+        self.openURL = openURL
+        self.allowedDomain = allowedDomain
+        self.maxSteps = maxSteps
+        self.humanLogin = humanLogin
+        self.windowID = windowID
+        self.clientRequestID = clientRequestID
+    }
 
     enum CodingKeys: String, CodingKey {
         case app, goal, planner
@@ -220,6 +251,7 @@ struct CUARunRequest: Codable, Equatable, Sendable {
         case maxSteps = "max_steps"
         case humanLogin = "human_login"
         case windowID = "window_id"
+        case clientRequestID = "client_request_id"
     }
 }
 
@@ -227,6 +259,9 @@ enum CUAClientError: LocalizedError, Equatable {
     case http(Int, String)
     case typedHTTP(Int, code: String, message: String, recovery: [String])
     case windowBinding(
+        expected: String, actual: String?, runID: String, cancellationFailed: Bool
+    )
+    case requestBinding(
         expected: String, actual: String?, runID: String, cancellationFailed: Bool
     )
 
@@ -243,6 +278,12 @@ enum CUAClientError: LocalizedError, Equatable {
                 ? " Rapid could not confirm that the rejected run stopped. Stop the local server before retrying."
                 : " The rejected run was stopped."
             return "The server did not bind the run to selected window '\(expected)' (received \(received)).\(stop) Refresh the window list and choose it again."
+        case let .requestBinding(expected, actual, _, cancellationFailed):
+            let received = actual.map { "'\($0)'" } ?? "no request identity"
+            let stop = cancellationFailed
+                ? " The unverified task may still be executing. Stop it immediately."
+                : " The unverified task was stopped."
+            return "The server did not confirm create request '\(expected)' (received \(received)).\(stop)"
         }
     }
 }
@@ -258,6 +299,11 @@ struct CUAClient: CUAAPI, Sendable {
     let baseURL: URL
     let bearerToken: String
     let session: URLSession
+
+    func capabilities() async throws -> CUACapabilities {
+        let (data, response) = try await send(path: "/v1/cua/capabilities", method: "GET")
+        return try decode(CUACapabilities.self, from: data, response: response)
+    }
 
     init?(
         host: String,
@@ -317,30 +363,40 @@ struct CUAClient: CUAAPI, Sendable {
         let (data, response) = try await send(
             path: "/v1/cua/runs", method: "POST", body: body
         )
-        struct Created: Codable {
-            var runID: String
-            var windowID: String?
-            enum CodingKeys: String, CodingKey {
-                case runID = "run_id"
-                case windowID = "window_id"
-            }
-        }
-        let created = try decode(Created.self, from: data, response: response)
-        guard created.windowID == request.windowID else {
+        let created = try decode(CUARunCreated.self, from: data, response: response)
+        guard created.windowID == request.windowID,
+              created.clientRequestID == request.clientRequestID
+        else {
             var cancellationFailed = false
             do {
                 try await cancel(runID: created.runID)
             } catch {
                 cancellationFailed = true
             }
-            throw CUAClientError.windowBinding(
-                expected: request.windowID,
-                actual: created.windowID,
-                runID: created.runID,
-                cancellationFailed: cancellationFailed
+            if created.windowID != request.windowID {
+                throw CUAClientError.windowBinding(
+                    expected: request.windowID, actual: created.windowID,
+                    runID: created.runID, cancellationFailed: cancellationFailed
+                )
+            }
+            throw CUAClientError.requestBinding(
+                expected: request.clientRequestID, actual: created.clientRequestID,
+                runID: created.runID, cancellationFailed: cancellationFailed
             )
         }
         return created.runID
+    }
+
+    func run(clientRequestID: String) async throws -> CUARunCreated {
+        var allowed = CharacterSet.alphanumerics
+        allowed.insert(charactersIn: "-._~")
+        guard let encoded = clientRequestID.addingPercentEncoding(withAllowedCharacters: allowed),
+              let url = URL(
+                  string: baseURL.absoluteString + "/v1/cua/runs/by-request/\(encoded)"
+              )
+        else { throw URLError(.badURL) }
+        let (data, response) = try await send(url: url, method: "GET")
+        return try decode(CUARunCreated.self, from: data, response: response)
     }
 
     func permissions() async throws -> CUAPermissionStatus {

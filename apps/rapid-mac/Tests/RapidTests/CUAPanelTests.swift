@@ -18,11 +18,19 @@ private final class MockAgentAPI: CUAAPI, @unchecked Sendable {
     var discoveryShouldFail = false
     var discoveryError: Error?
     var createError: Error?
+    var queuedCreateErrors: [Error] = []
+    var createAttempts = 0
+    var capabilitiesSupported = true
+    var capabilitiesDelayNanos: UInt64 = 0
+    var lookupResult: CUARunCreated?
+    var lookupHandler: ((String) -> CUARunCreated)?
+    var lookupError: Error?
     var createDelayNanos: UInt64 = 0
     var approveDelayNanos: UInt64 = 0
     var cancelDelayNanos: UInt64 = 0
     var eventsDelayNanos: UInt64 = 0
     var createdRequests: [CUARunRequest] = []
+    var attemptedRequests: [CUARunRequest] = []
     var scriptedEvents: [CUAEvent] = []
     var finalSummary = "opened the article"
     var approveCalls = 0
@@ -38,6 +46,15 @@ private final class MockAgentAPI: CUAAPI, @unchecked Sendable {
     var addedPlanners: [CUAPlannerCreateRequest] = []
     var deletedPlannerNames: [String] = []
     var addShouldFail = false
+
+    func capabilities() async throws -> CUACapabilities {
+        if capabilitiesDelayNanos > 0 {
+            try? await Task.sleep(nanoseconds: capabilitiesDelayNanos)
+        }
+        return CUACapabilities(
+            features: .init(idempotentRunCreate: capabilitiesSupported)
+        )
+    }
 
     func planners() async throws -> [CUAPlannerOption] {
         plannersResult
@@ -65,10 +82,22 @@ private final class MockAgentAPI: CUAAPI, @unchecked Sendable {
     }
 
     func create(_ request: CUARunRequest) async throws -> String {
+        createAttempts += 1
+        attemptedRequests.append(request)
         if createDelayNanos > 0 { try? await Task.sleep(nanoseconds: createDelayNanos) }
+        if !queuedCreateErrors.isEmpty { throw queuedCreateErrors.removeFirst() }
         if let createError { throw createError }
         createdRequests.append(request)
         return "run123"
+    }
+
+    func run(clientRequestID: String) async throws -> CUARunCreated {
+        if let lookupError { throw lookupError }
+        if let lookupHandler { return lookupHandler(clientRequestID) }
+        if let lookupResult { return lookupResult }
+        throw CUAClientError.typedHTTP(
+            404, code: "request_identity_not_found", message: "not found", recovery: []
+        )
     }
 
     func permissions() async throws -> CUAPermissionStatus {
@@ -123,6 +152,10 @@ private final class MockAgentAPI: CUAAPI, @unchecked Sendable {
 private actor WindowDiscoveryRaceAPI: CUAAPI {
     private var windowCall = 0
 
+    func capabilities() async throws -> CUACapabilities {
+        CUACapabilities(features: .init(idempotentRunCreate: true))
+    }
+
     func apps() async throws -> [CUAAppOption] { [] }
 
     func windows(app: String) async throws -> [CUAWindowOption] {
@@ -141,6 +174,9 @@ private actor WindowDiscoveryRaceAPI: CUAAPI {
     func addPlanner(_ request: CUAPlannerCreateRequest) async throws {}
     func deletePlanner(name: String) async throws {}
     func create(_ request: CUARunRequest) async throws -> String { "run" }
+    func run(clientRequestID: String) async throws -> CUARunCreated {
+        throw CUAClientError.http(404, "not found")
+    }
     func permissions() async throws -> CUAPermissionStatus {
         CUAPermissionStatus(accessibility: true, screenRecording: true)
     }
@@ -564,6 +600,182 @@ struct CUAViewModelTests {
         #expect(api.createdRequests.isEmpty)
     }
 
+    @Test("Start fails closed before POST when safe create recovery is unavailable")
+    func requiresIdempotentCreateCapability() async {
+        let api = MockAgentAPI()
+        api.capabilitiesSupported = false
+        let viewModel = CUAViewModel(api: api)
+        viewModel.goal = "g"
+        selectTarget(viewModel)
+
+        await viewModel.start()
+
+        #expect(api.createAttempts == 0)
+        #expect(!viewModel.phase.isBusy)
+        guard case let .failed(message) = viewModel.phase else {
+            Issue.record("expected capability failure")
+            return
+        }
+        #expect(message.contains("cannot safely recover"))
+    }
+
+    @Test("Typed create rejection does not retry or enter recovery")
+    func typedCreateFailureIsDefinitive() async {
+        let api = MockAgentAPI()
+        api.createError = CUAClientError.typedHTTP(
+            409, code: "request_identity_conflict", message: "conflict", recovery: []
+        )
+        let viewModel = CUAViewModel(api: api)
+        viewModel.goal = "g"
+        selectTarget(viewModel)
+
+        await viewModel.start()
+
+        #expect(api.createAttempts == 1)
+        #expect(!viewModel.isRecoveringCreate)
+        #expect(!viewModel.phase.isBusy)
+    }
+
+    @Test("Ambiguous create retries the same identity and stops the recovered run")
+    func ambiguousCreateRetryStopsRecoveredRun() async {
+        let api = MockAgentAPI()
+        api.queuedCreateErrors = [URLError(.networkConnectionLost)]
+        let viewModel = CUAViewModel(api: api)
+        viewModel.goal = "g"
+        selectTarget(viewModel)
+
+        await viewModel.start()
+
+        #expect(api.createAttempts == 2)
+        #expect(Set(api.attemptedRequests.map(\.clientRequestID)).count == 1)
+        #expect(api.createdRequests.count == 1)
+        #expect(api.cancelCalls == 1)
+        #expect(viewModel.phase == .idle)
+        #expect(!viewModel.isRecoveringCreate)
+    }
+
+    @Test("Starting owns preflight so a second Start is ignored and Stop prevents POST")
+    func capabilityPreflightOwnsLifecycle() async {
+        let api = MockAgentAPI()
+        api.capabilitiesDelayNanos = 40_000_000
+        let viewModel = CUAViewModel(api: api)
+        viewModel.goal = "g"
+        selectTarget(viewModel)
+
+        let first = Task { await viewModel.start() }
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        #expect(viewModel.phase == .starting)
+        await viewModel.start()
+        await viewModel.cancel()
+        await first.value
+
+        #expect(api.createAttempts == 0)
+        #expect(viewModel.phase == .idle)
+        #expect(!viewModel.isStopping)
+    }
+
+    @Test("Unreachable recovery locks Start until lookup can find and stop the run")
+    func ambiguousCreateRecoveryRemainsLocked() async {
+        let api = MockAgentAPI()
+        api.createError = URLError(.networkConnectionLost)
+        api.lookupError = URLError(.cannotConnectToHost)
+        let viewModel = CUAViewModel(api: api)
+        viewModel.goal = "g"
+        selectTarget(viewModel)
+
+        await viewModel.start()
+
+        #expect(api.createAttempts == 2)
+        #expect(viewModel.phase == .starting)
+        #expect(viewModel.isRecoveringCreate)
+        #expect(!viewModel.canStart)
+        #expect(viewModel.actionError?.contains("may still be executing") == true)
+
+        let requestID = try? #require(api.attemptedRequests.first?.clientRequestID)
+        api.lookupError = nil
+        api.lookupResult = CUARunCreated(
+            runID: "recovered", status: "running", windowID: "cg:123",
+            clientRequestID: requestID
+        )
+        await viewModel.cancel()
+
+        #expect(api.cancelCalls == 1)
+        #expect(viewModel.phase == .idle)
+        #expect(!viewModel.isRecoveringCreate)
+    }
+
+    @Test("Recovered run stays quarantined when cancellation fails")
+    func recoveredRunCancellationFailureIsStoppable() async {
+        let api = MockAgentAPI()
+        api.queuedCreateErrors = [URLError(.networkConnectionLost)]
+        api.cancelShouldFail = true
+        let viewModel = CUAViewModel(api: api, pollIntervalNanos: 1_000_000_000)
+        viewModel.goal = "g"
+        selectTarget(viewModel)
+
+        await viewModel.start()
+
+        #expect(api.createAttempts == 2)
+        #expect(api.cancelCalls == 1)
+        #expect(viewModel.phase == .running)
+        #expect(viewModel.phase.isBusy)
+        #expect(!viewModel.canApprove)
+        #expect(viewModel.actionError?.contains("may still be executing") == true)
+
+        api.cancelShouldFail = false
+        await viewModel.cancel()
+        #expect(api.cancelCalls == 2)
+        #expect(viewModel.phase == .idle)
+    }
+
+    @Test("Mismatched lookup metadata still stops the concrete recovered run")
+    func mismatchedLookupIsCancelled() async {
+        let api = MockAgentAPI()
+        api.createError = URLError(.networkConnectionLost)
+        api.lookupResult = CUARunCreated(
+            runID: "mismatched", status: "running", windowID: "cg:123",
+            clientRequestID: "wrong-request"
+        )
+        let viewModel = CUAViewModel(api: api)
+        viewModel.goal = "g"
+        selectTarget(viewModel)
+
+        await viewModel.start()
+
+        #expect(api.cancelCalls == 1)
+        #expect(viewModel.phase == .idle)
+        #expect(!viewModel.isRecoveringCreate)
+    }
+
+    @Test("Mismatched lookup stays stoppable when cancellation fails")
+    func mismatchedLookupCancelFailureIsQuarantined() async {
+        let api = MockAgentAPI()
+        api.createError = URLError(.networkConnectionLost)
+        api.lookupHandler = { requestID in
+            CUARunCreated(
+                runID: "mismatched", status: "running", windowID: "cg:other",
+                clientRequestID: requestID
+            )
+        }
+        api.cancelShouldFail = true
+        let viewModel = CUAViewModel(api: api, pollIntervalNanos: 1_000_000_000)
+        viewModel.goal = "g"
+        selectTarget(viewModel)
+
+        await viewModel.start()
+
+        #expect(api.cancelCalls == 1)
+        #expect(viewModel.phase == .running)
+        #expect(viewModel.phase.isBusy)
+        #expect(!viewModel.canApprove)
+        #expect(viewModel.actionError?.contains("may still be executing") == true)
+
+        api.cancelShouldFail = false
+        await viewModel.cancel()
+        #expect(api.cancelCalls == 2)
+        #expect(viewModel.phase == .idle)
+    }
+
     @Test("Start requires an explicit live process and window selection")
     func requiresExplicitWindowSelection() async {
         let api = MockAgentAPI()
@@ -818,14 +1030,14 @@ struct CUAClientTests {
     func createDecodes() async throws {
         RecordingURLProtocol.stubResponse(
             path: "/v1/cua/runs",
-            body: Data(#"{"run_id":"abc","status":"running","window_id":"opaque:abc"}"#.utf8)
+            body: Data(#"{"run_id":"abc","status":"running","window_id":"opaque:abc","client_request_id":"request-1"}"#.utf8)
         )
         let client = makeClient()
         let runID = try await client.create(
             CUARunRequest(
                 app: "pid:42", goal: "g", planner: "local-9b",
                 openURL: "", allowedDomain: "wikipedia.org", maxSteps: 8,
-                humanLogin: true, windowID: "opaque:abc"
+                humanLogin: true, windowID: "opaque:abc", clientRequestID: "request-1"
             )
         )
         #expect(runID == "abc")
@@ -837,6 +1049,7 @@ struct CUAClientTests {
         #expect(json["max_steps"] as? Int == 8)
         #expect(json["app"] as? String == "pid:42")
         #expect(json["window_id"] as? String == "opaque:abc")
+        #expect(json["client_request_id"] as? String == "request-1")
     }
 
     @Test("Create rejects missing or changed window binding and cancels the run")
@@ -898,6 +1111,52 @@ struct CUAClientTests {
             )
         }
         #expect(RecordingURLProtocol.captured["/v1/cua/runs/unsafe/cancel"] != nil)
+    }
+
+    @Test("Create rejects a missing request identity and stops the run")
+    func createRequiresMatchingRequestIdentity() async throws {
+        RecordingURLProtocol.stubResponse(
+            path: "/v1/cua/runs",
+            body: Data(#"{"run_id":"unsafe","status":"running","window_id":"cg:123"}"#.utf8)
+        )
+        RecordingURLProtocol.stubResponse(path: "/v1/cua/runs/unsafe/cancel")
+        let request = CUARunRequest(
+            app: "pid:42", goal: "g", planner: "local-9b", openURL: "",
+            allowedDomain: "", maxSteps: 8, humanLogin: true, windowID: "cg:123",
+            clientRequestID: "request-1"
+        )
+
+        do {
+            _ = try await makeClient().create(request)
+            Issue.record("expected request identity rejection")
+        } catch let error as CUAClientError {
+            #expect(
+                error == .requestBinding(
+                    expected: "request-1", actual: nil, runID: "unsafe",
+                    cancellationFailed: false
+                )
+            )
+        }
+        #expect(RecordingURLProtocol.captured["/v1/cua/runs/unsafe/cancel"] != nil)
+    }
+
+    @Test("Capabilities and request lookup decode the idempotent create contract")
+    func idempotentCreateContract() async throws {
+        RecordingURLProtocol.stubResponse(
+            path: "/v1/cua/capabilities",
+            body: Data(#"{"features":{"idempotent_run_create":true}}"#.utf8)
+        )
+        RecordingURLProtocol.stubResponse(
+            path: "/v1/cua/runs/by-request/request-1",
+            body: Data(#"{"run_id":"abc","status":"running","window_id":"cg:123","client_request_id":"request-1"}"#.utf8)
+        )
+        let client = makeClient()
+
+        #expect(try await client.capabilities().features.idempotentRunCreate)
+        let found = try await client.run(clientRequestID: "request-1")
+        #expect(found.runID == "abc")
+        #expect(found.windowID == "cg:123")
+        #expect(found.clientRequestID == "request-1")
     }
 
     @Test("Discovery decodes bundle_id and URL-encodes the PID selector")
@@ -1212,6 +1471,7 @@ struct CUATargetUISourceTests {
         #expect(section.contains("ComputerUse.Agent.Target.Window"))
         #expect(section.contains("ComputerUse.Agent.Target.Refresh"))
         #expect(section.contains("ComputerUse.Agent.Target.Error"))
+        #expect(section.contains("Retry Recovery"))
         #expect(page.contains("Actions run on this Mac"))
         #expect(page.contains("choose the brain endpoint"))
         #expect(!page.contains("Everything runs locally"))

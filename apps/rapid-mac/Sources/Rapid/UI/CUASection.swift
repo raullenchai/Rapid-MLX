@@ -365,7 +365,11 @@ struct CUASection: View {
                 )
                 .font(.callout.weight(.semibold))
                 Spacer()
-                Button(viewModel.isStopping ? "Stopping…" : "Stop") {
+                Button(
+                    viewModel.isRecoveringCreate
+                        ? (viewModel.isStopping ? "Recovering…" : "Retry Recovery")
+                        : (viewModel.isStopping ? "Stopping…" : "Stop")
+                ) {
                     Task { await viewModel.cancel() }
                 }
                     .buttonStyle(.bordered)

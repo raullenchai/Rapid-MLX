@@ -3,16 +3,30 @@ import Foundation
 /// Transport contract for the agent-task panel, so the view model can be
 /// unit-tested without a live server.
 protocol CUAAPI: Sendable {
+    func capabilities() async throws -> CUACapabilities
     func apps() async throws -> [CUAAppOption]
     func windows(app: String) async throws -> [CUAWindowOption]
     func planners() async throws -> [CUAPlannerOption]
     func addPlanner(_ request: CUAPlannerCreateRequest) async throws
     func deletePlanner(name: String) async throws
     func create(_ request: CUARunRequest) async throws -> String
+    func run(clientRequestID: String) async throws -> CUARunCreated
     func permissions() async throws -> CUAPermissionStatus
     func events(runID: String, after: Int) async throws -> CUARunView
     func approve(runID: String, gateID: String) async throws
     func cancel(runID: String) async throws
+}
+
+struct CUACapabilities: Codable, Equatable, Sendable {
+    struct Features: Codable, Equatable, Sendable {
+        var idempotentRunCreate: Bool
+
+        enum CodingKeys: String, CodingKey {
+            case idempotentRunCreate = "idempotent_run_create"
+        }
+    }
+
+    var features: Features
 }
 
 /// Phase of the agent-task panel.
@@ -111,8 +125,11 @@ final class CUAViewModel: ObservableObject {
 
     private static let bindingCleanupWarning =
         "Warning: this unverified task may still be executing. Stop it immediately before retrying."
+    private static let createRecoveryWarning =
+        "Rapid could not confirm whether the task started. It may still be executing. Restore the local server connection, then use Stop again. Start remains locked."
     private var lifecycleGeneration = 0
     private var stoppingStartGeneration: Int?
+    private var pendingCreateRecovery: CUARunRequest?
 
     init(api: CUAAPI?, pollIntervalNanos: UInt64 = 700_000_000) {
         self.api = api ?? NullCUAAPI()
@@ -147,10 +164,15 @@ final class CUAViewModel: ObservableObject {
             && !requiresBindingCleanup && !isStopping
     }
 
+    var isRecoveringCreate: Bool { pendingCreateRecovery != nil && runID == nil }
+
     var approvalUnavailableMessage: String? {
         guard phase == .awaitingApproval, !canApprove else { return nil }
         if isStopping {
             return "Rapid is stopping this task. Approval is unavailable while cancellation finishes."
+        }
+        if requiresBindingCleanup {
+            return "Rapid could not verify this task start. Approval is disabled; stop the task immediately."
         }
         return "This approval is missing its gate identity. Stop the task and retry."
     }
@@ -375,8 +397,37 @@ final class CUAViewModel: ObservableObject {
         actionError = nil
         showingPollError = false
         requiresBindingCleanup = false
+        pendingCreateRecovery = nil
         stopPolling()
         runID = nil
+        do {
+            let capabilities = try await api.capabilities()
+            guard generation == lifecycleGeneration else { return }
+            if stoppingStartGeneration == generation {
+                stoppingStartGeneration = nil
+                isStopping = false
+                phase = .idle
+                return
+            }
+            guard capabilities.features.idempotentRunCreate else {
+                phase = .failed(
+                    message: "This local server cannot safely recover an interrupted task start. Update or restart Rapid before starting Computer Use."
+                )
+                return
+            }
+        } catch {
+            guard generation == lifecycleGeneration else { return }
+            if stoppingStartGeneration == generation {
+                stoppingStartGeneration = nil
+                isStopping = false
+                phase = .idle
+            } else {
+                phase = .failed(
+                    message: "Rapid could not verify safe task-start recovery: \(Self.describe(error))"
+                )
+            }
+            return
+        }
         let request = CUARunRequest(
             app: "pid:\(app.pid)",
             goal: goal.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -385,7 +436,8 @@ final class CUAViewModel: ObservableObject {
             allowedDomain: allowedDomain.trimmingCharacters(in: .whitespacesAndNewlines),
             maxSteps: maxSteps,
             humanLogin: true,
-            windowID: window.windowID
+            windowID: window.windowID,
+            clientRequestID: UUID().uuidString.lowercased()
         )
         do {
             let createdRunID = try await api.create(request)
@@ -439,6 +491,26 @@ final class CUAViewModel: ObservableObject {
                 } else {
                     phase = .failed(message: Self.describe(error))
                 }
+                return
+            }
+            if case let CUAClientError.requestBinding(
+                _, _, createdRunID, cancellationFailed
+            ) = error {
+                stoppingStartGeneration = nil
+                isStopping = false
+                if cancellationFailed {
+                    quarantine(runID: createdRunID, warning: Self.createRecoveryWarning)
+                } else if stopWasRequested {
+                    actionError = nil
+                    phase = .idle
+                } else {
+                    phase = .failed(message: Self.describe(error))
+                }
+                return
+            }
+            if Self.isAmbiguousCreateError(error) {
+                stoppingStartGeneration = nil
+                await recoverAmbiguousCreate(request, generation: generation)
                 return
             }
             if stoppingStartGeneration == generation {
@@ -507,6 +579,11 @@ final class CUAViewModel: ObservableObject {
 
     func cancel() async {
         guard phase.isBusy, !isStopping else { return }
+        if let request = pendingCreateRecovery, runID == nil {
+            isStopping = true
+            await recoverAmbiguousCreate(request, generation: lifecycleGeneration)
+            return
+        }
         if phase == .starting, runID == nil {
             stoppingStartGeneration = lifecycleGeneration
             isStopping = true
@@ -531,6 +608,7 @@ final class CUAViewModel: ObservableObject {
             actionError = nil
             showingPollError = false
             requiresBindingCleanup = false
+            pendingCreateRecovery = nil
             isStopping = false
             phase = .idle
         } catch {
@@ -544,6 +622,98 @@ final class CUAViewModel: ObservableObject {
             isStopping = false
             phase = previousPhase
             beginPolling(runID: runID, generation: generation)
+        }
+    }
+
+    private func recoverAmbiguousCreate(_ request: CUARunRequest, generation: Int) async {
+        pendingCreateRecovery = request
+        phase = .starting
+        isStopping = true
+        actionError = "Recovering the interrupted task start and stopping any accepted run…"
+
+        var recovered: CUARunCreated?
+        do {
+            let recoveredRunID = try await api.create(request)
+            recovered = CUARunCreated(
+                runID: recoveredRunID,
+                status: "running",
+                windowID: request.windowID,
+                clientRequestID: request.clientRequestID
+            )
+        } catch {
+            if let cleanup = Self.bindingCleanup(from: error) {
+                guard generation == lifecycleGeneration else { return }
+                pendingCreateRecovery = nil
+                if cleanup.cancellationFailed {
+                    quarantine(runID: cleanup.runID, warning: Self.createRecoveryWarning)
+                } else {
+                    isStopping = false
+                    actionError = nil
+                    phase = .idle
+                }
+                return
+            }
+            do {
+                recovered = try await api.run(clientRequestID: request.clientRequestID)
+            } catch {
+                guard generation == lifecycleGeneration else { return }
+                isStopping = false
+                actionError = Self.createRecoveryWarning
+                return
+            }
+        }
+
+        guard generation == lifecycleGeneration, let recovered else { return }
+        // Lookup is keyed by the client request identity. If a broken or
+        // mismatched server echoes different metadata, the returned run is
+        // still the only concrete automation authority we can stop. Treat it
+        // as untrusted and cancel it rather than discarding its run ID.
+        do {
+            try await api.cancel(runID: recovered.runID)
+            guard generation == lifecycleGeneration else { return }
+            pendingCreateRecovery = nil
+            runID = nil
+            isStopping = false
+            requiresBindingCleanup = false
+            actionError = nil
+            phase = .idle
+        } catch {
+            guard generation == lifecycleGeneration else { return }
+            pendingCreateRecovery = nil
+            quarantine(runID: recovered.runID, warning: Self.createRecoveryWarning)
+        }
+    }
+
+    private func quarantine(runID: String, warning: String) {
+        self.runID = runID
+        requiresBindingCleanup = true
+        isStopping = false
+        actionError = warning
+        phase = .running
+        beginPolling(runID: runID, generation: lifecycleGeneration)
+    }
+
+    private static func isAmbiguousCreateError(_ error: Error) -> Bool {
+        switch error {
+        case CUAClientError.windowBinding, CUAClientError.requestBinding:
+            return false
+        case let CUAClientError.typedHTTP(status, _, _, _),
+             let CUAClientError.http(status, _):
+            return status >= 500
+        default:
+            return true
+        }
+    }
+
+    private static func bindingCleanup(
+        from error: Error
+    ) -> (runID: String, cancellationFailed: Bool)? {
+        switch error {
+        case let CUAClientError.windowBinding(_, _, runID, cancellationFailed),
+             let CUAClientError.requestBinding(_, _, runID, cancellationFailed):
+            return (runID, cancellationFailed)
+        default:
+            return nil
         }
     }
 
@@ -730,6 +900,8 @@ private struct NullCUAAPI: CUAAPI {
         }
     }
 
+    func capabilities() async throws -> CUACapabilities { throw Unavailable() }
+
     func planners() async throws -> [CUAPlannerOption] {
         throw Unavailable()
     }
@@ -747,6 +919,10 @@ private struct NullCUAAPI: CUAAPI {
     }
 
     func create(_ request: CUARunRequest) async throws -> String {
+        throw Unavailable()
+    }
+
+    func run(clientRequestID: String) async throws -> CUARunCreated {
         throw Unavailable()
     }
 
