@@ -58,6 +58,9 @@ class CUARun:
         event_sink: Callable[[dict], None] | None = None,
         gate: Callable[[str], Any] | None = None,
         stop_event: asyncio.Event | None = None,
+        window_id: str | None = None,
+        backend_app: str | None = None,
+        expected_app: dict | None = None,
     ):
         self.config = config
         self.app = app
@@ -66,6 +69,9 @@ class CUARun:
         self.event_sink = event_sink
         self.gate = gate
         self.stop_event = stop_event or asyncio.Event()
+        self.window_id = window_id
+        self.backend_app = backend_app or app
+        self.expected_app = dict(expected_app) if expected_app is not None else None
         run_dir.mkdir(parents=True, exist_ok=True)
         self.history: list[dict] = []
         self.trace: dict = {
@@ -73,6 +79,7 @@ class CUARun:
             "goal": goal,
             "planner": config.planner.describe(),
             "steps": [],
+            "window_id": window_id,
         }
         self.tracker = NoProgressTracker()
         self._empty_snapshots = 0
@@ -100,6 +107,42 @@ class CUARun:
         except Exception:  # noqa: BLE001 - events must never kill the run
             pass
 
+    async def _request_approval(
+        self, reason: str, *, action: str = "", target: str = ""
+    ) -> bool:
+        """Ask the human to approve one explicitly described action."""
+        if self.gate is None:
+            marker = (
+                "APPROVE_SIGNIN"
+                if reason == "sign-in"
+                else f"APPROVE_ACTION_{hashlib.sha256(reason.encode()).hexdigest()[:12]}"
+            )
+            if reason == "sign-in":
+                return await gates.wait_for_human(
+                    self.run_dir, marker, self.config.pause_timeout
+                )
+            return await gates.wait_for_human(
+                self.run_dir, marker, self.config.pause_timeout, reason=reason
+            )
+        event = {"kind": "gate", "reason": reason}
+        if action:
+            event.update({"action": action, "target": target})
+        self._emit(event)
+        try:
+            approved = bool(await self.gate(reason))
+        except Exception:  # noqa: BLE001 - a broken gate must not hang the run
+            approved = False
+        self._emit(
+            {
+                "kind": "gate_resolved",
+                "reason": reason,
+                "approved": approved,
+                "action": action,
+                "target": target,
+            }
+        )
+        return approved
+
     async def _request_signin_approval(self) -> bool:
         """Ask the human to approve a sign-in pause.
 
@@ -107,17 +150,40 @@ class CUARun:
         gate/gate_resolved events and resolved through the callback; without
         one (CLI mode) the file sentinel is the approval channel.
         """
-        if self.gate is None:
-            return await gates.wait_for_human(
-                self.run_dir, "APPROVE_SIGNIN", self.config.pause_timeout
-            )
-        self._emit({"kind": "gate", "reason": "sign-in"})
-        try:
-            approved = bool(await self.gate("sign-in"))
-        except Exception:  # noqa: BLE001 - a broken gate must not hang the run
-            approved = False
-        self._emit({"kind": "gate_resolved", "approved": approved})
-        return approved
+        return await self._request_approval("sign-in")
+
+    @staticmethod
+    def _target(snapshot: dict, index: int) -> dict:
+        return next(
+            (e for e in snapshot.get("elements", []) if e.get("index") == index), {}
+        )
+
+    @staticmethod
+    def _target_identity(target: dict) -> tuple[str, ...] | None:
+        required = ("index", "role", "label", "x", "y", "width", "height", "center")
+        if any(field not in target for field in required):
+            return None
+        return tuple(
+            json.dumps(target.get(field), ensure_ascii=False, sort_keys=True)
+            for field in (*required, "subrole", "actions")
+        )
+
+    @staticmethod
+    def _window_identity(snapshot: dict) -> tuple[str, str, str, str, str] | None:
+        app = snapshot.get("app")
+        if (
+            not isinstance(app, dict)
+            or "pid" not in app
+            or "window_index" not in snapshot
+        ):
+            return None
+        return (
+            str(app.get("pid")),
+            str(app.get("bundle_id", "")),
+            str(app.get("name", "")),
+            str(snapshot.get("window_index")),
+            str(snapshot.get("window_id", "")),
+        )
 
     def _check_domain(self, url: str) -> str | None:
         allowed = self.config.allowed_domain.strip().lower().rstrip(".")
@@ -136,6 +202,22 @@ class CUARun:
             )
         return None
 
+    def _get_app_state(self, *, screenshot: bool) -> dict:
+        kwargs: dict[str, Any] = {"screenshot": screenshot, "use_cache": False}
+        if self.window_id is not None:
+            kwargs["window_id"] = self.window_id
+        snapshot = backend.get_app_state(self.backend_app, **kwargs)
+        if self.expected_app is not None:
+            observed = snapshot.get("app") or {}
+            for key in ("pid", "bundleId", "name"):
+                expected = self.expected_app.get(key)
+                if expected is not None and observed.get(key) != expected:
+                    raise ComputerUseError(
+                        "target_drift",
+                        f"selected app identity changed for pid {self.expected_app.get('pid')}",
+                    )
+        return snapshot
+
     async def _execute(self, plan: dict, snapshot: dict) -> dict:
         action = plan["action"]
         index = plan.get("element_index", -1)
@@ -143,24 +225,35 @@ class CUARun:
         try:
             if action == "click":
                 result.update(
-                    backend.click(self.app, index, expected_snapshot=snapshot)
+                    backend.click(self.backend_app, index, expected_snapshot=snapshot)
                 )
             elif action == "fill":
                 result.update(
                     backend.set_value(
-                        self.app,
+                        self.backend_app,
                         index,
                         plan.get("text", ""),
                         expected_snapshot=snapshot,
                     )
                 )
             elif action == "press":
-                backend.click(self.app, index, expected_snapshot=snapshot)
+                backend.click(self.backend_app, index, expected_snapshot=snapshot)
                 await asyncio.sleep(0.2)
-                result.update(backend.press_key(self.app, plan.get("key", "Enter")))
+                result.update(
+                    backend.press_key(
+                        self.backend_app,
+                        plan.get("key", "Enter"),
+                        expected_snapshot=snapshot,
+                    )
+                )
             elif action == "scroll":
                 result.update(
-                    backend.scroll(self.app, plan.get("direction", "down"), 1.0)
+                    backend.scroll(
+                        self.backend_app,
+                        plan.get("direction", "down"),
+                        1.0,
+                        expected_snapshot=snapshot,
+                    )
                 )
             elif action == "wait":
                 await asyncio.sleep(2.0)
@@ -182,10 +275,22 @@ class CUARun:
             self._emit({"kind": "terminal", "status": "stopped"})
             return {"status": "stopped", "reason": "cancelled by client"}
         try:
-            snapshot = backend.get_app_state(
-                self.app, screenshot=not planner.text_only, use_cache=False
-            )
+            snapshot = self._get_app_state(screenshot=not planner.text_only)
         except ComputerUseError as exc:
+            if self.window_id is not None:
+                reason = f"selected window unavailable: {exc.message}"
+                self.trace["status"] = "stopped"
+                self.trace["final_summary"] = reason
+                self._record({"step": step_no, "stop": reason, "error_code": exc.code})
+                self._emit(
+                    {
+                        "kind": "terminal",
+                        "status": "stopped",
+                        "reason": reason,
+                        "error": exc.code,
+                    }
+                )
+                return {"status": "stopped", "reason": reason, "error": exc.code}
             # AX watchdog tripped (wedged app accessibility service): treat as
             # an unusable snapshot and let the honest-stop path handle it.
             snapshot = {
@@ -222,7 +327,9 @@ class CUARun:
                 return {"status": "stopped", "reason": reason}
             return None
         self._empty_snapshots = 0
-        url_now = backend.read_url(self.app)
+        url_now = backend.read_url(
+            self.backend_app, window_id=self.window_id or snapshot.get("window_id")
+        )
         guard = self._check_domain(url_now)
         if guard:
             self.trace["guard_stop"] = guard
@@ -239,14 +346,7 @@ class CUARun:
             self.config.allowed_domain,
             progress_hint,
         )
-        target: dict = next(
-            (
-                e
-                for e in snapshot.get("elements", [])
-                if e["index"] == plan.get("element_index")
-            ),
-            {},
-        )
+        target = self._target(snapshot, plan.get("element_index", -1))
         target_label = str(target.get("label", ""))
         try:
             gates.check_plan_consents(plan, target_label)
@@ -278,12 +378,146 @@ class CUARun:
                 self._record({"step": step_no, "plan": plan, "gate": "timeout"})
                 return {"status": "stopped", "reason": "sign-in gate not approved"}
 
+        approval = gates.consequential_action(plan, target_label)
+        if approval is not None:
+            approval_reason = f"{approval.reason}; app={self.app!r}"
+            approved = await self._request_approval(
+                approval_reason, action=approval.action, target=approval.target
+            )
+            if not approved:
+                self.trace["human_gate"] = f"{approval.kind} not approved"
+                self._record({"step": step_no, "plan": plan, "gate": "not approved"})
+                return {
+                    "status": "stopped",
+                    "reason": f"{approval.kind} not approved",
+                }
+
+            # Approval binds to the observed target. Re-observe after the human
+            # pause and fail closed if the indexed control or domain changed.
+            try:
+                fresh = self._get_app_state(screenshot=not planner.text_only)
+            except ComputerUseError as exc:
+                reason = (
+                    f"selected window unavailable after approval: {exc.message}"
+                    if self.window_id is not None
+                    else f"could not revalidate approved target: {exc}"
+                )
+                self._record(
+                    {
+                        "step": step_no,
+                        "plan": plan,
+                        "gate": "stale",
+                        "stop": reason,
+                        "error_code": exc.code,
+                    }
+                )
+                return {"status": "stopped", "reason": reason, "error": exc.code}
+            fresh_url = backend.read_url(
+                self.backend_app, window_id=self.window_id or fresh.get("window_id")
+            )
+            fresh_guard = self._check_domain(fresh_url)
+            fresh_target = self._target(fresh, plan.get("element_index", -1))
+            fresh_label = str(fresh_target.get("label", ""))
+            original_target_identity = self._target_identity(target)
+            fresh_target_identity = self._target_identity(fresh_target)
+            original_window_identity = self._window_identity(snapshot)
+            fresh_window_identity = self._window_identity(fresh)
+            stale = any(
+                (
+                    original_target_identity is None,
+                    fresh_target_identity is None,
+                    original_target_identity != fresh_target_identity,
+                    original_window_identity is None,
+                    fresh_window_identity is None,
+                    original_window_identity != fresh_window_identity,
+                    snapshot.get("window") != fresh.get("window"),
+                    fresh_url != url_now,
+                    _tree_signature(fresh) != _tree_signature(snapshot),
+                )
+            )
+            try:
+                gates.check_plan_consents(plan, fresh_label)
+            except ConsentError as exc:
+                self.trace["consent_stop"] = str(exc)
+                self._record({"step": step_no, "plan": plan, "consent_stop": str(exc)})
+                return {"status": "stopped", "reason": str(exc)}
+            if fresh_guard or stale:
+                reason = fresh_guard or "approved target changed before execution"
+                self._record(
+                    {"step": step_no, "plan": plan, "gate": "stale", "stop": reason}
+                )
+                result = {"status": "stopped", "reason": reason}
+                if self.window_id is not None and stale:
+                    result["error"] = "window_stale"
+                return result
+            snapshot = fresh
+            url_now = fresh_url
+
+        # Planning and human approval are await points during which the active
+        # browser location can change. Enforce the domain boundary again at
+        # the last possible moment before any input is dispatched.
+        if self.window_id is not None and approval is None:
+            try:
+                fresh = self._get_app_state(screenshot=not planner.text_only)
+            except ComputerUseError as exc:
+                reason = f"selected window unavailable before action: {exc.message}"
+                self._record(
+                    {
+                        "step": step_no,
+                        "plan": plan,
+                        "stop": reason,
+                        "error_code": exc.code,
+                    }
+                )
+                return {"status": "stopped", "reason": reason, "error": exc.code}
+            if self._window_identity(snapshot) != self._window_identity(
+                fresh
+            ) or snapshot.get("window") != fresh.get("window"):
+                reason = "selected window moved or was replaced before action"
+                self._record({"step": step_no, "plan": plan, "stop": reason})
+                return {"status": "stopped", "reason": reason, "error": "window_stale"}
+            original_target = self._target(snapshot, plan.get("element_index", -1))
+            fresh_target = self._target(fresh, plan.get("element_index", -1))
+            if self._target_identity(original_target) != self._target_identity(
+                fresh_target
+            ):
+                reason = "planned target changed before action"
+                self._record({"step": step_no, "plan": plan, "stop": reason})
+                return {"status": "stopped", "reason": reason, "error": "target_stale"}
+            snapshot = fresh
+        pre_action_url = backend.read_url(
+            self.backend_app, window_id=self.window_id or snapshot.get("window_id")
+        )
+        pre_action_guard = self._check_domain(pre_action_url)
+        if pre_action_guard:
+            self.trace["guard_stop"] = pre_action_guard
+            self._record(
+                {
+                    "step": step_no,
+                    "plan": plan,
+                    "stop": pre_action_guard,
+                    "url": pre_action_url,
+                }
+            )
+            return {"status": "stopped", "reason": pre_action_guard}
+        url_now = pre_action_url
         before_sig = _tree_signature(snapshot)
         executed = await self._execute(plan, snapshot)
         await asyncio.sleep(1.2)
-        after = backend.get_app_state(self.app, screenshot=False, use_cache=False)
+        try:
+            after = self._get_app_state(screenshot=False)
+        except ComputerUseError as exc:
+            if self.window_id is None:
+                raise
+            reason = f"selected window unavailable after action: {exc.message}"
+            self._record(
+                {"step": step_no, "plan": plan, "stop": reason, "error_code": exc.code}
+            )
+            return {"status": "stopped", "reason": reason, "error": exc.code}
         after_sig = _tree_signature(after)
-        url_after = backend.read_url(self.app)
+        url_after = backend.read_url(
+            self.backend_app, window_id=self.window_id or after.get("window_id")
+        )
         delta = {
             "executed": executed,
             "tree_changed": before_sig != after_sig,
@@ -353,6 +587,9 @@ async def run(
     event_sink: Callable[[dict], None] | None = None,
     gate: Callable[[str], Any] | None = None,
     stop_event: asyncio.Event | None = None,
+    window_id: str | None = None,
+    backend_app: str | None = None,
+    expected_app: dict | None = None,
 ) -> dict:
     """Run the loop. Pass `planner` to inject a custom brain (SDK/testing use)."""
     run_dir = config_mod.RUNS_DIR / (
@@ -379,8 +616,13 @@ async def run(
         event_sink=event_sink,
         gate=gate,
         stop_event=stop_event,
+        window_id=window_id,
+        backend_app=backend_app,
+        expected_app=expected_app,
     )
-    cua_run._emit({"kind": "started", "app": app, "run_dir": str(run_dir)})
+    cua_run._emit(
+        {"kind": "started", "app": app, "run_dir": str(run_dir), "window_id": window_id}
+    )
     limit = max_steps or config.max_steps
     terminal: dict = {"status": "incomplete"}
     try:
@@ -416,6 +658,7 @@ async def run(
     finally:
         cua_run.trace["status"] = terminal.get("status", "incomplete")
         reason = str(terminal.get("reason", ""))
+        error = str(terminal.get("error", ""))
         if reason and not cua_run.trace.get("final_summary"):
             cua_run.trace["final_summary"] = reason
         if not cua_run._terminal_emitted:
@@ -429,6 +672,7 @@ async def run(
                     "status": public_status,
                     "final_summary": str(cua_run.trace.get("final_summary", "")),
                     **({"reason": reason} if reason else {}),
+                    **({"error": error} if error else {}),
                 }
             )
         (run_dir / "trace.json").write_text(

@@ -181,6 +181,59 @@ def test_normal_plan_passes():
     )
 
 
+@pytest.mark.parametrize(
+    ("label", "instruction"),
+    [
+        ("Send", "send the email"),
+        ("Publish", "publish the post"),
+        ("Move to Trash", "delete the file"),
+        ("Confirm reservation", "book the appointment"),
+        ("发送", "发送邮件"),
+        ("削除", "ファイルを削除"),
+        ("보내기", "메시지 보내기"),
+    ],
+)
+def test_consequential_action_requires_typed_targeted_approval(label, instruction):
+    requirement = gates.consequential_action(
+        {
+            "action": "click",
+            "element_index": 4,
+            "step_instruction": instruction,
+        },
+        label,
+    )
+    assert requirement is not None
+    assert requirement.kind == "external_commit"
+    assert requirement.action == "click"
+    assert requirement.target == label
+    assert f"target={label!r}" in requirement.reason
+
+
+def test_read_only_and_draft_actions_do_not_require_approval():
+    assert (
+        gates.consequential_action(
+            {
+                "action": "click",
+                "element_index": 1,
+                "step_instruction": "submit the search",
+            },
+            "Search",
+        )
+        is None
+    )
+    assert (
+        gates.consequential_action(
+            {
+                "action": "fill",
+                "element_index": 2,
+                "step_instruction": "draft the email",
+            },
+            "Message body",
+        )
+        is None
+    )
+
+
 def test_sign_in_detection():
     snapshot = {
         "elements": [
@@ -246,7 +299,9 @@ def fake_backend(monkeypatch):
 
     monkeypatch.setattr(backend_mod, "get_app_state", fake_get_app_state)
     monkeypatch.setattr(
-        backend_mod, "read_url", lambda app: "https://www.wikipedia.org/"
+        backend_mod,
+        "read_url",
+        lambda app, **kwargs: "https://www.wikipedia.org/",
     )
     monkeypatch.setattr(
         backend_mod,
@@ -263,7 +318,9 @@ def fake_backend(monkeypatch):
         },
     )
     monkeypatch.setattr(
-        backend_mod, "press_key", lambda app, key: {"ok": True, "key": key}
+        backend_mod,
+        "press_key",
+        lambda app, key, **kw: {"ok": True, "key": key},
     )
     return backend_mod
 
@@ -383,7 +440,7 @@ def test_loop_empty_ax_tree_stops_honestly(
         return {"app": {"name": app}, "elements": [], "tree_text": ""}
 
     monkeypatch.setattr(loop_mod.backend, "get_app_state", empty_state)
-    monkeypatch.setattr(loop_mod.backend, "read_url", lambda app: "")
+    monkeypatch.setattr(loop_mod.backend, "read_url", lambda app, **kwargs: "")
     config = _make_config(tmp_path)
     planner = _FakePlanner(
         [{"action": "done", "step_instruction": "x", "final_summary": "y"}],
@@ -414,11 +471,30 @@ def test_loop_domain_guard(config_dir, fake_backend, tmp_path, monkeypatch):
     from rapid_mlx.cua import loop as loop_mod
 
     monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    observed_window_ids = []
+
+    def state_with_window(app, screenshot=True, use_cache=True):
+        return {
+            "app": {"name": app},
+            "window_id": "cg:202",
+            "elements": [{"index": 1, "label": "Search", "role": "AXTextField"}],
+            "tree_text": "[1] AXTextField Search",
+        }
+
+    monkeypatch.setattr(fake_backend, "get_app_state", state_with_window)
+    monkeypatch.setattr(
+        fake_backend,
+        "read_url",
+        lambda app, window_id=None: (
+            observed_window_ids.append(window_id) or "https://www.wikipedia.org/"
+        ),
+    )
     config = _make_config(tmp_path)
     config.allowed_domain = "example.com"
     trace = asyncio.run(loop_mod.run(config, "Google Chrome", "goal", max_steps=3))
     assert trace["status"] == "stopped"
     assert "domain guard" in trace.get("guard_stop", "")
+    assert observed_window_ids == ["cg:202"]
 
 
 def test_loop_writes_trace(config_dir, fake_backend, tmp_path, monkeypatch):
@@ -1017,7 +1093,7 @@ def test_execute_all_action_variants(fake_backend, tmp_path, monkeypatch):
     monkeypatch.setattr(
         fake_backend,
         "scroll",
-        lambda app, direction, pages: {"ok": True, "direction": direction},
+        lambda app, direction, pages, **kw: {"ok": True, "direction": direction},
     )
 
     async def no_sleep(_seconds):
@@ -1118,6 +1194,567 @@ def test_loop_invalid_domain_consent_and_human_timeout(
     monkeypatch.setattr(loop_mod.gates, "wait_for_human", timeout)
     result = asyncio.run(runner.step(normal, 1))
     assert result["status"] == "stopped" and "not approved" in result["reason"]
+
+
+@pytest.mark.parametrize("decision", [False, None])
+def test_consequential_action_does_not_execute_without_approval(
+    decision, fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    clicks: list[int] = []
+    monkeypatch.setattr(
+        fake_backend,
+        "click",
+        lambda app, index, **kwargs: clicks.append(index) or {"ok": True},
+    )
+    events: list[dict] = []
+
+    async def gate(reason):
+        assert clicks == []
+        assert "external_commit" in reason
+        assert "target='Send'" in reason
+        return decision
+
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path),
+        "Mail",
+        "send email",
+        tmp_path / "approval-denied",
+        event_sink=events.append,
+        gate=gate,
+    )
+    planner = _FakePlanner(
+        [
+            {
+                "action": "click",
+                "step_instruction": "send the email",
+                "element_index": 1,
+                "final_summary": "",
+            }
+        ]
+    )
+    monkeypatch.setattr(
+        fake_backend,
+        "get_app_state",
+        lambda *args, **kwargs: {
+            "app": {"name": "Mail", "pid": 101, "bundle_id": "mail"},
+            "window_index": 0,
+            "elements": [
+                {
+                    "index": 1,
+                    "label": "Send",
+                    "role": "AXButton",
+                    "x": 10,
+                    "y": 10,
+                    "width": 50,
+                    "height": 20,
+                    "center": [35, 20],
+                }
+            ],
+            "tree_text": "[1] AXButton Send",
+        },
+    )
+    result = asyncio.run(runner.step(planner, 1))
+    assert result == {"status": "stopped", "reason": "external_commit not approved"}
+    assert clicks == []
+    assert [event["kind"] for event in events] == [
+        "plan",
+        "gate",
+        "gate_resolved",
+    ]
+
+
+def test_approved_action_reobserves_and_stops_on_stale_target(
+    fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    centers = iter([[35, 20], [135, 20]])
+    monkeypatch.setattr(
+        fake_backend,
+        "get_app_state",
+        lambda *args, **kwargs: {
+            "app": {"name": "Mail", "pid": 101, "bundle_id": "mail"},
+            "window_index": 0,
+            "elements": [
+                {
+                    "index": 1,
+                    "label": "Send",
+                    "role": "AXButton",
+                    "x": 10,
+                    "y": 10,
+                    "width": 50,
+                    "height": 20,
+                    "center": next(centers),
+                }
+            ],
+            "tree_text": "snapshot",
+        },
+    )
+    clicks: list[int] = []
+    monkeypatch.setattr(
+        fake_backend,
+        "click",
+        lambda app, index, **kwargs: clicks.append(index) or {"ok": True},
+    )
+
+    async def approve(_reason):
+        return True
+
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path),
+        "Mail",
+        "send email",
+        tmp_path / "approval-stale",
+        gate=approve,
+    )
+    planner = _FakePlanner(
+        [
+            {
+                "action": "click",
+                "step_instruction": "send the email",
+                "element_index": 1,
+                "final_summary": "",
+            }
+        ]
+    )
+    result = asyncio.run(runner.step(planner, 1))
+    assert result == {
+        "status": "stopped",
+        "reason": "approved target changed before execution",
+    }
+    assert clicks == []
+
+
+def test_approved_action_executes_only_after_stable_revalidation(
+    fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    snapshot = {
+        "app": {"name": "Mail", "pid": 101, "bundle_id": "mail"},
+        "window_index": 0,
+        "elements": [
+            {
+                "index": 1,
+                "label": "Send",
+                "role": "AXButton",
+                "actions": ["AXPress"],
+                "x": 10,
+                "y": 10,
+                "width": 50,
+                "height": 20,
+                "center": [35, 20],
+            }
+        ],
+        "tree_text": "[1] AXButton* Send",
+    }
+    monkeypatch.setattr(
+        fake_backend, "get_app_state", lambda *args, **kwargs: dict(snapshot)
+    )
+    clicks: list[int] = []
+    monkeypatch.setattr(
+        fake_backend,
+        "click",
+        lambda app, index, **kwargs: clicks.append(index) or {"ok": True},
+    )
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(loop_mod.asyncio, "sleep", no_sleep)
+
+    async def approve(reason):
+        assert clicks == []
+        assert "app='Mail'" in reason
+        return True
+
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path),
+        "Mail",
+        "send email",
+        tmp_path / "approval-success",
+        gate=approve,
+    )
+    planner = _FakePlanner(
+        [
+            {
+                "action": "click",
+                "step_instruction": "send the email",
+                "element_index": 1,
+                "final_summary": "",
+            }
+        ]
+    )
+    assert asyncio.run(runner.step(planner, 1)) is None
+    assert clicks == [1]
+
+
+def test_domain_is_rechecked_after_planning_before_any_action(
+    fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    snapshot = {
+        "app": {"name": "Chrome"},
+        "window_id": "cg:404",
+        "elements": [{"index": 1, "label": "Article", "role": "AXLink"}],
+        "tree_text": "[1] AXLink Article",
+    }
+    monkeypatch.setattr(
+        fake_backend, "get_app_state", lambda *args, **kwargs: dict(snapshot)
+    )
+    urls = iter(["https://allowed.example/start", "https://outside.example/"])
+    observed_window_ids: list[str | None] = []
+    monkeypatch.setattr(
+        fake_backend,
+        "read_url",
+        lambda _app, window_id=None: (
+            observed_window_ids.append(window_id) or next(urls)
+        ),
+    )
+    clicks: list[int] = []
+    monkeypatch.setattr(
+        fake_backend,
+        "click",
+        lambda app, index, **kwargs: clicks.append(index) or {"ok": True},
+    )
+    config = _make_config(tmp_path)
+    config.allowed_domain = "allowed.example"
+    runner = loop_mod.CUARun(
+        config, "Chrome", "open article", tmp_path / "domain-changed-during-plan"
+    )
+    planner = _FakePlanner(
+        [
+            {
+                "action": "click",
+                "step_instruction": "open the article",
+                "element_index": 1,
+                "final_summary": "",
+            }
+        ]
+    )
+
+    result = asyncio.run(runner.step(planner, 1))
+
+    assert result is not None
+    assert result["status"] == "stopped"
+    assert "outside --allowed-domain" in result["reason"]
+    assert clicks == []
+    assert observed_window_ids == ["cg:404", "cg:404"]
+
+
+def test_selected_window_is_revalidated_before_action_and_fails_on_move(
+    fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    windows = iter(
+        [
+            {"window_id": "cg:404", "index": 0, "x": 10, "y": 10},
+            {"window_id": "cg:404", "index": 0, "x": 20, "y": 10},
+        ]
+    )
+    calls: list[str | None] = []
+
+    def state(app, **kwargs):
+        calls.append(kwargs.get("window_id"))
+        return {
+            "app": {"name": app, "pid": 9},
+            "window_id": "cg:404",
+            "window_index": 0,
+            "window": next(windows),
+            "elements": [{"index": 1, "label": "Open", "role": "AXButton"}],
+            "tree_text": "[1] AXButton Open",
+        }
+
+    monkeypatch.setattr(fake_backend, "get_app_state", state)
+    clicks: list[int] = []
+    monkeypatch.setattr(
+        fake_backend,
+        "click",
+        lambda app, index, **kwargs: clicks.append(index) or {"ok": True},
+    )
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path),
+        "Browser",
+        "open",
+        tmp_path / "selected-moved",
+        window_id="cg:404",
+    )
+    planner = _FakePlanner(
+        [
+            {
+                "action": "click",
+                "step_instruction": "open",
+                "element_index": 1,
+                "final_summary": "",
+            }
+        ]
+    )
+    result = asyncio.run(runner.step(planner, 1))
+    assert result == {
+        "status": "stopped",
+        "reason": "selected window moved or was replaced before action",
+        "error": "window_stale",
+    }
+    assert calls == ["cg:404", "cg:404"]
+    assert clicks == []
+
+
+def test_selected_window_fails_closed_when_planned_index_changes(
+    fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    window = {"window_id": "cg:404", "index": 0, "x": 10, "y": 10}
+    labels = iter(["Open", "Delete"])
+
+    def state(app, **kwargs):
+        label = next(labels)
+        return {
+            "app": {"name": app, "pid": 9},
+            "window_id": "cg:404",
+            "window_index": 0,
+            "window": dict(window),
+            "elements": [
+                {
+                    "index": 1,
+                    "label": label,
+                    "role": "AXButton",
+                    "actions": ["AXPress"],
+                    "x": 10,
+                    "y": 10,
+                    "width": 50,
+                    "height": 20,
+                    "center": [35, 20],
+                }
+            ],
+            "tree_text": f"[1] AXButton* {label}",
+        }
+
+    monkeypatch.setattr(fake_backend, "get_app_state", state)
+    clicks: list[int] = []
+    monkeypatch.setattr(
+        fake_backend,
+        "click",
+        lambda app, index, **kwargs: clicks.append(index) or {"ok": True},
+    )
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path),
+        "Browser",
+        "open",
+        tmp_path / "selected-target-stale",
+        window_id="cg:404",
+    )
+    planner = _FakePlanner(
+        [
+            {
+                "action": "click",
+                "step_instruction": "open",
+                "element_index": 1,
+                "final_summary": "",
+            }
+        ]
+    )
+    result = asyncio.run(runner.step(planner, 1))
+    assert result == {
+        "status": "stopped",
+        "reason": "planned target changed before action",
+        "error": "target_stale",
+    }
+    assert clicks == []
+
+
+def test_selected_window_allows_unrelated_dynamic_content_before_action(
+    fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    window = {"window_id": "cg:404", "index": 0, "x": 10, "y": 10}
+    table_values = iter(["12.1%", "13.8%", "14.0%"])
+
+    def state(app, **kwargs):
+        value = next(table_values)
+        return {
+            "app": {"name": app, "pid": 9},
+            "window_id": "cg:404",
+            "window_index": 0,
+            "window": dict(window),
+            "elements": [
+                {
+                    "index": 4,
+                    "label": "CPU",
+                    "role": "AXRadioButton",
+                    "actions": ["AXPress"],
+                    "x": 20,
+                    "y": 20,
+                    "width": 50,
+                    "height": 20,
+                    "center": [45, 30],
+                },
+                {"index": 20, "label": value, "role": "AXStaticText"},
+            ],
+            "tree_text": f"[4] AXRadioButton CPU\n[20] AXStaticText {value}",
+        }
+
+    monkeypatch.setattr(fake_backend, "get_app_state", state)
+    clicks = []
+    monkeypatch.setattr(
+        fake_backend,
+        "click",
+        lambda app, index, **kwargs: clicks.append(index) or {"ok": True},
+    )
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(loop_mod.asyncio, "sleep", no_sleep)
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path),
+        "Activity Monitor",
+        "click CPU tab",
+        tmp_path / "selected-dynamic-sibling",
+        window_id="cg:404",
+    )
+    planner = _FakePlanner(
+        [
+            {
+                "action": "click",
+                "step_instruction": "click CPU",
+                "element_index": 4,
+                "final_summary": "",
+            }
+        ]
+    )
+
+    assert asyncio.run(runner.step(planner, 1)) is None
+    assert clicks == [4]
+
+
+def test_selected_window_rejects_target_shifted_to_planned_index(
+    fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    window = {"window_id": "cg:404", "index": 0, "x": 10, "y": 10}
+    observations = iter(
+        [
+            [(4, "CPU", 20), (5, "Memory", 80)],
+            [(4, "Memory", 80), (5, "CPU", 20)],
+        ]
+    )
+
+    def state(app, **kwargs):
+        controls = next(observations)
+        return {
+            "app": {"name": app, "pid": 9},
+            "window_id": "cg:404",
+            "window_index": 0,
+            "window": dict(window),
+            "elements": [
+                {
+                    "index": index,
+                    "label": label,
+                    "role": "AXRadioButton",
+                    "actions": ["AXPress"],
+                    "x": x,
+                    "y": 20,
+                    "width": 50,
+                    "height": 20,
+                    "center": [x + 25, 30],
+                }
+                for index, label, x in controls
+            ],
+            "tree_text": "tabs",
+        }
+
+    monkeypatch.setattr(fake_backend, "get_app_state", state)
+    clicks = []
+    monkeypatch.setattr(
+        fake_backend,
+        "click",
+        lambda app, index, **kwargs: clicks.append(index) or {"ok": True},
+    )
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path),
+        "Activity Monitor",
+        "click CPU tab",
+        tmp_path / "selected-index-shift",
+        window_id="cg:404",
+    )
+    planner = _FakePlanner(
+        [
+            {
+                "action": "click",
+                "step_instruction": "click CPU",
+                "element_index": 4,
+                "final_summary": "",
+            }
+        ]
+    )
+
+    assert asyncio.run(runner.step(planner, 1)) == {
+        "status": "stopped",
+        "reason": "planned target changed before action",
+        "error": "target_stale",
+    }
+    assert clicks == []
+
+
+def test_selected_window_rejects_pid_identity_reuse(
+    fake_backend, tmp_path, monkeypatch
+):
+    from rapid_mlx.computer_use.errors import ComputerUseError
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    monkeypatch.setattr(
+        fake_backend,
+        "get_app_state",
+        lambda app, **kwargs: {
+            "app": {"name": "other", "bundleId": "com.other", "pid": 42},
+            "window_id": "cg:404",
+        },
+    )
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path),
+        "Browser",
+        "open",
+        tmp_path / "selected-pid-reused",
+        window_id="cg:404",
+        backend_app="pid:42",
+        expected_app={"name": "browser", "bundleId": "com.browser", "pid": 42},
+    )
+    with pytest.raises(ComputerUseError) as excinfo:
+        runner._get_app_state(screenshot=False)
+    assert excinfo.value.code == "target_drift"
+    assert "identity changed" in excinfo.value.message
 
 
 def test_loop_ranker_success_and_unavailable(fake_backend, tmp_path, monkeypatch):
@@ -1343,9 +1980,22 @@ def test_loop_ax_watchdog_stops_honestly(config_dir, tmp_path, monkeypatch):
 
     monkeypatch.setattr(loop_mod.backend.ax_driver, "collect", wedged_collect)
     monkeypatch.setattr(loop_mod.backend, "AX_COLLECT_TIMEOUT_S", 0.01)
-    monkeypatch.setattr(loop_mod.backend, "read_url", lambda app: "")
+    monkeypatch.setattr(loop_mod.backend, "read_url", lambda app, **kwargs: "")
     monkeypatch.setattr(
         loop_mod.backend, "_resolve_app", lambda app: (None, {"name": app, "pid": 1})
+    )
+    monkeypatch.setattr(
+        loop_mod.backend,
+        "_select_window",
+        lambda *a, **k: {
+            "index": 0,
+            "window_id": 1,
+            "title": "Test",
+            "x": 0,
+            "y": 0,
+            "width": 100,
+            "height": 100,
+        },
     )
     config = _make_config(tmp_path)
     planner = _FakePlanner(

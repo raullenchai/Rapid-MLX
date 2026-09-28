@@ -145,6 +145,126 @@ are marked; multimodal and MCP surfaces link to their own guides.
 | `/readyz` | GET | Alias for `/health/ready` |
 | `/livez` | GET | Process liveness only (does not check model readiness) |
 | `/metrics` | GET | Prometheus metrics |
+| `/v1/cua/capabilities` | GET | Authenticated computer-use protocol and host availability |
+| `/v1/cua/permissions` | GET | Authenticated macOS Accessibility and Screen Recording readiness |
+| `/v1/cua/apps` | GET | Authenticated running-app discovery for custom CUA clients |
+| `/v1/cua/apps/{app}/windows` | GET | Authenticated window discovery for an app |
+| `/v1/cua/observations` | POST | Fresh, authenticated observation of an exact app process and window |
+| `/v1/cua/runs` | GET/POST | List or create supervised high-level computer-use runs |
+| `/v1/cua/runs/by-request/{id}` | GET | Recover a run created with a client request ID |
+| `/v1/cua/runs/{id}` | GET | Poll typed events, terminal state, and any pending approval gate |
+| `/v1/cua/runs/{id}/approval` | POST | Resolve the current gate with `{"gate_id": "...", "approved": true|false}` |
+| `/v1/cua/runs/{id}/cancel` | POST | Cancel a run |
+
+### Custom computer-use clients
+
+To host only the authenticated Computer Use control plane, without resolving,
+downloading, or loading a chat model, start the server in CUA-only mode:
+
+```bash
+RAPID_MLX_API_KEY=replace-me rapid-mlx serve --cua-only \
+  --host 127.0.0.1 --port 8000 \
+  --cors-origins http://127.0.0.1 http://localhost
+```
+
+This mode mounts health and `/v1/cua/*` routes only. It does not expose chat,
+model, image, audio, or video inference routes, and it rejects model and
+residency flags. `GET /health/ready` reports `ready: true`, `model: null`, and
+`model_loaded: false` once the listener is ready. Clients should then verify an
+authenticated `GET /v1/cua/capabilities` before enabling Computer Use. An API
+key is mandatory, including for loopback listeners.
+
+The Desktop sidecar includes the native macOS framework bindings. Standalone
+Python installs that use local macOS Computer Use should install the matching
+extra:
+
+```bash
+pip install 'rapid-mlx[computer-use]'
+```
+
+The extra is Darwin-only. Remote or Linux servers remain import-safe and report
+the local desktop capability as unavailable.
+
+A client can target one discovered window by taking its opaque `window_id` from
+`GET /v1/cua/apps/{app}/windows` and including it in the run request:
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/cua/runs \
+  -H "Authorization: Bearer $RAPID_MLX_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "app": "Safari",
+    "window_id": "cg:12345",
+    "client_request_id": "desktop-018f5d2a",
+    "goal": "Open the account settings",
+    "allowed_domain": "example.com"
+  }'
+```
+
+The server validates that the window belongs to the resolved app process before
+accepting the run, freezes the canonical ID, and returns `window_id` in create,
+list, run-view, and event-poll responses. Keep the ID opaque and rediscover
+windows before retrying a stopped run.
+
+Clients that must recover from a lost create response should send a unique,
+opaque `client_request_id` of at most 128 characters. It must be one URL path
+segment and cannot contain `/`. The `202` response echoes that ID. Repeating the
+same normalized request with the same ID returns the
+original `run_id` and does not start another task. Reusing the ID with a
+different request returns `409` with code `request_identity_conflict`.
+
+After a timeout, disconnect, or undecodable response, recover the accepted run
+before allowing another Start action:
+
+```bash
+curl http://127.0.0.1:8000/v1/cua/runs/by-request/desktop-018f5d2a \
+  -H "Authorization: Bearer $RAPID_MLX_API_KEY"
+```
+
+The lookup returns the create-response shape (`run_id`, current `status`,
+`window_id`, and `client_request_id`). An unknown or expired ID returns typed
+`404` code `request_identity_not_found`. Request IDs and runs are held only in
+the server process, expire together under the 100-run retention limit, and do
+not survive a server restart. An ID no longer present in that registry has no
+continuing idempotency guarantee; generate a new ID only when starting a new
+task.
+
+Selected-window runs fail closed if the app identity changes or the window is
+closed, replaced, moved, or resized. They also stop if the planned control
+changes before input is dispatched. Domain-restricted browser runs stop when a
+trusted URL cannot be tied unambiguously to the selected browser process,
+including when multiple browser processes expose the same application bundle.
+`open_url` cannot be combined with `window_id`, because opening a URL can change
+which window is targeted.
+
+To render a selected window without starting a run, send the exact app identity,
+PID, and opaque window ID returned by discovery. Observations always bypass the
+snapshot cache and do not activate the app:
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/cua/observations \
+  -H "Authorization: Bearer $RAPID_MLX_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "app": "com.apple.Safari",
+    "pid": 1234,
+    "window_id": "cg:12345",
+    "screenshot": false
+  }'
+```
+
+The response contains `snapshot_id`, `observed_at`, canonical app identity,
+window identity and geometry, coordinate space, typed accessibility elements,
+element count, and truncation status. It deliberately omits the backend's raw
+tree text and redacts secure-text-field labels. `screenshot` defaults to
+`false` and the response image is `null`.
+
+Accessibility permission is required for every observation. PNG output also
+requires Screen Recording permission, request field `"screenshot": true`, and
+the server opt-in `RAPID_MLX_CUA_EXPOSE_SCREENSHOTS=1`. PNGs larger than 4 MiB
+are rejected before base64 encoding. Success and typed error responses use
+`Cache-Control: no-store` and `Pragma: no-cache`; clients should not persist
+observations that may contain private UI labels or pixels.
 
 For lazy or idle-unload deployments, `/metrics` always exposes primary-model
 residency and lifecycle series even while the engine is in standby:

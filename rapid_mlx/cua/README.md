@@ -43,6 +43,72 @@ rapid-mlx cua run --app "Google Chrome" \
 
 Traces land in `~/.rapid-mlx/cua-runs/<timestamp>/trace.json`.
 
+The `/v1/cua/*` HTTP API controls the local computer and requires the server
+to start with an API key. Without one, these routes return HTTP 503. Send the
+key as `Authorization: Bearer <key>`; the Desktop-managed server supplies its
+own per-launch bearer. The standalone `rapid-mlx cua` CLI does not use this
+HTTP API.
+
+### Custom GUI clients
+
+Authenticated clients can implement the complete supervised task journey:
+
+```bash
+# Discover host readiness and target windows.
+curl -H "Authorization: Bearer $RAPID_API_KEY" http://127.0.0.1:8000/v1/cua/capabilities
+curl -H "Authorization: Bearer $RAPID_API_KEY" http://127.0.0.1:8000/v1/cua/permissions
+curl -H "Authorization: Bearer $RAPID_API_KEY" http://127.0.0.1:8000/v1/cua/apps
+curl -H "Authorization: Bearer $RAPID_API_KEY" \
+  http://127.0.0.1:8000/v1/cua/apps/Google%20Chrome/windows
+
+# Create a high-level run. Raw click and typing operations are not exposed.
+curl -X POST -H "Authorization: Bearer $RAPID_API_KEY" \
+  -H 'Content-Type: application/json' http://127.0.0.1:8000/v1/cua/runs \
+  -d '{"app":"Google Chrome","goal":"Open the Alan Turing article","planner":"local-9b"}'
+
+# Poll the returned run id. Use events_after_seq as the next `after` cursor.
+curl -H "Authorization: Bearer $RAPID_API_KEY" \
+  'http://127.0.0.1:8000/v1/cua/runs/RUN_ID/events?after=0'
+
+# When pending_gate is present, echo its gate_id to approve or deny it.
+curl -X POST -H "Authorization: Bearer $RAPID_API_KEY" \
+  -H 'Content-Type: application/json' \
+  http://127.0.0.1:8000/v1/cua/runs/RUN_ID/approval \
+  -d '{"gate_id":"GATE_ID_FROM_PENDING_GATE","approved":true}'
+
+# Cancellation is idempotent for an existing run.
+curl -X POST -H "Authorization: Bearer $RAPID_API_KEY" \
+  http://127.0.0.1:8000/v1/cua/runs/RUN_ID/cancel
+```
+
+Run responses contain a typed event envelope (`kind`, `seq`, `ts`) with
+event-specific fields such as `action`, `target`, `target_label`, `outcome`,
+and `tree_changed`, terminal status and summary, and the current `pending_gate`.
+Local trace paths are intentionally omitted from HTTP responses. Fresh window
+observations are available through the separately permissioned observation API;
+screenshots remain disabled unless the server and request both opt in.
+
+Every `gate`, `gate_detail`, and `gate_resolved` event for one decision carries
+the same `gate_id` as `pending_gate`. New clients should always send that ID in
+their decision request.
+
+Window discovery returns an opaque `window_id` such as `cg:123`, resolved
+against the target process ID. Run creation can bind the run to that exact
+window; clients should rediscover windows before retrying a stopped run.
+Clients should inspect the versioned capability response instead of inferring
+support from route presence. Observation capability flags reflect the host
+platform, current Accessibility and Screen Recording grants, and screenshot
+server policy, while `approval_gate_id` remains true.
+
+Runs and events are retained only in the server process (up to 100 recent
+runs). A server restart clears them, so an old `run_id` can return HTTP 404;
+clients should treat that as an expired session and start a new run.
+
+Native clients are not subject to browser CORS checks. For a browser GUI on a
+different origin, start the server with that exact origin in `--cors-origins`
+or `RAPID_MLX_CORS_ALLOW_ORIGINS`; do not use a wildcard for a computer-control
+server.
+
 ## SDK
 
 ```python

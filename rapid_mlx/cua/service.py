@@ -13,8 +13,10 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
+from typing import NamedTuple
 from urllib.parse import urlparse
 
+from rapid_mlx.computer_use import backend
 from rapid_mlx.cua.config import CUAConfig, PlannerConfig, load_config, resolve_planner
 from rapid_mlx.cua.loop import run as run_loop
 from rapid_mlx.cua.planner import assert_loopback_url, validate_planner_url
@@ -31,12 +33,43 @@ class CUARunNotFoundError(RuntimeError):
     pass
 
 
+class CUARequestIdentityConflictError(RuntimeError):
+    pass
+
+
+class CUARequestIdentityNotFoundError(RuntimeError):
+    pass
+
+
+class CUAGateMismatchError(RuntimeError):
+    pass
+
+
+class CUAGateDecisionConflictError(RuntimeError):
+    pass
+
+
+class _RunCreateIdentity(NamedTuple):
+    app: str
+    goal: str
+    planner: str
+    planner_model: str | None
+    planner_url: str | None
+    open_url: str
+    allowed_domain: str
+    max_steps: int
+    human_login: bool
+    window_id: str | None
+
+
 @dataclass
 class CUAServiceRun:
     run_id: str
     app: str
     goal: str
     config: CUAConfig
+    window_id: str | None = None
+    client_request_id: str | None = None
     status: str = "running"
     final_summary: str = ""
     error: str = ""
@@ -47,42 +80,111 @@ class CUAServiceRun:
     _approve_event: asyncio.Event = field(default_factory=asyncio.Event)
     _stop_event: asyncio.Event = field(default_factory=asyncio.Event)
     _awaiting: bool = False
+    _pending_gate: dict | None = None
+    _resolved_gate_id: str | None = None
 
     def emit(self, event: dict) -> None:
         with self._lock:
             # Cursor metadata is service-owned.  A sink payload must not be able
             # to forge sequence numbers or timestamps and break pagination.
-            event = {**event, "seq": len(self.events) + 1, "ts": time.time()}
-            self.events.append(event)
-            kind = event.get("kind")
-            if kind == "started" and event.get("run_dir"):
+            if event.get("kind") == "started" and event.get("run_dir"):
                 self.run_dir = str(event["run_dir"])
-            elif kind == "gate":
+            # Trace paths are host-private implementation details.  Custom GUI
+            # clients receive the event, but never the local filesystem path.
+            event = {key: value for key, value in event.items() if key != "run_dir"}
+            kind = event.get("kind")
+            if kind == "gate":
+                # Allocate the event and identity before publishing the gate.
+                # A GUI may decide immediately after observing this event, so
+                # wait_for_approval must reuse both objects.
+                self._approve_event = asyncio.Event()
+                self._pending_gate = {
+                    "gate_id": uuid.uuid4().hex,
+                    "kind": "approval",
+                    "reason": str(event.get("reason") or "approval required"),
+                    "requested_at": time.time(),
+                }
+                for key in ("action", "target"):
+                    if event.get(key):
+                        self._pending_gate[key] = event[key]
+                self._resolved_gate_id = None
+                event["gate_id"] = self._pending_gate["gate_id"]
                 self._awaiting = True
                 self.status = "awaiting_approval"
-            elif kind == "gate_resolved":
+            elif kind == "gate_detail" and self._pending_gate is not None:
+                event["gate_id"] = self._pending_gate["gate_id"]
+            elif kind == "gate_resolved" and self._resolved_gate_id is not None:
+                event["gate_id"] = self._resolved_gate_id
+                self._resolved_gate_id = None
+            event = {**event, "seq": len(self.events) + 1, "ts": time.time()}
+            self.events.append(event)
+            if kind == "gate_resolved":
                 self._awaiting = False
                 if self.status == "awaiting_approval":
                     self.status = "running"
 
     async def wait_for_approval(self, reason: str, timeout: float) -> bool:
+        with self._lock:
+            # Production emits ``gate`` first. Direct SDK/test callers still
+            # receive a fresh one-shot event and identity here.
+            if not self._awaiting or self._pending_gate is None:
+                self._approve_event = asyncio.Event()
+                self._pending_gate = {
+                    "gate_id": uuid.uuid4().hex,
+                    "kind": "approval",
+                    "reason": reason,
+                    "requested_at": time.time(),
+                }
+                self._resolved_gate_id = None
+                self._awaiting = True
+            gate = self._pending_gate
+            approval_event = self._approve_event
+            gate["reason"] = reason
+            gate["expires_at"] = time.time() + timeout
+            self.status = "awaiting_approval"
         self.emit({"kind": "gate_detail", "reason": reason, "timeout_s": timeout})
         try:
-            await asyncio.wait_for(self._approve_event.wait(), timeout=timeout)
-            return True
+            await asyncio.wait_for(approval_event.wait(), timeout=timeout)
+            with self._lock:
+                return bool(gate.get("approved"))
         except (asyncio.TimeoutError, TimeoutError):
             return False
         finally:
             with self._lock:
-                self._awaiting = False
-            self._approve_event.clear()
+                if self._approve_event is approval_event and self._pending_gate is gate:
+                    self._awaiting = False
+                    self._pending_gate = None
+                    self._resolved_gate_id = str(gate["gate_id"])
+            approval_event.clear()
 
-    def approve(self) -> bool:
+    def resolve_gate(self, approved: bool, *, gate_id: str | None = None) -> bool:
         with self._lock:
             if not self._awaiting:
                 return False
-        self._approve_event.set()
+            if self._pending_gate is None:
+                self._pending_gate = {
+                    "gate_id": uuid.uuid4().hex,
+                    "kind": "approval",
+                    "reason": "approval required",
+                }
+            current_gate_id = str(self._pending_gate["gate_id"])
+            if gate_id is not None and gate_id != current_gate_id:
+                raise CUAGateMismatchError(
+                    f"approval gate {gate_id!r} is stale; current gate is {current_gate_id!r}"
+                )
+            if "approved" in self._pending_gate:
+                if bool(self._pending_gate["approved"]) == approved:
+                    return True
+                raise CUAGateDecisionConflictError(
+                    f"approval gate {current_gate_id!r} already has a different decision"
+                )
+            self._pending_gate["approved"] = approved
+            approval_event = self._approve_event
+        approval_event.set()
         return True
+
+    def approve(self) -> bool:
+        return self.resolve_gate(True)
 
     def cancel(self) -> None:
         self._stop_event.set()
@@ -90,6 +192,10 @@ class CUAServiceRun:
     def view(self, events_after: int = 0) -> dict:
         with self._lock:
             events = [e for e in self.events if e["seq"] > events_after]
+            current_last_seq = self.events[-1]["seq"] if self.events else 0
+            delivered_through = (
+                events[-1]["seq"] if events else min(events_after, current_last_seq)
+            )
             return {
                 "run_id": self.run_id,
                 "app": self.app,
@@ -98,9 +204,12 @@ class CUAServiceRun:
                 "final_summary": self.final_summary,
                 "error": self.error,
                 "planner": self.config.planner.describe() if self.config else "n/a",
-                "events_after_seq": events_after,
+                "events_after_seq": delivered_through,
                 "events": events,
-                "run_dir": str(self.run_dir),
+                "pending_gate": (
+                    dict(self._pending_gate) if self._pending_gate else None
+                ),
+                "window_id": self.window_id,
             }
 
 
@@ -110,6 +219,8 @@ class CUAService:
     def __init__(self) -> None:
         self._runs: dict[str, CUAServiceRun] = {}
         self._tasks: dict[str, asyncio.Task] = {}
+        self._request_runs: dict[str, tuple[_RunCreateIdentity, str]] = {}
+        self._create_lock = asyncio.Lock()
         self._closing = False
 
     def list_runs(self) -> list[dict]:
@@ -120,6 +231,7 @@ class CUAService:
                 "goal": r.goal,
                 "status": r.status,
                 "created_at": r.created_at,
+                "window_id": r.window_id,
             }
             for r in self._runs.values()
         ]
@@ -128,6 +240,22 @@ class CUAService:
         run = self._runs.get(run_id)
         if run is None:
             raise CUARunNotFoundError(f"no such CUA run: {run_id}")
+        return run
+
+    def get_by_request_id(self, client_request_id: str) -> CUAServiceRun:
+        entry = self._request_runs.get(client_request_id)
+        if entry is None:
+            raise CUARequestIdentityNotFoundError(
+                f"no CUA run for client request: {client_request_id}"
+            )
+        run = self._runs.get(entry[1])
+        if run is None:
+            # Keep both retention indexes coherent even if a caller mutates the
+            # registry in a test or future maintenance path.
+            self._request_runs.pop(client_request_id, None)
+            raise CUARequestIdentityNotFoundError(
+                f"no CUA run for client request: {client_request_id}"
+            )
         return run
 
     async def create(
@@ -141,6 +269,8 @@ class CUAService:
         allowed_domain: str = "",
         max_steps: int = 12,
         human_login: bool = False,
+        window_id: str | None = None,
+        client_request_id: str | None = None,
     ) -> CUAServiceRun:
         if self._closing:
             raise CUARunConflictError("CUA service is shutting down")
@@ -155,16 +285,59 @@ class CUAService:
                 or not parsed_open_url.hostname
             ):
                 raise ValueError("open_url must be an absolute HTTP(S) URL")
-        active_tasks = [task for task in self._tasks.values() if not task.done()]
-        active_runs = [
-            run
-            for run in self._runs.values()
-            if run.status in {"running", "awaiting_approval"}
-        ]
-        if active_tasks or len(active_runs) >= MAX_CONCURRENT_RUNS:
-            raise CUARunConflictError(
-                "another CUA run is active; cancel it before starting a new one"
-            )
+        if window_id is not None and open_url:
+            raise ValueError("open_url cannot be used with a selected window")
+        identity = _RunCreateIdentity(
+            app=app,
+            goal=goal,
+            planner=planner,
+            planner_model=planner_model,
+            planner_url=planner_url,
+            open_url=open_url,
+            allowed_domain=allowed_domain,
+            max_steps=max_steps,
+            human_login=human_login,
+            window_id=window_id,
+        )
+        async with self._create_lock:
+            if client_request_id is not None:
+                previous = self._request_runs.get(client_request_id)
+                if previous is not None:
+                    if previous[0] != identity:
+                        raise CUARequestIdentityConflictError(
+                            "client_request_id was already used with a different request"
+                        )
+                    return self.get(previous[1])
+            active_tasks = [task for task in self._tasks.values() if not task.done()]
+            active_runs = [
+                run
+                for run in self._runs.values()
+                if run.status in {"running", "awaiting_approval"}
+            ]
+            if active_tasks or len(active_runs) >= MAX_CONCURRENT_RUNS:
+                raise CUARunConflictError(
+                    "another CUA run is active; cancel it before starting a new one"
+                )
+            return await self._create_locked(identity, client_request_id)
+
+    async def _create_locked(
+        self,
+        identity: _RunCreateIdentity,
+        client_request_id: str | None,
+    ) -> CUAServiceRun:
+        """Validate and commit one run while ``_create_lock`` is held."""
+        (
+            app,
+            goal,
+            planner,
+            planner_model,
+            planner_url,
+            open_url,
+            allowed_domain,
+            max_steps,
+            human_login,
+            window_id,
+        ) = identity
         try:
             planner_cfg: PlannerConfig = resolve_planner(
                 planner, url_override=planner_url, model_override=planner_model
@@ -187,11 +360,28 @@ class CUAService:
             allowed_domain=allowed_domain,
             human_login=human_login,
         )
+        selected_window_id: str | None = None
+        selected_app: dict | None = None
+        if window_id is not None:
+            selection = await asyncio.to_thread(backend.validate_window, app, window_id)
+            selected_window_id = str(selection["window_id"])
+            selected_app = dict(selection["app"])
+        if self._closing:
+            raise CUARunConflictError("CUA service is shutting down")
         run_id = uuid.uuid4().hex[:12]
-        run = CUAServiceRun(run_id=run_id, app=app, goal=goal, config=config)
+        run = CUAServiceRun(
+            run_id=run_id,
+            app=app,
+            goal=goal,
+            config=config,
+            window_id=selected_window_id,
+            client_request_id=client_request_id,
+        )
         run.run_dir = ""
         self._prune_runs()
         self._runs[run_id] = run
+        if client_request_id is not None:
+            self._request_runs[client_request_id] = (identity, run_id)
 
         task = asyncio.create_task(
             run_loop(
@@ -203,6 +393,11 @@ class CUAService:
                 event_sink=run.emit,
                 gate=lambda reason: run.wait_for_approval(reason, config.pause_timeout),
                 stop_event=run._stop_event,
+                window_id=selected_window_id,
+                backend_app=(
+                    f"pid:{selected_app['pid']}" if selected_app is not None else None
+                ),
+                expected_app=selected_app,
             )
         )
         self._tasks[run_id] = task
@@ -226,6 +421,10 @@ class CUAService:
             expired = terminal.pop(0)
             self._runs.pop(expired.run_id, None)
             self._tasks.pop(expired.run_id, None)
+            if expired.client_request_id is not None:
+                entry = self._request_runs.get(expired.client_request_id)
+                if entry is not None and entry[1] == expired.run_id:
+                    self._request_runs.pop(expired.client_request_id, None)
 
     @staticmethod
     def _has_terminal_event(run: CUAServiceRun) -> bool:
