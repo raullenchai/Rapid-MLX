@@ -630,3 +630,200 @@ def test_serve_yes_flag_and_help() -> None:
     assert "assume yes for prompts such as installing a missing optional extra" in (
         " ".join(help_text.split())
     )
+
+
+@pytest.mark.parametrize(
+    ("method", "expected"),
+    [
+        (
+            "pip",
+            "/tmp/runtime/bin/python -m pip install 'rapid-mlx[vision]==1.2.3'",
+        ),
+        (
+            "install_sh",
+            "/tmp/runtime/bin/python -m pip install 'rapid-mlx[vision]==1.2.3'",
+        ),
+        ("uv", "uv tool install --force 'rapid-mlx[vision]==1.2.3'"),
+        ("pipx", "pipx install --force 'rapid-mlx[vision]==1.2.3'"),
+    ],
+)
+def test_repair_command_matches_detected_install_method(
+    monkeypatch, method, expected
+) -> None:
+    monkeypatch.setattr(sys, "executable", "/tmp/runtime/bin/python")
+    monkeypatch.setattr(
+        "rapid_mlx._version_check.detect_install_method",
+        lambda: SimpleNamespace(method=method),
+    )
+
+    assert (
+        optional_runtime.optional_extra_repair_command("vision", version="1.2.3")
+        == expected
+    )
+
+
+def test_brew_repair_is_honest_and_switches_to_isolated_uv(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "rapid_mlx._version_check.detect_install_method",
+        lambda: SimpleNamespace(method="brew"),
+    )
+
+    command = optional_runtime.optional_extra_repair_command("audio", version="1.2.3")
+
+    assert "cannot add Python optional extras in place" in command
+    assert (
+        "brew uninstall rapid-mlx && uv tool install 'rapid-mlx[audio]==1.2.3'"
+    ) in command
+
+
+def test_global_pipx_repair_preserves_global_scope(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "rapid_mlx._version_check.detect_install_method",
+        lambda: SimpleNamespace(
+            method="unknown",
+            upgrade_command="sudo pipx upgrade --global rapid-mlx",
+        ),
+    )
+
+    assert (
+        optional_runtime.optional_extra_repair_command("vision", version="1.2.3")
+        == "sudo pipx install --global --force 'rapid-mlx[vision]==1.2.3'"
+    )
+
+
+def test_http_visible_repair_hides_interpreter_path(monkeypatch) -> None:
+    monkeypatch.setattr(sys, "executable", "/Users/alice/private/bin/python")
+    monkeypatch.setattr(
+        "rapid_mlx._version_check.detect_install_method",
+        lambda: SimpleNamespace(method="pip"),
+    )
+
+    command = optional_runtime.optional_extra_repair_command(
+        "vision", version="1.2.3", include_paths=False
+    )
+
+    assert command == "python -m pip install 'rapid-mlx[vision]==1.2.3'"
+    assert "/Users/alice" not in command
+
+
+@pytest.mark.parametrize(
+    ("method", "stdin", "assume_yes", "status", "expected"),
+    [
+        ("pip", _TTY("y\n"), False, "absent", "accepted"),
+        ("pip", _TTY("n\n"), False, "absent", "declined"),
+        ("pip", _NotTTY(), False, "absent", "non_interactive"),
+        ("pip", _NotTTY(), True, "absent", "assume_yes"),
+        ("uv", _TTY("y\n"), False, "absent", "no_installer"),
+        ("pipx", _TTY("y\n"), False, "absent", "no_installer"),
+        ("pip", _TTY("y\n"), False, "broken", "broken_runtime"),
+    ],
+)
+def test_recovery_outcome_emits_before_install(
+    monkeypatch, method, stdin, assume_yes, status, expected
+) -> None:
+    order = _isolate_handler(monkeypatch, stdin=stdin, stderr=_TTY())
+    monkeypatch.setattr(
+        "rapid_mlx._version_check.detect_install_method",
+        lambda: SimpleNamespace(method=method),
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.telemetry.model_events.emit_model_serve_failed",
+        lambda *_args, **kwargs: order.append(("failure", kwargs)),
+    )
+    monkeypatch.setattr(
+        optional_runtime,
+        "_install_optional_extra",
+        lambda _exc: order.append("install"),
+    )
+
+    with pytest.raises(SystemExit, match="2"):
+        optional_runtime.handle_optional_runtime_missing(
+            _failure(status=status), assume_yes=assume_yes
+        )
+
+    failure_index = next(
+        i
+        for i, item in enumerate(order)
+        if isinstance(item, tuple) and item[0] == "failure"
+    )
+    assert order[failure_index][1]["extra_recovery"] == expected
+    if expected in {"accepted", "assume_yes"}:
+        assert order[failure_index + 1] == "install"
+    else:
+        assert "install" not in order
+
+
+def test_keyboard_interrupt_during_prompt_records_declined(monkeypatch) -> None:
+    order = _isolate_handler(monkeypatch, stdin=_TTY(), stderr=_TTY())
+    monkeypatch.setattr(
+        "rapid_mlx._version_check.detect_install_method",
+        lambda: SimpleNamespace(method="pip"),
+    )
+    monkeypatch.setattr(
+        optional_runtime,
+        "_prompt_to_install",
+        lambda _extra: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.telemetry.model_events.emit_model_serve_failed",
+        lambda *_args, **kwargs: order.append(kwargs),
+    )
+
+    with pytest.raises(SystemExit, match="2"):
+        optional_runtime.handle_optional_runtime_missing(_failure())
+
+    assert order[-1]["extra_recovery"] == "declined"
+
+
+def test_pull_alias_checks_known_video_lane_before_download(monkeypatch) -> None:
+    profile = SimpleNamespace(
+        modality="video-gen",
+        hf_path="publisher/video",
+        supports_image_input=False,
+        vision_min_memory_gb=None,
+    )
+    failure = _failure(extra="video")
+    monkeypatch.setattr(
+        "rapid_mlx.model_aliases.resolve_profile", lambda _name: profile
+    )
+    monkeypatch.setattr(optional_runtime, "_running_in_desktop_sidecar", lambda: False)
+    monkeypatch.setattr(
+        "rapid_mlx.runtime.video_lane.require_video_runtime_or_exit",
+        lambda _name: (_ for _ in ()).throw(failure),
+    )
+    handled = []
+
+    def handle(exc, **kwargs):
+        handled.append((exc, kwargs))
+        raise SystemExit(2)
+
+    monkeypatch.setattr(cli, "_handle_optional_runtime_missing", handle)
+    monkeypatch.setattr(
+        cli,
+        "_pull_repository",
+        lambda *_args, **_kwargs: pytest.fail("weights must not download"),
+    )
+
+    with pytest.raises(SystemExit, match="2"):
+        cli.pull_command(SimpleNamespace(model="video-alias"))
+
+    assert handled == [
+        (
+            failure,
+            {
+                "alias_or_path": "video-alias",
+                "auto_selected": False,
+                "assume_yes": False,
+            },
+        )
+    ]
+
+
+def test_pull_preflight_never_triggers_in_desktop_sidecar(monkeypatch) -> None:
+    monkeypatch.setattr(optional_runtime, "_running_in_desktop_sidecar", lambda: True)
+    monkeypatch.setattr(
+        "rapid_mlx.model_aliases.resolve_profile",
+        lambda _name: pytest.fail("desktop must skip alias runtime preflight"),
+    )
+
+    cli._preflight_pull_optional_runtime(SimpleNamespace(model="video-alias"))

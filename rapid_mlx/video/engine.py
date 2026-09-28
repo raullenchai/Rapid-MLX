@@ -222,9 +222,11 @@ class VideoGenerationEngine:
             )
             from videox_fun_mlx.pipeline.scheduler import DDIMScheduler
         except ImportError as exc:
+            from rapid_mlx.runtime.optional_runtime import optional_extra_install_hint
+
             raise VideoBackendUnavailableError(
                 "CogVideoX requires the rapid-mlx[video] dependencies. "
-                "Install them with: pip install 'rapid-mlx[video]'."
+                + optional_extra_install_hint("video")
             ) from exc
 
         # Prefer the cached snapshot outright. Passing the repo id makes

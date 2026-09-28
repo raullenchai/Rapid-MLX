@@ -238,6 +238,7 @@ struct TelemetryRegistryTests {
         #expect(registry.validate("model_serve_failed", [
             "error_class": .string("missing_extra"),
             "extra": .string("vision"),
+            "extra_recovery": .string("declined"),
         ]) != nil)
         let rejectedExtra = registry.validate("model_serve_failed", [
             "error_class": .string("other"),

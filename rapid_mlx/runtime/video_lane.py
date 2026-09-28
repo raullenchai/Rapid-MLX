@@ -153,12 +153,12 @@ def registered_wan_runtime_issue(model_name: str) -> str | None:
 
 def require_video_runtime_or_exit(model_name: str | None = None) -> None:
     """Fail before model download when the optional video stack is absent."""
-    from .optional_runtime import OptionalRuntimeMissing
+    from .optional_runtime import OptionalRuntimeMissing, optional_extra_install_hint
 
     if sys.version_info < (3, 11):
         raise OptionalRuntimeMissing(
             extra="video",
-            install_hint="pip install 'rapid-mlx[video]'",
+            install_hint=optional_extra_install_hint("video"),
             status="incompatible",
             marker_reason="python_version_unsupported",
             detail=(
@@ -247,7 +247,7 @@ def require_video_runtime_or_exit(model_name: str | None = None) -> None:
         )
         raise OptionalRuntimeMissing(
             extra="video",
-            install_hint="pip install 'rapid-mlx[video]'",
+            install_hint=optional_extra_install_hint("video"),
             detail=message,
             status="absent" if reason == "runtime_extra_missing" else "broken",
             marker_reason=reason,
@@ -422,9 +422,11 @@ class VideoEngine:
         try:
             from mlx_video import generate_video_with_audio
         except ImportError as exc:
+            from .optional_runtime import optional_extra_install_hint
+
             raise VideoRuntimeError(
                 "LTX-2.3 support is not installed. "
-                "Run `pip install 'rapid-mlx[video]'`."
+                + optional_extra_install_hint("video")
             ) from exc
 
         # The 22B pipeline is not re-entrant and a second concurrent graph can

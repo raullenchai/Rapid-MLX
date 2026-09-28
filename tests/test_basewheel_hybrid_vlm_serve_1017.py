@@ -166,19 +166,21 @@ def test_serve_guard_hybrid_vlm_boots_without_vision_extra(monkeypatch, capsys):
 
     _patch_probes(monkeypatch, is_mllm=True, hybrid=True)
     _mock_mllm_absent(monkeypatch)
+    monkeypatch.setattr(
+        "rapid_mlx.runtime.optional_runtime._running_in_desktop_sidecar",
+        lambda: False,
+    )
     _stub_post_guard_sentinel(monkeypatch)
 
-    args = _args("mlx-community/Qwen3.6-27B-4bit")
+    args = _args("qwen3.5-4b-4bit")
     # Reaching the sentinel means the vision guard did NOT exit — the model
     # is allowed to boot text-only from the base wheel.
     with pytest.raises(_ReachedPastVisionGuardError):
         cli.serve_command(args)
 
     err = capsys.readouterr().err
-    assert "[vision]" not in err, (
-        "hybrid-backbone VLM must not be pushed into the [vision] install on "
-        f"a base wheel; stderr was: {err!r}"
-    )
+    assert err.count("warning: vision runtime absent") == 1
+    assert "rapid-mlx[vision]==" in err
 
 
 def test_serve_guard_genuine_vlm_still_requires_vision_extra(monkeypatch, capsys):
@@ -217,6 +219,72 @@ def test_serve_guard_no_mllm_skips_vision_extra(monkeypatch):
     args = _args("mlx-community/Qwen3-VL-2B-Instruct-4bit", no_mllm=True)
     with pytest.raises(_ReachedPastVisionGuardError):
         cli.serve_command(args)
+
+
+def test_absent_runtime_degrade_rejects_image_with_capability_event(
+    monkeypatch, capsys
+):
+    from rapid_mlx import cli
+    from rapid_mlx.api.utils import validate_content_blocks_for_capabilities
+    from rapid_mlx.model_aliases import resolve_profile
+    from rapid_mlx.models import mllm as mllm_mod
+
+    profile = resolve_profile("qwen3.5-4b-4bit")
+    assert profile is not None and profile.vision_min_memory_gb is not None
+    monkeypatch.setattr(
+        mllm_mod,
+        "vision_runtime_status",
+        lambda: (mllm_mod.VisionRuntimeStatus.ABSENT, "mlx_vlm"),
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.runtime.optional_runtime._running_in_desktop_sidecar",
+        lambda: False,
+    )
+    events = []
+    monkeypatch.setattr(
+        "rapid_mlx.telemetry.inference.emit_capability_rejected",
+        lambda capability, **props: events.append((capability, props)),
+    )
+
+    assert cli._warn_vision_text_only_degrade(profile) is True
+    with pytest.raises(Exception) as caught:
+        validate_content_blocks_for_capabilities(
+            [{"content": [{"type": "image_url", "image_url": {"url": "x"}}]}],
+            model_name="qwen3.5-4b-4bit",
+            allow_image=False,
+            allow_video=False,
+        )
+
+    assert getattr(caught.value, "code", None) == "image_input_unsupported"
+    assert events[0][0] == "image_input_unsupported"
+    assert capsys.readouterr().err.count("warning: vision runtime absent") == 1
+
+
+def test_broken_runtime_and_forced_vision_never_degrade(monkeypatch, capsys):
+    from rapid_mlx import cli
+    from rapid_mlx.model_aliases import resolve_profile
+    from rapid_mlx.models import mllm as mllm_mod
+
+    profile = resolve_profile("qwen3.5-4b-4bit")
+    assert profile is not None
+    monkeypatch.setattr(
+        "rapid_mlx.runtime.optional_runtime._running_in_desktop_sidecar",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        mllm_mod,
+        "vision_runtime_status",
+        lambda: (mllm_mod.VisionRuntimeStatus.BROKEN, "PIL"),
+    )
+    assert cli._warn_vision_text_only_degrade(profile, args=_args()) is False
+
+    monkeypatch.setattr(
+        mllm_mod,
+        "vision_runtime_status",
+        lambda: (mllm_mod.VisionRuntimeStatus.ABSENT, "mlx_vlm"),
+    )
+    assert cli._warn_vision_text_only_degrade(profile, args=_args(mllm=True)) is False
+    assert capsys.readouterr().err == ""
 
 
 # ---------------------------------------------------------------------------

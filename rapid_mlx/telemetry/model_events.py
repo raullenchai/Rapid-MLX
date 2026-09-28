@@ -603,6 +603,7 @@ def emit_model_serve_failed(
     engine: object = None,
     alias_or_path: object = None,
     auto_selected: bool = False,
+    extra_recovery: object = None,
 ) -> None:
     """Claim and emit at most one logical serve failure per process."""
     global _serve_failure_claimed
@@ -622,6 +623,8 @@ def emit_model_serve_failed(
     props: dict[str, object] = {"error_class": error_class}
     if optional_runtime_missing is not None:
         props["extra"] = optional_runtime_missing.extra
+        if extra_recovery is not None:
+            props["extra_recovery"] = extra_recovery
     if engine is not None:
         props["model"] = engine_telemetry_id(engine)
     elif alias_or_path is not None:

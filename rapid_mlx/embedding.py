@@ -17,7 +17,9 @@ logger = logging.getLogger(__name__)
 # Canonical install-hint copy. Shared between the CLI startup probe
 # (H-08) and the ``/v1/embeddings`` route guard (H-09) so the user sees
 # the same actionable line no matter which surface tripped the guard.
-EMBEDDINGS_EXTRA_INSTALL_HINT = "Install with: pip install 'rapid-mlx[embeddings]'"
+from .runtime.optional_runtime import optional_extra_install_hint
+
+EMBEDDINGS_EXTRA_INSTALL_HINT = optional_extra_install_hint("embeddings")
 
 # HuggingFace stamps ``tokenizer.model_max_length`` with a huge sentinel
 # (``VERY_LARGE_INTEGER`` ≈ 1e30) when the tokenizer config declares no real

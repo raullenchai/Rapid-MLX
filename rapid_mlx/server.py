@@ -66,6 +66,7 @@ from .middleware.exception_handlers import (
 from .runtime.optional_runtime import (
     OptionalRuntimeMissing,
     handle_optional_runtime_missing,
+    optional_extra_install_hint,
 )
 from .runtime.optional_runtime import (
     assume_yes as optional_runtime_assume_yes,
@@ -2701,6 +2702,7 @@ def load_model(
             "vision_memory_insufficient": (
                 "its measured vision footprint exceeds this Mac's physical memory"
             ),
+            "vision_runtime_absent": ("the optional vision runtime is not installed"),
         }.get(
             _serving_lane_reason,
             "its vision cache contract is not supported",
@@ -3890,7 +3892,8 @@ Examples:
         help=(
             "Pre-load an embedding model at startup (e.g. "
             "mlx-community/all-MiniLM-L6-v2-4bit). Requires the "
-            "[embeddings] extra: pip install 'rapid-mlx[embeddings]'."
+            "[embeddings] extra. "
+            + optional_extra_install_hint("embeddings", include_paths=False)
         ),
     )
     parser.add_argument(

@@ -684,11 +684,11 @@ class MLLMBenchmarkResult:
 def download_test_image(url: str, timeout: int = 30) -> "Image.Image":
     """Download image from URL and return PIL Image."""
     if Image is None:
+        from .runtime.optional_runtime import optional_extra_install_hint
+
         raise ImportError(
             "Image benchmarks require Pillow, which is included in the "
-            "optional vision dependencies.\n"
-            "Install with:\n"
-            "    pip install 'rapid-mlx[vision]'"
+            "optional vision dependencies.\n" + optional_extra_install_hint("vision")
         )
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
@@ -1196,9 +1196,11 @@ def create_test_video(
 ) -> str:
     """Create a synthetic test video with colored frames and text."""
     if cv2 is None:
+        from .runtime.optional_runtime import optional_extra_install_hint
+
         raise ImportError(
             "opencv-python is required for video benchmarks. "
-            "Install with: pip install 'rapid-mlx[vision]'"
+            + optional_extra_install_hint("vision")
         )
     temp_file = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
     temp_file.close()
@@ -1272,9 +1274,11 @@ def download_video(url: str, timeout: int = 120) -> str:
 def get_video_info(video_path: str) -> dict:
     """Get information about a video file."""
     if cv2 is None:
+        from .runtime.optional_runtime import optional_extra_install_hint
+
         raise ImportError(
             "opencv-python is required for video benchmarks. "
-            "Install with: pip install 'rapid-mlx[vision]'"
+            + optional_extra_install_hint("vision")
         )
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():

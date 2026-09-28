@@ -312,9 +312,14 @@ async def create_embeddings(
             caller_agent=caller_agent,
             caller_client=caller_client,
         )
+        from rapid_mlx.runtime.optional_runtime import optional_extra_install_hint
+
         raise HTTPException(
             status_code=503,
-            detail="mlx-embeddings not installed. Install with: pip install 'rapid-mlx[embeddings]'",
+            detail=(
+                "mlx-embeddings not installed. "
+                + optional_extra_install_hint("embeddings", include_paths=False)
+            ),
         )
     except HTTPException:
         raise

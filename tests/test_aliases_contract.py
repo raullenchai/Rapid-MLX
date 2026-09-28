@@ -950,6 +950,17 @@ def test_qwen35_and_qwen36_vision_aliases_carry_the_same_memory_floor() -> None:
         assert profile.get("vision_min_memory_gb") == 32, name
 
 
+@pytest.mark.parametrize(
+    "alias",
+    ["mistral-24b-4bit", "devstral-24b-4bit", "devstral-v2-24b-4bit"],
+)
+def test_text_capable_mistral_vision_routes_declare_memory_floor(alias) -> None:
+    profile = list_profiles()[alias]
+    assert profile.vision_min_memory_gb == 32
+    assert profile.modality == "text"
+    assert profile.is_text_only is False
+
+
 def test_mtp_preset_requires_a_valid_drafter_and_positive_token_count() -> None:
     """MTP capability metadata is consumed by both CLI and macOS Settings."""
     from rapid_mlx.model_aliases import _coerce

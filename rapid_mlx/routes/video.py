@@ -858,6 +858,7 @@ def _validate_reference_image(
     try:
         from PIL import Image
     except ImportError as exc:
+        from rapid_mlx.runtime.optional_runtime import optional_extra_install_hint
         from rapid_mlx.telemetry.inference import emit_capability_rejected
 
         emit_capability_rejected(
@@ -869,7 +870,10 @@ def _validate_reference_image(
         )
         raise HTTPException(
             status_code=503,
-            detail="image-to-video requires `pip install 'rapid-mlx[video]'`",
+            detail=(
+                "image-to-video requires the video extra. "
+                + optional_extra_install_hint("video", include_paths=False)
+            ),
         ) from exc
 
     try:

@@ -96,7 +96,10 @@ service:
     privacy-reduced serve-failure keys and their timestamps on the device for
     ten-minute duplicate suppression; the file itself is never sent.
   * For a failed model serve caused by a missing optional runtime, the closed
-    extra name (`vision`, `video`, `audio`, or `image`).
+    extra name (`vision`, `video`, `audio`, or `image`) and a closed recovery
+    outcome (`accepted`, `declined`, `non_interactive`, `assume_yes`,
+    `no_installer`, `managed_runtime`, or `broken_runtime`). Commands, paths,
+    prompt text, and installer output are never sent.
   * For a failed server bind, whether its port was explicitly selected. The
     port number itself is not sent.
   * For a failed inference counted in `inference_bucket_reached`, a closed

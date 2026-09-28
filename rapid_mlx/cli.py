@@ -30,7 +30,11 @@ from rapid_mlx._completion import alias_completer
 from rapid_mlx.client_header import RAPID_CLIENT_CLI_CHAT
 from rapid_mlx.http_auth import rapid_mlx_client_headers
 from rapid_mlx.model_profile import ModelProfile
-from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
+from rapid_mlx.runtime.optional_runtime import (
+    OptionalRuntimeMissing,
+    optional_extra_install_hint,
+    optional_extra_repair_command,
+)
 from rapid_mlx.runtime.optional_runtime import (
     handle_optional_runtime_missing as _handle_optional_runtime_missing,
 )
@@ -3526,8 +3530,7 @@ def _preflight_native_mtp_or_exit(args):
         print(
             "\n  Error: native MTP requires the qualified "
             f"mlx-vlm {QUALIFIED_MLX_VLM_VERSION} runtime.\n\n"
-            "  Install it with:\n"
-            "    pip install 'rapid-mlx[mtp]'\n",
+            f"  {optional_extra_install_hint('mtp')}\n",
             file=sys.stderr,
         )
         raise SystemExit(1)
@@ -4386,6 +4389,24 @@ def _serve_will_run_on_mllm_lane(args) -> bool:
     elif requested_spec_decode == "none" and getattr(args, "force_spec_decode", False):
         requested_spec_decode = "auto"
     force_text = getattr(args, "no_mllm", False)
+    from .model_aliases import resolve_profile
+    from .models.mllm import VisionRuntimeStatus, vision_runtime_status
+
+    profile = resolve_profile(args.model)
+    if (
+        profile is not None
+        and getattr(profile, "modality", "text") == "text"
+        and getattr(profile, "vision_min_memory_gb", None) is not None
+        and not getattr(profile, "is_text_only", False)
+        and not force_text
+        and requested_spec_decode in (None, "none")
+    ):
+        runtime_status, _ = vision_runtime_status()
+        if runtime_status in {
+            VisionRuntimeStatus.BROKEN,
+            VisionRuntimeStatus.INCOMPATIBLE,
+        }:
+            return True
     is_mllm_lane, auto_text_fallback = resolve_serving_lane(
         args.model,
         force_mllm=getattr(args, "mllm", False),
@@ -4418,6 +4439,99 @@ def _alias_modality(model_name: str) -> str | None:
 
     profile = resolve_profile(model_name)
     return None if profile is None else profile.modality
+
+
+def _alias_text_degrades_without_vision(profile, *, args=None) -> bool:
+    """Whether an absent vision extra leaves this catalog alias text-capable."""
+    if (
+        profile is None
+        or profile.modality != "text"
+        or profile.vision_min_memory_gb is None
+        or profile.is_text_only
+    ):
+        return False
+    from .models.mllm import VisionRuntimeStatus, vision_runtime_status
+
+    if args is not None:
+        requested_spec_decode = getattr(args, "spec_decode", "none") or "none"
+        if (
+            getattr(args, "mllm", False)
+            or getattr(args, "no_mllm", False)
+            or requested_spec_decode not in (None, "none")
+            or getattr(args, "enable_mtp", False)
+            or getattr(args, "force_spec_decode", False)
+        ):
+            return False
+    return vision_runtime_status()[0] is VisionRuntimeStatus.ABSENT
+
+
+def _warn_vision_text_only_degrade(profile, *, args=None) -> bool:
+    """Print the single recovery line for an absent-runtime text fallback."""
+    if not _alias_text_degrades_without_vision(profile, args=args):
+        return False
+    from .runtime.optional_runtime import _running_in_desktop_sidecar
+
+    if _running_in_desktop_sidecar():
+        return False
+    print(
+        "warning: vision runtime absent; serving this text-capable checkpoint "
+        "text-only. Enable image input with: "
+        + optional_extra_repair_command("vision"),
+        file=sys.stderr,
+    )
+    return True
+
+
+def _preflight_pull_optional_runtime(args) -> None:
+    """Reject catalog aliases whose known lane cannot run before weight fetch."""
+    from .model_aliases import resolve_profile
+    from .runtime.optional_runtime import _running_in_desktop_sidecar
+
+    if _running_in_desktop_sidecar():
+        return
+    alias = getattr(args, "_original_alias", None) or args.model
+    from .audio.probe import is_audio_model_alias, require_audio_or_exit
+
+    try:
+        if is_audio_model_alias(alias):
+            require_audio_or_exit(alias)
+            return
+    except OptionalRuntimeMissing as exc:
+        _handle_optional_runtime_missing(
+            exc,
+            alias_or_path=alias,
+            auto_selected=False,
+            assume_yes=bool(getattr(args, "yes", False)),
+        )
+    profile = resolve_profile(alias)
+    if profile is None:
+        return
+    try:
+        if profile.modality == "video-gen":
+            from .runtime.video_lane import require_video_runtime_or_exit
+
+            require_video_runtime_or_exit(profile.hf_path)
+        elif profile.modality == "image-gen":
+            from .runtime.image_lane import require_image_runtime_or_exit
+
+            require_image_runtime_or_exit(profile.hf_path)
+        elif profile.modality == "text-diffusion" or (
+            (profile.supports_image_input or profile.vision_min_memory_gb is not None)
+            and not _alias_text_degrades_without_vision(profile)
+        ):
+            from .models.mllm import require_mlx_vlm_or_exit
+
+            require_mlx_vlm_or_exit(
+                profile.hf_path,
+                text_diffusion=profile.modality == "text-diffusion",
+            )
+    except OptionalRuntimeMissing as exc:
+        _handle_optional_runtime_missing(
+            exc,
+            alias_or_path=alias,
+            auto_selected=False,
+            assume_yes=bool(getattr(args, "yes", False)),
+        )
 
 
 def _prefetch_config_for_lane_guard(hf_path: str) -> None:
@@ -4866,6 +4980,15 @@ def serve_command(args):
             alias_or_path=getattr(args, "_original_alias", None) or args.model,
             assume_yes=bool(getattr(args, "yes", False)),
         )
+    if _serve_profile is not None and _serve_profile.modality == "image-gen":
+        from .runtime.image_lane import require_image_runtime_or_exit
+
+        _run_optional_runtime_guard(
+            require_image_runtime_or_exit,
+            args.model,
+            alias_or_path=getattr(args, "_original_alias", None) or args.model,
+            assume_yes=bool(getattr(args, "yes", False)),
+        )
 
     # F-H08-INCOMPLETE: the ``[embeddings]`` extra-required guard MUST
     # fire first thing in ``serve_command`` — before
@@ -4922,6 +5045,7 @@ def serve_command(args):
     # An uncached checkpoint (config not yet materialized) probes "not
     # hybrid" and keeps the SAFE ``[vision]``-required default; the guard's
     # message points at ``--no-mllm`` for a text-capable backbone.
+    _warn_vision_text_only_degrade(_serve_profile, args=args)
     if _serve_will_run_on_mllm_lane(args):
         from .models.mllm import require_mlx_vlm_or_exit
 
@@ -5000,12 +5124,7 @@ def serve_command(args):
                 "\n  Error: DFlash speculative decoding "
                 '(--speculative-config \'{"method":"dflash"}\') requires '
                 "mlx-vlm 0.5.0+ for the DFlash drafter hooks.\n"
-                "\n  Install in a Python environment with:\n"
-                "    pip install 'rapid-mlx[dflash]'\n"
-                "\n  Homebrew installs the text-only package. Homebrew users "
-                "can switch to the isolated full install with:\n"
-                "    brew uninstall rapid-mlx\n"
-                "    uv tool install 'rapid-mlx[dflash]'\n"
+                f"\n  {optional_extra_install_hint('dflash')}\n"
             )
             sys.exit(1)
 
@@ -7176,7 +7295,7 @@ def _run_submit_flow(
                 )
                 print("  Install them and re-run:")
                 print()
-                print("    pip install 'rapid-mlx[vision]'")
+                print("   ", optional_extra_repair_command("vision"))
                 print()
                 print(
                     "  Or, if you only need text inference (smaller "
@@ -9861,6 +9980,8 @@ def pull_command(args):
         AudioRuntimePreparationError,
         prepare_runtime_requirement,
     )
+
+    _preflight_pull_optional_runtime(args)
 
     primary_repo = args.model
     primary_args = args
@@ -14354,7 +14475,8 @@ Examples:
         help=(
             "Pre-load an embedding model at startup (e.g. "
             "mlx-community/embeddinggemma-300m-6bit). Requires the "
-            "[embeddings] extra: pip install 'rapid-mlx[embeddings]'."
+            "[embeddings] extra. "
+            + optional_extra_install_hint("embeddings", include_paths=False)
         ),
     )
     # Embedding input-length controls (issue #1381). Prevents silent

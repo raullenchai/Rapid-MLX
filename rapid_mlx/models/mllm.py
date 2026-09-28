@@ -247,15 +247,9 @@ def _vision_install_hint(*, include_paths: bool = True) -> str:
             "Reinstall Rapid-MLX Desktop.app to restore its validated vision "
             "runtime. Do not pip-install into the code-signed bundled sidecar."
         )
-    python = shlex.quote(sys.executable) if include_paths else "python"
-    return (
-        "Install the validated vision stack into this runtime with:\n"
-        f"    {python} -m pip install --upgrade --force-reinstall "
-        "'rapid-mlx[vision]'\n"
-        "or repair mlx-vlm directly (pinned to Rapid-MLX's validated set):\n"
-        f"    {python} -m pip install --upgrade --force-reinstall "
-        f"'mlx-vlm=={VALIDATED_MLX_VLM_VERSION}'"
-    )
+    from rapid_mlx.runtime.optional_runtime import optional_extra_install_hint
+
+    return optional_extra_install_hint("vision", include_paths=include_paths)
 
 
 # Backwards-compatible public constant used by docs/tests. It is generated
@@ -1744,9 +1738,11 @@ class MLXMultimodalLM:
                 logger.info("Native video pipeline enabled (temporal 3D conv + M-RoPE)")
 
         except ImportError:
+            from rapid_mlx.runtime.optional_runtime import optional_extra_install_hint
+
             raise ImportError(
                 "Vision dependencies are required for multimodal inference. "
-                "Install with: pip install 'rapid-mlx[vision]'"
+                + optional_extra_install_hint("vision")
             )
         except ValueError as e:
             # mlx's strict `load_weights` raises `ValueError: Missing N

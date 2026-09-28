@@ -47,9 +47,11 @@ def image_runtime_issue(model_name: str | None = None) -> str | None:
         else "mflux"
     )
     if importlib.util.find_spec(runtime_module) is None:
+        from .optional_runtime import optional_extra_install_hint
+
         return (
             "image generation requires the `rapid-mlx[image]` "
-            "Python extra (`pip install 'rapid-mlx[image]'`)."
+            "Python extra. " + optional_extra_install_hint("image")
         )
     return None
 
@@ -58,7 +60,10 @@ def require_image_runtime_or_exit(model_name: str | None = None) -> None:
     """Fail before model download when the optional image stack is absent."""
 
     if issue := image_runtime_issue(model_name):
-        from .optional_runtime import OptionalRuntimeMissing
+        from .optional_runtime import (
+            OptionalRuntimeMissing,
+            optional_extra_install_hint,
+        )
 
         reason = (
             "python_version_unsupported"
@@ -67,7 +72,7 @@ def require_image_runtime_or_exit(model_name: str | None = None) -> None:
         )
         raise OptionalRuntimeMissing(
             extra="image",
-            install_hint="pip install 'rapid-mlx[image]'",
+            install_hint=optional_extra_install_hint("image"),
             detail=f"\n  Error: {issue.rstrip()}\n",
             status=(
                 "incompatible" if reason == "python_version_unsupported" else "absent"

@@ -1554,6 +1554,18 @@ def resolve_serving_lane_decision(
             False, "vision_hybrid_cache_unsupported", auto_text_fallback=True
         )
     if cache_mode == "arrays":
+        from ..models.mllm import VisionRuntimeStatus, vision_runtime_status
+
+        runtime_status, _ = vision_runtime_status()
+        if runtime_status is VisionRuntimeStatus.ABSENT:
+            return ServingLaneDecision(
+                False, "vision_runtime_absent", auto_text_fallback=True
+            )
+        if runtime_status is not VisionRuntimeStatus.OK:
+            # Only a genuinely absent optional runtime may degrade. A broken or
+            # incompatible install must reach the vision guard and report its
+            # repair instead of silently hiding the damaged environment.
+            return ServingLaneDecision(True, "vision_runtime_unusable")
         if mllm_hybrid_runtime_supported():
             return ServingLaneDecision(True, "vision_hybrid_runtime_supported")
         return ServingLaneDecision(

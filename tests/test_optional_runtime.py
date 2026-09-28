@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+import rapid_mlx
 from rapid_mlx import cli, server
 from rapid_mlx.runtime import optional_runtime
 from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
@@ -287,19 +288,10 @@ if lane == "vision-present":
 
 
 def _expected_install_hint_line(extra: str, *, child_executable: str) -> str:
-    if extra == "vision":
-        return (
-            f"    {shlex.quote(child_executable)} -m pip install "
-            "--upgrade --force-reinstall 'rapid-mlx[vision]'"
-        )
-    if extra == "audio":
-        return "Install with: pip install 'rapid-mlx[audio]'"
-    if extra == "image":
-        return (
-            "  Error: image generation requires the `rapid-mlx[image]` Python "
-            "extra (`pip install 'rapid-mlx[image]'`)."
-        )
-    return f"pip install 'rapid-mlx[{extra}]'"
+    return (
+        f"    {shlex.quote(child_executable)} -m pip install "
+        f"'rapid-mlx[{extra}]=={rapid_mlx.__version__}'"
+    )
 
 
 def _assert_actionable_failure_contract(
@@ -818,6 +810,7 @@ def test_bonsai_engine_preflight_is_missing_vision_failure(monkeypatch, capsys) 
             "model_type": "vlm",
             "auto_selected": False,
             "quant": "2bit",
+            "extra_recovery": "no_installer",
         }
     ]
     assert [
