@@ -52,7 +52,7 @@ struct ComputerUseView: View {
                 HStack(alignment: .top) {
                     SectionHeader(
                         "Computer Use",
-                        subtitle: "Let Rapid handle useful work across apps on this Mac. Everything runs locally.",
+                        subtitle: "Actions run on this Mac. You choose the brain endpoint used for planning.",
                         emphasis: .page
                     )
                     Spacer()

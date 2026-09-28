@@ -69,18 +69,13 @@ struct CUASection: View {
                     }
                 }
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("App").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                    TextField("Google Chrome", text: $viewModel.appName)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(maxWidth: 220)
-                        .accessibilityIdentifier("ComputerUse.Agent.App")
-                }
-                VStack(alignment: .leading, spacing: 4) {
                     Text("Max steps").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                     Stepper("\(viewModel.maxSteps)", value: $viewModel.maxSteps, in: 1 ... 40)
                         .accessibilityIdentifier("ComputerUse.Agent.MaxSteps")
                 }
             }
+
+            targetPicker
 
             Label(viewModel.plannerDisclosure, systemImage: "desktopcomputer")
                 .font(.caption)
@@ -148,6 +143,7 @@ struct CUASection: View {
         .task {
             await viewModel.loadPlanners()
             await viewModel.loadPermissions()
+            await viewModel.loadTargets()
             permissionSnapshot = MacAutomationPermissions.snapshot()
         }
         .onChange(of: scenePhase) { _, phase in
@@ -236,6 +232,80 @@ struct CUASection: View {
                 brainDraftAllowRemote = false
             }
         }
+    }
+
+    private var targetPicker: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Target window")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if viewModel.isLoadingApps || viewModel.isLoadingWindows {
+                    ProgressView().controlSize(.small)
+                }
+                Button("Refresh") {
+                    Task { await viewModel.loadTargets() }
+                }
+                .buttonStyle(.borderless)
+                .disabled(viewModel.phase.isBusy || viewModel.isLoadingApps)
+                .accessibilityIdentifier("ComputerUse.Agent.Target.Refresh")
+            }
+
+            HStack(spacing: 10) {
+                Picker(
+                    "Process",
+                    selection: Binding(
+                        get: { viewModel.selectedPID },
+                        set: { pid in Task { await viewModel.selectApp(pid: pid) } }
+                    )
+                ) {
+                    Text("Choose an app process…").tag(Int?.none)
+                    ForEach(viewModel.appOptions) { app in
+                        Text(app.displayName).tag(Optional(app.pid))
+                    }
+                }
+                .disabled(viewModel.phase.isBusy || viewModel.isLoadingApps)
+                .accessibilityIdentifier("ComputerUse.Agent.Target.Process")
+
+                Picker("Window", selection: $viewModel.selectedWindowID) {
+                    Text("Choose a window…").tag(String?.none)
+                    ForEach(viewModel.windowOptions) { window in
+                        Text(window.displayName).tag(Optional(window.windowID))
+                    }
+                }
+                .disabled(
+                    viewModel.phase.isBusy || viewModel.selectedPID == nil
+                        || viewModel.isLoadingWindows || viewModel.windowOptions.isEmpty
+                )
+                .accessibilityIdentifier("ComputerUse.Agent.Target.Window")
+            }
+
+            if viewModel.appOptions.isEmpty, !viewModel.isLoadingApps,
+               viewModel.targetError == nil
+            {
+                Text("No controllable app processes were found. Open an app, then refresh.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("ComputerUse.Agent.Target.Empty")
+            }
+            if let summary = viewModel.targetSummary {
+                Label(summary, systemImage: "macwindow")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("ComputerUse.Agent.Target.Selection")
+            }
+            if let error = viewModel.targetError {
+                Label(error, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .accessibilityIdentifier("ComputerUse.Agent.Target.Error")
+            }
+        }
+        .padding(10)
+        .background(RapidTheme.surfaceCanvas, in: RoundedRectangle(cornerRadius: 10))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("ComputerUse.Agent.Target")
     }
 
     private var permissionReadiness: some View {

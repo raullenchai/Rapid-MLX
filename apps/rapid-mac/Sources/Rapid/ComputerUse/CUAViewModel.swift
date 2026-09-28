@@ -3,6 +3,8 @@ import Foundation
 /// Transport contract for the agent-task panel, so the view model can be
 /// unit-tested without a live server.
 protocol CUAAPI: Sendable {
+    func apps() async throws -> [CUAAppOption]
+    func windows(app: String) async throws -> [CUAWindowOption]
     func planners() async throws -> [CUAPlannerOption]
     func addPlanner(_ request: CUAPlannerCreateRequest) async throws
     func deletePlanner(name: String) async throws
@@ -90,12 +92,20 @@ final class CUAViewModel: ObservableObject {
     @Published var pendingApproval: CUAPendingApproval?
     @Published var executorPermissions: CUAPermissionStatus?
     @Published var actionError: String?
+    @Published var appOptions: [CUAAppOption] = []
+    @Published var windowOptions: [CUAWindowOption] = []
+    @Published var selectedPID: Int?
+    @Published var selectedWindowID: String?
+    @Published var targetError: String?
+    @Published var isLoadingApps = false
+    @Published var isLoadingWindows = false
 
     private let api: CUAAPI
     private var runID: String?
     private var pollTask: Task<Void, Never>?
     private var showingPollError = false
     private let pollIntervalNanos: UInt64
+    private var targetDiscoveryGeneration = 0
 
     init(api: CUAAPI?, pollIntervalNanos: UInt64 = 700_000_000) {
         self.api = api ?? NullCUAAPI()
@@ -105,7 +115,24 @@ final class CUAViewModel: ObservableObject {
     var canStart: Bool {
         !goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !phase.isBusy
-            && !appName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && selectedApp != nil
+            && selectedWindow != nil
+            && openURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var selectedApp: CUAAppOption? {
+        guard let selectedPID else { return nil }
+        return appOptions.first { $0.pid == selectedPID }
+    }
+
+    var selectedWindow: CUAWindowOption? {
+        guard let selectedWindowID else { return nil }
+        return windowOptions.first { $0.windowID == selectedWindowID }
+    }
+
+    var targetSummary: String? {
+        guard let app = selectedApp, let window = selectedWindow else { return nil }
+        return "\(window.displayName) in \(app.displayName)"
     }
 
     var canApprove: Bool {
@@ -135,6 +162,98 @@ final class CUAViewModel: ObservableObject {
 
     func loadPermissions() async {
         executorPermissions = try? await api.permissions()
+    }
+
+    func loadTargets() async {
+        targetDiscoveryGeneration += 1
+        let generation = targetDiscoveryGeneration
+        isLoadingApps = true
+        isLoadingWindows = false
+        targetError = nil
+        defer {
+            if generation == targetDiscoveryGeneration { isLoadingApps = false }
+        }
+        do {
+            let discovered = try await api.apps().sorted {
+                ($0.name ?? $0.bundleID ?? "").localizedCaseInsensitiveCompare(
+                    $1.name ?? $1.bundleID ?? ""
+                ) == .orderedAscending
+            }
+            guard generation == targetDiscoveryGeneration else { return }
+            appOptions = discovered
+            guard let selectedPID, discovered.contains(where: { $0.pid == selectedPID }) else {
+                self.selectedPID = nil
+                selectedWindowID = nil
+                windowOptions = []
+                return
+            }
+            await loadWindows(
+                pid: selectedPID, preserveSelection: true, generation: generation
+            )
+        } catch {
+            guard generation == targetDiscoveryGeneration else { return }
+            appOptions = []
+            windowOptions = []
+            selectedPID = nil
+            selectedWindowID = nil
+            targetError = targetDiscoveryMessage(error)
+        }
+    }
+
+    func selectApp(pid: Int?) async {
+        targetDiscoveryGeneration += 1
+        let generation = targetDiscoveryGeneration
+        isLoadingApps = false
+        selectedPID = pid
+        selectedWindowID = nil
+        windowOptions = []
+        targetError = nil
+        guard let pid else { return }
+        appName = appOptions.first(where: { $0.pid == pid })?.name ?? "PID \(pid)"
+        await loadWindows(pid: pid, preserveSelection: false, generation: generation)
+    }
+
+    func refreshWindows() async {
+        guard let selectedPID else { return }
+        targetDiscoveryGeneration += 1
+        let generation = targetDiscoveryGeneration
+        isLoadingApps = false
+        await loadWindows(
+            pid: selectedPID, preserveSelection: true, generation: generation
+        )
+    }
+
+    private func loadWindows(pid: Int, preserveSelection: Bool, generation: Int) async {
+        isLoadingWindows = true
+        targetError = nil
+        defer {
+            if generation == targetDiscoveryGeneration { isLoadingWindows = false }
+        }
+        let oldSelection = preserveSelection ? selectedWindowID : nil
+        do {
+            let discovered = try await api.windows(app: "pid:\(pid)")
+            guard generation == targetDiscoveryGeneration, selectedPID == pid else { return }
+            windowOptions = discovered
+            selectedWindowID = discovered.contains(where: { $0.windowID == oldSelection })
+                ? oldSelection : nil
+            if discovered.isEmpty {
+                targetError = "No usable windows were found for this process. Open a window, then refresh."
+            } else if oldSelection != nil, selectedWindowID == nil {
+                targetError = "The selected window is no longer available. Choose a window again."
+            }
+        } catch {
+            guard generation == targetDiscoveryGeneration, selectedPID == pid else { return }
+            windowOptions = []
+            selectedWindowID = nil
+            targetError = targetDiscoveryMessage(error)
+        }
+    }
+
+    private func targetDiscoveryMessage(_ error: Error) -> String {
+        if case let CUAClientError.http(code, _) = error, code == 404 {
+            return "This local server does not support window selection. Update or restart Rapid, then refresh."
+        }
+        return "Could not load apps and windows: \(Self.describe(error)) Refresh to try again."
     }
 
     // MARK: Add-brain settings
@@ -192,8 +311,8 @@ final class CUAViewModel: ObservableObject {
         }
         if Self.isLoopbackEndpoint(planner.url) {
             return planner.textOnly
-                ? "Actions and brain run on this Mac. The brain receives the goal and Accessibility snapshot."
-                : "Actions and brain run on this Mac. The brain receives the goal, Accessibility snapshot, and screenshot."
+                ? "Actions run on this Mac. The planner request goes to the configured loopback endpoint, which may forward it. It receives the goal and Accessibility snapshot."
+                : "Actions run on this Mac. The planner request goes to the configured loopback endpoint, which may forward it. It receives the goal, Accessibility snapshot, and screenshot."
         }
         return planner.textOnly
             ? "Actions run on this Mac. This external brain receives the goal and Accessibility snapshot over HTTPS."
@@ -217,6 +336,7 @@ final class CUAViewModel: ObservableObject {
 
     func start() async {
         guard canStart else { return }
+        guard let app = selectedApp, let window = selectedWindow else { return }
         phase = .starting
         events = []
         pendingGateReason = nil
@@ -226,18 +346,28 @@ final class CUAViewModel: ObservableObject {
         stopPolling()
         runID = nil
         let request = CUARunRequest(
-            app: appName.trimmingCharacters(in: .whitespacesAndNewlines),
+            app: "pid:\(app.pid)",
             goal: goal.trimmingCharacters(in: .whitespacesAndNewlines),
             planner: plannerName,
             openURL: openURL.trimmingCharacters(in: .whitespacesAndNewlines),
             allowedDomain: allowedDomain.trimmingCharacters(in: .whitespacesAndNewlines),
             maxSteps: maxSteps,
-            humanLogin: true
+            humanLogin: true,
+            windowID: window.windowID
         )
         do {
             runID = try await api.create(request)
         } catch {
-            phase = .failed(message: Self.describe(error))
+            if case let CUAClientError.http(_, detail) = error,
+               Self.invalidatesSelectedTarget(code: nil, message: detail)
+            {
+                selectedWindowID = nil
+                phase = .failed(
+                    message: "The selected window is no longer available: \(detail) Refresh the window list and choose it again."
+                )
+            } else {
+                phase = .failed(message: Self.describe(error))
+            }
             return
         }
         phase = .running
@@ -362,15 +492,21 @@ final class CUAViewModel: ObservableObject {
                     case "completed":
                         phase = .finished(summary: event.finalSummary ?? "")
                     case let terminal where terminal != nil:
-                        phase = .failed(
-                            message: Self.firstNonEmpty(
+                        let message = Self.firstNonEmpty(
                                 event.reason,
                                 event.error,
                                 event.finalSummary,
                                 view.error,
                                 fallback: "run ended: \(terminal ?? "unknown")"
                             )
-                        )
+                        if Self.invalidatesSelectedTarget(code: event.error, message: message) {
+                            selectedWindowID = nil
+                            phase = .failed(
+                                message: "\(message) Refresh the window list and choose it again."
+                            )
+                        } else {
+                            phase = .failed(message: message)
+                        }
                     default:
                         break
                     }
@@ -383,13 +519,19 @@ final class CUAViewModel: ObservableObject {
                     return
                 }
                 if ["stopped", "stalled", "failed"].contains(view.status) {
-                    phase = .failed(
-                        message: Self.firstNonEmpty(
+                    let message = Self.firstNonEmpty(
                             view.error,
                             view.finalSummary,
                             fallback: "run ended: \(view.status)"
                         )
-                    )
+                    if Self.invalidatesSelectedTarget(code: view.error, message: message) {
+                        selectedWindowID = nil
+                        phase = .failed(
+                            message: "\(message) Refresh the window list and choose it again."
+                        )
+                    } else {
+                        phase = .failed(message: message)
+                    }
                     self.runID = nil
                     return
                 }
@@ -418,6 +560,19 @@ final class CUAViewModel: ObservableObject {
         (error as? LocalizedError)?.errorDescription ?? String(describing: error)
     }
 
+    private static func invalidatesSelectedTarget(code: String?, message: String) -> Bool {
+        let targetCodes = [
+            "window_not_found", "window_stale", "target_drift", "target_stale",
+            "stale_observation",
+        ]
+        if let code, targetCodes.contains(code.lowercased()) { return true }
+        let lower = message.lowercased()
+        return targetCodes.contains(where: { lower.contains($0) })
+            || lower.contains("selected window unavailable")
+            || lower.contains("window was replaced")
+            || lower.contains("window is no longer available")
+    }
+
     private static func firstNonEmpty(
         _ values: String?..., fallback: String
     ) -> String {
@@ -444,6 +599,10 @@ private struct NullCUAAPI: CUAAPI {
     func planners() async throws -> [CUAPlannerOption] {
         throw Unavailable()
     }
+
+    func apps() async throws -> [CUAAppOption] { throw Unavailable() }
+
+    func windows(app: String) async throws -> [CUAWindowOption] { throw Unavailable() }
 
     func addPlanner(_ request: CUAPlannerCreateRequest) async throws {
         throw Unavailable()

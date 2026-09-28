@@ -1,5 +1,54 @@
 import Foundation
 
+struct CUAAppOption: Codable, Equatable, Identifiable, Sendable {
+    var name: String?
+    var bundleID: String?
+    var pid: Int
+
+    var id: Int { pid }
+    var displayName: String {
+        let label = name?.nilIfBlank ?? bundleID?.nilIfBlank ?? "Unknown app"
+        return "\(label) — PID \(pid)"
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case name, pid
+        case bundleID = "bundle_id"
+    }
+}
+
+struct CUAWindowOption: Codable, Equatable, Identifiable, Sendable {
+    var windowID: String
+    var index: Int
+    var title: String
+    var x: Double?
+    var y: Double?
+    var width: Double?
+    var height: Double?
+
+    var id: String { windowID }
+    var displayTitle: String { title.nilIfBlank ?? "Untitled window" }
+    var displayName: String {
+        var detail = "Window \(index + 1)"
+        if let width, let height, width > 0, height > 0 {
+            detail += " · \(Int(width.rounded()))×\(Int(height.rounded()))"
+        }
+        return "\(displayTitle) — \(detail)"
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case index, title, x, y, width, height
+        case windowID = "window_id"
+    }
+}
+
+private extension String {
+    var nilIfBlank: String? {
+        let value = trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
+}
+
 /// One selectable slow-thinking planner preset from `GET /v1/cua/planners`.
 struct CUAPlannerOption: Codable, Equatable, Identifiable, Sendable {
     var name: String
@@ -141,6 +190,7 @@ struct CUARunView: Codable, Equatable, Sendable {
     var eventsAfterSeq: Int
     var events: [CUAEvent]
     var pendingGate: CUAPendingGate? = nil
+    var windowID: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case runID = "run_id"
@@ -148,6 +198,7 @@ struct CUARunView: Codable, Equatable, Sendable {
         case finalSummary = "final_summary"
         case eventsAfterSeq = "events_after_seq"
         case pendingGate = "pending_gate"
+        case windowID = "window_id"
     }
 }
 
@@ -160,6 +211,7 @@ struct CUARunRequest: Codable, Equatable, Sendable {
     var allowedDomain: String
     var maxSteps: Int
     var humanLogin: Bool
+    var windowID: String
 
     enum CodingKeys: String, CodingKey {
         case app, goal, planner
@@ -167,6 +219,7 @@ struct CUARunRequest: Codable, Equatable, Sendable {
         case allowedDomain = "allowed_domain"
         case maxSteps = "max_steps"
         case humanLogin = "human_login"
+        case windowID = "window_id"
     }
 }
 
@@ -212,6 +265,23 @@ struct CUAClient: CUAAPI, Sendable {
     func planners() async throws -> [CUAPlannerOption] {
         let (data, response) = try await send(path: "/v1/cua/planners", method: "GET")
         return try decode([CUAPlannerOption].self, from: data, response: response)
+    }
+
+    func apps() async throws -> [CUAAppOption] {
+        let (data, response) = try await send(path: "/v1/cua/apps", method: "GET")
+        return try decode([CUAAppOption].self, from: data, response: response)
+    }
+
+    func windows(app: String) async throws -> [CUAWindowOption] {
+        var allowed = CharacterSet.alphanumerics
+        allowed.insert(charactersIn: "-._~")
+        guard let encodedApp = app.addingPercentEncoding(withAllowedCharacters: allowed),
+              let url = URL(
+                  string: baseURL.absoluteString + "/v1/cua/apps/\(encodedApp)/windows"
+              )
+        else { throw URLError(.badURL) }
+        let (data, response) = try await send(url: url, method: "GET")
+        return try decode([CUAWindowOption].self, from: data, response: response)
     }
 
     func addPlanner(_ request: CUAPlannerCreateRequest) async throws {

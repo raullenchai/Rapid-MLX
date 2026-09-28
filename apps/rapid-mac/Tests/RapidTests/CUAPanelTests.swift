@@ -8,6 +8,15 @@ private final class MockAgentAPI: CUAAPI, @unchecked Sendable {
     enum Failure: Error { case requested }
 
     var plannersResult: [CUAPlannerOption] = []
+    var appsResult = [CUAAppOption(name: "Google Chrome", bundleID: "com.google.Chrome", pid: 42)]
+    var windowsResult = [
+        CUAWindowOption(
+            windowID: "cg:123", index: 0, title: "Research — Apple Silicon",
+            x: 0, y: 0, width: 1200, height: 800
+        ),
+    ]
+    var discoveryShouldFail = false
+    var createError: Error?
     var createdRequests: [CUARunRequest] = []
     var scriptedEvents: [CUAEvent] = []
     var finalSummary = "opened the article"
@@ -29,6 +38,16 @@ private final class MockAgentAPI: CUAAPI, @unchecked Sendable {
         plannersResult
     }
 
+    func apps() async throws -> [CUAAppOption] {
+        if discoveryShouldFail { throw Failure.requested }
+        return appsResult
+    }
+
+    func windows(app: String) async throws -> [CUAWindowOption] {
+        if discoveryShouldFail { throw Failure.requested }
+        return windowsResult
+    }
+
     func addPlanner(_ request: CUAPlannerCreateRequest) async throws {
         if addShouldFail { throw Failure.requested }
         addedPlanners.append(request)
@@ -39,6 +58,7 @@ private final class MockAgentAPI: CUAAPI, @unchecked Sendable {
     }
 
     func create(_ request: CUARunRequest) async throws -> String {
+        if let createError { throw createError }
         createdRequests.append(request)
         return "run123"
     }
@@ -89,10 +109,60 @@ private final class MockAgentAPI: CUAAPI, @unchecked Sendable {
     }
 }
 
+private actor WindowDiscoveryRaceAPI: CUAAPI {
+    private var windowCall = 0
+
+    func apps() async throws -> [CUAAppOption] { [] }
+
+    func windows(app: String) async throws -> [CUAWindowOption] {
+        windowCall += 1
+        let call = windowCall
+        try await Task.sleep(nanoseconds: call == 1 ? 50_000_000 : 1_000_000)
+        return [
+            CUAWindowOption(
+                windowID: call == 1 ? "cg:old" : "cg:new", index: 0,
+                title: call == 1 ? "Old" : "New", x: 0, y: 0, width: 900, height: 700
+            ),
+        ]
+    }
+
+    func planners() async throws -> [CUAPlannerOption] { [] }
+    func addPlanner(_ request: CUAPlannerCreateRequest) async throws {}
+    func deletePlanner(name: String) async throws {}
+    func create(_ request: CUARunRequest) async throws -> String { "run" }
+    func permissions() async throws -> CUAPermissionStatus {
+        CUAPermissionStatus(accessibility: true, screenRecording: true)
+    }
+    func events(runID: String, after: Int) async throws -> CUARunView {
+        CUARunView(
+            runID: runID, app: "", goal: "", status: "running", finalSummary: "",
+            error: "", planner: "", eventsAfterSeq: after, events: []
+        )
+    }
+    func approve(runID: String, gateID: String) async throws {}
+    func cancel(runID: String) async throws {}
+}
+
 private func drain() async {
     await Task.yield()
     try? await Task.sleep(nanoseconds: 50_000_000)
     await Task.yield()
+}
+
+@MainActor
+private func selectTarget(_ viewModel: CUAViewModel) {
+    viewModel.appOptions = [
+        CUAAppOption(name: "Google Chrome", bundleID: "com.google.Chrome", pid: 42),
+    ]
+    viewModel.windowOptions = [
+        CUAWindowOption(
+            windowID: "cg:123", index: 0, title: "Research — Apple Silicon",
+            x: nil, y: nil, width: nil, height: nil
+        ),
+    ]
+    viewModel.selectedPID = 42
+    viewModel.selectedWindowID = "cg:123"
+    viewModel.appName = "Google Chrome"
 }
 
 // MARK: - View model
@@ -125,12 +195,15 @@ struct CUAViewModelTests {
         ]
         let viewModel = CUAViewModel(api: api, pollIntervalNanos: 5_000_000)
         viewModel.goal = "open Apple Silicon"
+        selectTarget(viewModel)
         await viewModel.start()
         await drain()
         #expect(viewModel.phase == .finished(summary: "opened Apple Silicon"))
         #expect(api.createdRequests.count == 1)
         #expect(api.createdRequests[0].goal == "open Apple Silicon")
         #expect(api.createdRequests[0].humanLogin)
+        #expect(api.createdRequests[0].app == "pid:42")
+        #expect(api.createdRequests[0].windowID == "cg:123")
         #expect(viewModel.events.count == 4)
     }
 
@@ -142,6 +215,7 @@ struct CUAViewModelTests {
         ]
         let viewModel = CUAViewModel(api: api, pollIntervalNanos: 5_000_000)
         viewModel.goal = "check flights"
+        selectTarget(viewModel)
         await viewModel.start()
         api.scriptedEvents = [
             makeEvent(
@@ -170,6 +244,7 @@ struct CUAViewModelTests {
         let viewModel = CUAViewModel(api: api, pollIntervalNanos: 5_000_000)
         viewModel.goal = "check flights"
         viewModel.appName = "Google Chrome"
+        selectTarget(viewModel)
         await viewModel.start()
         await drain()
 
@@ -194,6 +269,7 @@ struct CUAViewModelTests {
         let viewModel = CUAViewModel(api: api, pollIntervalNanos: 5_000_000)
         viewModel.goal = "submit my report"
         viewModel.appName = "Safari"
+        selectTarget(viewModel)
         await viewModel.start()
         await drain()
 
@@ -217,6 +293,7 @@ struct CUAViewModelTests {
         ]
         let viewModel = CUAViewModel(api: api, pollIntervalNanos: 5_000_000)
         viewModel.goal = "continue safely"
+        selectTarget(viewModel)
         await viewModel.start()
         await drain()
 
@@ -233,6 +310,7 @@ struct CUAViewModelTests {
         ]
         let viewModel = CUAViewModel(api: api, pollIntervalNanos: 5_000_000)
         viewModel.goal = "continue safely"
+        selectTarget(viewModel)
         await viewModel.start()
         await drain()
 
@@ -270,6 +348,7 @@ struct CUAViewModelTests {
         api.scriptedEvents = [makeEvent(seq: 2, kind: "gate", gateID: "gate-7")]
         let viewModel = CUAViewModel(api: api, pollIntervalNanos: 5_000_000)
         viewModel.goal = "check flights"
+        selectTarget(viewModel)
         await viewModel.start()
         await drain()
         #expect(viewModel.phase == .awaitingApproval)
@@ -289,6 +368,7 @@ struct CUAViewModelTests {
         await viewModel.cancel()
         #expect(api.cancelCalls == 0)
         viewModel.goal = "g"
+        selectTarget(viewModel)
         await viewModel.start()
         await viewModel.cancel()
         #expect(api.cancelCalls == 1)
@@ -300,6 +380,7 @@ struct CUAViewModelTests {
         api.cancelShouldFail = true
         let viewModel = CUAViewModel(api: api)
         viewModel.goal = "g"
+        selectTarget(viewModel)
         await viewModel.start()
         await viewModel.cancel()
 
@@ -314,6 +395,7 @@ struct CUAViewModelTests {
         api.eventsShouldFail = true
         let viewModel = CUAViewModel(api: api, pollIntervalNanos: 5_000_000)
         viewModel.goal = "g"
+        selectTarget(viewModel)
         await viewModel.start()
         await drain()
 
@@ -332,8 +414,100 @@ struct CUAViewModelTests {
         #expect(!viewModel.canStart)
         viewModel.goal = "   "
         #expect(!viewModel.canStart)
+        selectTarget(viewModel)
         await viewModel.start()
         #expect(api.createdRequests.isEmpty)
+    }
+
+    @Test("Start requires an explicit live process and window selection")
+    func requiresExplicitWindowSelection() async {
+        let api = MockAgentAPI()
+        let viewModel = CUAViewModel(api: api)
+        viewModel.goal = "open the selected document"
+        #expect(!viewModel.canStart)
+
+        await viewModel.loadTargets()
+        #expect(viewModel.appOptions.first?.displayName == "Google Chrome — PID 42")
+        #expect(viewModel.selectedPID == nil)
+        #expect(!viewModel.canStart)
+
+        await viewModel.selectApp(pid: 42)
+        #expect(viewModel.windowOptions.first?.displayTitle == "Research — Apple Silicon")
+        #expect(
+            viewModel.windowOptions.first?.displayName
+                == "Research — Apple Silicon — Window 1 · 1200×800"
+        )
+        #expect(viewModel.selectedWindowID == nil)
+        viewModel.selectedWindowID = "cg:123"
+        #expect(viewModel.canStart)
+    }
+
+    @Test("Refresh clears a window that moved or disappeared")
+    func refreshRevalidatesSelection() async {
+        let api = MockAgentAPI()
+        let viewModel = CUAViewModel(api: api)
+        viewModel.goal = "continue"
+        selectTarget(viewModel)
+        api.windowsResult = [
+            CUAWindowOption(
+                windowID: "cg:999", index: 0, title: "Replacement",
+                x: nil, y: nil, width: nil, height: nil
+            ),
+        ]
+
+        await viewModel.loadTargets()
+
+        #expect(viewModel.selectedPID == 42)
+        #expect(viewModel.selectedWindowID == nil)
+        #expect(!viewModel.canStart)
+        #expect(viewModel.targetError?.contains("no longer available") == true)
+    }
+
+    @Test("Late discovery response cannot replace a newer window list")
+    func discoveryGenerationRejectsLateResponse() async {
+        let viewModel = CUAViewModel(api: WindowDiscoveryRaceAPI())
+        viewModel.appOptions = [CUAAppOption(name: "Finder", bundleID: nil, pid: 42)]
+        let first = Task { await viewModel.selectApp(pid: 42) }
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        await viewModel.refreshWindows()
+        await first.value
+
+        #expect(viewModel.windowOptions.map(\.windowID) == ["cg:new"])
+        #expect(viewModel.selectedWindowID == nil)
+        #expect(!viewModel.isLoadingWindows)
+    }
+
+    @Test("Discovery failure remains visible after clearing a previous selection")
+    func discoveryFailureIsNotSwallowed() async {
+        let api = MockAgentAPI()
+        api.discoveryShouldFail = true
+        let viewModel = CUAViewModel(api: api)
+        selectTarget(viewModel)
+
+        await viewModel.loadTargets()
+
+        #expect(viewModel.selectedPID == nil)
+        #expect(viewModel.selectedWindowID == nil)
+        #expect(viewModel.targetError?.contains("Could not load apps and windows") == true)
+    }
+
+    @Test("Server rejection clears stale target and offers recovery")
+    func staleTargetCreateFailure() async {
+        let api = MockAgentAPI()
+        api.createError = CUAClientError.http(409, "selected window was replaced")
+        let viewModel = CUAViewModel(api: api)
+        viewModel.goal = "continue"
+        selectTarget(viewModel)
+
+        await viewModel.start()
+
+        #expect(viewModel.selectedWindowID == nil)
+        #expect(!viewModel.canStart)
+        guard case let .failed(message) = viewModel.phase else {
+            Issue.record("expected failed phase")
+            return
+        }
+        #expect(message.contains("Refresh the window list"))
     }
 
     @Test("Permission readiness comes from the executor API")
@@ -358,6 +532,7 @@ struct CUAViewModelTests {
         ]
         let viewModel = CUAViewModel(api: api, pollIntervalNanos: 5_000_000)
         viewModel.goal = "long task"
+        selectTarget(viewModel)
         await viewModel.start()
         await drain()
         guard case .failed = viewModel.phase else {
@@ -375,10 +550,36 @@ struct CUAViewModelTests {
         ]
         let viewModel = CUAViewModel(api: api, pollIntervalNanos: 5_000_000)
         viewModel.goal = "open an article"
+        selectTarget(viewModel)
         await viewModel.start()
         await drain()
 
         #expect(viewModel.phase == .failed(message: "planner unavailable"))
+    }
+
+    @Test("Typed stale terminal clears the frozen window before retry")
+    func terminalStaleWindowIsRecoverable() async {
+        let api = MockAgentAPI()
+        api.scriptedEvents = [
+            makeEvent(
+                seq: 2, kind: "terminal", status: "stopped",
+                reason: "selected window unavailable: it moved", error: "window_stale"
+            ),
+        ]
+        let viewModel = CUAViewModel(api: api, pollIntervalNanos: 5_000_000)
+        viewModel.goal = "open the report"
+        selectTarget(viewModel)
+        await viewModel.start()
+        await drain()
+
+        #expect(viewModel.selectedPID == 42)
+        #expect(viewModel.selectedWindowID == nil)
+        #expect(!viewModel.canStart)
+        guard case let .failed(message) = viewModel.phase else {
+            Issue.record("expected failed phase")
+            return
+        }
+        #expect(message.contains("choose it again"))
     }
 }
 
@@ -421,9 +622,9 @@ struct CUAClientTests {
         let client = makeClient()
         let runID = try await client.create(
             CUARunRequest(
-                app: "Google Chrome", goal: "g", planner: "local-9b",
+                app: "pid:42", goal: "g", planner: "local-9b",
                 openURL: "", allowedDomain: "wikipedia.org", maxSteps: 8,
-                humanLogin: true
+                humanLogin: true, windowID: "opaque:abc"
             )
         )
         #expect(runID == "abc")
@@ -433,6 +634,31 @@ struct CUAClientTests {
         let json = try #require(JSONSerialization.jsonObject(with: sent) as? [String: Any])
         #expect(json["allowed_domain"] as? String == "wikipedia.org")
         #expect(json["max_steps"] as? Int == 8)
+        #expect(json["app"] as? String == "pid:42")
+        #expect(json["window_id"] as? String == "opaque:abc")
+    }
+
+    @Test("Discovery decodes bundle_id and URL-encodes the PID selector")
+    func discoveryContract() async throws {
+        RecordingURLProtocol.stubResponse(
+            path: "/v1/cua/apps",
+            body: Data(#"[{"name":"Finder","bundle_id":"com.apple.finder","pid":42}]"#.utf8)
+        )
+        RecordingURLProtocol.stubResponse(
+            path: "/v1/cua/apps/pid:42/windows",
+            body: Data(#"[{"window_id":"opaque:abc","index":0,"title":"Downloads"}]"#.utf8)
+        )
+        let client = makeClient()
+        let apps = try await client.apps()
+        let windows = try await client.windows(app: "pid:42")
+
+        #expect(apps.first?.bundleID == "com.apple.finder")
+        #expect(apps.first?.displayName == "Finder — PID 42")
+        #expect(windows.first?.windowID == "opaque:abc")
+        let captured = try #require(
+            RecordingURLProtocol.captured["/v1/cua/apps/pid:42/windows"]
+        )
+        #expect(captured.request.url?.absoluteString.contains("pid%3A42") == true)
     }
 
     @Test("Events decode snake_case payload")
@@ -456,6 +682,7 @@ struct CUAClientTests {
         #expect(view.events[0].target == "Account")
         #expect(view.pendingGate?.gateID == "gate-7")
         #expect(view.pendingGate?.target == "Account")
+        #expect(view.windowID == nil)
     }
 
     @Test("Approval binds the decision to the pending gate")
@@ -628,6 +855,18 @@ struct CUAAddBrainTests {
         vm.plannerOptions[0].textOnly = true
         #expect(!vm.plannerDisclosure.contains("screenshot"))
         #expect(vm.plannerDisclosure.contains("Accessibility snapshot"))
+
+        vm.plannerName = "loopback"
+        vm.plannerOptions = [
+            CUAPlannerOption(
+                name: "loopback", model: "m", url: "http://127.0.0.1:8080/v1",
+                textOnly: true
+            ),
+        ]
+        #expect(vm.plannerDisclosure.contains("Actions run on this Mac"))
+        #expect(vm.plannerDisclosure.contains("loopback endpoint"))
+        #expect(vm.plannerDisclosure.contains("may forward it"))
+        #expect(!vm.plannerDisclosure.contains("brain run on this Mac"))
     }
 
     @MainActor
@@ -661,5 +900,32 @@ struct CUAPlannerDecodeTests {
         #expect(option.hasApiKey == true)
         #expect(option.userCreated == true)
         #expect(option.allowRemote == true)
+    }
+}
+
+@Suite("Agent Task Target UI")
+struct CUATargetUISourceTests {
+    @Test("Window controls are addressable and privacy copy distinguishes execution")
+    func targetControlsAndPrivacyCopy() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let section = try String(
+            contentsOf: root.appendingPathComponent("Sources/Rapid/UI/CUASection.swift"),
+            encoding: .utf8
+        )
+        let page = try String(
+            contentsOf: root.appendingPathComponent("Sources/Rapid/UI/ComputerUseView.swift"),
+            encoding: .utf8
+        )
+
+        #expect(section.contains("ComputerUse.Agent.Target.Process"))
+        #expect(section.contains("ComputerUse.Agent.Target.Window"))
+        #expect(section.contains("ComputerUse.Agent.Target.Refresh"))
+        #expect(section.contains("ComputerUse.Agent.Target.Error"))
+        #expect(page.contains("Actions run on this Mac"))
+        #expect(page.contains("choose the brain endpoint"))
+        #expect(!page.contains("Everything runs locally"))
     }
 }
