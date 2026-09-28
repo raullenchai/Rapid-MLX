@@ -37,7 +37,10 @@ def load_product_recommendation_policy() -> dict[str, Any]:
 def _read_recommendation_policy() -> dict[str, Any]:
     """Read the same checked-in policy for latency-sensitive display paths."""
     path = Path(__file__).with_name("model_recommendations.json")
-    return json.loads(path.read_text(encoding="utf-8"))
+    payload: object = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("recommendation policy must be a JSON object")
+    return payload
 
 
 @lru_cache(maxsize=2)
