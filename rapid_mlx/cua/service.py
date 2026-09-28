@@ -58,6 +58,9 @@ class CUAServiceRun:
             if kind == "started" and event.get("run_dir"):
                 self.run_dir = str(event["run_dir"])
             elif kind == "gate":
+                # Publish a fresh one-shot event before exposing the awaiting
+                # state. A fast approval can no longer land on the prior gate.
+                self._approve_event = asyncio.Event()
                 self._awaiting = True
                 self.status = "awaiting_approval"
             elif kind == "gate_resolved":
@@ -66,22 +69,31 @@ class CUAServiceRun:
                     self.status = "running"
 
     async def wait_for_approval(self, reason: str, timeout: float) -> bool:
+        with self._lock:
+            # Production emits ``gate`` first. Direct SDK/test callers still
+            # receive a one-shot event when no gate event established one.
+            if not self._awaiting:
+                self._approve_event = asyncio.Event()
+                self._awaiting = True
+            approval_event = self._approve_event
         self.emit({"kind": "gate_detail", "reason": reason, "timeout_s": timeout})
         try:
-            await asyncio.wait_for(self._approve_event.wait(), timeout=timeout)
+            await asyncio.wait_for(approval_event.wait(), timeout=timeout)
             return True
         except (asyncio.TimeoutError, TimeoutError):
             return False
         finally:
             with self._lock:
-                self._awaiting = False
-            self._approve_event.clear()
+                if self._approve_event is approval_event:
+                    self._awaiting = False
+            approval_event.clear()
 
     def approve(self) -> bool:
         with self._lock:
             if not self._awaiting:
                 return False
-        self._approve_event.set()
+            approval_event = self._approve_event
+        approval_event.set()
         return True
 
     def cancel(self) -> None:

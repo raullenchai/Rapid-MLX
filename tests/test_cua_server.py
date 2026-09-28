@@ -321,6 +321,39 @@ def test_approval_timeout(client):
     assert asyncio.run(active.wait_for_approval("sign-in", timeout=0.001)) is False
 
 
+def test_late_approval_event_cannot_approve_the_next_gate(client):
+    active = cua_service.CUAServiceRun(
+        run_id="timeout-replay",
+        app="A",
+        goal="g",
+        config=None,  # type: ignore[arg-type]
+    )
+
+    async def scenario():
+        active.emit({"kind": "gate", "reason": "first"})
+        assert await active.wait_for_approval("first", timeout=0.001) is False
+        expired_event = active._approve_event
+        expired_event.set()
+        active.emit({"kind": "gate", "reason": "second"})
+        return await active.wait_for_approval("second", timeout=0.001)
+
+    assert asyncio.run(scenario()) is False
+
+
+def test_fast_approval_after_gate_emit_is_not_lost(client):
+    active = cua_service.CUAServiceRun(
+        run_id="fast-approval",
+        app="A",
+        goal="g",
+        config=None,  # type: ignore[arg-type]
+    )
+    active.emit({"kind": "gate", "reason": "external_commit"})
+    assert active.approve() is True
+    assert (
+        asyncio.run(active.wait_for_approval("external_commit", timeout=0.01)) is True
+    )
+
+
 def test_cancel_requests_stop(client):
     test_client = client
     fresh = client.fresh_service

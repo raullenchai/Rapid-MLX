@@ -100,6 +100,42 @@ class CUARun:
         except Exception:  # noqa: BLE001 - events must never kill the run
             pass
 
+    async def _request_approval(
+        self, reason: str, *, action: str = "", target: str = ""
+    ) -> bool:
+        """Ask the human to approve one explicitly described action."""
+        if self.gate is None:
+            marker = (
+                "APPROVE_SIGNIN"
+                if reason == "sign-in"
+                else f"APPROVE_ACTION_{hashlib.sha256(reason.encode()).hexdigest()[:12]}"
+            )
+            if reason == "sign-in":
+                return await gates.wait_for_human(
+                    self.run_dir, marker, self.config.pause_timeout
+                )
+            return await gates.wait_for_human(
+                self.run_dir, marker, self.config.pause_timeout, reason=reason
+            )
+        event = {"kind": "gate", "reason": reason}
+        if action:
+            event.update({"action": action, "target": target})
+        self._emit(event)
+        try:
+            approved = bool(await self.gate(reason))
+        except Exception:  # noqa: BLE001 - a broken gate must not hang the run
+            approved = False
+        self._emit(
+            {
+                "kind": "gate_resolved",
+                "reason": reason,
+                "approved": approved,
+                "action": action,
+                "target": target,
+            }
+        )
+        return approved
+
     async def _request_signin_approval(self) -> bool:
         """Ask the human to approve a sign-in pause.
 
@@ -107,17 +143,40 @@ class CUARun:
         gate/gate_resolved events and resolved through the callback; without
         one (CLI mode) the file sentinel is the approval channel.
         """
-        if self.gate is None:
-            return await gates.wait_for_human(
-                self.run_dir, "APPROVE_SIGNIN", self.config.pause_timeout
-            )
-        self._emit({"kind": "gate", "reason": "sign-in"})
-        try:
-            approved = bool(await self.gate("sign-in"))
-        except Exception:  # noqa: BLE001 - a broken gate must not hang the run
-            approved = False
-        self._emit({"kind": "gate_resolved", "approved": approved})
-        return approved
+        return await self._request_approval("sign-in")
+
+    @staticmethod
+    def _target(snapshot: dict, index: int) -> dict:
+        return next(
+            (e for e in snapshot.get("elements", []) if e.get("index") == index), {}
+        )
+
+    @staticmethod
+    def _target_identity(target: dict) -> tuple[str, ...] | None:
+        required = ("index", "role", "label", "x", "y", "width", "height", "center")
+        if any(field not in target for field in required):
+            return None
+        return tuple(
+            json.dumps(target.get(field), ensure_ascii=False, sort_keys=True)
+            for field in (*required, "subrole", "actions")
+        )
+
+    @staticmethod
+    def _window_identity(snapshot: dict) -> tuple[str, str, str, str, str] | None:
+        app = snapshot.get("app")
+        if (
+            not isinstance(app, dict)
+            or "pid" not in app
+            or "window_index" not in snapshot
+        ):
+            return None
+        return (
+            str(app.get("pid")),
+            str(app.get("bundle_id", "")),
+            str(app.get("name", "")),
+            str(snapshot.get("window_index")),
+            str(snapshot.get("window_id", "")),
+        )
 
     def _check_domain(self, url: str) -> str | None:
         allowed = self.config.allowed_domain.strip().lower().rstrip(".")
@@ -250,14 +309,7 @@ class CUARun:
             self.config.allowed_domain,
             progress_hint,
         )
-        target: dict = next(
-            (
-                e
-                for e in snapshot.get("elements", [])
-                if e["index"] == plan.get("element_index")
-            ),
-            {},
-        )
+        target = self._target(snapshot, plan.get("element_index", -1))
         target_label = str(target.get("label", ""))
         try:
             gates.check_plan_consents(plan, target_label)
@@ -288,6 +340,67 @@ class CUARun:
                 self.trace["human_gate"] = "sign-in gate timed out"
                 self._record({"step": step_no, "plan": plan, "gate": "timeout"})
                 return {"status": "stopped", "reason": "sign-in gate not approved"}
+
+        approval = gates.consequential_action(plan, target_label)
+        if approval is not None:
+            approval_reason = f"{approval.reason}; app={self.app!r}"
+            approved = await self._request_approval(
+                approval_reason, action=approval.action, target=approval.target
+            )
+            if not approved:
+                self.trace["human_gate"] = f"{approval.kind} not approved"
+                self._record({"step": step_no, "plan": plan, "gate": "not approved"})
+                return {
+                    "status": "stopped",
+                    "reason": f"{approval.kind} not approved",
+                }
+
+            # Approval binds to the observed target. Re-observe after the human
+            # pause and fail closed if the indexed control or domain changed.
+            try:
+                fresh = backend.get_app_state(
+                    self.app, screenshot=not planner.text_only, use_cache=False
+                )
+            except ComputerUseError as exc:
+                reason = f"could not revalidate approved target: {exc}"
+                self._record(
+                    {"step": step_no, "plan": plan, "gate": "stale", "stop": reason}
+                )
+                return {"status": "stopped", "reason": reason}
+            fresh_url = backend.read_url(self.app)
+            fresh_guard = self._check_domain(fresh_url)
+            fresh_target = self._target(fresh, plan.get("element_index", -1))
+            fresh_label = str(fresh_target.get("label", ""))
+            original_target_identity = self._target_identity(target)
+            fresh_target_identity = self._target_identity(fresh_target)
+            original_window_identity = self._window_identity(snapshot)
+            fresh_window_identity = self._window_identity(fresh)
+            stale = any(
+                (
+                    original_target_identity is None,
+                    fresh_target_identity is None,
+                    original_target_identity != fresh_target_identity,
+                    original_window_identity is None,
+                    fresh_window_identity is None,
+                    original_window_identity != fresh_window_identity,
+                    fresh_url != url_now,
+                    _tree_signature(fresh) != _tree_signature(snapshot),
+                )
+            )
+            try:
+                gates.check_plan_consents(plan, fresh_label)
+            except ConsentError as exc:
+                self.trace["consent_stop"] = str(exc)
+                self._record({"step": step_no, "plan": plan, "consent_stop": str(exc)})
+                return {"status": "stopped", "reason": str(exc)}
+            if fresh_guard or stale:
+                reason = fresh_guard or "approved target changed before execution"
+                self._record(
+                    {"step": step_no, "plan": plan, "gate": "stale", "stop": reason}
+                )
+                return {"status": "stopped", "reason": reason}
+            snapshot = fresh
+            url_now = fresh_url
 
         before_sig = _tree_signature(snapshot)
         executed = await self._execute(plan, snapshot)

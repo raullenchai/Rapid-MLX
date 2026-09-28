@@ -181,6 +181,59 @@ def test_normal_plan_passes():
     )
 
 
+@pytest.mark.parametrize(
+    ("label", "instruction"),
+    [
+        ("Send", "send the email"),
+        ("Publish", "publish the post"),
+        ("Move to Trash", "delete the file"),
+        ("Confirm reservation", "book the appointment"),
+        ("发送", "发送邮件"),
+        ("削除", "ファイルを削除"),
+        ("보내기", "메시지 보내기"),
+    ],
+)
+def test_consequential_action_requires_typed_targeted_approval(label, instruction):
+    requirement = gates.consequential_action(
+        {
+            "action": "click",
+            "element_index": 4,
+            "step_instruction": instruction,
+        },
+        label,
+    )
+    assert requirement is not None
+    assert requirement.kind == "external_commit"
+    assert requirement.action == "click"
+    assert requirement.target == label
+    assert f"target={label!r}" in requirement.reason
+
+
+def test_read_only_and_draft_actions_do_not_require_approval():
+    assert (
+        gates.consequential_action(
+            {
+                "action": "click",
+                "element_index": 1,
+                "step_instruction": "submit the search",
+            },
+            "Search",
+        )
+        is None
+    )
+    assert (
+        gates.consequential_action(
+            {
+                "action": "fill",
+                "element_index": 2,
+                "step_instruction": "draft the email",
+            },
+            "Message body",
+        )
+        is None
+    )
+
+
 def test_sign_in_detection():
     snapshot = {
         "elements": [
@@ -1084,6 +1137,210 @@ def test_loop_invalid_domain_consent_and_human_timeout(
     monkeypatch.setattr(loop_mod.gates, "wait_for_human", timeout)
     result = asyncio.run(runner.step(normal, 1))
     assert result["status"] == "stopped" and "not approved" in result["reason"]
+
+
+@pytest.mark.parametrize("decision", [False, None])
+def test_consequential_action_does_not_execute_without_approval(
+    decision, fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    clicks: list[int] = []
+    monkeypatch.setattr(
+        fake_backend,
+        "click",
+        lambda app, index, **kwargs: clicks.append(index) or {"ok": True},
+    )
+    events: list[dict] = []
+
+    async def gate(reason):
+        assert clicks == []
+        assert "external_commit" in reason
+        assert "target='Send'" in reason
+        return decision
+
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path),
+        "Mail",
+        "send email",
+        tmp_path / "approval-denied",
+        event_sink=events.append,
+        gate=gate,
+    )
+    planner = _FakePlanner(
+        [
+            {
+                "action": "click",
+                "step_instruction": "send the email",
+                "element_index": 1,
+                "final_summary": "",
+            }
+        ]
+    )
+    monkeypatch.setattr(
+        fake_backend,
+        "get_app_state",
+        lambda *args, **kwargs: {
+            "app": {"name": "Mail", "pid": 101, "bundle_id": "mail"},
+            "window_index": 0,
+            "elements": [
+                {
+                    "index": 1,
+                    "label": "Send",
+                    "role": "AXButton",
+                    "x": 10,
+                    "y": 10,
+                    "width": 50,
+                    "height": 20,
+                    "center": [35, 20],
+                }
+            ],
+            "tree_text": "[1] AXButton Send",
+        },
+    )
+    result = asyncio.run(runner.step(planner, 1))
+    assert result == {"status": "stopped", "reason": "external_commit not approved"}
+    assert clicks == []
+    assert [event["kind"] for event in events] == [
+        "plan",
+        "gate",
+        "gate_resolved",
+    ]
+
+
+def test_approved_action_reobserves_and_stops_on_stale_target(
+    fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    centers = iter([[35, 20], [135, 20]])
+    monkeypatch.setattr(
+        fake_backend,
+        "get_app_state",
+        lambda *args, **kwargs: {
+            "app": {"name": "Mail", "pid": 101, "bundle_id": "mail"},
+            "window_index": 0,
+            "elements": [
+                {
+                    "index": 1,
+                    "label": "Send",
+                    "role": "AXButton",
+                    "x": 10,
+                    "y": 10,
+                    "width": 50,
+                    "height": 20,
+                    "center": next(centers),
+                }
+            ],
+            "tree_text": "snapshot",
+        },
+    )
+    clicks: list[int] = []
+    monkeypatch.setattr(
+        fake_backend,
+        "click",
+        lambda app, index, **kwargs: clicks.append(index) or {"ok": True},
+    )
+
+    async def approve(_reason):
+        return True
+
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path),
+        "Mail",
+        "send email",
+        tmp_path / "approval-stale",
+        gate=approve,
+    )
+    planner = _FakePlanner(
+        [
+            {
+                "action": "click",
+                "step_instruction": "send the email",
+                "element_index": 1,
+                "final_summary": "",
+            }
+        ]
+    )
+    result = asyncio.run(runner.step(planner, 1))
+    assert result == {
+        "status": "stopped",
+        "reason": "approved target changed before execution",
+    }
+    assert clicks == []
+
+
+def test_approved_action_executes_only_after_stable_revalidation(
+    fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    snapshot = {
+        "app": {"name": "Mail", "pid": 101, "bundle_id": "mail"},
+        "window_index": 0,
+        "elements": [
+            {
+                "index": 1,
+                "label": "Send",
+                "role": "AXButton",
+                "actions": ["AXPress"],
+                "x": 10,
+                "y": 10,
+                "width": 50,
+                "height": 20,
+                "center": [35, 20],
+            }
+        ],
+        "tree_text": "[1] AXButton* Send",
+    }
+    monkeypatch.setattr(
+        fake_backend, "get_app_state", lambda *args, **kwargs: dict(snapshot)
+    )
+    clicks: list[int] = []
+    monkeypatch.setattr(
+        fake_backend,
+        "click",
+        lambda app, index, **kwargs: clicks.append(index) or {"ok": True},
+    )
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(loop_mod.asyncio, "sleep", no_sleep)
+
+    async def approve(reason):
+        assert clicks == []
+        assert "app='Mail'" in reason
+        return True
+
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path),
+        "Mail",
+        "send email",
+        tmp_path / "approval-success",
+        gate=approve,
+    )
+    planner = _FakePlanner(
+        [
+            {
+                "action": "click",
+                "step_instruction": "send the email",
+                "element_index": 1,
+                "final_summary": "",
+            }
+        ]
+    )
+    assert asyncio.run(runner.step(planner, 1)) is None
+    assert clicks == [1]
 
 
 def test_loop_ranker_success_and_unavailable(fake_backend, tmp_path, monkeypatch):
