@@ -167,6 +167,10 @@ class CUAServiceRun:
     def view(self, events_after: int = 0) -> dict:
         with self._lock:
             events = [e for e in self.events if e["seq"] > events_after]
+            current_last_seq = self.events[-1]["seq"] if self.events else 0
+            delivered_through = (
+                events[-1]["seq"] if events else min(events_after, current_last_seq)
+            )
             return {
                 "run_id": self.run_id,
                 "app": self.app,
@@ -175,7 +179,7 @@ class CUAServiceRun:
                 "final_summary": self.final_summary,
                 "error": self.error,
                 "planner": self.config.planner.describe() if self.config else "n/a",
-                "events_after_seq": events_after,
+                "events_after_seq": delivered_through,
                 "events": events,
                 "pending_gate": dict(self._pending_gate)
                 if self._pending_gate

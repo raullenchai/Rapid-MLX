@@ -623,6 +623,40 @@ def test_events_after_seq_pagination(client):
     ).json()
     assert [e["seq"] for e in view["events"]] == [3]
     assert view["events"][0]["kind"] == "executed"
+    assert view["events_after_seq"] == 3
+
+    # Feeding the returned cursor back never redelivers an event.
+    next_view = test_client.get(
+        "/v1/cua/runs/ev1/events",
+        headers=AUTH,
+        params={"after": view["events_after_seq"]},
+    ).json()
+    assert next_view["events"] == []
+    assert next_view["events_after_seq"] == 3
+    active.emit({"kind": "plan", "step": 2})
+    fresh_view = test_client.get(
+        "/v1/cua/runs/ev1/events",
+        headers=AUTH,
+        params={"after": next_view["events_after_seq"]},
+    ).json()
+    assert [event["seq"] for event in fresh_view["events"]] == [4]
+    assert fresh_view["events_after_seq"] == 4
+
+    # A persisted or corrupt cursor beyond the service's retained tail clamps
+    # to the current tail so future events remain pollable.
+    excessive = test_client.get(
+        "/v1/cua/runs/ev1/events", headers=AUTH, params={"after": 999}
+    ).json()
+    assert excessive["events"] == []
+    assert excessive["events_after_seq"] == 4
+    active.emit({"kind": "executed", "step": 2})
+    recovered = test_client.get(
+        "/v1/cua/runs/ev1/events",
+        headers=AUTH,
+        params={"after": excessive["events_after_seq"]},
+    ).json()
+    assert [event["seq"] for event in recovered["events"]] == [5]
+    assert recovered["events_after_seq"] == 5
 
     assert client.get("/v1/cua/runs/missing", headers=AUTH).status_code == 404
     assert client.get("/v1/cua/runs/missing/events", headers=AUTH).status_code == 404
