@@ -365,8 +365,11 @@ struct CUASection: View {
                 )
                 .font(.callout.weight(.semibold))
                 Spacer()
-                Button("Stop") { Task { await viewModel.cancel() } }
+                Button(viewModel.isStopping ? "Stopping…" : "Stop") {
+                    Task { await viewModel.cancel() }
+                }
                     .buttonStyle(.bordered)
+                    .disabled(viewModel.isStopping)
                     .accessibilityIdentifier("ComputerUse.Agent.Stop")
             }
             if let progress = viewModel.activeProgress {
@@ -428,12 +431,15 @@ struct CUASection: View {
                     .tint(.orange)
                     .disabled(!viewModel.canApprove)
                     .accessibilityIdentifier("ComputerUse.Agent.Approve")
-                Button("Stop Task") { Task { await viewModel.cancel() } }
+                Button(viewModel.isStopping ? "Stopping…" : "Stop Task") {
+                    Task { await viewModel.cancel() }
+                }
                     .buttonStyle(.bordered)
+                    .disabled(viewModel.isStopping)
                     .accessibilityIdentifier("ComputerUse.Agent.StopAtApproval")
             }
-            if !viewModel.canApprove {
-                Text("This approval is missing its gate identity. Stop the task and retry.")
+            if let approvalUnavailableMessage = viewModel.approvalUnavailableMessage {
+                Text(approvalUnavailableMessage)
                     .font(.caption)
                     .foregroundStyle(.orange)
                     .accessibilityIdentifier("ComputerUse.Agent.ApprovalUnavailable")

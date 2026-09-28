@@ -18,6 +18,10 @@ private final class MockAgentAPI: CUAAPI, @unchecked Sendable {
     var discoveryShouldFail = false
     var discoveryError: Error?
     var createError: Error?
+    var createDelayNanos: UInt64 = 0
+    var approveDelayNanos: UInt64 = 0
+    var cancelDelayNanos: UInt64 = 0
+    var eventsDelayNanos: UInt64 = 0
     var createdRequests: [CUARunRequest] = []
     var scriptedEvents: [CUAEvent] = []
     var finalSummary = "opened the article"
@@ -61,6 +65,7 @@ private final class MockAgentAPI: CUAAPI, @unchecked Sendable {
     }
 
     func create(_ request: CUARunRequest) async throws -> String {
+        if createDelayNanos > 0 { try? await Task.sleep(nanoseconds: createDelayNanos) }
         if let createError { throw createError }
         createdRequests.append(request)
         return "run123"
@@ -71,6 +76,7 @@ private final class MockAgentAPI: CUAAPI, @unchecked Sendable {
     }
 
     func events(runID: String, after: Int) async throws -> CUARunView {
+        if eventsDelayNanos > 0 { try? await Task.sleep(nanoseconds: eventsDelayNanos) }
         if eventsShouldFail { throw Failure.requested }
         var events: [CUAEvent] = []
         if after == 0 {
@@ -103,11 +109,13 @@ private final class MockAgentAPI: CUAAPI, @unchecked Sendable {
     func approve(runID: String, gateID: String) async throws {
         approveCalls += 1
         approvedGateIDs.append(gateID)
+        if approveDelayNanos > 0 { try? await Task.sleep(nanoseconds: approveDelayNanos) }
         if approveShouldFail { throw Failure.requested }
     }
 
     func cancel(runID: String) async throws {
         cancelCalls += 1
+        if cancelDelayNanos > 0 { try? await Task.sleep(nanoseconds: cancelDelayNanos) }
         if cancelShouldFail { throw Failure.requested }
     }
 }
@@ -257,8 +265,32 @@ struct CUAViewModelTests {
         #expect(viewModel.pendingApproval?.target == nil)
         #expect(viewModel.pendingApproval?.reason == "sign-in")
         #expect(!viewModel.canApprove)
+        #expect(viewModel.approvalUnavailableMessage?.contains("missing its gate identity") == true)
         await viewModel.approve()
         #expect(api.approveCalls == 0)
+    }
+
+    @Test("Approval card explains that Stop is in progress")
+    func approvalCardExplainsStoppingState() async {
+        let api = MockAgentAPI()
+        api.pendingGateResult = CUAPendingGate(
+            gateID: "gate-stop", reason: "confirm", action: "click", target: "Submit"
+        )
+        api.cancelDelayNanos = 50_000_000
+        let viewModel = CUAViewModel(api: api, pollIntervalNanos: 5_000_000)
+        viewModel.goal = "g"
+        selectTarget(viewModel)
+        await viewModel.start()
+        await drain()
+        #expect(viewModel.phase == .awaitingApproval)
+
+        let stop = Task { await viewModel.cancel() }
+        try? await Task.sleep(nanoseconds: 5_000_000)
+
+        #expect(viewModel.isStopping)
+        #expect(viewModel.approvalUnavailableMessage?.contains("stopping this task") == true)
+        await stop.value
+        #expect(viewModel.approvalUnavailableMessage == nil)
     }
 
     @Test("Canonical pending gate survives a missed gate event")
@@ -390,6 +422,116 @@ struct CUAViewModelTests {
         #expect(api.cancelCalls == 1)
         #expect(viewModel.phase.isBusy)
         #expect(viewModel.actionError?.hasPrefix("Stop failed:") == true)
+    }
+
+    @Test("Repeated Stop while cancellation is in flight sends one request")
+    func repeatedStopIsCoalesced() async {
+        let api = MockAgentAPI()
+        api.cancelDelayNanos = 50_000_000
+        let viewModel = CUAViewModel(api: api, pollIntervalNanos: 5_000_000)
+        viewModel.goal = "g"
+        selectTarget(viewModel)
+        await viewModel.start()
+
+        let firstStop = Task { await viewModel.cancel() }
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        #expect(viewModel.isStopping)
+        await viewModel.cancel()
+        await firstStop.value
+
+        #expect(api.cancelCalls == 1)
+        #expect(!viewModel.isStopping)
+        #expect(viewModel.phase == .idle)
+    }
+
+    @Test("Stop during create cancels the server run before polling starts")
+    func cancelWhileStarting() async {
+        let api = MockAgentAPI()
+        api.createDelayNanos = 50_000_000
+        let viewModel = CUAViewModel(api: api, pollIntervalNanos: 5_000_000)
+        viewModel.goal = "g"
+        selectTarget(viewModel)
+
+        let start = Task { await viewModel.start() }
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        await viewModel.cancel()
+
+        #expect(viewModel.phase == .starting)
+        #expect(viewModel.isStopping)
+        #expect(viewModel.actionError?.contains("Stop requested") == true)
+        await start.value
+
+        #expect(api.cancelCalls == 1)
+        #expect(viewModel.phase == .idle)
+        #expect(!viewModel.isStopping)
+        #expect(viewModel.events.isEmpty)
+        #expect(viewModel.actionError == nil)
+    }
+
+    @Test("Failed cleanup after stopping create preserves a retryable Stop")
+    func cancelWhileStartingFailure() async {
+        let api = MockAgentAPI()
+        api.createDelayNanos = 30_000_000
+        api.cancelShouldFail = true
+        let viewModel = CUAViewModel(api: api, pollIntervalNanos: 5_000_000)
+        viewModel.goal = "g"
+        selectTarget(viewModel)
+
+        let start = Task { await viewModel.start() }
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        await viewModel.cancel()
+        await start.value
+
+        #expect(api.cancelCalls == 1)
+        #expect(viewModel.phase == .running)
+        #expect(!viewModel.isStopping)
+        #expect(viewModel.phase.isBusy)
+        #expect(viewModel.actionError?.contains("Try Stop again") == true)
+    }
+
+    @Test("Late approval cannot revive the UI after Stop")
+    func approvalDoesNotReviveCancelledRun() async {
+        let api = MockAgentAPI()
+        api.pendingGateResult = CUAPendingGate(
+            gateID: "gate-7", reason: "confirm", action: "click", target: "Submit"
+        )
+        api.approveDelayNanos = 50_000_000
+        let viewModel = CUAViewModel(api: api, pollIntervalNanos: 5_000_000)
+        viewModel.goal = "g"
+        selectTarget(viewModel)
+        await viewModel.start()
+        await drain()
+        #expect(viewModel.phase == .awaitingApproval)
+
+        let approval = Task { await viewModel.approve() }
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        await viewModel.cancel()
+        await approval.value
+
+        #expect(api.approveCalls == 1)
+        #expect(api.cancelCalls == 1)
+        #expect(viewModel.phase == .idle)
+        #expect(viewModel.pendingApproval == nil)
+    }
+
+    @Test("Late poll response cannot revive the UI after Stop")
+    func pollDoesNotReviveCancelledRun() async {
+        let api = MockAgentAPI()
+        api.eventsDelayNanos = 50_000_000
+        api.runStatus = "completed"
+        let viewModel = CUAViewModel(api: api, pollIntervalNanos: 5_000_000)
+        viewModel.goal = "g"
+        selectTarget(viewModel)
+        await viewModel.start()
+        try? await Task.sleep(nanoseconds: 5_000_000)
+
+        await viewModel.cancel()
+        try? await Task.sleep(nanoseconds: 70_000_000)
+
+        #expect(api.cancelCalls == 1)
+        #expect(viewModel.phase == .idle)
+        #expect(viewModel.events.isEmpty)
+        #expect(viewModel.pendingApproval == nil)
     }
 
     @Test("Polling failure keeps the active run controllable and retries")

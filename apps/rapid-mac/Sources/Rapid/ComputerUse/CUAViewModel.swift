@@ -99,6 +99,7 @@ final class CUAViewModel: ObservableObject {
     @Published var targetError: String?
     @Published var isLoadingApps = false
     @Published var isLoadingWindows = false
+    @Published private(set) var isStopping = false
 
     private let api: CUAAPI
     private var runID: String?
@@ -110,6 +111,8 @@ final class CUAViewModel: ObservableObject {
 
     private static let bindingCleanupWarning =
         "Warning: this unverified task may still be executing. Stop it immediately before retrying."
+    private var lifecycleGeneration = 0
+    private var stoppingStartGeneration: Int?
 
     init(api: CUAAPI?, pollIntervalNanos: UInt64 = 700_000_000) {
         self.api = api ?? NullCUAAPI()
@@ -141,7 +144,15 @@ final class CUAViewModel: ObservableObject {
 
     var canApprove: Bool {
         phase == .awaitingApproval && pendingApproval?.gateID != nil
-            && !requiresBindingCleanup
+            && !requiresBindingCleanup && !isStopping
+    }
+
+    var approvalUnavailableMessage: String? {
+        guard phase == .awaitingApproval, !canApprove else { return nil }
+        if isStopping {
+            return "Rapid is stopping this task. Approval is unavailable while cancellation finishes."
+        }
+        return "This approval is missing its gate identity. Stop the task and retry."
     }
 
     var activeProgress: CUAProgressPresentation? {
@@ -353,6 +364,10 @@ final class CUAViewModel: ObservableObject {
     func start() async {
         guard canStart else { return }
         guard let app = selectedApp, let window = selectedWindow else { return }
+        lifecycleGeneration += 1
+        let generation = lifecycleGeneration
+        stoppingStartGeneration = nil
+        isStopping = false
         phase = .starting
         events = []
         pendingGateReason = nil
@@ -373,24 +388,64 @@ final class CUAViewModel: ObservableObject {
             windowID: window.windowID
         )
         do {
-            runID = try await api.create(request)
+            let createdRunID = try await api.create(request)
+            guard generation == lifecycleGeneration else {
+                // Defensive cleanup for a programmatic lifecycle replacement.
+                // The UI cannot reach this branch: `.starting` disables Start,
+                // and Stop records `stoppingStartGeneration` without advancing
+                // the generation so the result is handled below. A newer owner
+                // must not be overwritten with an error from this old request.
+                try? await api.cancel(runID: createdRunID)
+                return
+            }
+            if stoppingStartGeneration == generation {
+                do {
+                    try await api.cancel(runID: createdRunID)
+                    guard generation == lifecycleGeneration else { return }
+                    stoppingStartGeneration = nil
+                    isStopping = false
+                    actionError = nil
+                    phase = .idle
+                } catch {
+                    guard generation == lifecycleGeneration else { return }
+                    stoppingStartGeneration = nil
+                    isStopping = false
+                    runID = createdRunID
+                    actionError = "Stop failed: \(Self.describe(error)) Try Stop again."
+                    phase = .running
+                    beginPolling(runID: createdRunID, generation: generation)
+                }
+                return
+            }
+            runID = createdRunID
         } catch {
+            guard generation == lifecycleGeneration else { return }
+            let stopWasRequested = stoppingStartGeneration == generation
             if case let CUAClientError.windowBinding(
                 _, _, createdRunID, cancellationFailed
             ) = error {
+                stoppingStartGeneration = nil
+                isStopping = false
                 selectedWindowID = nil
                 if cancellationFailed {
                     runID = createdRunID
                     requiresBindingCleanup = true
                     actionError = Self.bindingCleanupWarning
                     phase = .running
-                    pollTask = Task { [weak self] in
-                        await self?.pollUntilTerminal()
-                    }
-                    _ = pollTask
+                    beginPolling(runID: createdRunID, generation: generation)
+                } else if stopWasRequested {
+                    actionError = nil
+                    phase = .idle
                 } else {
                     phase = .failed(message: Self.describe(error))
                 }
+                return
+            }
+            if stoppingStartGeneration == generation {
+                stoppingStartGeneration = nil
+                isStopping = false
+                actionError = nil
+                phase = .idle
                 return
             }
             let typedTargetFailure: Bool
@@ -418,22 +473,30 @@ final class CUAViewModel: ObservableObject {
             return
         }
         phase = .running
+        guard let runID else { return }
+        beginPolling(runID: runID, generation: generation)
+    }
+
+    private func beginPolling(runID: String, generation: Int) {
         pollTask = Task { [weak self] in
-            await self?.pollUntilTerminal()
+            await self?.pollUntilTerminal(runID: runID, generation: generation)
         }
         _ = pollTask
     }
 
     func approve() async {
         guard let runID, canApprove, let gateID = pendingApproval?.gateID else { return }
+        let generation = lifecycleGeneration
         do {
             try await api.approve(runID: runID, gateID: gateID)
+            guard generation == lifecycleGeneration, self.runID == runID else { return }
             pendingGateReason = nil
             pendingApproval = nil
             actionError = nil
             showingPollError = false
             phase = .running
         } catch {
+            guard generation == lifecycleGeneration, self.runID == runID else { return }
             // Keep the run controllable so the user can retry approval or
             // stop it. Treating a transport error as a terminal phase leaves
             // the server run active with no Stop button.
@@ -443,9 +506,22 @@ final class CUAViewModel: ObservableObject {
     }
 
     func cancel() async {
-        guard let runID, phase.isBusy else { return }
+        guard phase.isBusy, !isStopping else { return }
+        if phase == .starting, runID == nil {
+            stoppingStartGeneration = lifecycleGeneration
+            isStopping = true
+            actionError = "Stop requested. Waiting for the server to finish creating the task."
+            return
+        }
+        guard let runID else { return }
+        let previousPhase = phase
+        lifecycleGeneration += 1
+        let generation = lifecycleGeneration
+        isStopping = true
+        stopPolling()
         do {
             try await api.cancel(runID: runID)
+            guard generation == lifecycleGeneration, self.runID == runID else { return }
             // The server has accepted cancellation; return to idle while its
             // trace records the terminal event.
             stopPolling()
@@ -455,14 +531,19 @@ final class CUAViewModel: ObservableObject {
             actionError = nil
             showingPollError = false
             requiresBindingCleanup = false
+            isStopping = false
             phase = .idle
         } catch {
+            guard generation == lifecycleGeneration, self.runID == runID else { return }
             // Preserve the Stop control. A failed request must not make an
             // active run appear cancelled locally.
             actionError = requiresBindingCleanup
                 ? "\(Self.bindingCleanupWarning) Stop failed: \(Self.describe(error)) Try Stop again."
                 : "Stop failed: \(Self.describe(error))"
             showingPollError = false
+            isStopping = false
+            phase = previousPhase
+            beginPolling(runID: runID, generation: generation)
         }
     }
 
@@ -471,12 +552,12 @@ final class CUAViewModel: ObservableObject {
         pollTask = nil
     }
 
-    private func pollUntilTerminal() async {
-        guard let runID else { return }
-        var lastSeq = 0
+    private func pollUntilTerminal(runID: String, generation: Int) async {
+        var lastSeq = events.map(\.seq).max() ?? 0
         while !Task.isCancelled {
             do {
                 let view = try await api.events(runID: runID, after: lastSeq)
+                guard generation == lifecycleGeneration, self.runID == runID else { return }
                 if showingPollError {
                     actionError = requiresBindingCleanup ? Self.bindingCleanupWarning : nil
                     showingPollError = false
@@ -587,6 +668,7 @@ final class CUAViewModel: ObservableObject {
                 }
             } catch {
                 if Task.isCancelled { return }
+                guard generation == lifecycleGeneration, self.runID == runID else { return }
                 if case let CUAClientError.http(code, detail) = error, code == 404 {
                     phase = .failed(
                         message: Self.firstNonEmpty(
