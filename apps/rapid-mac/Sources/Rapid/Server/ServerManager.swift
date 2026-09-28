@@ -56,6 +56,7 @@ final class MemoryLoadConfirmationQueue {
 
         var warning: ModelSizing.MemoryWarning
         var requestID: UUID?
+        var onboardingEngineAttemptToken: UUID?
         var phase: Phase = .awaitingDecision
         var launchComplete = false
     }
@@ -68,8 +69,20 @@ final class MemoryLoadConfirmationQueue {
         return pending.first?.warning
     }
 
-    func enqueue(warning: ModelSizing.MemoryWarning, requestID: UUID?) {
-        pending.append(Pending(warning: warning, requestID: requestID))
+    func enqueue(
+        warning: ModelSizing.MemoryWarning,
+        requestID: UUID?,
+        onboardingEngineAttemptToken: UUID? = nil
+    ) {
+        pending.append(Pending(
+            warning: warning,
+            requestID: requestID,
+            onboardingEngineAttemptToken: onboardingEngineAttemptToken
+        ))
+    }
+
+    func onboardingEngineAttemptToken(warningID: UUID) -> UUID? {
+        pending.first { $0.warning.id == warningID }?.onboardingEngineAttemptToken
     }
 
     /// Replace the measured facts for the visible decision without changing
@@ -1995,6 +2008,10 @@ final class ServerManager {
                 await refreshResidency()
                 if replacementGroup != nil {
                     state = .ready(alias: trimmed)
+                    DesktopFunnelReporter.enqueueEngineOutcomeIfArmed(
+                        .engineReady,
+                        alias: trimmed
+                    )
                 }
                 if replacementGroup == .assistant {
                     recordReadySelection(
@@ -2442,6 +2459,9 @@ final class ServerManager {
     private func activatePendingMemoryLoad(
         _ warning: ModelSizing.MemoryWarning
     ) async {
+        let onboardingAttemptToken = memoryConfirmations.onboardingEngineAttemptToken(
+            warningID: warning.id
+        )
         let provider = memorySnapshotProvider
         let snapshot = await Task.detached(priority: .utility) {
             provider()
@@ -2460,6 +2480,9 @@ final class ServerManager {
         } ?? false
         if plannedReleaseChanged {
             memoryConfirmations.cancelChecking(warningID: warning.id)
+            if let onboardingAttemptToken {
+                DesktopFunnelReporter.releaseOnboardingEngineAttempt(onboardingAttemptToken)
+            }
             return
         }
 
@@ -2495,8 +2518,12 @@ final class ServerManager {
             isAutoRespawn: currentWarning.isAutoRespawn,
             bypassMemoryGuard: true,
             videoOutputDirectory: currentWarning.videoOutputDirectory,
-            estimatedMemoryGB: currentWarning.footprintGB
+            estimatedMemoryGB: currentWarning.footprintGB,
+            onboardingEngineAttemptToken: onboardingAttemptToken
         )
+        if let onboardingAttemptToken {
+            DesktopFunnelReporter.releaseOnboardingEngineAttempt(onboardingAttemptToken)
+        }
         memoryConfirmRunning.remove(seq)
         memoryConfirmations.completeConfirmedLaunch(warningID: currentWarning.id)
     }
@@ -2515,10 +2542,16 @@ final class ServerManager {
         // load that was never started, so any launch still in flight belongs
         // to an EARLIER confirmation and its waiter must not be told it
         // finished.
-        _ = memoryConfirmations.resolveCurrent(
+        let onboardingAttemptToken = memoryConfirmations.onboardingEngineAttemptToken(
+            warningID: warning.id
+        )
+        let cancelled = memoryConfirmations.resolveCurrent(
             warningID: warning.id,
             decision: .cancelled
         )
+        if cancelled != nil, let onboardingAttemptToken {
+            DesktopFunnelReporter.releaseOnboardingEngineAttempt(onboardingAttemptToken)
+        }
     }
 
     func start(
@@ -2531,7 +2564,8 @@ final class ServerManager {
         memoryAdmission: MemoryAdmissionContext? = nil,
         catalogEntryHint: CatalogEntryHint? = nil,
         videoOutputDirectory: String? = nil,
-        estimatedMemoryGB: Double? = nil
+        estimatedMemoryGB: Double? = nil,
+        onboardingEngineAttemptToken: UUID? = nil
     ) async {
         guard !communityBenchmarkReserved else { return }
         // Issue #278: a manual restart is the user taking over the
@@ -2551,6 +2585,10 @@ final class ServerManager {
         guard !didSignalShutdown else { return }
         guard let binary = binaryPath else {
             state = .missing
+            DesktopFunnelReporter.enqueueEngineOutcomeIfArmed(
+                .engineStartFailed,
+                alias: alias
+            )
             return
         }
         let trimmedAlias = alias.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2565,6 +2603,10 @@ final class ServerManager {
             state = .crashed(
                 alias: trimmedAlias,
                 message: "That model name isn't valid. Pick a model from the bar at the top."
+            )
+            DesktopFunnelReporter.enqueueEngineOutcomeIfArmed(
+                .engineStartFailed,
+                alias: trimmedAlias
             )
             return
         }
@@ -2644,8 +2686,14 @@ final class ServerManager {
                 )
                 memoryConfirmations.enqueue(
                     warning: warning,
-                    requestID: memoryRequestID
+                    requestID: memoryRequestID,
+                    onboardingEngineAttemptToken: onboardingEngineAttemptToken
                 )
+                if let onboardingEngineAttemptToken {
+                    DesktopFunnelReporter.retainOnboardingEngineAttempt(
+                        onboardingEngineAttemptToken
+                    )
+                }
                 // The user is now the decision-maker for this alias, so a
                 // queued auto-respawn must not answer for them. Parking a
                 // load leaves ``state`` untouched — still ``.crashed`` when
@@ -2860,6 +2908,10 @@ final class ServerManager {
                 alias: trimmedAlias,
                 message: "Couldn't start the model — another app may already be using what Rapid needs to run. Quit other local AI apps or development servers, then click Restart."
             )
+            DesktopFunnelReporter.enqueueEngineOutcomeIfArmed(
+                .engineStartFailed,
+                alias: trimmedAlias
+            )
             return
         }
         activePort = resolvedPort
@@ -2881,6 +2933,10 @@ final class ServerManager {
             state = .crashed(
                 alias: trimmedAlias,
                 message: "Couldn't start the model securely. Restart Rapid-MLX; if this keeps happening, please file a bug."
+            )
+            DesktopFunnelReporter.enqueueEngineOutcomeIfArmed(
+                .engineStartFailed,
+                alias: trimmedAlias
             )
             return
         }
@@ -3141,6 +3197,10 @@ final class ServerManager {
             // (principle: error copy must be human + actionable).
             print("[server] failed to start the model: \(error.localizedDescription)")
             state = .crashed(alias: trimmedAlias, message: "Couldn't start the model. Restart Rapid-MLX and try again.")
+            DesktopFunnelReporter.enqueueEngineOutcomeIfArmed(
+                .engineStartFailed,
+                alias: trimmedAlias
+            )
             isOperating = false
             return
         }
@@ -3245,6 +3305,10 @@ final class ServerManager {
                     && !performanceFlags.contains("--no-mllm")
                     && !performanceFlags.contains("--text-only")
                 state = .ready(alias: trimmedAlias)
+                DesktopFunnelReporter.enqueueEngineOutcomeIfArmed(
+                    .engineReady,
+                    alias: trimmedAlias
+                )
                 // Issue #270: mark the spawn cycle as "demonstrably
                 // healthy" so a subsequent ``handleChildExit`` knows
                 // an auto-respawn is worth attempting.
@@ -3799,6 +3863,12 @@ final class ServerManager {
             }
             if let message = reason {
                 state = .crashed(alias: alias, message: message)
+                if !spawnCycleReachedReady {
+                    DesktopFunnelReporter.enqueueEngineOutcomeIfArmed(
+                        .engineStartFailed,
+                        alias: alias
+                    )
+                }
             } else {
                 state = .stopped
             }
@@ -3924,6 +3994,12 @@ final class ServerManager {
             }
         }
         state = .crashed(alias: alias, message: message)
+        if !reachedReadyThisCycle {
+            DesktopFunnelReporter.enqueueEngineOutcomeIfArmed(
+                .engineStartFailed,
+                alias: alias
+            )
+        }
         // Issue #270: silent idle-state crash. The user closed every
         // chat window via Cmd+W and then rapid-mlx died (OOM, SIGSEGV,
         // model worker hang). Previously the desktop stayed alive but

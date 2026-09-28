@@ -178,11 +178,14 @@ struct RapidApp: App {
         // #2878 changed the Desktop default from 8000 to 7659. Preserve the
         // old endpoint for upgrades before InstallTracker records this launch;
         // otherwise existing OpenAI-compatible clients silently disconnect.
-        PortAllocator.migrateLegacyDefaultIfNeeded(
-            hadPreviousLaunch: UserDefaults.standard.string(
-                forKey: InstallTracker.lastSeenVersionKey
-            ) != nil
-        )
+        // Capture before InstallTracker records this launch. This is also the
+        // durable first-run-funnel upgrade exclusion: even an older install
+        // that never completed or entered Quickstart must not become a new
+        // telemetry cohort merely because it upgraded into this feature.
+        let hadPreviousLaunch = UserDefaults.standard.string(
+            forKey: InstallTracker.lastSeenVersionKey
+        ) != nil
+        PortAllocator.migrateLegacyDefaultIfNeeded(hadPreviousLaunch: hadPreviousLaunch)
         // Sweep orphan rapid-mlx processes from previous sessions BEFORE
         // anything else looks at our serve port.
         //
@@ -367,7 +370,10 @@ struct RapidApp: App {
         _downloads = State(initialValue: downloadsInstance)
         _shareCompute = State(initialValue: shareComputeManager)
         _installTracker = State(initialValue: InstallTracker())
-        _quickstart = State(initialValue: QuickstartCoordinator())
+        _quickstart = State(initialValue: QuickstartCoordinator(
+            hasChatHistory: !chat.conversations.isEmpty,
+            hadPreviousLaunch: hadPreviousLaunch
+        ))
         let dockPrompt = DockVisibilityPromptStore()
         _dockPromptStore = State(initialValue: dockPrompt)
         AppDelegate.shared.dockPromptStore = dockPrompt

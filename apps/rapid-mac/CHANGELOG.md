@@ -17,6 +17,18 @@ can actually understand.
 
 ## [Unreleased]
 
+### Added
+- **Anonymous first-run funnel counts.** Official Desktop builds now send
+  identifier-free, once-per-install setup milestones for installs whose first
+  setup starts on this version or later; existing installs and re-shown setup
+  never enter the cohort. The counters measure aggregate onboarding, download,
+  engine-start, and first-reply drop-off. The request contains only the app
+  version and a closed milestone name, honors telemetry and update-check
+  opt-outs, and is documented in `PRIVACY.md`. Existing and incomplete installs
+  are durably excluded, only the engine start caused by first-run setup is
+  counted, failed milestone requests are not retried, and development or
+  dogfood packages cannot enable the sender.
+
 ## [0.15.2] — 2026-09-24
 
 Rapid-MLX 0.15.2 makes local model serving easier to connect, harder to

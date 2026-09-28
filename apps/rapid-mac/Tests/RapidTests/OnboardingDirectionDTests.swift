@@ -69,17 +69,40 @@ struct OnboardingDirectionDTests {
     @Test("Welcome-screen Skip receives the hardware-aware starter policy")
     func starterPolicyIsOwnedByTheRootView() throws {
         let source = try Self.strippedSource("Sources/Rapid/UI/QuickstartView.swift")
-        let body = try #require(source.range(of: "varbody:someView{"))
-        let content = try #require(source.range(of: "privatevarcontent:someView{"))
-        let baseline = try #require(source.range(of: ".onAppear{coordinator.applyDefaultChoice(hardware:hardware,catalog:catalogLoaded?cachedModels:[])"))
-        let policyTask = try #require(source.range(of: ".task(id:StarterSelectionKey("))
-        let chooser = try #require(source.range(of: "privatevarchooseModelStep:someView{"))
-        let actionBoundary = try #require(source.range(
-            of: "privatefuncadvanceToModelChoice(){ifcatalogLoaded{coordinator.settleDefaultChoice(hardware:hardware,catalog:cachedModels)}else{coordinator.applyDefaultChoice(hardware:hardware,catalog:[])}coordinator.advanceToChooseModel()}"
-        ))
-        let skipRefresh = try #require(source.range(
-            of: "privatefuncskipForNow(){coordinator.applyDefaultChoice(hardware:hardware,catalog:catalogLoaded?cachedModels:[])onSkip()}"
-        ))
+        func locate(_ needle: String, label: String) -> Range<String.Index>? {
+            guard let range = source.range(of: needle) else {
+                // Do not put the full source string inside a #require
+                // expression: Swift Testing renders operand values on failure,
+                // which can flood CI output with this very large Swift file.
+                Issue.record("Could not locate \(label) in QuickstartView.swift")
+                return nil
+            }
+            return range
+        }
+        guard
+            let body = locate("varbody:someView{", label: "the root body"),
+            let content = locate("privatevarcontent:someView{", label: "the content router"),
+            let baseline = locate(
+                ".onAppear{coordinator.applyDefaultChoice(hardware:hardware,catalog:catalogLoaded?cachedModels:[])",
+                label: "the synchronous starter baseline"
+            ),
+            let policyTask = locate(
+                ".task(id:StarterSelectionKey(",
+                label: "the live starter-policy task"
+            ),
+            let chooser = locate(
+                "privatevarchooseModelStep:someView{",
+                label: "the model chooser"
+            ),
+            let actionBoundary = locate(
+                "privatefuncadvanceToModelChoice(){ifcatalogLoaded{coordinator.settleDefaultChoice(hardware:hardware,catalog:cachedModels)}else{coordinator.applyDefaultChoice(hardware:hardware,catalog:[])}coordinator.advanceToChooseModel()}",
+                label: "the Get Started policy refresh"
+            ),
+            let skipRefresh = locate(
+                "privatefuncskipForNow(){coordinator.applyDefaultChoice(hardware:hardware,catalog:catalogLoaded?cachedModels:[])onSkip()}",
+                label: "the Skip policy refresh"
+            )
+        else { return }
 
         #expect(baseline.lowerBound > body.lowerBound)
         #expect(baseline.lowerBound < content.lowerBound,

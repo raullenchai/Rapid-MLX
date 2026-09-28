@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import Rapid
 
-@Suite("Memory-load confirmation request isolation (#1463)")
+@Suite("ServerManager memory-load confirmation request isolation (#1463)")
 struct MemoryLoadConfirmationQueueTests {
     private func warning(_ alias: String) -> ModelSizing.MemoryWarning {
         ModelSizing.MemoryWarning(
@@ -327,5 +327,51 @@ struct MemoryLoadConfirmationQueueTests {
         queue.restoreAwaiting(warningID: original.id)
         #expect(queue.currentWarning == checked)
         #expect(queue.takeDecision(for: request) == nil)
+    }
+
+    @Test("Load anyway carries the onboarding attempt through to engine ready")
+    func confirmedLoadCarriesOnboardingAttemptToReady() throws {
+        let flowToken = DesktopFunnelReporter.FlowToken(id: UUID())
+        let gate = DesktopFunnelEngineAttemptGate()
+        let attemptToken = gate.arm(alias: "starter", flowToken: flowToken)
+        let original = warning("starter")
+        let queue = MemoryLoadConfirmationQueue()
+        queue.enqueue(
+            warning: original,
+            requestID: nil,
+            onboardingEngineAttemptToken: attemptToken
+        )
+
+        gate.retain(token: attemptToken)
+        gate.disarm(token: attemptToken)
+        #expect(queue.beginChecking(warningID: original.id))
+        let confirmed = try #require(queue.confirmChecking(
+            warningID: original.id,
+            sequence: 1
+        ))
+        #expect(confirmed.id == original.id)
+        #expect(queue.onboardingEngineAttemptToken(warningID: original.id) == attemptToken)
+        #expect(gate.consume(milestone: .engineReady, alias: "starter") == flowToken)
+        queue.completeConfirmedLaunch(warningID: original.id)
+    }
+
+    @Test("Cancelling a guarded onboarding load releases its engine attempt")
+    func cancelledLoadReleasesOnboardingAttempt() {
+        let flowToken = DesktopFunnelReporter.FlowToken(id: UUID())
+        let gate = DesktopFunnelEngineAttemptGate()
+        let attemptToken = gate.arm(alias: "starter", flowToken: flowToken)
+        let original = warning("starter")
+        let queue = MemoryLoadConfirmationQueue()
+        queue.enqueue(
+            warning: original,
+            requestID: nil,
+            onboardingEngineAttemptToken: attemptToken
+        )
+
+        gate.retain(token: attemptToken)
+        gate.disarm(token: attemptToken)
+        #expect(queue.resolveCurrent(warning: original, decision: .cancelled))
+        gate.release(token: attemptToken)
+        #expect(gate.consume(milestone: .engineStartFailed, alias: "starter") == nil)
     }
 }

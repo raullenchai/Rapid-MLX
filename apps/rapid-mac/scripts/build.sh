@@ -215,6 +215,14 @@ cp "$ROOT/.build/$CONFIG/Rapid" "$CONTENTS/MacOS/Rapid"
 cp "$ROOT/Resources/Info.plist" "$CONTENTS/Info.plist"
 cp "$ROOT/Resources/AppIcon.icns" "$CONTENTS/Resources/AppIcon.icns"
 
+# Only the canonical public-release lane may enable the anonymous first-run
+# funnel. This exact packaged Info.plist bit survives app launch; build-process
+# environment variables do not. The helper also removes the bit for the normal
+# local/ad-hoc path so copying a previously stamped plist can never authorize it.
+bash "$ROOT/scripts/configure-desktop-funnel-build.sh" \
+    "$CONTENTS/Info.plist" "${RAPID_MLX_OFFICIAL_RELEASE:-0}" \
+    "${CODESIGN_IDENTITY:--}" "${APPLE_TEAM_ID:-}"
+
 # Candidate builds keep the release/Sparkle version fields byte-for-byte
 # identical to source. A separate, validated identity lets About and tester
 # filenames expose the exact source without making CFBundleVersion non-numeric.
