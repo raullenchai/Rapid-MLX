@@ -28,8 +28,10 @@ sidecar packaging, observation API, or low-level action API.
   selection. A generation token prevents older concurrent responses from
   replacing newer discovery state.
 - Run creation accepts success only when the response repeats the requested
-  `window_id`. A missing or different identity triggers an immediate cancel; the
-  UI clears the selection and reports whether cancellation could be confirmed.
+  `window_id`. A missing or different identity triggers an immediate cancel. If cancellation
+  cannot be confirmed, the UI retains the created run ID in a quarantined busy
+  state, keeps only Stop available, and preserves a strong execution warning
+  across polling and repeated cancellation failures.
 - Typed stale-window failures during creation or execution clear the window and
   tell the user to refresh and choose again. Structured discovery 404 responses
   preserve `code`, `message`, and recovery guidance, so a missing process or
@@ -60,7 +62,7 @@ Harbor, Echo, and firefighter completion FYIs when messaging is available.
 ## Verification
 
 - `swift test --disable-sandbox --filter CUA`
-- 39 tests passed in the feature worktree and again in a temporary combined
+- 41 tests passed in the feature worktree and again in a temporary combined
   server-selection/observation plus GUI tree. The added contract regressions use
   real JSON for typed discovery errors and verify mismatch/missing create
   responses cancel the created run.

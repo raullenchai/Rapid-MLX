@@ -226,7 +226,9 @@ struct CUARunRequest: Codable, Equatable, Sendable {
 enum CUAClientError: LocalizedError, Equatable {
     case http(Int, String)
     case typedHTTP(Int, code: String, message: String, recovery: [String])
-    case windowBinding(expected: String, actual: String?, cancellationFailed: Bool)
+    case windowBinding(
+        expected: String, actual: String?, runID: String, cancellationFailed: Bool
+    )
 
     var errorDescription: String? {
         switch self {
@@ -235,7 +237,7 @@ enum CUAClientError: LocalizedError, Equatable {
         case let .typedHTTP(code, errorCode, message, recovery):
             let hint = recovery.first.map { " \($0)" } ?? ""
             return "CUA request failed (HTTP \(code), \(errorCode)): \(message)\(hint)"
-        case let .windowBinding(expected, actual, cancellationFailed):
+        case let .windowBinding(expected, actual, _, cancellationFailed):
             let received = actual.map { "'\($0)'" } ?? "no window identity"
             let stop = cancellationFailed
                 ? " Rapid could not confirm that the rejected run stopped. Stop the local server before retrying."
@@ -334,6 +336,7 @@ struct CUAClient: CUAAPI, Sendable {
             throw CUAClientError.windowBinding(
                 expected: request.windowID,
                 actual: created.windowID,
+                runID: created.runID,
                 cancellationFailed: cancellationFailed
             )
         }

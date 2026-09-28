@@ -532,6 +532,43 @@ struct CUAViewModelTests {
         #expect(message.contains("Refresh the window list"))
     }
 
+    @Test("Failed binding cleanup keeps only Stop available for the created run")
+    func failedBindingCleanupIsRetryable() async {
+        let api = MockAgentAPI()
+        api.createError = CUAClientError.windowBinding(
+            expected: "cg:123", actual: nil, runID: "unsafe", cancellationFailed: true
+        )
+        api.eventsShouldFail = true
+        let viewModel = CUAViewModel(api: api, pollIntervalNanos: 5_000_000)
+        viewModel.goal = "continue"
+        selectTarget(viewModel)
+
+        await viewModel.start()
+
+        #expect(viewModel.phase == .running)
+        #expect(viewModel.phase.isBusy)
+        #expect(viewModel.selectedWindowID == nil)
+        #expect(!viewModel.canApprove)
+        #expect(viewModel.actionError?.contains("may still be executing") == true)
+
+        try? await Task.sleep(nanoseconds: 10_000_000)
+        api.eventsShouldFail = false
+        try? await Task.sleep(nanoseconds: 15_000_000)
+        #expect(viewModel.actionError?.contains("may still be executing") == true)
+
+        api.cancelShouldFail = true
+        await viewModel.cancel()
+        #expect(api.cancelCalls == 1)
+        #expect(viewModel.phase.isBusy)
+        #expect(viewModel.actionError?.contains("may still be executing") == true)
+        #expect(viewModel.actionError?.contains("Try Stop again") == true)
+
+        api.cancelShouldFail = false
+        await viewModel.cancel()
+        #expect(api.cancelCalls == 2)
+        #expect(viewModel.phase == .idle)
+    }
+
     @Test("Permission readiness comes from the executor API")
     func executorPermissionReadiness() async {
         let api = MockAgentAPI()
@@ -684,12 +721,41 @@ struct CUAClientTests {
             } catch let error as CUAClientError {
                 #expect(
                     error == .windowBinding(
-                        expected: "cg:123", actual: actual, cancellationFailed: false
+                        expected: "cg:123", actual: actual, runID: "unsafe",
+                        cancellationFailed: false
                     )
                 )
             }
             #expect(RecordingURLProtocol.captured["/v1/cua/runs/unsafe/cancel"] != nil)
         }
+    }
+
+    @Test("Create preserves the run identity when binding cleanup fails")
+    func failedBindingCancellationPreservesRunID() async throws {
+        RecordingURLProtocol.stubResponse(
+            path: "/v1/cua/runs",
+            body: Data(#"{"run_id":"unsafe","status":"running"}"#.utf8)
+        )
+        RecordingURLProtocol.stubResponse(
+            path: "/v1/cua/runs/unsafe/cancel", status: 503
+        )
+        let request = CUARunRequest(
+            app: "pid:42", goal: "g", planner: "local-9b", openURL: "",
+            allowedDomain: "", maxSteps: 8, humanLogin: true, windowID: "cg:123"
+        )
+
+        do {
+            _ = try await makeClient().create(request)
+            Issue.record("expected binding rejection")
+        } catch let error as CUAClientError {
+            #expect(
+                error == .windowBinding(
+                    expected: "cg:123", actual: nil, runID: "unsafe",
+                    cancellationFailed: true
+                )
+            )
+        }
+        #expect(RecordingURLProtocol.captured["/v1/cua/runs/unsafe/cancel"] != nil)
     }
 
     @Test("Discovery decodes bundle_id and URL-encodes the PID selector")

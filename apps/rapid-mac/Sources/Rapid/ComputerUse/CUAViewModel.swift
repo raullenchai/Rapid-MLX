@@ -106,6 +106,10 @@ final class CUAViewModel: ObservableObject {
     private var showingPollError = false
     private let pollIntervalNanos: UInt64
     private var targetDiscoveryGeneration = 0
+    private var requiresBindingCleanup = false
+
+    private static let bindingCleanupWarning =
+        "Warning: this unverified task may still be executing. Stop it immediately before retrying."
 
     init(api: CUAAPI?, pollIntervalNanos: UInt64 = 700_000_000) {
         self.api = api ?? NullCUAAPI()
@@ -137,6 +141,7 @@ final class CUAViewModel: ObservableObject {
 
     var canApprove: Bool {
         phase == .awaitingApproval && pendingApproval?.gateID != nil
+            && !requiresBindingCleanup
     }
 
     var activeProgress: CUAProgressPresentation? {
@@ -354,6 +359,7 @@ final class CUAViewModel: ObservableObject {
         pendingApproval = nil
         actionError = nil
         showingPollError = false
+        requiresBindingCleanup = false
         stopPolling()
         runID = nil
         let request = CUARunRequest(
@@ -369,11 +375,23 @@ final class CUAViewModel: ObservableObject {
         do {
             runID = try await api.create(request)
         } catch {
-            let bindingFailure: Bool
-            if case CUAClientError.windowBinding = error {
-                bindingFailure = true
-            } else {
-                bindingFailure = false
+            if case let CUAClientError.windowBinding(
+                _, _, createdRunID, cancellationFailed
+            ) = error {
+                selectedWindowID = nil
+                if cancellationFailed {
+                    runID = createdRunID
+                    requiresBindingCleanup = true
+                    actionError = Self.bindingCleanupWarning
+                    phase = .running
+                    pollTask = Task { [weak self] in
+                        await self?.pollUntilTerminal()
+                    }
+                    _ = pollTask
+                } else {
+                    phase = .failed(message: Self.describe(error))
+                }
+                return
             }
             let typedTargetFailure: Bool
             if case let CUAClientError.typedHTTP(_, code, message, _) = error {
@@ -387,7 +405,7 @@ final class CUAViewModel: ObservableObject {
             } else {
                 typedTargetFailure = false
             }
-            if bindingFailure || typedTargetFailure {
+            if typedTargetFailure {
                 selectedWindowID = nil
                 var message = Self.describe(error)
                 if !message.localizedCaseInsensitiveContains("refresh") {
@@ -436,11 +454,14 @@ final class CUAViewModel: ObservableObject {
             pendingApproval = nil
             actionError = nil
             showingPollError = false
+            requiresBindingCleanup = false
             phase = .idle
         } catch {
             // Preserve the Stop control. A failed request must not make an
             // active run appear cancelled locally.
-            actionError = "Stop failed: \(Self.describe(error))"
+            actionError = requiresBindingCleanup
+                ? "\(Self.bindingCleanupWarning) Stop failed: \(Self.describe(error)) Try Stop again."
+                : "Stop failed: \(Self.describe(error))"
             showingPollError = false
         }
     }
@@ -457,7 +478,7 @@ final class CUAViewModel: ObservableObject {
             do {
                 let view = try await api.events(runID: runID, after: lastSeq)
                 if showingPollError {
-                    actionError = nil
+                    actionError = requiresBindingCleanup ? Self.bindingCleanupWarning : nil
                     showingPollError = false
                 }
                 if !view.events.isEmpty {
@@ -578,7 +599,9 @@ final class CUAViewModel: ObservableObject {
                 // A transient polling failure does not stop the server run.
                 // Keep Stop available and retry instead of presenting a
                 // terminal local state while automation continues unseen.
-                actionError = "Connection interrupted: \(Self.describe(error))"
+                actionError = requiresBindingCleanup
+                    ? Self.bindingCleanupWarning
+                    : "Connection interrupted: \(Self.describe(error))"
                 showingPollError = true
             }
             try? await Task.sleep(nanoseconds: pollIntervalNanos)
