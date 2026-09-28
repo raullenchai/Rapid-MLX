@@ -2190,13 +2190,8 @@ def test_responses_strict_true_guided_unavailable_default_on_invalid_returns_422
 def test_strict_helper_composition_extract_returns_none_for_empty_schema():
     """Unit-level pin on the ``strict_mode AND no schema`` shape.
 
-    Codex r4 BLOCKING #3 (rewording fix): this test never claimed
-    to exercise the route gate; it pins the helper composition that
-    the gate depends on. The route gate IS exercised by
-    ``test_strict_true_with_tools_returns_400_chat`` and
-    ``test_responses_strict_true_with_tools_returns_400`` — both
-    make real requests and assert the 400 envelope. The defense-
-    in-depth ``strict_schema_required`` 400 in the route is
+    This test pins the helper composition that the route's malformed-schema
+    gate depends on. The defense-in-depth ``strict_schema_required`` 400 is
     pre-empted in production by ``_validate_response_format`` at
     body-parse time, but this test still earns its keep by pinning
     the helper invariant the gate relies on (a refactor that lets

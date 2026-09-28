@@ -1151,10 +1151,9 @@ async def create_response(request: Request):
                 # R12-4: pre-R12-4 this branch raised 400
                 # ``guided_extra_required``. The new path falls
                 # through to post-generate validation + repair retry
-                # below (mirrored from chat.py). The
-                # ``strict_stream_unsupported`` gate above already
-                # rejects streaming on this surface, so we know we
-                # are about to take the non-stream branch. The
+                # below (mirrored from chat.py). Strict streams also
+                # take this buffered path before their validated result
+                # is replayed through the normal SSE event ladder. The
                 # disable flag ``RAPID_MLX_STRICT_JSON_SCHEMA=off``
                 # restores the legacy silent-pass-through behavior.
                 if not strict_enforcement_enabled():
@@ -1265,10 +1264,9 @@ async def create_response(request: Request):
         # thinking preference. Same shape as R12-M2 above but the
         # trigger is "tools provided" instead of "strict json_schema",
         # so this branch lives OUTSIDE the ``if is_strict_json_schema``
-        # block (strict + tools is mutually exclusive on /v1/responses
-        # and returns 400 above, so the two branches never both fire —
-        # but the shared helper keeps the merge contract identical
-        # across both auto-disable triggers). Default-on thinking
+        # block. On strict + tools requests the two auto-disable triggers
+        # intentionally compose through the same idempotent merge helper.
+        # Default-on thinking
         # routinely exhausts the agent-SDK ``max_output_tokens=50..100``
         # budget inside ``<think>...</think>`` before emitting the
         # ``<tool_call>`` envelope, so the tool never fires
@@ -5135,13 +5133,9 @@ async def _stream_responses(
                 completed_output.append(fc_done_item)
             tool_output_index += 1
 
-        # H-06 (codex r2): the streaming /v1/responses path is
-        # unreachable for strict=true requests — the entry-point
-        # gate above 400s them as ``strict_stream_unsupported``
-        # because constrained decoding here is buffered-only. So no
-        # post-decode validation is needed in the stream loop;
-        # belt-and-braces validation runs in the non-stream path
-        # where the buffered output is available.
+        # Strict requests do not reach this live engine stream loop: they
+        # use the buffered validation/repair path, then replay its result
+        # through the normal Responses SSE event ladder.
 
         # r6-A R6-C2: streaming-path mirror of the non-stream
         # degenerate-output guard. When the stream emits no user-visible

@@ -382,23 +382,17 @@ class TestHelperGateDecisionMatchesResolvedThinking:
     always rendered with the template default — a request whose
     auto-disabled render would fit got rejected anyway."""
 
-    def test_enforce_rejects_when_rendered_with_thinking_on(self):
-        """Sanity that the test engine's tight cap actually trips: a
-        request that renders to 600 chars (=150 tokens) + 80 max_tokens
-        exceeds the 200-token cap. This is the pre-fix surface
-        (helper rendered with the default → think-on long prompt)."""
-        from fastapi import HTTPException
-
+    def test_enforce_accepts_fitting_prompt_when_completion_needs_clamp(self):
+        """The helper returns the prompt count routes reuse for clamping."""
         engine = _ThinkingTemplateEngine()
-        with pytest.raises(HTTPException) as exc:
-            enforce_context_length_for_messages(
-                engine,
-                [{"role": "user", "content": "hi"}],
-                tools=None,
-                max_tokens=80,
-                enable_thinking=None,  # pre-fix behaviour
-            )
-        assert exc.value.status_code == 400
+        result = enforce_context_length_for_messages(
+            engine,
+            [{"role": "user", "content": "hi"}],
+            tools=None,
+            max_tokens=80,
+            enable_thinking=None,
+        )
+        assert result == 150
 
     def test_enforce_accepts_when_rendered_with_thinking_off(self):
         """The fix: with the auto-disable resolved value threaded

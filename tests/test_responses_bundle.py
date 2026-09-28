@@ -14,6 +14,7 @@ no MLX import — so the tests stay fast and CI-portable.
 import json
 import sys
 import types
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
@@ -135,8 +136,14 @@ def _install_lightweight_engine_modules(monkeypatch):
     base_mod.BaseEngine = _BaseEngine
     base_mod.GenerationOutput = _GenerationOutput
 
+    batched_mod = types.ModuleType("rapid_mlx.engine.batched")
+    batched_mod._admission_engine_context = ContextVar(
+        "test_admission_engine_context", default=None
+    )
+
     monkeypatch.setitem(sys.modules, "rapid_mlx.engine", engine_pkg)
     monkeypatch.setitem(sys.modules, "rapid_mlx.engine.base", base_mod)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.engine.batched", batched_mod)
 
 
 _IMPORTED_UNDER_LIGHTWEIGHT_ENGINE = (
@@ -144,6 +151,7 @@ _IMPORTED_UNDER_LIGHTWEIGHT_ENGINE = (
     "rapid_mlx.config.server_config",
     "rapid_mlx.engine",
     "rapid_mlx.engine.base",
+    "rapid_mlx.engine.batched",
     "rapid_mlx.middleware.auth",
     "rapid_mlx.service.helpers",
     "rapid_mlx.routes.responses",
@@ -153,6 +161,7 @@ _PARENT_ATTRS_UNDER_LIGHTWEIGHT_ENGINE = (
     ("rapid_mlx", "engine"),
     ("rapid_mlx.config", "server_config"),
     ("rapid_mlx.engine", "base"),
+    ("rapid_mlx.engine", "batched"),
     ("rapid_mlx.middleware", "auth"),
     ("rapid_mlx.service", "helpers"),
     ("rapid_mlx.routes", "responses"),
@@ -279,7 +288,9 @@ def _parse_sse(body: str) -> list[tuple[str, dict]]:
     return events
 
 
-def test_strict_stream_rejection_emits_capability(monkeypatch, make_responses_client):
+def test_strict_stream_returns_normal_sse_without_capability_rejection(
+    monkeypatch, make_responses_client
+):
     from rapid_mlx.telemetry import inference
 
     calls: list[tuple[str, str]] = []
@@ -290,7 +301,7 @@ def test_strict_stream_rejection_emits_capability(monkeypatch, make_responses_cl
             (capability, model_type)
         ),
     )
-    state = make_responses_client()
+    state = make_responses_client(text='{"answer":"ok"}')
     response = state.client.post(
         "/v1/responses",
         headers=_AUTH,
@@ -312,9 +323,16 @@ def test_strict_stream_rejection_emits_capability(monkeypatch, make_responses_cl
         ),
     )
 
-    assert response.status_code == 400
-    assert response.json()["error"]["code"] == "strict_stream_unsupported"
-    assert calls == [("structured_output_unsupported", "llm")]
+    assert response.status_code == 200, response.text
+    events = _parse_sse(response.text)
+    assert events[0][0] == "response.created"
+    assert events[-1][0] == "response.completed"
+    assert "".join(
+        payload["delta"]
+        for event, payload in events
+        if event == "response.output_text.delta"
+    ) == '{"answer":"ok"}'
+    assert calls == []
 
 
 # ---------------------------------------------------------------------------
