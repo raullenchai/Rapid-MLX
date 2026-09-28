@@ -11,3 +11,4 @@
 - Verification: focused CLI tests, CUA server suite, Ruff, diff check, and a real Python 3.12 subprocess smoke covering readiness, unauthenticated 401, authenticated capabilities, and no model startup message.
 - Follow-ups: a separate backend PR must correct system overlay handling in topmost-window occlusion checks. A later grounding PR should include unlabeled editable controls and address bounded AX tree truncation.
 - FYI: team messaging outside the active task channel was unavailable; equivalent scope/status was recorded here and coordinated directly with Atlas and Pixel.
+- Draft PR: https://github.com/raullenchai/Rapid-MLX/pull/3848 (stacked on `vector/cua-idempotent-create`; not Ready and not merged).
