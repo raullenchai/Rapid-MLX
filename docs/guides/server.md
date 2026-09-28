@@ -151,6 +151,7 @@ are marked; multimodal and MCP surfaces link to their own guides.
 | `/v1/cua/apps/{app}/windows` | GET | Authenticated window discovery for an app |
 | `/v1/cua/observations` | POST | Fresh, authenticated observation of an exact app process and window |
 | `/v1/cua/runs` | GET/POST | List or create supervised high-level computer-use runs |
+| `/v1/cua/runs/by-request/{id}` | GET | Recover a run created with a client request ID |
 | `/v1/cua/runs/{id}` | GET | Poll typed events, terminal state, and any pending approval gate |
 | `/v1/cua/runs/{id}/approval` | POST | Resolve the current gate with `{"gate_id": "...", "approved": true|false}` |
 | `/v1/cua/runs/{id}/cancel` | POST | Cancel a run |
@@ -178,6 +179,7 @@ curl -X POST http://127.0.0.1:8000/v1/cua/runs \
   -d '{
     "app": "Safari",
     "window_id": "cg:12345",
+    "client_request_id": "desktop-018f5d2a",
     "goal": "Open the account settings",
     "allowed_domain": "example.com"
   }'
@@ -187,6 +189,29 @@ The server validates that the window belongs to the resolved app process before
 accepting the run, freezes the canonical ID, and returns `window_id` in create,
 list, run-view, and event-poll responses. Keep the ID opaque and rediscover
 windows before retrying a stopped run.
+
+Clients that must recover from a lost create response should send a unique,
+opaque `client_request_id` of at most 128 characters. It must be one URL path
+segment and cannot contain `/`. The `202` response echoes that ID. Repeating the
+same normalized request with the same ID returns the
+original `run_id` and does not start another task. Reusing the ID with a
+different request returns `409` with code `request_identity_conflict`.
+
+After a timeout, disconnect, or undecodable response, recover the accepted run
+before allowing another Start action:
+
+```bash
+curl http://127.0.0.1:8000/v1/cua/runs/by-request/desktop-018f5d2a \
+  -H "Authorization: Bearer $RAPID_MLX_API_KEY"
+```
+
+The lookup returns the create-response shape (`run_id`, current `status`,
+`window_id`, and `client_request_id`). An unknown or expired ID returns typed
+`404` code `request_identity_not_found`. Request IDs and runs are held only in
+the server process, expire together under the 100-run retention limit, and do
+not survive a server restart. An ID no longer present in that registry has no
+continuing idempotency guarantee; generate a new ID only when starting a new
+task.
 
 Selected-window runs fail closed if the app identity changes or the window is
 closed, replaced, moved, or resized. They also stop if the planned control

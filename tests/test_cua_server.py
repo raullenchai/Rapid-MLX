@@ -7,6 +7,7 @@ loop are stubbed so no computer access or HTTP planner calls happen.
 from __future__ import annotations
 
 import asyncio
+import threading
 
 import pytest
 from fastapi import FastAPI
@@ -154,6 +155,7 @@ def test_cua_routes_fail_closed_without_server_api_key(client, api_key):
         ("post", "/v1/cua/planners"),
         ("delete", "/v1/cua/planners/custom"),
         ("get", "/v1/cua/runs"),
+        ("get", "/v1/cua/runs/by-request/unknown"),
         ("post", "/v1/cua/runs"),
         ("get", "/v1/cua/runs/unknown"),
         ("get", "/v1/cua/runs/unknown/events"),
@@ -193,6 +195,7 @@ def test_discovery_contract(client):
         "screenshot_observation": False,
         "observation_without_activation": cua_routes.sys.platform == "darwin",
         "approval_gate_id": True,
+        "idempotent_run_create": True,
     }
 
     permissions = client.get("/v1/cua/permissions", headers=AUTH)
@@ -245,6 +248,60 @@ def test_create_run_freezes_selected_window_and_rejects_open_url(client, monkeyp
     rejected = _post_run(client, window_id="cg:123", open_url="https://example.com")
     assert rejected.status_code == 400
     assert "cannot be used" in rejected.json()["detail"]
+
+
+def test_idempotent_create_replays_one_run_and_lookup_is_authenticated(client):
+    request_id = "desktop%launch:42"
+    first = _post_run(client, client_request_id=request_id)
+    replay = _post_run(
+        client,
+        app="  Google Chrome  ",
+        goal="  open the article  ",
+        client_request_id=request_id,
+    )
+
+    assert first.status_code == replay.status_code == 202
+    assert first.json()["run_id"] == replay.json()["run_id"]
+    assert replay.json()["status"] in {"running", "completed"}
+    assert first.json()["client_request_id"] == request_id
+    assert len(client.fresh_service._runs) == 1
+
+    path = "/v1/cua/runs/by-request/desktop%25launch%3A42"
+    assert client.get(path).status_code == 401
+    recovered = client.get(path, headers=AUTH)
+    assert recovered.status_code == 200
+    assert recovered.json()["run_id"] == first.json()["run_id"]
+    assert recovered.json()["client_request_id"] == request_id
+
+
+def test_request_identity_conflict_and_typed_lookup_miss(client):
+    created = _post_run(client, client_request_id="same-id")
+    assert created.status_code == 202
+
+    conflict = _post_run(client, client_request_id="same-id", goal="a different task")
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"]["code"] == "request_identity_conflict"
+    assert len(client.fresh_service._runs) == 1
+
+    missing = client.get("/v1/cua/runs/by-request/missing", headers=AUTH)
+    assert missing.status_code == 404
+    assert missing.json()["detail"]["code"] == "request_identity_not_found"
+
+    too_long = _post_run(client, client_request_id="x" * 129)
+    assert too_long.status_code == 422
+
+
+def test_request_identity_is_one_url_path_segment(client):
+    rejected = _post_run(client, client_request_id="desktop/run-1")
+    assert rejected.status_code == 422
+    assert client.fresh_service.list_runs() == []
+
+    # Starlette decodes %2F before matching route segments. Neither an encoded
+    # nor a literal slash may enter the by-request handler.
+    encoded = client.get("/v1/cua/runs/by-request/desktop%2Frun-1", headers=AUTH)
+    literal = client.get("/v1/cua/runs/by-request/desktop/run-1", headers=AUTH)
+    assert encoded.status_code == 404
+    assert literal.status_code == 404
 
 
 def test_planner_crud_roundtrip(client):
@@ -743,6 +800,240 @@ def test_cancel_interrupts_active_background_task(client, monkeypatch):
     assert run.final_summary == "cancelled by client"
     assert run.run_id not in service._tasks
     assert [event["kind"] for event in run.events].count("terminal") == 1
+
+
+def test_create_lock_serializes_validation_and_starts_one_task(client, monkeypatch):
+    from rapid_mlx.computer_use import backend as backend_mod
+
+    service = client.fresh_service
+    validation_started = threading.Event()
+    release_validation = threading.Event()
+    loop_started = 0
+
+    def delayed_validate(app, window_id):
+        validation_started.set()
+        assert release_validation.wait(timeout=5)
+        return {
+            "app": {"name": app, "pid": 42},
+            "window_id": window_id,
+            "window": {"window_id": window_id, "index": 0},
+        }
+
+    async def blocked_run(*args, **kwargs):
+        nonlocal loop_started
+        loop_started += 1
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(backend_mod, "validate_window", delayed_validate)
+    monkeypatch.setattr(cua_service, "run_loop", blocked_run)
+
+    async def scenario():
+        first = asyncio.create_task(
+            service.create(
+                app="pid:42",
+                goal="first",
+                planner="local-9b",
+                window_id="cg:1",
+                client_request_id="request-a",
+            )
+        )
+        assert await asyncio.to_thread(validation_started.wait, 5)
+        second = asyncio.create_task(
+            service.create(
+                app="pid:42",
+                goal="second",
+                planner="local-9b",
+                window_id="cg:2",
+                client_request_id="request-b",
+            )
+        )
+        await asyncio.sleep(0.01)
+        release_validation.set()
+        run = await first
+        with pytest.raises(cua_service.CUARunConflictError):
+            await second
+        await asyncio.sleep(0)
+        assert len(service._tasks) == 1
+        assert loop_started == 1
+        service.cancel(run.run_id)
+        await asyncio.sleep(0)
+
+    asyncio.run(scenario())
+
+
+def test_concurrent_same_identity_validates_and_starts_once(client, monkeypatch):
+    from rapid_mlx.computer_use import backend as backend_mod
+
+    service = client.fresh_service
+    validation_started = threading.Event()
+    release_validation = threading.Event()
+    validation_calls = 0
+    loop_started = 0
+
+    def delayed_validate(app, window_id):
+        nonlocal validation_calls
+        validation_calls += 1
+        validation_started.set()
+        assert release_validation.wait(timeout=5)
+        return {
+            "app": {"name": app, "pid": 42},
+            "window_id": window_id,
+            "window": {"window_id": window_id, "index": 0},
+        }
+
+    async def blocked_run(*args, **kwargs):
+        nonlocal loop_started
+        loop_started += 1
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(backend_mod, "validate_window", delayed_validate)
+    monkeypatch.setattr(cua_service, "run_loop", blocked_run)
+
+    async def scenario():
+        kwargs = {
+            "app": "pid:42",
+            "goal": "same task",
+            "planner": "local-9b",
+            "window_id": "cg:1",
+            "client_request_id": "same-concurrent-request",
+        }
+        first = asyncio.create_task(service.create(**kwargs))
+        assert await asyncio.to_thread(validation_started.wait, 5)
+        replay = asyncio.create_task(service.create(**kwargs))
+        await asyncio.sleep(0.01)
+        release_validation.set()
+        first_run, replayed_run = await asyncio.gather(first, replay)
+        await asyncio.sleep(0)
+        assert replayed_run is first_run
+        assert validation_calls == 1
+        assert loop_started == 1
+        service.cancel(first_run.run_id)
+        await asyncio.sleep(0)
+
+    asyncio.run(scenario())
+
+
+def test_cancelled_create_before_commit_leaves_no_identity_or_task(client, monkeypatch):
+    from rapid_mlx.computer_use import backend as backend_mod
+
+    service = client.fresh_service
+    validation_started = threading.Event()
+    release_validation = threading.Event()
+
+    def delayed_validate(app, window_id):
+        validation_started.set()
+        assert release_validation.wait(timeout=5)
+        return {
+            "app": {"name": app, "pid": 42},
+            "window_id": window_id,
+            "window": {"window_id": window_id, "index": 0},
+        }
+
+    monkeypatch.setattr(backend_mod, "validate_window", delayed_validate)
+
+    async def scenario():
+        create = asyncio.create_task(
+            service.create(
+                app="pid:42",
+                goal="cancel before commit",
+                planner="local-9b",
+                window_id="cg:1",
+                client_request_id="cancelled-before-commit",
+            )
+        )
+        assert await asyncio.to_thread(validation_started.wait, 5)
+        create.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await create
+        release_validation.set()
+        await asyncio.sleep(0.01)
+
+    asyncio.run(scenario())
+    assert service._runs == {}
+    assert service._tasks == {}
+    with pytest.raises(cua_service.CUARequestIdentityNotFoundError):
+        service.get_by_request_id("cancelled-before-commit")
+
+
+def test_response_loss_after_commit_is_recoverable_without_second_task(
+    client, monkeypatch
+):
+    service = client.fresh_service
+    loop_started = 0
+
+    async def blocked_run(*args, **kwargs):
+        nonlocal loop_started
+        loop_started += 1
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(cua_service, "run_loop", blocked_run)
+
+    async def scenario():
+        committed = asyncio.Event()
+
+        async def handler_that_loses_response():
+            run = await service.create(
+                app="Chrome",
+                goal="recover me",
+                planner="local-9b",
+                client_request_id="response-lost",
+            )
+            committed.set()
+            await asyncio.Event().wait()
+            return run
+
+        handler = asyncio.create_task(handler_that_loses_response())
+        await committed.wait()
+        handler.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await handler
+        recovered = service.get_by_request_id("response-lost")
+        replay = await service.create(
+            app="Chrome",
+            goal="recover me",
+            planner="local-9b",
+            client_request_id="response-lost",
+        )
+        assert replay is recovered
+        assert loop_started == 1
+        service.cancel(recovered.run_id)
+        await asyncio.sleep(0)
+
+    asyncio.run(scenario())
+
+
+def test_request_identity_retention_matches_run_retention(client, monkeypatch):
+    service = client.fresh_service
+    monkeypatch.setattr(cua_service, "MAX_RETAINED_RUNS", 1)
+
+    async def completed_run(*args, **kwargs):
+        return {"status": "done", "final_summary": "done"}
+
+    monkeypatch.setattr(cua_service, "run_loop", completed_run)
+
+    async def scenario():
+        first = await service.create(
+            app="Chrome",
+            goal="first",
+            planner="local-9b",
+            client_request_id="retained-first",
+        )
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert service.get_by_request_id("retained-first") is first
+
+        second = await service.create(
+            app="Chrome",
+            goal="second",
+            planner="local-9b",
+            client_request_id="retained-second",
+        )
+        assert service.get_by_request_id("retained-second") is second
+        with pytest.raises(cua_service.CUARequestIdentityNotFoundError):
+            service.get_by_request_id("retained-first")
+        await asyncio.sleep(0)
+
+    asyncio.run(scenario())
 
 
 def test_service_failure_pruning_and_shutdown(client, monkeypatch):

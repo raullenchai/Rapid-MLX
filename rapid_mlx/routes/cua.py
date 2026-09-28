@@ -14,7 +14,7 @@ import os
 import sys
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response, status
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
@@ -85,12 +85,16 @@ class CUARunCreateRequest(BaseModel):
     max_steps: int = Field(default=12, ge=1, le=40)
     human_login: bool = False
     window_id: str | None = Field(default=None, min_length=1, max_length=128)
+    client_request_id: str | None = Field(
+        default=None, min_length=1, max_length=128, pattern=r"^[^/]+$"
+    )
 
 
 class CUARunCreated(BaseModel):
     run_id: str
     status: str
     window_id: str | None = None
+    client_request_id: str | None = None
 
 
 class CUAEvent(BaseModel):
@@ -176,6 +180,7 @@ class CUACapabilityFeatures(BaseModel):
     screenshot_observation: bool = False
     observation_without_activation: bool = False
     approval_gate_id: bool = True
+    idempotent_run_create: bool = True
 
 
 class CUACapabilities(BaseModel):
@@ -287,6 +292,24 @@ def _http_error(exc: Exception) -> HTTPException:
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
     if isinstance(exc, cua_service.CUARunConflictError):
         return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    if isinstance(exc, cua_service.CUARequestIdentityConflictError):
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "request_identity_conflict",
+                "message": str(exc),
+                "recovery": [],
+            },
+        )
+    if isinstance(exc, cua_service.CUARequestIdentityNotFoundError):
+        return HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "code": "request_identity_not_found",
+                "message": str(exc),
+                "recovery": [],
+            },
+        )
     if isinstance(exc, cua_service.CUAGateMismatchError):
         return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     if isinstance(exc, cua_service.CUAGateDecisionConflictError):
@@ -576,15 +599,42 @@ async def create_run(request: CUARunCreateRequest) -> CUARunCreated:
             max_steps=request.max_steps,
             human_login=request.human_login,
             window_id=request.window_id,
+            client_request_id=request.client_request_id,
         )
-    except (ValueError, cua_service.CUARunConflictError, ComputerUseError) as exc:
+    except (
+        ValueError,
+        cua_service.CUARunConflictError,
+        cua_service.CUARequestIdentityConflictError,
+        ComputerUseError,
+    ) as exc:
         raise _http_error(exc) from exc
-    return CUARunCreated(run_id=run.run_id, status=run.status, window_id=run.window_id)
+    return CUARunCreated(
+        run_id=run.run_id,
+        status=run.status,
+        window_id=run.window_id,
+        client_request_id=run.client_request_id,
+    )
 
 
 @router.get("/runs", response_model=CUARunList)
 async def list_runs() -> CUARunList:
     return CUARunList(runs=_service().list_runs())
+
+
+@router.get("/runs/by-request/{client_request_id}", response_model=CUARunCreated)
+async def get_run_by_request(
+    client_request_id: str = Path(min_length=1, max_length=128, pattern=r"^[^/]+$"),
+) -> CUARunCreated:
+    try:
+        run = _service().get_by_request_id(client_request_id)
+    except cua_service.CUARequestIdentityNotFoundError as exc:
+        raise _http_error(exc) from exc
+    return CUARunCreated(
+        run_id=run.run_id,
+        status=run.status,
+        window_id=run.window_id,
+        client_request_id=run.client_request_id,
+    )
 
 
 @router.get("/runs/{run_id}", response_model=CUARunView)

@@ -13,6 +13,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
+from typing import NamedTuple
 from urllib.parse import urlparse
 
 from rapid_mlx.computer_use import backend
@@ -32,12 +33,33 @@ class CUARunNotFoundError(RuntimeError):
     pass
 
 
+class CUARequestIdentityConflictError(RuntimeError):
+    pass
+
+
+class CUARequestIdentityNotFoundError(RuntimeError):
+    pass
+
+
 class CUAGateMismatchError(RuntimeError):
     pass
 
 
 class CUAGateDecisionConflictError(RuntimeError):
     pass
+
+
+class _RunCreateIdentity(NamedTuple):
+    app: str
+    goal: str
+    planner: str
+    planner_model: str | None
+    planner_url: str | None
+    open_url: str
+    allowed_domain: str
+    max_steps: int
+    human_login: bool
+    window_id: str | None
 
 
 @dataclass
@@ -47,6 +69,7 @@ class CUAServiceRun:
     goal: str
     config: CUAConfig
     window_id: str | None = None
+    client_request_id: str | None = None
     status: str = "running"
     final_summary: str = ""
     error: str = ""
@@ -196,6 +219,8 @@ class CUAService:
     def __init__(self) -> None:
         self._runs: dict[str, CUAServiceRun] = {}
         self._tasks: dict[str, asyncio.Task] = {}
+        self._request_runs: dict[str, tuple[_RunCreateIdentity, str]] = {}
+        self._create_lock = asyncio.Lock()
         self._closing = False
 
     def list_runs(self) -> list[dict]:
@@ -217,6 +242,22 @@ class CUAService:
             raise CUARunNotFoundError(f"no such CUA run: {run_id}")
         return run
 
+    def get_by_request_id(self, client_request_id: str) -> CUAServiceRun:
+        entry = self._request_runs.get(client_request_id)
+        if entry is None:
+            raise CUARequestIdentityNotFoundError(
+                f"no CUA run for client request: {client_request_id}"
+            )
+        run = self._runs.get(entry[1])
+        if run is None:
+            # Keep both retention indexes coherent even if a caller mutates the
+            # registry in a test or future maintenance path.
+            self._request_runs.pop(client_request_id, None)
+            raise CUARequestIdentityNotFoundError(
+                f"no CUA run for client request: {client_request_id}"
+            )
+        return run
+
     async def create(
         self,
         app: str,
@@ -229,6 +270,7 @@ class CUAService:
         max_steps: int = 12,
         human_login: bool = False,
         window_id: str | None = None,
+        client_request_id: str | None = None,
     ) -> CUAServiceRun:
         if self._closing:
             raise CUARunConflictError("CUA service is shutting down")
@@ -245,16 +287,57 @@ class CUAService:
                 raise ValueError("open_url must be an absolute HTTP(S) URL")
         if window_id is not None and open_url:
             raise ValueError("open_url cannot be used with a selected window")
-        active_tasks = [task for task in self._tasks.values() if not task.done()]
-        active_runs = [
-            run
-            for run in self._runs.values()
-            if run.status in {"running", "awaiting_approval"}
-        ]
-        if active_tasks or len(active_runs) >= MAX_CONCURRENT_RUNS:
-            raise CUARunConflictError(
-                "another CUA run is active; cancel it before starting a new one"
-            )
+        identity = _RunCreateIdentity(
+            app=app,
+            goal=goal,
+            planner=planner,
+            planner_model=planner_model,
+            planner_url=planner_url,
+            open_url=open_url,
+            allowed_domain=allowed_domain,
+            max_steps=max_steps,
+            human_login=human_login,
+            window_id=window_id,
+        )
+        async with self._create_lock:
+            if client_request_id is not None:
+                previous = self._request_runs.get(client_request_id)
+                if previous is not None:
+                    if previous[0] != identity:
+                        raise CUARequestIdentityConflictError(
+                            "client_request_id was already used with a different request"
+                        )
+                    return self.get(previous[1])
+            active_tasks = [task for task in self._tasks.values() if not task.done()]
+            active_runs = [
+                run
+                for run in self._runs.values()
+                if run.status in {"running", "awaiting_approval"}
+            ]
+            if active_tasks or len(active_runs) >= MAX_CONCURRENT_RUNS:
+                raise CUARunConflictError(
+                    "another CUA run is active; cancel it before starting a new one"
+                )
+            return await self._create_locked(identity, client_request_id)
+
+    async def _create_locked(
+        self,
+        identity: _RunCreateIdentity,
+        client_request_id: str | None,
+    ) -> CUAServiceRun:
+        """Validate and commit one run while ``_create_lock`` is held."""
+        (
+            app,
+            goal,
+            planner,
+            planner_model,
+            planner_url,
+            open_url,
+            allowed_domain,
+            max_steps,
+            human_login,
+            window_id,
+        ) = identity
         try:
             planner_cfg: PlannerConfig = resolve_planner(
                 planner, url_override=planner_url, model_override=planner_model
@@ -283,6 +366,8 @@ class CUAService:
             selection = await asyncio.to_thread(backend.validate_window, app, window_id)
             selected_window_id = str(selection["window_id"])
             selected_app = dict(selection["app"])
+        if self._closing:
+            raise CUARunConflictError("CUA service is shutting down")
         run_id = uuid.uuid4().hex[:12]
         run = CUAServiceRun(
             run_id=run_id,
@@ -290,10 +375,13 @@ class CUAService:
             goal=goal,
             config=config,
             window_id=selected_window_id,
+            client_request_id=client_request_id,
         )
         run.run_dir = ""
         self._prune_runs()
         self._runs[run_id] = run
+        if client_request_id is not None:
+            self._request_runs[client_request_id] = (identity, run_id)
 
         task = asyncio.create_task(
             run_loop(
@@ -333,6 +421,10 @@ class CUAService:
             expired = terminal.pop(0)
             self._runs.pop(expired.run_id, None)
             self._tasks.pop(expired.run_id, None)
+            if expired.client_request_id is not None:
+                entry = self._request_runs.get(expired.client_request_id)
+                if entry is not None and entry[1] == expired.run_id:
+                    self._request_runs.pop(expired.client_request_id, None)
 
     @staticmethod
     def _has_terminal_event(run: CUAServiceRun) -> bool:
