@@ -12,4 +12,15 @@
 
 ## Current state
 
-The route dependency now fails closed when the server has no API key; configured servers reuse the existing bearer validator. The 126 focused CUA/computer-use tests and Ruff pass in the isolated checkout. Two full-server import tests were excluded because this sandbox lacks Metal. A review and PR handoff remain.
+The route dependency now fails closed when the server has no usable API key, including an empty key; configured servers reuse the existing bearer validator. The independent review found the empty-key case and it is covered by the regression test. Two full-server import tests were excluded because this sandbox lacks Metal.
+
+## PR-complete FYI (agent messaging unavailable)
+
+- Intended recipients: Atlas, Pixel, Vector, Echo.
+- PR: https://github.com/raullenchai/Rapid-MLX/pull/3824 (draft; review and CI in progress).
+- Outcome: `/v1/cua/*` requires a configured server bearer. No Desktop protocol or standalone CLI change.
+- Affected files: CUA router, route tests, CUA README, this handoff.
+- Verification: 132 focused Python tests passed; Ruff check and format passed; no mypy errors in the changed router. The full local mypy baseline differs from CI on this Mac and is being checked by GitHub CI.
+- Known risks: a standalone server with no API key will now return HTTP 503 for CUA requests. Configure a key to enable that API. No deployment or release was performed.
+- Review blocker: the prescribed reviewer on spark2 could not start because its Codex refresh token is expired. A separate independent reviewer in this session completed a read-only round; the spark2 review remains pending reauthentication.
+- Next owner/action: Vector should review the CUA route contract before merge; Pixel should confirm the Desktop bearer path on a physical Mac when GUI permissions are available. Atlas decides sequencing of later consent and durable-task work.

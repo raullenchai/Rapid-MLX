@@ -111,9 +111,10 @@ def test_requires_auth(client):
     )
 
 
-def test_cua_routes_fail_closed_without_server_api_key(client):
+@pytest.mark.parametrize("api_key", [None, ""])
+def test_cua_routes_fail_closed_without_server_api_key(client, api_key):
     cfg = get_config()
-    cfg.api_key = None
+    cfg.api_key = api_key
     requests = (
         ("get", "/v1/cua/planners"),
         ("post", "/v1/cua/planners"),

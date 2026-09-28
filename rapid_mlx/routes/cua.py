@@ -25,12 +25,18 @@ async def require_cua_auth(
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ) -> bool:
     """Computer control requires an explicitly configured server bearer."""
-    if get_config().api_key is None:
+    if not get_config().api_key:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Computer use API requires a server API key",
         )
-    return await verify_api_key(credentials)
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="API key required",
+        )
+    return bool(await verify_api_key(credentials))
+
 
 router = APIRouter(
     prefix="/v1/cua",
