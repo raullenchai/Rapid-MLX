@@ -72,7 +72,8 @@ def _read_stored() -> dict:
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     if CONFIG_PATH.exists():
         try:
-            return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+            loaded: dict = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+            return loaded
         except (json.JSONDecodeError, OSError):
             return {}
     return {}
@@ -177,7 +178,7 @@ def save_user_preset(
     api_key: str | None = None,
     reasoning_effort: str | None = None,
     text_only: bool = False,
-) -> dict:
+) -> tuple[str, dict]:
     """Create or update a user-defined brain preset.
 
     Product behavior (not POC): users add their own cloud brain from the app
@@ -222,7 +223,8 @@ def save_user_preset(
         "user_created": True,
     }
     _write_stored(stored)
-    return name, presets[name]
+    created: dict = presets[name]
+    return name, created
 
 
 def delete_user_preset(name: str) -> None:
