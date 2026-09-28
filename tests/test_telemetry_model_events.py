@@ -1574,7 +1574,7 @@ def test_serve_failure_latch_claims_before_building(monkeypatch):
     monkeypatch.setattr(
         model_events,
         "serve_error_class",
-        lambda _exc: calls.append("classify") or "other",
+        lambda _exc, *, model_ref=None: calls.append("classify") or "other",
     )
     _capture_accepted_events(monkeypatch, lambda event, _props: calls.append(event))
     model_events.emit_model_serve_failed(RuntimeError("first"))

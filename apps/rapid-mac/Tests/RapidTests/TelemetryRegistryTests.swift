@@ -231,7 +231,8 @@ struct TelemetryRegistryTests {
             "invalid_config",
             "tokenizer_load_failed",
             "incompatible_weights",
-            "quantization_mismatch"
+            "quantization_mismatch",
+            "local_path_missing"
         ] {
             #expect(registry.validate("model_serve_failed", ["error_class": .string(errorClass)]) != nil)
         }

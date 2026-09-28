@@ -1262,7 +1262,11 @@ def test_generations_uses_engine_default_steps(client, monkeypatch, default_step
     assert engine.steps_seen == [default_steps]
 
 
-def test_image_alias_skips_the_mllm_routing_preflight(monkeypatch):
+@pytest.mark.parametrize(
+    "model_ref",
+    ["z-image-turbo", "MLX-COMMUNITY/qwen-image-2.1-mflux-q4"],
+)
+def test_image_alias_skips_the_mllm_routing_preflight(monkeypatch, model_ref):
     """An image-gen alias must not run the MLLM-vs-text routing preflight.
 
     ``_ensure_routing_config`` materializes a checkpoint ``config.json`` so
@@ -1307,8 +1311,13 @@ def test_image_alias_skips_the_mllm_routing_preflight(monkeypatch):
         for attr in ("_engine", "_model_name", "_model_alias")
     }
     try:
-        server.load_model("z-image-turbo")
-        assert built.get("model_name") == "filipstrand/Z-Image-Turbo-mflux-4bit", (
+        server.load_model(model_ref)
+        expected = (
+            "filipstrand/Z-Image-Turbo-mflux-4bit"
+            if model_ref == "z-image-turbo"
+            else "mlx-community/Qwen-Image-2.1-mflux-q4"
+        )
+        assert built.get("model_name") == expected, (
             "the image alias never reached ImageEngine — the MLLM routing "
             "preflight ran and killed a lane that has no MLLM question"
         )

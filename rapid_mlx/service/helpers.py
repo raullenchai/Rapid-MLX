@@ -3009,7 +3009,9 @@ async def ensure_engine_ready(engine: BaseEngine) -> BaseEngine:
             # returned to the client.
             from ..request import model_load_error_payload
 
-            payload = model_load_error_payload(exc)
+            payload = model_load_error_payload(
+                exc, model_ref=getattr(engine, "_model_name", None)
+            )
             # A 503 means "temporarily unavailable", so keep the pre-existing
             # ``Retry-After`` uniformly: a load failure can be transient (a
             # backend-init race, a passing I/O fault) as readily as permanent,

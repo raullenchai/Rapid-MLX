@@ -19,7 +19,7 @@ from rapid_mlx.image.engine import (
     default_steps_for_model,
 )
 from rapid_mlx.image.precision import QWEN_IMAGE_21_Q4_REPO
-from rapid_mlx.model_aliases import resolve_profile
+from rapid_mlx.model_aliases import resolve_model, resolve_profile
 from rapid_mlx.model_sizes import size_bytes
 from rapid_mlx.runtime.resident_models import estimate_model_bytes
 
@@ -466,3 +466,53 @@ def test_official_snapshot_layout_is_complete_and_detects_missing_shard(
     assert _download_gate.mflux_missing_weights(REPO) == [
         "transformer/diffusion_pytorch_model-00002-of-00002.safetensors"
     ]
+
+
+def test_q4_repo_id_case_variant_uses_curated_pin_and_real_layout(
+    monkeypatch, tmp_path
+):
+    """Reproduce the raw-repo failure without downloading the 9.6 GB model."""
+    import json
+
+    cache = tmp_path / "hub"
+    snapshot = (
+        cache
+        / "models--mlx-community--Qwen-Image-2.1-mflux-q4"
+        / "snapshots"
+        / LOW_REVISION
+    )
+    files = {
+        "processor/tokenizer.json": "{}",
+        "transformer/model.safetensors.index.json": json.dumps(
+            {"weight_map": {"transformer.block": "transformer.safetensors"}}
+        ),
+        "transformer/transformer.safetensors": "weights",
+        "text_encoder/model.safetensors.index.json": json.dumps(
+            {
+                "metadata": {"quantization_level": "4", "mflux_version": "0.20.0"},
+                "weight_map": {
+                    "embed_tokens.weight": "text.safetensors",
+                    "embed_tokens.scales": "text.safetensors",
+                    "embed_tokens.biases": "text.safetensors",
+                },
+            }
+        ),
+        "text_encoder/text.safetensors": "weights",
+        "vae/model.safetensors.index.json": json.dumps(
+            {"weight_map": {"vae.block": "vae.safetensors"}}
+        ),
+        "vae/vae.safetensors": "weights",
+    }
+    for relative, data in files.items():
+        target = snapshot / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(data)
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache))
+
+    typed = "MLX-COMMUNITY/qwen-image-2.1-mflux-q4"
+    canonical = resolve_model(typed)
+    assert canonical == LOW_REPO
+    assert resolve_profile(typed) == resolve_profile("qwen-image-2.1")
+    assert _download_gate.IMAGE_MODEL_REVISIONS[canonical] == LOW_REVISION
+    assert _download_gate.mflux_missing_weights(canonical) == []
+    assert _download_gate.mflux_local_snapshot(canonical) == str(snapshot)

@@ -6756,10 +6756,21 @@ def serve_command(args):
         # non-HF errors that still spell out "not found".
         from huggingface_hub.utils import RepositoryNotFoundError
 
-        is_404 = isinstance(e, RepositoryNotFoundError) or (
-            "404" in str(e) or "not found" in str(e).lower()
+        from rapid_mlx.local_model_path import local_model_failure_message
+
+        local_message = local_model_failure_message(
+            getattr(args, "_original_alias", None) or args.model,
+            e,
+            include_supplied_path=True,
         )
-        if is_404:
+        is_404 = local_message is None and (
+            isinstance(e, RepositoryNotFoundError)
+            or "404" in str(e)
+            or "not found" in str(e).lower()
+        )
+        if local_message is not None:
+            print(f"\n  Error: {local_message}", file=sys.stderr)
+        elif is_404:
             shown = getattr(args, "_original_alias", args.model)
             print(f"\n  Error: Model '{shown}' not found on HuggingFace.")
             _print_unknown_model_help(
@@ -7604,10 +7615,21 @@ def bench_command(args):
             # traceback when the user typed a missing repo / bad alias.
             from huggingface_hub.utils import RepositoryNotFoundError
 
-            is_404 = isinstance(e, RepositoryNotFoundError) or (
-                "404" in str(e) or "not found" in str(e).lower()
+            from rapid_mlx.local_model_path import local_model_failure_message
+
+            local_message = local_model_failure_message(
+                getattr(args, "_original_alias", None) or args.model,
+                e,
+                include_supplied_path=True,
             )
-            if is_404:
+            is_404 = local_message is None and (
+                isinstance(e, RepositoryNotFoundError)
+                or "404" in str(e)
+                or "not found" in str(e).lower()
+            )
+            if local_message is not None:
+                print(f"\n  Error: {local_message}", file=sys.stderr)
+            elif is_404:
                 shown = getattr(args, "_original_alias", args.model)
                 print(f"\n  Error: Model '{shown}' not found on HuggingFace.")
                 _print_unknown_model_help(
@@ -15706,11 +15728,26 @@ def main():
         and args.model
         and getattr(args, "command", None) not in ("doctor", "service", "system-one")
     ):
+        from rapid_mlx.local_model_path import (
+            local_model_failure_message,
+            raise_if_missing_local_model,
+        )
         from rapid_mlx.model_aliases import RetiredModelAliasError, resolve_model
         from rapid_mlx.user_aliases import UserAliasError
 
         try:
+            raise_if_missing_local_model(args.model)
             resolved = resolve_model(args.model)
+        except FileNotFoundError as exc:
+            if getattr(args, "command", None) == "serve":
+                from rapid_mlx.telemetry.model_events import emit_model_serve_failed
+
+                emit_model_serve_failed(exc, alias_or_path=args.model)
+            message = local_model_failure_message(
+                args.model, exc, include_supplied_path=True
+            )
+            print(f"\n  Error: {message}", file=sys.stderr)
+            raise SystemExit(1) from None
         except (RetiredModelAliasError, UserAliasError) as exc:
             print(f"\n  Error: {exc}", file=sys.stderr)
             raise SystemExit(1) from None

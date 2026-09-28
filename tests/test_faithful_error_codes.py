@@ -257,6 +257,51 @@ def test_ensure_engine_ready_generic_load_failure_keeps_retry_after_distinct_cod
     assert _SECRET not in http.detail["error"]["message"]
 
 
+def test_ensure_engine_ready_local_failure_never_leaks_model_root(
+    monkeypatch, tmp_path
+):
+    from rapid_mlx.service import helpers
+
+    model_root = tmp_path / "private-model"
+    model_root.mkdir()
+    index = model_root / "model.safetensors.index.json"
+    index.write_text('{"weight_map":{"layer":"model-00002-of-00002.safetensors"}}')
+    missing = model_root / "model-00002-of-00002.safetensors"
+
+    class _Engine:
+        _model_name = str(model_root)
+
+    class _Lifecycle:
+        engine = _Engine()
+
+        def acquire_request(self):
+            pass
+
+        def release_request(self):
+            pass
+
+        async def ensure_loaded(self):
+            raise FileNotFoundError(2, "private", str(missing))
+
+    class _FakeConfig:
+        primary_model_lifecycle = _Lifecycle()
+
+    monkeypatch.setattr(helpers, "get_config", lambda: _FakeConfig())
+
+    async def _run():
+        with pytest.raises(HTTPException) as exc_info:
+            await helpers.ensure_engine_ready(
+                _FakeConfig.primary_model_lifecycle.engine
+            )
+        return exc_info.value
+
+    http = asyncio.run(_run())
+    message = http.detail["error"]["message"]
+    assert "model-00002-of-00002.safetensors" in message
+    assert str(model_root) not in message
+    assert _SECRET not in message
+
+
 # ── chat route unknown model -> dict envelope with model_not_found ──
 
 

@@ -159,7 +159,7 @@ def find_optional_runtime_missing(
     return None
 
 
-def serve_error_class(exc: BaseException) -> str:
+def serve_error_class(exc: BaseException, *, model_ref: object = None) -> str:
     """Reduce loader failures to the registry's closed serve categories."""
     try:
         if find_optional_runtime_missing(exc) is not None:
@@ -210,12 +210,17 @@ def serve_error_class(exc: BaseException) -> str:
         for current in chain:
             if isinstance(current, (HfHubHTTPError, RepositoryNotFoundError)):
                 return "download_failed"
-            # A missing local/Hub shard is an availability failure, not evidence that
-            # bytes on disk are corrupt. ModuleNotFoundError is handled separately
-            # below because mlx-lm uses it for an unknown architecture module.
+            # A missing Hub shard is an availability failure; a missing path or
+            # shard under a user-supplied local model is not a download failure.
+            # ModuleNotFoundError is handled separately below because mlx-lm
+            # uses it for an unknown architecture module.
             if isinstance(current, FileNotFoundError) and not isinstance(
                 current, ModuleNotFoundError
             ):
+                from rapid_mlx.local_model_path import is_local_model_ref
+
+                if is_local_model_ref(model_ref):
+                    return "local_path_missing"
                 return "download_failed"
             if isinstance(current, ModuleNotFoundError):
                 missing = current.name or ""
@@ -618,7 +623,7 @@ def emit_model_serve_failed(
     error_class = (
         "missing_extra"
         if optional_runtime_missing is not None
-        else serve_error_class(exc)
+        else serve_error_class(exc, model_ref=alias_or_path)
     )
     props: dict[str, object] = {"error_class": error_class}
     if optional_runtime_missing is not None:
