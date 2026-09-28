@@ -232,7 +232,7 @@ def _walk(element: object, depth: int, out: list[dict], counter: list[int]) -> N
             return
 
 
-def _app_element(app_name: str) -> object:
+def _app_element(app_name: str, expected_pid: int | None = None) -> object:
     if AS is None:
         raise RuntimeError("computer-use actions require macOS with PyObjC installed")
     workspace = AS.NSWorkspace.sharedWorkspace()
@@ -245,6 +245,8 @@ def _app_element(app_name: str) -> object:
     exact: list[Any] = []
     wanted = app_name.lower()
     for app in workspace.runningApplications():
+        if expected_pid is not None and int(app.processIdentifier()) != expected_pid:
+            continue
         name = (app.localizedName() or "").lower()
         if wanted not in name:
             continue
@@ -269,7 +271,8 @@ def _app_element(app_name: str) -> object:
         # take it as-is — an AX-unresponsive app should still be selectable.
         if len(matches) == 1 or _as_list(_get(element, "AXWindows")):
             return element
-    raise SystemExit(f"app not found: {app_name!r}")
+    suffix = f" with pid {expected_pid}" if expected_pid is not None else ""
+    raise SystemExit(f"app not found: {app_name!r}{suffix}")
 
 
 def collect(
@@ -278,10 +281,15 @@ def collect(
     max_windows: int = 3,
     window_index: int = 0,
     window_frame: tuple[float, float, float, float] | None = None,
+    expected_pid: int | None = None,
 ) -> list[dict]:
     if window_index < 0:
         raise ValueError("window_index must be non-negative")
-    app = _app_element(app_name)
+    app = (
+        _app_element(app_name, expected_pid=expected_pid)
+        if expected_pid is not None
+        else _app_element(app_name)
+    )
     targets: list[dict] = []
     counter = [0]
     for attempt in range(4):

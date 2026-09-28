@@ -381,6 +381,7 @@ def get_app_state(
         app_info["name"] or app,
         window_index=resolved_index,
         window=window,
+        expected_pid=app_info["pid"],
     )
     if not targets and resolved_index:
         raise ComputerUseError(
@@ -526,6 +527,7 @@ def _collect_with_timeout(
     *,
     window_index: int = 0,
     window: dict | None = None,
+    expected_pid: int | None = None,
     timeout_s: float | None = None,
 ) -> list[dict]:
     """ax_driver.collect with a watchdog.
@@ -559,7 +561,10 @@ def _collect_with_timeout(
                     if window is not None
                     else None
                 ),
+                expected_pid=expected_pid,
             )
+        except SystemExit as exc:
+            outcome["error"] = ComputerUseError("app_not_found", str(exc))
         except Exception as exc:  # noqa: BLE001 - surfaced below
             outcome["error"] = exc
 
@@ -593,6 +598,7 @@ def _live_element(snapshot: dict, element_index: int) -> object:
         snapshot["app"]["name"],
         window_index=current_window["index"],
         window=current_window,
+        expected_pid=int(snapshot["app"]["pid"]),
     )
     for target in fresh:
         if int(target["target_id"][1:]) == element_index:
@@ -677,7 +683,9 @@ def _validate_focused_window(snapshot: dict) -> None:
             "target_drift",
             f"pid {snapshot['app']['pid']} is no longer frontmost; re-observe",
         )
-    app_element = ax_driver._app_element(snapshot["app"]["name"])
+    app_element = ax_driver._app_element(
+        snapshot["app"]["name"], expected_pid=int(snapshot["app"]["pid"])
+    )
     focused = ax_driver._get(app_element, "AXFocusedWindow")
     focused_frame = ax_driver._point_size(focused) if focused is not None else None
     expected = snapshot["window"]
@@ -834,6 +842,7 @@ def _synthetic_fill(snapshot: dict, element_index: int, value: str) -> dict:
             snapshot["app"]["name"],
             window_index=current_window["index"],
             window=current_window,
+            expected_pid=int(snapshot["app"]["pid"]),
         )
         for target in fresh:
             if target.get("element") is None or target["role"] not in FILL_ROLES:
@@ -1102,6 +1111,20 @@ def read_url(app: str, window_id: int | str | None = None) -> str:
         bundle_id = str(app_info.get("bundleId") or "")
         if not re.fullmatch(r"[A-Za-z0-9.-]+", bundle_id):
             return ""
+        if app.startswith("pid:"):
+            workspace = (
+                ax_driver.AS.NSWorkspace.sharedWorkspace() if ax_driver.AS else None
+            )
+            if workspace is None:
+                return ""
+            same_bundle_pids = {
+                int(running.processIdentifier())
+                for running in workspace.runningApplications()
+                if (running.bundleIdentifier() or "").lower() == bundle_id.lower()
+                and running.activationPolicy() == 0
+            }
+            if same_bundle_pids != {int(app_info["pid"])}:
+                return ""
         if bundle_id in {"com.apple.Safari", "com.apple.SafariTechnologyPreview"}:
             tab_property = "current tab"
         elif bundle_id.startswith(

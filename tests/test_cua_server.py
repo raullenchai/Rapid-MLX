@@ -222,6 +222,13 @@ def test_create_run_freezes_selected_window_and_rejects_open_url(client, monkeyp
         }
 
     monkeypatch.setattr(backend_mod, "validate_window", validate_window)
+    run_kwargs: dict = {}
+
+    async def capture_run(config, app, goal, **kwargs):
+        run_kwargs.update(kwargs)
+        return {"status": "done", "final_summary": "done"}
+
+    monkeypatch.setattr(cua_service, "run_loop", capture_run)
     response = _post_run(client, window_id="opaque-client-id")
     assert response.status_code == 202
     assert response.json()["window_id"] == "cg:123"
@@ -229,6 +236,8 @@ def test_create_run_freezes_selected_window_and_rejects_open_url(client, monkeyp
     view = client.get(f"/v1/cua/runs/{run_id}", headers=AUTH).json()
     assert view["window_id"] == "cg:123"
     assert observed == [("Google Chrome", "opaque-client-id")]
+    assert run_kwargs["backend_app"] == "pid:42"
+    assert run_kwargs["expected_app"]["pid"] == 42
 
     rejected = _post_run(client, window_id="cg:123", open_url="https://example.com")
     assert rejected.status_code == 400

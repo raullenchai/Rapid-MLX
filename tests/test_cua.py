@@ -1528,6 +1528,36 @@ def test_selected_window_fails_closed_when_planned_index_changes(
     assert clicks == []
 
 
+def test_selected_window_rejects_pid_identity_reuse(
+    fake_backend, tmp_path, monkeypatch
+):
+    from rapid_mlx.computer_use.errors import ComputerUseError
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    monkeypatch.setattr(
+        fake_backend,
+        "get_app_state",
+        lambda app, **kwargs: {
+            "app": {"name": "other", "bundleId": "com.other", "pid": 42},
+            "window_id": "cg:404",
+        },
+    )
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path),
+        "Browser",
+        "open",
+        tmp_path / "selected-pid-reused",
+        window_id="cg:404",
+        backend_app="pid:42",
+        expected_app={"name": "browser", "bundleId": "com.browser", "pid": 42},
+    )
+    with pytest.raises(ComputerUseError) as excinfo:
+        runner._get_app_state(screenshot=False)
+    assert excinfo.value.code == "target_drift"
+    assert "identity changed" in excinfo.value.message
+
+
 def test_loop_ranker_success_and_unavailable(fake_backend, tmp_path, monkeypatch):
     import asyncio
 

@@ -14,7 +14,9 @@ canonical ID, and returns it from create/list/view surfaces. Selected runs pass
 that ID to every state observation and trusted URL read. They revalidate the
 window after planning and after approval, and stop with a typed window error if
 the window closes, is replaced, or moves. `open_url` is rejected when a window
-is selected. Runs without `window_id` retain their existing call shape.
+is selected. The validated PID is also frozen for state collection, trusted URL
+reads, focused-window checks, AX element recollection, and actions; app identity
+drift fails closed. Runs without `window_id` retain their existing call shape.
 
 Capability `features.window_selection` is now true. Visual observation and a
 raw action API remain outside this branch.

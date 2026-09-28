@@ -278,9 +278,11 @@ class CUAService:
             human_login=human_login,
         )
         selected_window_id: str | None = None
+        selected_app: dict | None = None
         if window_id is not None:
             selection = await asyncio.to_thread(backend.validate_window, app, window_id)
             selected_window_id = str(selection["window_id"])
+            selected_app = dict(selection["app"])
         run_id = uuid.uuid4().hex[:12]
         run = CUAServiceRun(
             run_id=run_id,
@@ -304,6 +306,10 @@ class CUAService:
                 gate=lambda reason: run.wait_for_approval(reason, config.pause_timeout),
                 stop_event=run._stop_event,
                 window_id=selected_window_id,
+                backend_app=(
+                    f"pid:{selected_app['pid']}" if selected_app is not None else None
+                ),
+                expected_app=selected_app,
             )
         )
         self._tasks[run_id] = task

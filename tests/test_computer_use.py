@@ -231,6 +231,39 @@ def test_read_url_rejects_active_tab_from_different_selected_window(monkeypatch)
     assert backend.read_url("Safari") == ""
 
 
+def test_read_url_pid_target_rejects_duplicate_browser_bundle(monkeypatch):
+    app_info = {"name": "browser", "bundleId": "com.google.Chrome", "pid": 42}
+    monkeypatch.setattr(
+        backend, "_resolve_app", lambda app, **kwargs: (object(), app_info)
+    )
+    monkeypatch.setattr(backend, "_select_window", lambda *a, **k: _window())
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a: None)
+
+    def running(pid):
+        return types.SimpleNamespace(
+            processIdentifier=lambda: pid,
+            bundleIdentifier=lambda: "com.google.Chrome",
+            activationPolicy=lambda: 0,
+        )
+
+    workspace = types.SimpleNamespace(
+        runningApplications=lambda: [running(99), running(42)]
+    )
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "AS",
+        types.SimpleNamespace(
+            NSWorkspace=types.SimpleNamespace(sharedWorkspace=lambda: workspace)
+        ),
+    )
+    monkeypatch.setattr(
+        backend.subprocess,
+        "run",
+        lambda *a, **k: pytest.fail("ambiguous bundle must fail before osascript"),
+    )
+    assert backend.read_url("pid:42", window_id="cg:101") == ""
+
+
 def test_coordinate_click_binds_to_selected_window(monkeypatch):
     snapshot = _stable_snapshot(elements=[])
     monkeypatch.setattr(backend, "get_app_state", lambda *a, **k: snapshot)
@@ -330,6 +363,7 @@ def test_get_app_state_uses_requested_window_without_screenshot(monkeypatch):
     assert state["window_id"] == "cg:303"
     assert captured["window_index"] == 2
     assert captured["window_frame"] == (4.0, 5.0, 100.0, 100.0)
+    assert captured["expected_pid"] == 7
 
 
 def test_select_window_id_is_bound_to_resolved_app_pid(monkeypatch):
@@ -945,7 +979,9 @@ def test_focused_window_and_post_action_state_contract(monkeypatch):
             NSWorkspace=types.SimpleNamespace(sharedWorkspace=lambda: workspace)
         ),
     )
-    monkeypatch.setattr(backend.ax_driver, "_app_element", lambda app: "application")
+    monkeypatch.setattr(
+        backend.ax_driver, "_app_element", lambda app, **kwargs: "application"
+    )
     monkeypatch.setattr(backend.ax_driver, "_get", lambda *a: "focused")
     monkeypatch.setattr(
         backend.ax_driver, "_point_size", lambda *a: (0.0, 0.0, 100.0, 100.0)
@@ -1017,6 +1053,18 @@ def test_collect_watchdog_preserves_structured_errors(monkeypatch):
     assert excinfo.value is expected
 
 
+def test_collect_watchdog_translates_missing_pid_to_typed_error(monkeypatch):
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "collect",
+        lambda *a, **k: (_ for _ in ()).throw(SystemExit("pid missing")),
+    )
+    with pytest.raises(errors.ComputerUseError) as excinfo:
+        backend._collect_with_timeout("A", expected_pid=42, timeout_s=1)
+    assert excinfo.value.code == "app_not_found"
+    assert "pid missing" in excinfo.value.message
+
+
 def test_element_click_ax_and_fallback(monkeypatch):
     snapshot = {"elements": [{"index": 0, "center": [6, 12], "actions": ["AXPress"]}]}
     monkeypatch.setattr(backend, "get_app_state", lambda *a, **k: snapshot)
@@ -1044,6 +1092,46 @@ def test_element_click_ax_and_fallback(monkeypatch):
     with pytest.raises(errors.ComputerUseError, match="gone"):
         backend.click("A", element_index=0)
     assert len(clicks) == 1
+
+
+def test_click_recollects_ax_element_from_snapshot_pid(monkeypatch):
+    snapshot = _stable_snapshot(
+        elements=[
+            {
+                "index": 0,
+                "role": "AXButton",
+                "label": "Safe",
+                "center": [6, 12],
+                "actions": ["AXPress"],
+            }
+        ]
+    )
+    captured: dict = {}
+
+    def collect(app_name, **kwargs):
+        captured.update({"app_name": app_name, **kwargs})
+        target = _target(0, role="AXButton", element="pid-4-element")
+        target.update({"text": "Safe", "center": [6, 12]})
+        return [target]
+
+    monkeypatch.setattr(backend, "_collect_with_timeout", collect)
+    monkeypatch.setattr(
+        backend, "_validate_snapshot_window", lambda *a, **k: snapshot["window"]
+    )
+    pressed: list[object] = []
+    _install_module(
+        monkeypatch,
+        "ApplicationServices",
+        kAXErrorSuccess=0,
+        AXUIElementPerformAction=lambda element, action: (
+            pressed.append((element, action)) or 0
+        ),
+    )
+    result = backend.click("pid:4", element_index=0, expected_snapshot=snapshot)
+    assert result["mode"] == "AXPress"
+    assert captured["app_name"] == "A"
+    assert captured["expected_pid"] == 4
+    assert pressed == [("pid-4-element", "AXPress")]
 
 
 def test_set_value_and_synthetic_fill_paths(monkeypatch):
@@ -1371,6 +1459,12 @@ def test_ax_driver_app_collect_retries_and_press(monkeypatch):
     monkeypatch.setattr(ax_driver.time, "sleep", lambda _: None)
     assert ax_driver._app_element("Target App") == ("element", 42)
     assert sets == []  # native apps must not be forced into manual AX mode
+
+    same_name_other_pid = _RunningApp("Target App", pid=99)
+    fake_as.NSWorkspace = types.SimpleNamespace(
+        sharedWorkspace=lambda: _Workspace([same_name_other_pid, app])
+    )
+    assert ax_driver._app_element("Target App", expected_pid=42) == ("element", 42)
 
     chrome = _RunningApp("Chrome", "com.google.Chrome", pid=43)
     fake_as.NSWorkspace = types.SimpleNamespace(

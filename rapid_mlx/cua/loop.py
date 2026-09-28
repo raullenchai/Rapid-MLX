@@ -59,6 +59,8 @@ class CUARun:
         gate: Callable[[str], Any] | None = None,
         stop_event: asyncio.Event | None = None,
         window_id: str | None = None,
+        backend_app: str | None = None,
+        expected_app: dict | None = None,
     ):
         self.config = config
         self.app = app
@@ -68,6 +70,8 @@ class CUARun:
         self.gate = gate
         self.stop_event = stop_event or asyncio.Event()
         self.window_id = window_id
+        self.backend_app = backend_app or app
+        self.expected_app = dict(expected_app) if expected_app is not None else None
         run_dir.mkdir(parents=True, exist_ok=True)
         self.history: list[dict] = []
         self.trace: dict = {
@@ -202,7 +206,17 @@ class CUARun:
         kwargs: dict[str, Any] = {"screenshot": screenshot, "use_cache": False}
         if self.window_id is not None:
             kwargs["window_id"] = self.window_id
-        return backend.get_app_state(self.app, **kwargs)
+        snapshot = backend.get_app_state(self.backend_app, **kwargs)
+        if self.expected_app is not None:
+            observed = snapshot.get("app") or {}
+            for key in ("pid", "bundleId", "name"):
+                expected = self.expected_app.get(key)
+                if expected is not None and observed.get(key) != expected:
+                    raise ComputerUseError(
+                        "target_drift",
+                        f"selected app identity changed for pid {self.expected_app.get('pid')}",
+                    )
+        return snapshot
 
     async def _execute(self, plan: dict, snapshot: dict) -> dict:
         action = plan["action"]
@@ -211,23 +225,23 @@ class CUARun:
         try:
             if action == "click":
                 result.update(
-                    backend.click(self.app, index, expected_snapshot=snapshot)
+                    backend.click(self.backend_app, index, expected_snapshot=snapshot)
                 )
             elif action == "fill":
                 result.update(
                     backend.set_value(
-                        self.app,
+                        self.backend_app,
                         index,
                         plan.get("text", ""),
                         expected_snapshot=snapshot,
                     )
                 )
             elif action == "press":
-                backend.click(self.app, index, expected_snapshot=snapshot)
+                backend.click(self.backend_app, index, expected_snapshot=snapshot)
                 await asyncio.sleep(0.2)
                 result.update(
                     backend.press_key(
-                        self.app,
+                        self.backend_app,
                         plan.get("key", "Enter"),
                         expected_snapshot=snapshot,
                     )
@@ -235,7 +249,7 @@ class CUARun:
             elif action == "scroll":
                 result.update(
                     backend.scroll(
-                        self.app,
+                        self.backend_app,
                         plan.get("direction", "down"),
                         1.0,
                         expected_snapshot=snapshot,
@@ -314,7 +328,7 @@ class CUARun:
             return None
         self._empty_snapshots = 0
         url_now = backend.read_url(
-            self.app, window_id=self.window_id or snapshot.get("window_id")
+            self.backend_app, window_id=self.window_id or snapshot.get("window_id")
         )
         guard = self._check_domain(url_now)
         if guard:
@@ -399,7 +413,7 @@ class CUARun:
                 )
                 return {"status": "stopped", "reason": reason, "error": exc.code}
             fresh_url = backend.read_url(
-                self.app, window_id=self.window_id or fresh.get("window_id")
+                self.backend_app, window_id=self.window_id or fresh.get("window_id")
             )
             fresh_guard = self._check_domain(fresh_url)
             fresh_target = self._target(fresh, plan.get("element_index", -1))
@@ -472,7 +486,7 @@ class CUARun:
                 return {"status": "stopped", "reason": reason, "error": "target_stale"}
             snapshot = fresh
         pre_action_url = backend.read_url(
-            self.app, window_id=self.window_id or snapshot.get("window_id")
+            self.backend_app, window_id=self.window_id or snapshot.get("window_id")
         )
         pre_action_guard = self._check_domain(pre_action_url)
         if pre_action_guard:
@@ -502,7 +516,7 @@ class CUARun:
             return {"status": "stopped", "reason": reason, "error": exc.code}
         after_sig = _tree_signature(after)
         url_after = backend.read_url(
-            self.app, window_id=self.window_id or after.get("window_id")
+            self.backend_app, window_id=self.window_id or after.get("window_id")
         )
         delta = {
             "executed": executed,
@@ -574,6 +588,8 @@ async def run(
     gate: Callable[[str], Any] | None = None,
     stop_event: asyncio.Event | None = None,
     window_id: str | None = None,
+    backend_app: str | None = None,
+    expected_app: dict | None = None,
 ) -> dict:
     """Run the loop. Pass `planner` to inject a custom brain (SDK/testing use)."""
     run_dir = config_mod.RUNS_DIR / (
@@ -601,6 +617,8 @@ async def run(
         gate=gate,
         stop_event=stop_event,
         window_id=window_id,
+        backend_app=backend_app,
+        expected_app=expected_app,
     )
     cua_run._emit(
         {"kind": "started", "app": app, "run_dir": str(run_dir), "window_id": window_id}
