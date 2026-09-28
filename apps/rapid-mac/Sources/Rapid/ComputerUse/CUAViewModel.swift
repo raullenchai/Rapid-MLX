@@ -301,29 +301,44 @@ final class CUAViewModel: ObservableObject {
                     events.append(contentsOf: view.events)
                     lastSeq = view.events.map(\.seq).max() ?? lastSeq
                 }
-                for event in view.events where event.kind == "gate" {
-                    pendingGateReason = event.reason ?? "sign-in"
+                if let gate = view.pendingGate {
+                    pendingGateReason = gate.reason ?? "approval required"
                     pendingApproval = CUAPendingApproval(
-                        gateID: event.gateID,
-                        app: event.app ?? view.app,
-                        action: event.action,
-                        target: event.target ?? event.targetLabel,
-                        reason: event.reason ?? "Approval is required before Rapid continues."
+                        gateID: gate.gateID,
+                        app: view.app,
+                        action: gate.action,
+                        target: gate.target,
+                        reason: gate.reason ?? "Approval is required before Rapid continues."
                     )
                     phase = .awaitingApproval
-                }
-                for event in view.events where
-                    event.kind == "gate_detail" && phase == .awaitingApproval
-                {
-                    pendingGateReason = event.reason ?? pendingGateReason
-                    pendingApproval = CUAPendingApproval(
-                        gateID: event.gateID ?? pendingApproval?.gateID,
-                        app: event.app ?? pendingApproval?.app ?? view.app,
-                        action: event.action ?? pendingApproval?.action,
-                        target: event.targetLabel ?? pendingApproval?.target,
-                        reason: event.reason ?? pendingApproval?.reason
-                            ?? "Approval is required before Rapid continues."
-                    )
+                } else {
+                    // Older servers expose approval state only as events.
+                    for event in view.events where event.kind == "gate" {
+                        pendingGateReason = event.reason ?? "sign-in"
+                        pendingApproval = CUAPendingApproval(
+                            gateID: event.gateID,
+                            app: event.app ?? view.app,
+                            action: event.action,
+                            target: event.target ?? event.targetLabel,
+                            reason: event.reason
+                                ?? "Approval is required before Rapid continues."
+                        )
+                        phase = .awaitingApproval
+                    }
+                    for event in view.events where
+                        event.kind == "gate_detail" && phase == .awaitingApproval
+                    {
+                        pendingGateReason = event.reason ?? pendingGateReason
+                        pendingApproval = CUAPendingApproval(
+                            gateID: event.gateID ?? pendingApproval?.gateID,
+                            app: event.app ?? pendingApproval?.app ?? view.app,
+                            action: event.action ?? pendingApproval?.action,
+                            target: event.target ?? event.targetLabel
+                                ?? pendingApproval?.target,
+                            reason: event.reason ?? pendingApproval?.reason
+                                ?? "Approval is required before Rapid continues."
+                        )
+                    }
                 }
                 for event in view.events where event.kind == "gate_resolved" {
                     pendingGateReason = nil

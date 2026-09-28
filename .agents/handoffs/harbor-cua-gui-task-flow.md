@@ -25,6 +25,8 @@ assets, or claim complete delegated-workflow parity.
 - A running task shows the current structured plan step, action, target, bounded
   step count and safety limit, verifier outcome, and a persistent Stop button.
 - Approval pauses show app plus optional structured action and target fields.
+  The run view's canonical `pending_gate` wins over event-derived state, so a
+  reconnect remains safe after the gate event has fallen behind the cursor.
   Optional `gate_id` is decoded and retained in pending state. Approvals with
   an ID send `{gate_id, approved}` so a delayed request cannot approve a later
   gate; legacy events without an ID retain the empty-body request.
@@ -44,7 +46,7 @@ workflow model.
 
 ## Verification
 
-- Focused CUA and permission Swift suites: 28 tests passed across panel, client,
+- Focused CUA and permission Swift suites: 29 tests passed across panel, client,
   brain, decode, and TCC readiness suites; the complete Rapid target compiled.
 - Existing Mac automation permission model remains the single source of truth.
 - `git diff --check` passed.

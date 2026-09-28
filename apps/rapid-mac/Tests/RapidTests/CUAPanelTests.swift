@@ -19,6 +19,7 @@ private final class MockAgentAPI: CUAAPI, @unchecked Sendable {
     var cancelShouldFail = false
     var eventsShouldFail = false
     var permissionsResult = CUAPermissionStatus(accessibility: true, screenRecording: true)
+    var pendingGateResult: CUAPendingGate?
 
     var addedPlanners: [CUAPlannerCreateRequest] = []
     var deletedPlannerNames: [String] = []
@@ -72,7 +73,8 @@ private final class MockAgentAPI: CUAAPI, @unchecked Sendable {
             planner: "local-9b [local]",
             eventsAfterSeq: after,
             events: events,
-            runDir: "/tmp/runs/x"
+            runDir: "/tmp/runs/x",
+            pendingGate: pendingGateResult
         )
     }
 
@@ -177,6 +179,30 @@ struct CUAViewModelTests {
         #expect(viewModel.pendingApproval?.action == nil)
         #expect(viewModel.pendingApproval?.target == nil)
         #expect(viewModel.pendingApproval?.reason == "sign-in")
+    }
+
+    @Test("Canonical pending gate survives a missed gate event")
+    func canonicalPendingGateAfterCursor() async {
+        let api = MockAgentAPI()
+        api.pendingGateResult = CUAPendingGate(
+            gateID: "gate-reconnect", reason: "Confirm submission",
+            action: "submit", target: "Expense report"
+        )
+        let viewModel = CUAViewModel(api: api, pollIntervalNanos: 5_000_000)
+        viewModel.goal = "submit my report"
+        viewModel.appName = "Safari"
+        await viewModel.start()
+        await drain()
+
+        #expect(viewModel.phase == .awaitingApproval)
+        #expect(
+            viewModel.pendingApproval == CUAPendingApproval(
+                gateID: "gate-reconnect", app: "Google Chrome",
+                action: "submit", target: "Expense report", reason: "Confirm submission"
+            )
+        )
+        await viewModel.approve()
+        #expect(api.approvedGateIDs.first == "gate-reconnect")
     }
 
     @Test("Active progress reports structured step and honest verifier outcome")
@@ -376,6 +402,7 @@ struct CUAClientTests {
         let payload = """
         {"run_id":"abc","app":"Google Chrome","goal":"g","status":"running",
          "final_summary":"","error":"","planner":"p","events_after_seq":1,
+         "pending_gate":{"gate_id":"gate-7","reason":"sign-in","action":"sign_in","target":"Account"},
          "events":[{"seq":2,"kind":"gate","step":1,"step_instruction":"click it",
                     "gate_id":"gate-7","app":"Safari","action":"sign_in","target":"Account",
                     "latency_s":0.4}],"run_dir":"/tmp/x"}
@@ -389,6 +416,8 @@ struct CUAClientTests {
         #expect(view.events[0].gateID == "gate-7")
         #expect(view.events[0].action == "sign_in")
         #expect(view.events[0].target == "Account")
+        #expect(view.pendingGate?.gateID == "gate-7")
+        #expect(view.pendingGate?.target == "Account")
     }
 
     @Test("Approval binds the decision to the pending gate")

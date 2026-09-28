@@ -117,6 +117,18 @@ private struct CUAApprovalRequest: Codable {
     }
 }
 
+struct CUAPendingGate: Codable, Equatable, Sendable {
+    var gateID: String
+    var reason: String?
+    var action: String?
+    var target: String?
+
+    enum CodingKeys: String, CodingKey {
+        case gateID = "gate_id"
+        case reason, action, target
+    }
+}
+
 /// Full run view returned by the events endpoint.
 struct CUARunView: Codable, Equatable, Sendable {
     var runID: String
@@ -129,6 +141,7 @@ struct CUARunView: Codable, Equatable, Sendable {
     var eventsAfterSeq: Int
     var events: [CUAEvent]
     var runDir: String
+    var pendingGate: CUAPendingGate? = nil
 
     enum CodingKeys: String, CodingKey {
         case runID = "run_id"
@@ -136,6 +149,7 @@ struct CUARunView: Codable, Equatable, Sendable {
         case finalSummary = "final_summary"
         case eventsAfterSeq = "events_after_seq"
         case runDir = "run_dir"
+        case pendingGate = "pending_gate"
     }
 }
 
