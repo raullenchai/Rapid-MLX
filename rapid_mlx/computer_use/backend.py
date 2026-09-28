@@ -336,6 +336,13 @@ def _topmost_window_id_at(x: float, y: float) -> int | None:
         kCGNullWindowID,
     )
     for window in windows or []:
+        # Normal application windows and their blocking sheets/panels are on
+        # the normal window layer. Higher system layers include full-screen,
+        # visually transparent surfaces owned by services such as the Dock and
+        # Notification Center; treating those bounds as opaque makes every
+        # underlying app target look occluded.
+        if window.get("kCGWindowLayer") != 0:
+            continue
         if float(window.get("kCGWindowAlpha", 1)) <= 0:
             continue
         bounds = window.get("kCGWindowBounds") or {}

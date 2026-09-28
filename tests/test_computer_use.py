@@ -939,6 +939,42 @@ def test_window_records_and_topmost_probe_skip_invalid_entries(monkeypatch):
     assert backend._topmost_window_id_at(150, 150) is None
 
 
+def test_topmost_probe_ignores_system_layers_but_keeps_normal_window_occlusion(
+    monkeypatch,
+):
+    raw = [
+        {
+            "kCGWindowOwnerName": "Notification Center",
+            "kCGWindowLayer": 21,
+            "kCGWindowNumber": 900,
+            "kCGWindowBounds": {"X": 0, "Y": 0, "Width": 1920, "Height": 1080},
+        },
+        {
+            "kCGWindowOwnerName": "Blocking Panel",
+            "kCGWindowLayer": 0,
+            "kCGWindowNumber": 202,
+            "kCGWindowBounds": {"X": 0, "Y": 0, "Width": 100, "Height": 100},
+        },
+        {
+            "kCGWindowOwnerName": "Target App",
+            "kCGWindowLayer": 0,
+            "kCGWindowNumber": 101,
+            "kCGWindowBounds": {"X": 0, "Y": 0, "Width": 500, "Height": 500},
+        },
+    ]
+    _install_module(
+        monkeypatch,
+        "Quartz",
+        CGWindowListCopyWindowInfo=lambda *_: raw,
+        kCGNullWindowID=0,
+        kCGWindowListExcludeDesktopElements=1,
+        kCGWindowListOptionOnScreenOnly=2,
+    )
+
+    assert backend._topmost_window_id_at(50, 50) == 202
+    assert backend._topmost_window_id_at(250, 250) == 101
+
+
 def test_stale_snapshot_rejected_before_input(monkeypatch):
     snapshot = _stable_snapshot(observed_at=10.0)
     monkeypatch.setattr(
