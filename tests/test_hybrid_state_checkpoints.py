@@ -148,6 +148,33 @@ class TestStateCheckpoints:
         assert holder.positions[0] == 100
         assert holder.positions[-1] == 500
 
+    def test_existing_stride_checkpoint_is_promoted_to_boundary_anchor(self):
+        original = StateCheckpoints([(100, (_Array(100),))])
+
+        anchored = original.with_checkpoint(
+            100,
+            (_Array(999),),
+            max_count=3,
+            stride=2048,
+            force=True,
+            anchor=True,
+        )
+
+        assert anchored is not original
+        assert anchored.positions == (100,)
+        assert anchored.anchor_position == 100
+        # Promotion preserves the already-materialised stride state.
+        assert anchored.arrays_at(100)[0].tag == 100
+        duplicate = anchored.with_checkpoint(
+            100,
+            (_Array(1000),),
+            max_count=3,
+            stride=2048,
+            force=True,
+            anchor=True,
+        )
+        assert duplicate is anchored
+
     def test_max_count_zero_disables_recording(self):
         holder = StateCheckpoints().with_checkpoint(2048, (), max_count=0, stride=1)
         assert len(holder) == 0
