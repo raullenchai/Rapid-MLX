@@ -458,6 +458,7 @@ struct CUAAddBrainTests {
         #expect(CUAViewModel.isLoopbackEndpoint("http://localhost:1234/v1"))
         #expect(CUAViewModel.isLoopbackEndpoint("http://localhost.:1234/v1"))
         #expect(CUAViewModel.isLoopbackEndpoint("http://127.0.0.1:1234/v1"))
+        #expect(CUAViewModel.isLoopbackEndpoint("http://127.0.0.2:1234/v1"))
         #expect(CUAViewModel.isLoopbackEndpoint("http://[::1]:1234/v1"))
         #expect(!CUAViewModel.isLoopbackEndpoint("https://planner.example/v1"))
         #expect(!CUAViewModel.isLoopbackEndpoint("not a url"))

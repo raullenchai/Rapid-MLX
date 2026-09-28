@@ -138,8 +138,12 @@ final class CUAViewModel: ObservableObject {
             var host = url.host?.lowercased()
         else { return false }
         while host.hasSuffix(".") { host.removeLast() }
-        return host == "localhost" || host == "127.0.0.1"
-            || host == "::1" || host == "[::1]"
+        if host == "localhost" || host == "::1" || host == "[::1]" { return true }
+        let octets = host.split(separator: ".", omittingEmptySubsequences: false)
+        guard octets.count == 4 else { return false }
+        let numbers = octets.compactMap { Int($0) }
+        return numbers.count == 4 && numbers[0] == 127
+            && numbers.allSatisfy { (0 ... 255).contains($0) }
     }
 
     func start() async {

@@ -68,7 +68,7 @@ class PlannerConfig:
     allow_remote: bool = False
 
     def describe(self) -> str:
-        kind = "remote" if self.allow_remote else "local"
+        kind = "local" if is_loopback_url(self.url) else "remote"
         return f"{self.preset} [{kind}] {self.model}"
 
 

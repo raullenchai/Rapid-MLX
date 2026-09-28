@@ -36,7 +36,8 @@ copy, and build integration.
 ## Verified behavior and compatibility
 
 - Loopback HTTP(S), including `127.0.0.1`, `localhost`, `localhost.`, and IPv6
-  loopback, remains keyless and does not require remote consent.
+  loopback (plus the rest of `127.0.0.0/8`), remains keyless and does not
+  require remote consent.
 - All non-loopback endpoints, including LAN addresses, require explicit consent
   and HTTPS. LAN HTTP remains a product-policy follow-up.
 - Keyless HTTPS endpoints run once consented; the API key no longer acts as a
@@ -50,7 +51,7 @@ copy, and build integration.
 
 ## Verification evidence
 
-- `python3.12 -m pytest tests/test_cua.py -q`: 75 passed.
+- `python3.12 -m pytest tests/test_cua.py -q`: 77 passed.
 - `python3.12 -m pytest tests/test_cua_server.py -q -k 'not real_server'`:
   19 passed, 2 deselected. The two real-server import tests abort in the local
   MLX native import path; all route/config tests completed.

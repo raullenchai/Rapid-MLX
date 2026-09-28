@@ -1560,6 +1560,46 @@ def test_legacy_keyless_preset_does_not_gain_remote_consent(tmp_path, monkeypatc
     assert resolved.allow_remote is False
 
 
+def test_legacy_keyed_remote_preset_preserves_previous_permission(
+    tmp_path, monkeypatch
+):
+    from rapid_mlx.cua import config as config_mod
+    from rapid_mlx.cua.planner import validate_planner_url
+
+    cfg_path = tmp_path / "cua-config.json"
+    monkeypatch.setattr(config_mod, "CONFIG_PATH", cfg_path)
+    cfg_path.write_text(
+        json.dumps(
+            {
+                "presets": {
+                    "legacy": {
+                        "url": "https://planner.example/v1/chat/completions",
+                        "model": "m",
+                        "api_key": "sk-legacy",
+                        "user_created": True,
+                    }
+                }
+            }
+        )
+    )
+    resolved = config_mod.resolve_planner("legacy")
+    assert resolved.allow_remote is True
+    assert validate_planner_url(resolved.url, resolved.allow_remote) == resolved.url
+
+
+def test_planner_description_uses_endpoint_location_not_permission():
+    from rapid_mlx.cua.config import PlannerConfig
+
+    local = PlannerConfig(
+        preset="keyed-local",
+        url="http://127.0.0.2:1234/v1/chat/completions",
+        model="m",
+        api_key="sk-local",
+        allow_remote=True,
+    )
+    assert "[local]" in local.describe()
+
+
 def test_preset_name_conflicts(tmp_path, monkeypatch):
     from rapid_mlx.cua import config as config_mod
 
@@ -1695,6 +1735,7 @@ def test_validate_url_accepts_domain_names():
             "http://api.example.com/v1/chat/completions", allow_remote=True
         )
     assert validate_planner_url("http://127.0.0.1:18888/v1", allow_remote=False)
+    assert validate_planner_url("http://127.0.0.2:18888/v1", allow_remote=False)
     assert validate_planner_url("http://localhost:18888/v1", allow_remote=False)
     assert validate_planner_url("http://localhost.:18888/v1", allow_remote=False)
     assert validate_planner_url("http://[::1]:18888/v1", allow_remote=False)
