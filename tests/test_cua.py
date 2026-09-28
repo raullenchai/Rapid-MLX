@@ -1715,6 +1715,8 @@ def test_save_preset_input_validation(tmp_path, monkeypatch, config_dir):
         config_mod.save_user_preset("Bad Name!", "http://a/v1", "m")
     with pytest.raises(ValueError, match="http"):
         config_mod.save_user_preset("ok", "ftp://a/v1", "m")
+    with pytest.raises(ValueError, match="hostname"):
+        config_mod.save_user_preset("ok", "https:///v1", "m")
     with pytest.raises(ValueError, match="HTTPS"):
         config_mod.save_user_preset(
             "ok", "http://api.x.com/v1", "m", api_key="k", allow_remote=True
@@ -1784,7 +1786,10 @@ def test_write_stored_survives_unlink_failure(tmp_path, monkeypatch, config_dir)
 def test_validate_url_accepts_domain_names():
     """Hostnames (api.example.com) are remote by definition — they must pass
     validation with allow_remote and fail without it."""
+    from rapid_mlx.cua.config import is_loopback_url
     from rapid_mlx.cua.planner import validate_planner_url
+
+    assert is_loopback_url("https:///v1") is False
 
     url = "https://api.example.com/v1/chat/completions"
     assert validate_planner_url(url, allow_remote=True) == url
