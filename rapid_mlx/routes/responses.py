@@ -4583,12 +4583,7 @@ async def _stream_responses(
             uses_reserved_slot = bool(reasoning_item_added)
             if reasoning_item_finalized:
                 return events, reasoning_item_payload_done, uses_reserved_slot
-            if reasoning_item_added:
-                if reasoning_output_index is None:
-                    reasoning_output_index = 0
-                if reasoning_item_id is None:
-                    reasoning_item_id = _item_id("reasoning", "rs")
-            elif accumulated_reasoning_text:
+            if accumulated_reasoning_text:
                 reasoning_output_index = len(completed_output)
                 reasoning_item_id = _item_id("reasoning", "rs")
                 reasoning_item_added = True

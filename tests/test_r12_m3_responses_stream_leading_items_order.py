@@ -160,6 +160,23 @@ class _EngineWithToolCall:
         )
 
 
+class _EngineWithReasoningOnly:
+    preserve_native_tool_format = False
+
+    def __init__(self):
+        self.tokenizer = _Tokenizer()
+
+    async def stream_chat(self, messages, **kwargs):
+        yield _GenerationOutput(
+            text="",
+            new_text="thinking without a final answer",
+            prompt_tokens=3,
+            completion_tokens=1,
+            channel="reasoning",
+            finish_reason="stop",
+        )
+
+
 _IMPORTED = (
     "rapid_mlx.config",
     "rapid_mlx.config.server_config",
@@ -423,6 +440,27 @@ def test_buffered_strict_replay_matches_origin_main_golden(
 
     replay = _parse_sse("".join(asyncio.run(collect_replay())))
     assert _golden_projection(replay) == origin_main_stream_goldens[scenario]
+
+
+def test_reasoning_only_finalization_keeps_opened_item_identity(
+    make_client,
+):
+    engine = _EngineWithReasoningOnly()
+    make_client.set(engine)
+    from rapid_mlx.routes import responses as responses_route
+
+    events = _run_shared_responses_builder(responses_route, engine, _stream_payload())
+    added = next(
+        data["item"]
+        for name, data in events
+        if name == "response.output_item.added" and data["item"]["type"] == "reasoning"
+    )
+    done = next(
+        data["item"]
+        for name, data in events
+        if name == "response.output_item.done" and data["item"]["type"] == "reasoning"
+    )
+    assert done["id"] == added["id"]
 
 
 def _assert_leading_items_before_message(events):
