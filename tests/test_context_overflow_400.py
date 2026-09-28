@@ -105,7 +105,7 @@ class _StubEngine:
         raise AssertionError("engine.stream_chat must not be reached on the 400 path")
 
 
-def _make_app(routes: list[Any]) -> TestClient:
+def _make_app(routes: list[Any], *, max_prompt_tokens: int | None = None) -> TestClient:
     cfg = reset_config()
     cfg.engine = _StubEngine()
     cfg.model_name = "qwen3-0.6b-8bit"
@@ -115,6 +115,7 @@ def _make_app(routes: list[Any]) -> TestClient:
     cfg.reasoning_parser_name = None
     cfg.default_max_tokens = 1024
     cfg.thinking_token_budget = 0
+    cfg.max_prompt_tokens = max_prompt_tokens
 
     app = FastAPI()
     for router in routes:
@@ -171,6 +172,26 @@ def test_chat_completions_rejects_over_context_window():
     assert err.get("code") == "context_length_exceeded"
     assert err.get("type") == "invalid_request_error"
     assert str(_CONTEXT_WINDOW) in err.get("message", "")
+
+
+def test_chat_completions_rejects_over_operational_prompt_cap_before_engine():
+    """A serve-level prompt cap wins even when the model window has room."""
+    from rapid_mlx.routes.chat import router as chat_router
+
+    client = _make_app([chat_router], max_prompt_tokens=16_384)
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "qwen3-0.6b-8bit",
+            "messages": [{"role": "user", "content": _huge_text(20_000)}],
+            "max_tokens": 16,
+        },
+    )
+
+    assert resp.status_code == 400, resp.text
+    err = _extract_error(resp.json())
+    assert err.get("code") == "context_length_exceeded"
+    assert "16384" in err.get("message", "")
 
 
 # ─── /v1/completions ────────────────────────────────────────────────

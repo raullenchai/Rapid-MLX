@@ -270,6 +270,7 @@ _default_min_p: float | None = None  # Set via --default-min-p
 _default_repetition_penalty: float | None = None  # Set via --default-repetition-penalty
 _default_presence_penalty: float | None = None  # Set via --default-presence-penalty
 _default_frequency_penalty: float | None = None  # Set via --default-frequency-penalty
+_max_prompt_tokens: int | None = None
 
 
 def _bind_audio_worker_for_engine(engine: object | None) -> bool:
@@ -3318,6 +3319,7 @@ def _sync_config() -> None:
     cfg.default_repetition_penalty = _default_repetition_penalty
     cfg.default_presence_penalty = _default_presence_penalty
     cfg.default_frequency_penalty = _default_frequency_penalty
+    cfg.max_prompt_tokens = _max_prompt_tokens
     cfg.alias_recommended_sampling = _alias_recommended_sampling
     cfg.generation_config_sampling = _generation_config_sampling
     cfg.enable_auto_tool_choice = _enable_auto_tool_choice
@@ -3632,7 +3634,7 @@ def _capture_start_failures(func):
 def _build_parser() -> argparse.ArgumentParser:
     """Build the parser for the standalone ``python -m rapid_mlx.server`` CLI."""
 
-    from .cli import _PortContextArgumentParser
+    from .cli import _PortContextArgumentParser, positive_int
 
     parser = _PortContextArgumentParser(
         description="Rapid-MLX OpenAI-compatible server for LLM and MLLM inference",
@@ -3800,6 +3802,16 @@ Examples:
         type=int,
         default=None,
         help="Default max tokens for generation (caps when client sends None)",
+    )
+    parser.add_argument(
+        "--max-prompt-tokens",
+        type=positive_int,
+        default=None,
+        metavar="TOKENS",
+        help=(
+            "Operational prompt-token admission ceiling. Requests above this "
+            "limit are rejected before prefill."
+        ),
     )
     # ``--api-key`` accepts an inline value OR falls back to the
     # ``RAPID_MLX_API_KEY`` env var. The env-var form keeps the bearer
@@ -4041,7 +4053,7 @@ def main():
     uvicorn_log_level = configure_logging(args.log_level)
 
     # Set global configuration
-    global _api_key, _default_timeout, _rate_limiter
+    global _api_key, _default_timeout, _rate_limiter, _max_prompt_tokens
     global _default_temperature, _default_top_p, _default_top_k
     global _enable_audio_lane
     # Task #292: forward ``--enable-audio`` to the gate that decides
@@ -4058,6 +4070,7 @@ def main():
     # docstring for the dogfood-v0.8.2 finding #3 context.
     _api_key = _resolve_api_key(args.api_key)
     _default_timeout = args.timeout
+    _max_prompt_tokens = args.max_prompt_tokens
     if args.default_temperature is not None:
         _default_temperature = args.default_temperature
     if args.default_top_p is not None:

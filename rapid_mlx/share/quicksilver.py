@@ -96,6 +96,9 @@ CATALOG_REASONING_REQUIRED: frozenset[str] = frozenset({"glm-5.3-flash"})
 # ``reasoning_effort`` (or any other reasoning knob) still wins per request,
 # and an explicit passthrough after ``--`` replaces the injected value.
 CATALOG_DEFAULT_REASONING_EFFORT: dict[str, str] = {"glm-5.3-flash": "low"}
+# Operational prompt ceilings measured against each pool listing's memory and
+# first-token budget. Listings absent from this table keep the server default.
+CATALOG_MAX_PROMPT_TOKENS: dict[str, int] = {"glm-5.3-flash": 16_384}
 
 # §3.1 error taxonomy: terminal codes surface + exit non-zero; the rest
 # (429 / 5xx / network) retry with capped exponential backoff.
@@ -1516,6 +1519,14 @@ def _run_share(
         t.split("=", 1)[0] == "--default-reasoning-effort" for t in passthrough
     ):
         extra += ["--default-reasoning-effort", default_effort]
+    explicit_prompt_cap = _passthrough_option_value(passthrough, "--max-prompt-tokens")
+    prompt_cap: int | str | None = (
+        explicit_prompt_cap
+        if explicit_prompt_cap is not None
+        else CATALOG_MAX_PROMPT_TOKENS.get(catalog_id)
+    )
+    if prompt_cap is not None and explicit_prompt_cap is None:
+        extra += ["--max-prompt-tokens", str(prompt_cap)]
     # Pool requests (and the relay's readiness probe) address the node by its
     # CATALOG id, but the serve alias differs (§5.4, e.g. nemotron-3.5-lightning
     # vs nemotron-3.5-lightning-30b-4bit). Expose the loaded model UNDER the
@@ -1653,6 +1664,11 @@ def _run_share(
                             f"rapid-mlx: serving {display_model} to the "
                             f"QuickSilver pool — node {cache['node_id']}"
                             + (f", payout account {payout}" if payout else "")
+                            + (
+                                f", max prompt {prompt_cap} tokens"
+                                if prompt_cap is not None
+                                else ""
+                            )
                             + f", heartbeat every {interval:.0f}s. Ctrl-C to stop."
                         ),
                         flush=True,
