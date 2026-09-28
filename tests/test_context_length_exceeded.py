@@ -442,6 +442,60 @@ def test_operational_prompt_cap_counts_batched_mllm_tokenizer_output():
     assert excinfo.value.detail["error"]["code"] == "context_length_exceeded"
 
 
+def test_tokenized_prompt_length_supports_tensor_and_generic_outputs():
+    from rapid_mlx.service.helpers import _tokenized_prompt_length
+
+    class _Tensor:
+        shape = (1, 7)
+
+    class _Sized:
+        def __len__(self):
+            return 5
+
+    assert _tokenized_prompt_length({}) == 0
+    assert _tokenized_prompt_length(_Tensor()) == 7
+    assert _tokenized_prompt_length(_Sized()) == 5
+    assert _tokenized_prompt_length(object()) == 0
+
+
+def test_operational_prompt_cap_allows_countable_mllm_prompt_under_cap():
+    from rapid_mlx.config import get_config
+    from rapid_mlx.service.helpers import enforce_context_length_for_messages
+
+    class _Tokenizer:
+        def apply_chat_template(self, messages, **kwargs):  # noqa: ARG002
+            assert kwargs["enable_thinking"] is False
+            return [0] * 32
+
+    class _MLLMEngine:
+        is_mllm = True
+        tokenizer = _Tokenizer()
+
+    get_config().max_prompt_tokens = 16_384
+    assert (
+        enforce_context_length_for_messages(
+            _MLLMEngine(),
+            [{"role": "user", "content": "small prompt"}],
+            enable_thinking=False,
+        )
+        == 32
+    )
+
+
+def test_mllm_prompt_admission_keeps_legacy_skip_without_operational_cap():
+    from rapid_mlx.service.helpers import enforce_context_length_for_messages
+
+    class _MLLMEngine:
+        is_mllm = True
+
+    assert (
+        enforce_context_length_for_messages(
+            _MLLMEngine(), [{"role": "user", "content": "prompt"}]
+        )
+        is None
+    )
+
+
 @pytest.mark.parametrize("failure", ["missing", "raises", "empty"])
 def test_operational_prompt_cap_fails_closed_when_mllm_count_unavailable(failure):
     """An enabled safety ceiling must never fall through to Metal uncounted."""
@@ -490,6 +544,52 @@ def test_operational_prompt_cap_fails_closed_when_text_count_unavailable():
         enforce_context_length_for_messages(
             _Engine(), [{"role": "user", "content": "prompt"}]
         )
+    assert excinfo.value.detail["error"]["code"] == "context_length_exceeded"
+
+
+def test_operational_prompt_cap_fails_closed_without_text_prompt_builder():
+    from fastapi import HTTPException
+
+    from rapid_mlx.config import get_config
+    from rapid_mlx.service.helpers import enforce_context_length_for_messages
+
+    get_config().max_prompt_tokens = 16_384
+    with pytest.raises(HTTPException) as excinfo:
+        enforce_context_length_for_messages(
+            object(), [{"role": "user", "content": "prompt"}]
+        )
+    assert excinfo.value.detail["error"]["code"] == "context_length_exceeded"
+
+
+def test_operational_prompt_cap_fails_closed_when_text_rendering_fails():
+    from fastapi import HTTPException
+
+    from rapid_mlx.config import get_config
+    from rapid_mlx.service.helpers import enforce_context_length_for_messages
+
+    class _Engine:
+        is_mllm = False
+
+        def build_prompt(self, messages, **kwargs):  # noqa: ARG002
+            raise RuntimeError("engine is unloading")
+
+    get_config().max_prompt_tokens = 16_384
+    with pytest.raises(HTTPException) as excinfo:
+        enforce_context_length_for_messages(
+            _Engine(), [{"role": "user", "content": "prompt"}]
+        )
+    assert excinfo.value.detail["error"]["code"] == "context_length_exceeded"
+
+
+def test_operational_prompt_cap_fails_closed_when_raw_prompt_count_unavailable():
+    from fastapi import HTTPException
+
+    from rapid_mlx.config import get_config
+    from rapid_mlx.service.helpers import enforce_context_length_for_prompt
+
+    get_config().max_prompt_tokens = 16_384
+    with pytest.raises(HTTPException) as excinfo:
+        enforce_context_length_for_prompt(object(), "uncountable")
     assert excinfo.value.detail["error"]["code"] == "context_length_exceeded"
 
 
