@@ -299,7 +299,9 @@ def test_failed_twins_exist_and_mirror_their_success_event(registry):
         assert twin_props["error_class"]["kind"] == "enum", name
 
         identifying = {
-            k: v for k, v in twin_props.items() if k not in {"error_class", "extra"}
+            k: v
+            for k, v in twin_props.items()
+            if k not in {"error_class", "extra", "extra_recovery"}
         }
         assert set(identifying) == set(success_props), (
             f"{name} identifying props differ from {declared}"

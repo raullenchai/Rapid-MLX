@@ -229,7 +229,7 @@ def test_chat_route_rejects_image_on_text_lane_with_typed_reason():
         "Model 'qwen3-vl-8b-4bit' is serving text-only; image input is unsupported. "
         "The installed vision runtime (mlx-vlm) is missing or too old"
     )
-    assert "'rapid-mlx[vision]'" in message
+    assert "'rapid-mlx[vision]==" in message
     assert error == {
         "type": "invalid_request_error",
         "code": "image_input_unsupported",

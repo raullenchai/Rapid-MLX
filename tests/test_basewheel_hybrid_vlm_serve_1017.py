@@ -53,6 +53,7 @@ def _patch_probes(
     """Stub the two offline probes ``resolve_serving_lane`` consults so the
     lane decision is exercised without a materialized checkpoint config."""
     from rapid_mlx.api import utils as api_utils
+    from rapid_mlx.models import mllm as mllm_mod
 
     monkeypatch.setattr(api_utils, "is_mllm_model", lambda name: is_mllm)
     monkeypatch.setattr(
@@ -64,6 +65,11 @@ def _patch_probes(
         api_utils,
         "mllm_hybrid_runtime_supported",
         lambda: hybrid_runtime_supported,
+    )
+    monkeypatch.setattr(
+        mllm_mod,
+        "vision_runtime_status",
+        lambda: (mllm_mod.VisionRuntimeStatus.OK, None),
     )
 
 

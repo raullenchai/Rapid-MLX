@@ -16,6 +16,14 @@ from rapid_mlx import cli
 from rapid_mlx.audio import registry, runtime_requirements
 
 
+@pytest.fixture(autouse=True)
+def _audio_runtime_present(monkeypatch) -> None:
+    """These tests exercise post-preflight runtime assets, not extra recovery."""
+    monkeypatch.setattr(
+        "rapid_mlx.audio.probe.require_audio_or_exit", lambda _name: None
+    )
+
+
 def test_kokoro_alias_and_hf_id_declare_voice_assets() -> None:
     expected = (
         registry.AudioRuntimeAsset(
