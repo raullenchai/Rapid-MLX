@@ -145,6 +145,14 @@ are marked; multimodal and MCP surfaces link to their own guides.
 | `/readyz` | GET | Alias for `/health/ready` |
 | `/livez` | GET | Process liveness only (does not check model readiness) |
 | `/metrics` | GET | Prometheus metrics |
+| `/v1/cua/capabilities` | GET | Authenticated computer-use protocol and host availability |
+| `/v1/cua/permissions` | GET | Authenticated macOS Accessibility and Screen Recording readiness |
+| `/v1/cua/apps` | GET | Authenticated running-app discovery for custom CUA clients |
+| `/v1/cua/apps/{app}/windows` | GET | Authenticated window discovery for an app |
+| `/v1/cua/runs` | GET/POST | List or create supervised high-level computer-use runs |
+| `/v1/cua/runs/{id}` | GET | Poll typed events, terminal state, and any pending approval gate |
+| `/v1/cua/runs/{id}/approval` | POST | Resolve a pending gate with `{"approved": true|false}` |
+| `/v1/cua/runs/{id}/cancel` | POST | Cancel a run |
 
 For lazy or idle-unload deployments, `/metrics` always exposes primary-model
 residency and lifecycle series even while the engine is in standby:

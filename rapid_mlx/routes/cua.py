@@ -9,12 +9,15 @@ exactly one run may be active.
 
 from __future__ import annotations
 
-from typing import Any
+import sys
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+from starlette.concurrency import run_in_threadpool
 
+from ..computer_use.errors import ComputerUseError
 from ..config import get_config
 from ..cua import service as cua_service
 from ..cua.config import delete_user_preset, load_config, save_user_preset
@@ -86,6 +89,39 @@ class CUARunCreated(BaseModel):
     status: str
 
 
+class CUAEvent(BaseModel):
+    """Stable event envelope; event-specific fields remain forward compatible."""
+
+    model_config = ConfigDict(extra="allow")
+
+    kind: str
+    seq: int
+    ts: float
+    app: str | None = None
+    step: int | None = None
+    action: str | None = None
+    step_instruction: str | None = None
+    element_index: int | None = None
+    target_label: str | None = None
+    latency_s: float | None = None
+    outcome: str | None = None
+    tree_changed: bool | None = None
+    url_after: str | None = None
+    reason: str | None = None
+    timeout_s: float | None = None
+    approved: bool | None = None
+    status: str | None = None
+    final_summary: str | None = None
+    error: str | None = None
+
+
+class CUAPendingGate(BaseModel):
+    kind: Literal["approval"] = "approval"
+    reason: str
+    requested_at: float | None = None
+    expires_at: float | None = None
+
+
 class CUARunView(BaseModel):
     run_id: str
     app: str
@@ -95,17 +131,61 @@ class CUARunView(BaseModel):
     error: str
     planner: str
     events_after_seq: int
-    events: list[dict[str, Any]]
-    run_dir: str
+    events: list[CUAEvent]
+    pending_gate: CUAPendingGate | None = None
+
+
+class CUARunSummary(BaseModel):
+    run_id: str
+    app: str
+    goal: str
+    status: str
+    created_at: float
 
 
 class CUARunList(BaseModel):
-    runs: list[dict[str, Any]]
+    runs: list[CUARunSummary]
 
 
 class CUAApprovalResult(BaseModel):
     run_id: str
     approved: bool
+
+
+class CUAGateDecision(BaseModel):
+    approved: bool = True
+
+
+class CUACapabilities(BaseModel):
+    protocol_version: int = 1
+    available: bool
+    platform: str
+    discovery: list[str]
+    run_operations: list[str]
+    max_concurrent_runs: int
+
+
+class CUAPermissions(BaseModel):
+    accessibility: bool | None
+    screen_recording: bool | None
+    hints: list[str] = Field(default_factory=list)
+
+
+class CUAApp(BaseModel):
+    name: str | None
+    bundle_id: str | None = Field(alias="bundleId")
+    pid: int
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class CUAWindow(BaseModel):
+    index: int
+    title: str
+    x: float | None = None
+    y: float | None = None
+    width: float | None = None
+    height: float | None = None
 
 
 def _service() -> cua_service.CUAService:
@@ -119,7 +199,81 @@ def _http_error(exc: Exception) -> HTTPException:
         return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     if isinstance(exc, ValueError):
         return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    if isinstance(exc, ComputerUseError):
+        code_to_status = {
+            "app_not_found": status.HTTP_404_NOT_FOUND,
+            "window_not_found": status.HTTP_404_NOT_FOUND,
+            "unsupported_platform": status.HTTP_501_NOT_IMPLEMENTED,
+            "permission_denied": status.HTTP_403_FORBIDDEN,
+        }
+        return HTTPException(
+            status_code=code_to_status.get(exc.code, status.HTTP_400_BAD_REQUEST),
+            detail={
+                "code": exc.code,
+                "message": exc.message,
+                "recovery": list(exc.recovery),
+            },
+        )
     return HTTPException(status_code=500, detail=str(exc))
+
+
+def _backend():
+    # Keep server/router imports safe on Linux and on Macs without PyObjC.
+    from ..computer_use import backend
+
+    return backend
+
+
+def _discovery_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, ImportError):
+        exc = ComputerUseError(
+            "unsupported_platform", "computer use requires macOS with PyObjC"
+        )
+    return _http_error(exc)
+
+
+@router.get("/capabilities", response_model=CUACapabilities)
+async def get_capabilities() -> CUACapabilities:
+    return CUACapabilities(
+        available=sys.platform == "darwin",
+        platform=sys.platform,
+        discovery=["permissions", "apps", "windows"],
+        run_operations=["create", "poll", "approve", "deny", "cancel"],
+        max_concurrent_runs=cua_service.MAX_CONCURRENT_RUNS,
+    )
+
+
+@router.get("/permissions", response_model=CUAPermissions)
+async def get_permissions() -> CUAPermissions:
+    if sys.platform != "darwin":
+        return CUAPermissions(
+            accessibility=None,
+            screen_recording=None,
+            hints=["Computer use requires a macOS host with PyObjC installed."],
+        )
+    try:
+        payload = await run_in_threadpool(_backend().permissions)
+        return CUAPermissions(**payload)
+    except (ComputerUseError, ImportError) as exc:
+        raise _discovery_error(exc) from exc
+
+
+@router.get("/apps", response_model=list[CUAApp], response_model_by_alias=False)
+async def list_apps() -> list[CUAApp]:
+    try:
+        apps = await run_in_threadpool(_backend().list_apps)
+        return [CUAApp(**app) for app in apps]
+    except (ComputerUseError, ImportError) as exc:
+        raise _discovery_error(exc) from exc
+
+
+@router.get("/apps/{app}/windows", response_model=list[CUAWindow])
+async def list_windows(app: str) -> list[CUAWindow]:
+    try:
+        windows = await run_in_threadpool(_backend().list_windows, app)
+        return [CUAWindow(**window) for window in windows]
+    except (ComputerUseError, ImportError) as exc:
+        raise _discovery_error(exc) from exc
 
 
 @router.get("/planners", response_model=list[CUAPlannerInfo])
@@ -215,17 +369,20 @@ async def get_run_events(
 
 
 @router.post("/runs/{run_id}/approval", response_model=CUAApprovalResult)
-async def approve_run(run_id: str) -> CUAApprovalResult:
+async def approve_run(
+    run_id: str, decision: CUAGateDecision | None = None
+) -> CUAApprovalResult:
     try:
-        approved = _service().get(run_id).approve()
+        requested = True if decision is None else decision.approved
+        resolved = _service().get(run_id).resolve_gate(requested)
     except cua_service.CUARunNotFoundError as exc:
         raise _http_error(exc) from exc
-    if not approved:
+    if not resolved:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="run is not awaiting approval",
         )
-    return CUAApprovalResult(run_id=run_id, approved=True)
+    return CUAApprovalResult(run_id=run_id, approved=requested)
 
 
 @router.post("/runs/{run_id}/cancel", response_model=CUARunView)

@@ -44,6 +44,34 @@ def client(monkeypatch, tmp_path, authorized):
 
     monkeypatch.setattr(backend_mod, "get_app_state", fake_get_app_state)
     monkeypatch.setattr(
+        backend_mod,
+        "permissions",
+        lambda: {
+            "accessibility": True,
+            "screen_recording": False,
+            "hints": ["Grant Screen Recording."],
+        },
+    )
+    monkeypatch.setattr(
+        backend_mod,
+        "list_apps",
+        lambda: [{"name": "Finder", "bundleId": "com.apple.finder", "pid": 42}],
+    )
+    monkeypatch.setattr(
+        backend_mod,
+        "list_windows",
+        lambda app: [
+            {
+                "index": 0,
+                "title": f"{app} window",
+                "x": 1,
+                "y": 2,
+                "width": 3,
+                "height": 4,
+            }
+        ],
+    )
+    monkeypatch.setattr(
         backend_mod, "read_url", lambda app: "https://www.wikipedia.org/"
     )
     monkeypatch.setattr(backend_mod, "click", lambda app, index, **k: {"ok": True})
@@ -117,6 +145,10 @@ def test_cua_routes_fail_closed_without_server_api_key(client, api_key):
     cfg.api_key = api_key
     requests = (
         ("get", "/v1/cua/planners"),
+        ("get", "/v1/cua/capabilities"),
+        ("get", "/v1/cua/permissions"),
+        ("get", "/v1/cua/apps"),
+        ("get", "/v1/cua/apps/Finder/windows"),
         ("post", "/v1/cua/planners"),
         ("delete", "/v1/cua/planners/custom"),
         ("get", "/v1/cua/runs"),
@@ -139,6 +171,29 @@ def test_list_planners(client):
     assert response.status_code == 200
     names = {p["name"] for p in response.json()}
     assert {"local-27b", "local-9b"} <= names
+
+
+def test_discovery_contract(client):
+    capabilities = client.get("/v1/cua/capabilities", headers=AUTH)
+    assert capabilities.status_code == 200
+    assert capabilities.json()["run_operations"] == [
+        "create",
+        "poll",
+        "approve",
+        "deny",
+        "cancel",
+    ]
+
+    permissions = client.get("/v1/cua/permissions", headers=AUTH)
+    assert permissions.json()["accessibility"] is True
+    assert permissions.json()["screen_recording"] is False
+
+    apps = client.get("/v1/cua/apps", headers=AUTH)
+    assert apps.json() == [
+        {"name": "Finder", "bundle_id": "com.apple.finder", "pid": 42}
+    ]
+    windows = client.get("/v1/cua/apps/Finder/windows", headers=AUTH)
+    assert windows.json()[0]["title"] == "Finder window"
 
 
 def test_planner_crud_roundtrip(client):
@@ -235,7 +290,8 @@ def test_run_lifecycle_done(client):
     assert kinds[-1] == "terminal"
     assert kinds.count("started") == 1
     assert kinds.count("terminal") == 1
-    assert view["run_dir"] == "/tmp/fake-cua-run"
+    assert "run_dir" not in view
+    assert all("run_dir" not in event for event in view["events"])
 
     # pagination: events after the last seq is empty
     tail = test_client.get(
@@ -309,6 +365,31 @@ def test_approval_gate_flow(client):
     approved = test_client.post("/v1/cua/runs/gate1/approval", headers=AUTH)
     assert approved.status_code == 200
     assert approved.json() == {"run_id": "gate1", "approved": True}
+
+
+def test_gate_is_visible_and_can_be_denied(client):
+    active = cua_service.CUAServiceRun(
+        run_id="gate-deny",
+        app="A",
+        goal="g",
+        config=None,  # type: ignore[arg-type]
+    )
+    client.fresh_service._runs[active.run_id] = active
+
+    async def scenario():
+        waiter = asyncio.create_task(active.wait_for_approval("sign in", timeout=5))
+        await asyncio.sleep(0.01)
+        view = client.get(f"/v1/cua/runs/{active.run_id}", headers=AUTH).json()
+        assert view["pending_gate"]["reason"] == "sign in"
+        denied = client.post(
+            f"/v1/cua/runs/{active.run_id}/approval",
+            headers=AUTH,
+            json={"approved": False},
+        )
+        assert denied.json() == {"run_id": active.run_id, "approved": False}
+        return await waiter
+
+    assert asyncio.run(scenario()) is False
 
 
 def test_approval_timeout(client):

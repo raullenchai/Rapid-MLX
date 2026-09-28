@@ -47,20 +47,21 @@ class CUAServiceRun:
     _approve_event: asyncio.Event = field(default_factory=asyncio.Event)
     _stop_event: asyncio.Event = field(default_factory=asyncio.Event)
     _awaiting: bool = False
+    _pending_gate: dict | None = None
 
     def emit(self, event: dict) -> None:
         with self._lock:
             # Cursor metadata is service-owned.  A sink payload must not be able
             # to forge sequence numbers or timestamps and break pagination.
+            if event.get("kind") == "started" and event.get("run_dir"):
+                self.run_dir = str(event["run_dir"])
+            # Trace paths are host-private implementation details.  Custom GUI
+            # clients receive the event, but never the local filesystem path.
+            event = {key: value for key, value in event.items() if key != "run_dir"}
             event = {**event, "seq": len(self.events) + 1, "ts": time.time()}
             self.events.append(event)
             kind = event.get("kind")
-            if kind == "started" and event.get("run_dir"):
-                self.run_dir = str(event["run_dir"])
-            elif kind == "gate":
-                # Publish a fresh one-shot event before exposing the awaiting
-                # state. A fast approval can no longer land on the prior gate.
-                self._approve_event = asyncio.Event()
+            if kind == "gate":
                 self._awaiting = True
                 self.status = "awaiting_approval"
             elif kind == "gate_resolved":
@@ -69,32 +70,41 @@ class CUAServiceRun:
                     self.status = "running"
 
     async def wait_for_approval(self, reason: str, timeout: float) -> bool:
+        gate = {
+            "kind": "approval",
+            "reason": reason,
+            "requested_at": time.time(),
+            "expires_at": time.time() + timeout,
+        }
         with self._lock:
-            # Production emits ``gate`` first. Direct SDK/test callers still
-            # receive a one-shot event when no gate event established one.
-            if not self._awaiting:
-                self._approve_event = asyncio.Event()
-                self._awaiting = True
-            approval_event = self._approve_event
+            self._awaiting = True
+            self._pending_gate = gate
+            self.status = "awaiting_approval"
         self.emit({"kind": "gate_detail", "reason": reason, "timeout_s": timeout})
         try:
-            await asyncio.wait_for(approval_event.wait(), timeout=timeout)
-            return True
+            await asyncio.wait_for(self._approve_event.wait(), timeout=timeout)
+            with self._lock:
+                return bool(self._pending_gate and self._pending_gate.get("approved"))
         except (asyncio.TimeoutError, TimeoutError):
             return False
         finally:
             with self._lock:
-                if self._approve_event is approval_event:
-                    self._awaiting = False
-            approval_event.clear()
+                self._awaiting = False
+                self._pending_gate = None
+            self._approve_event.clear()
 
-    def approve(self) -> bool:
+    def resolve_gate(self, approved: bool) -> bool:
         with self._lock:
             if not self._awaiting:
                 return False
-            approval_event = self._approve_event
-        approval_event.set()
+            if self._pending_gate is None:
+                self._pending_gate = {"kind": "approval", "reason": "approval required"}
+            self._pending_gate["approved"] = approved
+        self._approve_event.set()
         return True
+
+    def approve(self) -> bool:
+        return self.resolve_gate(True)
 
     def cancel(self) -> None:
         self._stop_event.set()
@@ -112,7 +122,9 @@ class CUAServiceRun:
                 "planner": self.config.planner.describe() if self.config else "n/a",
                 "events_after_seq": events_after,
                 "events": events,
-                "run_dir": str(self.run_dir),
+                "pending_gate": dict(self._pending_gate)
+                if self._pending_gate
+                else None,
             }
 
 

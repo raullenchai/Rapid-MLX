@@ -49,6 +49,44 @@ key as `Authorization: Bearer <key>`; the Desktop-managed server supplies its
 own per-launch bearer. The standalone `rapid-mlx cua` CLI does not use this
 HTTP API.
 
+### Custom GUI clients
+
+Authenticated clients can implement the complete supervised task journey:
+
+```bash
+# Discover host readiness and target windows.
+curl -H "Authorization: Bearer $RAPID_API_KEY" http://127.0.0.1:8000/v1/cua/capabilities
+curl -H "Authorization: Bearer $RAPID_API_KEY" http://127.0.0.1:8000/v1/cua/permissions
+curl -H "Authorization: Bearer $RAPID_API_KEY" http://127.0.0.1:8000/v1/cua/apps
+curl -H "Authorization: Bearer $RAPID_API_KEY" \
+  http://127.0.0.1:8000/v1/cua/apps/Google%20Chrome/windows
+
+# Create a high-level run. Raw click and typing operations are not exposed.
+curl -X POST -H "Authorization: Bearer $RAPID_API_KEY" \
+  -H 'Content-Type: application/json' http://127.0.0.1:8000/v1/cua/runs \
+  -d '{"app":"Google Chrome","goal":"Open the Alan Turing article","planner":"local-9b"}'
+
+# Poll the returned run id. Use events_after_seq as the next `after` cursor.
+curl -H "Authorization: Bearer $RAPID_API_KEY" \
+  'http://127.0.0.1:8000/v1/cua/runs/RUN_ID/events?after=0'
+
+# When pending_gate is present, approve or deny it explicitly.
+curl -X POST -H "Authorization: Bearer $RAPID_API_KEY" \
+  -H 'Content-Type: application/json' \
+  http://127.0.0.1:8000/v1/cua/runs/RUN_ID/approval \
+  -d '{"approved":true}'
+
+# Cancellation is idempotent for an existing run.
+curl -X POST -H "Authorization: Bearer $RAPID_API_KEY" \
+  http://127.0.0.1:8000/v1/cua/runs/RUN_ID/cancel
+```
+
+Run responses contain a typed event envelope (`kind`, `seq`, `ts`) with
+event-specific fields, terminal status and summary, and the current
+`pending_gate`. Local trace paths are intentionally omitted from HTTP
+responses. Screenshots are not returned by this API; clients use structured
+events and host discovery without transferring captured private content.
+
 ## SDK
 
 ```python
