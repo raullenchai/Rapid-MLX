@@ -175,6 +175,7 @@ actor DesktopFunnelReporter {
         // The durable claim is the delivery boundary. Once it succeeds this
         // milestone is never attempted again, even if transport fails.
         guard claimMarker(at: marker) else { return }
+        guard Self.processState.allowsSending, isEnabled() else { return }
         await send(request)
     }
 

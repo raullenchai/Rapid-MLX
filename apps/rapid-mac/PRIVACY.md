@@ -139,7 +139,8 @@ These counters are sent only by installs whose first-run setup started on this
 version or later; existing installs never send them, including when setup is
 shown again. The engine result is counted only for the first engine start
 directly initiated by that setup flow; a later manual start, restart, or model
-switch is not counted as an onboarding result.
+switch is not counted as an onboarding result. The first chat reply is counted
+even if it happens on a later launch.
 
 The request is `POST https://rapidmlx.com/api/desktop-funnel` with exactly
 `{"v":"<app version>","m":"<milestone>"}`. It contains no install ID, device,

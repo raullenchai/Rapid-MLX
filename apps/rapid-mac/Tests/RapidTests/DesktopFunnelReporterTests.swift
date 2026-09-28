@@ -555,6 +555,34 @@ struct DesktopFunnelReporterTests {
         #expect(await probe.count == 0)
     }
 
+    @Test("Settings opt-out latch flipping during claim blocks transport")
+    func optOutLatchDuringClaimBlocksTransport() async throws {
+        let directory = temporaryDirectory("latched-during-claim")
+        defer {
+            DesktopFunnelReporter.resetProcessStateForTesting()
+            try? FileManager.default.removeItem(at: directory)
+        }
+        try enroll(directory)
+        let probe = FunnelSendProbe()
+        let reporter = DesktopFunnelReporter(
+            isEnabled: { true },
+            send: { request in await probe.send(request) },
+            markerDirectory: directory,
+            version: "0.15.3",
+            claimMarker: { url in
+                DesktopFunnelReporter.latchProcessOptOut()
+                return FileManager.default.createFile(atPath: url.path, contents: Data())
+            }
+        )
+
+        await reporter.report(.firstChatReply)
+
+        #expect(await probe.count == 0)
+        #expect(FileManager.default.fileExists(
+            atPath: marker("desktop_funnel_first_chat_reply", in: directory).path
+        ))
+    }
+
     @Test("Only the armed onboarding engine attempt emits a terminal outcome")
     func engineAttemptCausalityExcludesLaterManualRestartAndModelSwitch() {
         let gate = DesktopFunnelEngineAttemptGate()
