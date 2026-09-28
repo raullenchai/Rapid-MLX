@@ -73,6 +73,7 @@ struct ContentView: View {
     // See the note beside the detail's `.frame(minWidth: 440)`.
 
     @Environment(ServerManager.self) private var server
+    @Environment(CUAServerManager.self) private var cuaServer
     @Environment(DownloadManager.self) private var downloads
     @Environment(ShareComputeManager.self) private var shareCompute
     @Environment(ChatViewModel.self) private var chat
@@ -1215,6 +1216,7 @@ struct ContentView: View {
         case .computerUse:
             if computerUseEnabled {
                 ComputerUseView(
+                    cuaServer: cuaServer,
                     languageRuntime: DraftPostLanguageRuntime(
                         profile: server.activeModelProfile,
                         selectedAlias: alias,
@@ -1230,17 +1232,9 @@ struct ContentView: View {
                         port: server.activePort,
                         bearerToken: server.activeBearer,
                         liveServer: server
-                    ),
-                    cuaRuntime: CUAClient(
-                        host: server.host,
-                        port: server.activePort,
-                        bearerToken: server.activeBearer ?? ""
                     )
                 )
-                // Recreate the CUA state object when the app-owned server
-                // rotates credentials. Otherwise it retains a client with a
-                // stale bearer token across server restarts.
-                .id(server.activeBearer)
+                .id(cuaServer.sessionID)
             } else {
                 mainArea
             }

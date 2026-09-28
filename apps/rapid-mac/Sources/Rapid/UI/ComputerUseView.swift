@@ -11,9 +11,9 @@ private struct StarterCardHeightKey: PreferenceKey {
 }
 
 struct ComputerUseView: View {
+    @Bindable var cuaServer: CUAServerManager
     let languageRuntime: DraftPostLanguageRuntime?
     let visualRuntime: DraftPostVisualRuntime?
-    var cuaRuntime: CUAClient?
     @State private var showingDraftPost = false
     @State private var showingFreeUpSpace = false
     @StateObject private var cuaViewModel: CUAViewModel
@@ -34,15 +34,15 @@ struct ComputerUseView: View {
     @State private var measuredStarterHeight: CGFloat = 0
 
     init(
+        cuaServer: CUAServerManager,
         languageRuntime: DraftPostLanguageRuntime? = nil,
-        visualRuntime: DraftPostVisualRuntime? = nil,
-        cuaRuntime: CUAClient? = nil
+        visualRuntime: DraftPostVisualRuntime? = nil
     ) {
+        self.cuaServer = cuaServer
         self.languageRuntime = languageRuntime
         self.visualRuntime = visualRuntime
-        self.cuaRuntime = cuaRuntime
         _cuaViewModel = StateObject(
-            wrappedValue: CUAViewModel(api: cuaRuntime)
+            wrappedValue: CUAViewModel(api: cuaServer.client)
         )
     }
 
@@ -64,7 +64,7 @@ struct ComputerUseView: View {
                         .background(.orange.opacity(0.1), in: Capsule())
                 }
 
-                CUASection(viewModel: cuaViewModel)
+                cuaRuntimeSection
 
                 VStack(alignment: .leading, spacing: RapidTheme.Space.md) {
                     Text("Start with a flow").font(.headline)
@@ -128,6 +128,33 @@ struct ComputerUseView: View {
         }
         .sheet(isPresented: $showingFreeUpSpace) {
             FreeUpSpaceFlowSheet()
+        }
+        .onAppear { cuaServer.startIfNeeded() }
+    }
+
+    @ViewBuilder
+    private var cuaRuntimeSection: some View {
+        switch cuaServer.state {
+        case .ready:
+            CUASection(viewModel: cuaViewModel)
+        case .idle, .starting:
+            HStack(spacing: 10) {
+                ProgressView().controlSize(.small)
+                Text("Preparing Computer Use on this Mac…")
+                    .foregroundStyle(.secondary)
+            }
+            .accessibilityIdentifier("ComputerUse.Server.Starting")
+        case .failed(let message):
+            VStack(alignment: .leading, spacing: 10) {
+                Label(message, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+                Button("Try Again") {
+                    Task { await cuaServer.retry() }
+                }
+                .buttonStyle(.bordered)
+                .accessibilityIdentifier("ComputerUse.Server.Retry")
+            }
+            .accessibilityIdentifier("ComputerUse.Server.Error")
         }
     }
 
