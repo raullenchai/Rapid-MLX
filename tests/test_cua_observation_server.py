@@ -155,6 +155,7 @@ def test_observation_ax_tree_stays_on_requested_pid_with_same_named_apps(
         backend, "_resolve_app", lambda app, *, activate: (object(), app_info)
     )
     monkeypatch.setattr(backend, "_select_window", lambda *a, **k: window)
+    monkeypatch.setattr(backend, "_window_records", lambda app: [window])
     seen_pid = []
 
     def collect(app, **kwargs):
