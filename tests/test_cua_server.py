@@ -668,10 +668,12 @@ def test_target_resolver_requests_browser_automation_then_reresolves(
         ],
     )
     calls = 0
+    read_kwargs = []
 
     def read_url(*args, **kwargs):
         nonlocal calls
         calls += 1
+        read_kwargs.append(kwargs)
         if calls == 1:
             raise ComputerUseError(
                 "automation_permission_required", "browser access needs approval"
@@ -703,6 +705,10 @@ def test_target_resolver_requests_browser_automation_then_reresolves(
     assert resolved["automation"] is None
     assert resolved["targets"][0]["allowed_domain"] == "research.example"
     assert resolved["approval"]["kind"] == "website_scope"
+    assert read_kwargs == [
+        {"require_permission": True, "allow_background_app": True},
+        {"require_permission": True, "allow_background_app": True},
+    ]
 
     monkeypatch.setattr(
         backend, "read_url", lambda *a, **k: "https://research.example/article"

@@ -836,6 +836,7 @@ async def resolve_targets(request: CUATargetResolveRequest) -> CUATargetResoluti
                     f"pid:{app['pid']}",
                     window["window_id"],
                     require_permission=True,
+                    allow_background_app=True,
                 )
             except ComputerUseError as exc:
                 if exc.code == "automation_permission_required":
