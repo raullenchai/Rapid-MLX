@@ -319,84 +319,7 @@ struct CUASection: View {
       }
     }
         .sheet(isPresented: $viewModel.showAddBrain) {
-            VStack(alignment: .leading, spacing: 12) {
-        Text("Add Model").font(.headline)
-                Text(
-                    "Rapid always executes actions on this Mac. Choose where the planning model runs and exactly what it may receive."
-                )
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                Form {
-          TextField("Name (for example, My Local Model)", text: $brainDraftName)
-            .accessibilityIdentifier("ComputerUse.Agent.ModelName")
-          TextField("Model name", text: $brainDraftModel)
-            .accessibilityIdentifier("ComputerUse.Agent.ModelNameAtEndpoint")
-                    TextField("Endpoint URL", text: $brainDraftURL)
-            .accessibilityIdentifier("ComputerUse.Agent.ModelURL")
-                        .onChange(of: brainDraftURL) { _, _ in
-                            brainDraftAllowRemote = false
-                        }
-                    SecureField("API key (optional)", text: $brainDraftAPIKey)
-            .accessibilityIdentifier("ComputerUse.Agent.ModelKey")
-                    Toggle("Text only — do not send screenshots", isOn: $brainDraftTextOnly)
-            .accessibilityIdentifier("ComputerUse.Agent.ModelTextOnly")
-                    if !brainDraftURL.isEmpty && !CUAViewModel.isLoopbackEndpoint(brainDraftURL) {
-                        Toggle(
-              "Allow this endpoint to receive the task goal and, during execution, the Accessibility snapshot\(brainDraftTextOnly ? "" : ", and screenshot")",
-                            isOn: $brainDraftAllowRemote
-                        )
-            .accessibilityIdentifier("ComputerUse.Agent.ModelRemoteConsent")
-                        Text("External endpoints must use HTTPS. LAN addresses are also treated as external.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else if !brainDraftURL.isEmpty {
-                        Text("This loopback endpoint runs on this Mac and does not require an API key.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                if let error = viewModel.brainError {
-                    Text(error).font(.caption).foregroundStyle(.red)
-                }
-                HStack {
-                    Spacer()
-                    Button("Cancel") { viewModel.showAddBrain = false }
-            .accessibilityIdentifier("ComputerUse.Agent.ModelCancel")
-          Button("Save Model") {
-                        viewModel.newBrainName = brainDraftName
-                        viewModel.newBrainURL = brainDraftURL
-                        viewModel.newBrainModel = brainDraftModel
-                        viewModel.newBrainAPIKey = brainDraftAPIKey
-                        viewModel.newBrainTextOnly = brainDraftTextOnly
-                        viewModel.newBrainAllowRemote = brainDraftAllowRemote
-                        Task { await viewModel.saveBrain() }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(brainDraftName.isEmpty || brainDraftURL.isEmpty || brainDraftModel.isEmpty)
-          .accessibilityIdentifier("ComputerUse.Agent.ModelSave")
-                }
-            }
-            .padding(20)
-            .frame(width: 460)
-            .onAppear {
-                brainDraftName = ""
-                brainDraftURL = ""
-                brainDraftModel = ""
-                brainDraftAPIKey = ""
-                brainDraftTextOnly = false
-                brainDraftAllowRemote = false
-                viewModel.brainError = nil
-            }
-            .onDisappear {
-                // Never reuse a stale draft (an old key must not ride along
-                // into a different endpoint).
-                brainDraftName = ""
-                brainDraftURL = ""
-                brainDraftModel = ""
-                brainDraftAPIKey = ""
-                brainDraftTextOnly = false
-                brainDraftAllowRemote = false
-            }
+            addModelSheet
         }
     .sheet(isPresented: $showManageModels, onDismiss: {
       if addModelAfterManaging {
@@ -407,6 +330,136 @@ struct CUASection: View {
       manageModelsSheet
     }
     }
+
+  private var addModelSheet: some View {
+    VStack(spacing: 0) {
+      ScrollView {
+        VStack(alignment: .leading, spacing: 18) {
+          VStack(alignment: .leading, spacing: 6) {
+            Text("Add Model")
+              .font(.title3.weight(.semibold))
+            Text(
+              "Rapid always executes actions on this Mac. Choose where the planning model runs and exactly what it may receive."
+            )
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+          }
+
+          VStack(alignment: .leading, spacing: 14) {
+            modelField("Name", help: "For example, My Local Model") {
+              TextField("My Local Model", text: $brainDraftName)
+                .accessibilityIdentifier("ComputerUse.Agent.ModelName")
+            }
+            modelField("Model name", help: "The model identifier expected by this endpoint") {
+              TextField("Model identifier", text: $brainDraftModel)
+                .accessibilityIdentifier("ComputerUse.Agent.ModelNameAtEndpoint")
+            }
+            modelField("Endpoint URL", help: "A loopback URL on this Mac or an HTTPS endpoint") {
+              TextField("https://example.com/v1", text: $brainDraftURL)
+                .accessibilityIdentifier("ComputerUse.Agent.ModelURL")
+                .onChange(of: brainDraftURL) { _, _ in
+                  brainDraftAllowRemote = false
+                }
+            }
+            modelField("API key", help: "Optional. Stored only in your local Computer Use configuration.") {
+              SecureField("Optional", text: $brainDraftAPIKey)
+                .accessibilityIdentifier("ComputerUse.Agent.ModelKey")
+            }
+          }
+
+          VStack(alignment: .leading, spacing: 12) {
+            Toggle("Text only — do not send screenshots", isOn: $brainDraftTextOnly)
+              .fixedSize(horizontal: false, vertical: true)
+              .accessibilityIdentifier("ComputerUse.Agent.ModelTextOnly")
+
+            if !brainDraftURL.isEmpty && !CUAViewModel.isLoopbackEndpoint(brainDraftURL) {
+              Toggle(isOn: $brainDraftAllowRemote) {
+                Text(
+                  "Allow this endpoint to receive the task goal and, during execution, the Accessibility snapshot\(brainDraftTextOnly ? "" : ", and screenshot")"
+                )
+                .fixedSize(horizontal: false, vertical: true)
+              }
+              .accessibilityIdentifier("ComputerUse.Agent.ModelRemoteConsent")
+              Text("External endpoints must use HTTPS. LAN addresses are also treated as external.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            } else if !brainDraftURL.isEmpty {
+              Text("This loopback endpoint runs on this Mac and does not require an API key.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+          }
+
+          if let error = viewModel.brainError {
+            Text(error)
+              .font(.caption)
+              .foregroundStyle(.red)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+        }
+        .padding(24)
+      }
+
+      Divider()
+      HStack(spacing: 10) {
+        Spacer()
+        Button("Cancel") { viewModel.showAddBrain = false }
+          .keyboardShortcut(.cancelAction)
+          .accessibilityIdentifier("ComputerUse.Agent.ModelCancel")
+        Button("Save Model") {
+          viewModel.newBrainName = brainDraftName
+          viewModel.newBrainURL = brainDraftURL
+          viewModel.newBrainModel = brainDraftModel
+          viewModel.newBrainAPIKey = brainDraftAPIKey
+          viewModel.newBrainTextOnly = brainDraftTextOnly
+          viewModel.newBrainAllowRemote = brainDraftAllowRemote
+          Task { await viewModel.saveBrain() }
+        }
+        .buttonStyle(.borderedProminent)
+        .keyboardShortcut(.defaultAction)
+        .disabled(brainDraftName.isEmpty || brainDraftURL.isEmpty || brainDraftModel.isEmpty)
+        .accessibilityIdentifier("ComputerUse.Agent.ModelSave")
+      }
+      .padding(.horizontal, 24)
+      .padding(.vertical, 14)
+    }
+    .frame(minWidth: 420, idealWidth: 520, maxWidth: 620, minHeight: 460, idealHeight: 520)
+    .onAppear {
+      brainDraftName = ""
+      brainDraftURL = ""
+      brainDraftModel = ""
+      brainDraftAPIKey = ""
+      brainDraftTextOnly = false
+      brainDraftAllowRemote = false
+      viewModel.brainError = nil
+    }
+    .onDisappear {
+      brainDraftName = ""
+      brainDraftURL = ""
+      brainDraftModel = ""
+      brainDraftAPIKey = ""
+      brainDraftTextOnly = false
+      brainDraftAllowRemote = false
+    }
+  }
+
+  private func modelField<Content: View>(
+    _ label: String, help: String, @ViewBuilder content: () -> Content
+  ) -> some View {
+    VStack(alignment: .leading, spacing: 5) {
+      Text(label)
+        .font(.callout.weight(.medium))
+      content()
+        .textFieldStyle(.roundedBorder)
+      Text(help)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+  }
 
   private func targetResolutionApproval(_ approval: CUATargetApproval) -> some View {
     VStack(alignment: .leading, spacing: 10) {
