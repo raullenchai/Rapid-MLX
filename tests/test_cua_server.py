@@ -270,6 +270,7 @@ def test_target_resolver_silently_resolves_one_explicit_nonbrowser_window(client
     assert body["status"] == "resolved"
     assert body["approval"] is None
     assert body["targets"][0]["window_id"] == "cg:123"
+    assert body["targets"][0]["bundle_id"] == "com.apple.finder"
     assert body["targets"][0]["display_name"] == "Finder — Documents"
 
 
@@ -314,13 +315,13 @@ def test_target_resolver_cross_app_choice_requires_approval(client, monkeypatch)
     )
 
     async def choose(self, goal, catalog):
-        assert set(catalog[0]) == {
-            "catalog_id",
-            "app_name",
-            "window_title",
-            "front_to_back_order",
-        }
-        return {"target_ids": ["w1", "w2"], "reason": "two apps are required"}
+        assert catalog == [
+            {"catalog_id": "a1", "app_name": "Finder"},
+            {"catalog_id": "a2", "app_name": "TextEdit"},
+        ]
+        assert "Documents" not in repr(catalog)
+        assert "Notes" not in repr(catalog)
+        return {"target_ids": ["a1", "a2"], "reason": "two apps are required"}
 
     monkeypatch.setattr(cua_routes.Planner, "resolve_targets", choose)
     body = client.post(
@@ -332,6 +333,82 @@ def test_target_resolver_cross_app_choice_requires_approval(client, monkeypatch)
     assert len(body["targets"]) == 2
     assert body["approval"]["kind"] == "ambiguity"
     assert body["approval"]["options"][0]["target_ids"] == ["target_1", "target_2"]
+
+
+def test_target_resolver_does_not_send_window_titles_to_remote_without_consent(
+    client, monkeypatch
+):
+    from rapid_mlx.cua.config import PlannerConfig
+
+    monkeypatch.setattr(
+        cua_routes,
+        "resolve_planner",
+        lambda name: PlannerConfig(
+            preset=name,
+            url="https://planner.example/v1",
+            model="remote-model",
+            allow_remote=True,
+        ),
+    )
+    calls = []
+
+    async def choose(self, goal, catalog):
+        calls.append(catalog)
+        assert catalog == [{"catalog_id": "a1", "app_name": "Finder"}]
+        assert "Documents" not in repr(catalog)
+        return {"target_ids": ["a1"], "reason": "best match"}
+
+    monkeypatch.setattr(cua_routes.Planner, "resolve_targets", choose)
+    denied = client.post(
+        "/v1/cua/targets/resolve",
+        headers=AUTH,
+        json={"goal": "Organize these files", "planner": "remote"},
+    ).json()
+    assert denied["status"] == "unresolved"
+    assert calls == []
+
+    allowed = client.post(
+        "/v1/cua/targets/resolve",
+        headers=AUTH,
+        json={
+            "goal": "Organize these files",
+            "planner": "remote",
+            "allow_remote_app_discovery": True,
+        },
+    ).json()
+    assert allowed["status"] == "needs_approval"
+    assert len(calls) == 1
+
+
+def test_target_resolver_refuses_to_guess_among_same_app_windows(client, monkeypatch):
+    from rapid_mlx.computer_use import backend
+
+    monkeypatch.setattr(
+        backend,
+        "discover_target_windows",
+        lambda: [
+            {
+                "catalog_id": "w1",
+                "app": {"name": "Finder", "bundleId": "com.apple.finder", "pid": 42},
+                "window": {"window_id": "cg:123", "title": "Private Project"},
+                "z_order": 0,
+            },
+            {
+                "catalog_id": "w2",
+                "app": {"name": "Finder", "bundleId": "com.apple.finder", "pid": 42},
+                "window": {"window_id": "cg:124", "title": "Personal Files"},
+                "z_order": 1,
+            },
+        ],
+    )
+    body = client.post(
+        "/v1/cua/targets/resolve",
+        headers=AUTH,
+        json={"goal": "Use Finder to organize files", "planner": "local-9b"},
+    ).json()
+    assert body["status"] == "unresolved"
+    assert body["targets"] == []
+    assert "multiple eligible windows" in body["reason"]
 
 
 def test_target_resolver_browser_requires_trusted_domain(client, monkeypatch):
