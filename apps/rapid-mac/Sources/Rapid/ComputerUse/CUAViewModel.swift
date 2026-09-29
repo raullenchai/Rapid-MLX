@@ -227,7 +227,7 @@ final class CUAViewModel: ObservableObject {
     var canStart: Bool {
         let targetReady = selectedTargets.isEmpty
             ? (selectedApp != nil && selectedWindow != nil)
-            : selectedTargets.count >= 2
+            : true
         let legacyDomainReady = !selectedTargets.isEmpty
             || selectedApp?.isBrowser != true
             || selectedBrowserDomainError == nil
@@ -305,9 +305,7 @@ final class CUAViewModel: ObservableObject {
         selectedWindowID = nil
         windowOptions = []
         allowedDomain = ""
-        targetError = selectedTargets.count == 1
-            ? "Add one more authorized window to start a multi-window task."
-            : nil
+        targetError = nil
     }
 
     func removeSelectedTarget(id: String) {
@@ -316,9 +314,7 @@ final class CUAViewModel: ObservableObject {
         if selectedInitialTargetID == id {
             selectedInitialTargetID = selectedTargets.first?.targetID
         }
-        if selectedTargets.count == 1 {
-            targetError = "Add one more authorized window, or remove this target to use one window."
-        } else if selectedTargets.isEmpty {
+        if selectedTargets.isEmpty {
             targetError = nil
         }
     }
@@ -439,7 +435,7 @@ final class CUAViewModel: ObservableObject {
             permissionRequestMessage = Self.describe(requestError)
         } else if executorPermissions?.isGranted(permission) != true {
             permissionRequestMessage =
-                "macOS still shows \(permission.title) as not allowed for Rapid Computer Use. Review it in System Settings, then refresh."
+                "macOS still shows \(permission.title) as not allowed for Rapid-MLX Desktop. Review it in System Settings, then refresh."
         }
     }
 
@@ -652,14 +648,17 @@ final class CUAViewModel: ObservableObject {
     func start() async {
         guard canStart else { return }
         let frozenTargets = selectedTargets
+        let usesMultiTargetContract = frozenTargets.count >= 2
         let app: CUAAppOption
         let window: CUAWindowOption
-        let frozenInitialTargetID = frozenTargets.isEmpty
-            ? nil
-            : (selectedInitialTargetID ?? frozenTargets.first?.targetID)
-        if let initial = frozenTargets.first(where: { $0.targetID == frozenInitialTargetID }) {
-            app = initial.app
-            window = initial.window
+        let frozenInitialTargetID = usesMultiTargetContract
+            ? (selectedInitialTargetID ?? frozenTargets.first?.targetID)
+            : nil
+        if let authorized = frozenTargets.first(where: {
+            !usesMultiTargetContract || $0.targetID == frozenInitialTargetID
+        }) {
+            app = authorized.app
+            window = authorized.window
         } else {
             guard let selectedApp, let selectedWindow else { return }
             app = selectedApp
@@ -673,11 +672,12 @@ final class CUAViewModel: ObservableObject {
             appSelector: "pid:\(app.pid)",
             windowID: window.windowID,
             targetDisplayName: "\(window.displayName) in \(app.displayName)",
-            allowedDomain: frozenTargets.isEmpty && app.isBrowser
-                ? Self.normalizedDomain(allowedDomain)
-                : "",
+            allowedDomain: usesMultiTargetContract
+                ? ""
+                : (frozenTargets.first?.allowedDomain
+                    ?? (app.isBrowser ? Self.normalizedDomain(allowedDomain) : "")),
             maxSteps: maxSteps,
-            targets: frozenTargets,
+            targets: usesMultiTargetContract ? frozenTargets : [],
             initialTargetID: frozenInitialTargetID
         )
         lifecycleGeneration += 1
@@ -712,7 +712,7 @@ final class CUAViewModel: ObservableObject {
                 )
                 return
             }
-            if !frozenTargets.isEmpty {
+            if usesMultiTargetContract {
                 guard capabilities.features.multiTargetRuns == true,
                       capabilities.features.switchTarget == true
                 else {
@@ -750,7 +750,7 @@ final class CUAViewModel: ObservableObject {
             humanLogin: true,
             windowID: context.windowID,
             clientRequestID: UUID().uuidString.lowercased(),
-            targets: frozenTargets.isEmpty ? nil : frozenTargets.map(\.requestTarget),
+            targets: usesMultiTargetContract ? frozenTargets.map(\.requestTarget) : nil,
             initialTargetID: context.initialTargetID
         )
         do {

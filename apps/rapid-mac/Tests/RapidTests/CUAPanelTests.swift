@@ -406,6 +406,44 @@ struct CUAViewModelTests {
         viewModel.invalidateSession()
     }
 
+    @Test("One explicitly authorized browser window can start")
+    func oneAuthorizedBrowserWindowCanStart() async {
+        let api = MockAgentAPI()
+        api.multiTargetSupported = false
+        let viewModel = CUAViewModel(api: api, pollIntervalNanos: 5_000_000)
+        viewModel.appOptions = [
+            CUAAppOption(name: "Google Chrome", bundleID: "com.google.Chrome", pid: 42),
+        ]
+        viewModel.windowOptions = [
+            CUAWindowOption(
+                windowID: "cg:chrome", index: 0, title: "Example", x: nil, y: nil,
+                width: 900, height: 700
+            ),
+        ]
+        viewModel.selectedPID = 42
+        viewModel.selectedWindowID = "cg:chrome"
+        viewModel.allowedDomain = "example.com"
+        viewModel.addSelectedTarget()
+        viewModel.goal = "Summarize this page"
+
+        #expect(viewModel.selectedTargets.count == 1)
+        #expect(viewModel.targetError == nil)
+        #expect(viewModel.canStart)
+
+        await viewModel.start()
+
+        let request = api.attemptedRequests.first
+        #expect(request?.app == "pid:42")
+        #expect(request?.windowID == "cg:chrome")
+        #expect(request?.allowedDomain == "example.com")
+        #expect(request?.targets == nil)
+        #expect(request?.initialTargetID == nil)
+        #expect(viewModel.runContext?.targets.isEmpty == true)
+        #expect(viewModel.runContext?.initialTargetID == nil)
+        #expect(viewModel.activeTargetID == nil)
+        viewModel.invalidateSession()
+    }
+
     @Test("Removing the starting target safely falls back to the first remaining target")
     func removingInitialTargetChoosesSafeFallback() {
         let viewModel = CUAViewModel(api: MockAgentAPI())

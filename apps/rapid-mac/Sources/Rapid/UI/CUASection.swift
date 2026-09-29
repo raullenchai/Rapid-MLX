@@ -587,14 +587,14 @@ struct CUASection: View {
     private var permissionReadinessMessage: String {
         if let permissions = viewModel.executorPermissions {
             if permissions.isReady {
-                return "Rapid Computer Use has Screen Recording and Accessibility access."
+                return "Rapid-MLX Desktop has Screen Recording and Accessibility access for Computer Use."
             }
             if viewModel.supportsPermissionRequest {
-                return "Rapid Computer Use needs the permissions below. Each Allow button asks macOS on behalf of that helper."
+                return "Rapid-MLX Desktop needs the permissions below for Computer Use. Each Allow button asks macOS for the current app."
             }
-            return "Rapid Computer Use needs the permissions below. Open System Settings, allow the Rapid Computer Use helper, then refresh."
+            return "Rapid-MLX Desktop needs the permissions below for Computer Use. Allow this app in System Settings, then refresh."
         }
-        return "Rapid Computer Use could not report its permission status. Open System Settings and review the Rapid Computer Use helper, then refresh."
+        return "Rapid Computer Use could not report its permission status. Review Rapid-MLX Desktop in System Settings, then refresh."
     }
 
     private var permissionSettingsLinks: [MacAutomationPermission] {
