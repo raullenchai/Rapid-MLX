@@ -1306,7 +1306,7 @@ struct CUAViewModelTests {
 
         #expect(viewModel.selectedPID == nil)
         #expect(viewModel.selectedWindowID == nil)
-        #expect(viewModel.targetError?.contains("Could not load apps and windows") == true)
+        #expect(viewModel.targetError?.contains("could not find the apps") == true)
     }
 
     @Test("Typed discovery 404 distinguishes a closed process from an old server")
@@ -1324,7 +1324,7 @@ struct CUAViewModelTests {
         await viewModel.refreshWindows()
 
         #expect(viewModel.selectedWindowID == nil)
-        #expect(viewModel.targetError?.contains("no longer running") == true)
+        #expect(viewModel.targetError?.contains("no longer open") == true)
         #expect(viewModel.targetError?.contains("does not support") == false)
     }
 
@@ -1344,7 +1344,7 @@ struct CUAViewModelTests {
             Issue.record("expected failed phase")
             return
         }
-        #expect(message.contains("Refresh the window list"))
+        #expect(message.contains("Start setup again"))
     }
 
     @Test("Failed binding cleanup keeps only Stop available for the created run")
@@ -1634,7 +1634,7 @@ struct CUAViewModelTests {
             Issue.record("expected failed phase")
             return
         }
-        #expect(message.contains("choose it again"))
+        #expect(message.contains("Start setup again"))
     }
 }
 
@@ -2753,7 +2753,11 @@ struct CUATargetUISourceTests {
         #expect(page.contains("ComputerUse.Server.Error"))
         #expect(page.contains("ComputerUse.Server.Retry"))
         #expect(page.contains("Actions run on this Mac"))
-        #expect(page.contains("choose the brain endpoint"))
+        #expect(page.contains("local or cloud model you choose"))
+        #expect(!page.contains("EXPERIMENTAL"))
+        let computerUsePosition = try #require(sidebar.range(of: "if computerUseEnabled"))
+        let experimentalPosition = try #require(sidebar.range(of: "SectionHeader(\"Experimental\")"))
+        #expect(computerUsePosition.lowerBound < experimentalPosition.lowerBound)
         #expect(!page.contains("Everything runs locally"))
         #expect(page.contains("CUASection(viewModel: cuaViewModel)"))
         #expect(!page.contains("Start with a flow"))

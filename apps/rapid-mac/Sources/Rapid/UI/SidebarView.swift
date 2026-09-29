@@ -247,11 +247,32 @@ struct SidebarView: View {
             )
             .accessibilityIdentifier("Sidebar.Launch")
 
+            if computerUseEnabled {
+                if let cuaViewModel {
+                    CUASidebarRow(
+                        isSelected: selection == .computerUse,
+                        viewModel: cuaViewModel,
+                        action: {
+                            cancelRename()
+                            selection = .computerUse
+                        }
+                    )
+                } else {
+                    row(
+                        title: "Computer Use",
+                        systemImage: "macwindow.on.rectangle",
+                        isSelected: selection == .computerUse,
+                        action: { selection = .computerUse }
+                    )
+                    .accessibilityIdentifier("Sidebar.ComputerUse")
+                }
+            }
+
             // Experimental workspaces live in their own labelled group below
             // the everyday tabs (rather than interleaved with them), so the
             // opt-in previews read as a distinct, still-being-validated set.
             // The header appears only when at least one is enabled.
-            if videoGenerationEnabled || computerUseEnabled || benchmarkEnabled || shareComputeEnabled {
+            if videoGenerationEnabled || benchmarkEnabled || shareComputeEnabled {
                 SectionHeader("Experimental")
                     .padding(.horizontal, RapidTheme.Space.sm)
                     .padding(.top, RapidTheme.Space.lg)
@@ -265,26 +286,6 @@ struct SidebarView: View {
                         action: { selection = .video }
                     )
                     .accessibilityIdentifier("Sidebar.Video")
-                }
-                if computerUseEnabled {
-                    if let cuaViewModel {
-                        CUASidebarRow(
-                            isSelected: selection == .computerUse,
-                            viewModel: cuaViewModel,
-                            action: {
-                                cancelRename()
-                                selection = .computerUse
-                            }
-                        )
-                    } else {
-                        row(
-                            title: "Computer Use",
-                            systemImage: "macwindow.on.rectangle",
-                            isSelected: selection == .computerUse,
-                            action: { selection = .computerUse }
-                        )
-                        .accessibilityIdentifier("Sidebar.ComputerUse")
-                    }
                 }
                 if benchmarkEnabled {
                     row(
