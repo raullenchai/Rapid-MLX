@@ -3442,6 +3442,169 @@ def test_done_cannot_turn_failed_execution_into_success(
     assert "previous action failed" in runner.history[-1]["error"]
 
 
+def test_done_cannot_claim_folder_rename_after_unverified_enter(
+    fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    snapshot = {
+        "app": {"name": "Finder"},
+        "elements": [
+            {
+                "index": 1,
+                "label": "Rapid CUA Dogfood 2026-09-28\u200b\u200b",
+                "role": "AXTextField",
+                "parent_role": "AXCell",
+            }
+        ],
+        "tree_text": (
+            "[1] AXTextField Rapid CUA Dogfood 2026-09-28\u200b\u200b "
+            "Kind Folder"
+        ),
+    }
+    monkeypatch.setattr(fake_backend, "get_app_state", lambda *a, **k: dict(snapshot))
+    monkeypatch.setattr(
+        fake_backend,
+        "press_key",
+        lambda *a, **k: {
+            "ok": True,
+            "executed": True,
+            "verified": None,
+            "key": "enter",
+            "verification": "synthetic key emitted; outcome not asserted",
+        },
+    )
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(loop_mod.asyncio, "sleep", no_sleep)
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path),
+        "Finder",
+        "create folder Rapid CUA Dogfood 2026-09-28",
+        tmp_path / "uncommitted-finder-rename",
+    )
+    planner = _FakePlanner(
+        [
+            {
+                "action": "press",
+                "step_instruction": "commit the folder name",
+                "element_index": 1,
+                "key": "Enter",
+                "final_summary": "",
+            },
+            {
+                "action": "done",
+                "step_instruction": "finish",
+                "element_index": -1,
+                "final_summary": "Created and verified the named folder.",
+            },
+        ]
+    )
+
+    assert asyncio.run(runner.step(planner, 1)) is None
+    executed = runner.trace["steps"][-1]
+    assert executed["protocol_outcome"] == "uncertain"
+    assert asyncio.run(runner.step(planner, 2)) is None
+    assert "final_summary" not in runner.trace
+    assert runner.history[-1]["action"] == "done"
+    assert runner.history[-1]["outcome"] == "no_effect"
+    assert "previous commit could not be verified" in runner.history[-1]["error"]
+
+
+def test_finder_generic_text_field_enter_does_not_arm_rename_commit(
+    fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    snapshot = {
+        "app": {"name": "Finder"},
+        "elements": [{"index": 1, "label": "Documents", "role": "AXTextField"}],
+        "tree_text": "[1] AXTextField Documents",
+    }
+    monkeypatch.setattr(fake_backend, "get_app_state", lambda *a, **k: dict(snapshot))
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(loop_mod.asyncio, "sleep", no_sleep)
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path), "Finder", "go to Documents", tmp_path / "finder-go"
+    )
+    planner = _FakePlanner(
+        [
+            {
+                "action": "press",
+                "step_instruction": "open location",
+                "element_index": 1,
+                "key": "Enter",
+                "final_summary": "",
+            },
+            {
+                "action": "done",
+                "step_instruction": "finish",
+                "element_index": -1,
+                "final_summary": "Documents is visible.",
+            },
+        ]
+    )
+
+    assert asyncio.run(runner.step(planner, 1)) is None
+    assert asyncio.run(runner.step(planner, 2)) == {
+        "status": "done",
+        "summary": "Documents is visible.",
+    }
+
+
+def test_unverified_browser_enter_can_complete_from_fresh_observation(
+    fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(loop_mod.asyncio, "sleep", no_sleep)
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path), "Google Chrome", "search", tmp_path / "browser-enter"
+    )
+    planner = _FakePlanner(
+        [
+            {
+                "action": "press",
+                "step_instruction": "submit search",
+                "element_index": 1,
+                "key": "Enter",
+                "final_summary": "",
+            },
+            {
+                "action": "done",
+                "step_instruction": "finish",
+                "element_index": -1,
+                "final_summary": "Search results are visible.",
+            },
+        ]
+    )
+
+    assert asyncio.run(runner.step(planner, 1)) is None
+    assert runner.trace["steps"][-1]["protocol_outcome"] == "uncertain"
+    assert asyncio.run(runner.step(planner, 2)) == {
+        "status": "done",
+        "summary": "Search results are visible.",
+    }
+
+
 def test_invalid_planner_response_stays_in_trace_not_terminal_summary(
     config_dir, fake_backend, monkeypatch
 ):

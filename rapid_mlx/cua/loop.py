@@ -184,7 +184,13 @@ class CUARun:
             return None
         return tuple(
             json.dumps(target.get(field), ensure_ascii=False, sort_keys=True)
-            for field in (*required, "subrole", "actions", "source_window_id")
+            for field in (
+                *required,
+                "subrole",
+                "parent_role",
+                "actions",
+                "source_window_id",
+            )
         )
 
     @staticmethod
@@ -1088,17 +1094,28 @@ class CUARun:
                 }
             )
         save_unverified = plan["action"] == "save" and not save_persistence_verified
+        observed_app_name = str(snapshot.get("app", {}).get("name", self.app))
+        finder_rename_unverified = (
+            observed_app_name.casefold() == "finder"
+            and plan["action"] == "press"
+            and str(plan.get("key", "")).casefold() in {"enter", "return"}
+            and str(target.get("role", "")) == "AXTextField"
+            and str(target.get("parent_role", "")) == "AXCell"
+            and outcome == "uncertain"
+        )
         if execution_failed:
             self._last_execution_failed = True
         elif executed.get("executed") is True:
-            # A dispatched action followed by the fresh `after` observation is
-            # enough to let the planner assess completion on its next turn.
+            # Ordinary synthetic actions remain eligible for assessment from
+            # their fresh post-action observation. Persistence boundaries are
+            # tracked separately below because UI state alone is insufficient.
             self._last_execution_failed = False
             self._failed_completion_rejections = 0
-        if save_unverified:
+        if save_unverified or finder_rename_unverified:
             # Saving is the goal-changing side effect itself. An accepted
-            # AXPress without same-document verification remains pending even
-            # if later navigation succeeds: only partial/blocked may terminate.
+            # AXPress, or Finder's Enter on an inline rename editor, remains
+            # pending without persistence verification even when the AX tree
+            # displays the requested value: only partial/blocked may terminate.
             self._last_commit_unverified = True
         elif plan["action"] == "save" and save_persistence_verified:
             self._last_commit_unverified = False

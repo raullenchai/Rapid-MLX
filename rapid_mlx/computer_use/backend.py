@@ -589,6 +589,7 @@ def get_app_state(
                 "index": index,
                 "role": target["role"],
                 "subrole": target.get("subrole") or "",
+                "parent_role": target.get("parent_role") or "",
                 "label": target["text"],
                 "actions": target.get("actions", []),
                 "x": round(rect[0]),

@@ -244,6 +244,9 @@ def _walk(element: object, depth: int, out: list[dict], counter: list[int]) -> N
     role = raw_role if isinstance(raw_role, str) else ""
     raw_subrole = _get(element, "AXSubrole")
     subrole = raw_subrole if isinstance(raw_subrole, str) else ""
+    parent = _get(element, "AXParent")
+    raw_parent_role = _get(parent, "AXRole") if parent is not None else None
+    parent_role = raw_parent_role if isinstance(raw_parent_role, str) else ""
     # Never read AXDescription/AXTitle/AXValue from a secure field. Redacting
     # after _label() would already have copied a credential into process memory,
     # planner context, traces, or an HTTP observation.
@@ -269,6 +272,7 @@ def _walk(element: object, depth: int, out: list[dict], counter: list[int]) -> N
                 "target_id": f"t{counter[0] - 1:03d}",
                 "role": role,
                 "subrole": subrole,
+                "parent_role": parent_role,
                 "text": label,
                 "actions": actions[:6],
                 "rect": geom,
