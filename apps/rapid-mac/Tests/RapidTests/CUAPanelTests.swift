@@ -1380,8 +1380,8 @@ struct CUAViewModelTests {
         #expect(viewModel.supportsPermissionRequest)
     }
 
-    @Test("Permission request is explicit, capability gated, and refreshed")
-    func permissionRequestUsesHelperAndRefreshes() async {
+    @Test("Accessibility request is explicit, capability gated, and refreshed")
+    func accessibilityPermissionRequestUsesHelperAndRefreshes() async {
         let api = MockAgentAPI()
         api.permissionsResult = CUAPermissionStatus(
             accessibility: false, screenRecording: true
@@ -1399,17 +1399,52 @@ struct CUAViewModelTests {
         #expect(viewModel.permissionRequestMessage?.contains("still shows") == true)
     }
 
-    @Test("Unsupported servers never receive a permission request")
+    @Test("Screen Recording request comes from the main app and refreshes helper status")
+    func screenRecordingPermissionRequestUsesMainAppAndRefreshes() async {
+        let api = MockAgentAPI()
+        api.permissionsResult = CUAPermissionStatus(
+            accessibility: true, screenRecording: false
+        )
+        var mainAppRequests = 0
+        let viewModel = CUAViewModel(
+            api: api,
+            mainAppScreenRecordingRequest: {
+                mainAppRequests += 1
+                return false
+            }
+        )
+
+        await viewModel.loadPermissions()
+        let readsBeforeClick = api.permissionsCalls
+        await viewModel.requestPermission(.screenRecording)
+
+        #expect(mainAppRequests == 1)
+        #expect(api.requestedPermissions.isEmpty)
+        #expect(api.permissionsCalls == readsBeforeClick + 1)
+        #expect(viewModel.executorPermissions?.screenRecording == false)
+        #expect(viewModel.permissionRequestMessage?.contains("Rapid-MLX Desktop") == true)
+    }
+
+    @Test("Unsupported servers block helper requests but not the main app Screen Recording request")
     func permissionRequestRequiresCapability() async {
         let api = MockAgentAPI()
         api.permissionRequestSupported = false
-        let viewModel = CUAViewModel(api: api)
+        var mainAppRequests = 0
+        let viewModel = CUAViewModel(
+            api: api,
+            mainAppScreenRecordingRequest: {
+                mainAppRequests += 1
+                return false
+            }
+        )
 
         await viewModel.loadPermissions()
+        await viewModel.requestPermission(.accessibility)
         await viewModel.requestPermission(.screenRecording)
 
         #expect(!viewModel.supportsPermissionRequest)
         #expect(api.requestedPermissions.isEmpty)
+        #expect(mainAppRequests == 1)
     }
 
     @Test("Permission request errors still refresh helper status")
@@ -1423,9 +1458,9 @@ struct CUAViewModelTests {
 
         await viewModel.loadPermissions()
         let readsBeforeClick = api.permissionsCalls
-        await viewModel.requestPermission(.screenRecording)
+        await viewModel.requestPermission(.accessibility)
 
-        #expect(api.requestedPermissions == [.screenRecording])
+        #expect(api.requestedPermissions == [.accessibility])
         #expect(api.permissionsCalls == readsBeforeClick + 1)
         #expect(viewModel.executorPermissions?.screenRecording == false)
         #expect(viewModel.permissionRequestMessage != nil)
