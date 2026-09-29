@@ -4142,9 +4142,7 @@ def _finder_transaction_snapshot():
     }
 
 
-def test_finder_rename_denial_precedes_value_write(
-    fake_backend, tmp_path, monkeypatch
-):
+def test_finder_rename_denial_precedes_value_write(fake_backend, tmp_path, monkeypatch):
     import asyncio
 
     from rapid_mlx.cua import loop as loop_mod
@@ -4166,17 +4164,77 @@ def test_finder_rename_denial_precedes_value_write(
         return False
 
     runner = loop_mod.CUARun(
-        _make_config(tmp_path), "Finder", "rename Before to After", tmp_path / "deny",
+        _make_config(tmp_path),
+        "Finder",
+        "rename Before to After",
+        tmp_path / "deny",
         gate=deny,
     )
+    runner._approved_finder_rename = {
+        "original_path": "/tmp/Older",
+        "requested_basename": "Older Approved",
+    }
     planner = _FakePlanner(
-        [{"action": "fill", "step_instruction": "rename item", "element_index": 1,
-          "text": "After", "final_summary": ""}]
+        [
+            {
+                "action": "fill",
+                "step_instruction": "rename item",
+                "element_index": 1,
+                "text": "After",
+                "final_summary": "",
+            }
+        ]
     )
 
     result = asyncio.run(runner.step(planner, 1))
     assert result == {"status": "stopped", "reason": "external_commit not approved"}
     assert writes == []
+    assert runner._approved_finder_rename is None
+
+
+def test_failed_finder_rename_fill_does_not_retain_enter_authority(
+    fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    snapshot = _finder_transaction_snapshot()
+    monkeypatch.setattr(fake_backend, "get_app_state", lambda *a, **k: snapshot)
+    binding = {"original_path": "/tmp/Before", "requested_basename": "After"}
+    monkeypatch.setattr(fake_backend, "inspect_finder_rename", lambda *a, **k: binding)
+    monkeypatch.setattr(
+        fake_backend,
+        "set_finder_rename_value",
+        lambda *a, **k: {
+            "ok": False,
+            "executed": False,
+            "verified": False,
+            "error_code": "action_failed",
+        },
+    )
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path),
+        "Finder",
+        "rename Before to After",
+        tmp_path / "failed",
+        gate=lambda _reason: asyncio.sleep(0, result=True),
+    )
+    planner = _FakePlanner(
+        [
+            {
+                "action": "fill",
+                "step_instruction": "rename item",
+                "element_index": 1,
+                "text": "After",
+                "final_summary": "",
+            }
+        ]
+    )
+
+    assert asyncio.run(runner.step(planner, 1)) is None
+    assert runner._approved_finder_rename is None
 
 
 def test_finder_rename_fill_fails_closed_when_binding_is_untrusted(
@@ -4200,15 +4258,29 @@ def test_finder_rename_fill_fails_closed_when_binding_is_untrusted(
     runner = loop_mod.CUARun(
         _make_config(tmp_path), "Finder", "rename Before to After", tmp_path / "drift"
     )
+    runner._approved_finder_rename = {
+        "original_path": "/tmp/Older",
+        "requested_basename": "Older Approved",
+    }
     planner = _FakePlanner(
-        [{"action": "fill", "step_instruction": "rename item", "element_index": 1,
-          "text": "After", "final_summary": ""}]
+        [
+            {
+                "action": "fill",
+                "step_instruction": "rename item",
+                "element_index": 1,
+                "text": "After",
+                "final_summary": "",
+            }
+        ]
     )
 
     result = asyncio.run(runner.step(planner, 1))
     assert result == {
-        "status": "stopped", "reason": "Finder reference changed", "error": "target_drift"
+        "status": "stopped",
+        "reason": "Finder reference changed",
+        "error": "target_drift",
     }
+    assert runner._approved_finder_rename is None
 
 
 def test_finder_rename_approval_is_reused_and_focus_loss_is_verified(
@@ -4237,14 +4309,17 @@ def test_finder_rename_approval_is_reused_and_focus_loss_is_verified(
     monkeypatch.setattr(
         fake_backend,
         "commit_finder_rename",
-        lambda *a, **k: commits.append(True) or {
-            "ok": True,
-            "executed": False,
-            "attempted": False,
-            "verified": True,
-            "verification_source": "finder_file_reference_basename",
-            "actual_basename": "After",
-        },
+        lambda *a, **k: (
+            commits.append(True)
+            or {
+                "ok": True,
+                "executed": False,
+                "attempted": False,
+                "verified": True,
+                "verification_source": "finder_file_reference_basename",
+                "actual_basename": "After",
+            }
+        ),
     )
     approvals = []
 
@@ -4253,17 +4328,34 @@ def test_finder_rename_approval_is_reused_and_focus_loss_is_verified(
         return True
 
     runner = loop_mod.CUARun(
-        _make_config(tmp_path), "Finder", "rename Before to After", tmp_path / "approve",
+        _make_config(tmp_path),
+        "Finder",
+        "rename Before to After",
+        tmp_path / "approve",
         gate=approve,
     )
     planner = _FakePlanner(
         [
-            {"action": "fill", "step_instruction": "set the new name", "element_index": 1,
-             "text": "After", "final_summary": ""},
-            {"action": "press", "step_instruction": "commit the rename", "element_index": 1,
-             "key": "Enter", "final_summary": ""},
-            {"action": "done", "step_instruction": "finish", "element_index": -1,
-             "final_summary": "Renamed."},
+            {
+                "action": "fill",
+                "step_instruction": "set the new name",
+                "element_index": 1,
+                "text": "After",
+                "final_summary": "",
+            },
+            {
+                "action": "press",
+                "step_instruction": "commit the rename",
+                "element_index": 1,
+                "key": "Enter",
+                "final_summary": "",
+            },
+            {
+                "action": "done",
+                "step_instruction": "finish",
+                "element_index": -1,
+                "final_summary": "Renamed.",
+            },
         ]
     )
 
@@ -4274,7 +4366,8 @@ def test_finder_rename_approval_is_reused_and_focus_loss_is_verified(
     assert commits == [True]
     assert runner._last_finder_rename_verified is True
     assert asyncio.run(runner.step(planner, 3)) == {
-        "status": "done", "summary": "Renamed."
+        "status": "done",
+        "summary": "Renamed.",
     }
 
 

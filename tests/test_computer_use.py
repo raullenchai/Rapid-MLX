@@ -2952,7 +2952,9 @@ def _install_selected_finder_editor(monkeypatch, snapshot, path_state):
 def test_finder_rename_transaction_binds_exact_selected_item(monkeypatch):
     snapshot = _finder_rename_snapshot()
     path_state = ["/tmp/Before"]
-    _live, reference = _install_selected_finder_editor(monkeypatch, snapshot, path_state)
+    _live, reference = _install_selected_finder_editor(
+        monkeypatch, snapshot, path_state
+    )
 
     binding = backend.inspect_finder_rename(snapshot, 0, "After")
 
@@ -2977,7 +2979,9 @@ def test_finder_rename_transaction_skips_enter_if_reference_already_committed(
 ):
     snapshot = _finder_rename_snapshot()
     path_state = ["/tmp/After"]
-    _live, reference = _install_selected_finder_editor(monkeypatch, snapshot, path_state)
+    _live, reference = _install_selected_finder_editor(
+        monkeypatch, snapshot, path_state
+    )
     binding = {
         "pid": 4,
         "window_id": "cg:101",
@@ -2986,7 +2990,9 @@ def test_finder_rename_transaction_skips_enter_if_reference_already_committed(
         "requested_basename": "After",
     }
     presses = []
-    monkeypatch.setattr(backend.ax_driver, "_press_key", lambda *a, **k: presses.append(a))
+    monkeypatch.setattr(
+        backend.ax_driver, "_press_key", lambda *a, **k: presses.append(a)
+    )
 
     result = backend.commit_finder_rename("pid:4", snapshot, 0, binding)
 
@@ -2999,7 +3005,9 @@ def test_finder_rename_transaction_skips_enter_if_reference_already_committed(
 def test_finder_rename_transaction_stages_then_commits_exact_editor(monkeypatch):
     snapshot = _finder_rename_snapshot()
     path_state = ["/tmp/Before"]
-    _live, reference = _install_selected_finder_editor(monkeypatch, snapshot, path_state)
+    _live, reference = _install_selected_finder_editor(
+        monkeypatch, snapshot, path_state
+    )
     binding = {
         "pid": 4,
         "window_id": "cg:101",
@@ -3020,8 +3028,28 @@ def test_finder_rename_transaction_stages_then_commits_exact_editor(monkeypatch)
     assert staged["verified"] is None
     assert staged["verification_source"] == "pending"
     assert len(writes) == 1
-    monkeypatch.setattr(backend, "_prepare_synthetic_action", lambda *a, **k: snapshot)
-    monkeypatch.setattr(backend, "inspect_focused_element", lambda *a, **k: {})
+    raises = []
+    foreground = {"finder": False}  # Approval card left Rapid frontmost.
+
+    def restore_finder(*args):
+        assert foreground["finder"] is False
+        raises.append(args)
+        foreground["finder"] = True
+        return snapshot["window"]
+
+    monkeypatch.setattr(backend, "raise_selected_window", restore_finder)
+    monkeypatch.setattr(
+        backend, "_validate_snapshot_window", lambda *a, **k: snapshot["window"]
+    )
+    monkeypatch.setattr(
+        backend,
+        "_validate_focused_window",
+        lambda *a, **k: (
+            None
+            if foreground["finder"]
+            else pytest.fail("Enter prepared before Finder focus was restored")
+        ),
+    )
     presses = []
 
     def press(key):
@@ -3033,13 +3061,16 @@ def test_finder_rename_transaction_stages_then_commits_exact_editor(monkeypatch)
 
     assert committed["verified"] is True
     assert committed["actual_basename"] == "After"
+    assert raises == [("pid:4", snapshot)]
     assert presses == [backend.KEY_ALIASES["enter"]]
 
 
 def test_finder_rename_transaction_fails_closed_on_reference_drift(monkeypatch):
     snapshot = _finder_rename_snapshot()
     path_state = ["/tmp/Unexpected"]
-    _live, reference = _install_selected_finder_editor(monkeypatch, snapshot, path_state)
+    _live, reference = _install_selected_finder_editor(
+        monkeypatch, snapshot, path_state
+    )
     binding = {
         "pid": 4,
         "window_id": "cg:101",
@@ -3048,7 +3079,9 @@ def test_finder_rename_transaction_fails_closed_on_reference_drift(monkeypatch):
         "requested_basename": "After",
     }
     presses = []
-    monkeypatch.setattr(backend.ax_driver, "_press_key", lambda *a, **k: presses.append(a))
+    monkeypatch.setattr(
+        backend.ax_driver, "_press_key", lambda *a, **k: presses.append(a)
+    )
 
     with pytest.raises(errors.ComputerUseError, match="moved or changed"):
         backend.commit_finder_rename("pid:4", snapshot, 0, binding)
@@ -3059,8 +3092,11 @@ def test_finder_rename_path_state_rejects_missing_reference(monkeypatch):
     monkeypatch.setattr(backend, "_finder_file_reference_path", lambda _value: None)
     with pytest.raises(errors.ComputerUseError, match="no longer available"):
         backend._finder_rename_path_state(
-            {"file_reference": object(), "original_path": "/tmp/Before",
-             "requested_basename": "After"}
+            {
+                "file_reference": object(),
+                "original_path": "/tmp/Before",
+                "requested_basename": "After",
+            }
         )
 
 
@@ -3080,8 +3116,11 @@ def test_finder_rename_transaction_revalidates_every_identity_boundary(
     path_state = ["/tmp/Before"]
     live, reference = _install_selected_finder_editor(monkeypatch, snapshot, path_state)
     binding = {
-        "pid": 4, "window_id": "cg:101", "file_reference": reference,
-        "original_path": "/tmp/Before", "requested_basename": "After",
+        "pid": 4,
+        "window_id": "cg:101",
+        "file_reference": reference,
+        "original_path": "/tmp/Before",
+        "requested_basename": "After",
     }
     if mutation == "window":
         snapshot["window_id"] = "cg:other"
@@ -3137,10 +3176,15 @@ def test_inspect_finder_rename_rejects_untrusted_bindings(
 def test_finder_rename_set_reports_immediate_disk_commit(monkeypatch):
     snapshot = _finder_rename_snapshot()
     path_state = ["/tmp/Before"]
-    _live, reference = _install_selected_finder_editor(monkeypatch, snapshot, path_state)
+    _live, reference = _install_selected_finder_editor(
+        monkeypatch, snapshot, path_state
+    )
     binding = {
-        "pid": 4, "window_id": "cg:101", "file_reference": reference,
-        "original_path": "/tmp/Before", "requested_basename": "After",
+        "pid": 4,
+        "window_id": "cg:101",
+        "file_reference": reference,
+        "original_path": "/tmp/Before",
+        "requested_basename": "After",
     }
 
     def set_value(*_args):
@@ -3148,8 +3192,10 @@ def test_finder_rename_set_reports_immediate_disk_commit(monkeypatch):
         return 0
 
     _install_module(
-        monkeypatch, "ApplicationServices",
-        AXUIElementSetAttributeValue=set_value, kAXValueAttribute="AXValue",
+        monkeypatch,
+        "ApplicationServices",
+        AXUIElementSetAttributeValue=set_value,
+        kAXValueAttribute="AXValue",
     )
     result = backend.set_finder_rename_value("pid:4", snapshot, 0, binding)
     assert result["verified"] is True
@@ -3159,17 +3205,60 @@ def test_finder_rename_set_reports_immediate_disk_commit(monkeypatch):
 def test_finder_rename_set_rejects_failed_ax_write(monkeypatch):
     snapshot = _finder_rename_snapshot()
     path_state = ["/tmp/Before"]
-    _live, reference = _install_selected_finder_editor(monkeypatch, snapshot, path_state)
+    _live, reference = _install_selected_finder_editor(
+        monkeypatch, snapshot, path_state
+    )
     binding = {
-        "pid": 4, "window_id": "cg:101", "file_reference": reference,
-        "original_path": "/tmp/Before", "requested_basename": "After",
+        "pid": 4,
+        "window_id": "cg:101",
+        "file_reference": reference,
+        "original_path": "/tmp/Before",
+        "requested_basename": "After",
     }
     _install_module(
-        monkeypatch, "ApplicationServices",
-        AXUIElementSetAttributeValue=lambda *_args: 1, kAXValueAttribute="AXValue",
+        monkeypatch,
+        "ApplicationServices",
+        AXUIElementSetAttributeValue=lambda *_args: 1,
+        kAXValueAttribute="AXValue",
     )
     with pytest.raises(errors.ComputerUseError, match="rejected"):
         backend.set_finder_rename_value("pid:4", snapshot, 0, binding)
+
+
+def test_finder_rename_set_rechecks_path_immediately_before_ax_write(monkeypatch):
+    snapshot = _finder_rename_snapshot()
+    path_state = ["/tmp/Before"]
+    _live, reference = _install_selected_finder_editor(
+        monkeypatch, snapshot, path_state
+    )
+    binding = {
+        "pid": 4,
+        "window_id": "cg:101",
+        "file_reference": reference,
+        "original_path": "/tmp/Before",
+        "requested_basename": "After",
+    }
+    checks = []
+
+    def check(_binding):
+        checks.append("path")
+        if len(checks) == 2:
+            raise errors.ComputerUseError("target_drift", "moved before write")
+        return "unchanged", "/tmp/Before"
+
+    monkeypatch.setattr(backend, "_finder_rename_path_state", check)
+    writes = []
+    _install_module(
+        monkeypatch,
+        "ApplicationServices",
+        AXUIElementSetAttributeValue=lambda *args: writes.append(args) or 0,
+        kAXValueAttribute="AXValue",
+    )
+
+    with pytest.raises(errors.ComputerUseError, match="moved before write"):
+        backend.set_finder_rename_value("pid:4", snapshot, 0, binding)
+    assert checks == ["path", "path"]
+    assert writes == []
 
 
 def test_finder_rename_commit_rejects_changed_editor_and_unverified_dispatch(
@@ -3179,25 +3268,101 @@ def test_finder_rename_commit_rejects_changed_editor_and_unverified_dispatch(
     path_state = ["/tmp/Before"]
     live, reference = _install_selected_finder_editor(monkeypatch, snapshot, path_state)
     binding = {
-        "pid": 4, "window_id": "cg:101", "file_reference": reference,
-        "original_path": "/tmp/Before", "requested_basename": "After",
+        "pid": 4,
+        "window_id": "cg:101",
+        "file_reference": reference,
+        "original_path": "/tmp/Before",
+        "requested_basename": "After",
     }
     original_get = backend.ax_driver._get
     monkeypatch.setattr(
-        backend.ax_driver, "_get",
-        lambda element, attr: "Different" if element is live and attr == "AXValue"
-        else original_get(element, attr),
+        backend.ax_driver,
+        "_get",
+        lambda element, attr: (
+            "Different"
+            if element is live and attr == "AXValue"
+            else original_get(element, attr)
+        ),
     )
     with pytest.raises(errors.ComputerUseError, match="approved basename"):
         backend.commit_finder_rename("pid:4", snapshot, 0, binding)
     monkeypatch.setattr(backend.ax_driver, "_get", original_get)
-    monkeypatch.setattr(backend, "_prepare_synthetic_action", lambda *a, **k: snapshot)
-    monkeypatch.setattr(backend, "inspect_focused_element", lambda *a, **k: {})
+    monkeypatch.setattr(
+        backend, "raise_selected_window", lambda *a, **k: snapshot["window"]
+    )
+    monkeypatch.setattr(
+        backend, "_validate_snapshot_window", lambda *a, **k: snapshot["window"]
+    )
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a, **k: None)
     monkeypatch.setattr(backend.ax_driver, "_press_key", lambda _key: None)
     monkeypatch.setattr(backend.time, "sleep", lambda _delay: None)
     result = backend.commit_finder_rename("pid:4", snapshot, 0, binding)
     assert result["verified"] is False
     assert result["executed"] is True
+
+
+def test_finder_rename_focus_restore_commit_skips_duplicate_enter(monkeypatch):
+    snapshot = _finder_rename_snapshot()
+    path_state = ["/tmp/Before"]
+    _live, reference = _install_selected_finder_editor(
+        monkeypatch, snapshot, path_state
+    )
+    binding = {
+        "pid": 4,
+        "window_id": "cg:101",
+        "file_reference": reference,
+        "original_path": "/tmp/Before",
+        "requested_basename": "After",
+    }
+    raises = []
+
+    def raise_window(*args):
+        raises.append(args)
+        path_state[0] = "/tmp/After"
+        return snapshot["window"]
+
+    monkeypatch.setattr(backend, "raise_selected_window", raise_window)
+    presses = []
+    monkeypatch.setattr(
+        backend.ax_driver, "_press_key", lambda key: presses.append(key)
+    )
+
+    result = backend.commit_finder_rename("pid:4", snapshot, 0, binding)
+
+    assert result["verified"] is True
+    assert result["executed"] is False
+    assert result["verification_source"] == "finder_file_reference_basename"
+    assert raises == [("pid:4", snapshot)]
+    assert presses == []
+
+
+def test_finder_rename_drift_during_focus_restore_dispatches_no_enter(monkeypatch):
+    snapshot = _finder_rename_snapshot()
+    path_state = ["/tmp/Before"]
+    _live, reference = _install_selected_finder_editor(
+        monkeypatch, snapshot, path_state
+    )
+    binding = {
+        "pid": 4,
+        "window_id": "cg:101",
+        "file_reference": reference,
+        "original_path": "/tmp/Before",
+        "requested_basename": "After",
+    }
+
+    def raise_window(*_args):
+        path_state[0] = "/tmp/Unexpected"
+        return snapshot["window"]
+
+    monkeypatch.setattr(backend, "raise_selected_window", raise_window)
+    presses = []
+    monkeypatch.setattr(
+        backend.ax_driver, "_press_key", lambda key: presses.append(key)
+    )
+
+    with pytest.raises(errors.ComputerUseError, match="moved or changed"):
+        backend.commit_finder_rename("pid:4", snapshot, 0, binding)
+    assert presses == []
 
 
 def test_finder_inline_rename_verifies_committed_file_reference(monkeypatch):

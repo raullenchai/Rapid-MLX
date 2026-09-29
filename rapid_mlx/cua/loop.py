@@ -742,6 +742,10 @@ class CUARun:
             and str(target.get("parent_role", "")) == "AXCell"
         )
         if finder_rename_fill:
+            # A new rename proposal supersedes any staged transaction before
+            # binding or approval. Denial and bind failure must not leave an
+            # older one-shot Enter authority reusable.
+            self._approved_finder_rename = None
             try:
                 finder_rename = backend.inspect_finder_rename(
                     snapshot,
@@ -921,8 +925,6 @@ class CUARun:
             # Finder rename authority is bound to its opaque file reference.
             # Revalidating that reference adjacent to AXSetValue avoids relying
             # on the AX tree rebuilt by the approval card's focus transition.
-            if finder_rename_fill:
-                self._approved_finder_rename = finder_rename
             # Approval binds to the observed target. Re-observe after the human
             # pause and fail closed if the indexed control or domain changed.
             try:
@@ -954,18 +956,22 @@ class CUARun:
             fresh_target_identity = self._target_identity(fresh_target)
             original_window_identity = self._window_identity(snapshot)
             fresh_window_identity = self._window_identity(fresh)
-            stale = False if finder_rename_fill else any(
-                (
-                    plan["action"] != "save" and original_target_identity is None,
-                    plan["action"] != "save" and fresh_target_identity is None,
-                    plan["action"] != "save"
-                    and original_target_identity != fresh_target_identity,
-                    original_window_identity is None,
-                    fresh_window_identity is None,
-                    original_window_identity != fresh_window_identity,
-                    snapshot.get("window") != fresh.get("window"),
-                    fresh_url != url_now,
-                    _tree_signature(fresh) != _tree_signature(snapshot),
+            stale = (
+                False
+                if finder_rename_fill
+                else any(
+                    (
+                        plan["action"] != "save" and original_target_identity is None,
+                        plan["action"] != "save" and fresh_target_identity is None,
+                        plan["action"] != "save"
+                        and original_target_identity != fresh_target_identity,
+                        original_window_identity is None,
+                        fresh_window_identity is None,
+                        original_window_identity != fresh_window_identity,
+                        snapshot.get("window") != fresh.get("window"),
+                        fresh_url != url_now,
+                        _tree_signature(fresh) != _tree_signature(snapshot),
+                    )
                 )
             )
             if plan["action"] == "save" and not stale:
@@ -1043,9 +1049,7 @@ class CUARun:
         url_now = pre_action_url
         before_sig = _tree_signature(snapshot)
         executed = await self._execute(plan, snapshot, save_identity, finder_rename)
-        if finder_rename_fill and executed.get("verification_source") != (
-            "finder_file_reference_basename"
-        ):
+        if finder_rename_fill and executed.get("verification_source") == "pending":
             self._approved_finder_rename = finder_rename
         elif finder_rename is not None:
             self._approved_finder_rename = None
