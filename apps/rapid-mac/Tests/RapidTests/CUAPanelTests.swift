@@ -1286,6 +1286,32 @@ struct CUAViewModelTests {
         await drain()
 
         #expect(viewModel.phase == .failed(message: "planner unavailable"))
+        #expect(!viewModel.browserAutomationRecoveryRequired)
+    }
+
+    @Test("Typed browser Automation failure offers persistent recovery")
+    func automationPermissionFailureIsRecoverable() async {
+        let api = MockAgentAPI()
+        api.scriptedEvents = [
+            makeEvent(
+                seq: 2, kind: "terminal", status: "failed",
+                reason: "browser URL access is not authorized",
+                error: "automation_permission_required"
+            ),
+        ]
+        let viewModel = CUAViewModel(api: api, pollIntervalNanos: 5_000_000)
+        viewModel.goal = "check the selected page"
+        selectTarget(viewModel)
+
+        await viewModel.start()
+        await drain()
+
+        #expect(viewModel.phase == .failed(message: "browser URL access is not authorized"))
+        #expect(viewModel.browserAutomationRecoveryRequired)
+        #expect(viewModel.runContext?.allowedDomain == "example.com")
+
+        viewModel.newTask()
+        #expect(!viewModel.browserAutomationRecoveryRequired)
     }
 
     @Test("Typed stale terminal clears the frozen window before retry")
@@ -2071,6 +2097,8 @@ struct CUATargetUISourceTests {
         #expect(section.contains("ComputerUse.Agent.Failure.Summary"))
         #expect(section.contains("ComputerUse.Agent.Failure.Details"))
         #expect(section.contains("ComputerUse.Agent.Failure.ChangeWarning"))
+        #expect(section.contains("ComputerUse.Agent.Failure.AutomationRecovery"))
+        #expect(section.contains("ComputerUse.Agent.Failure.OpenAutomationSettings"))
         #expect(section.contains("ComputerUse.Agent.RunContext"))
         #expect(section.contains("ComputerUse.Agent.RunContext.Goal"))
         #expect(section.contains("ComputerUse.Agent.NewTask"))

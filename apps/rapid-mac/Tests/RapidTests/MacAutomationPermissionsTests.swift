@@ -79,6 +79,14 @@ struct MacAutomationPermissionsTests {
         #expect(MacAutomationPermission.accessibility.title == "Accessibility")
     }
 
+    @Test("Automation recovery opens the target-specific privacy pane")
+    func automationRecoverySettingsURL() {
+        #expect(
+            MacAutomationPermissions.automationSettingsURL.absoluteString
+                == "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation"
+        )
+    }
+
     private static func sourceFile(_ relative: String) -> URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

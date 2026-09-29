@@ -755,6 +755,26 @@ struct CUASection: View {
                     .foregroundStyle(.orange)
                     .accessibilityIdentifier("ComputerUse.Agent.Failure.ChangeWarning")
             }
+            if viewModel.browserAutomationRecoveryRequired {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Browser access is not allowed")
+                        .font(.callout.weight(.semibold))
+                    Text(
+                        "The task stopped because Rapid could not verify the selected browser's domain. Allow Rapid to control that browser in System Settings, then choose New Task and try again."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    Button("Open Automation Settings") {
+                        MacAutomationPermissions.openAutomationSettings()
+                    }
+                    .buttonStyle(.bordered)
+                    .accessibilityIdentifier("ComputerUse.Agent.Failure.OpenAutomationSettings")
+                }
+                .padding(10)
+                .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("ComputerUse.Agent.Failure.AutomationRecovery")
+            }
             DisclosureGroup {
                 VStack(alignment: .leading, spacing: 10) {
                     Text(failure.technicalDetails)

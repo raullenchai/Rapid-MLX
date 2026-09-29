@@ -178,6 +178,7 @@ final class CUAViewModel: ObservableObject {
     @Published private(set) var isStopping = false
     @Published private(set) var isSessionDetached = false
     @Published private(set) var wasSessionInterrupted = false
+    @Published private(set) var browserAutomationRecoveryRequired = false
 
     private let api: CUAAPI
     private var runID: String?
@@ -585,6 +586,7 @@ final class CUAViewModel: ObservableObject {
         pendingGateReason = nil
         pendingApproval = nil
         actionError = nil
+        browserAutomationRecoveryRequired = false
         showingPollError = false
         requiresBindingCleanup = false
         pendingCreateRecovery = nil
@@ -745,6 +747,7 @@ final class CUAViewModel: ObservableObject {
             }
             let typedTargetFailure: Bool
             if case let CUAClientError.typedHTTP(_, code, message, _) = error {
+                browserAutomationRecoveryRequired = Self.isAutomationPermissionError(code)
                 typedTargetFailure = Self.invalidatesSelectedTarget(
                     code: code, message: message
                 )
@@ -787,6 +790,7 @@ final class CUAViewModel: ObservableObject {
         runID = nil
         runContext = nil
         activeTargetID = nil
+        browserAutomationRecoveryRequired = false
         goal = ""
         events = []
         pendingGateReason = nil
@@ -1026,6 +1030,7 @@ final class CUAViewModel: ObservableObject {
         events = previous.events
         runContext = previous.runContext
         wasSessionInterrupted = previous.wasSessionInterrupted
+        browserAutomationRecoveryRequired = previous.browserAutomationRecoveryRequired
     }
 
     private func pollUntilTerminal(runID: String, generation: Int) async {
@@ -1099,6 +1104,9 @@ final class CUAViewModel: ObservableObject {
                     }
                 }
                 for event in view.events where event.isTerminal {
+                    browserAutomationRecoveryRequired = Self.isAutomationPermissionError(
+                        event.error
+                    ) || Self.isAutomationPermissionError(view.error)
                     switch event.status {
                     case "completed":
                         phase = .finished(summary: event.finalSummary ?? "")
@@ -1131,6 +1139,9 @@ final class CUAViewModel: ObservableObject {
                     return
                 }
                 if ["stopped", "stalled", "failed"].contains(view.status) {
+                    browserAutomationRecoveryRequired = Self.isAutomationPermissionError(
+                        view.error
+                    )
                     let message = Self.firstNonEmpty(
                             view.error,
                             view.finalSummary,
@@ -1209,6 +1220,10 @@ final class CUAViewModel: ObservableObject {
             || lower.contains("selected window unavailable")
             || lower.contains("window was replaced")
             || lower.contains("window is no longer available")
+    }
+
+    private static func isAutomationPermissionError(_ code: String?) -> Bool {
+        code == "automation_permission_required"
     }
 
     private static func firstNonEmpty(
