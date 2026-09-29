@@ -2550,6 +2550,42 @@ def test_strict_tools_invalid_constrained_repair_returns_502(
     assert len(engine.guided_calls) == 1
 
 
+def test_chat_strict_tools_without_guided_generation_skips_repair():
+    engine = _Engine(
+        supports_guided=False,
+        chat_text=_INVALID_PAYLOAD_WRONG_KEY,
+    )
+
+    response = _make_client(engine).post(
+        "/v1/chat/completions", json=_chat_tools_payload()
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["error"]["code"] == "json_schema_violation"
+    assert response.json()["error"]["details"]["attempts"] == 1
+    assert len(engine.chat_calls) == 1
+    assert engine.guided_calls == []
+
+
+def test_responses_strict_tools_without_guided_generation_skips_repair(
+    _rate_limiter_state,
+):
+    engine = _Engine(
+        supports_guided=False,
+        chat_text=_INVALID_PAYLOAD_WRONG_KEY,
+    )
+
+    response = _make_responses_client(engine, _rate_limiter_state).post(
+        "/v1/responses", json=_responses_tools_payload()
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["error"]["code"] == "json_schema_violation"
+    assert response.json()["error"]["details"]["attempts"] == 1
+    assert len(engine.chat_calls) == 1
+    assert engine.guided_calls == []
+
+
 @pytest.mark.parametrize("surface", ["chat", "responses"])
 @pytest.mark.parametrize("skip_reason", ["disabled", "prompt_over_window"])
 def test_strict_tools_skipped_repair_keeps_one_attempt_422(

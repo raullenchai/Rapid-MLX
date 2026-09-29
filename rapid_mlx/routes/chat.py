@@ -6018,7 +6018,11 @@ async def _create_chat_completion_impl(
         ok, failure_details = validate_and_envelope(output.text or "", json_schema)
         attempts = 1
         repair_attempted = False
-        if not ok and repair_retry_enabled():
+        if (
+            not ok
+            and repair_retry_enabled()
+            and (not request.tools or engine.supports_guided_generation)
+        ):
             repair_messages = build_repair_messages(
                 messages,
                 output.text or "",
