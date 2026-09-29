@@ -2529,6 +2529,25 @@ async def _stream_buffered_responses_response(
                     finish_reason=None,
                 )
             )
+        elif item_type == "computer_call":
+            outputs.append(
+                GenerationOutput(
+                    text=" ",
+                    new_text=" ",
+                    channel="tool_call",
+                    tool_calls=[
+                        {
+                            "id": item.get("call_id"),
+                            "name": "computer",
+                            "arguments": json.dumps(
+                                item.get("action") or {}, separators=(",", ":")
+                            ),
+                        }
+                    ],
+                    finished=False,
+                    finish_reason=None,
+                )
+            )
 
     if not outputs:
         outputs.append(GenerationOutput(text="", new_text="", finished=False))

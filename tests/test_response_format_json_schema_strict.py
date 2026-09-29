@@ -2331,6 +2331,63 @@ async def test_buffered_responses_stream_matches_normal_state_machine_sdk_shape(
 
 
 @pytest.mark.asyncio
+async def test_buffered_responses_stream_replays_computer_call_to_completion():
+    from rapid_mlx.routes.responses import _stream_buffered_responses_response
+
+    completed = {
+        "id": "resp_computer_replay",
+        "object": "response",
+        "created_at": 1,
+        "status": "completed",
+        "model": "test-model",
+        "output": [
+            {
+                "type": "computer_call",
+                "id": "cu_exact",
+                "call_id": "call_computer",
+                "status": "completed",
+                "action": {"type": "click", "x": 128, "y": 128, "button": "left"},
+                "pending_safety_checks": [],
+            }
+        ],
+        "usage": {"input_tokens": 4, "output_tokens": 5},
+        "parallel_tool_calls": True,
+        "tool_choice": "auto",
+        "tools": [
+            {
+                "type": "computer_20251022",
+                "name": "computer",
+                "display_width": 1280,
+                "display_height": 800,
+                "environment": "linux",
+            }
+        ],
+    }
+
+    events = [
+        json.loads(event.splitlines()[1][6:])
+        async for event in _stream_buffered_responses_response(
+            json.dumps(completed).encode()
+        )
+    ]
+
+    assert not any(event["type"] == "response.failed" for event in events)
+    assert [
+        (event["type"], event.get("item", {}).get("type"))
+        for event in events
+        if event["type"]
+        in {"response.output_item.added", "response.output_item.done"}
+    ] == [
+        ("response.output_item.added", "computer_call"),
+        ("response.output_item.done", "computer_call"),
+    ]
+    terminal = events[-1]
+    assert terminal["type"] == "response.completed"
+    assert terminal["response"]["status"] == "completed"
+    assert terminal["response"]["output"] == [completed["output"][0]]
+
+
+@pytest.mark.asyncio
 async def test_buffered_replay_covers_empty_and_failure_protocol_shapes():
     from rapid_mlx.api.models import (
         AssistantMessage,
