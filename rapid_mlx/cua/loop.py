@@ -95,6 +95,7 @@ class CUARun:
         self.tracker = NoProgressTracker()
         self._last_execution_failed = False
         self._last_commit_unverified = False
+        self._last_finder_rename_verified = False
         self._failed_completion_rejections = 0
         self._trusted_transient_window_id: str | None = None
         self._empty_snapshots = 0
@@ -368,14 +369,17 @@ class CUARun:
             self._record({"step": step_no, "assessment_only": True, "stop": reason})
             return {"status": "stopped", "reason": reason}
         fresh_guard = self._check_domain(fresh_url)
-        drifted = any(
+        target_drifted = any(
             (
                 assessed_target_id != self.active_target_id,
                 self._window_identity(snapshot) != self._window_identity(fresh),
                 snapshot.get("window") != fresh.get("window"),
-                _tree_signature(snapshot) != _tree_signature(fresh),
                 url_now != fresh_url,
             )
+        )
+        tree_drifted = _tree_signature(snapshot) != _tree_signature(fresh)
+        drifted = target_drifted or (
+            tree_drifted and not self._last_finder_rename_verified
         )
         if fresh_guard or drifted:
             reason = fresh_guard or "final assessment target changed during planning"
@@ -607,6 +611,7 @@ class CUARun:
             planner, snapshot, progress_hint
         )
         if plan["action"] == "switch_target":
+            self._last_finder_rename_verified = False
             previous = str(self.active_target_id)
             requested = str(plan["target_id"])
             if requested == previous:
@@ -631,11 +636,9 @@ class CUARun:
                 switch_candidate = self._get_app_state(screenshot=False)
                 backend.raise_selected_window(self.backend_app, switch_candidate)
                 switched = self._get_app_state(screenshot=False)
-                if (
-                    self._window_identity(switch_candidate)
-                    != self._window_identity(switched)
-                    or switch_candidate.get("window") != switched.get("window")
-                ):
+                if self._window_identity(switch_candidate) != self._window_identity(
+                    switched
+                ) or switch_candidate.get("window") != switched.get("window"):
                     raise ComputerUseError(
                         "target_drift",
                         "selected target changed while establishing window focus",
@@ -780,6 +783,11 @@ class CUARun:
                 "reason": plan["final_summary"],
                 "completion_disposition": plan["action"],
             }
+
+        # Finder persistence evidence applies to the immediately following
+        # completion assessment only. Any later executable action must earn
+        # fresh authority before it can relax tree-only assessment drift.
+        self._last_finder_rename_verified = False
 
         if self.config.human_login and gates.looks_like_sign_in(snapshot):
             approved = await self._request_signin_approval()
@@ -1104,6 +1112,11 @@ class CUARun:
                 }
             )
         save_unverified = plan["action"] == "save" and not save_persistence_verified
+        finder_persistence_verified = (
+            plan["action"] in {"fill", "press"}
+            and verification is True
+            and executed.get("verification_source") == "finder_file_reference_basename"
+        )
         observed_app_name = str(snapshot.get("app", {}).get("name", self.app))
         finder_rename_unverified = (
             observed_app_name.casefold() == "finder"
@@ -1112,6 +1125,7 @@ class CUARun:
             and str(target.get("role", "")) == "AXTextField"
             and str(target.get("parent_role", "")) == "AXCell"
             and outcome == "uncertain"
+            and not self._last_finder_rename_verified
         )
         if execution_failed:
             self._last_execution_failed = True
@@ -1121,7 +1135,16 @@ class CUARun:
             # tracked separately below because UI state alone is insufficient.
             self._last_execution_failed = False
             self._failed_completion_rejections = 0
-        if save_unverified or finder_rename_unverified:
+        if finder_persistence_verified:
+            self._last_finder_rename_verified = True
+            self._last_commit_unverified = False
+            history_entry.update(
+                {
+                    "verified_persistence": True,
+                    "verification_source": "finder_file_reference_basename",
+                }
+            )
+        elif save_unverified or finder_rename_unverified:
             # Saving is the goal-changing side effect itself. An accepted
             # AXPress, or Finder's Enter on an inline rename editor, remains
             # pending without persistence verification even when the AX tree

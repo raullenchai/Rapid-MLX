@@ -27,6 +27,8 @@ from urllib.parse import unquote, urlparse
 from .errors import ComputerUseError
 
 _permission_request_lock = threading.Lock()
+_finder_rename_binding_lock = threading.Lock()
+_finder_rename_bindings: dict[tuple[int, str], tuple[object, object, str, float]] = {}
 
 SNAPSHOT_TTL_S = 120.0
 AX_COLLECT_TIMEOUT_S = 20.0
@@ -966,7 +968,9 @@ def _validate_focused_window(
         # only when an older bridge lacks that resolver API entirely.
         workspace = services.NSWorkspace.sharedWorkspace() if services else None
         frontmost = workspace.frontmostApplication() if workspace is not None else None
-        active = frontmost is not None and int(frontmost.processIdentifier()) == expected_pid
+        active = (
+            frontmost is not None and int(frontmost.processIdentifier()) == expected_pid
+        )
     if not active:
         raise ComputerUseError(
             "target_drift",
@@ -1451,6 +1455,16 @@ def set_value(
     ) != snapshot.get("window_id")
     live = _live_element(snapshot, element_index, validate_point=not is_transient)
     if live is not None:
+        is_finder_item = (
+            str(snapshot.get("app", {}).get("name", "")).casefold() == "finder"
+            and entry.get("role") == "AXTextField"
+            and entry.get("parent_role") == "AXCell"
+        )
+        finder_file_reference = (
+            _finder_file_reference_for_editor(live, snapshot)
+            if is_finder_item
+            else None
+        )
         from ApplicationServices import (  # type: ignore[import-untyped]
             AXUIElementSetAttributeValue,
             kAXValueAttribute,
@@ -1460,6 +1474,29 @@ def set_value(
         if err == 0:
             readback = _read_value(live)
             if readback == value:
+                if is_finder_item:
+                    actual_path = _finder_file_reference_path(finder_file_reference)
+                    requested_basename = value.replace("\u200b", "").replace(
+                        "\ufeff", ""
+                    )
+                    if (
+                        actual_path is not None
+                        and Path(actual_path).name == requested_basename
+                    ):
+                        _clear_finder_rename_binding(snapshot)
+                        return _finish_action(
+                            app,
+                            snapshot,
+                            {
+                                "mode": "AXSetValue",
+                                "element_index": element_index,
+                                "verification_source": "finder_file_reference_basename",
+                                "actual_basename": Path(actual_path).name,
+                            },
+                            verified=True,
+                            verification="Finder file-reference URL resolved to the requested basename",
+                            include_post_state=include_post_state,
+                        )
                 return _finish_action(
                     app,
                     snapshot,
@@ -1638,6 +1675,282 @@ def type_text(
     )
 
 
+def _finder_file_reference_path(value: object) -> str | None:
+    """Resolve Finder's opaque AXURL to the item's current filesystem path."""
+    try:
+        from Foundation import NSURL  # type: ignore[import-untyped]
+
+        url = (
+            value if hasattr(value, "filePathURL") else NSURL.URLWithString_(str(value))
+        )
+        file_path_url = url.filePathURL() if url is not None else None
+        path = file_path_url.path() if file_path_url is not None else None
+    except Exception:  # noqa: BLE001 - optional PyObjC/Foundation boundary
+        return None
+    return str(path) if path else None
+
+
+def _finder_rename_binding_key(snapshot: dict) -> tuple[int, str]:
+    return int(snapshot["app"]["pid"]), str(snapshot.get("window_id") or "")
+
+
+def _finder_file_reference_for_editor(live: object, snapshot: dict) -> object | None:
+    """Bind Finder's replacement editor to the original selected item."""
+    cell = ax_driver._get(live, "AXParent")
+    row = ax_driver._get(cell, "AXParent") if cell is not None else None
+    reference = ax_driver._get(live, "AXURL")
+    key = _finder_rename_binding_key(snapshot)
+    if reference is not None:
+        path = _finder_file_reference_path(reference)
+        if row is not None and path is not None:
+            with _finder_rename_binding_lock:
+                _finder_rename_bindings[key] = (row, reference, path, time.monotonic())
+        return reference
+    with _finder_rename_binding_lock:
+        binding = _finder_rename_bindings.get(key)
+    if binding is None:
+        return None
+    bound_row, bound_reference, bound_path, observed_at = binding
+    if (
+        time.monotonic() - observed_at > SNAPSHOT_TTL_S
+        or row != bound_row
+        or _finder_file_reference_path(bound_reference) != bound_path
+    ):
+        with _finder_rename_binding_lock:
+            _finder_rename_bindings.pop(key, None)
+        return None
+    return bound_reference
+
+
+def _clear_finder_rename_binding(snapshot: dict) -> None:
+    with _finder_rename_binding_lock:
+        _finder_rename_bindings.pop(_finder_rename_binding_key(snapshot), None)
+
+
+def _finder_rename_menu_item(snapshot: dict) -> object:
+    """Return Finder's one enabled native Rename menu command."""
+    app_info = snapshot["app"]
+    app_element = ax_driver._app_element(
+        str(app_info["name"]), expected_pid=int(app_info["pid"])
+    )
+    menu_bar = ax_driver._get(app_element, "AXMenuBar")
+    matches: list[object] = []
+    seen = 0
+
+    def walk(element: object, depth: int) -> None:
+        nonlocal seen
+        if depth > SAVE_MENU_MAX_DEPTH or seen >= SAVE_MENU_MAX_NODES:
+            return
+        seen += 1
+        command = ax_driver._get(element, "AXMenuItemCmdChar")
+        modifiers = ax_driver._get(element, "AXMenuItemCmdModifiers")
+        if (
+            ax_driver._get(element, "AXRole") == "AXMenuItem"
+            and (
+                (command in {"\r", "\n"} and modifiers == 0)
+                or ax_driver._get(element, "AXTitle") == "Rename"
+            )
+            and ax_driver._get(element, "AXEnabled") is True
+            and "AXPress" in ax_driver._action_names(element)
+        ):
+            matches.append(element)
+        for child in ax_driver._as_list(ax_driver._get(element, "AXChildren")):
+            walk(child, depth + 1)
+
+    if menu_bar is not None:
+        walk(menu_bar, 0)
+    if len(matches) != 1:
+        raise ComputerUseError(
+            "element_not_found",
+            "Finder native Rename command is unavailable or ambiguous",
+        )
+    return matches[0]
+
+
+def _finder_item_editor_for_path(
+    snapshot: dict, expected_path: str, expected_row: object
+) -> object:
+    """Reacquire Finder's replacement inline editor for one file reference."""
+    focused_element = _focused_ax_element(snapshot["app"])
+    if focused_element is not None:
+        focused_cell = ax_driver._get(focused_element, "AXParent")
+        focused_row = ax_driver._get(focused_cell, "AXParent")
+        focused_reference = ax_driver._get(focused_element, "AXURL")
+        if (
+            ax_driver._get(focused_element, "AXRole") == "AXTextField"
+            and ax_driver._get(focused_cell, "AXRole") == "AXCell"
+            and focused_row == expected_row
+            and ax_driver._get(focused_row, "AXSelected") is True
+            and (
+                focused_reference is None
+                or _finder_file_reference_path(focused_reference) == expected_path
+            )
+        ):
+            return focused_element
+    window = _focused_ax_window(snapshot["app"])
+    matches: list[object] = []
+    seen = 0
+
+    def walk(element: object, depth: int) -> None:
+        nonlocal seen
+        if depth > TEXTEDIT_VALUE_MAX_DEPTH or seen >= TEXTEDIT_VALUE_MAX_NODES:
+            return
+        seen += 1
+        if ax_driver._get(element, "AXRole") == "AXTextField":
+            cell = ax_driver._get(element, "AXParent")
+            candidate_row = ax_driver._get(cell, "AXParent")
+            if (
+                ax_driver._get(cell, "AXRole") == "AXCell"
+                and candidate_row == expected_row
+                and ax_driver._get(candidate_row, "AXSelected") is True
+            ):
+                reference = ax_driver._get(element, "AXURL")
+                if _finder_file_reference_path(reference) == expected_path:
+                    matches.append(element)
+        for child in ax_driver._as_list(ax_driver._get(element, "AXChildren")):
+            walk(child, depth + 1)
+
+    if window is not None:
+        walk(window, 0)
+    if len(matches) != 1:
+        raise ComputerUseError(
+            "target_drift",
+            "Finder replacement rename editor is unavailable or ambiguous",
+        )
+    return matches[0]
+
+
+def _finder_inline_rename(
+    app: str,
+    snapshot: dict,
+    element_index: int,
+    *,
+    include_post_state: bool = False,
+) -> dict | None:
+    """Commit and verify one Finder item-cell inline rename.
+
+    Finder can accept ``AXValue`` and display it in the editor without
+    committing the directory entry. Bind the commit to the exact AXCell text
+    field, retain its opaque file-reference URL, then resolve that same item
+    after ``AXConfirm``/Enter and compare the filesystem basename.
+    """
+    entry = _element(snapshot, element_index)
+    if (
+        str(snapshot.get("app", {}).get("name", "")).casefold() != "finder"
+        or entry.get("role") != "AXTextField"
+        or entry.get("parent_role") != "AXCell"
+    ):
+        return None
+    live = _live_element(snapshot, element_index, validate_point=False)
+    if live is None:
+        raise ComputerUseError("target_drift", "Finder inline rename editor changed")
+    file_reference = ax_driver._get(live, "AXURL")
+    requested_name = _read_value(live)
+    if file_reference is None or not requested_name:
+        return None
+
+    # A selected Finder row exposes the same AXTextField/AXCell shape before
+    # inline editing begins. Only treat it as a pending commit once its editor
+    # value differs from the file reference's current basename. The first
+    # Enter must continue through the generic path so Finder can start rename.
+    expected_basename = requested_name.replace("\u200b", "").replace("\ufeff", "")
+    original_path = _finder_file_reference_path(file_reference)
+    if original_path is None or Path(original_path).name == expected_basename:
+        return None
+
+    expected_window = _validate_snapshot_window(snapshot)
+    _validate_focused_window(snapshot, expected_window)
+    cell = ax_driver._get(live, "AXParent")
+    row = ax_driver._get(cell, "AXParent") if cell is not None else None
+    if (
+        ax_driver._get(cell, "AXRole") != "AXCell"
+        or ax_driver._get(row, "AXRole") != "AXRow"
+    ):
+        raise ComputerUseError(
+            "target_drift", "Finder rename target is no longer the bound item row"
+        )
+
+    import ApplicationServices as AS  # type: ignore[import-untyped]  # noqa: N813, N817
+
+    if ax_driver._get(row, "AXSelected") is not True:
+        if (
+            AS.AXUIElementSetAttributeValue(row, "AXSelected", True)
+            != AS.kAXErrorSuccess
+        ):
+            raise ComputerUseError(
+                "target_drift", "Finder rename target could not be selected"
+            )
+        time.sleep(0.05)
+        if ax_driver._get(row, "AXSelected") is not True:
+            raise ComputerUseError(
+                "target_drift", "Finder rename target did not accept selection"
+            )
+        expected_window = _validate_snapshot_window(snapshot)
+        _validate_focused_window(snapshot, expected_window)
+
+    rename_item = _finder_rename_menu_item(snapshot)
+    expected_window = _validate_snapshot_window(snapshot)
+    _validate_focused_window(snapshot, expected_window)
+    if (
+        ax_driver._get(row, "AXSelected") is not True
+        or _finder_file_reference_path(file_reference) != original_path
+    ):
+        raise ComputerUseError(
+            "target_drift", "Finder rename target changed during menu resolution"
+        )
+    if AS.AXUIElementPerformAction(rename_item, "AXPress") != AS.kAXErrorSuccess:
+        raise ComputerUseError(
+            "action_failed", "Finder native Rename command rejected AXPress"
+        )
+    time.sleep(0.1)
+    if _finder_file_reference_path(file_reference) != original_path:
+        raise ComputerUseError("target_drift", "Finder rename target changed")
+    live = _finder_item_editor_for_path(snapshot, original_path, row)
+    if not (
+        ax_driver._get(live, "AXFocused") is True
+        or live == _focused_ax_element(snapshot["app"])
+    ):
+        raise ComputerUseError(
+            "target_drift", "Finder native rename editor is not focused"
+        )
+    expected_window = _validate_snapshot_window(snapshot)
+    _validate_focused_window(snapshot, expected_window)
+    ax_driver._press_key(ax_driver._keycode_for("a"), modifiers=ax_driver.FLAG_COMMAND)
+    ax_driver._type_text(expected_basename)
+    ax_driver._press_key(KEY_ALIASES["enter"])
+
+    # AXValue may contain invisible editor sentinels. They are not part of a
+    # legal Finder basename and must not make an uncommitted editor look true.
+    actual_path = None
+    for _ in range(10):
+        actual_path = _finder_file_reference_path(file_reference)
+        if actual_path is not None and Path(actual_path).name == expected_basename:
+            break
+        time.sleep(0.1)
+    verified = actual_path is not None and Path(actual_path).name == expected_basename
+    if verified:
+        _clear_finder_rename_binding(snapshot)
+    return _finish_action(
+        app,
+        snapshot,
+        {
+            "ok": verified,
+            "mode": "FinderRenameMenu+CGEvent-text",
+            "key": "enter",
+            "executed": True,
+            "actual_basename": Path(actual_path).name if actual_path else None,
+            "verification_source": "finder_file_reference_basename",
+        },
+        verified=verified,
+        verification=(
+            "Finder file-reference URL resolved to the requested basename"
+            if verified
+            else "Finder file-reference URL did not resolve to the requested basename"
+        ),
+        include_post_state=include_post_state,
+    )
+
+
 def press_key(
     app: str,
     key: str,
@@ -1647,6 +1960,7 @@ def press_key(
     element_index: int | None = None,
 ) -> dict:
     normalized = key.strip().lower()
+    finder_enter_binding: tuple[object, str, str] | None = None
     if expected_snapshot is not None and element_index is not None:
         entry = _element(expected_snapshot, element_index)
         is_transient = entry.get(
@@ -1657,6 +1971,41 @@ def press_key(
                 "unsupported_key",
                 "transient companion targets only allow Enter after exact focus validation",
             )
+        if normalized == "enter":
+            rename_result = _finder_inline_rename(
+                app,
+                expected_snapshot,
+                element_index,
+                include_post_state=include_post_state,
+            )
+            if rename_result is not None:
+                return rename_result
+            if (
+                str(expected_snapshot.get("app", {}).get("name", "")).casefold()
+                == "finder"
+                and entry.get("role") == "AXTextField"
+                and entry.get("parent_role") == "AXCell"
+            ):
+                live = _live_element(
+                    expected_snapshot, element_index, validate_point=False
+                )
+                reference = (
+                    _finder_file_reference_for_editor(live, expected_snapshot)
+                    if live is not None
+                    else None
+                )
+                requested = _read_value(live) if live is not None else None
+                before_path = (
+                    _finder_file_reference_path(reference)
+                    if reference is not None
+                    else None
+                )
+                if requested and before_path:
+                    finder_enter_binding = (
+                        reference,
+                        before_path,
+                        requested.replace("\u200b", "").replace("\ufeff", ""),
+                    )
     if normalized in KEY_ALIASES:
         snapshot = _prepare_synthetic_action(
             app,
@@ -1666,6 +2015,30 @@ def press_key(
             allow_focused_editable_enter=normalized == "enter",
         )
         ax_driver._press_key(KEY_ALIASES[normalized])
+        if finder_enter_binding is not None:
+            reference, before_path, requested_basename = finder_enter_binding
+            actual_path = before_path
+            for _ in range(10):
+                actual_path = _finder_file_reference_path(reference) or actual_path
+                if (
+                    Path(actual_path).name == requested_basename
+                    and Path(before_path).name != requested_basename
+                ):
+                    _clear_finder_rename_binding(snapshot)
+                    return _finish_action(
+                        app,
+                        snapshot,
+                        {
+                            "mode": "CGEvent-keycode",
+                            "key": normalized,
+                            "verification_source": "finder_file_reference_basename",
+                            "actual_basename": Path(actual_path).name,
+                        },
+                        verified=True,
+                        verification="Finder file-reference URL resolved to the requested basename",
+                        include_post_state=include_post_state,
+                    )
+                time.sleep(0.1)
         return _finish_action(
             app,
             snapshot,

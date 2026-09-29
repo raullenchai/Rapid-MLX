@@ -408,8 +408,9 @@ def test_multi_target_switch_observes_only_frozen_selected_target(
     monkeypatch.setattr(
         backend_mod,
         "raise_selected_window",
-        lambda app, snapshot: raised.append((app, snapshot["window_id"]))
-        or snapshot["window"],
+        lambda app, snapshot: (
+            raised.append((app, snapshot["window_id"])) or snapshot["window"]
+        ),
     )
     focused = []
     monkeypatch.setattr(
@@ -3509,8 +3510,7 @@ def test_done_cannot_claim_folder_rename_after_unverified_enter(
             }
         ],
         "tree_text": (
-            "[1] AXTextField Rapid CUA Dogfood 2026-09-28\u200b\u200b "
-            "Kind Folder"
+            "[1] AXTextField Rapid CUA Dogfood 2026-09-28\u200b\u200b Kind Folder"
         ),
     }
     monkeypatch.setattr(fake_backend, "get_app_state", lambda *a, **k: dict(snapshot))
@@ -3536,6 +3536,9 @@ def test_done_cannot_claim_folder_rename_after_unverified_enter(
         "create folder Rapid CUA Dogfood 2026-09-28",
         tmp_path / "uncommitted-finder-rename",
     )
+    # Persistence evidence from an earlier rename must not authorize this
+    # later uncertain commit.
+    runner._last_finder_rename_verified = True
     planner = _FakePlanner(
         [
             {
@@ -3608,6 +3611,69 @@ def test_finder_generic_text_field_enter_does_not_arm_rename_commit(
     assert asyncio.run(runner.step(planner, 2)) == {
         "status": "done",
         "summary": "Documents is visible.",
+    }
+
+
+def test_finder_disk_verified_fill_allows_done(fake_backend, tmp_path, monkeypatch):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    snapshot = {
+        "app": {"name": "Finder"},
+        "elements": [
+            {
+                "index": 1,
+                "label": "Verified Folder",
+                "role": "AXTextField",
+                "parent_role": "AXCell",
+            }
+        ],
+        "tree_text": "[1] AXTextField Verified Folder Kind Folder",
+    }
+    monkeypatch.setattr(fake_backend, "get_app_state", lambda *a, **k: dict(snapshot))
+    monkeypatch.setattr(
+        fake_backend,
+        "set_value",
+        lambda *a, **k: {
+            "ok": True,
+            "executed": True,
+            "verified": True,
+            "verification_source": "finder_file_reference_basename",
+            "actual_basename": "Verified Folder",
+        },
+    )
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path),
+        "Finder",
+        "rename folder to Verified Folder",
+        tmp_path / "verified-finder-rename",
+    )
+    planner = _FakePlanner(
+        [
+            {
+                "action": "fill",
+                "step_instruction": "rename the folder",
+                "element_index": 1,
+                "text": "Verified Folder",
+                "final_summary": "",
+            },
+            {
+                "action": "done",
+                "step_instruction": "finish",
+                "element_index": -1,
+                "final_summary": "Renamed and verified the folder.",
+            },
+        ]
+    )
+
+    assert asyncio.run(runner.step(planner, 1)) is None
+    assert runner._last_finder_rename_verified is True
+    assert runner.history[-1]["verified_persistence"] is True
+    assert asyncio.run(runner.step(planner, 2)) == {
+        "status": "done",
+        "summary": "Renamed and verified the folder.",
     }
 
 
