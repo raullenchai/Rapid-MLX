@@ -321,6 +321,15 @@ final class CUAViewModel: ObservableObject {
 
     var isRecoveringCreate: Bool { pendingCreateRecovery != nil && runID == nil }
 
+    var canRetrySetup: Bool {
+        guard case .failed = phase else { return false }
+        return !isSessionDetached
+            && runContext != nil
+            && runID == nil
+            && pendingCreateRecovery == nil
+            && !requiresBindingCleanup
+    }
+
     var approvalUnavailableMessage: String? {
         guard phase == .awaitingApproval, !canApprove else { return nil }
         if isStopping {
@@ -826,6 +835,48 @@ final class CUAViewModel: ObservableObject {
         wasSessionInterrupted = false
         isStopping = false
         phase = .idle
+    }
+
+    /// Returns a failed task to an editable draft without carrying any target
+    /// authority into the next run. The task configuration is local
+    /// presentation state; process, window, domain, run, gate, and request
+    /// identities must all be selected and authorized again.
+    func retrySetup() async {
+        guard canRetrySetup, let context = runContext else { return }
+        lifecycleGeneration += 1
+        targetDiscoveryGeneration += 1
+        stopPolling()
+        runID = nil
+        pendingCreateRecovery = nil
+        stoppingStartGeneration = nil
+        pendingGateReason = nil
+        pendingApproval = nil
+        requiresBindingCleanup = false
+        isStopping = false
+        showingPollError = false
+        actionError = nil
+        browserAutomationRecoveryRequired = false
+        wasSessionInterrupted = false
+        events = []
+        runContext = nil
+        activeTargetID = nil
+
+        goal = context.goal
+        plannerName = context.plannerName
+        maxSteps = context.maxSteps
+        appName = ""
+        selectedPID = nil
+        selectedWindowID = nil
+        selectedTargets = []
+        windowOptions = []
+        allowedDomain = ""
+        targetError = "Select and authorize each target window again before starting."
+        phase = .idle
+
+        await loadTargets()
+        if targetError == nil {
+            targetError = "Select and authorize each target window again before starting."
+        }
     }
 
     func approve() async {

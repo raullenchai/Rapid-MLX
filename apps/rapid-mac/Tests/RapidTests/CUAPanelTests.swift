@@ -1252,6 +1252,14 @@ struct CUAViewModelTests {
         #expect(viewModel.selectedWindowID == nil)
         #expect(!viewModel.canApprove)
         #expect(viewModel.actionError?.contains("may still be executing") == true)
+        let discoveryCalls = api.appsCalls
+        viewModel.phase = .failed(message: "binding could not be verified")
+        #expect(!viewModel.canRetrySetup)
+        await viewModel.retrySetup()
+        #expect(viewModel.phase == .failed(message: "binding could not be verified"))
+        #expect(api.appsCalls == discoveryCalls)
+        #expect(viewModel.actionError?.contains("may still be executing") == true)
+        viewModel.phase = .running
 
         try? await Task.sleep(nanoseconds: 10_000_000)
         api.eventsShouldFail = false
@@ -1331,6 +1339,8 @@ struct CUAViewModelTests {
         ]
         let viewModel = CUAViewModel(api: api, pollIntervalNanos: 5_000_000)
         viewModel.goal = "check the selected page"
+        viewModel.plannerName = "reviewed-brain"
+        viewModel.maxSteps = 17
         selectTarget(viewModel)
 
         await viewModel.start()
@@ -1340,8 +1350,24 @@ struct CUAViewModelTests {
         #expect(viewModel.browserAutomationRecoveryRequired)
         #expect(viewModel.runContext?.allowedDomain == "example.com")
 
-        viewModel.newTask()
+        let createCount = api.createdRequests.count
+        await viewModel.retrySetup()
+
         #expect(!viewModel.browserAutomationRecoveryRequired)
+        #expect(viewModel.phase == .idle)
+        #expect(viewModel.goal == "check the selected page")
+        #expect(viewModel.plannerName == "reviewed-brain")
+        #expect(viewModel.maxSteps == 17)
+        #expect(viewModel.runContext == nil)
+        #expect(viewModel.events.isEmpty)
+        #expect(viewModel.selectedPID == nil)
+        #expect(viewModel.selectedWindowID == nil)
+        #expect(viewModel.selectedTargets.isEmpty)
+        #expect(viewModel.allowedDomain.isEmpty)
+        #expect(!viewModel.canStart)
+        #expect(api.createdRequests.count == createCount)
+        #expect(api.appsCalls == 1)
+        #expect(viewModel.targetError?.contains("authorize each target") == true)
     }
 
     @Test("Typed stale terminal clears the frozen window before retry")
@@ -2131,6 +2157,8 @@ struct CUATargetUISourceTests {
         #expect(section.contains("ComputerUse.Agent.Failure.ChangeWarning"))
         #expect(section.contains("ComputerUse.Agent.Failure.AutomationRecovery"))
         #expect(section.contains("ComputerUse.Agent.Failure.OpenAutomationSettings"))
+        #expect(section.contains("ComputerUse.Agent.Failure.RetrySetup"))
+        #expect(section.contains("ComputerUse.Agent.Failure.RetrySetupHelp"))
         #expect(section.contains("ComputerUse.Agent.RunContext"))
         #expect(section.contains("ComputerUse.Agent.RunContext.Goal"))
         #expect(section.contains("ComputerUse.Agent.NewTask"))

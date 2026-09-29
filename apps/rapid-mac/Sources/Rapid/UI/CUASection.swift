@@ -800,6 +800,22 @@ struct CUASection: View {
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("ComputerUse.Agent.Failure.AutomationRecovery")
             }
+            if viewModel.canRetrySetup {
+                VStack(alignment: .leading, spacing: 6) {
+                    Button("Retry setup") {
+                        Task { await viewModel.retrySetup() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("ComputerUse.Agent.Failure.RetrySetup")
+                    Text(
+                        "Restores this task as a draft. Review and authorize every target window and browser domain again before Start."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("ComputerUse.Agent.Failure.RetrySetupHelp")
+            }
             DisclosureGroup {
                 VStack(alignment: .leading, spacing: 10) {
                     Text(failure.technicalDetails)
