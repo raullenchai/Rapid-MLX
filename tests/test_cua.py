@@ -3416,6 +3416,58 @@ def test_loop_unverified_ranker_success_remains_uncertain(
     }
 
 
+def test_loop_continues_to_planner_terminal_after_ranker_transport_failure(
+    config_dir, fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    import httpx
+
+    from rapid_mlx.cua import loop as loop_mod
+    from rapid_mlx.cua.fast import FastOutcomeRanker
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+
+    async def no_sleep(_seconds):
+        return None
+
+    async def unavailable_ranker(self, *args):
+        request = httpx.Request("POST", self.url)
+        raise httpx.ConnectError("All connection attempts failed", request=request)
+
+    monkeypatch.setattr(loop_mod.asyncio, "sleep", no_sleep)
+    monkeypatch.setattr(FastOutcomeRanker, "assess", unavailable_ranker)
+    config = _make_config(tmp_path)
+    config.fast_ranker_url = "http://127.0.0.1:18700/v1/rank"
+    planner = _FakePlanner(
+        [
+            {
+                "action": "click",
+                "step_instruction": "open the item",
+                "element_index": 1,
+                "final_summary": "",
+            },
+            {
+                "action": "done",
+                "step_instruction": "finish",
+                "final_summary": "the item is open",
+            },
+        ]
+    )
+
+    trace = asyncio.run(
+        loop_mod.run(config, "Finder", "open item", max_steps=2, planner=planner)
+    )
+
+    assert trace["status"] == "done"
+    assert trace["final_summary"] == "the item is open"
+    action_step = trace["steps"][0]
+    assert action_step["protocol_outcome"] == "uncertain"
+    assert action_step["state_delta"]["fast_outcome"] == {
+        "outcome": "unavailable"
+    }
+
+
 def test_exact_execution_verification_is_authoritative(
     fake_backend, tmp_path, monkeypatch
 ):

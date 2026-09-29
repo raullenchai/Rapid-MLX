@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+import httpx
+
 from rapid_mlx.computer_use import backend
 from rapid_mlx.computer_use.errors import ComputerUseError
 from rapid_mlx.cua import config as config_mod
@@ -1058,7 +1060,10 @@ class CUARun:
                 # its result for diagnostics, but do not promote an unverified
                 # dispatch to user-visible success (or suppress recovery).
                 delta["fast_outcome"] = {**verdict, "advisory": True}
-            except (RuntimeError, KeyError, ValueError):
+            except (httpx.TransportError, RuntimeError, KeyError, ValueError):
+                # The local ranker is advisory. Connection, timeout, and
+                # protocol failures must not discard an already executed
+                # action or bypass the planner's terminal decision.
                 delta["fast_outcome"] = {"outcome": "unavailable"}
         self.tracker.record(plan, outcome, observed_change=bool(delta["tree_changed"]))
         event = {
