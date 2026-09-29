@@ -2280,6 +2280,11 @@ def list_apps() -> list[dict]:
     return apps
 
 
+_AUTOMATION_INITIAL_TIMEOUT_S = 30
+_AUTOMATION_STEADY_TIMEOUT_S = 5
+_AUTOMATION_READY_BUNDLES: set[str] = set()
+
+
 def read_url(
     app: str,
     window_id: int | str | None = None,
@@ -2326,16 +2331,32 @@ def read_url(
             tab_property = "active tab"
         else:
             return ""
-        result = subprocess.run(
-            [
-                "osascript",
-                "-e",
-                f'tell application id "{bundle_id}" to get URL of {tab_property} of front window',
-            ],
-            capture_output=True,
-            text=True,
-            timeout=5,
+        timeout = (
+            _AUTOMATION_STEADY_TIMEOUT_S
+            if bundle_key in _AUTOMATION_READY_BUNDLES or not require_permission
+            else _AUTOMATION_INITIAL_TIMEOUT_S
         )
+        try:
+            result = subprocess.run(
+                [
+                    "osascript",
+                    "-e",
+                    f'tell application id "{bundle_id}" to get URL of {tab_property} of front window',
+                ],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            if require_permission:
+                raise ComputerUseError(
+                    "automation_permission_required",
+                    "browser URL access timed out while waiting for macOS "
+                    "Automation authorization; allow Rapid-MLX to control the "
+                    "selected browser in System Settings > Privacy & Security "
+                    "> Automation, then retry",
+                ) from exc
+            return ""
         if result.returncode != 0:
             stderr = result.stderr or ""
             permission_denied = "(-1743)" in stderr or (
@@ -2349,6 +2370,7 @@ def read_url(
                     "& Security > Automation, then retry",
                 )
             return ""
+        _AUTOMATION_READY_BUNDLES.add(bundle_key)
         url = result.stdout.strip()
         if url.startswith(("http://", "https://")):
             return url
