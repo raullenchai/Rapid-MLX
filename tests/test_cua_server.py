@@ -287,6 +287,218 @@ def test_target_resolver_silently_resolves_one_explicit_nonbrowser_window(client
     assert body["targets"][0]["display_name"] == "Finder — Documents"
 
 
+@pytest.mark.parametrize(
+    ("catalog", "reason"),
+    [
+        ([], "No eligible apps are open"),
+        (
+            [
+                {
+                    "catalog_id": "w1",
+                    "app": {"name": "Finder", "bundleId": "", "pid": 42},
+                    "window": {"window_id": "cg:123", "title": "Documents"},
+                }
+            ],
+            "could not verify the open apps",
+        ),
+    ],
+)
+def test_target_resolver_reports_unavailable_or_unverifiable_catalog(
+    client, monkeypatch, catalog, reason
+):
+    monkeypatch.setattr(
+        cua_routes._backend(), "discover_target_windows", lambda: catalog
+    )
+
+    response = client.post(
+        "/v1/cua/targets/resolve",
+        headers=AUTH,
+        json={"goal": "Organize files", "planner": "local-9b"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "unresolved"
+    assert reason in response.json()["reason"]
+
+
+def test_target_resolver_maps_backend_discovery_failure(client, monkeypatch):
+    from rapid_mlx.computer_use.errors import ComputerUseError
+
+    monkeypatch.setattr(
+        cua_routes._backend(),
+        "discover_target_windows",
+        lambda: (_ for _ in ()).throw(ComputerUseError("access_denied", "denied")),
+    )
+
+    response = client.post(
+        "/v1/cua/targets/resolve",
+        headers=AUTH,
+        json={"goal": "Organize files", "planner": "local-9b"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "access_denied"
+
+
+@pytest.mark.parametrize(
+    ("model", "payload", "message"),
+    [
+        (
+            cua_routes.CUATarget,
+            {
+                "target_id": "one",
+                "app": "pid:42",
+                "pid": 42,
+                "window_id": "cg:1",
+                "bundle_id": "com.apple.finder",
+            },
+            "must be supplied together",
+        ),
+        (
+            cua_routes.CUATargetResolution,
+            {"status": "needs_automation"},
+            "only browser preflight metadata",
+        ),
+        (
+            cua_routes.CUATargetResolution,
+            {
+                "status": "resolved",
+                "automation": {
+                    "bundle_id": "com.apple.Safari",
+                    "display_name": "Safari",
+                },
+            },
+            "requires needs_automation",
+        ),
+        (
+            cua_routes.CUARunCreateRequest,
+            {
+                "app": "pid:42",
+                "goal": "Organize files",
+                "bundle_id": "com.apple.finder",
+            },
+            "must be supplied together",
+        ),
+        (
+            cua_routes.CUARunCreateRequest,
+            {
+                "app": "pid:42",
+                "goal": "Organize files",
+                "bundle_id": "com.apple.finder",
+                "process_start_time": 1000.0,
+            },
+            "requires window_id",
+        ),
+    ],
+)
+def test_target_contracts_reject_partial_authority(model, payload, message):
+    with pytest.raises(ValueError, match=message):
+        model.model_validate(payload)
+
+
+def test_target_resolver_fails_closed_when_running_apps_cannot_be_verified(
+    client, monkeypatch
+):
+    from rapid_mlx.computer_use.errors import ComputerUseError
+
+    monkeypatch.setattr(
+        cua_routes._backend(),
+        "list_apps",
+        lambda: (_ for _ in ()).throw(ComputerUseError("access_denied", "denied")),
+    )
+
+    body = client.post(
+        "/v1/cua/targets/resolve",
+        headers=AUTH,
+        json={"goal": "Organize files", "planner": "local-9b"},
+    ).json()
+
+    assert body["status"] == "unresolved"
+    assert "could not verify the open apps" in body["reason"]
+
+
+def test_target_resolver_handles_missing_planner_and_stale_choice(client, monkeypatch):
+    monkeypatch.setattr(
+        cua_routes,
+        "resolve_planner",
+        lambda name: (_ for _ in ()).throw(ValueError("missing planner")),
+    )
+    missing = client.post(
+        "/v1/cua/targets/resolve",
+        headers=AUTH,
+        json={"goal": "Organize files", "planner": "missing"},
+    ).json()
+    assert missing["status"] == "unresolved"
+    assert "planner is unavailable" in missing["reason"]
+
+    from rapid_mlx.cua.config import PlannerConfig
+
+    monkeypatch.setattr(
+        cua_routes,
+        "resolve_planner",
+        lambda name: PlannerConfig(
+            preset=name, url="http://127.0.0.1:1/v1", model="test"
+        ),
+    )
+
+    async def stale_choice(self, goal, catalog):
+        return {"target_ids": ["removed"], "reason": "stale"}
+
+    monkeypatch.setattr(cua_routes.Planner, "resolve_targets", stale_choice)
+    stale = client.post(
+        "/v1/cua/targets/resolve",
+        headers=AUTH,
+        json={"goal": "Organize files", "planner": "test"},
+    ).json()
+    assert stale["status"] == "unresolved"
+    assert "proposed apps changed" in stale["reason"]
+
+
+def test_target_resolver_rejects_browser_when_url_cannot_be_verified(
+    client, monkeypatch
+):
+    from rapid_mlx.computer_use.errors import ComputerUseError
+
+    monkeypatch.setattr(
+        cua_routes._backend(),
+        "discover_target_windows",
+        lambda: [
+            {
+                "catalog_id": "w1",
+                "app": {
+                    "name": "Safari",
+                    "bundleId": "com.apple.Safari",
+                    "pid": 42,
+                    "processStartTime": 1000.0,
+                },
+                "window": {"window_id": "cg:123", "title": "Example"},
+                "z_order": 0,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        cua_routes._backend(),
+        "list_apps",
+        lambda: [{"name": "Safari", "bundleId": "com.apple.Safari", "pid": 42}],
+    )
+    monkeypatch.setattr(
+        cua_routes._backend(),
+        "read_url",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            ComputerUseError("url_unavailable", "cannot read URL")
+        ),
+    )
+
+    body = client.post(
+        "/v1/cua/targets/resolve",
+        headers=AUTH,
+        json={"goal": "Use Safari to read this page", "planner": "local-9b"},
+    ).json()
+
+    assert body["status"] == "unresolved"
+    assert "could not verify the website" in body["reason"]
+
+
 def test_target_resolver_does_not_treat_app_name_substring_as_explicit(
     client, monkeypatch
 ):
@@ -2279,14 +2491,43 @@ def test_permission_prompt_rejects_unparseable_peer_address(client, monkeypatch)
     assert calls == []
 
 
-def test_multi_target_freeze_rejects_changed_pid_identity(client, monkeypatch):
+@pytest.mark.parametrize(
+    ("live_app", "message"),
+    [
+        (
+            {"name": "Finder", "bundleId": "com.apple.finder", "pid": 99},
+            "process identity changed",
+        ),
+        (
+            {
+                "name": "Finder",
+                "bundleId": "com.example.replacement",
+                "pid": 42,
+                "processStartTime": 1000.0,
+            },
+            "app identity changed",
+        ),
+        (
+            {
+                "name": "Finder",
+                "bundleId": "com.apple.finder",
+                "pid": 42,
+                "processStartTime": 2000.0,
+            },
+            "process identity changed",
+        ),
+    ],
+)
+def test_multi_target_freeze_rejects_changed_pid_identity(
+    client, monkeypatch, live_app, message
+):
     from rapid_mlx.computer_use import backend as backend_mod
 
     monkeypatch.setattr(
         backend_mod,
         "validate_window",
         lambda app, window_id: {
-            "app": {"name": "Finder", "bundleId": "com.apple.finder", "pid": 99},
+            "app": live_app,
             "window_id": window_id,
         },
     )
@@ -2295,16 +2536,32 @@ def test_multi_target_freeze_rejects_changed_pid_identity(client, monkeypatch):
         app="pid:42",
         initial_target_id="one",
         targets=[
-            {"target_id": "one", "app": "pid:42", "pid": 42, "window_id": "cg:1"},
+            {
+                "target_id": "one",
+                "app": "pid:42",
+                "pid": 42,
+                "window_id": "cg:1",
+                "bundle_id": "com.apple.finder",
+                "process_start_time": 1000.0,
+            },
             {"target_id": "two", "app": "pid:43", "pid": 43, "window_id": "cg:2"},
         ],
     )
     assert response.status_code == 400
-    assert "process identity changed" in response.text
+    assert message in response.text
     assert client.fresh_service.list_runs() == []
 
 
-def test_resolved_target_freeze_rejects_reused_process_identity(client, monkeypatch):
+@pytest.mark.parametrize(
+    ("bundle_id", "process_start_time", "message"),
+    [
+        ("com.example.replacement", 2000.0, "selected app identity changed"),
+        ("com.apple.finder", 1000.0, "selected process identity changed"),
+    ],
+)
+def test_resolved_target_freeze_rejects_reused_process_identity(
+    client, monkeypatch, bundle_id, process_start_time, message
+):
     from rapid_mlx.computer_use import backend as backend_mod
 
     monkeypatch.setattr(
@@ -2324,11 +2581,11 @@ def test_resolved_target_freeze_rejects_reused_process_identity(client, monkeypa
         client,
         app="pid:42",
         window_id="cg:1",
-        bundle_id="com.apple.finder",
-        process_start_time=1000.0,
+        bundle_id=bundle_id,
+        process_start_time=process_start_time,
     )
     assert response.status_code == 400
-    assert "process identity changed" in response.text
+    assert message in response.text
     assert client.fresh_service.list_runs() == []
 
 

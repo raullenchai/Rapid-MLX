@@ -58,6 +58,64 @@ def test_resolve_custom_url_requires_model(config_dir):
     assert planner.model == "m"
 
 
+@pytest.mark.parametrize(
+    ("response", "message"),
+    [
+        ({"target_ids": []}, "invalid target set"),
+        ({"target_ids": ["a1", "a1"]}, "invalid target set"),
+        ({"target_ids": ["missing"]}, "unknown catalog ID"),
+    ],
+)
+def test_planner_target_resolution_validates_bounded_catalog_ids(response, message):
+    from rapid_mlx.cua.planner import Planner
+
+    async def scenario():
+        planner = Planner("http://127.0.0.1:1/v1", "test")
+
+        async def answer(*args, **kwargs):
+            return json.dumps(response)
+
+        planner._ask = answer
+        try:
+            with pytest.raises(ValueError, match=message):
+                await planner.resolve_targets(
+                    "organize files", [{"catalog_id": "a1", "app_name": "Finder"}]
+                )
+        finally:
+            await planner.close()
+
+    asyncio.run(scenario())
+
+
+def test_planner_target_resolution_returns_valid_choice_and_bounded_reason():
+    from rapid_mlx.cua.planner import Planner
+
+    async def scenario():
+        planner = Planner("http://127.0.0.1:1/v1", "test")
+        captured = {}
+
+        async def answer(content, max_tokens, schema, name):
+            captured.update(
+                content=content, max_tokens=max_tokens, schema=schema, name=name
+            )
+            return json.dumps({"target_ids": ["a1"], "reason": "r" * 500})
+
+        planner._ask = answer
+        try:
+            result = await planner.resolve_targets(
+                "organize files", [{"catalog_id": "a1", "app_name": "Finder"}]
+            )
+        finally:
+            await planner.close()
+        return result, captured
+
+    result, captured = asyncio.run(scenario())
+    assert result == {"target_ids": ["a1"], "reason": "r" * 400}
+    assert captured["max_tokens"] == 300
+    assert captured["name"] == "computer_target_resolution"
+    assert "organize files" in captured["content"][0]["text"]
+
+
 def test_resolve_unknown_preset_lists_known(config_dir):
     with pytest.raises(ValueError, match="local-9b"):
         resolve_planner("nope")

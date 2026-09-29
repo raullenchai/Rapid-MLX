@@ -105,6 +105,50 @@ def test_selected_window_observation_loss_stops_before_planning(tmp_path, monkey
     assert events[-1]["kind"] == "terminal"
 
 
+def test_nonactivation_key_focuses_target_before_dispatch(tmp_path, monkeypatch):
+    run, _ = _runner(tmp_path, monkeypatch)
+    focused = []
+    pressed = []
+    monkeypatch.setattr(
+        loop_mod.backend,
+        "click",
+        lambda *args, **kwargs: focused.append((args, kwargs)) or {"ok": True},
+    )
+    monkeypatch.setattr(
+        loop_mod.backend,
+        "press_key",
+        lambda *args, **kwargs: pressed.append((args, kwargs)) or {"ok": True},
+    )
+
+    result = asyncio.run(run._execute(_plan("press", key="tab"), _snapshot()))
+
+    assert result == {"action": "press", "ok": True, "executed": True}
+    assert focused[0][1]["focus_only"] is True
+    assert pressed[0][0][1] == "tab"
+
+
+def test_keyboard_activation_rebind_failure_stops_before_input(tmp_path, monkeypatch):
+    run, _ = _runner(tmp_path, monkeypatch, plan=_plan("press", key="enter"))
+    monkeypatch.setattr(
+        loop_mod.backend,
+        "inspect_focused_element",
+        lambda *args, **kwargs: _fail("focus moved", "target_drift"),
+    )
+    monkeypatch.setattr(
+        loop_mod.backend,
+        "press_key",
+        lambda *args, **kwargs: pytest.fail("stale key input was dispatched"),
+    )
+
+    result = asyncio.run(run.step(SimpleNamespace(text_only=True), 1))
+
+    assert result == {
+        "status": "stopped",
+        "reason": "keyboard activation rejected: focus moved",
+        "error": "target_drift",
+    }
+
+
 @pytest.mark.parametrize("terminal", ["partial", "blocked"])
 def test_failed_prior_action_accepts_honest_noncompletion(
     tmp_path, monkeypatch, terminal
