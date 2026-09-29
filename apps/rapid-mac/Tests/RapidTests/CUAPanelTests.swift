@@ -2348,6 +2348,7 @@ struct CUATargetUISourceTests {
         #expect(section.contains("ComputerUse.Agent.TargetSet"))
         #expect(section.contains("ComputerUse.Agent.TargetSet.Initial"))
         #expect(section.contains("ComputerUse.Agent.TargetSet.SetInitial"))
+        #expect(section.contains("ComputerUse.Agent.TargetSet.Remove"))
         #expect(section.contains("ComputerUse.Agent.RunContext.Targets"))
         #expect(section.contains("ComputerUse.Agent.RunContext.Domain"))
         #expect(section.contains("ComputerUse.Agent.Approval.TargetWindow"))
