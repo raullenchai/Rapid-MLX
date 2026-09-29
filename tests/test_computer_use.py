@@ -2851,6 +2851,102 @@ def test_finder_inline_rename_rejects_unselectable_exact_row(monkeypatch):
     assert "could not be selected" in excinfo.value.message
 
 
+@pytest.mark.parametrize(
+    ("failure", "message"),
+    [
+        ("live_none", "editor changed"),
+        ("bad_hierarchy", "bound item row"),
+        ("selection_not_sticky", "did not accept selection"),
+        ("rename_rejected", "rejected AXPress"),
+        ("path_changed", "rename target changed"),
+        ("editor_unfocused", "editor is not focused"),
+    ],
+)
+def test_finder_inline_rename_fails_closed_at_each_native_boundary(
+    monkeypatch, failure, message
+):
+    snapshot = _finder_rename_snapshot()
+    live = object()
+    if failure == "live_none":
+        monkeypatch.setattr(backend, "_live_element", lambda *a, **k: None)
+        with pytest.raises(errors.ComputerUseError, match=message):
+            backend._finder_inline_rename("pid:4", snapshot, 0)
+        return
+
+    reference = _FinderFileReference(lambda: "/tmp/Original")
+    selected = [failure not in {"selection_not_sticky"}]
+    monkeypatch.setattr(backend, "_live_element", lambda *a, **k: live)
+    monkeypatch.setattr(
+        backend, "_validate_snapshot_window", lambda value: value["window"]
+    )
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a: None)
+    rename_item = _install_finder_rename_tree(
+        monkeypatch, live, reference, "Renamed", selected
+    )
+    original_get = backend.ax_driver._get
+    if failure == "bad_hierarchy":
+        monkeypatch.setattr(
+            backend.ax_driver,
+            "_get",
+            lambda element, attr: (
+                "AXGroup"
+                if attr == "AXRole" and original_get(element, "AXRole") == "AXCell"
+                else original_get(element, attr)
+            ),
+        )
+    if failure == "editor_unfocused":
+        monkeypatch.setattr(
+            backend.ax_driver,
+            "_get",
+            lambda element, attr: (
+                False
+                if element is live and attr == "AXFocused"
+                else original_get(element, attr)
+            ),
+        )
+        monkeypatch.setattr(backend, "_focused_ax_element", lambda app: object())
+    monkeypatch.setattr(backend, "_finder_item_editor_for_path", lambda *a: live)
+    path_calls = 0
+
+    def path(value):
+        nonlocal path_calls
+        path_calls += 1
+        return (
+            "/tmp/Changed"
+            if failure == "path_changed" and path_calls >= 3
+            else "/tmp/Original"
+        )
+
+    monkeypatch.setattr(backend, "_finder_file_reference_path", path)
+
+    def set_attribute(*args):
+        if failure != "selection_not_sticky":
+            selected[0] = True
+        return 0
+
+    _install_module(
+        monkeypatch,
+        "ApplicationServices",
+        AXUIElementSetAttributeValue=set_attribute,
+        AXUIElementPerformAction=lambda element, action: int(
+            failure == "rename_rejected" and element is rename_item
+        ),
+        kAXErrorSuccess=0,
+    )
+    monkeypatch.setattr(backend.time, "sleep", lambda _: None)
+
+    with pytest.raises(errors.ComputerUseError, match=message):
+        backend._finder_inline_rename("pid:4", snapshot, 0)
+
+
+def test_finder_inline_rename_without_reference_uses_generic_path(monkeypatch):
+    snapshot = _finder_rename_snapshot()
+    live = object()
+    monkeypatch.setattr(backend, "_live_element", lambda *a, **k: live)
+    monkeypatch.setattr(backend.ax_driver, "_get", lambda *a: None)
+    assert backend._finder_inline_rename("pid:4", snapshot, 0) is None
+
+
 def test_finder_selected_row_enter_is_not_misclassified_as_commit(monkeypatch):
     snapshot = _finder_rename_snapshot()
     live = object()
@@ -3137,6 +3233,78 @@ def test_finder_replacement_editor_rejects_a_different_selected_row(monkeypatch)
         backend._finder_item_editor_for_path(snapshot, "/tmp/Original", expected_row)
 
     assert excinfo.value.code == "target_drift"
+
+
+def test_finder_replacement_editor_accepts_focused_exact_row(monkeypatch):
+    snapshot = _finder_rename_snapshot()
+    editor, cell, row = object(), object(), object()
+    monkeypatch.setattr(backend, "_focused_ax_element", lambda app: editor)
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_get",
+        lambda element, attr: {
+            editor: {"AXRole": "AXTextField", "AXParent": cell, "AXURL": None},
+            cell: {"AXRole": "AXCell", "AXParent": row},
+            row: {"AXSelected": True},
+        }.get(element, {}).get(attr),
+    )
+
+    assert (
+        backend._finder_item_editor_for_path(snapshot, "/tmp/Original", row) is editor
+    )
+
+
+def test_finder_replacement_editor_traversal_is_depth_bounded(monkeypatch):
+    snapshot = _finder_rename_snapshot()
+    row = object()
+    window = {"AXRole": "AXWindow", "AXChildren": []}
+    cursor = window
+    for _ in range(backend.TEXTEDIT_VALUE_MAX_DEPTH + 2):
+        child = {"AXRole": "AXGroup", "AXChildren": []}
+        cursor["AXChildren"] = [child]
+        cursor = child
+    monkeypatch.setattr(backend, "_focused_ax_element", lambda app: None)
+    monkeypatch.setattr(backend, "_focused_ax_window", lambda app: window)
+    monkeypatch.setattr(
+        backend.ax_driver, "_get", lambda element, attr: element.get(attr)
+    )
+
+    with pytest.raises(errors.ComputerUseError) as excinfo:
+        backend._finder_item_editor_for_path(snapshot, "/tmp/Original", row)
+    assert excinfo.value.code == "target_drift"
+
+
+def test_finder_generic_enter_retries_file_reference_before_unverified(
+    monkeypatch,
+):
+    snapshot = _finder_rename_snapshot()
+    live, reference = object(), object()
+    monkeypatch.setattr(backend, "_finder_inline_rename", lambda *a, **k: None)
+    monkeypatch.setattr(backend, "_live_element", lambda *a, **k: live)
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_get",
+        lambda element, attr: {
+            "AXURL": reference,
+            "AXValue": "Verified CUA Folder",
+        }.get(attr),
+    )
+    monkeypatch.setattr(
+        backend,
+        "_finder_file_reference_path",
+        lambda value: "/tmp/Original",
+    )
+    monkeypatch.setattr(backend, "_prepare_synthetic_action", lambda *a, **k: snapshot)
+    monkeypatch.setattr(backend.ax_driver, "_press_key", lambda key: None)
+    sleeps = []
+    monkeypatch.setattr(backend.time, "sleep", sleeps.append)
+
+    result = backend.press_key(
+        "pid:4", "enter", expected_snapshot=snapshot, element_index=0
+    )
+
+    assert result["verified"] is None
+    assert sleeps == [0.1] * 10
 
 
 def test_finder_inline_rename_rejects_drift_during_menu_resolution(monkeypatch):
