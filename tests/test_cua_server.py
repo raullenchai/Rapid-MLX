@@ -441,7 +441,9 @@ def test_target_resolver_does_not_send_window_titles_to_remote_without_consent(
     assert len(calls) == 1
 
 
-def test_target_resolver_refuses_to_guess_among_same_app_windows(client, monkeypatch):
+def test_target_resolver_proposes_frontmost_same_app_item_for_approval(
+    client, monkeypatch
+):
     from rapid_mlx.computer_use import backend
 
     monkeypatch.setattr(
@@ -477,9 +479,58 @@ def test_target_resolver_refuses_to_guess_among_same_app_windows(client, monkeyp
         headers=AUTH,
         json={"goal": "Use Finder to organize files", "planner": "local-9b"},
     ).json()
-    assert body["status"] == "unresolved"
-    assert body["targets"] == []
-    assert "multiple open items" in body["reason"]
+    assert body["status"] == "needs_approval"
+    assert body["targets"][0]["window_id"] == "cg:123"
+    assert body["targets"][0]["display_name"] == "Finder — Private Project"
+    assert body["approval"]["options"][0]["label"] == "Use this app"
+    assert "pid:" not in body["approval"]["prompt"].casefold()
+    assert "window" not in body["approval"]["prompt"].casefold()
+
+
+def test_target_resolver_uses_unique_local_title_match_with_approval(
+    client, monkeypatch
+):
+    from rapid_mlx.computer_use import backend
+
+    monkeypatch.setattr(
+        backend,
+        "discover_target_windows",
+        lambda: [
+            {
+                "catalog_id": "w1",
+                "app": {
+                    "name": "Finder",
+                    "bundleId": "com.apple.finder",
+                    "pid": 42,
+                    "processStartTime": 1000.0,
+                },
+                "window": {"window_id": "cg:123", "title": "Private Project"},
+                "z_order": 0,
+            },
+            {
+                "catalog_id": "w2",
+                "app": {
+                    "name": "Finder",
+                    "bundleId": "com.apple.finder",
+                    "pid": 42,
+                    "processStartTime": 1000.0,
+                },
+                "window": {"window_id": "cg:124", "title": "Personal Files"},
+                "z_order": 1,
+            },
+        ],
+    )
+    body = client.post(
+        "/v1/cua/targets/resolve",
+        headers=AUTH,
+        json={
+            "goal": "Use Finder to organize Personal Files",
+            "planner": "local-9b",
+        },
+    ).json()
+    assert body["status"] == "needs_approval"
+    assert body["targets"][0]["window_id"] == "cg:124"
+    assert body["targets"][0]["display_name"] == "Finder — Personal Files"
 
 
 def test_target_resolver_browser_requires_trusted_domain(client, monkeypatch):
