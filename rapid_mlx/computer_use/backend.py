@@ -915,6 +915,25 @@ def _read_value(live_element: object) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def inspect_focused_element(snapshot: dict, element_index: int) -> dict:
+    """Return an indexed target only when it is the exact focused AX element.
+
+    Keyboard activation is routed by focus rather than coordinates. Resolve
+    the snapshot entry back to a live Accessibility object so callers do not
+    trust planner text or a stale serialized label when deciding whether
+    Enter or Space can commit an external effect.
+    """
+    entry = _element(snapshot, element_index)
+    live = _live_element(snapshot, element_index, validate_point=False)
+    focused = _focused_ax_element(snapshot["app"])
+    if focused is None or live != focused:
+        raise ComputerUseError(
+            "target_drift",
+            "keyboard target is not the exact focused Accessibility element",
+        )
+    return dict(entry)
+
+
 def _finish_action(
     app: str,
     snapshot: dict,

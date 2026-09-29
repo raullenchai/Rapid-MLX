@@ -483,13 +483,20 @@ class CUARun:
                     )
                 )
             elif action == "press":
-                backend.click(
-                    self.backend_app,
-                    index,
-                    expected_snapshot=snapshot,
-                    focus_only=True,
-                )
-                await asyncio.sleep(0.2)
+                if gates.is_keyboard_activation(plan):
+                    # Enter and Space activate whichever control has keyboard
+                    # focus. Re-bind the serialized index to the exact live AX
+                    # object immediately before dispatch. Do not focus through
+                    # click(), because AXPress on a button is itself the commit.
+                    backend.inspect_focused_element(snapshot, index)
+                else:
+                    backend.click(
+                        self.backend_app,
+                        index,
+                        expected_snapshot=snapshot,
+                        focus_only=True,
+                    )
+                    await asyncio.sleep(0.2)
                 result.update(
                     backend.press_key(
                         self.backend_app,
@@ -684,6 +691,23 @@ class CUARun:
             return None
         target = self._target(snapshot, plan.get("element_index", -1))
         target_label = str(target.get("label", ""))
+        if gates.is_keyboard_activation(plan):
+            try:
+                target = backend.inspect_focused_element(
+                    snapshot, plan.get("element_index", -1)
+                )
+            except ComputerUseError as exc:
+                reason = f"keyboard activation rejected: {exc.message}"
+                self._record(
+                    {
+                        "step": step_no,
+                        "plan": plan,
+                        "stop": reason,
+                        "error_code": exc.code,
+                    }
+                )
+                return {"status": "stopped", "reason": reason, "error": exc.code}
+            target_label = str(target.get("label", ""))
         save_identity: tuple[str, ...] | None = None
         save_persistence_verified = False
         if plan["action"] == "save":
