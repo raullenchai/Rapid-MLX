@@ -421,9 +421,7 @@ Return JSON only: {{"target_ids":["a1"],"reason":"brief diagnostic"}}
         observed_context = {
             "app_name": str(app.get("name", ""))[:120] if isinstance(app, dict) else "",
             "window_title": (
-                str(window.get("title", ""))[:500]
-                if isinstance(window, dict)
-                else ""
+                str(window.get("title", ""))[:500] if isinstance(window, dict) else ""
             ),
         }
         guard_text = (
