@@ -3170,11 +3170,11 @@ def test_finder_generic_enter_verifies_same_file_reference_commit(monkeypatch):
 
 def test_finder_generic_enter_uses_bound_reference_for_replacement_editor(monkeypatch):
     snapshot = _finder_rename_snapshot()
-    live, cell, row, reference = object(), object(), object(), object()
+    live, cell, row, original_row, reference = (object() for _ in range(5))
     paths = iter(["/tmp/Original", "/tmp/Original", "/tmp/Verified CUA Folder"])
     key = backend._finder_rename_binding_key(snapshot)
     backend._finder_rename_bindings[key] = (
-        row,
+        original_row,
         reference,
         "/tmp/Original",
         backend.time.monotonic(),
@@ -3190,9 +3190,11 @@ def test_finder_generic_enter_uses_bound_reference_for_replacement_editor(monkey
                 "AXValue": "Verified CUA Folder",
                 "AXParent": cell,
             },
-            cell: {"AXParent": row},
+            cell: {"AXParent": row, "AXRole": "AXCell"},
+            row: {"AXRole": "AXRow", "AXSelected": True},
         }.get(element, {}).get(attr),
     )
+    monkeypatch.setattr(backend, "_focused_ax_element", lambda app: live)
     monkeypatch.setattr(
         backend, "_finder_file_reference_path", lambda value: next(paths)
     )
@@ -3217,8 +3219,12 @@ def test_finder_replacement_binding_fails_closed_on_missing_or_drift(monkeypatch
         "_get",
         lambda element, attr: {
             live: {"AXParent": cell, "AXURL": None},
-            cell: {"AXParent": row},
+            cell: {"AXParent": row, "AXRole": "AXCell"},
+            row: {"AXRole": "AXRow", "AXSelected": True},
         }.get(element, {}).get(attr),
+    )
+    monkeypatch.setattr(
+        backend, "_finder_file_reference_path", lambda value: "/tmp/Original"
     )
     backend._finder_rename_bindings.pop(key, None)
     assert backend._finder_file_reference_for_editor(live, snapshot) is None
@@ -3230,7 +3236,14 @@ def test_finder_replacement_binding_fails_closed_on_missing_or_drift(monkeypatch
         backend.time.monotonic(),
     )
     assert backend._finder_file_reference_for_editor(live, snapshot) is None
-    assert key not in backend._finder_rename_bindings
+    assert key in backend._finder_rename_bindings
+    monkeypatch.setattr(backend, "_focused_ax_element", lambda app: object())
+    assert (
+        backend._finder_file_reference_for_editor(
+            live, snapshot, allow_selected_row_rebind=True
+        )
+        is None
+    )
 
 
 def test_finder_replacement_binding_expires_without_authorizing_editor(monkeypatch):
