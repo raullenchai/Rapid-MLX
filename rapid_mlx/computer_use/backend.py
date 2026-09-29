@@ -1715,7 +1715,9 @@ def _finder_rename_binding_key(snapshot: dict) -> tuple[int, str]:
     return int(snapshot["app"]["pid"]), str(snapshot.get("window_id") or "")
 
 
-def _finder_file_reference_for_editor(live: object, snapshot: dict) -> object | None:
+def _finder_file_reference_for_editor(
+    live: object, snapshot: dict, *, allow_selected_row_rebind: bool = False
+) -> object | None:
     """Bind Finder's replacement editor to the original selected item."""
     cell = ax_driver._get(live, "AXParent")
     row = ax_driver._get(cell, "AXParent") if cell is not None else None
@@ -1734,12 +1736,26 @@ def _finder_file_reference_for_editor(live: object, snapshot: dict) -> object | 
     bound_row, bound_reference, bound_path, observed_at = binding
     if (
         time.monotonic() - observed_at > SNAPSHOT_TTL_S
-        or row != bound_row
         or _finder_file_reference_path(bound_reference) != bound_path
     ):
         with _finder_rename_binding_lock:
             _finder_rename_bindings.pop(key, None)
         return None
+    if row != bound_row:
+        # Finder can recreate the AXRow object when inline editing begins.
+        # Retain the original opaque reference, but use it only to classify a
+        # generic Enter that is already independently bound to the exact
+        # focused editor and selected replacement row. This never authorizes
+        # input or relaxes the synthetic-action window/focus guards.
+        cell = ax_driver._get(live, "AXParent")
+        if not (
+            allow_selected_row_rebind
+            and live == _focused_ax_element(snapshot["app"])
+            and ax_driver._get(cell, "AXRole") == "AXCell"
+            and ax_driver._get(row, "AXRole") == "AXRow"
+            and ax_driver._get(row, "AXSelected") is True
+        ):
+            return None
     return bound_reference
 
 
@@ -2011,7 +2027,11 @@ def press_key(
                     expected_snapshot, element_index, validate_point=False
                 )
                 reference = (
-                    _finder_file_reference_for_editor(live, expected_snapshot)
+                    _finder_file_reference_for_editor(
+                        live,
+                        expected_snapshot,
+                        allow_selected_row_rebind=True,
+                    )
                     if live is not None
                     else None
                 )
