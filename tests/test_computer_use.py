@@ -2545,6 +2545,22 @@ def test_live_app_discovery_refreshes_stale_workspace_by_pid(monkeypatch):
     assert ax_driver._app_element("safari", expected_pid=23429) == ("ax", 23429)
 
 
+def test_resolved_app_info_includes_process_incarnation_marker():
+    launched = types.SimpleNamespace(timeIntervalSince1970=lambda: 1234.5)
+    running = types.SimpleNamespace(
+        localizedName=lambda: "TextEdit",
+        bundleIdentifier=lambda: "com.apple.TextEdit",
+        processIdentifier=lambda: 42,
+        launchDate=lambda: launched,
+    )
+    assert backend._resolved_app_info(running) == {
+        "name": "textedit",
+        "bundleId": "com.apple.textedit",
+        "pid": 42,
+        "processStartTime": 1234.5,
+    }
+
+
 def test_live_duplicate_browser_pid_keeps_url_guard_fail_closed(monkeypatch):
     selected = _RunningApp("Safari", "com.apple.Safari", 23429)
     duplicate = _RunningApp("Safari", "com.apple.Safari", 23430)

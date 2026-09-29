@@ -196,7 +196,11 @@ def test_discovery_contract(client):
         "observation_without_activation": cua_routes.sys.platform == "darwin",
         "approval_gate_id": True,
         "idempotent_run_create": True,
+        "multi_target_runs": True,
+        "switch_target": True,
     }
+    assert capabilities.json()["protocol_version"] == 2
+    assert capabilities.json()["max_run_targets"] == 3
 
     permissions = client.get("/v1/cua/permissions", headers=AUTH)
     assert permissions.json()["accessibility"] is True
@@ -248,6 +252,193 @@ def test_create_run_freezes_selected_window_and_rejects_open_url(client, monkeyp
     rejected = _post_run(client, window_id="cg:123", open_url="https://example.com")
     assert rejected.status_code == 400
     assert "cannot be used" in rejected.json()["detail"]
+
+
+def test_multi_target_create_freezes_and_echoes_full_authority(client, monkeypatch):
+    from rapid_mlx.computer_use import backend as backend_mod
+
+    observed = []
+
+    def validate_window(app, window_id):
+        observed.append((app, window_id))
+        pid = int(app.removeprefix("pid:"))
+        bundle = "com.apple.Safari" if pid == 42 else "com.apple.TextEdit"
+        return {
+            "app": {
+                "name": "Safari" if pid == 42 else "TextEdit",
+                "bundleId": bundle,
+                "pid": pid,
+            },
+            "window_id": window_id,
+            "window": {"window_id": window_id, "index": 0},
+        }
+
+    monkeypatch.setattr(backend_mod, "validate_window", validate_window)
+    run_kwargs = {}
+
+    async def capture_run(config, app, goal, **kwargs):
+        run_kwargs.update(kwargs)
+        return {"status": "done", "final_summary": "done"}
+
+    monkeypatch.setattr(cua_service, "run_loop", capture_run)
+    payload = {
+        "app": "pid:42",
+        "goal": "read then edit",
+        "client_request_id": "multi-1",
+        "initial_target_id": "web",
+        "targets": [
+            {
+                "target_id": "web",
+                "app": "pid:42",
+                "pid": 42,
+                "window_id": "cg:1",
+                "allowed_domain": "example.com",
+            },
+            {
+                "target_id": "notes",
+                "app": "pid:43",
+                "pid": 43,
+                "window_id": "cg:2",
+                "allowed_domain": "",
+            },
+        ],
+    }
+    created = client.post("/v1/cua/runs", headers=AUTH, json=payload)
+    assert created.status_code == 202, created.text
+    body = created.json()
+    assert body["active_target_id"] == "web"
+    assert body["targets"] == payload["targets"]
+    assert observed == [("pid:42", "cg:1"), ("pid:43", "cg:2")]
+    assert client.fresh_service.get(body["run_id"]).active_target_id == "web"
+
+    replay = client.post("/v1/cua/runs", headers=AUTH, json=payload)
+    recovered = client.get("/v1/cua/runs/by-request/multi-1", headers=AUTH)
+    assert replay.json()["run_id"] == body["run_id"]
+    assert replay.json()["targets"] == body["targets"]
+    assert replay.json()["active_target_id"] == body["active_target_id"]
+    assert recovered.json()["targets"] == payload["targets"]
+
+    reordered = dict(payload)
+    reordered["targets"] = list(reversed(payload["targets"]))
+    conflict = client.post("/v1/cua/runs", headers=AUTH, json=reordered)
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"]["code"] == "request_identity_conflict"
+
+
+def test_multi_target_request_rejects_ambiguous_or_unscoped_authority(client):
+    base = {
+        "app": "pid:42",
+        "goal": "g",
+        "initial_target_id": "web",
+        "targets": [
+            {
+                "target_id": "web",
+                "app": "pid:42",
+                "pid": 42,
+                "window_id": "cg:1",
+                "allowed_domain": "example.com",
+            },
+            {
+                "target_id": "notes",
+                "app": "pid:43",
+                "pid": 43,
+                "window_id": "cg:2",
+                "allowed_domain": "",
+            },
+        ],
+    }
+    mixed = {**base, "window_id": "cg:1"}
+    assert client.post("/v1/cua/runs", headers=AUTH, json=mixed).status_code == 422
+    mismatched = {
+        **base,
+        "targets": [dict(base["targets"][0], app="pid:99"), base["targets"][1]],
+    }
+    assert client.post("/v1/cua/runs", headers=AUTH, json=mismatched).status_code == 422
+
+
+def test_multi_target_gate_rejects_decision_after_target_change(client):
+    run = cua_service.CUAServiceRun(
+        run_id="r",
+        app="pid:42",
+        goal="g",
+        config=None,
+        window_id="cg:1",
+        targets=[
+            {
+                "target_id": "web",
+                "app": "pid:42",
+                "pid": 42,
+                "window_id": "cg:1",
+                "allowed_domain": "example.com",
+            },
+            {
+                "target_id": "notes",
+                "app": "pid:43",
+                "pid": 43,
+                "window_id": "cg:2",
+                "allowed_domain": "",
+            },
+        ],
+        active_target_id="web",
+    )
+    run.emit({"kind": "gate", "reason": "external_commit", "target_id": "web"})
+    gate_id = run.view()["pending_gate"]["gate_id"]
+    run.emit(
+        {
+            "kind": "target_switched",
+            "from_target_id": "web",
+            "target_id": "notes",
+        }
+    )
+    with pytest.raises(cua_service.CUAGateMismatchError):
+        run.resolve_gate(True, gate_id=gate_id)
+    assert not run._approve_event.is_set()
+    run.emit({"kind": "terminal", "status": "stopped"})
+    assert run.events[-1]["target_id"] == "notes"
+
+
+def test_multi_target_browser_requires_reviewed_domain(client, monkeypatch):
+    from rapid_mlx.computer_use import backend as backend_mod
+
+    def validate_window(app, window_id):
+        pid = int(app.removeprefix("pid:"))
+        return {
+            "app": {
+                "name": "Safari" if pid == 42 else "TextEdit",
+                "bundleId": "com.apple.Safari" if pid == 42 else "com.apple.TextEdit",
+                "pid": pid,
+            },
+            "window_id": window_id,
+        }
+
+    monkeypatch.setattr(backend_mod, "validate_window", validate_window)
+    response = client.post(
+        "/v1/cua/runs",
+        headers=AUTH,
+        json={
+            "app": "pid:42",
+            "goal": "g",
+            "initial_target_id": "web",
+            "targets": [
+                {
+                    "target_id": "web",
+                    "app": "pid:42",
+                    "pid": 42,
+                    "window_id": "cg:1",
+                    "allowed_domain": "",
+                },
+                {
+                    "target_id": "notes",
+                    "app": "pid:43",
+                    "pid": 43,
+                    "window_id": "cg:2",
+                    "allowed_domain": "",
+                },
+            ],
+        },
+    )
+    assert response.status_code == 400
+    assert "requires allowed_domain" in response.json()["detail"]
 
 
 def test_idempotent_create_replays_one_run_and_lookup_is_authenticated(client):

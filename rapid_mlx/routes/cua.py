@@ -16,7 +16,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response, status
 from fastapi.security import HTTPAuthorizationCredentials
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.concurrency import run_in_threadpool
 
 from ..computer_use.errors import ComputerUseError
@@ -72,6 +72,20 @@ class CUAPlannerCreateRequest(BaseModel):
     allow_remote: bool = False
 
 
+class CUATarget(BaseModel):
+    target_id: str = Field(min_length=1, max_length=32, pattern=r"^[A-Za-z0-9_-]+$")
+    app: str = Field(min_length=5, max_length=32, pattern=r"^pid:[1-9][0-9]*$")
+    pid: int = Field(gt=0)
+    window_id: str = Field(min_length=1, max_length=128)
+    allowed_domain: str = Field(default="", max_length=200)
+
+    @model_validator(mode="after")
+    def validate_pid_selector(self) -> CUATarget:
+        if self.app != f"pid:{self.pid}":
+            raise ValueError("target app must exactly match pid:<pid>")
+        return self
+
+
 class CUARunCreateRequest(BaseModel):
     app: str = Field(min_length=1, max_length=120)
     goal: str = Field(min_length=1, max_length=4000)
@@ -86,6 +100,31 @@ class CUARunCreateRequest(BaseModel):
     client_request_id: str | None = Field(
         default=None, min_length=1, max_length=128, pattern=r"^[^/]+$"
     )
+    targets: list[CUATarget] | None = Field(default=None, min_length=2, max_length=3)
+    initial_target_id: str | None = Field(default=None, min_length=1, max_length=32)
+
+    @model_validator(mode="after")
+    def validate_target_set(self) -> CUARunCreateRequest:
+        if self.targets is None:
+            if self.initial_target_id is not None:
+                raise ValueError("initial_target_id requires targets")
+            return self
+        if self.window_id is not None or self.allowed_domain or self.open_url:
+            raise ValueError(
+                "targets cannot be combined with window_id, allowed_domain, or open_url"
+            )
+        ids = [target.target_id for target in self.targets]
+        if len(ids) != len(set(ids)):
+            raise ValueError("target_id values must be unique")
+        anchors = [(target.pid, target.window_id) for target in self.targets]
+        if len(anchors) != len(set(anchors)):
+            raise ValueError("each target must bind a distinct process window")
+        if self.initial_target_id not in set(ids):
+            raise ValueError("initial_target_id must name one submitted target")
+        initial = next(t for t in self.targets if t.target_id == self.initial_target_id)
+        if self.app != initial.app:
+            raise ValueError("app must match the initial target app")
+        return self
 
 
 class CUARunCreated(BaseModel):
@@ -93,6 +132,8 @@ class CUARunCreated(BaseModel):
     status: str
     window_id: str | None = None
     client_request_id: str | None = None
+    targets: list[CUATarget] = Field(default_factory=list)
+    active_target_id: str | None = None
 
 
 class CUAEvent(BaseModel):
@@ -104,6 +145,8 @@ class CUAEvent(BaseModel):
     seq: int
     ts: float
     gate_id: str | None = None
+    target_id: str | None = None
+    from_target_id: str | None = None
     app: str | None = None
     step: int | None = None
     action: str | None = None
@@ -131,6 +174,7 @@ class CUAPendingGate(BaseModel):
     expires_at: float | None = None
     action: str | None = None
     target: str | None = None
+    target_id: str | None = None
 
 
 class CUARunView(BaseModel):
@@ -145,6 +189,8 @@ class CUARunView(BaseModel):
     events: list[CUAEvent]
     pending_gate: CUAPendingGate | None = None
     window_id: str | None = None
+    targets: list[CUATarget] = Field(default_factory=list)
+    active_target_id: str | None = None
 
 
 class CUARunSummary(BaseModel):
@@ -154,6 +200,7 @@ class CUARunSummary(BaseModel):
     status: str
     created_at: float
     window_id: str | None = None
+    active_target_id: str | None = None
 
 
 class CUARunList(BaseModel):
@@ -179,16 +226,19 @@ class CUACapabilityFeatures(BaseModel):
     observation_without_activation: bool = False
     approval_gate_id: bool = True
     idempotent_run_create: bool = True
+    multi_target_runs: bool = True
+    switch_target: bool = True
 
 
 class CUACapabilities(BaseModel):
-    protocol_version: int = 1
+    protocol_version: int = 2
     available: bool
     platform: str
     discovery: list[str]
     run_operations: list[str]
     max_concurrent_runs: int
     features: CUACapabilityFeatures
+    max_run_targets: int = 3
 
 
 class CUAPermissions(BaseModel):
@@ -601,6 +651,12 @@ async def create_run(request: CUARunCreateRequest) -> CUARunCreated:
             human_login=request.human_login,
             window_id=request.window_id,
             client_request_id=request.client_request_id,
+            targets=(
+                [target.model_dump() for target in request.targets]
+                if request.targets
+                else None
+            ),
+            initial_target_id=request.initial_target_id,
         )
     except (
         ValueError,
@@ -614,6 +670,8 @@ async def create_run(request: CUARunCreateRequest) -> CUARunCreated:
         status=run.status,
         window_id=run.window_id,
         client_request_id=run.client_request_id,
+        targets=run.targets,
+        active_target_id=run.active_target_id,
     )
 
 
@@ -635,6 +693,8 @@ async def get_run_by_request(
         status=run.status,
         window_id=run.window_id,
         client_request_id=run.client_request_id,
+        targets=run.targets,
+        active_target_id=run.active_target_id,
     )
 
 

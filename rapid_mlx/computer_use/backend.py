@@ -77,6 +77,24 @@ def _needs_web_content_retry(app_info: dict) -> bool:
     return any(marker in bundle for marker in ("chrome", "chromium", "edge"))
 
 
+def _resolved_app_info(running: Any) -> dict:
+    """Return app identity, including a private process-incarnation marker."""
+    info = {
+        "name": (running.localizedName() or "").lower(),
+        "bundleId": (running.bundleIdentifier() or "").lower(),
+        "pid": int(running.processIdentifier()),
+    }
+    try:
+        launched = running.launchDate()
+        started_at = float(launched.timeIntervalSince1970())
+    except Exception:  # noqa: BLE001 - older bridges may omit launchDate
+        return info
+    if started_at > 0:
+        # Internal only: HTTP response models intentionally drop this field.
+        info["processStartTime"] = started_at
+    return info
+
+
 def _resolve_app(app: str, *, activate: bool = True) -> tuple[object, dict]:
     """Find a running app by name substring, bundle id, or pid:N."""
     try:
@@ -98,14 +116,9 @@ def _resolve_app(app: str, *, activate: bool = True) -> tuple[object, dict]:
     if wanted_pid is not None:
         running = ax_driver._application_for_pid(wanted_pid, AS)
         if running is not None:
-            pid = int(running.processIdentifier())
-            name = (running.localizedName() or "").lower()
-            bundle = (running.bundleIdentifier() or "").lower()
-            return _ax_app_element(running, activate=activate), {
-                "name": name,
-                "bundleId": bundle,
-                "pid": pid,
-            }
+            return _ax_app_element(running, activate=activate), _resolved_app_info(
+                running
+            )
         raise ComputerUseError("app_not_found", f"no running app matches {app!r}")
     for running in ax_driver._running_applications(AS):
         if (
@@ -114,15 +127,11 @@ def _resolve_app(app: str, *, activate: bool = True) -> tuple[object, dict]:
             and running.activationPolicy() != 0
         ):
             continue
-        name = (running.localizedName() or "").lower()
-        bundle = (running.bundleIdentifier() or "").lower()
-        pid = int(running.processIdentifier())
+        info = _resolved_app_info(running)
+        name = str(info["name"])
+        bundle = str(info["bundleId"])
         if lowered in (name, bundle) or lowered in name or lowered in bundle:
-            return _ax_app_element(running, activate=activate), {
-                "name": name,
-                "bundleId": bundle,
-                "pid": pid,
-            }
+            return _ax_app_element(running, activate=activate), info
     raise ComputerUseError("app_not_found", f"no running app matches {app!r}")
 
 

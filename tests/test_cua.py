@@ -5,6 +5,7 @@ All external effects are stubbed: no Accessibility calls, no HTTP servers.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -92,6 +93,25 @@ def test_save_is_dedicated_and_needs_no_element_index():
     )
     assert plan["action"] == "save"
     assert plan["element_index"] == -1
+
+
+def test_switch_target_accepts_only_frozen_token_and_needs_no_element():
+    plan = validate_plan(
+        {
+            "action": "switch_target",
+            "step_instruction": "continue in notes",
+            "target_id": "notes",
+        },
+        valid_indexes={1, 2},
+        valid_target_ids={"web", "notes"},
+    )
+    assert plan["target_id"] == "notes"
+    assert plan["element_index"] == -1
+    with pytest.raises(ValueError, match="unknown target_id"):
+        validate_plan(
+            {"action": "switch_target", "target_id": "other"},
+            valid_target_ids={"web", "notes"},
+        )
 
 
 def test_save_always_requires_exact_approval():
@@ -314,6 +334,150 @@ class _FakePlanner:
 
     async def close(self):
         pass
+
+
+def test_multi_target_switch_observes_only_frozen_selected_target(
+    tmp_path, monkeypatch
+):
+    from rapid_mlx.computer_use import backend as backend_mod
+    from rapid_mlx.cua.loop import CUARun
+
+    observed = []
+    events = []
+
+    def get_state(app, **kwargs):
+        observed.append((app, kwargs.get("window_id")))
+        pid = int(app.removeprefix("pid:"))
+        return {
+            "app": {
+                "name": "Safari" if pid == 42 else "TextEdit",
+                "bundleId": "com.apple.Safari" if pid == 42 else "com.apple.TextEdit",
+                "pid": pid,
+            },
+            "window_id": kwargs["window_id"],
+            "window_index": 0,
+            "window": {"window_id": kwargs["window_id"], "index": 0},
+            "elements": [
+                {
+                    "index": 0,
+                    "role": "AXButton",
+                    "label": "x",
+                    "x": 1,
+                    "y": 1,
+                    "width": 1,
+                    "height": 1,
+                    "center": [1, 1],
+                }
+            ],
+            "tree_text": "[0] AXButton x",
+        }
+
+    monkeypatch.setattr(backend_mod, "get_app_state", get_state)
+    monkeypatch.setattr(
+        backend_mod,
+        "read_url",
+        lambda app, **kwargs: "https://example.com" if app == "pid:42" else "",
+    )
+
+    class SwitchingPlanner:
+        text_only = True
+
+        async def plan(self, *args, **kwargs):
+            assert kwargs["active_target_id"] == "web"
+            assert [item["target_id"] for item in kwargs["target_catalog"]] == [
+                "web",
+                "notes",
+            ]
+            return (
+                {
+                    "action": "switch_target",
+                    "target_id": "notes",
+                    "step_instruction": "switch",
+                    "element_index": -1,
+                    "text": "",
+                    "key": "",
+                    "direction": "",
+                    "final_summary": "",
+                },
+                "",
+                0.01,
+                [],
+            )
+
+    targets = [
+        {
+            "target_id": "web",
+            "app": "pid:42",
+            "pid": 42,
+            "window_id": "cg:1",
+            "allowed_domain": "example.com",
+            "expected_app": {
+                "name": "Safari",
+                "bundleId": "com.apple.Safari",
+                "pid": 42,
+            },
+        },
+        {
+            "target_id": "notes",
+            "app": "pid:43",
+            "pid": 43,
+            "window_id": "cg:2",
+            "allowed_domain": "",
+            "expected_app": {
+                "name": "TextEdit",
+                "bundleId": "com.apple.TextEdit",
+                "pid": 43,
+            },
+        },
+    ]
+    runner = CUARun(
+        _make_config(tmp_path),
+        "pid:42",
+        "g",
+        tmp_path,
+        event_sink=events.append,
+        window_id="cg:1",
+        backend_app="pid:42",
+        expected_app=targets[0]["expected_app"],
+        targets=targets,
+        initial_target_id="web",
+    )
+    assert asyncio.run(runner.step(SwitchingPlanner(), 1)) is None
+    assert observed == [("pid:42", "cg:1"), ("pid:43", "cg:2")]
+    switched = next(event for event in events if event["kind"] == "target_switched")
+    assert switched["from_target_id"] == "web"
+    assert switched["target_id"] == "notes"
+
+    class SwitchBackPlanner:
+        text_only = True
+
+        async def plan(self, *args, **kwargs):
+            assert kwargs["active_target_id"] == "notes"
+            return (
+                {
+                    "action": "switch_target",
+                    "target_id": "web",
+                    "step_instruction": "switch back",
+                    "element_index": -1,
+                    "text": "",
+                    "key": "",
+                    "direction": "",
+                    "final_summary": "",
+                },
+                "",
+                0.01,
+                [],
+            )
+
+    monkeypatch.setattr(
+        backend_mod,
+        "read_url",
+        lambda app, **kwargs: "https://outside.example" if app == "pid:42" else "",
+    )
+    stopped = asyncio.run(runner.step(SwitchBackPlanner(), 2))
+    assert stopped["status"] == "stopped"
+    assert stopped["error"] == "domain_guard"
+    assert len([event for event in events if event["kind"] == "target_switched"]) == 1
 
 
 @pytest.fixture()
@@ -2474,7 +2638,12 @@ def test_selected_window_rejects_pid_identity_reuse(
         fake_backend,
         "get_app_state",
         lambda app, **kwargs: {
-            "app": {"name": "other", "bundleId": "com.other", "pid": 42},
+            "app": {
+                "name": "browser",
+                "bundleId": "com.browser",
+                "pid": 42,
+                "processStartTime": 200.0,
+            },
             "window_id": "cg:404",
         },
     )
@@ -2485,7 +2654,12 @@ def test_selected_window_rejects_pid_identity_reuse(
         tmp_path / "selected-pid-reused",
         window_id="cg:404",
         backend_app="pid:42",
-        expected_app={"name": "browser", "bundleId": "com.browser", "pid": 42},
+        expected_app={
+            "name": "browser",
+            "bundleId": "com.browser",
+            "pid": 42,
+            "processStartTime": 100.0,
+        },
     )
     with pytest.raises(ComputerUseError) as excinfo:
         runner._get_app_state(screenshot=False)

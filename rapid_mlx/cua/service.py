@@ -9,6 +9,7 @@ surface, numbered events, an approval event, and a stop event.
 from __future__ import annotations
 
 import asyncio
+import re
 import threading
 import time
 import uuid
@@ -23,6 +24,18 @@ from rapid_mlx.cua.planner import assert_loopback_url, validate_planner_url
 
 MAX_CONCURRENT_RUNS = 1
 MAX_RETAINED_RUNS = 100
+
+
+def _normalize_allowed_domain(value: str) -> str:
+    domain = value.strip().lower().rstrip(".")
+    if not domain:
+        return ""
+    if len(domain) > 200 or not re.fullmatch(
+        r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?",
+        domain,
+    ):
+        raise ValueError(f"invalid allowed_domain: {value!r}")
+    return domain
 
 
 class CUARunConflictError(RuntimeError):
@@ -60,6 +73,8 @@ class _RunCreateIdentity(NamedTuple):
     max_steps: int
     human_login: bool
     window_id: str | None
+    targets: tuple[tuple[str, str, int, str, str], ...]
+    initial_target_id: str | None
 
 
 @dataclass
@@ -70,6 +85,8 @@ class CUAServiceRun:
     config: CUAConfig
     window_id: str | None = None
     client_request_id: str | None = None
+    targets: list[dict] = field(default_factory=list)
+    active_target_id: str | None = None
     status: str = "running"
     final_summary: str = ""
     error: str = ""
@@ -92,7 +109,22 @@ class CUAServiceRun:
             # Trace paths are host-private implementation details.  Custom GUI
             # clients receive the event, but never the local filesystem path.
             event = {key: value for key, value in event.items() if key != "run_dir"}
+            if self.targets and self.active_target_id and not event.get("target_id"):
+                event["target_id"] = self.active_target_id
             kind = event.get("kind")
+            if event.get("target_id"):
+                self.active_target_id = str(event["target_id"])
+                active = next(
+                    (
+                        t
+                        for t in self.targets
+                        if t["target_id"] == self.active_target_id
+                    ),
+                    None,
+                )
+                if active is not None:
+                    self.app = str(active["app"])
+                    self.window_id = str(active["window_id"])
             if kind == "gate":
                 # Allocate the event and identity before publishing the gate.
                 # A GUI may decide immediately after observing this event, so
@@ -104,7 +136,7 @@ class CUAServiceRun:
                     "reason": str(event.get("reason") or "approval required"),
                     "requested_at": time.time(),
                 }
-                for key in ("action", "target"):
+                for key in ("action", "target", "target_id"):
                     if event.get(key):
                         self._pending_gate[key] = event[key]
                 self._resolved_gate_id = None
@@ -113,6 +145,8 @@ class CUAServiceRun:
                 self.status = "awaiting_approval"
             elif kind == "gate_detail" and self._pending_gate is not None:
                 event["gate_id"] = self._pending_gate["gate_id"]
+                if self._pending_gate.get("target_id"):
+                    event["target_id"] = self._pending_gate["target_id"]
             elif kind == "gate_resolved" and self._resolved_gate_id is not None:
                 event["gate_id"] = self._resolved_gate_id
                 self._resolved_gate_id = None
@@ -168,6 +202,11 @@ class CUAServiceRun:
                     "reason": "approval required",
                 }
             current_gate_id = str(self._pending_gate["gate_id"])
+            gate_target_id = self._pending_gate.get("target_id")
+            if gate_target_id is not None and gate_target_id != self.active_target_id:
+                raise CUAGateMismatchError(
+                    "approval gate is stale because the active target changed"
+                )
             if gate_id is not None and gate_id != current_gate_id:
                 raise CUAGateMismatchError(
                     f"approval gate {gate_id!r} is stale; current gate is {current_gate_id!r}"
@@ -210,6 +249,8 @@ class CUAServiceRun:
                     dict(self._pending_gate) if self._pending_gate else None
                 ),
                 "window_id": self.window_id,
+                "targets": [dict(target) for target in self.targets],
+                "active_target_id": self.active_target_id,
             }
 
 
@@ -232,6 +273,7 @@ class CUAService:
                 "status": r.status,
                 "created_at": r.created_at,
                 "window_id": r.window_id,
+                "active_target_id": r.active_target_id,
             }
             for r in self._runs.values()
         ]
@@ -271,6 +313,8 @@ class CUAService:
         human_login: bool = False,
         window_id: str | None = None,
         client_request_id: str | None = None,
+        targets: list[dict] | None = None,
+        initial_target_id: str | None = None,
     ) -> CUAServiceRun:
         if self._closing:
             raise CUARunConflictError("CUA service is shutting down")
@@ -287,6 +331,26 @@ class CUAService:
                 raise ValueError("open_url must be an absolute HTTP(S) URL")
         if window_id is not None and open_url:
             raise ValueError("open_url cannot be used with a selected window")
+        if targets is not None:
+            if not 2 <= len(targets) <= 3:
+                raise ValueError("multi-target runs require two or three targets")
+            target_ids = [str(target.get("target_id", "")) for target in targets]
+            if len(target_ids) != len(set(target_ids)) or not all(target_ids):
+                raise ValueError("multi-target runs require unique target_id values")
+            if initial_target_id not in set(target_ids):
+                raise ValueError("initial_target_id must name one submitted target")
+            for target in targets:
+                if str(target.get("app")) != f"pid:{int(target.get('pid', 0))}":
+                    raise ValueError("target app must exactly match pid:<pid>")
+            initial = next(
+                target for target in targets if target["target_id"] == initial_target_id
+            )
+            if app != str(initial["app"]):
+                raise ValueError("app must match the initial target app")
+            if window_id is not None or allowed_domain or open_url:
+                raise ValueError(
+                    "targets cannot be combined with window_id, allowed_domain, or open_url"
+                )
         identity = _RunCreateIdentity(
             app=app,
             goal=goal,
@@ -298,6 +362,17 @@ class CUAService:
             max_steps=max_steps,
             human_login=human_login,
             window_id=window_id,
+            targets=tuple(
+                (
+                    str(target["target_id"]),
+                    str(target["app"]),
+                    int(target["pid"]),
+                    str(target["window_id"]),
+                    _normalize_allowed_domain(str(target.get("allowed_domain", ""))),
+                )
+                for target in (targets or [])
+            ),
+            initial_target_id=initial_target_id,
         )
         async with self._create_lock:
             if client_request_id is not None:
@@ -337,6 +412,8 @@ class CUAService:
             max_steps,
             human_login,
             window_id,
+            requested_targets,
+            initial_target_id,
         ) = identity
         try:
             planner_cfg: PlannerConfig = resolve_planner(
@@ -362,7 +439,55 @@ class CUAService:
         )
         selected_window_id: str | None = None
         selected_app: dict | None = None
-        if window_id is not None:
+        frozen_targets: list[dict] = []
+        if requested_targets:
+            for (
+                target_id,
+                selector,
+                pid,
+                requested_window,
+                target_domain,
+            ) in requested_targets:
+                selection = await asyncio.to_thread(
+                    backend.validate_window, selector, requested_window
+                )
+                app_info = dict(selection["app"])
+                if int(app_info.get("pid", -1)) != pid:
+                    raise ValueError(f"target {target_id!r} process identity changed")
+                bundle = str(app_info.get("bundleId") or "").lower()
+                browser = bundle in {
+                    "com.apple.safari",
+                    "com.apple.safaritechnologypreview",
+                } or bundle.startswith(
+                    (
+                        "com.google.chrome",
+                        "com.microsoft.edgemac",
+                        "org.chromium.chromium",
+                    )
+                )
+                if browser and not target_domain.strip():
+                    raise ValueError(
+                        f"browser target {target_id!r} requires allowed_domain"
+                    )
+                frozen_targets.append(
+                    {
+                        "target_id": target_id,
+                        "app": selector,
+                        "pid": pid,
+                        "window_id": str(selection["window_id"]),
+                        "allowed_domain": target_domain.strip().lower().rstrip("."),
+                        "expected_app": app_info,
+                    }
+                )
+            active = next(
+                target
+                for target in frozen_targets
+                if target["target_id"] == initial_target_id
+            )
+            selected_window_id = active["window_id"]
+            selected_app = active["expected_app"]
+            app = active["app"]
+        elif window_id is not None:
             selection = await asyncio.to_thread(backend.validate_window, app, window_id)
             selected_window_id = str(selection["window_id"])
             selected_app = dict(selection["app"])
@@ -376,6 +501,11 @@ class CUAService:
             config=config,
             window_id=selected_window_id,
             client_request_id=client_request_id,
+            targets=[
+                {key: value for key, value in target.items() if key != "expected_app"}
+                for target in frozen_targets
+            ],
+            active_target_id=initial_target_id,
         )
         run.run_dir = ""
         self._prune_runs()
@@ -398,6 +528,8 @@ class CUAService:
                     f"pid:{selected_app['pid']}" if selected_app is not None else None
                 ),
                 expected_app=selected_app,
+                targets=frozen_targets or None,
+                initial_target_id=initial_target_id,
             )
         )
         self._tasks[run_id] = task

@@ -206,6 +206,46 @@ accepting the run, freezes the canonical ID, and returns `window_id` in create,
 list, run-view, and event-poll responses. Keep the ID opaque and rediscover
 windows before retrying a stopped run.
 
+A run may instead freeze two or three exact PID and window anchors. Each target
+has a client-chosen opaque `target_id`; browser targets require a reviewed
+`allowed_domain`. The top-level `app` must match the initial PID selector:
+
+```json
+{
+  "app": "pid:1234",
+  "goal": "Read the source, then add a note",
+  "client_request_id": "desktop-018f5d2b",
+  "initial_target_id": "source",
+  "targets": [
+    {
+      "target_id": "source",
+      "app": "pid:1234",
+      "pid": 1234,
+      "window_id": "cg:12345",
+      "allowed_domain": "example.com"
+    },
+    {
+      "target_id": "notes",
+      "app": "pid:5678",
+      "pid": 5678,
+      "window_id": "cg:67890",
+      "allowed_domain": ""
+    }
+  ]
+}
+```
+
+Multi-target requests cannot include top-level `window_id`, `allowed_domain`,
+or `open_url`. The create response and request-ID lookup echo the complete
+canonical target list and `active_target_id`; clients should compare both
+before accepting control authority. During the run, the planner may request a
+no-input `switch_target` to one frozen ID. The server observes only the active
+target, emits `target_switched` with the old and new IDs, and includes
+`target_id` on subsequent events and approval gates. A process restart, window
+replacement, unknown target, domain mismatch, or approval for an obsolete gate
+stops or rejects the operation without dispatching input. Target order and
+per-target domains are part of the idempotent request identity.
+
 Clients that must recover from a lost create response should send a unique,
 opaque `client_request_id` of at most 128 characters. It must be one URL path
 segment and cannot contain `/`. The `202` response echoes that ID. Repeating the
@@ -222,7 +262,7 @@ curl http://127.0.0.1:8000/v1/cua/runs/by-request/desktop-018f5d2a \
 ```
 
 The lookup returns the create-response shape (`run_id`, current `status`,
-`window_id`, and `client_request_id`). An unknown or expired ID returns typed
+`window_id`, `client_request_id`, `targets`, and `active_target_id`). An unknown or expired ID returns typed
 `404` code `request_identity_not_found`. Request IDs and runs are held only in
 the server process, expire together under the 100-run retention limit, and do
 not survive a server restart. An ID no longer present in that registry has no

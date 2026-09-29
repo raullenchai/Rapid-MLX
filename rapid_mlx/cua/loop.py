@@ -61,6 +61,8 @@ class CUARun:
         window_id: str | None = None,
         backend_app: str | None = None,
         expected_app: dict | None = None,
+        targets: list[dict] | None = None,
+        initial_target_id: str | None = None,
     ):
         self.config = config
         self.app = app
@@ -72,6 +74,10 @@ class CUARun:
         self.window_id = window_id
         self.backend_app = backend_app or app
         self.expected_app = dict(expected_app) if expected_app is not None else None
+        self.targets = {
+            str(target["target_id"]): dict(target) for target in (targets or [])
+        }
+        self.active_target_id = initial_target_id
         run_dir.mkdir(parents=True, exist_ok=True)
         self.history: list[dict] = []
         self.trace: dict = {
@@ -80,6 +86,11 @@ class CUARun:
             "planner": config.planner.describe(),
             "steps": [],
             "window_id": window_id,
+            "targets": [
+                {key: value for key, value in target.items() if key != "expected_app"}
+                for target in self.targets.values()
+            ],
+            "active_target_id": initial_target_id,
         }
         self.tracker = NoProgressTracker()
         self._last_execution_failed = False
@@ -95,6 +106,8 @@ class CUARun:
         )
 
     def _record(self, step: dict) -> None:
+        if self.active_target_id is not None:
+            step = {**step, "target_id": self.active_target_id}
         self.trace["steps"].append(step)
         (self.run_dir / "trace.json").write_text(
             json.dumps(self.trace, ensure_ascii=False, indent=2, default=str),
@@ -102,6 +115,8 @@ class CUARun:
         )
 
     def _emit(self, event: dict) -> None:
+        if self.active_target_id is not None:
+            event = {**event, "target_id": self.active_target_id}
         if event.get("kind") == "terminal":
             self._terminal_emitted = True
         if self.event_sink is None:
@@ -191,6 +206,13 @@ class CUARun:
 
     def _check_domain(self, url: str) -> str | None:
         allowed = self.config.allowed_domain.strip().lower().rstrip(".")
+        if self.active_target_id is not None:
+            allowed = (
+                str(self.targets[self.active_target_id].get("allowed_domain", ""))
+                .strip()
+                .lower()
+                .rstrip(".")
+            )
         if not allowed:
             return None
         if not url:
@@ -205,6 +227,18 @@ class CUARun:
                 f"--allowed-domain {allowed!r}"
             )
         return None
+
+    def _activate_target(self, target_id: str) -> None:
+        target = self.targets.get(target_id)
+        if target is None:
+            raise ComputerUseError("unknown_target", f"unknown target_id {target_id!r}")
+        self.active_target_id = target_id
+        self.app = str(target["app"])
+        self.backend_app = str(target["app"])
+        self.window_id = str(target["window_id"])
+        self.expected_app = dict(target["expected_app"])
+        self._trusted_transient_window_id = None
+        self.trace["active_target_id"] = target_id
 
     def _get_app_state(
         self, *, screenshot: bool, transient_baseline: set[str] | None = None
@@ -225,7 +259,7 @@ class CUARun:
         )
         if self.expected_app is not None:
             observed = snapshot.get("app") or {}
-            for key in ("pid", "bundleId", "name"):
+            for key in ("pid", "bundleId", "name", "processStartTime"):
                 expected = self.expected_app.get(key)
                 if expected is not None and observed.get(key) != expected:
                     raise ComputerUseError(
@@ -386,13 +420,87 @@ class CUARun:
         progress_hint = (
             self.tracker.take_hint(snapshot) if self.tracker.should_intervene() else ""
         )
-        plan, raw, latency, attempts = await planner.plan(
+        plan_args = [
             self.goal,
             snapshot,
             self.history,
-            self.config.allowed_domain,
+            (
+                str(self.targets[self.active_target_id].get("allowed_domain", ""))
+                if self.active_target_id is not None
+                else self.config.allowed_domain
+            ),
             progress_hint,
-        )
+        ]
+        if self.targets:
+            plan, raw, latency, attempts = await planner.plan(
+                *plan_args,
+                target_catalog=[
+                    {
+                        "target_id": target["target_id"],
+                        "app": target["app"],
+                        "window_id": target["window_id"],
+                    }
+                    for target in self.targets.values()
+                ],
+                active_target_id=str(self.active_target_id),
+            )
+        else:
+            plan, raw, latency, attempts = await planner.plan(*plan_args)
+        if plan["action"] == "switch_target":
+            previous = str(self.active_target_id)
+            requested = str(plan["target_id"])
+            if requested == previous:
+                self.history.append(
+                    {
+                        "step": step_no,
+                        "action": "switch_target",
+                        "target_id": requested,
+                        "outcome": "no_effect",
+                        "error": "target is already active",
+                    }
+                )
+                return None
+            try:
+                self._activate_target(requested)
+                switched = self._get_app_state(screenshot=False)
+                switched_url = backend.read_url(
+                    self.backend_app, window_id=self.window_id
+                )
+                guard = self._check_domain(switched_url)
+                if guard:
+                    raise ComputerUseError("domain_guard", guard)
+            except ComputerUseError as exc:
+                reason = f"target switch failed closed: {exc.message}"
+                self._record(
+                    {
+                        "step": step_no,
+                        "plan": plan,
+                        "stop": reason,
+                        "error_code": exc.code,
+                    }
+                )
+                return {"status": "stopped", "reason": reason, "error": exc.code}
+            event = {
+                "kind": "target_switched",
+                "step": step_no,
+                "action": "switch_target",
+                "outcome": "success",
+                "from_target_id": previous,
+                "target_id": requested,
+                "window_id": switched.get("window_id"),
+            }
+            self._emit(event)
+            self.history.append(
+                {
+                    "step": step_no,
+                    "action": "switch_target",
+                    "from_target_id": previous,
+                    "target_id": requested,
+                    "outcome": "success",
+                }
+            )
+            self._record({"step": step_no, "plan": plan, "target_switch": event})
+            return None
         target = self._target(snapshot, plan.get("element_index", -1))
         target_label = str(target.get("label", ""))
         save_identity: tuple[str, ...] | None = None
@@ -879,6 +987,8 @@ async def run(
     window_id: str | None = None,
     backend_app: str | None = None,
     expected_app: dict | None = None,
+    targets: list[dict] | None = None,
+    initial_target_id: str | None = None,
 ) -> dict:
     """Run the loop. Pass `planner` to inject a custom brain (SDK/testing use)."""
     run_dir = config_mod.RUNS_DIR / (
@@ -908,6 +1018,8 @@ async def run(
         window_id=window_id,
         backend_app=backend_app,
         expected_app=expected_app,
+        targets=targets,
+        initial_target_id=initial_target_id,
     )
     cua_run._emit(
         {"kind": "started", "app": app, "run_dir": str(run_dir), "window_id": window_id}
