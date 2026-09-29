@@ -4,6 +4,73 @@ import Testing
 
 @Suite("Mac automation permissions")
 struct MacAutomationPermissionsTests {
+    @Test("Browser Automation allowlist matches trusted URL readers")
+    func browserAutomationAllowlist() {
+        for bundle in [
+            "com.apple.Safari",
+            "com.apple.SafariTechnologyPreview",
+            "com.google.Chrome",
+            "com.google.Chrome.beta",
+            "com.microsoft.edgemac",
+            "com.microsoft.edgemac.Beta",
+            "org.chromium.Chromium",
+            "org.chromium.Chromium.canary",
+        ] {
+            #expect(BrowserAutomationAuthorizer.supports(bundleIdentifier: bundle))
+        }
+        for bundle in ["", "com.apple.TextEdit", "com.example.untrusted"] {
+            #expect(!BrowserAutomationAuthorizer.supports(bundleIdentifier: bundle))
+        }
+    }
+
+    @Test("Browser Automation maps permission results without sending an event")
+    func browserAutomationPermissionResults() async {
+        let bundle = "com.apple.Safari"
+        let authorized = await BrowserAutomationAuthorizer.request(
+            bundleIdentifier: bundle, permissionCheck: { _ in noErr }
+        )
+        let denied = await BrowserAutomationAuthorizer.request(
+            bundleIdentifier: bundle,
+            permissionCheck: { _ in OSStatus(errAEEventNotPermitted) }
+        )
+        let unavailable = await BrowserAutomationAuthorizer.request(
+            bundleIdentifier: bundle,
+            permissionCheck: { _ in OSStatus(procNotFound) }
+        )
+        let failed = await BrowserAutomationAuthorizer.request(
+            bundleIdentifier: bundle, permissionCheck: { _ in -1 }
+        )
+
+        #expect(authorized == .authorized)
+        #expect(denied == .denied)
+        #expect(unavailable == .targetUnavailable)
+        #expect(failed == .failed(-1))
+    }
+
+    @Test("Browser Automation request has a bounded consent wait")
+    func browserAutomationTimeout() async {
+        let result = await BrowserAutomationAuthorizer.request(
+            bundleIdentifier: "com.apple.Safari",
+            timeoutNanoseconds: 1_000_000,
+            permissionCheck: { _ in
+                Thread.sleep(forTimeInterval: 0.05)
+                return noErr
+            }
+        )
+        #expect(result == .timedOut)
+    }
+
+    @Test("Unsupported Automation targets never reach the system API")
+    func unsupportedBrowserAutomationTargetFailsClosed() async {
+        let result = await BrowserAutomationAuthorizer.request(
+            bundleIdentifier: "com.example.untrusted",
+            permissionCheck: { _ in
+                fatalError("unsupported target reached the system API")
+            }
+        )
+        #expect(result == .targetUnavailable)
+    }
+
     @Test("Packaged app can request target-specific browser Automation access")
     func browserAutomationPackagingContract() throws {
         let infoData = try Data(contentsOf: Self.sourceFile("Resources/Info.plist"))
