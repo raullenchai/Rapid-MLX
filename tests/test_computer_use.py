@@ -703,6 +703,60 @@ def test_read_url_waits_for_initial_automation_prompt_then_uses_steady_timeout(
     ]
 
 
+def test_read_url_timeout_revokes_ready_bundle(monkeypatch):
+    app_info = {"name": "safari", "bundleId": "com.apple.Safari", "pid": 4}
+    monkeypatch.setattr(
+        backend, "_resolve_app", lambda app, **kwargs: (object(), app_info)
+    )
+    monkeypatch.setattr(backend, "_select_window", lambda *a, **k: _window())
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a: None)
+    monkeypatch.setattr(backend, "_AUTOMATION_READY_BUNDLES", {"com.apple.safari"})
+    timeouts = []
+
+    def timeout(cmd, **kwargs):
+        timeouts.append(kwargs["timeout"])
+        raise backend.subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+
+    monkeypatch.setattr(backend.subprocess, "run", timeout)
+    for _ in range(2):
+        with pytest.raises(backend.ComputerUseError) as permission_error:
+            backend.read_url("Safari", require_permission=True)
+        assert permission_error.value.code == "automation_permission_required"
+    assert timeouts == [
+        backend._AUTOMATION_STEADY_TIMEOUT_S,
+        backend._AUTOMATION_INITIAL_TIMEOUT_S,
+    ]
+
+
+def test_read_url_denial_revokes_ready_bundle(monkeypatch):
+    app_info = {"name": "safari", "bundleId": "com.apple.Safari", "pid": 4}
+    monkeypatch.setattr(
+        backend, "_resolve_app", lambda app, **kwargs: (object(), app_info)
+    )
+    monkeypatch.setattr(backend, "_select_window", lambda *a, **k: _window())
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a: None)
+    monkeypatch.setattr(backend, "_AUTOMATION_READY_BUNDLES", {"com.apple.safari"})
+    timeouts = []
+
+    def denied(cmd, **kwargs):
+        timeouts.append(kwargs["timeout"])
+        return types.SimpleNamespace(
+            stdout="",
+            stderr="Not authorized to send Apple events to Safari. (-1743)",
+            returncode=1,
+        )
+
+    monkeypatch.setattr(backend.subprocess, "run", denied)
+    for _ in range(2):
+        with pytest.raises(backend.ComputerUseError) as permission_error:
+            backend.read_url("Safari", require_permission=True)
+        assert permission_error.value.code == "automation_permission_required"
+    assert timeouts == [
+        backend._AUTOMATION_STEADY_TIMEOUT_S,
+        backend._AUTOMATION_INITIAL_TIMEOUT_S,
+    ]
+
+
 def test_read_url_surfaces_initial_automation_timeout(monkeypatch):
     app_info = {"name": "safari", "bundleId": "com.apple.Safari", "pid": 4}
     monkeypatch.setattr(

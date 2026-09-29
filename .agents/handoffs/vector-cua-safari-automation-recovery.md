@@ -21,9 +21,11 @@ For an allowed-domain read, the first trusted URL request for a browser bundle
 now has a bounded 30-second consent window. A successful AppleScript response
 marks that bundle ready in the helper process; later per-step reads retain the
 five-second timeout. Denial and initial timeout both surface
-`automation_permission_required`. Reads without a domain policy retain the
-short timeout and best-effort empty-string behavior. No page-controlled AX URL
-is trusted, and no action occurs without a validated URL.
+`automation_permission_required` and clear the ready marker, so a retry after
+TCC revocation receives a fresh 30-second consent window. Reads without a
+domain policy retain the short timeout and best-effort empty-string behavior.
+No page-controlled AX URL is trusted, and no action occurs without a validated
+URL.
 
 This adapts the existing typed backend error and `CUAViewModel` recovery path;
 no new UI contract is introduced. Pixel should confirm the existing Automation
@@ -36,8 +38,9 @@ settings prompt remains visible and understandable during Mini dogfood.
 - Ruff format and lint: passed on both changed Python files
 
 Focused tests cover the longer initial timeout, transition to the short steady
-timeout, explicit Apple Events denial, timeout recovery, and unchanged
-best-effort behavior without an allowed-domain policy.
+timeout, ready-state invalidation after explicit Apple Events denial or timeout,
+timeout recovery, and unchanged best-effort behavior without an allowed-domain
+policy.
 
 ## Remaining live check
 

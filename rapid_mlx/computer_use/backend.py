@@ -2349,6 +2349,7 @@ def read_url(
             )
         except subprocess.TimeoutExpired as exc:
             if require_permission:
+                _AUTOMATION_READY_BUNDLES.discard(bundle_key)
                 raise ComputerUseError(
                     "automation_permission_required",
                     "browser URL access timed out while waiting for macOS "
@@ -2363,6 +2364,7 @@ def read_url(
                 "not authorized to send apple events" in stderr.lower()
             )
             if require_permission and permission_denied:
+                _AUTOMATION_READY_BUNDLES.discard(bundle_key)
                 raise ComputerUseError(
                     "automation_permission_required",
                     "browser URL access is not authorized; allow Rapid-MLX to "
