@@ -897,7 +897,18 @@ def test_coordinate_click_binds_to_selected_window(monkeypatch):
 
 
 def test_synthetic_keyboard_actions_activate_target_app(monkeypatch):
-    snapshot = _stable_snapshot()
+    snapshot = _stable_snapshot(
+        elements=[
+            {
+                "index": 0,
+                "role": "AXButton",
+                "label": "Continue",
+                "center": [50, 50],
+                "actions": [],
+                "source_window_id": "cg:101",
+            }
+        ]
+    )
     calls = []
     monkeypatch.setattr(
         backend,
@@ -906,9 +917,14 @@ def test_synthetic_keyboard_actions_activate_target_app(monkeypatch):
     )
     monkeypatch.setattr(backend.ax_driver, "_type_text", lambda text: None)
     monkeypatch.setattr(backend.ax_driver, "_press_key", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        backend, "inspect_focused_element", lambda *a, **k: {"index": 0}
+    )
 
     backend.type_text("Target App", "secret")
-    backend.press_key("Target App", "return")
+    backend.press_key(
+        "Target App", "return", expected_snapshot=snapshot, element_index=0
+    )
     assert calls == [("Target App", None), ("Target App", None)]
 
 
@@ -3139,6 +3155,80 @@ def test_finder_selected_row_enter_is_not_misclassified_as_commit(monkeypatch):
     assert backend._finder_inline_rename("pid:4", snapshot, 0) is None
 
 
+def test_finder_selected_row_under_focused_outline_is_valid_keyboard_target(monkeypatch):
+    snapshot = _finder_rename_snapshot()
+    snapshot["elements"][0].update(
+        {"role": "AXRow", "parent_role": "AXOutline", "label": "Selected item"}
+    )
+    row, outline = object(), object()
+    monkeypatch.setattr(backend, "_live_element", lambda *a, **k: row)
+    monkeypatch.setattr(backend, "_focused_ax_element", lambda app: outline)
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_get",
+        lambda element, attr: {
+            row: {"AXRole": "AXRow", "AXSelected": True, "AXParent": outline},
+            outline: {"AXRole": "AXOutline"},
+        }.get(element, {}).get(attr),
+    )
+
+    assert backend.inspect_focused_element(
+        snapshot, 0, allow_selected_finder_row=True
+    ) == snapshot["elements"][0]
+
+
+@pytest.mark.parametrize("selected", [False, None])
+def test_finder_unselected_row_under_focused_outline_is_rejected(monkeypatch, selected):
+    snapshot = _finder_rename_snapshot()
+    snapshot["elements"][0].update(
+        {"role": "AXRow", "parent_role": "AXOutline", "label": "Selected item"}
+    )
+    row, outline = object(), object()
+    monkeypatch.setattr(backend, "_live_element", lambda *a, **k: row)
+    monkeypatch.setattr(backend, "_focused_ax_element", lambda app: outline)
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_get",
+        lambda element, attr: {
+            row: {"AXRole": "AXRow", "AXSelected": selected, "AXParent": outline},
+            outline: {"AXRole": "AXOutline"},
+        }.get(element, {}).get(attr),
+    )
+
+    with pytest.raises(errors.ComputerUseError, match="exact focused"):
+        backend.inspect_focused_element(
+            snapshot, 0, allow_selected_finder_row=True
+        )
+
+
+def test_activation_key_rechecks_exact_focus_immediately_before_dispatch(monkeypatch):
+    snapshot = _finder_rename_snapshot()
+    snapshot["app"] = {
+        "name": "TextEdit",
+        "bundleId": "com.apple.TextEdit",
+        "pid": 4,
+    }
+    calls = []
+    monkeypatch.setattr(backend, "_finder_inline_rename", lambda *a, **k: None)
+    monkeypatch.setattr(backend, "_prepare_synthetic_action", lambda *a, **k: snapshot)
+    monkeypatch.setattr(
+        backend,
+        "inspect_focused_element",
+        lambda *a, **k: calls.append((a, k)) or snapshot["elements"][0],
+    )
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_press_key",
+        lambda key: calls.append(("dispatch", key)),
+    )
+
+    backend.press_key("pid:4", "enter", expected_snapshot=snapshot, element_index=0)
+
+    assert calls[-2][0][1] == 0
+    assert calls[-2][1] == {"allow_selected_finder_row": True}
+    assert calls[-1][0] == "dispatch"
+
+
 def test_finder_generic_enter_verifies_same_file_reference_commit(monkeypatch):
     snapshot = _finder_rename_snapshot()
     live, reference = object(), object()
@@ -3157,6 +3247,9 @@ def test_finder_generic_enter_verifies_same_file_reference_commit(monkeypatch):
         backend, "_finder_file_reference_path", lambda value: next(paths)
     )
     monkeypatch.setattr(backend, "_prepare_synthetic_action", lambda *a, **k: snapshot)
+    monkeypatch.setattr(
+        backend, "inspect_focused_element", lambda *a, **k: snapshot["elements"][0]
+    )
     monkeypatch.setattr(backend.ax_driver, "_press_key", lambda key: None)
 
     result = backend.press_key(
@@ -3199,6 +3292,9 @@ def test_finder_generic_enter_uses_bound_reference_for_replacement_editor(monkey
         backend, "_finder_file_reference_path", lambda value: next(paths)
     )
     monkeypatch.setattr(backend, "_prepare_synthetic_action", lambda *a, **k: snapshot)
+    monkeypatch.setattr(
+        backend, "inspect_focused_element", lambda *a, **k: snapshot["elements"][0]
+    )
     monkeypatch.setattr(backend.ax_driver, "_press_key", lambda key: None)
 
     result = backend.press_key(
@@ -3482,6 +3578,9 @@ def test_finder_generic_enter_retries_file_reference_before_unverified(
         lambda value: "/tmp/Original",
     )
     monkeypatch.setattr(backend, "_prepare_synthetic_action", lambda *a, **k: snapshot)
+    monkeypatch.setattr(
+        backend, "inspect_focused_element", lambda *a, **k: snapshot["elements"][0]
+    )
     monkeypatch.setattr(backend.ax_driver, "_press_key", lambda key: None)
     sleeps = []
     monkeypatch.setattr(backend.time, "sleep", sleeps.append)
@@ -3570,6 +3669,7 @@ def test_transient_enter_requires_same_focused_companion(monkeypatch):
     live = object()
     monkeypatch.setattr(backend, "_live_element", lambda *a, **k: live)
     monkeypatch.setattr(backend, "_focused_ax_window", lambda *a, **k: live)
+    monkeypatch.setattr(backend, "_focused_ax_element", lambda *a, **k: live)
     monkeypatch.setattr(backend.ax_driver, "_get", lambda *a, **k: False)
     monkeypatch.setattr(
         backend, "_validate_focused_window", lambda snap, expected: None

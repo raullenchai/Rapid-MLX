@@ -756,7 +756,7 @@ def fake_backend(monkeypatch):
     monkeypatch.setattr(
         backend_mod,
         "inspect_focused_element",
-        lambda snapshot, index: next(
+        lambda snapshot, index, **kwargs: next(
             entry for entry in snapshot["elements"] if entry["index"] == index
         ),
     )
