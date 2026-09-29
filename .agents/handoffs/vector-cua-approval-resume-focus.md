@@ -15,6 +15,11 @@ frame, and unique AX window but used `AXRaise` without activating Finder.
 final PID focus check correctly failed with `target_drift` before any write.
 The file and sentinel remained unchanged.
 
+Signed follow-up run `2f4fa7d7566a` restored Finder focus but showed a second
+safe refusal: opening Rapid's approval UI closed Finder's transient rename
+editor. The stale element index correctly failed with `target_drift`; the file
+and sentinel again remained unchanged.
+
 ## Change
 
 After the existing exact identity and unique-window checks,
@@ -24,6 +29,14 @@ start time, CGWindowID, frame, and the unique AX window before `AXRaise`. The
 existing final frontmost PID and focused AX-window validation remains the last
 gate. Any drift fails closed; the approved action is never converted into a
 generic retry or rebound to a different Finder selection.
+
+When the approval focus transition closes the unchanged Finder inline editor,
+the backend re-enters Rename only after proving the retained opaque file
+reference still resolves to the original path and its retained AX row is the
+sole selected row in the same outline. It invokes Finder's unique native Rename
+command, reacquires an editor for that same row, path, and reference, and only
+then performs the adjacent approved `AXSetValue`. It does not click, reuse the
+stale serialized index as authority, or transfer approval to another selection.
 
 This follows the established observe, exact actuation, fresh observation pattern
 reviewed in Orca while retaining Rapid's stronger PID, CGWindowID, and opaque
@@ -37,8 +50,8 @@ Finder file-reference binding. No proprietary code was copied.
   introduced by the focus transition.
 - Process-start drift before activation cannot activate a reused PID; drift
   observed after activation cannot reach `AXRaise`.
-- `tests/test_computer_use.py tests/test_cua.py`: 404 passed before the two
-  added fail-closed cases; focused selection now passes 10 tests.
+- Approval-closed editor recovery is covered for the same bound row, reference,
+  and path; a different selected row fails before the native Rename command.
 - Ruff format/check: passed.
 
 ## Remaining live check

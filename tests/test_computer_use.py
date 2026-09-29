@@ -3218,6 +3218,195 @@ def test_finder_rename_transaction_stages_then_commits_exact_editor(monkeypatch)
     assert presses == [backend.KEY_ALIASES["enter"]]
 
 
+def test_finder_rename_resume_reopens_same_bound_row_after_approval(monkeypatch):
+    snapshot = _finder_rename_snapshot()
+    row, outline, reference, rename_item, restored_editor = (object() for _ in range(5))
+    binding = {
+        "pid": 4,
+        "window_id": "cg:101",
+        "file_reference": reference,
+        "original_path": "/tmp/Before",
+        "requested_basename": "After",
+    }
+    backend._finder_rename_bindings[backend._finder_rename_binding_key(snapshot)] = (
+        row,
+        reference,
+        "/tmp/Before",
+        backend.time.monotonic(),
+    )
+    monkeypatch.setattr(
+        backend,
+        "_finder_transaction_editor",
+        lambda *a, **k: (_ for _ in ()).throw(
+            errors.ComputerUseError(
+                "target_drift", "transient companion changed or lost focus"
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        backend,
+        "_finder_file_reference_path",
+        lambda value: "/tmp/Before" if value is reference else None,
+    )
+
+    def get(element, attr):
+        return {
+            row: {"AXParent": outline, "AXRole": "AXRow", "AXSelected": True},
+            outline: {"AXRole": "AXOutline", "AXChildren": [row]},
+        }.get(element, {}).get(attr)
+
+    monkeypatch.setattr(backend.ax_driver, "_get", get)
+    monkeypatch.setattr(backend, "_finder_rename_menu_item", lambda _: rename_item)
+    actions = []
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "AXUIElementPerformAction",
+        lambda element, action: (
+            actions.append((element, action)) or backend.ax_driver.kAXErrorSuccess
+        ),
+    )
+    monkeypatch.setattr(backend.time, "sleep", lambda _: None)
+    monkeypatch.setattr(
+        backend,
+        "_finder_item_editor_for_path",
+        lambda value, path, expected_row: (
+            restored_editor
+            if value is snapshot and path == "/tmp/Before" and expected_row is row
+            else pytest.fail("rename editor rebound outside the approved row")
+        ),
+    )
+    monkeypatch.setattr(
+        backend,
+        "_finder_transaction_reference",
+        lambda live, *a, **k: reference if live is restored_editor else None,
+    )
+
+    assert (
+        backend._resume_finder_transaction_editor(binding, snapshot, 0)
+        is restored_editor
+    )
+    assert actions == [(rename_item, "AXPress")]
+
+
+def test_finder_rename_resume_rejects_different_selected_row(monkeypatch):
+    snapshot = _finder_rename_snapshot()
+    row, other_row, outline, reference = (object() for _ in range(4))
+    binding = {
+        "pid": 4,
+        "window_id": "cg:101",
+        "file_reference": reference,
+        "original_path": "/tmp/Before",
+        "requested_basename": "After",
+    }
+    backend._finder_rename_bindings[backend._finder_rename_binding_key(snapshot)] = (
+        row,
+        reference,
+        "/tmp/Before",
+        backend.time.monotonic(),
+    )
+    monkeypatch.setattr(
+        backend,
+        "_finder_transaction_editor",
+        lambda *a, **k: (_ for _ in ()).throw(
+            errors.ComputerUseError("target_drift", "editor closed")
+        ),
+    )
+    monkeypatch.setattr(
+        backend,
+        "_finder_file_reference_path",
+        lambda value: "/tmp/Before" if value is reference else None,
+    )
+
+    def get(element, attr):
+        return {
+            row: {"AXParent": outline, "AXRole": "AXRow", "AXSelected": False},
+            other_row: {"AXRole": "AXRow", "AXSelected": True},
+            outline: {"AXRole": "AXOutline", "AXChildren": [row, other_row]},
+        }.get(element, {}).get(attr)
+
+    monkeypatch.setattr(backend.ax_driver, "_get", get)
+    monkeypatch.setattr(
+        backend,
+        "_finder_rename_menu_item",
+        lambda *a: pytest.fail("different selection must not consume approval"),
+    )
+
+    with pytest.raises(errors.ComputerUseError, match="approved Finder row changed"):
+        backend._resume_finder_transaction_editor(binding, snapshot, 0)
+
+
+@pytest.mark.parametrize(
+    ("failure", "message"),
+    [
+        ("missing_binding", "binding is no longer available"),
+        ("rename_rejected", "Rename command rejected"),
+        ("restored_reference", "not the approved item"),
+    ],
+)
+def test_finder_rename_resume_fails_closed_at_each_reentry_boundary(
+    monkeypatch, failure, message
+):
+    snapshot = _finder_rename_snapshot()
+    row, outline, reference, rename_item, restored_editor = (object() for _ in range(5))
+    binding = {
+        "pid": 4,
+        "window_id": "cg:101",
+        "file_reference": reference,
+        "original_path": "/tmp/Before",
+        "requested_basename": "After",
+    }
+    binding_key = backend._finder_rename_binding_key(snapshot)
+    if failure == "missing_binding":
+        backend._finder_rename_bindings.pop(binding_key, None)
+    else:
+        backend._finder_rename_bindings[binding_key] = (
+            row,
+            reference,
+            "/tmp/Before",
+            backend.time.monotonic(),
+        )
+    monkeypatch.setattr(
+        backend,
+        "_finder_transaction_editor",
+        lambda *a, **k: (_ for _ in ()).throw(
+            errors.ComputerUseError("target_drift", "editor closed")
+        ),
+    )
+    monkeypatch.setattr(
+        backend,
+        "_finder_file_reference_path",
+        lambda value: "/tmp/Before" if value is reference else None,
+    )
+
+    def get(element, attr):
+        return {
+            row: {"AXParent": outline, "AXRole": "AXRow", "AXSelected": True},
+            outline: {"AXRole": "AXOutline", "AXChildren": [row]},
+        }.get(element, {}).get(attr)
+
+    monkeypatch.setattr(backend.ax_driver, "_get", get)
+    monkeypatch.setattr(backend, "_finder_rename_menu_item", lambda _: rename_item)
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "AXUIElementPerformAction",
+        lambda *a: (
+            1 if failure == "rename_rejected" else backend.ax_driver.kAXErrorSuccess
+        ),
+    )
+    monkeypatch.setattr(backend.time, "sleep", lambda _: None)
+    monkeypatch.setattr(
+        backend, "_finder_item_editor_for_path", lambda *a: restored_editor
+    )
+    monkeypatch.setattr(
+        backend,
+        "_finder_transaction_reference",
+        lambda *a, **k: object() if failure == "restored_reference" else reference,
+    )
+
+    with pytest.raises(errors.ComputerUseError, match=message):
+        backend._resume_finder_transaction_editor(binding, snapshot, 0)
+
+
 def test_finder_rename_transaction_fails_closed_on_reference_drift(monkeypatch):
     snapshot = _finder_rename_snapshot()
     path_state = ["/tmp/Unexpected"]
