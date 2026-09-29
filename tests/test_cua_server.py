@@ -1582,3 +1582,158 @@ def test_loop_gate_callback_wiring(client, tmp_path):
     kinds = [e["kind"] for e in service_run.events]
     assert "gate" in kinds and "gate_resolved" in kinds
     assert service_run.status == "running"  # reset after resolution
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"initial_target_id": "orphan"}, "initial_target_id requires targets"),
+        (
+            {"targets": [
+                {"target_id": "same", "app": "pid:42", "pid": 42, "window_id": "cg:1"},
+                {"target_id": "same", "app": "pid:43", "pid": 43, "window_id": "cg:2"},
+            ], "initial_target_id": "same"},
+            "target_id values must be unique",
+        ),
+        (
+            {"targets": [
+                {"target_id": "one", "app": "pid:42", "pid": 42, "window_id": "cg:1"},
+                {"target_id": "two", "app": "pid:42", "pid": 42, "window_id": "cg:1"},
+            ], "initial_target_id": "one"},
+            "distinct process window",
+        ),
+        (
+            {"targets": [
+                {"target_id": "one", "app": "pid:42", "pid": 42, "window_id": "cg:1"},
+                {"target_id": "two", "app": "pid:43", "pid": 43, "window_id": "cg:2"},
+            ], "initial_target_id": "missing"},
+            "initial_target_id must name",
+        ),
+        (
+            {"app": "pid:43", "targets": [
+                {"target_id": "one", "app": "pid:42", "pid": 42, "window_id": "cg:1"},
+                {"target_id": "two", "app": "pid:43", "pid": 43, "window_id": "cg:2"},
+            ], "initial_target_id": "one"},
+            "app must match the initial",
+        ),
+    ],
+)
+def test_target_set_rejects_unscoped_or_ambiguous_authority(client, change, message):
+    response = _post_run(client, **change)
+    assert response.status_code == 422
+    assert message in response.text
+    assert client.fresh_service.list_runs() == []
+
+
+def test_native_capabilities_reflect_grants_and_fail_closed(client, monkeypatch):
+    from rapid_mlx.computer_use.errors import ComputerUseError
+
+    backend = cua_routes._backend()
+    monkeypatch.setattr(cua_routes.sys, "platform", "darwin")
+    granted = client.get("/v1/cua/capabilities", headers=AUTH)
+    assert granted.status_code == 200
+    assert granted.json()["features"]["visual_observation"] is True
+
+    def denied():
+        raise ComputerUseError("permission_denied", "AX unavailable")
+
+    monkeypatch.setattr(backend, "permissions", denied)
+    unavailable = client.get("/v1/cua/capabilities", headers=AUTH)
+    assert unavailable.status_code == 200
+    assert unavailable.json()["features"]["visual_observation"] is False
+    assert unavailable.json()["features"]["observation_without_activation"] is False
+
+
+@pytest.mark.parametrize(
+    ("path", "backend_method"),
+    [
+        ("/v1/cua/permissions", "permissions"),
+        ("/v1/cua/apps", "list_apps"),
+        ("/v1/cua/apps/Finder/windows", "list_windows"),
+    ],
+)
+def test_discovery_reports_typed_backend_failure(
+    client, monkeypatch, path, backend_method
+):
+    from rapid_mlx.computer_use.errors import ComputerUseError
+
+    backend = cua_routes._backend()
+    monkeypatch.setattr(cua_routes.sys, "platform", "darwin")
+
+    def denied(*args):
+        raise ComputerUseError("permission_denied", "AX unavailable")
+
+    monkeypatch.setattr(backend, backend_method, denied)
+    response = client.get(path, headers=AUTH)
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "permission_denied"
+
+
+def test_permission_request_is_disabled_without_explicit_loopback_binding(
+    client, monkeypatch
+):
+    monkeypatch.setattr(cua_routes.sys, "platform", "darwin")
+    get_config().cua_permission_requests_enabled = False
+    calls = []
+    monkeypatch.setattr(
+        cua_routes._backend(), "request_permission", lambda name: calls.append(name)
+    )
+    response = client.post(
+        "/v1/cua/permissions/request",
+        headers=AUTH,
+        json={"permission": "accessibility"},
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "local_request_required"
+    assert calls == []
+
+
+def test_permission_request_backend_error_is_typed(client, monkeypatch):
+    from rapid_mlx.computer_use.errors import ComputerUseError
+
+    monkeypatch.setattr(cua_routes.sys, "platform", "darwin")
+
+    def denied(permission):
+        raise ComputerUseError("permission_denied", "grant denied")
+
+    monkeypatch.setattr(cua_routes._backend(), "request_permission", denied)
+    response = client.post(
+        "/v1/cua/permissions/request",
+        headers=AUTH,
+        json={"permission": "accessibility"},
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "permission_denied"
+
+
+def test_discovery_import_error_reports_unsupported_platform(client, monkeypatch):
+    backend = cua_routes._backend()
+
+    def missing_pyobjc():
+        raise ImportError("Quartz unavailable")
+
+    monkeypatch.setattr(backend, "list_apps", missing_pyobjc)
+    response = client.get("/v1/cua/apps", headers=AUTH)
+    assert response.status_code == 501
+    assert response.json()["detail"]["code"] == "unsupported_platform"
+
+
+def test_permission_prompt_rejects_unparseable_peer_address(client, monkeypatch):
+    monkeypatch.setattr(cua_routes.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        cua_routes.ipaddress,
+        "ip_address",
+        lambda peer: (_ for _ in ()).throw(ValueError("not an IP address")),
+    )
+    calls = []
+    monkeypatch.setattr(
+        cua_routes._backend(), "request_permission", lambda name: calls.append(name)
+    )
+    response = client.post(
+        "/v1/cua/permissions/request",
+        headers=AUTH,
+        json={"permission": "accessibility"},
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "local_request_required"
+    assert calls == []

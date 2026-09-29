@@ -127,3 +127,95 @@ def test_cua_permission_prompts_require_explicit_loopback_listener(
         cli._serve_cua_only_mode(_args(**overrides))
 
     assert get_config().cua_permission_requests_enabled is False
+
+
+def test_cua_only_rejects_model_options_before_binding(monkeypatch, capsys):
+    monkeypatch.setenv("RAPID_MLX_API_KEY", "cua-secret")
+    monkeypatch.setattr(
+        cli,
+        "_resolve_serve_port",
+        lambda *args, **kwargs: pytest.fail("model options must be rejected first"),
+    )
+    with pytest.raises(SystemExit) as exc:
+        cli._serve_cua_only_mode(_args(model="unexpected"))
+    assert exc.value.code == 2
+    assert "--model" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("environment", "overrides", "expected_bytes", "expected_timeout"),
+    [
+        ({}, {"max_request_bytes": 1024}, 1024, None),
+        ({"RAPID_MLX_MAX_REQUEST_BYTES": "2048"}, {}, 2048, None),
+        ({"RAPID_MLX_MAX_REQUEST_BYTES": "bad"}, {}, 8 * 1024 * 1024, None),
+        ({"RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS": "0.5"}, {}, None, 0.5),
+        ({"RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS": "bad"}, {}, None, 15.0),
+    ],
+)
+def test_cua_only_request_limits_use_validated_cli_or_environment(
+    monkeypatch, environment, overrides, expected_bytes, expected_timeout
+):
+    from rapid_mlx.cua import server as cua_server
+
+    reset_config()
+    monkeypatch.setattr(cua_server, "_configured", False)
+    monkeypatch.setenv("RAPID_MLX_API_KEY", "cua-secret")
+    for name in (
+        "RAPID_MLX_MAX_REQUEST_BYTES",
+        "RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(cli, "_resolve_serve_port", lambda *args, **kwargs: 8123)
+    monkeypatch.setattr(cli, "_run_uvicorn", lambda *args, **kwargs: None)
+    exited = []
+    monkeypatch.setattr(cli, "_hard_exit_after_serve", lambda: exited.append(True))
+
+    cli._serve_cua_only_mode(_args(**overrides))
+    cfg = get_config()
+    if expected_bytes is not None:
+        assert cfg.max_request_bytes == expected_bytes
+    if expected_timeout is not None:
+        assert cfg.body_receive_timeout_seconds == expected_timeout
+    assert exited == [True]
+
+
+def test_cua_only_rate_limit_is_applied_and_announced(monkeypatch, capsys):
+    from rapid_mlx.cua import server as cua_server
+
+    reset_config()
+    monkeypatch.setattr(cua_server, "_configured", False)
+    monkeypatch.setenv("RAPID_MLX_API_KEY", "cua-secret")
+    monkeypatch.setattr(cli, "_resolve_serve_port", lambda *args, **kwargs: 8123)
+    applied = []
+    monkeypatch.setattr(
+        "rapid_mlx.middleware.auth.configure_rate_limiter",
+        lambda limit, enabled: applied.append((limit, enabled)),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_run_uvicorn",
+        lambda *args, **kwargs: (_ for _ in ()).throw(_ServerStartedError()),
+    )
+    with pytest.raises(_ServerStartedError):
+        cli._serve_cua_only_mode(_args(rate_limit=7))
+    assert applied == [(7, True)]
+    assert "rate-limit: 7/min" in capsys.readouterr().out
+
+
+def test_cua_only_invalid_listener_hostname_disables_permission_prompt(monkeypatch):
+    from rapid_mlx.cua import server as cua_server
+
+    reset_config()
+    monkeypatch.setattr(cua_server, "_configured", False)
+    monkeypatch.setenv("RAPID_MLX_API_KEY", "cua-secret")
+    monkeypatch.setattr(cli, "_resolve_serve_port", lambda *args, **kwargs: 8123)
+    monkeypatch.setattr(
+        cli,
+        "_run_uvicorn",
+        lambda *args, **kwargs: (_ for _ in ()).throw(_ServerStartedError()),
+    )
+    with pytest.raises(_ServerStartedError):
+        cli._serve_cua_only_mode(_args(host="example.invalid"))
+    assert get_config().cua_permission_requests_enabled is False

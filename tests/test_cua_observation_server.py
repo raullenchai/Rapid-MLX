@@ -310,3 +310,38 @@ def test_unsupported_platform_is_typed(observation_client, monkeypatch):
     response = client.post("/v1/cua/observations", headers=AUTH, json=REQUEST)
     assert response.status_code == 501
     assert response.json()["detail"]["code"] == "unsupported_platform"
+
+
+def test_observation_requires_accessibility_before_reading_window(
+    observation_client, monkeypatch
+):
+    client, backend = observation_client
+    observed = []
+    monkeypatch.setattr(
+        backend,
+        "permissions",
+        lambda: {"accessibility": False, "screen_recording": True, "hints": []},
+    )
+    monkeypatch.setattr(
+        backend, "get_app_state", lambda *args, **kwargs: observed.append(True)
+    )
+    response = client.post("/v1/cua/observations", headers=AUTH, json=REQUEST)
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "permission_denied"
+    assert observed == []
+
+
+def test_screenshot_requires_png_bytes_from_bound_window(
+    observation_client, monkeypatch
+):
+    client, backend = observation_client
+    monkeypatch.setenv("RAPID_MLX_CUA_EXPOSE_SCREENSHOTS", "1")
+    monkeypatch.setattr(
+        backend, "get_app_state", lambda *args, **kwargs: _snapshot()
+    )
+    response = client.post(
+        "/v1/cua/observations", headers=AUTH, json={**REQUEST, "screenshot": True}
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "screenshot_failed"
+    assert response.headers["cache-control"] == "no-store"
