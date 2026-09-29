@@ -476,7 +476,7 @@ def test_target_resolver_refuses_to_guess_among_same_app_windows(client, monkeyp
     ).json()
     assert body["status"] == "unresolved"
     assert body["targets"] == []
-    assert "multiple eligible windows" in body["reason"]
+    assert "multiple open items" in body["reason"]
 
 
 def test_target_resolver_browser_requires_trusted_domain(client, monkeypatch):

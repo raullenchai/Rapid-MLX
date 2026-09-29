@@ -316,9 +316,10 @@ final class CUAViewModel: ObservableObject {
             targetError = "Rapid could not verify the proposed app scope. Try again."
             return
           }
-          isResolvingTargets = false
+          let authorizedTargets = selectedTargets
           guard await authorizeResolvedBrowsers(
-            generation: generation, goal: requestedGoal, planner: requestedPlanner
+            generation: generation, goal: requestedGoal, planner: requestedPlanner,
+            targets: authorizedTargets
           ) else { return }
           await start()
         case "needs_approval":
@@ -352,26 +353,36 @@ final class CUAViewModel: ObservableObject {
       let generation = lifecycleGeneration
       let requestedGoal = goal.trimmingCharacters(in: .whitespacesAndNewlines)
       let requestedPlanner = plannerName
+      let authorizedTargets = selectedTargets
+      isResolvingTargets = true
+      defer {
+        if generation == lifecycleGeneration, !isSessionDetached {
+          isResolvingTargets = false
+        }
+      }
       targetResolutionApproval = nil
       pendingResolutionGoal = nil
       pendingResolutionPlanner = nil
       guard await authorizeResolvedBrowsers(
-        generation: generation, goal: requestedGoal, planner: requestedPlanner
+        generation: generation, goal: requestedGoal, planner: requestedPlanner,
+        targets: authorizedTargets
       ) else { return }
       await start()
     }
 
     private func authorizeResolvedBrowsers(
-      generation: Int, goal requestedGoal: String, planner requestedPlanner: String
+      generation: Int, goal requestedGoal: String, planner requestedPlanner: String,
+      targets authorizedTargets: [CUASelectedTarget]
     ) async -> Bool {
-      let browserBundles = Set(selectedTargets.compactMap(\.bundleID).filter {
+      let browserBundles = Set(authorizedTargets.compactMap(\.bundleID).filter {
         BrowserAutomationAuthorizer.supports(bundleIdentifier: $0)
       })
       for bundleID in browserBundles.sorted() {
         let result = await browserAutomationRequest(bundleID)
         guard generation == lifecycleGeneration, !isSessionDetached,
           goal.trimmingCharacters(in: .whitespacesAndNewlines) == requestedGoal,
-          plannerName == requestedPlanner
+          plannerName == requestedPlanner,
+          selectedTargets == authorizedTargets
         else {
           if !isSessionDetached {
             selectedTargets = []
