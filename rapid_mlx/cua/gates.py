@@ -75,6 +75,7 @@ def consequential_action(
     target_label: str = "",
     *,
     target_role: str = "",
+    target_parent_role: str = "",
     app_name: str = "",
 ) -> ApprovalRequirement | None:
     """Return an exact approval request for an externally committing action."""
@@ -93,20 +94,20 @@ def consequential_action(
     if is_keyboard_activation(plan):
         label = target_label.strip()
         role = target_role.strip()
-        finder_input = app_name.casefold() == "finder" and role in {
-            "AXRow",
-            "AXTextField",
-        }
-        editable_input = role in {
-            "AXTextField",
-            "AXTextArea",
-            "AXComboBox",
-            "AXSearchField",
-        }
-        read_only_activation = bool(READ_ONLY_SUBMIT_RE.search(label))
-        if finder_input or (editable_input and not CONSEQUENTIAL_RE.search(label)):
-            return None
-        if read_only_activation and not CONSEQUENTIAL_RE.search(label):
+        parent_role = target_parent_role.strip()
+        key = str(plan.get("key", "")).casefold()
+        finder_inline_rename = (
+            app_name.casefold() == "finder"
+            and key in {"enter", "return"}
+            and (
+                (role == "AXTextField" and parent_role == "AXCell")
+                or (role == "AXRow" and parent_role == "AXOutline")
+            )
+        )
+        read_only_search = role == "AXSearchField" and bool(
+            READ_ONLY_SUBMIT_RE.search(label)
+        )
+        if finder_inline_rename or read_only_search:
             return None
         if not label or not CONSEQUENTIAL_RE.search(f"{label} {instruction}"):
             return ApprovalRequirement(
