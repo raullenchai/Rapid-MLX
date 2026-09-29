@@ -1730,6 +1730,86 @@ struct CUAClientTests {
         #expect(json["allowed_domain"] == nil)
     }
 
+    @Test("Multi-target create accepts the server echo without request-only process identity")
+    func multiTargetCreateAcceptsNarrowRunTargetEcho() async throws {
+        let requested = [
+            CUARunTarget(
+                targetID: "target_1", app: "pid:14016", pid: 14_016,
+                windowID: "cg:11418", allowedDomain: "example.com",
+                bundleID: "com.apple.Safari", processStartTime: 12_345
+            ),
+            CUARunTarget(
+                targetID: "target_2", app: "pid:90979", pid: 90_979,
+                windowID: "cg:11490", allowedDomain: "",
+                bundleID: "com.apple.TextEdit", processStartTime: 67_890
+            ),
+        ]
+        let echoed = requested.map {
+            CUARunTarget(
+                targetID: $0.targetID, app: $0.app, pid: $0.pid,
+                windowID: $0.windowID, allowedDomain: $0.allowedDomain
+            )
+        }
+        RecordingURLProtocol.stubResponse(
+            path: "/v1/cua/runs",
+            body: try JSONEncoder().encode(
+                CUARunCreated(
+                    runID: "cross-app", status: "running", windowID: "cg:11418",
+                    clientRequestID: "request-cross-app", targets: echoed,
+                    activeTargetID: "target_1"
+                )
+            )
+        )
+        let request = CUARunRequest(
+            app: "pid:14016", goal: "read then edit", planner: "brain", openURL: "",
+            allowedDomain: "", maxSteps: 12, humanLogin: true, windowID: "cg:11418",
+            clientRequestID: "request-cross-app", targets: requested,
+            initialTargetID: "target_1"
+        )
+
+        #expect(try await makeClient().create(request) == "cross-app")
+        #expect(RecordingURLProtocol.captured["/v1/cua/runs/cross-app/cancel"] == nil)
+    }
+
+    @Test("Run-target echo comparison keeps every committed binding field exact")
+    func runTargetEchoBindingFieldsStayExact() {
+        let requested = CUARunTarget(
+            targetID: "target_1", app: "pid:14016", pid: 14_016,
+            windowID: "cg:11418", allowedDomain: "example.com",
+            bundleID: "com.apple.Safari", processStartTime: 12_345
+        )
+        let validationOnlyDifference = CUARunTarget(
+            targetID: requested.targetID, app: requested.app, pid: requested.pid,
+            windowID: requested.windowID, allowedDomain: requested.allowedDomain,
+            bundleID: nil, processStartTime: nil
+        )
+        #expect(requested.hasSameRunBinding(as: validationOnlyDifference))
+
+        let changedBindings = [
+            CUARunTarget(
+                targetID: "target_2", app: requested.app, pid: requested.pid,
+                windowID: requested.windowID, allowedDomain: requested.allowedDomain
+            ),
+            CUARunTarget(
+                targetID: requested.targetID, app: "pid:14017", pid: requested.pid,
+                windowID: requested.windowID, allowedDomain: requested.allowedDomain
+            ),
+            CUARunTarget(
+                targetID: requested.targetID, app: requested.app, pid: 14_017,
+                windowID: requested.windowID, allowedDomain: requested.allowedDomain
+            ),
+            CUARunTarget(
+                targetID: requested.targetID, app: requested.app, pid: requested.pid,
+                windowID: "cg:11419", allowedDomain: requested.allowedDomain
+            ),
+            CUARunTarget(
+                targetID: requested.targetID, app: requested.app, pid: requested.pid,
+                windowID: requested.windowID, allowedDomain: "other.example"
+            ),
+        ]
+        #expect(changedBindings.allSatisfy { !requested.hasSameRunBinding(as: $0) })
+    }
+
     @Test("Multi-target create mismatch cancels the concrete run")
     func multiTargetCreateMismatchFailsClosed() async throws {
         let requested = [

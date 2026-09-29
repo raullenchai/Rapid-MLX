@@ -61,6 +61,17 @@ struct CUARunTarget: Codable, Equatable, Identifiable, Sendable {
 
     var id: String { targetID }
 
+    /// The create response echoes the committed run binding through the
+    /// narrower server run-target schema. Process identity fields are request
+    /// validation inputs and are intentionally absent from that response.
+    func hasSameRunBinding(as other: CUARunTarget) -> Bool {
+        targetID == other.targetID
+            && app == other.app
+            && pid == other.pid
+            && windowID == other.windowID
+            && allowedDomain == other.allowedDomain
+    }
+
     enum CodingKeys: String, CodingKey {
         case app, pid
         case targetID = "target_id"
@@ -541,8 +552,12 @@ struct CUAClient: CUAAPI, Sendable {
             path: "/v1/cua/runs", method: "POST", body: body
         )
         let created = try decode(CUARunCreated.self, from: data, response: response)
-        let targetBindingMatches = request.targets.map {
-            created.targets == $0 && created.activeTargetID == request.initialTargetID
+        let targetBindingMatches = request.targets.map { requestedTargets in
+            created.targets?.count == requestedTargets.count
+                && zip(created.targets ?? [], requestedTargets).allSatisfy {
+                    $0.hasSameRunBinding(as: $1)
+                }
+                && created.activeTargetID == request.initialTargetID
         } ?? (created.windowID == request.windowID)
         guard targetBindingMatches, created.clientRequestID == request.clientRequestID
         else {
