@@ -67,9 +67,17 @@ def consequential_action(
 ) -> ApprovalRequirement | None:
     """Return an exact approval request for an externally committing action."""
     action = str(plan.get("action", ""))
+    instruction = str(plan.get("step_instruction", "")).strip()
+    if action == "save":
+        target = target_label.strip() or "selected document"
+        return ApprovalRequirement(
+            kind="external_commit",
+            action=action,
+            target=target[:160],
+            instruction=instruction[:240],
+        )
     if action not in {"click", "press"}:
         return None
-    instruction = str(plan.get("step_instruction", "")).strip()
     target = target_label.strip() or f"element {plan.get('element_index', -1)}"
     haystack = f"{target_label} {instruction}"
     if not CONSEQUENTIAL_RE.search(haystack):

@@ -136,7 +136,7 @@ struct CUAFailurePresentation: Equatable {
     }
 
     static func hasPotentialSideEffects(in events: [CUAEvent]) -> Bool {
-        let actionKinds = Set(["click", "fill", "press", "scroll"])
+        let actionKinds = Set(["click", "fill", "press", "scroll", "save"])
         return events.contains { event in
             event.kind == "executed" && event.action.map(actionKinds.contains) == true
         }

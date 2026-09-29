@@ -956,6 +956,139 @@ def _validate_focused_window(
         )
 
 
+SAVE_MENU_MAX_NODES = 128
+SAVE_MENU_MAX_DEPTH = 6
+
+
+def _save_menu_candidate(snapshot: dict) -> tuple[object, tuple[str, ...], object]:
+    """Resolve one exact native Save menu item for the selected document.
+
+    The command metadata, rather than a localized title, distinguishes Save
+    from Save As and Duplicate. The returned live reference never leaves this
+    process and is re-resolved before dispatch.
+    """
+
+    _validate_snapshot_window(snapshot)
+    _validate_focused_window(snapshot)
+    app_info = snapshot["app"]
+    app_element = ax_driver._app_element(
+        str(app_info["name"]), expected_pid=int(app_info["pid"])
+    )
+    focused = _focused_ax_window(app_info)
+    document = ax_driver._get(focused, "AXDocument") if focused is not None else None
+    if not isinstance(document, str) or not document.strip():
+        raise ComputerUseError(
+            "target_drift",
+            "selected window has no stable existing document; refusing Save",
+        )
+    menu_bar = ax_driver._get(app_element, "AXMenuBar")
+    if menu_bar is None:
+        raise ComputerUseError("element_not_found", "app has no accessible menu bar")
+    matches: list[tuple[object, tuple[str, ...]]] = []
+    seen = 0
+
+    def walk(element: object, path: tuple[str, ...], depth: int) -> None:
+        nonlocal seen
+        if depth > SAVE_MENU_MAX_DEPTH or seen >= SAVE_MENU_MAX_NODES:
+            return
+        seen += 1
+        role = ax_driver._get(element, "AXRole")
+        title_value = ax_driver._get(element, "AXTitle")
+        title = title_value.strip()[:160] if isinstance(title_value, str) else ""
+        next_path = (*path, title) if title else path
+        command = ax_driver._get(element, "AXMenuItemCmdChar")
+        modifiers = ax_driver._get(element, "AXMenuItemCmdModifiers")
+        enabled = ax_driver._get(element, "AXEnabled")
+        actions = ax_driver._action_names(element)
+        if (
+            role == "AXMenuItem"
+            and isinstance(command, str)
+            and command.casefold() == "s"
+            and isinstance(modifiers, int)
+            and not isinstance(modifiers, bool)
+            and modifiers == 0
+            and enabled is True
+            and "AXPress" in actions
+        ):
+            identifier = ax_driver._get(element, "AXIdentifier")
+            identity = (
+                *next_path,
+                command.casefold(),
+                str(modifiers),
+                identifier if isinstance(identifier, str) else "",
+            )
+            matches.append((element, identity))
+        for child in ax_driver._as_list(ax_driver._get(element, "AXChildren")):
+            walk(child, next_path, depth + 1)
+
+    walk(menu_bar, (), 0)
+    if len(matches) != 1:
+        raise ComputerUseError(
+            "element_not_found",
+            "native Save command is unavailable or ambiguous; no input was sent",
+        )
+    element, identity = matches[0]
+    return element, identity, document
+
+
+def inspect_save_document(app: str, snapshot: dict) -> dict:
+    """Return a private identity token for an approvable native Save action."""
+
+    del app
+    _, identity, document = _save_menu_candidate(snapshot)
+    return {"save_identity": (document, *identity)}
+
+
+def save_document(
+    app: str, snapshot: dict, *, expected_identity: tuple[str, ...]
+) -> dict:
+    """Press an exact native Save item; never synthesize a shortcut or click."""
+
+    live, identity, document = _save_menu_candidate(snapshot)
+    if (document, *identity) != expected_identity:
+        raise ComputerUseError(
+            "target_drift", "native Save command changed after approval; re-observe"
+        )
+    focused = _focused_ax_window(snapshot["app"])
+    edited_before = ax_driver._get(focused, "AXEdited") if focused is not None else None
+    err = ax_driver.AXUIElementPerformAction(live, "AXPress")
+    if err != ax_driver.kAXErrorSuccess:
+        raise ComputerUseError("action_failed", "native Save command rejected AXPress")
+    time.sleep(0.2)
+    verified = None
+    try:
+        _, after_identity, after_document = _save_menu_candidate(snapshot)
+        focused_after = _focused_ax_window(snapshot["app"])
+        edited_after = (
+            ax_driver._get(focused_after, "AXEdited")
+            if focused_after is not None
+            else None
+        )
+        if (
+            after_identity == identity
+            and after_document == document
+            and edited_before is True
+            and edited_after is False
+        ):
+            verified = True
+    except ComputerUseError:
+        # AXPress was accepted already. A post-action focus/menu change cannot
+        # retroactively become an execution rejection; report it as unverified.
+        pass
+    verification = (
+        "AXEdited changed from true to false for the same document"
+        if verified is True
+        else "native Save AXPress was accepted; persistence could not be verified"
+    )
+    return _finish_action(
+        app,
+        snapshot,
+        {"ok": True, "mode": "AXPress", "executed": True},
+        verified=verified,
+        verification=verification,
+    )
+
+
 def click(
     app: str,
     element_index: int | None = None,

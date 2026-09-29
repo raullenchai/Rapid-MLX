@@ -83,6 +83,7 @@ class CUARun:
         }
         self.tracker = NoProgressTracker()
         self._last_execution_failed = False
+        self._last_commit_unverified = False
         self._failed_completion_rejections = 0
         self._trusted_transient_window_id: str | None = None
         self._empty_snapshots = 0
@@ -233,7 +234,12 @@ class CUARun:
                     )
         return snapshot
 
-    async def _execute(self, plan: dict, snapshot: dict) -> dict:
+    async def _execute(
+        self,
+        plan: dict,
+        snapshot: dict,
+        save_identity: tuple[str, ...] | None = None,
+    ) -> dict:
         action = plan["action"]
         index = plan.get("element_index", -1)
         result: dict = {"action": action}
@@ -279,6 +285,18 @@ class CUARun:
             elif action == "wait":
                 await asyncio.sleep(2.0)
                 result.update({"ok": True})
+            elif action == "save":
+                if save_identity is None:
+                    raise ComputerUseError(
+                        "target_drift", "Save command was not bound before execution"
+                    )
+                result.update(
+                    backend.save_document(
+                        self.backend_app,
+                        snapshot,
+                        expected_identity=save_identity,
+                    )
+                )
         except ComputerUseError as exc:
             # A tool failure is an action-level outcome, not a run-level
             # crash: the tracker records it and the next step re-observes.
@@ -377,6 +395,24 @@ class CUARun:
         )
         target = self._target(snapshot, plan.get("element_index", -1))
         target_label = str(target.get("label", ""))
+        save_identity: tuple[str, ...] | None = None
+        if plan["action"] == "save":
+            try:
+                save_binding = backend.inspect_save_document(self.backend_app, snapshot)
+            except ComputerUseError as exc:
+                self._record(
+                    {
+                        "step": step_no,
+                        "plan": plan,
+                        "stop": exc.message,
+                        "error_code": exc.code,
+                    }
+                )
+                return {"status": "stopped", "reason": exc.message, "error": exc.code}
+            save_identity = tuple(save_binding["save_identity"])
+            target_label = str(
+                snapshot.get("window", {}).get("title") or "selected document"
+            )
         try:
             gates.check_plan_consents(plan, target_label)
         except ConsentError as exc:
@@ -396,7 +432,7 @@ class CUARun:
             }
         )
         if plan["action"] in {"done", "partial", "blocked"}:
-            if self._last_execution_failed:
+            if self._last_execution_failed or self._last_commit_unverified:
                 if plan["action"] != "done":
                     summary = plan["final_summary"]
                     self.trace["final_summary"] = summary
@@ -416,7 +452,10 @@ class CUARun:
                     }
                 self._failed_completion_rejections += 1
                 reason = (
-                    "the previous action failed; use the fresh observation to recover"
+                    "the previous commit could not be verified; use partial or blocked "
+                    "unless fresh evidence proves completion"
+                    if self._last_commit_unverified
+                    else "the previous action failed; use the fresh observation to recover"
                 )
                 self.history.append(
                     {
@@ -510,9 +549,10 @@ class CUARun:
             fresh_window_identity = self._window_identity(fresh)
             stale = any(
                 (
-                    original_target_identity is None,
-                    fresh_target_identity is None,
-                    original_target_identity != fresh_target_identity,
+                    plan["action"] != "save" and original_target_identity is None,
+                    plan["action"] != "save" and fresh_target_identity is None,
+                    plan["action"] != "save"
+                    and original_target_identity != fresh_target_identity,
                     original_window_identity is None,
                     fresh_window_identity is None,
                     original_window_identity != fresh_window_identity,
@@ -521,6 +561,14 @@ class CUARun:
                     _tree_signature(fresh) != _tree_signature(snapshot),
                 )
             )
+            if plan["action"] == "save" and not stale:
+                try:
+                    fresh_binding = backend.inspect_save_document(
+                        self.backend_app, fresh
+                    )
+                    stale = tuple(fresh_binding["save_identity"]) != save_identity
+                except ComputerUseError:
+                    stale = True
             try:
                 gates.check_plan_consents(plan, fresh_label)
             except ConsentError as exc:
@@ -588,7 +636,7 @@ class CUARun:
             return {"status": "stopped", "reason": pre_action_guard}
         url_now = pre_action_url
         before_sig = _tree_signature(snapshot)
-        executed = await self._execute(plan, snapshot)
+        executed = await self._execute(plan, snapshot, save_identity)
         await asyncio.sleep(1.2)
         try:
             after = self._get_app_state(
@@ -686,6 +734,7 @@ class CUARun:
                     "recovery": list(executed.get("recovery", [])),
                 }
             )
+        save_unverified = plan["action"] == "save" and verification is not True
         if execution_failed:
             self._last_execution_failed = True
         elif executed.get("executed") is True:
@@ -693,6 +742,13 @@ class CUARun:
             # enough to let the planner assess completion on its next turn.
             self._last_execution_failed = False
             self._failed_completion_rejections = 0
+        if save_unverified:
+            # Saving is the goal-changing side effect itself. An accepted
+            # AXPress without same-document verification remains pending even
+            # if later navigation succeeds: only partial/blocked may terminate.
+            self._last_commit_unverified = True
+        elif plan["action"] == "save" and verification is True:
+            self._last_commit_unverified = False
         self._emit(event)
         self.history.append(history_entry)
         self._record(

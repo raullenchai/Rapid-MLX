@@ -65,6 +65,142 @@ def test_press_key_rejects_multi_key():
     assert excinfo.value.code == "unsupported_key"
 
 
+def _install_save_menu(monkeypatch, items, *, edited_values=(None, None)):
+    app_element = {"AXMenuBar": {"AXRole": "AXMenuBar", "AXChildren": items}}
+    focused = {
+        "AXDocument": "file:///tmp/document.txt",
+        "AXEdited": edited_values[0],
+    }
+    pressed = []
+    monkeypatch.setattr(backend, "_validate_snapshot_window", lambda snapshot: None)
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda snapshot: None)
+    monkeypatch.setattr(backend.ax_driver, "_app_element", lambda *a, **k: app_element)
+    monkeypatch.setattr(backend, "_focused_ax_window", lambda app: focused)
+    monkeypatch.setattr(
+        backend.ax_driver, "_get", lambda element, attr: element.get(attr)
+    )
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_action_names",
+        lambda element: list(element.get("actions", [])),
+    )
+
+    def perform(element, action):
+        pressed.append((element, action))
+        focused["AXEdited"] = edited_values[1]
+        return backend.ax_driver.kAXErrorSuccess
+
+    monkeypatch.setattr(backend.ax_driver, "AXUIElementPerformAction", perform)
+    monkeypatch.setattr(backend.time, "sleep", lambda _: None)
+    return pressed
+
+
+def _save_item(title="Save", modifiers=0, enabled=True):
+    return {
+        "AXRole": "AXMenuItem",
+        "AXTitle": title,
+        "AXMenuItemCmdChar": "S",
+        "AXMenuItemCmdModifiers": modifiers,
+        "AXEnabled": enabled,
+        "actions": ["AXPress"],
+        "AXChildren": [],
+    }
+
+
+def test_native_save_uses_unique_command_and_stays_unverified_without_axedited(
+    monkeypatch,
+):
+    save = _save_item()
+    pressed = _install_save_menu(
+        monkeypatch,
+        [save, _save_item("Save As", 3), _save_item("Duplicate", 1)],
+    )
+    snapshot = _stable_snapshot(observed_at=backend.time.time())
+    binding = backend.inspect_save_document("pid:4", snapshot)
+    result = backend.save_document(
+        "pid:4", snapshot, expected_identity=tuple(binding["save_identity"])
+    )
+    assert pressed == [(save, "AXPress")]
+    assert result["executed"] is True
+    assert result["verified"] is None
+    assert "could not be verified" in result["verification"]
+
+
+def test_native_save_verifies_only_exact_edited_transition(monkeypatch):
+    save = _save_item()
+    _install_save_menu(monkeypatch, [save], edited_values=(True, False))
+    snapshot = _stable_snapshot(observed_at=backend.time.time())
+    binding = backend.inspect_save_document("pid:4", snapshot)
+    result = backend.save_document(
+        "pid:4", snapshot, expected_identity=tuple(binding["save_identity"])
+    )
+    assert result["verified"] is True
+
+
+@pytest.mark.parametrize(
+    "items",
+    [
+        [],
+        [_save_item(enabled=False)],
+        [_save_item(), _save_item("Other Save")],
+        [_save_item("Save As", 3)],
+    ],
+)
+def test_native_save_rejects_missing_disabled_ambiguous_or_modified_command(
+    monkeypatch, items
+):
+    pressed = _install_save_menu(monkeypatch, items)
+    with pytest.raises(errors.ComputerUseError) as excinfo:
+        backend.inspect_save_document(
+            "pid:4", _stable_snapshot(observed_at=backend.time.time())
+        )
+    assert excinfo.value.code == "element_not_found"
+    assert pressed == []
+
+
+def test_native_save_revalidates_identity_before_press(monkeypatch):
+    save = _save_item()
+    pressed = _install_save_menu(monkeypatch, [save])
+    snapshot = _stable_snapshot(observed_at=backend.time.time())
+    with pytest.raises(errors.ComputerUseError) as excinfo:
+        backend.save_document("pid:4", snapshot, expected_identity=("different",))
+    assert excinfo.value.code == "target_drift"
+    assert pressed == []
+
+
+def test_native_save_post_dispatch_drift_remains_executed_but_unverified(
+    monkeypatch,
+):
+    live = object()
+    calls = 0
+
+    def candidate(_snapshot):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return live, ("File", "Save", "s", "0", ""), "file:///tmp/a.txt"
+        raise errors.ComputerUseError("target_drift", "focus changed after dispatch")
+
+    monkeypatch.setattr(backend, "_save_menu_candidate", candidate)
+    monkeypatch.setattr(backend, "_focused_ax_window", lambda app: {})
+    monkeypatch.setattr(backend.ax_driver, "_get", lambda *a: None)
+    pressed = []
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "AXUIElementPerformAction",
+        lambda element, action: (
+            pressed.append((element, action)) or backend.ax_driver.kAXErrorSuccess
+        ),
+    )
+    monkeypatch.setattr(backend.time, "sleep", lambda _: None)
+    snapshot = _stable_snapshot(observed_at=backend.time.time())
+    expected = ("file:///tmp/a.txt", "File", "Save", "s", "0", "")
+    result = backend.save_document("pid:4", snapshot, expected_identity=expected)
+    assert pressed == [(live, "AXPress")]
+    assert result["executed"] is True
+    assert result["verified"] is None
+
+
 def test_keycode_map_matches_ax_driver():
     # backend and driver must agree on the HID mapping
     for key, code in ax_driver.KEYCODE_MAP.items():

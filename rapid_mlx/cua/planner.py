@@ -27,6 +27,7 @@ PLAN_SCHEMA = {
                 "press",
                 "scroll",
                 "wait",
+                "save",
                 "done",
                 "partial",
                 "blocked",
@@ -143,6 +144,7 @@ def validate_plan(
         "press",
         "scroll",
         "wait",
+        "save",
         "done",
         "partial",
         "blocked",
@@ -375,6 +377,7 @@ Actions:
 - press: focus an element then send one key (Enter/Escape/Tab/ArrowDown/ArrowUp/Space); use press Enter after fill to submit a search or form
 - scroll: direction up/down
 - wait: settle (popups, loads)
+- save: save the existing document in the exact selected window through the app's native Save menu item. It needs no element index and always asks the user for approval. Never substitute a keyboard shortcut.
 - done: every required part of the goal is verified complete. final_summary must state concrete evidence.
 - partial: some work succeeded, but a required part is unmet or unverified. final_summary must state both progress and the blocker.
 - blocked: no safe path remains. final_summary must state the blocker and any app changes already made.
@@ -396,7 +399,7 @@ Accessibility snapshot (element indexes + labels):
 {snapshot.get("tree_text", "")[:7000]}
 
 Return JSON only:
-{{"action":"click|fill|press|scroll|wait|done|partial|blocked",
+{{"action":"click|fill|press|scroll|wait|save|done|partial|blocked",
   "step_instruction":"...",
   "element_index":0, "text":"", "key":"", "direction":"down",
   "final_summary":""}}
@@ -458,7 +461,8 @@ Validation error: {exc}
 Invalid response:
 {text}
 
-Rules: click/fill/press need a valid element_index from the snapshot;
+Rules: click/fill/press need a valid element_index from the snapshot; save uses
+the exact selected document and native Save menu item and needs no index;
 press key must be one of {sorted(ALLOWED_KEYS)}; done/partial/blocked need a
 non-empty final_summary; never reference credentials or payment secrets.
 """

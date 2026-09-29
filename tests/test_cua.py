@@ -85,6 +85,26 @@ def test_press_key_allowlist():
     assert plan["key"] == "Enter"
 
 
+def test_save_is_dedicated_and_needs_no_element_index():
+    plan = validate_plan(
+        {"action": "save", "step_instruction": "Save the selected document"},
+        valid_indexes={1, 2},
+    )
+    assert plan["action"] == "save"
+    assert plan["element_index"] == -1
+
+
+def test_save_always_requires_exact_approval():
+    requirement = gates.consequential_action(
+        {"action": "save", "step_instruction": "Save current changes"},
+        "notes.txt",
+    )
+    assert requirement is not None
+    assert requirement.kind == "external_commit"
+    assert requirement.action == "save"
+    assert requirement.target == "notes.txt"
+
+
 def test_press_rejects_unknown_index():
     with pytest.raises(ValueError, match="unknown element_index"):
         validate_plan(
@@ -1625,6 +1645,154 @@ def test_approved_action_reobserves_and_stops_on_stale_target(
         "reason": "approved target changed before execution",
     }
     assert clicks == []
+
+
+def test_save_is_approval_bound_and_unverified_dispatch_stays_uncertain(
+    fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    snapshot = {
+        "app": {"name": "TextEdit", "pid": 101, "bundle_id": "textedit"},
+        "window_index": 0,
+        "window_id": "cg:55",
+        "window": {
+            "window_id": "cg:55",
+            "title": "notes.txt",
+            "x": 0,
+            "y": 0,
+            "width": 500,
+            "height": 400,
+        },
+        "elements": [{"index": 1, "label": "Body", "role": "AXTextArea"}],
+        "tree_text": "[1] AXTextArea Body",
+        "visible_window_ids": ["cg:55"],
+    }
+    monkeypatch.setattr(fake_backend, "get_app_state", lambda *a, **k: dict(snapshot))
+    inspections = []
+
+    def inspect(*args):
+        inspections.append(True)
+        return {"save_identity": ("document", "File", "Save", "s", "0", "")}
+
+    monkeypatch.setattr(fake_backend, "inspect_save_document", inspect)
+    saves = []
+    monkeypatch.setattr(
+        fake_backend,
+        "save_document",
+        lambda *a, **k: (
+            saves.append(k["expected_identity"])
+            or {"ok": True, "executed": True, "verified": None, "mode": "AXPress"}
+        ),
+    )
+    events = []
+
+    async def approve(reason):
+        assert "target='notes.txt'" in reason
+        assert saves == []
+        return True
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(loop_mod.asyncio, "sleep", no_sleep)
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path),
+        "TextEdit",
+        "save notes",
+        tmp_path / "save-approved",
+        gate=approve,
+        event_sink=events.append,
+    )
+    planner = _FakePlanner(
+        [{"action": "save", "step_instruction": "Save current changes"}]
+    )
+    assert asyncio.run(runner.step(planner, 1)) is None
+    assert len(inspections) == 2
+    assert saves == [("document", "File", "Save", "s", "0", "")]
+    executed = next(event for event in events if event["kind"] == "executed")
+    assert executed["action"] == "save"
+    assert executed["outcome"] == "uncertain"
+    gate = next(event for event in events if event["kind"] == "gate")
+    assert gate["action"] == "save" and gate["target"] == "notes.txt"
+    later_action = _FakePlanner(
+        [
+            {
+                "action": "click",
+                "step_instruction": "Inspect the document body",
+                "element_index": 1,
+            }
+        ]
+    )
+    assert asyncio.run(runner.step(later_action, 2)) is None
+    done = _FakePlanner(
+        [
+            {
+                "action": "done",
+                "step_instruction": "finish",
+                "final_summary": "Saved.",
+            }
+        ]
+    )
+    assert asyncio.run(runner.step(done, 3)) is None
+    assert runner.history[-1]["error"] == (
+        "the previous commit could not be verified; use partial or blocked unless "
+        "fresh evidence proves completion"
+    )
+
+
+def test_save_stops_when_menu_identity_changes_after_approval(
+    fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    snapshot = {
+        "app": {"name": "TextEdit", "pid": 101, "bundle_id": "textedit"},
+        "window_index": 0,
+        "window_id": "cg:55",
+        "window": {
+            "window_id": "cg:55",
+            "title": "notes.txt",
+            "x": 0,
+            "y": 0,
+            "width": 500,
+            "height": 400,
+        },
+        "elements": [{"index": 1, "label": "Body", "role": "AXTextArea"}],
+        "tree_text": "stable",
+    }
+    monkeypatch.setattr(fake_backend, "get_app_state", lambda *a, **k: dict(snapshot))
+    identities = iter([("File", "Save"), ("Other", "Save")])
+    monkeypatch.setattr(
+        fake_backend,
+        "inspect_save_document",
+        lambda *a, **k: {"save_identity": next(identities)},
+    )
+    saves = []
+    monkeypatch.setattr(fake_backend, "save_document", lambda *a, **k: saves.append(1))
+
+    async def approve(_reason):
+        return True
+
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path),
+        "TextEdit",
+        "save",
+        tmp_path / "save-stale",
+        gate=approve,
+    )
+    planner = _FakePlanner([{"action": "save", "step_instruction": "Save"}])
+    assert asyncio.run(runner.step(planner, 1)) == {
+        "status": "stopped",
+        "reason": "approved target changed before execution",
+    }
+    assert saves == []
 
 
 def test_approved_action_executes_only_after_stable_revalidation(

@@ -1733,6 +1733,9 @@ struct CUATargetUISourceTests {
         #expect(CUAFailurePresentation.hasPotentialSideEffects(in: [
             event("click"),
         ]))
+        #expect(CUAFailurePresentation.hasPotentialSideEffects(in: [
+            event("save"),
+        ]))
         #expect(!CUAFailurePresentation.hasPotentialSideEffects(in: [
             event("observe"), event("wait"),
         ]))
