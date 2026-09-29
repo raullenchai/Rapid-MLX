@@ -2375,8 +2375,7 @@ async def test_buffered_responses_stream_replays_computer_call_to_completion():
     assert [
         (event["type"], event.get("item", {}).get("type"))
         for event in events
-        if event["type"]
-        in {"response.output_item.added", "response.output_item.done"}
+        if event["type"] in {"response.output_item.added", "response.output_item.done"}
     ] == [
         ("response.output_item.added", "computer_call"),
         ("response.output_item.done", "computer_call"),
