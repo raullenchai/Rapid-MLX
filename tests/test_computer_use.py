@@ -688,6 +688,11 @@ def test_get_app_state_uses_requested_window_without_screenshot(monkeypatch):
         "_select_window",
         lambda *a, **k: _window(window_id=303, index=2, x=4, y=5),
     )
+    monkeypatch.setattr(
+        backend,
+        "_window_records",
+        lambda app: [_window(window_id=303, index=2, x=4, y=5)],
+    )
     state = backend.get_app_state(
         "Target App", window_index=2, screenshot=False, use_cache=False
     )
@@ -1044,6 +1049,7 @@ def test_get_app_state_cache_snapshot_and_window_errors(monkeypatch):
     )
     monkeypatch.setattr(backend.ax_driver, "collect", lambda *a, **k: [_target()])
     monkeypatch.setattr(backend, "_select_window", lambda *a, **k: _window())
+    monkeypatch.setattr(backend, "_window_records", lambda app: [_window()])
     monkeypatch.setattr(backend, "screenshot_window", lambda *a, **k: b"png-data")
     monkeypatch.setattr(backend.time, "time", lambda: 10.0)
     state = backend.get_app_state("A", screenshot=True, use_cache=False)
@@ -1083,6 +1089,7 @@ def test_get_app_state_cache_revalidates_reorder_and_closed_window(monkeypatch):
     monkeypatch.setattr(backend, "_resolve_app", lambda app: (object(), app_info))
     selected = {"window": _window(window_id=101, index=0)}
     monkeypatch.setattr(backend, "_select_window", lambda *a, **k: selected["window"])
+    monkeypatch.setattr(backend, "_window_records", lambda app: [selected["window"]])
     monkeypatch.setattr(backend.ax_driver, "collect", lambda *a, **k: [_target()])
     first = backend.get_app_state("A", screenshot=False, use_cache=False)
     assert first["window_id"] == "cg:101"
@@ -2681,6 +2688,7 @@ def test_secure_ax_subrole_is_redacted_before_snapshot_and_tree(monkeypatch):
     }
     monkeypatch.setattr(backend, "_resolve_app", lambda *a, **k: (object(), app_info))
     monkeypatch.setattr(backend, "_select_window", lambda *a, **k: window)
+    monkeypatch.setattr(backend, "_window_records", lambda app: [window])
     monkeypatch.setattr(backend, "_collect_with_timeout", lambda *a, **k: targets)
     snapshot = backend.get_app_state("pid:42", screenshot=False, use_cache=False)
     assert secret not in repr(snapshot)
