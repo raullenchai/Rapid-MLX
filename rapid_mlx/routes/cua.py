@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import ipaddress
 import os
+import re
 import sys
 from typing import Literal
 from urllib.parse import urlparse
@@ -90,7 +91,7 @@ class CUAPlannerCreateRequest(BaseModel):
     allow_remote: bool = False
 
 
-class CUATarget(BaseModel):
+class CUARunTarget(BaseModel):
     target_id: str = Field(min_length=1, max_length=32, pattern=r"^[A-Za-z0-9_-]+$")
     app: str = Field(min_length=5, max_length=32, pattern=r"^pid:[1-9][0-9]*$")
     pid: int = Field(gt=0)
@@ -98,9 +99,22 @@ class CUATarget(BaseModel):
     allowed_domain: str = Field(default="", max_length=200)
 
     @model_validator(mode="after")
-    def validate_pid_selector(self) -> CUATarget:
+    def validate_pid_selector(self) -> CUARunTarget:
         if self.app != f"pid:{self.pid}":
             raise ValueError("target app must exactly match pid:<pid>")
+        return self
+
+
+class CUATarget(CUARunTarget):
+    bundle_id: str | None = Field(default=None, min_length=1, max_length=300)
+    process_start_time: float | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def validate_process_binding(self) -> CUATarget:
+        if (self.bundle_id is None) != (self.process_start_time is None):
+            raise ValueError(
+                "bundle_id and process_start_time must be supplied together"
+            )
         return self
 
 
@@ -112,6 +126,7 @@ class CUATargetResolveRequest(BaseModel):
 
 class CUATargetProposal(CUATarget):
     bundle_id: str = Field(min_length=1, max_length=300)
+    process_start_time: float = Field(gt=0)
     display_name: str = Field(min_length=1, max_length=300)
 
 
@@ -146,6 +161,8 @@ class CUARunCreateRequest(BaseModel):
     max_steps: int = Field(default=12, ge=1, le=40)
     human_login: bool = False
     window_id: str | None = Field(default=None, min_length=1, max_length=128)
+    bundle_id: str | None = Field(default=None, min_length=1, max_length=300)
+    process_start_time: float | None = Field(default=None, gt=0)
     client_request_id: str | None = Field(
         default=None, min_length=1, max_length=128, pattern=r"^[^/]+$"
     )
@@ -154,6 +171,12 @@ class CUARunCreateRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_target_set(self) -> CUARunCreateRequest:
+        if (self.bundle_id is None) != (self.process_start_time is None):
+            raise ValueError(
+                "bundle_id and process_start_time must be supplied together"
+            )
+        if self.bundle_id is not None and self.window_id is None:
+            raise ValueError("resolved app identity requires window_id")
         if self.targets is None:
             if self.initial_target_id is not None:
                 raise ValueError("initial_target_id requires targets")
@@ -181,7 +204,7 @@ class CUARunCreated(BaseModel):
     status: str
     window_id: str | None = None
     client_request_id: str | None = None
-    targets: list[CUATarget] = Field(default_factory=list)
+    targets: list[CUARunTarget] = Field(default_factory=list)
     active_target_id: str | None = None
 
 
@@ -591,7 +614,9 @@ def _explicit_app_matches(goal: str, catalog: list[dict]) -> set[str]:
         item["catalog_id"]
         for item in catalog
         if len(str(item.get("app_name") or "").strip()) >= 3
-        and str(item["app_name"]).casefold() in folded
+        and re.search(
+            rf"(?<!\w){re.escape(str(item['app_name']).casefold())}(?!\w)", folded
+        )
     }
 
 
@@ -617,7 +642,12 @@ async def resolve_targets(request: CUATargetResolveRequest) -> CUATargetResoluti
             status="unresolved",
             reason="No eligible app windows are open. Open the apps needed for the task and try again.",
         )
-    catalog = [item for item in catalog if str(item["app"].get("bundleId") or "")]
+    catalog = [
+        item
+        for item in catalog
+        if str(item["app"].get("bundleId") or "")
+        and float(item["app"].get("processStartTime") or 0) > 0
+    ]
     if not catalog:
         return CUATargetResolution(
             status="unresolved",
@@ -743,6 +773,7 @@ async def resolve_targets(request: CUATargetResolveRequest) -> CUATargetResoluti
                 window_id=str(window["window_id"]),
                 allowed_domain=domain,
                 bundle_id=str(app["bundleId"]),
+                process_start_time=float(app["processStartTime"]),
                 display_name=f"{app_name} — {title}",
             )
         )
@@ -957,6 +988,8 @@ async def create_run(request: CUARunCreateRequest) -> CUARunCreated:
             max_steps=request.max_steps,
             human_login=request.human_login,
             window_id=request.window_id,
+            bundle_id=request.bundle_id,
+            process_start_time=request.process_start_time,
             client_request_id=request.client_request_id,
             targets=(
                 [target.model_dump() for target in request.targets]
@@ -977,7 +1010,7 @@ async def create_run(request: CUARunCreateRequest) -> CUARunCreated:
         status=run.status,
         window_id=run.window_id,
         client_request_id=run.client_request_id,
-        targets=[CUATarget.model_validate(target) for target in run.targets],
+        targets=[CUARunTarget.model_validate(target) for target in run.targets],
         active_target_id=run.active_target_id,
     )
 
