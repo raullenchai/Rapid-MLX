@@ -915,7 +915,28 @@ def _read_value(live_element: object) -> str | None:
     return value if isinstance(value, str) else None
 
 
-def inspect_focused_element(snapshot: dict, element_index: int) -> dict:
+def _is_selected_finder_row_under_focused_outline(snapshot: dict, live: object) -> bool:
+    """Allow Enter to start rename only for Finder's exact selected row."""
+    if str(snapshot.get("app", {}).get("name", "")).casefold() != "finder":
+        return False
+    if (
+        ax_driver._get(live, "AXRole") != "AXRow"
+        or ax_driver._get(live, "AXSelected") is not True
+    ):
+        return False
+    focused = _focused_ax_element(snapshot["app"])
+    if focused is None or ax_driver._get(focused, "AXRole") != "AXOutline":
+        return False
+    parent = ax_driver._get(live, "AXParent")
+    return parent == focused
+
+
+def inspect_focused_element(
+    snapshot: dict,
+    element_index: int,
+    *,
+    allow_selected_finder_row: bool = False,
+) -> dict:
     """Return an indexed target only when it is the exact focused AX element.
 
     Keyboard activation is routed by focus rather than coordinates. Resolve
@@ -926,7 +947,11 @@ def inspect_focused_element(snapshot: dict, element_index: int) -> dict:
     entry = _element(snapshot, element_index)
     live = _live_element(snapshot, element_index, validate_point=False)
     focused = _focused_ax_element(snapshot["app"])
-    if focused is None or live != focused:
+    exact_focus = focused is not None and live == focused
+    finder_row = allow_selected_finder_row and _is_selected_finder_row_under_focused_outline(
+        snapshot, live
+    )
+    if not exact_focus and not finder_row:
         raise ComputerUseError(
             "target_drift",
             "keyboard target is not the exact focused Accessibility element",
@@ -2074,6 +2099,15 @@ def press_key(
             element_index,
             allow_focused_editable_enter=normalized == "enter",
         )
+        if normalized in {"enter", "return", "space"}:
+            # Keyboard activation follows focus, not the serialized element
+            # index. Bind again after all preparation and immediately before
+            # dispatch so an in-window focus change cannot redirect the key.
+            inspect_focused_element(
+                snapshot,
+                element_index,
+                allow_selected_finder_row=normalized in {"enter", "return"},
+            )
         ax_driver._press_key(KEY_ALIASES[normalized])
         if finder_enter_binding is not None:
             reference, before_path, requested_basename = finder_enter_binding

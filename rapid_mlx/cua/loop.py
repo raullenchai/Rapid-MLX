@@ -488,7 +488,12 @@ class CUARun:
                     # focus. Re-bind the serialized index to the exact live AX
                     # object immediately before dispatch. Do not focus through
                     # click(), because AXPress on a button is itself the commit.
-                    backend.inspect_focused_element(snapshot, index)
+                    backend.inspect_focused_element(
+                        snapshot,
+                        index,
+                        allow_selected_finder_row=str(plan.get("key", "")).casefold()
+                        in {"enter", "return"},
+                    )
                 else:
                     backend.click(
                         self.backend_app,
@@ -694,7 +699,10 @@ class CUARun:
         if gates.is_keyboard_activation(plan):
             try:
                 target = backend.inspect_focused_element(
-                    snapshot, plan.get("element_index", -1)
+                    snapshot,
+                    plan.get("element_index", -1),
+                    allow_selected_finder_row=str(plan.get("key", "")).casefold()
+                    in {"enter", "return"},
                 )
             except ComputerUseError as exc:
                 reason = f"keyboard activation rejected: {exc.message}"
