@@ -2038,7 +2038,7 @@ def test_raise_selected_window_fails_closed_across_identity_boundaries(
         selections += 1
         current = dict(snapshot["window"])
         if failure == "window_drift" or (
-            failure == "post_raise_drift" and selections > 1
+            failure == "post_raise_drift" and selections > 2
         ):
             current["x"] += 20
         return current
@@ -3675,6 +3675,7 @@ def test_finder_rename_transaction_revalidates_every_identity_boundary(
         ("selection", "selected item"),
         ("shape", "item editor"),
         ("reference", "selected item"),
+        ("path", "no stable file reference"),
     ],
 )
 def test_inspect_finder_rename_rejects_untrusted_bindings(
@@ -3694,10 +3695,12 @@ def test_inspect_finder_rename_rejects_untrusted_bindings(
         )
     elif mutation == "shape":
         snapshot["elements"][0]["role"] = "AXButton"
-    else:
+    elif mutation == "reference":
         monkeypatch.setattr(
             backend, "_finder_file_reference_for_editor", lambda *a, **k: None
         )
+    elif mutation == "path":
+        monkeypatch.setattr(backend, "_finder_file_reference_path", lambda _ref: None)
     with pytest.raises(errors.ComputerUseError, match=message):
         backend.inspect_finder_rename(snapshot, 0, requested)
 
@@ -6064,3 +6067,62 @@ def test_ax_selector_ignores_unresolved_expected_pid(monkeypatch):
     monkeypatch.setattr(ax_driver, "_application_for_pid", lambda pid: None)
     with pytest.raises(SystemExit, match="not found"):
         ax_driver._app_element("Target App", expected_pid=42)
+
+
+def test_finder_unselected_inline_editor_cannot_bind_keyboard_activation(monkeypatch):
+    """An unselected editor must never inherit the selected-row Enter exception."""
+    snapshot = _finder_rename_snapshot()
+    editor, outline = object(), object()
+    monkeypatch.setattr(backend, "_focused_ax_element", lambda _app: outline)
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_get",
+        lambda element, attr: {
+            editor: {
+                "AXRole": "AXTextField",
+                "AXSelected": False,
+                "AXParent": outline,
+            },
+            outline: {"AXRole": "AXOutline"},
+        }.get(element, {}).get(attr),
+    )
+
+    assert (
+        backend._is_selected_finder_row_under_focused_outline(snapshot, editor) is False
+    )
+
+
+def test_finder_rename_commit_rejects_editor_drift_during_focus_restore(monkeypatch):
+    """A focus change must not send Enter if the approved editor value changed."""
+    snapshot = _finder_rename_snapshot()
+    path_state = ["/tmp/Before"]
+    live, reference = _install_selected_finder_editor(monkeypatch, snapshot, path_state)
+    binding = {
+        "pid": 4,
+        "window_id": "cg:101",
+        "file_reference": reference,
+        "original_path": "/tmp/Before",
+        "requested_basename": "After",
+    }
+    editor_value = {"value": "After"}
+    monkeypatch.setattr(backend, "_finder_transaction_editor", lambda *a, **k: live)
+    monkeypatch.setattr(
+        backend, "_normalized_finder_editor_value", lambda _live: editor_value["value"]
+    )
+
+    def restore(_app, _snapshot):
+        editor_value["value"] = "Different"
+        return snapshot["window"]
+
+    monkeypatch.setattr(backend, "raise_selected_window", restore)
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_press_key",
+        lambda _key: pytest.fail("drifted editor must not receive Enter"),
+    )
+
+    with pytest.raises(
+        errors.ComputerUseError, match="changed during focus restoration"
+    ):
+        backend.commit_finder_rename("pid:4", snapshot, 0, binding)
+    assert path_state == ["/tmp/Before"]
