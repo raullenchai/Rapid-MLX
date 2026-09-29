@@ -39,6 +39,7 @@ READ_ONLY_SUBMIT_RE = re.compile(
     r"搜索|查找|筛选|検索|검색)",
     re.IGNORECASE,
 )
+KEYBOARD_ACTIVATION_KEYS = {"enter", "return", "space"}
 
 
 class ConsentError(RuntimeError):
@@ -62,6 +63,13 @@ class ApprovalRequirement:
         )
 
 
+def is_keyboard_activation(plan: dict) -> bool:
+    """Whether a press can activate the currently focused control."""
+    return plan.get("action") == "press" and str(plan.get("key", "")).casefold() in (
+        KEYBOARD_ACTIVATION_KEYS
+    )
+
+
 def consequential_action(
     plan: dict, target_label: str = ""
 ) -> ApprovalRequirement | None:
@@ -78,6 +86,13 @@ def consequential_action(
         )
     if action not in {"click", "press"}:
         return None
+    if is_keyboard_activation(plan) and not target_label.strip():
+        return ApprovalRequirement(
+            kind="external_commit",
+            action=action,
+            target="focused control (unverified)",
+            instruction=instruction[:240],
+        )
     target = target_label.strip() or f"element {plan.get('element_index', -1)}"
     haystack = f"{target_label} {instruction}"
     if not CONSEQUENTIAL_RE.search(haystack):

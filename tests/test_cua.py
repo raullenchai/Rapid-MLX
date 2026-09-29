@@ -319,6 +319,44 @@ def test_read_only_and_draft_actions_do_not_require_approval():
     )
 
 
+@pytest.mark.parametrize("key", ["Enter", "Return", "Space"])
+def test_keyboard_activation_without_focused_target_requires_approval(key):
+    requirement = gates.consequential_action(
+        {
+            "action": "press",
+            "element_index": -1,
+            "key": key,
+            "step_instruction": "activate focused control",
+        },
+        "",
+    )
+    assert requirement is not None
+    assert requirement.target == "focused control (unverified)"
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "Return",
+        "NumpadEnter",
+        "KeypadEnter",
+        "Cmd+Return",
+        "Cmd+Enter",
+        "Cmd+Space",
+    ],
+)
+def test_planner_rejects_unrecognized_activation_key_spellings(key):
+    with pytest.raises(ValueError, match="press key"):
+        validate_plan(
+            {
+                "action": "press",
+                "step_instruction": "activate focused control",
+                "element_index": 1,
+                "key": key,
+            }
+        )
+
+
 def test_sign_in_detection():
     snapshot = {
         "elements": [
@@ -714,6 +752,13 @@ def fake_backend(monkeypatch):
         backend_mod,
         "press_key",
         lambda app, key, **kw: {"ok": True, "key": key},
+    )
+    monkeypatch.setattr(
+        backend_mod,
+        "inspect_focused_element",
+        lambda snapshot, index: next(
+            entry for entry in snapshot["elements"] if entry["index"] == index
+        ),
     )
     return backend_mod
 
@@ -2272,7 +2317,9 @@ def test_execute_all_action_variants(fake_backend, tmp_path, monkeypatch):
 
     monkeypatch.setattr(loop_mod.asyncio, "sleep", no_sleep)
     runner = loop_mod.CUARun(_make_config(tmp_path), "Chrome", "g", tmp_path / "run")
-    snapshot = {"elements": []}
+    snapshot = {
+        "elements": [{"index": 1, "label": "Search", "role": "AXTextField"}]
+    }
     fill = asyncio.run(
         runner._execute(
             {"action": "fill", "element_index": 1, "text": "hello"}, snapshot
@@ -4725,3 +4772,51 @@ def test_validate_url_accepts_domain_names():
         assert_loopback_url("not-a-url")
     with pytest.raises(ValueError, match="HTTP\\(S\\)"):
         validate_planner_url("not-a-url", allow_remote=False)
+
+
+def test_focused_consequential_button_enter_requires_approval(
+    fake_backend, tmp_path, monkeypatch
+):
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    snapshot = {
+        "app": {"name": "Mail"},
+        "elements": [{"index": 1, "label": "Send", "role": "AXButton"}],
+        "tree_text": "[1] AXButton Send",
+    }
+    monkeypatch.setattr(fake_backend, "get_app_state", lambda *a, **k: dict(snapshot))
+    dispatched: list[str] = []
+    monkeypatch.setattr(
+        fake_backend,
+        "press_key",
+        lambda app, key, **kwargs: dispatched.append(key) or {"ok": True},
+    )
+
+    async def deny(_reason):
+        return False
+
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path),
+        "Mail",
+        "activate control",
+        tmp_path / "focused-send-enter",
+        gate=deny,
+    )
+    planner = _FakePlanner(
+        [
+            {
+                "action": "press",
+                "step_instruction": "activate focused control",
+                "element_index": 1,
+                "key": "Enter",
+                "final_summary": "",
+            }
+        ]
+    )
+
+    assert asyncio.run(runner.step(planner, 1)) == {
+        "status": "stopped",
+        "reason": "external_commit not approved",
+    }
+    assert dispatched == []
