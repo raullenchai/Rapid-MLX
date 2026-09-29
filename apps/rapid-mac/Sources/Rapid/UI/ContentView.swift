@@ -1253,6 +1253,7 @@ struct ContentView: View {
                     cuaServer: cuaServer,
                     cuaViewModel: cuaServer.viewModel
                 )
+                .id(cuaServer.sessionID)
             } else {
                 mainArea
             }

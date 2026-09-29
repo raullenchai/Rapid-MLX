@@ -17,6 +17,7 @@ private final class MockAgentAPI: CUAAPI, @unchecked Sendable {
     ]
     var discoveryShouldFail = false
     var discoveryError: Error?
+    var appsCalls = 0
     var createError: Error?
     var queuedCreateErrors: [Error] = []
     var createAttempts = 0
@@ -62,6 +63,7 @@ private final class MockAgentAPI: CUAAPI, @unchecked Sendable {
     }
 
     func apps() async throws -> [CUAAppOption] {
+        appsCalls += 1
         if let discoveryError { throw discoveryError }
         if discoveryShouldFail { throw Failure.requested }
         return appsResult
@@ -901,6 +903,27 @@ struct CUAViewModelTests {
         #expect(viewModel.selectedWindowID == nil)
         #expect(!viewModel.canStart)
         #expect(viewModel.targetError?.contains("no longer available") == true)
+    }
+
+    @Test("Replacement session discovery and refresh use only the new API")
+    func replacementSessionUsesCurrentDiscoveryAPI() async {
+        let oldAPI = MockAgentAPI()
+        oldAPI.appsResult = []
+        let oldViewModel = CUAViewModel(api: oldAPI)
+        await oldViewModel.loadTargets()
+
+        let replacementAPI = MockAgentAPI()
+        replacementAPI.appsResult = [
+            CUAAppOption(name: "Safari", bundleID: "com.apple.Safari", pid: 23_429),
+        ]
+        let replacement = CUAViewModel(api: replacementAPI)
+        await replacement.loadTargets()
+        await replacement.loadTargets()
+
+        #expect(oldAPI.appsCalls == 1)
+        #expect(oldViewModel.appOptions.isEmpty)
+        #expect(replacementAPI.appsCalls == 2)
+        #expect(replacement.appOptions.map(\.pid) == [23_429])
     }
 
     @Test("Late discovery response cannot replace a newer window list")
@@ -1778,6 +1801,7 @@ struct CUATargetUISourceTests {
         #expect(!content.contains("languageRuntime: DraftPostLanguageRuntime"))
         #expect(!content.contains("visualRuntime: DraftPostVisualRuntime"))
         #expect(content.contains("cuaViewModel: cuaServer.viewModel"))
+        #expect(content.contains(".id(cuaServer.sessionID)"))
         #expect(sidebar.contains("@ObservedObject var viewModel: CUAViewModel"))
         #expect(sidebar.contains("accessibilityValue"))
         #expect(sidebar.contains("Approval needed"))
