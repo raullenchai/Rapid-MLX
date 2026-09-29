@@ -1,4 +1,4 @@
-"""Consent gates: credential guard, commerce guard, sign-in gate.
+"""Consent gates: hard stops and approval for consequential actions.
 
 The agent never touches credentials or payments, and never clicks or fills
 cart/checkout controls (research-only v1). Sign-in pages pause for a human
@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from rapid_mlx.cua.planner import SENSITIVE_RE
@@ -22,9 +23,77 @@ FORBIDDEN_COMMERCE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# These labels describe controls which commit an effect outside the local draft.
+# Keep this deterministic and deliberately conservative: an uncertain commit is
+# safer to pause than to infer from application-specific behavior.
+CONSEQUENTIAL_RE = re.compile(
+    r"(?:\b(?:send|submit|post|publish|delete|remove|trash|discard|erase|"
+    r"confirm|book|reserve|schedule|share|upload|reply|comment|invite|"
+    r"unsubscribe|enviar|publicar|eliminar|envoyer|publier|supprimer|senden|"
+    r"veröffentlichen|löschen)\b|发送|提交|发布|删除|移除|确认|预订|预约|分享|"
+    r"上传|回复|评论|邀请|送信|投稿|公開|削除|보내기|게시|삭제)",
+    re.IGNORECASE,
+)
+READ_ONLY_SUBMIT_RE = re.compile(
+    r"(?:\b(?:search|find|filter|look\s*up|buscar|rechercher|suchen)\b|"
+    r"搜索|查找|筛选|検索|검색)",
+    re.IGNORECASE,
+)
+
 
 class ConsentError(RuntimeError):
     """Raised when a plan crosses a hard consent boundary."""
+
+
+@dataclass(frozen=True)
+class ApprovalRequirement:
+    """A human approval request bound to one proposed action and target."""
+
+    kind: str
+    action: str
+    target: str
+    instruction: str
+
+    @property
+    def reason(self) -> str:
+        return (
+            f"{self.kind}: action={self.action}; target={self.target!r}; "
+            f"proposed={self.instruction!r}"
+        )
+
+
+def consequential_action(
+    plan: dict, target_label: str = ""
+) -> ApprovalRequirement | None:
+    """Return an exact approval request for an externally committing action."""
+    action = str(plan.get("action", ""))
+    instruction = str(plan.get("step_instruction", "")).strip()
+    if action == "save":
+        target = target_label.strip() or "selected document"
+        return ApprovalRequirement(
+            kind="external_commit",
+            action=action,
+            target=target[:160],
+            instruction=instruction[:240],
+        )
+    if action not in {"click", "press"}:
+        return None
+    target = target_label.strip() or f"element {plan.get('element_index', -1)}"
+    haystack = f"{target_label} {instruction}"
+    if not CONSEQUENTIAL_RE.search(haystack):
+        return None
+    # Search submission is a read-only navigation flow even when a planner
+    # uses the generic word "submit" in its instruction.
+    if READ_ONLY_SUBMIT_RE.search(target_label) and not CONSEQUENTIAL_RE.search(
+        target_label
+    ):
+        return None
+    return ApprovalRequirement(
+        kind="external_commit",
+        action=action,
+        target=target[:160],
+        instruction=instruction[:240],
+    )
 
 
 def check_plan_consents(plan: dict, target_label: str = "") -> None:
@@ -61,13 +130,21 @@ def looks_like_sign_in(snapshot: dict) -> bool:
     return bool(SIGN_IN_RE.search(haystack)) and "AXSecureTextField" in haystack
 
 
-async def wait_for_human(run_dir: Path, marker: str, timeout: float) -> bool:
+async def wait_for_human(
+    run_dir: Path, marker: str, timeout: float, *, reason: str = ""
+) -> bool:
     """File-sentinel human gate. Returns True when approved in time."""
     path = run_dir / marker
+    path.unlink(missing_ok=True)
     deadline = time.monotonic() + timeout
-    print(f"[human-gate] waiting up to {int(timeout)}s: touch {path}", flush=True)
+    detail = f" for {reason}" if reason else ""
+    print(
+        f"[human-gate] waiting up to {int(timeout)}s{detail}: touch {path}",
+        flush=True,
+    )
     while time.monotonic() < deadline:
         if path.exists():
+            path.unlink(missing_ok=True)
             return True
         await asyncio.sleep(1.0)
     return False

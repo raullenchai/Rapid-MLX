@@ -41,6 +41,11 @@ def test_emitted_constraints_are_stable_and_complete(constraints) -> None:
         "sentencepiece==0.2.2",
         "mlx-video-with-audio==0.1.36",
         "mlx-arsenal==0.12.1",
+        "pyobjc-core==12.2.2",
+        "pyobjc-framework-ApplicationServices==12.2.2",
+        "pyobjc-framework-Cocoa==12.2.2",
+        "pyobjc-framework-CoreText==12.2.2",
+        "pyobjc-framework-Quartz==12.2.2",
     ]
 
 

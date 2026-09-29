@@ -39,6 +39,8 @@
 	-->
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Rapid transcribes what you say into the app you're typing in. Recording happens only while the dictation indicator is visible, and audio is transcribed on this Mac.</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Rapid reads the current page address from the browser window you selected so Computer Use can enforce the domain you approved.</string>
 	<key>NSNetworkVolumesUsageDescription</key>
 	<string>Rapid needs access when you choose a network drive for model storage or approve a file tool there. Click Allow to continue.</string>
 	<key>NSRemovableVolumesUsageDescription</key>
