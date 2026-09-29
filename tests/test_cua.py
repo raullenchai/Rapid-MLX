@@ -3463,9 +3463,7 @@ def test_loop_continues_to_planner_terminal_after_ranker_transport_failure(
     assert trace["final_summary"] == "the item is open"
     action_step = trace["steps"][0]
     assert action_step["protocol_outcome"] == "uncertain"
-    assert action_step["state_delta"]["fast_outcome"] == {
-        "outcome": "unavailable"
-    }
+    assert action_step["state_delta"]["fast_outcome"] == {"outcome": "unavailable"}
 
 
 def test_exact_execution_verification_is_authoritative(
