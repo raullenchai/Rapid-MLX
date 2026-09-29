@@ -222,6 +222,7 @@ final class CUAViewModel: ObservableObject {
     private var showingPollError = false
     private let pollIntervalNanos: UInt64
     private var targetDiscoveryGeneration = 0
+    private var targetResolutionGeneration = 0
     private var requiresBindingCleanup = false
 
     private static let bindingCleanupWarning =
@@ -289,16 +290,14 @@ final class CUAViewModel: ObservableObject {
       let requestedGoal = goal.trimmingCharacters(in: .whitespacesAndNewlines)
       let requestedPlanner = plannerName
       let generation = lifecycleGeneration
-      isResolvingTargets = true
+      let resolutionGeneration = beginTargetResolution()
       targetError = nil
       browserAutomationRecoveryRequired = false
       targetResolutionApproval = nil
       pendingResolutionGoal = nil
       pendingResolutionPlanner = nil
       defer {
-        if generation == lifecycleGeneration, !isSessionDetached {
-          isResolvingTargets = false
-        }
+        finishTargetResolution(resolutionGeneration)
       }
       do {
         var resolution = try await api.resolveTargets(
@@ -401,11 +400,9 @@ final class CUAViewModel: ObservableObject {
       let requestedGoal = goal.trimmingCharacters(in: .whitespacesAndNewlines)
       let requestedPlanner = plannerName
       let authorizedTargets = selectedTargets
-      isResolvingTargets = true
+      let resolutionGeneration = beginTargetResolution()
       defer {
-        if generation == lifecycleGeneration, !isSessionDetached {
-          isResolvingTargets = false
-        }
+        finishTargetResolution(resolutionGeneration)
       }
       targetResolutionApproval = nil
       pendingResolutionGoal = nil
@@ -1203,6 +1200,7 @@ final class CUAViewModel: ObservableObject {
     func newTask() {
         guard !phase.isBusy, !isSessionDetached else { return }
         lifecycleGeneration += 1
+        invalidateTargetResolution()
         stopPolling()
         runID = nil
         runContext = nil
@@ -1440,12 +1438,29 @@ final class CUAViewModel: ObservableObject {
     /// cancellation, discovery, and poll continuation ignore its late result.
     func invalidateSession() {
         lifecycleGeneration += 1
+        invalidateTargetResolution()
         targetDiscoveryGeneration += 1
         stopPolling()
         runID = nil
         stoppingStartGeneration = nil
         pendingCreateRecovery = nil
         isStopping = false
+    }
+
+    private func beginTargetResolution() -> Int {
+        targetResolutionGeneration += 1
+        isResolvingTargets = true
+        return targetResolutionGeneration
+    }
+
+    private func finishTargetResolution(_ generation: Int) {
+        guard generation == targetResolutionGeneration else { return }
+        isResolvingTargets = false
+    }
+
+    private func invalidateTargetResolution() {
+        targetResolutionGeneration += 1
+        isResolvingTargets = false
     }
 
     /// Detaches every server-side authority while retaining local context for

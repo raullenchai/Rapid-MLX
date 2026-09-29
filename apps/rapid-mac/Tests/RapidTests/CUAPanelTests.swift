@@ -2240,6 +2240,36 @@ struct CUATaskFirstResolutionTests {
   }
 
   @MainActor
+  @Test func lifecycleChangeReleasesPendingAutomationResolution() async {
+    let api = MockAgentAPI()
+    api.targetResolutionResult = CUATargetResolution(
+      status: "needs_automation", targets: [], initialTargetID: nil,
+      reason: "Browser access is needed.", approval: nil,
+      automation: CUATargetAutomationRequest(
+        bundleID: "com.apple.Safari", displayName: "Safari"
+      )
+    )
+    let gate = AutomationGate()
+    let vm = Self.viewModel(api: api) { await gate.wait(bundleID: $0) }
+    vm.goal = "Read the open article"
+
+    let pendingResolution = Task { await vm.resolveAndStart() }
+    while await gate.requestedBundleID == nil { await Task.yield() }
+    #expect(vm.isResolvingTargets)
+
+    vm.newTask()
+    vm.goal = "Read a different open article"
+    #expect(vm.canResolveTask)
+
+    await gate.release()
+    await pendingResolution.value
+
+    #expect(vm.canResolveTask)
+    #expect(api.createAttempts == 0)
+    #expect(api.targetResolutionRequests.count == 1)
+  }
+
+  @MainActor
   @Test func changingTaskInvalidatesPendingScope() async {
     let api = MockAgentAPI()
     let target = Self.target()
