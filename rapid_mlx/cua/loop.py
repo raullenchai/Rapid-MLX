@@ -830,7 +830,12 @@ class CUARun:
                 self._record({"step": step_no, "plan": plan, "gate": "timeout"})
                 return {"status": "stopped", "reason": "sign-in gate not approved"}
 
-        approval = gates.consequential_action(plan, target_label)
+        approval = gates.consequential_action(
+            plan,
+            target_label,
+            target_role=str(target.get("role", "")),
+            app_name=str(snapshot.get("app", {}).get("name", self.app)),
+        )
         if approval is not None:
             approval_reason = f"{approval.reason}; app={self.app!r}"
             approved = await self._request_approval(
@@ -1164,6 +1169,7 @@ class CUARun:
             and outcome == "uncertain"
             and not self._last_finder_rename_verified
         )
+        approved_commit_unverified = approval is not None and verification is not True
         if execution_failed:
             self._last_execution_failed = True
         elif executed.get("executed") is True:
@@ -1181,11 +1187,12 @@ class CUARun:
                     "verification_source": "finder_file_reference_basename",
                 }
             )
-        elif save_unverified or finder_rename_unverified:
+        elif save_unverified or finder_rename_unverified or approved_commit_unverified:
             # Saving is the goal-changing side effect itself. An accepted
-            # AXPress, or Finder's Enter on an inline rename editor, remains
-            # pending without persistence verification even when the AX tree
-            # displays the requested value: only partial/blocked may terminate.
+            # AXPress, Finder's Enter on an inline rename editor, or any approved
+            # external commit remains pending without bounded host verification,
+            # even when the AX tree displays the requested value: only
+            # partial/blocked may terminate.
             self._last_commit_unverified = True
         elif plan["action"] == "save" and save_persistence_verified:
             self._last_commit_unverified = False
