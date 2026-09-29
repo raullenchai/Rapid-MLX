@@ -3245,9 +3245,7 @@ def test_finder_dialog_text_field_is_not_valid_rename_target(monkeypatch):
     )
 
     with pytest.raises(errors.ComputerUseError, match="exact focused"):
-        backend.inspect_focused_element(
-            snapshot, 0, allow_selected_finder_row=True
-        )
+        backend.inspect_focused_element(snapshot, 0, allow_selected_finder_row=True)
 
 
 @pytest.mark.parametrize("selected", [False, None])
