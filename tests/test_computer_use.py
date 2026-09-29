@@ -4008,6 +4008,54 @@ def test_live_app_discovery_refreshes_stale_workspace_by_pid(monkeypatch):
     assert ax_driver._app_element("safari", expected_pid=23429) == ("ax", 23429)
 
 
+def test_target_window_discovery_is_bounded_ordered_and_excludes_rapid(monkeypatch):
+    rapid = _RunningApp("Rapid", "com.rapidmlx.rapid", 10)
+    finder = _RunningApp("Finder", "com.apple.finder", 42)
+    textedit = _RunningApp("TextEdit", "com.apple.TextEdit", 43)
+    workspace = _Workspace([rapid, finder, textedit])
+    _install_module(
+        monkeypatch,
+        "ApplicationServices",
+        NSWorkspace=types.SimpleNamespace(sharedWorkspace=lambda: workspace),
+    )
+    quartz = _install_module(
+        monkeypatch,
+        "Quartz",
+        kCGNullWindowID=0,
+        kCGWindowListExcludeDesktopElements=1,
+        kCGWindowListOptionOnScreenOnly=2,
+    )
+    quartz.CGWindowListCopyWindowInfo = lambda *_: [
+        {
+            "kCGWindowOwnerPID": 10,
+            "kCGWindowLayer": 0,
+            "kCGWindowNumber": 1,
+            "kCGWindowBounds": {"Width": 800, "Height": 600},
+        },
+        {
+            "kCGWindowOwnerPID": 43,
+            "kCGWindowLayer": 0,
+            "kCGWindowNumber": 2,
+            "kCGWindowName": "Notes",
+            "kCGWindowBounds": {"X": 1, "Y": 2, "Width": 800, "Height": 600},
+        },
+        {
+            "kCGWindowOwnerPID": 42,
+            "kCGWindowLayer": 0,
+            "kCGWindowNumber": 3,
+            "kCGWindowName": "Documents",
+            "kCGWindowBounds": {"X": 3, "Y": 4, "Width": 900, "Height": 700},
+        },
+    ]
+
+    catalog = backend.discover_target_windows(limit=1)
+
+    assert len(catalog) == 1
+    assert catalog[0]["catalog_id"] == "w1"
+    assert catalog[0]["app"]["name"] == "TextEdit"
+    assert catalog[0]["window"]["window_id"] == "cg:2"
+
+
 def test_resolved_app_info_includes_process_incarnation_marker():
     launched = types.SimpleNamespace(timeIntervalSince1970=lambda: 1234.5)
     running = types.SimpleNamespace(

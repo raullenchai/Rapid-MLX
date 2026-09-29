@@ -89,7 +89,28 @@ def client(monkeypatch, tmp_path, authorized):
         ],
     )
     monkeypatch.setattr(
-        backend_mod, "read_url", lambda app: "https://www.wikipedia.org/"
+        backend_mod,
+        "discover_target_windows",
+        lambda: [
+            {
+                "catalog_id": "w1",
+                "app": {"name": "Finder", "bundleId": "com.apple.finder", "pid": 42},
+                "window": {
+                    "window_id": "cg:123",
+                    "title": "Documents",
+                    "x": 1,
+                    "y": 2,
+                    "width": 800,
+                    "height": 600,
+                },
+                "z_order": 0,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        backend_mod,
+        "read_url",
+        lambda app, *args, **kwargs: "https://www.wikipedia.org/",
     )
     monkeypatch.setattr(backend_mod, "click", lambda app, index, **k: {"ok": True})
     monkeypatch.setattr(
@@ -207,6 +228,7 @@ def test_discovery_contract(client):
         "app_discovery": True,
         "window_discovery": True,
         "window_selection": True,
+        "target_resolution": True,
         "visual_observation": cua_routes.sys.platform == "darwin",
         "screenshot_observation": False,
         "observation_without_activation": cua_routes.sys.platform == "darwin",
@@ -235,6 +257,119 @@ def test_discovery_contract(client):
     windows = client.get("/v1/cua/apps/Finder/windows", headers=AUTH)
     assert windows.json()[0]["window_id"] == "cg:123"
     assert windows.json()[0]["title"] == "Finder window"
+
+
+def test_target_resolver_silently_resolves_one_explicit_nonbrowser_window(client):
+    response = client.post(
+        "/v1/cua/targets/resolve",
+        headers=AUTH,
+        json={"goal": "Use Finder to create a project folder", "planner": "local-9b"},
+    )
+    body = response.json()
+    assert response.status_code == 200
+    assert body["status"] == "resolved"
+    assert body["approval"] is None
+    assert body["targets"][0]["window_id"] == "cg:123"
+    assert body["targets"][0]["display_name"] == "Finder — Documents"
+
+
+def test_target_resolver_rejects_unknown_model_catalog_id(client, monkeypatch):
+    async def unknown(self, goal, catalog):
+        raise ValueError("unknown catalog ID")
+
+    monkeypatch.setattr(cua_routes.Planner, "resolve_targets", unknown)
+    response = client.post(
+        "/v1/cua/targets/resolve",
+        headers=AUTH,
+        json={"goal": "Organize my files", "planner": "local-9b"},
+    )
+    assert response.json()["status"] == "unresolved"
+    assert response.json()["targets"] == []
+
+
+def test_target_resolver_cross_app_choice_requires_approval(client, monkeypatch):
+    from rapid_mlx.computer_use import backend
+
+    monkeypatch.setattr(
+        backend,
+        "discover_target_windows",
+        lambda: [
+            {
+                "catalog_id": "w1",
+                "app": {"name": "Finder", "bundleId": "com.apple.finder", "pid": 42},
+                "window": {"window_id": "cg:123", "title": "Documents"},
+                "z_order": 0,
+            },
+            {
+                "catalog_id": "w2",
+                "app": {
+                    "name": "TextEdit",
+                    "bundleId": "com.apple.TextEdit",
+                    "pid": 43,
+                },
+                "window": {"window_id": "cg:456", "title": "Notes"},
+                "z_order": 1,
+            },
+        ],
+    )
+
+    async def choose(self, goal, catalog):
+        assert set(catalog[0]) == {
+            "catalog_id",
+            "app_name",
+            "window_title",
+            "front_to_back_order",
+        }
+        return {"target_ids": ["w1", "w2"], "reason": "two apps are required"}
+
+    monkeypatch.setattr(cua_routes.Planner, "resolve_targets", choose)
+    body = client.post(
+        "/v1/cua/targets/resolve",
+        headers=AUTH,
+        json={"goal": "Read the note and create its folder", "planner": "local-9b"},
+    ).json()
+    assert body["status"] == "needs_approval"
+    assert len(body["targets"]) == 2
+    assert body["approval"]["kind"] == "ambiguity"
+    assert body["approval"]["options"][0]["target_ids"] == ["target_1", "target_2"]
+
+
+def test_target_resolver_browser_requires_trusted_domain(client, monkeypatch):
+    from rapid_mlx.computer_use import backend
+
+    monkeypatch.setattr(
+        backend,
+        "discover_target_windows",
+        lambda: [
+            {
+                "catalog_id": "w1",
+                "app": {"name": "Safari", "bundleId": "com.apple.Safari", "pid": 50},
+                "window": {"window_id": "cg:789", "title": "Untrusted title"},
+                "z_order": 0,
+            }
+        ],
+    )
+    monkeypatch.setattr(backend, "read_url", lambda *a, **k: "")
+    body = client.post(
+        "/v1/cua/targets/resolve",
+        headers=AUTH,
+        json={"goal": "Use Safari to research this topic", "planner": "local-9b"},
+    ).json()
+    assert body["status"] == "unresolved"
+    assert body["targets"] == []
+
+    monkeypatch.setattr(
+        backend, "read_url", lambda *a, **k: "https://research.example/article"
+    )
+    body = client.post(
+        "/v1/cua/targets/resolve",
+        headers=AUTH,
+        json={"goal": "Use Safari to research this topic", "planner": "local-9b"},
+    ).json()
+    assert body["status"] == "needs_approval"
+    assert body["targets"][0]["allowed_domain"] == "research.example"
+    assert body["approval"]["kind"] == "website_scope"
+    assert "research.example" in body["approval"]["prompt"]
 
     event_schema = client.app.openapi()["components"]["schemas"]["CUAEvent"]
     assert "target" in event_schema["properties"]

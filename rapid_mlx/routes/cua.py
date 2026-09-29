@@ -14,6 +14,7 @@ import ipaddress
 import os
 import sys
 from typing import Literal
+from urllib.parse import urlparse
 
 from fastapi import (
     APIRouter,
@@ -32,7 +33,13 @@ from starlette.concurrency import run_in_threadpool
 from ..computer_use.errors import ComputerUseError
 from ..config import get_config
 from ..cua import service as cua_service
-from ..cua.config import delete_user_preset, load_config, save_user_preset
+from ..cua.config import (
+    delete_user_preset,
+    load_config,
+    resolve_planner,
+    save_user_preset,
+)
+from ..cua.planner import Planner
 from ..middleware.auth import check_rate_limit, security, verify_api_key
 
 
@@ -94,6 +101,35 @@ class CUATarget(BaseModel):
         if self.app != f"pid:{self.pid}":
             raise ValueError("target app must exactly match pid:<pid>")
         return self
+
+
+class CUATargetResolveRequest(BaseModel):
+    goal: str = Field(min_length=1, max_length=4000)
+    planner: str = Field(default="local-27b", min_length=1, max_length=2000)
+
+
+class CUATargetProposal(CUATarget):
+    display_name: str = Field(min_length=1, max_length=300)
+
+
+class CUATargetApprovalOption(BaseModel):
+    option_id: str = Field(min_length=1, max_length=32)
+    label: str = Field(min_length=1, max_length=500)
+    target_ids: list[str] = Field(min_length=1, max_length=3)
+
+
+class CUATargetApproval(BaseModel):
+    kind: Literal["ambiguity", "website_scope", "new_app_scope"]
+    prompt: str = Field(min_length=1, max_length=500)
+    options: list[CUATargetApprovalOption] = Field(min_length=1, max_length=3)
+
+
+class CUATargetResolution(BaseModel):
+    status: Literal["resolved", "needs_approval", "unresolved"]
+    targets: list[CUATargetProposal] = Field(default_factory=list, max_length=3)
+    initial_target_id: str | None = None
+    reason: str = Field(default="", max_length=500)
+    approval: CUATargetApproval | None = None
 
 
 class CUARunCreateRequest(BaseModel):
@@ -232,6 +268,7 @@ class CUACapabilityFeatures(BaseModel):
     app_discovery: bool = True
     window_discovery: bool = True
     window_selection: bool = True
+    target_resolution: bool = True
     visual_observation: bool = False
     screenshot_observation: bool = False
     observation_without_activation: bool = False
@@ -543,6 +580,162 @@ async def list_apps() -> list[CUAApp]:
         return [CUAApp(**app) for app in apps]
     except (ComputerUseError, ImportError) as exc:
         raise _discovery_error(exc) from exc
+
+
+def _explicit_app_matches(goal: str, catalog: list[dict]) -> set[str]:
+    folded = goal.casefold()
+    return {
+        item["catalog_id"]
+        for item in catalog
+        if len(str(item["app"].get("name") or "").strip()) >= 3
+        and str(item["app"]["name"]).casefold() in folded
+    }
+
+
+def _is_browser(bundle_id: str) -> bool:
+    bundle = bundle_id.casefold()
+    return bundle in {
+        "com.apple.safari",
+        "com.apple.safaritechnologypreview",
+    } or bundle.startswith(
+        ("com.google.chrome", "com.microsoft.edgemac", "org.chromium.chromium")
+    )
+
+
+@router.post("/targets/resolve", response_model=CUATargetResolution)
+async def resolve_targets(request: CUATargetResolveRequest) -> CUATargetResolution:
+    """Suggest bounded open-window anchors without granting action authority."""
+    try:
+        catalog = await run_in_threadpool(_backend().discover_target_windows)
+    except (ComputerUseError, ImportError) as exc:
+        raise _discovery_error(exc) from exc
+    if not catalog:
+        return CUATargetResolution(
+            status="unresolved",
+            reason="No eligible app windows are open. Open the apps needed for the task and try again.",
+        )
+
+    public_catalog = [
+        {
+            "catalog_id": item["catalog_id"],
+            "app_name": str(item["app"].get("name") or "")[:120],
+            "window_title": str(item["window"].get("title") or "")[:200],
+            "front_to_back_order": int(item["z_order"]),
+        }
+        for item in catalog
+    ]
+    explicit = _explicit_app_matches(request.goal, catalog)
+    selected_ids: list[str]
+    diagnostic = ""
+    deterministic = False
+    if len(explicit) == 1:
+        selected_ids = list(explicit)
+        deterministic = True
+        diagnostic = "The task names one open app with one eligible window."
+    else:
+        try:
+            planner_cfg = resolve_planner(request.planner)
+        except ValueError:
+            return CUATargetResolution(
+                status="unresolved",
+                reason="The selected planner is unavailable. Choose another model and try again.",
+            )
+        planner = Planner(
+            planner_cfg.url,
+            planner_cfg.model,
+            reasoning_effort=planner_cfg.reasoning_effort,
+            timeout=planner_cfg.timeout,
+            text_only=True,
+            api_key=planner_cfg.api_key,
+            allow_remote=planner_cfg.allow_remote,
+        )
+        try:
+            choice = await planner.resolve_targets(request.goal, public_catalog)
+        except Exception:
+            return CUATargetResolution(
+                status="unresolved",
+                reason="Rapid could not determine which open apps the task needs. Clarify the task and try again.",
+            )
+        finally:
+            await planner.close()
+        selected_ids = choice["target_ids"]
+        diagnostic = choice["reason"]
+
+    by_id = {item["catalog_id"]: item for item in catalog}
+    selected = [by_id[item_id] for item_id in selected_ids if item_id in by_id]
+    if len(selected) != len(selected_ids) or not 1 <= len(selected) <= 3:
+        return CUATargetResolution(
+            status="unresolved", reason="The proposed app windows changed. Try again."
+        )
+
+    targets: list[CUATargetProposal] = []
+    has_browser = False
+    for index, item in enumerate(selected, start=1):
+        app = item["app"]
+        window = item["window"]
+        domain = ""
+        if _is_browser(str(app.get("bundleId") or "")):
+            has_browser = True
+            try:
+                url = await run_in_threadpool(
+                    _backend().read_url,
+                    f"pid:{app['pid']}",
+                    window["window_id"],
+                    require_permission=True,
+                )
+            except ComputerUseError:
+                url = ""
+            hostname = (urlparse(url).hostname or "").casefold().rstrip(".")
+            if not hostname:
+                return CUATargetResolution(
+                    status="unresolved",
+                    reason="Rapid could not verify the website in the proposed browser window. Bring it forward and try again.",
+                )
+            domain = hostname
+        app_name = str(app.get("name") or "App")[:120]
+        title = str(window.get("title") or "Untitled window")[:160]
+        targets.append(
+            CUATargetProposal(
+                target_id=f"target_{index}",
+                app=f"pid:{app['pid']}",
+                pid=int(app["pid"]),
+                window_id=str(window["window_id"]),
+                allowed_domain=domain,
+                display_name=f"{app_name} — {title}",
+            )
+        )
+
+    needs_approval = has_browser or len(targets) > 1 or not deterministic
+    approval = None
+    if needs_approval:
+        labels = ", ".join(target.display_name for target in targets)
+        kind: Literal["ambiguity", "website_scope", "new_app_scope"] = (
+            "website_scope" if has_browser else "ambiguity"
+        )
+        sites = sorted(
+            {target.allowed_domain for target in targets if target.allowed_domain}
+        )
+        site_copy = (
+            f" Website access is limited to {', '.join(sites)}." if sites else ""
+        )
+        approval = CUATargetApproval(
+            kind=kind,
+            prompt=f"Rapid plans to work in {labels}.{site_copy} Continue?",
+            options=[
+                CUATargetApprovalOption(
+                    option_id="use_proposed",
+                    label="Use these windows",
+                    target_ids=[target.target_id for target in targets],
+                )
+            ],
+        )
+    return CUATargetResolution(
+        status="needs_approval" if needs_approval else "resolved",
+        targets=targets,
+        initial_target_id=targets[0].target_id,
+        reason=diagnostic,
+        approval=approval,
+    )
 
 
 @router.get("/apps/{app}/windows", response_model=list[CUAWindow])

@@ -2280,6 +2280,81 @@ def list_apps() -> list[dict]:
     return apps
 
 
+def discover_target_windows(*, limit: int = 24) -> list[dict]:
+    """Return a bounded, front-to-back catalog of regular app windows.
+
+    This is discovery only. Run creation still resolves every PID and opaque
+    window ID again before granting the planner any authority.
+    """
+    import ApplicationServices as AS  # type: ignore[import-untyped]  # noqa: N813, N817
+    from Quartz import (
+        CGWindowListCopyWindowInfo,
+        kCGNullWindowID,
+        kCGWindowListExcludeDesktopElements,
+        kCGWindowListOptionOnScreenOnly,
+    )
+
+    excluded = {
+        "com.rapidmlx.rapid",
+        "com.rapidmlx.rapid.computer-use",
+        "com.apple.dock",
+        "com.apple.controlcenter",
+        "com.apple.notificationcenterui",
+        "com.apple.systemuiserver",
+    }
+    apps: dict[int, dict] = {}
+    for app in ax_driver._running_applications(AS):
+        if (
+            app.activationPolicy() != 0
+            or str(app.bundleIdentifier() or "").casefold() in excluded
+        ):
+            continue
+        info = _resolved_app_info(app)
+        info["name"] = app.localizedName()
+        info["bundleId"] = app.bundleIdentifier()
+        apps[int(app.processIdentifier())] = info
+    raw = CGWindowListCopyWindowInfo(
+        kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
+        kCGNullWindowID,
+    )
+    catalog: list[dict] = []
+    for z_order, window in enumerate(raw or []):
+        pid = int(window.get("kCGWindowOwnerPID", -1))
+        app = apps.get(pid)
+        if app is None or int(window.get("kCGWindowLayer", 99)) != 0:
+            continue
+        number = window.get("kCGWindowNumber")
+        bounds = window.get("kCGWindowBounds") or {}
+        width = bounds.get("Width")
+        height = bounds.get("Height")
+        if (
+            number is None
+            or not isinstance(width, (int, float))
+            or not isinstance(height, (int, float))
+        ):
+            continue
+        if width <= 1 or height <= 1:
+            continue
+        catalog.append(
+            {
+                "catalog_id": f"w{len(catalog) + 1}",
+                "app": app,
+                "window": {
+                    "window_id": f"cg:{int(number)}",
+                    "title": str(window.get("kCGWindowName") or "")[:200],
+                    "x": bounds.get("X"),
+                    "y": bounds.get("Y"),
+                    "width": width,
+                    "height": height,
+                },
+                "z_order": z_order,
+            }
+        )
+        if len(catalog) >= limit:
+            break
+    return catalog
+
+
 _AUTOMATION_INITIAL_TIMEOUT_S = 30
 _AUTOMATION_STEADY_TIMEOUT_S = 5
 _AUTOMATION_READY_BUNDLES: set[str] = set()
