@@ -1810,7 +1810,8 @@ def _finder_transaction_editor(
     )
     if reference != binding["file_reference"]:
         raise ComputerUseError(
-            "target_drift", "Finder rename editor no longer identifies the approved item"
+            "target_drift",
+            "Finder rename editor no longer identifies the approved item",
         )
     return live
 
@@ -1823,7 +1824,9 @@ def inspect_finder_rename(
         raise ComputerUseError("invalid_argument", "target is not a Finder rename")
     requested = requested_basename.replace("\u200b", "").replace("\ufeff", "")
     if not requested or requested != Path(requested).name:
-        raise ComputerUseError("invalid_argument", "Finder rename requires one basename")
+        raise ComputerUseError(
+            "invalid_argument", "Finder rename requires one basename"
+        )
     live = _live_element(snapshot, element_index, validate_point=False)
     if live is None or not _is_selected_finder_row_under_focused_outline(
         snapshot, live
@@ -1834,9 +1837,13 @@ def inspect_finder_rename(
         )
     entry = _element(snapshot, element_index)
     if entry.get("role") != "AXTextField" or entry.get("parent_role") != "AXCell":
-        raise ComputerUseError("target_drift", "Finder rename target is not an item editor")
+        raise ComputerUseError(
+            "target_drift", "Finder rename target is not an item editor"
+        )
     reference = _finder_file_reference_for_editor(live, snapshot)
-    original_path = _finder_file_reference_path(reference) if reference is not None else None
+    original_path = (
+        _finder_file_reference_path(reference) if reference is not None else None
+    )
     if original_path is None:
         raise ComputerUseError(
             "target_drift", "Finder rename target has no stable file reference"
@@ -1860,17 +1867,23 @@ def set_finder_rename_value(
 ) -> dict:
     """Write an approved Finder basename only while its exact binding is valid."""
     _finder_rename_path_state(binding)
-    live = _finder_transaction_editor(binding, snapshot, element_index)
     from ApplicationServices import (  # type: ignore[import-untyped]
         AXUIElementSetAttributeValue,
         kAXValueAttribute,
     )
 
+    live = _finder_transaction_editor(binding, snapshot, element_index)
+    # Keep the opaque-reference check adjacent to the irreversible AX write.
+    # The approval pause and editor lookup must not leave a race window in
+    # which a moved item receives the approved basename.
+    _finder_rename_path_state(binding)
     err = AXUIElementSetAttributeValue(
         live, kAXValueAttribute, binding["requested_basename"]
     )
     if err != 0 or _read_value(live) != binding["requested_basename"]:
-        raise ComputerUseError("action_failed", "Finder rejected the approved rename value")
+        raise ComputerUseError(
+            "action_failed", "Finder rejected the approved rename value"
+        )
     state, actual_path = _finder_rename_path_state(binding)
     if state == "committed":
         _clear_finder_rename_binding(snapshot)
@@ -1922,10 +1935,41 @@ def commit_finder_rename(
     live = _finder_transaction_editor(binding, snapshot, element_index)
     if _read_value(live) != binding["requested_basename"]:
         raise ComputerUseError(
-            "target_drift", "Finder rename editor no longer contains the approved basename"
+            "target_drift",
+            "Finder rename editor no longer contains the approved basename",
+        )
+    # The approval card can leave Finder in the background. Restore only the
+    # exact already-approved window, with the same opaque file reference
+    # checked immediately before and after focus changes. Raising Finder may
+    # itself commit the staged rename, in which case no Enter is needed.
+    _finder_rename_path_state(binding)
+    raise_selected_window(app, snapshot)
+    state, actual_path = _finder_rename_path_state(binding)
+    if state == "committed":
+        _clear_finder_rename_binding(snapshot)
+        result = _finish_action(
+            app,
+            snapshot,
+            {
+                "mode": "FinderRenameCommittedDuringFocusRestore",
+                "key": "enter",
+                "executed": False,
+                "verification_source": "finder_file_reference_basename",
+                "actual_basename": Path(actual_path).name,
+            },
+            verified=True,
+            verification="Finder file-reference URL resolved to the requested basename",
+        )
+        result["attempted"] = False
+        return result
+    live = _finder_transaction_editor(binding, snapshot, element_index)
+    if _read_value(live) != binding["requested_basename"]:
+        raise ComputerUseError(
+            "target_drift", "Finder rename editor changed during focus restoration"
         )
     prepared = _prepare_synthetic_action(app, None, snapshot, element_index)
     inspect_focused_element(prepared, element_index, allow_selected_finder_row=True)
+    # This is the last operation before the single approved key dispatch.
     _finder_rename_path_state(binding)
     ax_driver._press_key(KEY_ALIASES["enter"])
     actual_path = binding["original_path"]
