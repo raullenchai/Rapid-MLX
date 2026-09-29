@@ -309,6 +309,15 @@ def _focused_ax_window(app_info: dict) -> object | None:
     return focused
 
 
+def _focused_ax_element(app_info: dict) -> object | None:
+    """Return the exact focused control for the PID-bound app."""
+
+    app_element = ax_driver._app_element(
+        app_info["name"], expected_pid=int(app_info["pid"])
+    )
+    return ax_driver._get(app_element, "AXFocusedUIElement")
+
+
 def _ax_cg_frames_match(
     ax_frame: tuple[float, float, float, float],
     cg_frame: tuple[float, float, float, float],
@@ -959,6 +968,55 @@ def _validate_focused_window(
         )
 
 
+def raise_selected_window(app: str, snapshot: dict) -> dict:
+    """Raise only the exact PID-bound selected AX window.
+
+    This is a bounded recovery for an already observed occlusion. It never
+    moves, resizes, closes, or chooses another window.
+    """
+
+    expected = snapshot.get("window")
+    expected_app = snapshot.get("app") or {}
+    if not isinstance(expected, dict) or "pid" not in expected_app:
+        raise ComputerUseError(
+            "stale_observation", "selected window identity is missing"
+        )
+    _validate_snapshot_window(snapshot)
+    app_element, app_info = _resolve_app(
+        f"pid:{int(expected_app['pid'])}", activate=False
+    )
+    for key in ("pid", "bundleId", "name"):
+        wanted = expected_app.get(key)
+        if wanted is not None and app_info.get(key) != wanted:
+            raise ComputerUseError("target_drift", "selected app identity changed")
+    current = _select_window(app_info, window_id=expected["window_id"])
+    if not _same_window(expected, current):
+        raise ComputerUseError("target_drift", "selected window moved before recovery")
+    frame = tuple(float(current[key]) for key in ("x", "y", "width", "height"))
+    matches = [
+        window
+        for window in ax_driver._as_list(ax_driver._get(app_element, "AXWindows"))
+        if (candidate := ax_driver._point_size(window)) is not None
+        and _ax_cg_frames_match(candidate, frame)
+    ]
+    if len(matches) != 1 or "AXRaise" not in ax_driver._action_names(matches[0]):
+        raise ComputerUseError(
+            "target_occluded",
+            "selected window cannot be raised unambiguously; move the covering window",
+        )
+    err = ax_driver.AXUIElementPerformAction(matches[0], "AXRaise")
+    if err != ax_driver.kAXErrorSuccess:
+        raise ComputerUseError("target_occluded", "selected window rejected AXRaise")
+    time.sleep(0.2)
+    after = _select_window(app_info, window_id=expected["window_id"])
+    if not _same_window(expected, after):
+        raise ComputerUseError(
+            "target_drift", "selected window changed during recovery"
+        )
+    _validate_focused_window(snapshot)
+    return after
+
+
 SAVE_MENU_MAX_NODES = 128
 SAVE_MENU_MAX_DEPTH = 6
 TEXTEDIT_SAVE_MAX_BYTES = 1_048_576
@@ -1260,7 +1318,11 @@ def click(
         ) != snapshot.get("window_id")
         center = entry["center"]
         live = None
-        if "AXPress" in entry["actions"] or is_transient:
+        if (
+            "AXPress" in entry["actions"]
+            or is_transient
+            or (focus_only and entry.get("role") in FILL_ROLES)
+        ):
             # Menus and popovers can be owned by the selected app/window while
             # appearing outside the window's content bounds. Revalidate the
             # exact window and AX target identity, then prefer AXPress on that
@@ -1282,20 +1344,18 @@ def click(
                 )
         if (
             live is not None
-            and is_transient
             and focus_only
             and entry.get("role") in FILL_ROLES
-            and (
-                ax_driver._get(live, "AXFocused") is True
-                or live == _focused_ax_window(snapshot["app"])
-            )
+            and live == _focused_ax_element(snapshot["app"])
         ):
+            expected_window = snapshot.get("transient_window") if is_transient else None
+            _validate_focused_window(snapshot, expected_window)
             return _finish_action(
                 app,
                 snapshot,
                 {"mode": "AXFocusVerified", "element_index": element_index},
                 verified=True,
-                verification="exact transient Accessibility element remained focused",
+                verification="exact Accessibility element remained focused",
                 include_post_state=include_post_state,
             )
         if is_transient:
@@ -1447,6 +1507,8 @@ def _prepare_synthetic_action(
     window_id: int | str | None,
     expected_snapshot: dict | None = None,
     element_index: int | None = None,
+    *,
+    allow_focused_editable_enter: bool = False,
 ) -> dict:
     snapshot = expected_snapshot or get_app_state(
         app, screenshot=False, use_cache=False, window_id=window_id
@@ -1480,9 +1542,40 @@ def _prepare_synthetic_action(
                 )
             expected_window = current
         else:
-            expected_window = _validate_snapshot_window(
-                snapshot, point=_window_center(snapshot)
+            entry_is_focused_editable = (
+                allow_focused_editable_enter
+                and entry.get("role") in FILL_ROLES
+                and (
+                    live := _live_element(snapshot, element_index, validate_point=False)
+                )
+                is not None
+                and live == _focused_ax_element(snapshot["app"])
             )
+            if entry_is_focused_editable:
+                expected_window = _validate_snapshot_window(snapshot)
+                center = entry.get("center")
+                if (
+                    not isinstance(center, (list, tuple))
+                    or len(center) != 2
+                    or not all(isinstance(value, (int, float)) for value in center)
+                ):
+                    raise ComputerUseError(
+                        "target_drift", "focused editable target has invalid bounds"
+                    )
+                topmost_id = _topmost_window_id_at(float(center[0]), float(center[1]))
+                same_app_ids = {
+                    _cg_window_id(record["window_id"])
+                    for record in _window_records(snapshot["app"])
+                }
+                if topmost_id not in same_app_ids:
+                    raise ComputerUseError(
+                        "target_occluded",
+                        "selected window is covered by another process at keyboard dispatch",
+                    )
+            else:
+                expected_window = _validate_snapshot_window(
+                    snapshot, point=_window_center(snapshot)
+                )
     else:
         expected_window = _validate_snapshot_window(
             snapshot, point=_window_center(snapshot)
@@ -1530,7 +1623,11 @@ def press_key(
             )
     if normalized in KEY_ALIASES:
         snapshot = _prepare_synthetic_action(
-            app, window_id, expected_snapshot, element_index
+            app,
+            window_id,
+            expected_snapshot,
+            element_index,
+            allow_focused_editable_enter=normalized == "enter",
         )
         ax_driver._press_key(KEY_ALIASES[normalized])
         return _finish_action(

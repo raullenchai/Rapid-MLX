@@ -2230,6 +2230,166 @@ def test_selected_window_allows_unrelated_dynamic_content_before_action(
     assert clicks == [4]
 
 
+def test_selected_window_recovers_one_occlusion_with_exact_raise(
+    fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.computer_use.errors import ComputerUseError
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    window = {
+        "window_id": "cg:404",
+        "index": 0,
+        "x": 10,
+        "y": 10,
+        "width": 800,
+        "height": 600,
+    }
+    target = {
+        "index": 4,
+        "label": "Search",
+        "role": "AXTextField",
+        "actions": [],
+        "x": 20,
+        "y": 20,
+        "width": 200,
+        "height": 30,
+        "center": [120, 35],
+        "source_window_id": "cg:404",
+    }
+
+    def state(app, **kwargs):
+        return {
+            "app": {"name": app, "pid": 9},
+            "window_id": "cg:404",
+            "window_index": 0,
+            "window": dict(window),
+            "elements": [dict(target)],
+            "tree_text": "[4] AXTextField Search",
+        }
+
+    monkeypatch.setattr(fake_backend, "get_app_state", state)
+    clicks = []
+
+    def click(app, index, **kwargs):
+        clicks.append(index)
+        if len(clicks) == 1:
+            raise ComputerUseError("target_occluded", "covered")
+        return {"ok": True, "verified": True}
+
+    monkeypatch.setattr(fake_backend, "click", click)
+    raises = []
+    monkeypatch.setattr(
+        fake_backend,
+        "raise_selected_window",
+        lambda app, snapshot: raises.append((app, snapshot["window_id"])),
+    )
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(loop_mod.asyncio, "sleep", no_sleep)
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path),
+        "Browser",
+        "search",
+        tmp_path / "selected-occlusion-recovery",
+        window_id="cg:404",
+    )
+    planner = _FakePlanner(
+        [
+            {
+                "action": "click",
+                "step_instruction": "focus search",
+                "element_index": 4,
+                "final_summary": "",
+            }
+        ]
+    )
+
+    assert asyncio.run(runner.step(planner, 1)) is None
+    assert clicks == [4, 4]
+    assert raises == [("Browser", "cg:404")]
+
+
+def test_selected_window_occlusion_recovery_rejects_target_drift(
+    fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.computer_use.errors import ComputerUseError
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    labels = iter(["Search", "Search", "Different"])
+
+    def state(app, **kwargs):
+        label = next(labels)
+        return {
+            "app": {"name": app, "pid": 9},
+            "window_id": "cg:404",
+            "window_index": 0,
+            "window": {
+                "window_id": "cg:404",
+                "index": 0,
+                "x": 10,
+                "y": 10,
+                "width": 800,
+                "height": 600,
+            },
+            "elements": [
+                {
+                    "index": 4,
+                    "label": label,
+                    "role": "AXTextField",
+                    "actions": [],
+                    "x": 20,
+                    "y": 20,
+                    "width": 200,
+                    "height": 30,
+                    "center": [120, 35],
+                    "source_window_id": "cg:404",
+                }
+            ],
+            "tree_text": f"[4] AXTextField {label}",
+        }
+
+    monkeypatch.setattr(fake_backend, "get_app_state", state)
+    clicks = []
+
+    def click(app, index, **kwargs):
+        clicks.append(index)
+        raise ComputerUseError("target_occluded", "covered")
+
+    monkeypatch.setattr(fake_backend, "click", click)
+    monkeypatch.setattr(fake_backend, "raise_selected_window", lambda *a, **k: None)
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path),
+        "Browser",
+        "search",
+        tmp_path / "selected-occlusion-drift",
+        window_id="cg:404",
+    )
+    planner = _FakePlanner(
+        [
+            {
+                "action": "click",
+                "step_instruction": "focus search",
+                "element_index": 4,
+                "final_summary": "",
+            }
+        ]
+    )
+
+    result = asyncio.run(runner.step(planner, 1))
+
+    assert result["status"] == "stopped"
+    assert result["error"] == "target_stale"
+    assert clicks == [4]
+
+
 def test_selected_window_rejects_target_shifted_to_planned_index(
     fake_backend, tmp_path, monkeypatch
 ):

@@ -598,7 +598,7 @@ def test_synthetic_keyboard_actions_activate_target_app(monkeypatch):
     monkeypatch.setattr(
         backend,
         "_prepare_synthetic_action",
-        lambda app, window_id, *a: calls.append((app, window_id)) or snapshot,
+        lambda app, window_id, *a, **k: calls.append((app, window_id)) or snapshot,
     )
     monkeypatch.setattr(backend.ax_driver, "_type_text", lambda text: None)
     monkeypatch.setattr(backend.ax_driver, "_press_key", lambda *args, **kwargs: None)
@@ -1343,12 +1343,110 @@ def test_coordinate_action_rejects_point_outside_selected_window(monkeypatch):
 
 def test_synthetic_input_reports_attempted_but_unverified(monkeypatch):
     snapshot = _stable_snapshot()
-    monkeypatch.setattr(backend, "_prepare_synthetic_action", lambda *a: snapshot)
+    monkeypatch.setattr(backend, "_prepare_synthetic_action", lambda *a, **k: snapshot)
     monkeypatch.setattr(backend.ax_driver, "_type_text", lambda text: None)
     result = backend.type_text("A", "hello", window_id=101)
     assert result["attempted"] is True
     assert result["verified"] is None
     assert "synthetic text emitted" in result["verification"]
+
+
+def test_raise_selected_window_uses_unique_pid_bound_ax_window(monkeypatch):
+    snapshot = _stable_snapshot(observed_at=backend.time.time())
+    selected_ax = object()
+    other_ax = object()
+    app_element = object()
+    monkeypatch.setattr(
+        backend, "_validate_snapshot_window", lambda value: value["window"]
+    )
+    resolutions = []
+
+    def resolve(app, *, activate=True):
+        resolutions.append((app, activate))
+        return app_element, dict(snapshot["app"])
+
+    monkeypatch.setattr(backend, "_resolve_app", resolve)
+    monkeypatch.setattr(
+        backend, "_select_window", lambda *a, **k: dict(snapshot["window"])
+    )
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_get",
+        lambda element, attr: (
+            [other_ax, selected_ax]
+            if element is app_element and attr == "AXWindows"
+            else None
+        ),
+    )
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_point_size",
+        lambda element: (
+            (50.0, 50.0, 20.0, 20.0)
+            if element is other_ax
+            else (0.0, 0.0, 100.0, 100.0)
+        ),
+    )
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_action_names",
+        lambda element: ["AXRaise"] if element is selected_ax else [],
+    )
+    actions = []
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "AXUIElementPerformAction",
+        lambda element, action: (
+            actions.append((element, action)) or backend.ax_driver.kAXErrorSuccess
+        ),
+    )
+    focused = []
+    monkeypatch.setattr(
+        backend, "_validate_focused_window", lambda value: focused.append(value)
+    )
+    monkeypatch.setattr(backend.time, "sleep", lambda _: None)
+
+    assert backend.raise_selected_window("pid:4", snapshot) == snapshot["window"]
+    assert actions == [(selected_ax, "AXRaise")]
+    assert focused == [snapshot]
+    assert resolutions == [("pid:4", False)]
+
+
+def test_raise_selected_window_rejects_ambiguous_ax_match(monkeypatch):
+    snapshot = _stable_snapshot(observed_at=backend.time.time())
+    app_element = object()
+    windows = [object(), object()]
+    monkeypatch.setattr(
+        backend, "_validate_snapshot_window", lambda value: value["window"]
+    )
+    monkeypatch.setattr(
+        backend,
+        "_resolve_app",
+        lambda app, *, activate=True: (app_element, dict(snapshot["app"])),
+    )
+    monkeypatch.setattr(
+        backend, "_select_window", lambda *a, **k: dict(snapshot["window"])
+    )
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_get",
+        lambda element, attr: (
+            windows if element is app_element and attr == "AXWindows" else None
+        ),
+    )
+    monkeypatch.setattr(
+        backend.ax_driver, "_point_size", lambda _: (0.0, 0.0, 100.0, 100.0)
+    )
+    monkeypatch.setattr(backend.ax_driver, "_action_names", lambda _: ["AXRaise"])
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "AXUIElementPerformAction",
+        lambda *a: pytest.fail("ambiguous window must not be raised"),
+    )
+
+    with pytest.raises(errors.ComputerUseError) as excinfo:
+        backend.raise_selected_window("pid:4", snapshot)
+    assert excinfo.value.code == "target_occluded"
 
 
 def test_synthetic_input_rejects_background_process(monkeypatch):
@@ -1444,6 +1542,94 @@ def test_prepare_synthetic_action_observes_and_validates(monkeypatch):
     )
     assert backend._prepare_synthetic_action("A", "cg:101") is snapshot
     assert calls[1:] == ["window", "focus"]
+
+
+def test_enter_allows_same_pid_overlay_for_exact_focused_anchor_editable(monkeypatch):
+    snapshot = _stable_snapshot(
+        elements=[
+            {
+                "index": 0,
+                "role": "AXTextField",
+                "label": "Address and search",
+                "center": [50, 20],
+                "actions": [],
+                "source_window_id": "cg:101",
+            }
+        ]
+    )
+    live = object()
+    monkeypatch.setattr(backend, "_live_element", lambda *a, **k: live)
+    monkeypatch.setattr(backend, "_focused_ax_element", lambda *a, **k: live)
+    validations = []
+    monkeypatch.setattr(
+        backend,
+        "_validate_snapshot_window",
+        lambda snap, **kwargs: validations.append(kwargs) or snap["window"],
+    )
+    monkeypatch.setattr(
+        backend,
+        "_window_records",
+        lambda app: [snapshot["window"], {"window_id": "cg:202"}],
+    )
+    topmost_points = []
+    monkeypatch.setattr(
+        backend,
+        "_topmost_window_id_at",
+        lambda *point: topmost_points.append(point) or 202,
+    )
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a, **k: None)
+    pressed = []
+    monkeypatch.setattr(
+        backend.ax_driver, "_press_key", lambda key: pressed.append(key)
+    )
+
+    result = backend.press_key(
+        "pid:4", "Enter", expected_snapshot=snapshot, element_index=0
+    )
+
+    assert result["mode"] == "CGEvent-keycode"
+    assert validations == [{}]
+    assert topmost_points == [(50.0, 20.0)]
+    assert pressed == [backend.KEY_ALIASES["enter"]]
+
+
+def test_enter_rejects_foreign_overlay_despite_exact_focused_editable(monkeypatch):
+    snapshot = _stable_snapshot(
+        elements=[
+            {
+                "index": 0,
+                "role": "AXTextField",
+                "label": "Address and search",
+                "center": [50, 20],
+                "actions": [],
+                "source_window_id": "cg:101",
+            }
+        ]
+    )
+    live = object()
+    monkeypatch.setattr(backend, "_live_element", lambda *a, **k: live)
+    monkeypatch.setattr(backend, "_focused_ax_element", lambda *a, **k: live)
+    monkeypatch.setattr(
+        backend, "_validate_snapshot_window", lambda snap, **kwargs: snap["window"]
+    )
+    monkeypatch.setattr(backend, "_window_records", lambda app: [snapshot["window"]])
+    window_center = backend._window_center(snapshot)
+    monkeypatch.setattr(
+        backend,
+        "_topmost_window_id_at",
+        lambda x, y: 303 if (x, y) == (50.0, 20.0) else 101,
+    )
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_press_key",
+        lambda *a: pytest.fail("foreign overlay must block keyboard dispatch"),
+    )
+
+    with pytest.raises(errors.ComputerUseError) as excinfo:
+        backend.press_key("pid:4", "Enter", expected_snapshot=snapshot, element_index=0)
+
+    assert excinfo.value.code == "target_occluded"
+    assert window_center != (50.0, 20.0)
 
 
 def test_collect_watchdog_preserves_structured_errors(monkeypatch):
@@ -1951,7 +2137,8 @@ def test_transient_focused_editable_is_only_successful_for_press_focus_phase(
     )
     snapshot["transient_window"] = {"window_id": "cg:1803"}
     monkeypatch.setattr(backend, "_live_element", lambda *a, **k: live)
-    monkeypatch.setattr(backend, "_focused_ax_window", lambda *a, **k: live)
+    monkeypatch.setattr(backend, "_focused_ax_element", lambda *a, **k: live)
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a, **k: None)
     monkeypatch.setattr(backend.ax_driver, "_get", lambda *a, **k: False)
     monkeypatch.setattr(
         backend.ax_driver,
@@ -1965,6 +2152,87 @@ def test_transient_focused_editable_is_only_successful_for_press_focus_phase(
 
     result = backend.click("pid:4", 0, expected_snapshot=snapshot, focus_only=True)
     assert result["mode"] == "AXFocusVerified"
+
+
+def test_anchor_focused_editable_skips_occluded_center_for_press_focus_phase(
+    monkeypatch,
+):
+    snapshot = _stable_snapshot(
+        window_id=22,
+        elements=[
+            {
+                "index": 0,
+                "role": "AXTextField",
+                "label": "Address and search",
+                "center": [500, 90],
+                "actions": [],
+                "source_window_id": "cg:22",
+            }
+        ],
+    )
+    live = object()
+    monkeypatch.setattr(backend, "_live_element", lambda *a, **k: live)
+    monkeypatch.setattr(backend, "_focused_ax_element", lambda *a, **k: live)
+    monkeypatch.setattr(backend.ax_driver, "_get", lambda *a, **k: False)
+    focused_windows = []
+    monkeypatch.setattr(
+        backend,
+        "_validate_focused_window",
+        lambda snap, expected=None: focused_windows.append(expected),
+    )
+    monkeypatch.setattr(
+        backend,
+        "_validate_snapshot_window",
+        lambda *a, **k: pytest.fail(
+            "focused AX target must not probe its covered center"
+        ),
+    )
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_cg_click",
+        lambda *a, **k: pytest.fail("focused AX target must not receive a click"),
+    )
+
+    result = backend.click("pid:4", 0, expected_snapshot=snapshot, focus_only=True)
+
+    assert result["mode"] == "AXFocusVerified"
+    assert focused_windows == [None]
+
+
+def test_anchor_editable_focus_drift_keeps_occlusion_fail_closed(monkeypatch):
+    snapshot = _stable_snapshot(
+        window_id=22,
+        elements=[
+            {
+                "index": 0,
+                "role": "AXTextField",
+                "label": "Address and search",
+                "center": [500, 90],
+                "actions": [],
+                "source_window_id": "cg:22",
+            }
+        ],
+    )
+    monkeypatch.setattr(backend, "_live_element", lambda *a, **k: object())
+    monkeypatch.setattr(backend, "_focused_ax_element", lambda *a, **k: object())
+    monkeypatch.setattr(backend.ax_driver, "_get", lambda *a, **k: False)
+    monkeypatch.setattr(
+        backend,
+        "_validate_snapshot_window",
+        lambda *a, **k: (_ for _ in ()).throw(
+            errors.ComputerUseError("target_occluded", "covered")
+        ),
+    )
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_cg_click",
+        lambda *a, **k: pytest.fail("focus drift must not dispatch a click"),
+    )
+
+    with pytest.raises(errors.ComputerUseError) as excinfo:
+        backend.click("pid:4", 0, expected_snapshot=snapshot, focus_only=True)
+
+    assert excinfo.value.code == "target_occluded"
 
 
 def test_set_value_and_synthetic_fill_paths(monkeypatch):
@@ -2040,7 +2308,9 @@ def test_press_hotkey_scroll_and_secondary_paths(monkeypatch):
     monkeypatch.setattr(
         backend,
         "_prepare_synthetic_action",
-        lambda app, window_id, *a: calls.append(("resolve", app)) or snapshot_for_input,
+        lambda app, window_id, *a, **k: (
+            calls.append(("resolve", app)) or snapshot_for_input
+        ),
     )
     monkeypatch.setattr(
         backend,

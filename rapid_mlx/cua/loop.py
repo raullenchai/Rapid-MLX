@@ -620,6 +620,7 @@ class CUARun:
                 self._record({"step": step_no, "plan": plan, "stop": reason})
                 return {"status": "stopped", "reason": reason, "error": "target_stale"}
             snapshot = fresh
+            target = fresh_target
         pre_action_url = backend.read_url(
             self.backend_app, window_id=self.window_id or snapshot.get("window_id")
         )
@@ -638,6 +639,80 @@ class CUARun:
         url_now = pre_action_url
         before_sig = _tree_signature(snapshot)
         executed = await self._execute(plan, snapshot, save_identity)
+        target_source_window = target.get("source_window_id", snapshot.get("window_id"))
+        can_recover_occlusion = (
+            self.window_id is not None
+            and executed.get("error_code") == "target_occluded"
+            and target_source_window == snapshot.get("window_id")
+        )
+        if can_recover_occlusion:
+            try:
+                backend.raise_selected_window(self.backend_app, snapshot)
+                recovered = self._get_app_state(screenshot=not planner.text_only)
+            except ComputerUseError as exc:
+                reason = f"selected window remains occluded: {exc.message}"
+                self._record(
+                    {
+                        "step": step_no,
+                        "plan": plan,
+                        "stop": reason,
+                        "error_code": exc.code,
+                    }
+                )
+                return {"status": "stopped", "reason": reason, "error": exc.code}
+            recovered_url = backend.read_url(
+                self.backend_app,
+                window_id=self.window_id or recovered.get("window_id"),
+            )
+            recovered_target = self._target(recovered, plan.get("element_index", -1))
+            drifted = any(
+                (
+                    self._window_identity(snapshot) != self._window_identity(recovered),
+                    snapshot.get("window") != recovered.get("window"),
+                    self._target_identity(target)
+                    != self._target_identity(recovered_target),
+                    _tree_signature(snapshot) != _tree_signature(recovered),
+                    recovered_url != url_now,
+                )
+            )
+            recovered_guard = self._check_domain(recovered_url)
+            try:
+                gates.check_plan_consents(plan, str(recovered_target.get("label", "")))
+            except ConsentError as exc:
+                return {"status": "stopped", "reason": str(exc)}
+            if recovered_guard or drifted:
+                reason = (
+                    recovered_guard
+                    or "selected target changed during occlusion recovery"
+                )
+                self._record(
+                    {"step": step_no, "plan": plan, "stop": reason, "gate": "stale"}
+                )
+                return {
+                    "status": "stopped",
+                    "reason": reason,
+                    "error": "target_stale" if drifted else "domain_guard",
+                }
+            snapshot = recovered
+            target = recovered_target
+            url_now = recovered_url
+            before_sig = _tree_signature(recovered)
+            executed = await self._execute(plan, recovered, save_identity)
+            if executed.get("error_code") == "target_occluded":
+                reason = "selected window remains occluded after one raise attempt"
+                self._record(
+                    {
+                        "step": step_no,
+                        "plan": plan,
+                        "stop": reason,
+                        "error_code": "target_occluded",
+                    }
+                )
+                return {
+                    "status": "stopped",
+                    "reason": reason,
+                    "error": "target_occluded",
+                }
         await asyncio.sleep(1.2)
         try:
             after = self._get_app_state(
