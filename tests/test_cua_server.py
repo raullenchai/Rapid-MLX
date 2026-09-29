@@ -304,7 +304,7 @@ def test_target_resolver_does_not_treat_app_name_substring_as_explicit(
                     "pid": 44,
                     "processStartTime": 1003.0,
                 },
-                "window": {"window_id": "cg:125", "title": "Inbox"},
+                "window": {"window_id": "cg:125", "title": ""},
                 "z_order": 0,
             }
         ],
@@ -324,6 +324,9 @@ def test_target_resolver_does_not_treat_app_name_substring_as_explicit(
     ).json()
     assert called is True
     assert body["status"] == "needs_approval"
+    assert body["targets"][0]["display_name"] == "Mail"
+    assert "window" not in body["approval"]["prompt"].casefold()
+    assert "window" not in body["targets"][0]["display_name"].casefold()
 
 
 def test_target_resolver_rejects_unknown_model_catalog_id(client, monkeypatch):

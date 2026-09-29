@@ -764,7 +764,8 @@ async def resolve_targets(request: CUATargetResolveRequest) -> CUATargetResoluti
                 )
             domain = hostname
         app_name = str(app.get("name") or "App")[:120]
-        title = str(window.get("title") or "Untitled window")[:160]
+        title = str(window.get("title") or "").strip()[:160]
+        display_name = f"{app_name} — {title}" if title else app_name
         targets.append(
             CUATargetProposal(
                 target_id=f"target_{index}",
@@ -774,7 +775,7 @@ async def resolve_targets(request: CUATargetResolveRequest) -> CUATargetResoluti
                 allowed_domain=domain,
                 bundle_id=str(app["bundleId"]),
                 process_start_time=float(app["processStartTime"]),
-                display_name=f"{app_name} — {title}",
+                display_name=display_name,
             )
         )
 
