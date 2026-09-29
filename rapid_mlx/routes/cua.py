@@ -35,6 +35,7 @@ from ..config import get_config
 from ..cua import service as cua_service
 from ..cua.config import (
     delete_user_preset,
+    is_loopback_url,
     load_config,
     resolve_planner,
     save_user_preset,
@@ -106,9 +107,11 @@ class CUATarget(BaseModel):
 class CUATargetResolveRequest(BaseModel):
     goal: str = Field(min_length=1, max_length=4000)
     planner: str = Field(default="local-27b", min_length=1, max_length=2000)
+    allow_remote_app_discovery: bool = False
 
 
 class CUATargetProposal(CUATarget):
+    bundle_id: str = Field(min_length=1, max_length=300)
     display_name: str = Field(min_length=1, max_length=300)
 
 
@@ -587,8 +590,8 @@ def _explicit_app_matches(goal: str, catalog: list[dict]) -> set[str]:
     return {
         item["catalog_id"]
         for item in catalog
-        if len(str(item["app"].get("name") or "").strip()) >= 3
-        and str(item["app"]["name"]).casefold() in folded
+        if len(str(item.get("app_name") or "").strip()) >= 3
+        and str(item["app_name"]).casefold() in folded
     }
 
 
@@ -614,17 +617,35 @@ async def resolve_targets(request: CUATargetResolveRequest) -> CUATargetResoluti
             status="unresolved",
             reason="No eligible app windows are open. Open the apps needed for the task and try again.",
         )
+    catalog = [item for item in catalog if str(item["app"].get("bundleId") or "")]
+    if not catalog:
+        return CUATargetResolution(
+            status="unresolved",
+            reason="No eligible app windows have a verifiable application identity. Try again.",
+        )
 
+    windows_by_pid: dict[int, list[dict]] = {}
+    app_catalog: list[dict] = []
+    seen_pids: set[int] = set()
+    for item in catalog:
+        pid = int(item["app"]["pid"])
+        windows_by_pid.setdefault(pid, []).append(item)
+        if pid not in seen_pids:
+            seen_pids.add(pid)
+            app_catalog.append(
+                {
+                    "catalog_id": f"a{len(app_catalog) + 1}",
+                    "app_name": str(item["app"].get("name") or "App")[:120],
+                    "pid": pid,
+                }
+            )
+    # Window titles, process IDs, geometry, and ordering stay on-device. The
+    # planner receives only the minimum metadata needed to choose an app.
     public_catalog = [
-        {
-            "catalog_id": item["catalog_id"],
-            "app_name": str(item["app"].get("name") or "")[:120],
-            "window_title": str(item["window"].get("title") or "")[:200],
-            "front_to_back_order": int(item["z_order"]),
-        }
-        for item in catalog
+        {"catalog_id": item["catalog_id"], "app_name": item["app_name"]}
+        for item in app_catalog
     ]
-    explicit = _explicit_app_matches(request.goal, catalog)
+    explicit = _explicit_app_matches(request.goal, app_catalog)
     selected_ids: list[str]
     diagnostic = ""
     deterministic = False
@@ -639,6 +660,14 @@ async def resolve_targets(request: CUATargetResolveRequest) -> CUATargetResoluti
             return CUATargetResolution(
                 status="unresolved",
                 reason="The selected planner is unavailable. Choose another model and try again.",
+            )
+        if (
+            not is_loopback_url(planner_cfg.url)
+            and not request.allow_remote_app_discovery
+        ):
+            return CUATargetResolution(
+                status="unresolved",
+                reason="Allow the selected remote model to receive the task and names of open apps, then try again.",
             )
         planner = Planner(
             planner_cfg.url,
@@ -661,12 +690,24 @@ async def resolve_targets(request: CUATargetResolveRequest) -> CUATargetResoluti
         selected_ids = choice["target_ids"]
         diagnostic = choice["reason"]
 
-    by_id = {item["catalog_id"]: item for item in catalog}
-    selected = [by_id[item_id] for item_id in selected_ids if item_id in by_id]
-    if len(selected) != len(selected_ids) or not 1 <= len(selected) <= 3:
+    apps_by_id = {item["catalog_id"]: item for item in app_catalog}
+    selected_apps = [
+        apps_by_id[item_id] for item_id in selected_ids if item_id in apps_by_id
+    ]
+    if len(selected_apps) != len(selected_ids) or not 1 <= len(selected_apps) <= 3:
         return CUATargetResolution(
             status="unresolved", reason="The proposed app windows changed. Try again."
         )
+
+    selected: list[dict] = []
+    for app in selected_apps:
+        candidates = windows_by_pid[app["pid"]]
+        if len(candidates) != 1:
+            return CUATargetResolution(
+                status="unresolved",
+                reason=f"{app['app_name']} has multiple eligible windows. Close unrelated windows or clarify the task and try again.",
+            )
+        selected.append(candidates[0])
 
     targets: list[CUATargetProposal] = []
     has_browser = False
@@ -701,6 +742,7 @@ async def resolve_targets(request: CUATargetResolveRequest) -> CUATargetResoluti
                 pid=int(app["pid"]),
                 window_id=str(window["window_id"]),
                 allowed_domain=domain,
+                bundle_id=str(app["bundleId"]),
                 display_name=f"{app_name} — {title}",
             )
         )
