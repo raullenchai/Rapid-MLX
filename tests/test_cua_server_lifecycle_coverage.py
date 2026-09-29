@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from rapid_mlx.config import get_config, reset_config
+from rapid_mlx.config import reset_config
 from rapid_mlx.cua import server
 
 
