@@ -301,7 +301,7 @@ final class CUAViewModel: ObservableObject {
         }
       }
       do {
-        let resolution = try await api.resolveTargets(
+        var resolution = try await api.resolveTargets(
           goal: requestedGoal, planner: requestedPlanner,
           allowRemoteAppDiscovery: allowRemoteAppDiscovery
         )
@@ -309,6 +309,53 @@ final class CUAViewModel: ObservableObject {
           goal.trimmingCharacters(in: .whitespacesAndNewlines) == requestedGoal,
           plannerName == requestedPlanner
         else { return }
+        if resolution.status == "needs_automation" {
+          guard resolution.targets.isEmpty, resolution.initialTargetID == nil,
+            resolution.approval == nil, let automation = resolution.automation,
+            !automation.displayName.isEmpty,
+            BrowserAutomationAuthorizer.supports(bundleIdentifier: automation.bundleID)
+          else {
+            targetError = "Rapid could not verify the browser access request. Try again."
+            return
+          }
+          let authorization = await browserAutomationRequest(automation.bundleID)
+          guard generation == lifecycleGeneration, !isSessionDetached,
+            goal.trimmingCharacters(in: .whitespacesAndNewlines) == requestedGoal,
+            plannerName == requestedPlanner
+          else { return }
+          switch authorization {
+          case .authorized:
+            break
+          case .denied:
+            targetError = "Browser control is not allowed. Allow Rapid to control \(automation.displayName) in System Settings, then try again."
+            browserAutomationRecoveryRequired = true
+            return
+          case .targetUnavailable:
+            targetError = "\(automation.displayName) is no longer open. Open it and try again."
+            return
+          case .timedOut:
+            targetError = "macOS did not finish the browser access request. Review Automation in System Settings, then try again."
+            browserAutomationRecoveryRequired = true
+            return
+          case .failed:
+            targetError = "Rapid could not request browser access. Review Automation in System Settings, then try again."
+            browserAutomationRecoveryRequired = true
+            return
+          }
+          resolution = try await api.resolveTargets(
+            goal: requestedGoal, planner: requestedPlanner,
+            allowRemoteAppDiscovery: allowRemoteAppDiscovery
+          )
+          guard generation == lifecycleGeneration, !isSessionDetached,
+            goal.trimmingCharacters(in: .whitespacesAndNewlines) == requestedGoal,
+            plannerName == requestedPlanner
+          else { return }
+          guard resolution.status != "needs_automation" else {
+            targetError = "Browser access is still unavailable. Review Automation in System Settings, then try again."
+            browserAutomationRecoveryRequired = true
+            return
+          }
+        }
         switch resolution.status {
         case "resolved":
           guard applyTargetResolution(resolution, targetIDs: resolution.targets.map(\.targetID))

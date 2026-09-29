@@ -562,6 +562,67 @@ def test_target_resolver_browser_requires_trusted_domain(client, monkeypatch):
     assert body["status"] == "unresolved"
     assert body["targets"] == []
 
+
+def test_target_resolver_requests_browser_automation_then_reresolves(
+    client, monkeypatch
+):
+    from rapid_mlx.computer_use import backend
+    from rapid_mlx.computer_use.errors import ComputerUseError
+
+    monkeypatch.setattr(
+        backend,
+        "discover_target_windows",
+        lambda: [
+            {
+                "catalog_id": "w1",
+                "app": {
+                    "name": "Safari",
+                    "bundleId": "com.apple.Safari",
+                    "pid": 50,
+                    "processStartTime": 1002.0,
+                },
+                "window": {"window_id": "cg:789", "title": "Research"},
+                "z_order": 0,
+            }
+        ],
+    )
+    calls = 0
+
+    def read_url(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ComputerUseError(
+                "automation_permission_required", "browser access needs approval"
+            )
+        return "https://research.example/article"
+
+    monkeypatch.setattr(backend, "read_url", read_url)
+    request = {
+        "goal": "Use Safari to research this topic",
+        "planner": "local-9b",
+    }
+    preflight = client.post(
+        "/v1/cua/targets/resolve", headers=AUTH, json=request
+    ).json()
+    assert preflight == {
+        "status": "needs_automation",
+        "targets": [],
+        "initial_target_id": None,
+        "reason": "Browser access needs macOS approval before Rapid can verify the website.",
+        "approval": None,
+        "automation": {
+            "bundle_id": "com.apple.Safari",
+            "display_name": "Safari",
+        },
+    }
+
+    resolved = client.post("/v1/cua/targets/resolve", headers=AUTH, json=request).json()
+    assert resolved["status"] == "needs_approval"
+    assert resolved["automation"] is None
+    assert resolved["targets"][0]["allowed_domain"] == "research.example"
+    assert resolved["approval"]["kind"] == "website_scope"
+
     monkeypatch.setattr(
         backend, "read_url", lambda *a, **k: "https://research.example/article"
     )

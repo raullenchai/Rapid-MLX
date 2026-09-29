@@ -125,15 +125,26 @@ struct CUATargetApproval: Codable, Equatable, Sendable {
     var options: [CUATargetApprovalOption]
 }
 
+struct CUATargetAutomationRequest: Codable, Equatable, Sendable {
+    var bundleID: String
+    var displayName: String
+
+    enum CodingKeys: String, CodingKey {
+        case bundleID = "bundle_id"
+        case displayName = "display_name"
+    }
+}
+
 struct CUATargetResolution: Codable, Equatable, Sendable {
     var status: String
     var targets: [CUATargetProposal]
     var initialTargetID: String?
     var reason: String
     var approval: CUATargetApproval?
+    var automation: CUATargetAutomationRequest? = nil
 
     enum CodingKeys: String, CodingKey {
-        case status, targets, reason, approval
+        case status, targets, reason, approval, automation
         case initialTargetID = "initial_target_id"
     }
 }

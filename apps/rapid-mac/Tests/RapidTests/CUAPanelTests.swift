@@ -59,6 +59,7 @@ private final class MockAgentAPI: CUAAPI, @unchecked Sendable {
     status: "unresolved", targets: [], initialTargetID: nil,
     reason: "No matching app", approval: nil
   )
+  var queuedTargetResolutionResults: [CUATargetResolution] = []
   var targetResolutionRequests: [
     (goal: String, planner: String, allowRemoteAppDiscovery: Bool)
   ] = []
@@ -90,6 +91,9 @@ private final class MockAgentAPI: CUAAPI, @unchecked Sendable {
     goal: String, planner: String, allowRemoteAppDiscovery: Bool
   ) async throws -> CUATargetResolution {
     targetResolutionRequests.append((goal, planner, allowRemoteAppDiscovery))
+    if !queuedTargetResolutionResults.isEmpty {
+      return queuedTargetResolutionResults.removeFirst()
+    }
     return targetResolutionResult
   }
 
@@ -2172,6 +2176,67 @@ struct CUATaskFirstResolutionTests {
     await vm.approveResolvedTargets(optionID: "use_proposed")
     #expect(api.createAttempts == 1)
     #expect(api.attemptedRequests.first?.allowedDomain == "example.test")
+  }
+
+  @MainActor
+  @Test func firstUseBrowserAutomationRerunsResolutionBeforeWebsiteApproval() async {
+    let api = MockAgentAPI()
+    let target = Self.target(domain: "example.test")
+    api.queuedTargetResolutionResults = [
+      CUATargetResolution(
+        status: "needs_automation", targets: [], initialTargetID: nil,
+        reason: "Browser access is needed.", approval: nil,
+        automation: CUATargetAutomationRequest(
+          bundleID: "com.apple.Safari", displayName: "Safari"
+        )
+      ),
+      CUATargetResolution(
+        status: "needs_approval", targets: [target], initialTargetID: target.targetID,
+        reason: "", approval: CUATargetApproval(
+          kind: "website_scope", prompt: "Use example.test?",
+          options: [
+            CUATargetApprovalOption(
+              optionID: "site", label: "Use this website", targetIDs: [target.targetID]
+            )
+          ]
+        )
+      ),
+    ]
+    let vm = Self.viewModel(api: api) { bundleID in
+      #expect(bundleID == "com.apple.Safari")
+      return .authorized
+    }
+    vm.goal = "Read the open article"
+
+    await vm.resolveAndStart()
+
+    #expect(api.targetResolutionRequests.count == 2)
+    #expect(api.createAttempts == 0)
+    #expect(vm.targetResolutionApproval?.approval?.kind == "website_scope")
+
+    await vm.approveResolvedTargets(optionID: "site")
+    #expect(api.createAttempts == 1)
+    #expect(api.attemptedRequests.first?.allowedDomain == "example.test")
+  }
+
+  @MainActor
+  @Test func deniedBootstrapAutomationCreatesNoRun() async {
+    let api = MockAgentAPI()
+    api.targetResolutionResult = CUATargetResolution(
+      status: "needs_automation", targets: [], initialTargetID: nil,
+      reason: "Browser access is needed.", approval: nil,
+      automation: CUATargetAutomationRequest(
+        bundleID: "com.apple.Safari", displayName: "Safari"
+      )
+    )
+    let vm = Self.viewModel(api: api) { _ in .denied }
+    vm.goal = "Read the open article"
+
+    await vm.resolveAndStart()
+
+    #expect(api.createAttempts == 0)
+    #expect(api.targetResolutionRequests.count == 1)
+    #expect(vm.browserAutomationRecoveryRequired)
   }
 
   @MainActor
