@@ -33,6 +33,10 @@ RECOVERY_HINTS: dict[str, tuple[str, ...]] = {
         "(System Settings > Privacy & Security > Accessibility),",
         "then retry. `computer permissions --json` reports status.",
     ),
+    "automation_permission_required": (
+        "Allow Rapid-MLX to control the selected browser in System Settings",
+        "> Privacy & Security > Automation, then retry the task.",
+    ),
     "window_stale": ("The window was replaced or moved; re-run get-app-state.",),
     "action_timeout": (
         "The app did not settle in time; retry once, then re-observe",
@@ -45,6 +49,22 @@ RECOVERY_HINTS: dict[str, tuple[str, ...]] = {
     "invalid_argument": ("Fix the flagged argument and retry.",),
     "stale_snapshot": (
         "The cached snapshot expired; re-run get-app-state for fresh indexes.",
+    ),
+    "stale_observation": (
+        "The observation is too old or lacks a stable window identity;",
+        "re-run get-app-state and retry with its window_id and element index.",
+    ),
+    "target_drift": (
+        "The selected window moved, resized, or lost focus;",
+        "re-run list-windows and get-app-state before retrying.",
+    ),
+    "target_stale": (
+        "The planned control changed before input could be dispatched;",
+        "re-observe the selected window and create a fresh plan.",
+    ),
+    "target_occluded": (
+        "Another window covers the action point; bring the selected window",
+        "to the foreground, re-run get-app-state, and retry.",
     ),
     "unsupported_platform": ("Run computer-use on a Mac with PyObjC installed.",),
 }

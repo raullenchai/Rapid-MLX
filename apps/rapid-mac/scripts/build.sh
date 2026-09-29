@@ -27,6 +27,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD="$ROOT/.build/release"
 APP="$ROOT/build/Rapid-MLX Desktop.app"
 CONTENTS="$APP/Contents"
+CUA_HELPER="$CONTENTS/Helpers/Rapid Computer Use.app"
+CUA_HELPER_EXECUTABLE="$CUA_HELPER/Contents/MacOS/RapidComputerUse"
 
 CONFIG="${RAPID_BUILD_CONFIG:-release}"
 
@@ -213,6 +215,16 @@ rm -rf "$APP"
 mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources" "$CONTENTS/Frameworks"
 cp "$ROOT/.build/$CONFIG/Rapid" "$CONTENTS/MacOS/Rapid"
 cp "$ROOT/Resources/Info.plist" "$CONTENTS/Info.plist"
+
+# Browser domain enforcement reads only the selected browser's trusted active
+# tab API. Without the privacy purpose string macOS refuses the Apple Event
+# before it can present the target-specific Automation consent prompt.
+apple_events_usage=$(plutil -extract NSAppleEventsUsageDescription raw -o - \
+    "$CONTENTS/Info.plist" 2>/dev/null || true)
+if [[ -z "$apple_events_usage" ]]; then
+    echo "ERR: Info.plist lacks NSAppleEventsUsageDescription; browser domain guards would be unusable" >&2
+    exit 1
+fi
 cp "$ROOT/Resources/AppIcon.icns" "$CONTENTS/Resources/AppIcon.icns"
 
 # Only the canonical public-release lane may enable the anonymous first-run
@@ -568,6 +580,20 @@ else
         fi
     fi
 
+    # Pre-fix local caches contain a linker-signed Python with no Automation
+    # entitlement. Never stage one into a new app: the outer --deep signature
+    # does not add entitlements to that nested sender, and macOS then denies
+    # browser Apple Events without presenting consent UI.
+    if [[ "$SIDECAR_CACHE_HIT" == "1" ]]; then
+        cached_automation=$(codesign -d --entitlements :- \
+            "$SIDECAR_STAGE/rapid-mlx/python/bin/python3.12" 2>/dev/null \
+            | plutil -extract 'com\.apple\.security\.automation\.apple-events' raw -o - - 2>/dev/null || true)
+        if [[ "$cached_automation" != "true" ]]; then
+            echo "==> cached sidecar lacks browser Automation entitlement; rebuilding"
+            SIDECAR_CACHE_HIT=0
+        fi
+    fi
+
     SIDECAR_ARGS=(--out "$SIDECAR_STAGE")
     if [[ "${CODESIGN_IDENTITY:--}" != "-" ]]; then
         # CI release path — use the Developer ID identity already
@@ -576,10 +602,10 @@ else
         # resource envelope without re-signing (no --deep).
         SIDECAR_ARGS+=(--developer-id "$CODESIGN_IDENTITY")
     else
-        # Local dev — adhoc codesign + skip smoke (smoke needs a
-        # Python that can ``import mlx``, which a dev-machine global
-        # Python can't reliably do).
-        SIDECAR_ARGS+=(--skip-codesign --skip-verify)
+        # Local dogfood uses the same per-Mach-O entitlements with an ad-hoc
+        # identity. Skip only the expensive smoke; skipping the signing sweep
+        # leaves nested Python unable to request browser Automation consent.
+        SIDECAR_ARGS+=(--skip-verify)
     fi
     if [[ "$PARALLEL_SIDECAR_COMPLETE" == "1" ]]; then
         echo "==> parallel rapid-mlx sidecar is ready"
@@ -599,6 +625,29 @@ else
     # case expects (Sources/Rapid/Server/ServerLocator.swift:211-215).
     rm -rf "$CONTENTS/Resources/rapid-mlx"
     cp -R "$SIDECAR_STAGE/rapid-mlx" "$CONTENTS/Resources/rapid-mlx"
+
+    # Computer Use must make Accessibility and Screen Capture calls from a
+    # stable, user-visible code identity. Copy the statically linked embedded
+    # interpreter into a helper app as its MAIN executable. It runs rapid_mlx
+    # directly and must never exec the raw interpreter, or the TCC authority
+    # split returns.
+    mkdir -p "$CUA_HELPER/Contents/MacOS" "$CUA_HELPER/Contents/Resources"
+    cp "$ROOT/Resources/RapidComputerUseHelper-Info.plist" \
+        "$CUA_HELPER/Contents/Info.plist"
+    HELPER_VERSION="$(plutil -extract CFBundleShortVersionString raw -o - "$CONTENTS/Info.plist")"
+    HELPER_BUILD="$(plutil -extract CFBundleVersion raw -o - "$CONTENTS/Info.plist")"
+    plutil -replace CFBundleShortVersionString -string "$HELPER_VERSION" \
+        "$CUA_HELPER/Contents/Info.plist"
+    plutil -replace CFBundleVersion -string "$HELPER_BUILD" \
+        "$CUA_HELPER/Contents/Info.plist"
+    cp "$CONTENTS/Resources/rapid-mlx/python/bin/python3.12" \
+        "$CUA_HELPER_EXECUTABLE"
+    cp "$CONTENTS/Resources/AppIcon.icns" "$CUA_HELPER/Contents/Resources/AppIcon.icns"
+    test -x "$CUA_HELPER_EXECUTABLE"
+    if otool -L "$CUA_HELPER_EXECUTABLE" | grep -q 'libpython3\.12\.dylib'; then
+        echo "ERROR: Computer Use helper unexpectedly needs an external libpython" >&2
+        exit 1
+    fi
 
     # Stamp VERSION from the engine's own version. MONOREPO: the sidecar
     # IS the engine, so its VERSION is the engine version. Downstream
@@ -754,7 +803,15 @@ fi
 SIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
 if [[ "$SIGN_IDENTITY" == "-" ]]; then
     echo "==> ad-hoc codesign"
-    codesign --force --deep --sign - "$APP"
+    if [[ -d "$CUA_HELPER" ]]; then
+        codesign --force --options runtime \
+            --entitlements "$ROOT/Resources/RapidComputerUseHelper.entitlements" \
+            --identifier com.rapidmlx.rapid.computer-use \
+            --sign - "$CUA_HELPER"
+    fi
+    codesign --force --deep \
+        --entitlements "$ROOT/Resources/Rapid.entitlements" \
+        --sign - "$APP"
     codesign --verify --deep --strict "$APP"
 else
     echo "==> Developer ID codesign ($SIGN_IDENTITY)"
@@ -775,6 +832,13 @@ else
         --preserve-metadata=identifier,entitlements,flags \
         --sign "$SIGN_IDENTITY" "$SPARKLE_FRAMEWORK_DST"
     codesign --verify --deep --strict "$SPARKLE_FRAMEWORK_DST"
+    if [[ -d "$CUA_HELPER" ]]; then
+        codesign --force --options runtime --timestamp \
+            --entitlements "$ROOT/Resources/RapidComputerUseHelper.entitlements" \
+            --identifier com.rapidmlx.rapid.computer-use \
+            --sign "$SIGN_IDENTITY" "$CUA_HELPER"
+        codesign --verify --strict "$CUA_HELPER"
+    fi
     # No --deep: the sidecar's Mach-Os under Contents/Resources/rapid-mlx/
     # are already individually signed by build-sidecar.sh; this outer
     # (non-deep) codesign hashes their bytes into the .app's resource
@@ -806,6 +870,44 @@ else
         exit 1
     fi
     codesign -dv --verbose=4 "$APP" 2>&1 | grep -E 'Authority|TeamIdentifier|flags=' || true
+fi
+
+# TCC belongs to the process that calls AX/CG. Assert the packaged executable
+# is the stable helper identity and still carries the runtime entitlements
+# after the outer application has been sealed.
+if [[ -d "$CUA_HELPER" ]]; then
+    helper_identifier=$(codesign -dvv "$CUA_HELPER" 2>&1 \
+        | sed -n 's/^Identifier=//p' | head -1)
+    if [[ "$helper_identifier" != "com.rapidmlx.rapid.computer-use" ]]; then
+        echo "ERROR: packaged Computer Use helper has unstable identity '$helper_identifier'" >&2
+        exit 1
+    fi
+    helper_jit=$(codesign -d --entitlements :- "$CUA_HELPER" 2>/dev/null \
+        | plutil -extract 'com\.apple\.security\.cs\.allow-jit' raw -o - - 2>/dev/null || true)
+    if [[ "$helper_jit" != "true" ]]; then
+        echo "ERROR: packaged Computer Use helper lost its runtime entitlements" >&2
+        exit 1
+    fi
+    codesign --verify --strict "$CUA_HELPER"
+elif [[ "$SKIP_SIDECAR" != "1" ]]; then
+    echo "ERROR: packaged sidecar is missing the Computer Use helper" >&2
+    exit 1
+fi
+
+# Check both ad-hoc dogfood and Developer ID artifacts. Source entitlements do
+# not prove that the sealed application carries the permission.
+automation_events=$(codesign -d --entitlements :- "$APP" 2>/dev/null \
+    | plutil -extract 'com\.apple\.security\.automation\.apple-events' raw -o - - 2>/dev/null || true)
+if [[ "$automation_events" != "true" ]]; then
+    echo "ERROR: sealed entitlements lack com.apple.security.automation.apple-events=true (got: '${automation_events:-absent}') — browser domain guards could not request Automation access" >&2
+    exit 1
+fi
+nested_automation=$(codesign -d --entitlements :- \
+    "$APP/Contents/Resources/rapid-mlx/python/bin/python3.12" 2>/dev/null \
+    | plutil -extract 'com\.apple\.security\.automation\.apple-events' raw -o - - 2>/dev/null || true)
+if [[ "$nested_automation" != "true" ]]; then
+    echo "ERROR: packaged sidecar Python lacks com.apple.security.automation.apple-events=true (got: '${nested_automation:-absent}') — macOS would deny browser URL access without a consent prompt" >&2
+    exit 1
 fi
 
 echo
