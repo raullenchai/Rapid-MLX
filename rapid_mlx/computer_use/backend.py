@@ -915,9 +915,24 @@ def _read_value(live_element: object) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def _normalized_finder_editor_value(live_element: object) -> str | None:
+    value = _read_value(live_element)
+    return (
+        value.replace("\u200b", "").replace("\ufeff", "") if value is not None else None
+    )
+
+
+def is_finder_snapshot(snapshot: dict) -> bool:
+    """Identify Finder only from OS-resolved bundle metadata."""
+    return (
+        str(snapshot.get("app", {}).get("bundleId", "")).casefold()
+        == "com.apple.finder"
+    )
+
+
 def _is_selected_finder_row_under_focused_outline(snapshot: dict, live: object) -> bool:
     """Allow Enter only for Finder's exact selected item or inline editor."""
-    if str(snapshot.get("app", {}).get("name", "")).casefold() != "finder":
+    if not is_finder_snapshot(snapshot):
         return False
     focused = _focused_ax_element(snapshot["app"])
     if focused is None or ax_driver._get(focused, "AXRole") != "AXOutline":
@@ -1530,7 +1545,7 @@ def set_value(
     live = _live_element(snapshot, element_index, validate_point=not is_transient)
     if live is not None:
         is_finder_item = (
-            str(snapshot.get("app", {}).get("name", "")).casefold() == "finder"
+            is_finder_snapshot(snapshot)
             and entry.get("role") == "AXTextField"
             and entry.get("parent_role") == "AXCell"
         )
@@ -1783,7 +1798,7 @@ def _finder_rename_path_state(binding: dict[str, Any]) -> tuple[str, str]:
 
 
 def _finder_transaction_editor(
-    binding: dict[str, Any], snapshot: dict, element_index: int
+    binding: dict[str, Any], snapshot: dict, element_index: int, *, expected_value: str
 ) -> object:
     """Revalidate the exact selected Finder editor captured before approval."""
     if (
@@ -1794,20 +1809,29 @@ def _finder_transaction_editor(
             "target_drift", "Finder rename app or window changed after approval"
         )
     entry = _element(snapshot, element_index)
-    if entry.get("role") != "AXTextField" or entry.get("parent_role") != "AXCell":
+    if entry.get("role") != "AXTextField":
         raise ComputerUseError(
             "target_drift", "Finder rename editor shape changed after approval"
         )
     live = _live_element(snapshot, element_index, validate_point=False)
-    if live is None or not _is_selected_finder_row_under_focused_outline(
-        snapshot, live
-    ):
+    reference = (
+        _finder_transaction_reference(
+            live, snapshot, detached_expected_value=expected_value
+        )
+        if live is not None
+        else None
+    )
+    if reference is None:
+        focused = _focused_ax_element(snapshot["app"])
+        if focused is not None and focused != live:
+            live = focused
+            reference = _finder_transaction_reference(
+                live, snapshot, detached_expected_value=expected_value
+            )
+    if live is None or reference is None:
         raise ComputerUseError(
             "target_drift", "Finder rename editor is no longer in the selected row"
         )
-    reference = _finder_file_reference_for_editor(
-        live, snapshot, allow_selected_row_rebind=True
-    )
     if reference != binding["file_reference"]:
         raise ComputerUseError(
             "target_drift",
@@ -1820,27 +1844,40 @@ def inspect_finder_rename(
     snapshot: dict, element_index: int, requested_basename: str
 ) -> dict[str, Any]:
     """Bind a proposed inline rename to one selected Finder file reference."""
-    if str(snapshot.get("app", {}).get("name", "")).casefold() != "finder":
+    if not is_finder_snapshot(snapshot):
         raise ComputerUseError("invalid_argument", "target is not a Finder rename")
     requested = requested_basename.replace("\u200b", "").replace("\ufeff", "")
     if not requested or requested != Path(requested).name:
         raise ComputerUseError(
             "invalid_argument", "Finder rename requires one basename"
         )
+    entry = _element(snapshot, element_index)
+    if entry.get("role") != "AXTextField":
+        raise ComputerUseError(
+            "target_drift", "Finder rename target is not an item editor"
+        )
     live = _live_element(snapshot, element_index, validate_point=False)
-    if live is None or not _is_selected_finder_row_under_focused_outline(
-        snapshot, live
-    ):
+    reference = (
+        _finder_transaction_reference(live, snapshot) if live is not None else None
+    )
+    if reference is None:
+        key = _finder_rename_binding_key(snapshot)
+        with _finder_rename_binding_lock:
+            cached = _finder_rename_bindings.get(key)
+        cached_name = Path(cached[2]).name if cached is not None else ""
+        indexed_label = (
+            str(entry.get("label") or "").replace("\u200b", "").replace("\ufeff", "")
+        )
+        if indexed_label == cached_name:
+            focused = _focused_ax_element(snapshot["app"])
+            if focused is not None and focused != live:
+                live = focused
+                reference = _finder_transaction_reference(live, snapshot)
+    if live is None or reference is None:
         raise ComputerUseError(
             "target_drift",
             "Finder rename target is not the selected item under the focused outline",
         )
-    entry = _element(snapshot, element_index)
-    if entry.get("role") != "AXTextField" or entry.get("parent_role") != "AXCell":
-        raise ComputerUseError(
-            "target_drift", "Finder rename target is not an item editor"
-        )
-    reference = _finder_file_reference_for_editor(live, snapshot)
     original_path = (
         _finder_file_reference_path(reference) if reference is not None else None
     )
@@ -1867,12 +1904,22 @@ def set_finder_rename_value(
 ) -> dict:
     """Write an approved Finder basename only while its exact binding is valid."""
     _finder_rename_path_state(binding)
+    # The approval card made Rapid frontmost. Restore only the exact approved
+    # Finder window, with the original opaque reference checked on both sides,
+    # before reacquiring its focused inline editor.
+    raise_selected_window(app, snapshot)
+    _finder_rename_path_state(binding)
     from ApplicationServices import (  # type: ignore[import-untyped]
         AXUIElementSetAttributeValue,
         kAXValueAttribute,
     )
 
-    live = _finder_transaction_editor(binding, snapshot, element_index)
+    live = _finder_transaction_editor(
+        binding,
+        snapshot,
+        element_index,
+        expected_value=Path(str(binding["original_path"])).name,
+    )
     # Keep the opaque-reference check adjacent to the irreversible AX write.
     # The approval pause and editor lookup must not leave a race window in
     # which a moved item receives the approved basename.
@@ -1880,7 +1927,10 @@ def set_finder_rename_value(
     err = AXUIElementSetAttributeValue(
         live, kAXValueAttribute, binding["requested_basename"]
     )
-    if err != 0 or _read_value(live) != binding["requested_basename"]:
+    if (
+        err != 0
+        or _normalized_finder_editor_value(live) != binding["requested_basename"]
+    ):
         raise ComputerUseError(
             "action_failed", "Finder rejected the approved rename value"
         )
@@ -1932,8 +1982,13 @@ def commit_finder_rename(
         )
         result["attempted"] = False
         return result
-    live = _finder_transaction_editor(binding, snapshot, element_index)
-    if _read_value(live) != binding["requested_basename"]:
+    live = _finder_transaction_editor(
+        binding,
+        snapshot,
+        element_index,
+        expected_value=str(binding["requested_basename"]),
+    )
+    if _normalized_finder_editor_value(live) != binding["requested_basename"]:
         raise ComputerUseError(
             "target_drift",
             "Finder rename editor no longer contains the approved basename",
@@ -1962,8 +2017,13 @@ def commit_finder_rename(
         )
         result["attempted"] = False
         return result
-    live = _finder_transaction_editor(binding, snapshot, element_index)
-    if _read_value(live) != binding["requested_basename"]:
+    live = _finder_transaction_editor(
+        binding,
+        snapshot,
+        element_index,
+        expected_value=str(binding["requested_basename"]),
+    )
+    if _normalized_finder_editor_value(live) != binding["requested_basename"]:
         raise ComputerUseError(
             "target_drift", "Finder rename editor changed during focus restoration"
         )
@@ -2006,7 +2066,11 @@ def _finder_rename_binding_key(snapshot: dict) -> tuple[int, str]:
 
 
 def _finder_file_reference_for_editor(
-    live: object, snapshot: dict, *, allow_selected_row_rebind: bool = False
+    live: object,
+    snapshot: dict,
+    *,
+    allow_selected_row_rebind: bool = False,
+    detached_expected_value: str | None = None,
 ) -> object | None:
     """Bind Finder's replacement editor to the original selected item."""
     cell = ax_driver._get(live, "AXParent")
@@ -2038,15 +2102,70 @@ def _finder_file_reference_for_editor(
         # focused editor and selected replacement row. This never authorizes
         # input or relaxes the synthetic-action window/focus guards.
         cell = ax_driver._get(live, "AXParent")
-        if not (
-            allow_selected_row_rebind
-            and live == _focused_ax_element(snapshot["app"])
-            and ax_driver._get(cell, "AXRole") == "AXCell"
+        if not allow_selected_row_rebind:
+            return None
+        focused = live == _focused_ax_element(snapshot["app"])
+        replacement_row = (
+            ax_driver._get(cell, "AXRole") == "AXCell"
             and ax_driver._get(row, "AXRole") == "AXRow"
             and ax_driver._get(row, "AXSelected") is True
-        ):
+        )
+        bound_parent = ax_driver._get(bound_row, "AXParent")
+        selected_rows = [
+            candidate
+            for candidate in ax_driver._as_list(
+                ax_driver._get(bound_parent, "AXChildren")
+            )
+            if ax_driver._get(candidate, "AXRole") == "AXRow"
+            and ax_driver._get(candidate, "AXSelected") is True
+        ]
+        detached_editor = (
+            ax_driver._get(live, "AXRole") == "AXTextField"
+            and ax_driver._get(live, "AXURL") is None
+            and ax_driver._get(cell, "AXRole") == "AXApplication"
+            and ax_driver._get(bound_row, "AXRole") == "AXRow"
+            and ax_driver._get(bound_row, "AXSelected") is True
+            and ax_driver._get(bound_parent, "AXRole") == "AXOutline"
+            and selected_rows == [bound_row]
+            and _normalized_finder_editor_value(live)
+            == (detached_expected_value or Path(bound_path).name)
+        )
+        if not (focused and (replacement_row or detached_editor)):
             return None
     return bound_reference
+
+
+def _finder_transaction_reference(
+    live: object, snapshot: dict, *, detached_expected_value: str | None = None
+) -> object | None:
+    """Resolve the exact selected item behind Finder's inline editor."""
+    selected_row_editor = _is_selected_finder_row_under_focused_outline(snapshot, live)
+    if selected_row_editor:
+        return _finder_file_reference_for_editor(
+            live,
+            snapshot,
+            allow_selected_row_rebind=True,
+            detached_expected_value=detached_expected_value,
+        )
+    # Recent Finder versions expose the active inline editor as a focused,
+    # no-URL AXTextField directly under the app. The retained binding still
+    # has to identify one selected AXRow under an outline and an unchanged
+    # opaque file reference; _finder_file_reference_for_editor proves those
+    # facts before returning it.
+    parent = ax_driver._get(live, "AXParent")
+    if (
+        live == _focused_ax_element(snapshot["app"])
+        and ax_driver._get(live, "AXRole") == "AXTextField"
+        and ax_driver._get(live, "AXURL") is None
+        and ax_driver._get(parent, "AXRole") == "AXApplication"
+    ):
+        return _finder_file_reference_for_editor(
+            live,
+            snapshot,
+            allow_selected_row_rebind=True,
+            detached_expected_value=detached_expected_value,
+        )
+    return None
 
 
 def _clear_finder_rename_binding(snapshot: dict) -> None:
@@ -2163,7 +2282,7 @@ def _finder_inline_rename(
     """
     entry = _element(snapshot, element_index)
     if (
-        str(snapshot.get("app", {}).get("name", "")).casefold() != "finder"
+        not is_finder_snapshot(snapshot)
         or entry.get("role") != "AXTextField"
         or entry.get("parent_role") != "AXCell"
     ):
@@ -2308,8 +2427,7 @@ def press_key(
             if rename_result is not None:
                 return rename_result
             if (
-                str(expected_snapshot.get("app", {}).get("name", "")).casefold()
-                == "finder"
+                is_finder_snapshot(expected_snapshot)
                 and entry.get("role") == "AXTextField"
                 and entry.get("parent_role") == "AXCell"
             ):

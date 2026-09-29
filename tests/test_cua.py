@@ -3896,7 +3896,7 @@ def test_done_cannot_claim_folder_rename_after_unverified_enter(
 
     monkeypatch.setattr(loop_mod, "backend", fake_backend)
     snapshot = {
-        "app": {"name": "Finder"},
+        "app": {"name": "Finder", "bundleId": "com.apple.finder"},
         "elements": [
             {
                 "index": 1,
@@ -3972,7 +3972,7 @@ def test_finder_generic_text_field_enter_does_not_arm_rename_commit(
 
     monkeypatch.setattr(loop_mod, "backend", fake_backend)
     snapshot = {
-        "app": {"name": "Finder", "pid": 42},
+        "app": {"name": "Finder", "bundleId": "com.apple.finder", "pid": 42},
         "window_id": "cg:1",
         "window_index": 0,
         "window": {
@@ -4046,7 +4046,7 @@ def test_finder_disk_verified_fill_allows_done(fake_backend, tmp_path, monkeypat
 
     monkeypatch.setattr(loop_mod, "backend", fake_backend)
     snapshot = {
-        "app": {"name": "Finder"},
+        "app": {"name": "Finder", "bundleId": "com.apple.finder"},
         "elements": [
             {
                 "index": 1,
@@ -4113,7 +4113,7 @@ def test_finder_disk_verified_fill_allows_done(fake_backend, tmp_path, monkeypat
 
 def _finder_transaction_snapshot():
     return {
-        "app": {"name": "Finder", "pid": 42},
+        "app": {"name": "Finder", "bundleId": "com.apple.finder", "pid": 42},
         "window_id": "cg:1",
         "window_index": 0,
         "window": {
@@ -4149,6 +4149,8 @@ def test_finder_rename_denial_precedes_value_write(fake_backend, tmp_path, monke
 
     monkeypatch.setattr(loop_mod, "backend", fake_backend)
     snapshot = _finder_transaction_snapshot()
+    snapshot["app"]["name"] = "pid:93136"
+    snapshot["elements"][0]["parent_role"] = ""
     monkeypatch.setattr(fake_backend, "get_app_state", lambda *a, **k: snapshot)
     binding = {"original_path": "/tmp/Before", "requested_basename": "After"}
     monkeypatch.setattr(fake_backend, "inspect_finder_rename", lambda *a, **k: binding)

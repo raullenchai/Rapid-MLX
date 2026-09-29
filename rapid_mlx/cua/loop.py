@@ -737,9 +737,8 @@ class CUARun:
         finder_rename: dict[str, Any] | None = None
         finder_rename_fill = (
             plan["action"] == "fill"
-            and str(snapshot.get("app", {}).get("name", "")).casefold() == "finder"
+            and backend.is_finder_snapshot(snapshot)
             and str(target.get("role", "")) == "AXTextField"
-            and str(target.get("parent_role", "")) == "AXCell"
         )
         if finder_rename_fill:
             # A new rename proposal supersedes any staged transaction before
@@ -1248,9 +1247,8 @@ class CUARun:
             and verification is True
             and executed.get("verification_source") == "finder_file_reference_basename"
         )
-        observed_app_name = str(snapshot.get("app", {}).get("name", self.app))
         finder_rename_unverified = (
-            observed_app_name.casefold() == "finder"
+            backend.is_finder_snapshot(snapshot)
             and plan["action"] == "press"
             and str(plan.get("key", "")).casefold() in {"enter", "return"}
             and str(target.get("role", "")) == "AXTextField"
