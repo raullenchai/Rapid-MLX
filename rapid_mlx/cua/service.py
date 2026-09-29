@@ -73,7 +73,9 @@ class _RunCreateIdentity(NamedTuple):
     max_steps: int
     human_login: bool
     window_id: str | None
-    targets: tuple[tuple[str, str, int, str, str], ...]
+    bundle_id: str | None
+    process_start_time: float | None
+    targets: tuple[tuple[str, str, int, str, str, str | None, float | None], ...]
     initial_target_id: str | None
 
 
@@ -312,6 +314,8 @@ class CUAService:
         max_steps: int = 12,
         human_login: bool = False,
         window_id: str | None = None,
+        bundle_id: str | None = None,
+        process_start_time: float | None = None,
         client_request_id: str | None = None,
         targets: list[dict] | None = None,
         initial_target_id: str | None = None,
@@ -362,6 +366,8 @@ class CUAService:
             max_steps=max_steps,
             human_login=human_login,
             window_id=window_id,
+            bundle_id=bundle_id,
+            process_start_time=process_start_time,
             targets=tuple(
                 (
                     str(target["target_id"]),
@@ -369,6 +375,8 @@ class CUAService:
                     int(target["pid"]),
                     str(target["window_id"]),
                     _normalize_allowed_domain(str(target.get("allowed_domain", ""))),
+                    target.get("bundle_id"),
+                    target.get("process_start_time"),
                 )
                 for target in (targets or [])
             ),
@@ -412,6 +420,8 @@ class CUAService:
             max_steps,
             human_login,
             window_id,
+            bundle_id,
+            process_start_time,
             requested_targets,
             initial_target_id,
         ) = identity
@@ -447,12 +457,26 @@ class CUAService:
                 pid,
                 requested_window,
                 target_domain,
+                expected_bundle,
+                expected_start_time,
             ) in requested_targets:
                 selection = await asyncio.to_thread(
                     backend.validate_window, selector, requested_window
                 )
                 app_info = dict(selection["app"])
                 if int(app_info.get("pid", -1)) != pid:
+                    raise ValueError(f"target {target_id!r} process identity changed")
+                if (
+                    expected_bundle is not None
+                    and str(app_info.get("bundleId") or "").casefold()
+                    != expected_bundle.casefold()
+                ):
+                    raise ValueError(f"target {target_id!r} app identity changed")
+                if (
+                    expected_start_time is not None
+                    and float(app_info.get("processStartTime") or 0)
+                    != expected_start_time
+                ):
                     raise ValueError(f"target {target_id!r} process identity changed")
                 bundle = str(app_info.get("bundleId") or "").lower()
                 browser = bundle in {
@@ -491,6 +515,18 @@ class CUAService:
             selection = await asyncio.to_thread(backend.validate_window, app, window_id)
             selected_window_id = str(selection["window_id"])
             selected_app = dict(selection["app"])
+            if (
+                bundle_id is not None
+                and str(selected_app.get("bundleId") or "").casefold()
+                != bundle_id.casefold()
+            ):
+                raise ValueError("selected app identity changed")
+            if (
+                process_start_time is not None
+                and float(selected_app.get("processStartTime") or 0)
+                != process_start_time
+            ):
+                raise ValueError("selected process identity changed")
         if self._closing:
             raise CUARunConflictError("CUA service is shutting down")
         run_id = uuid.uuid4().hex[:12]

@@ -71,7 +71,14 @@ def client(monkeypatch, tmp_path, authorized):
     monkeypatch.setattr(
         backend_mod,
         "list_apps",
-        lambda: [{"name": "Finder", "bundleId": "com.apple.finder", "pid": 42}],
+        lambda: [
+            {
+                "name": "Finder",
+                "bundleId": "com.apple.finder",
+                "pid": 42,
+                "processStartTime": 1000.0,
+            }
+        ],
     )
     monkeypatch.setattr(
         backend_mod,
@@ -94,7 +101,12 @@ def client(monkeypatch, tmp_path, authorized):
         lambda: [
             {
                 "catalog_id": "w1",
-                "app": {"name": "Finder", "bundleId": "com.apple.finder", "pid": 42},
+                "app": {
+                    "name": "Finder",
+                    "bundleId": "com.apple.finder",
+                    "pid": 42,
+                    "processStartTime": 1000.0,
+                },
                 "window": {
                     "window_id": "cg:123",
                     "title": "Documents",
@@ -271,7 +283,47 @@ def test_target_resolver_silently_resolves_one_explicit_nonbrowser_window(client
     assert body["approval"] is None
     assert body["targets"][0]["window_id"] == "cg:123"
     assert body["targets"][0]["bundle_id"] == "com.apple.finder"
+    assert body["targets"][0]["process_start_time"] == 1000.0
     assert body["targets"][0]["display_name"] == "Finder — Documents"
+
+
+def test_target_resolver_does_not_treat_app_name_substring_as_explicit(
+    client, monkeypatch
+):
+    from rapid_mlx.computer_use import backend
+
+    monkeypatch.setattr(
+        backend,
+        "discover_target_windows",
+        lambda: [
+            {
+                "catalog_id": "w1",
+                "app": {
+                    "name": "Mail",
+                    "bundleId": "com.apple.mail",
+                    "pid": 44,
+                    "processStartTime": 1003.0,
+                },
+                "window": {"window_id": "cg:125", "title": "Inbox"},
+                "z_order": 0,
+            }
+        ],
+    )
+    called = False
+
+    async def choose(self, goal, catalog):
+        nonlocal called
+        called = True
+        return {"target_ids": ["a1"], "reason": "model-selected app"}
+
+    monkeypatch.setattr(cua_routes.Planner, "resolve_targets", choose)
+    body = client.post(
+        "/v1/cua/targets/resolve",
+        headers=AUTH,
+        json={"goal": "Send an email", "planner": "local-9b"},
+    ).json()
+    assert called is True
+    assert body["status"] == "needs_approval"
 
 
 def test_target_resolver_rejects_unknown_model_catalog_id(client, monkeypatch):
@@ -297,7 +349,12 @@ def test_target_resolver_cross_app_choice_requires_approval(client, monkeypatch)
         lambda: [
             {
                 "catalog_id": "w1",
-                "app": {"name": "Finder", "bundleId": "com.apple.finder", "pid": 42},
+                "app": {
+                    "name": "Finder",
+                    "bundleId": "com.apple.finder",
+                    "pid": 42,
+                    "processStartTime": 1000.0,
+                },
                 "window": {"window_id": "cg:123", "title": "Documents"},
                 "z_order": 0,
             },
@@ -307,6 +364,7 @@ def test_target_resolver_cross_app_choice_requires_approval(client, monkeypatch)
                     "name": "TextEdit",
                     "bundleId": "com.apple.TextEdit",
                     "pid": 43,
+                    "processStartTime": 1001.0,
                 },
                 "window": {"window_id": "cg:456", "title": "Notes"},
                 "z_order": 1,
@@ -389,13 +447,23 @@ def test_target_resolver_refuses_to_guess_among_same_app_windows(client, monkeyp
         lambda: [
             {
                 "catalog_id": "w1",
-                "app": {"name": "Finder", "bundleId": "com.apple.finder", "pid": 42},
+                "app": {
+                    "name": "Finder",
+                    "bundleId": "com.apple.finder",
+                    "pid": 42,
+                    "processStartTime": 1000.0,
+                },
                 "window": {"window_id": "cg:123", "title": "Private Project"},
                 "z_order": 0,
             },
             {
                 "catalog_id": "w2",
-                "app": {"name": "Finder", "bundleId": "com.apple.finder", "pid": 42},
+                "app": {
+                    "name": "Finder",
+                    "bundleId": "com.apple.finder",
+                    "pid": 42,
+                    "processStartTime": 1000.0,
+                },
                 "window": {"window_id": "cg:124", "title": "Personal Files"},
                 "z_order": 1,
             },
@@ -420,7 +488,12 @@ def test_target_resolver_browser_requires_trusted_domain(client, monkeypatch):
         lambda: [
             {
                 "catalog_id": "w1",
-                "app": {"name": "Safari", "bundleId": "com.apple.Safari", "pid": 50},
+                "app": {
+                    "name": "Safari",
+                    "bundleId": "com.apple.Safari",
+                    "pid": 50,
+                    "processStartTime": 1002.0,
+                },
                 "window": {"window_id": "cg:789", "title": "Untrusted title"},
                 "z_order": 0,
             }
@@ -2029,13 +2102,46 @@ def test_multi_target_freeze_rejects_changed_pid_identity(client, monkeypatch):
     assert client.fresh_service.list_runs() == []
 
 
+def test_resolved_target_freeze_rejects_reused_process_identity(client, monkeypatch):
+    from rapid_mlx.computer_use import backend as backend_mod
+
+    monkeypatch.setattr(
+        backend_mod,
+        "validate_window",
+        lambda app, window_id: {
+            "app": {
+                "name": "Finder",
+                "bundleId": "com.apple.finder",
+                "pid": 42,
+                "processStartTime": 2000.0,
+            },
+            "window_id": window_id,
+        },
+    )
+    response = _post_run(
+        client,
+        app="pid:42",
+        window_id="cg:1",
+        bundle_id="com.apple.finder",
+        process_start_time=1000.0,
+    )
+    assert response.status_code == 400
+    assert "process identity changed" in response.text
+    assert client.fresh_service.list_runs() == []
+
+
 def test_service_shutdown_during_window_freeze_does_not_commit_run(client, monkeypatch):
     from rapid_mlx.computer_use import backend as backend_mod
 
     def shutdown_during_validation(app, window_id):
         client.fresh_service._closing = True
         return {
-            "app": {"name": "Finder", "bundleId": "com.apple.finder", "pid": 42},
+            "app": {
+                "name": "Finder",
+                "bundleId": "com.apple.finder",
+                "pid": 42,
+                "processStartTime": 1000.0,
+            },
             "window_id": window_id,
         }
 
