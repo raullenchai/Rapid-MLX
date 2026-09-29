@@ -2000,6 +2000,7 @@ def test_raise_selected_window_requires_snapshot_identity():
         ("process_start_drift", "target_drift"),
         ("activated_process_start_drift", "target_drift"),
         ("window_drift", "target_drift"),
+        ("activated_window_drift", "target_drift"),
         ("post_activate_ax_drift", "target_occluded"),
         ("raise_rejected", "target_occluded"),
         ("post_raise_drift", "target_drift"),
@@ -2037,8 +2038,10 @@ def test_raise_selected_window_fails_closed_across_identity_boundaries(
         nonlocal selections
         selections += 1
         current = dict(snapshot["window"])
-        if failure == "window_drift" or (
-            failure == "post_raise_drift" and selections > 2
+        if (
+            failure == "window_drift"
+            or (failure == "activated_window_drift" and selections > 1)
+            or (failure == "post_raise_drift" and selections > 2)
         ):
             current["x"] += 20
         return current
@@ -2082,7 +2085,7 @@ def test_raise_selected_window_fails_closed_across_identity_boundaries(
     if failure == "process_start_drift":
         assert resolutions == [False]
         assert actions == []
-    elif failure == "activated_process_start_drift":
+    elif failure in {"activated_process_start_drift", "activated_window_drift"}:
         assert resolutions == [False, True]
         assert actions == []
 
