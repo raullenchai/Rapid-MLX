@@ -334,6 +334,70 @@ def test_keyboard_activation_without_focused_target_requires_approval(key):
     assert requirement.target == "focused control (unverified)"
 
 
+@pytest.mark.parametrize("label", ["OK", "Continue"])
+def test_ambiguous_focused_activation_requires_approval(label):
+    requirement = gates.consequential_action(
+        {
+            "action": "press",
+            "element_index": 1,
+            "key": "Enter",
+            "step_instruction": "activate focused control",
+        },
+        label,
+        target_role="AXButton",
+        app_name="Example App",
+    )
+
+    assert requirement is not None
+    assert requirement.target == label
+
+
+@pytest.mark.parametrize(
+    ("app_name", "role", "label"),
+    [
+        ("Safari", "AXSearchField", "Search"),
+        ("TextEdit", "AXTextArea", "Body"),
+        ("Finder", "AXTextField", "Folder name"),
+        ("Finder", "AXRow", "Selected folder"),
+    ],
+)
+def test_focused_input_and_finder_rename_activation_stay_ungated(
+    app_name, role, label
+):
+    assert (
+        gates.consequential_action(
+            {
+                "action": "press",
+                "element_index": 1,
+                "key": "Enter",
+                "step_instruction": "continue editing",
+            },
+            label,
+            target_role=role,
+            app_name=app_name,
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("key", ["Escape", "Tab", "ArrowDown", "ArrowUp"])
+def test_nonactivating_safe_keys_stay_ungated(key):
+    assert (
+        gates.consequential_action(
+            {
+                "action": "press",
+                "element_index": 1,
+                "key": key,
+                "step_instruction": "move focus",
+            },
+            "Continue",
+            target_role="AXButton",
+            app_name="Example App",
+        )
+        is None
+    )
+
+
 @pytest.mark.parametrize(
     "key",
     [
@@ -4818,3 +4882,85 @@ def test_focused_consequential_button_enter_requires_approval(
         "reason": "external_commit not approved",
     }
     assert dispatched == []
+
+
+def test_unverified_approved_keyboard_commit_cannot_finish_done(
+    fake_backend, tmp_path, monkeypatch
+):
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    snapshot = {
+        "app": {"name": "Mail", "bundleId": "com.example.Mail", "pid": 42},
+        "window_index": 0,
+        "window_id": "cg:1",
+        "window": {
+            "window_id": "cg:1",
+            "title": "Inbox",
+            "x": 0,
+            "y": 0,
+            "width": 500,
+            "height": 400,
+        },
+        "elements": [
+            {
+                "index": 1,
+                "label": "Send",
+                "role": "AXButton",
+                "x": 10,
+                "y": 10,
+                "width": 40,
+                "height": 20,
+                "center": [30, 20],
+                "source_window_id": "cg:1",
+            }
+        ],
+        "tree_text": "[1] AXButton Send",
+    }
+    monkeypatch.setattr(fake_backend, "get_app_state", lambda *a, **k: dict(snapshot))
+    monkeypatch.setattr(
+        fake_backend,
+        "press_key",
+        lambda *a, **k: {"ok": True, "key": "Enter"},
+    )
+    approvals = []
+
+    async def approve(reason):
+        approvals.append(reason)
+        return True
+
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path),
+        "Mail",
+        "send the message",
+        tmp_path / "approved-unverified-enter",
+        gate=approve,
+    )
+    planner = _FakePlanner(
+        [
+            {
+                "action": "press",
+                "step_instruction": "activate focused control",
+                "element_index": 1,
+                "key": "Enter",
+                "final_summary": "",
+            },
+            {
+                "action": "done",
+                "step_instruction": "finish",
+                "element_index": -1,
+                "final_summary": "Message sent successfully.",
+            },
+        ]
+    )
+
+    assert asyncio.run(runner.step(planner, 1)) is None
+    assert len(approvals) == 1
+    assert runner.trace["steps"][-1]["protocol_outcome"] == "uncertain"
+    assert runner.trace["steps"][-1]["execution"]["executed"] is True
+    assert runner._last_commit_unverified is True
+    assert asyncio.run(runner.step(planner, 2)) is None
+    assert runner.trace["steps"][-1]["completion_rejected"] == (
+        "the previous commit could not be verified; use partial or blocked unless "
+        "fresh evidence proves completion"
+    )

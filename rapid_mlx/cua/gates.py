@@ -71,7 +71,11 @@ def is_keyboard_activation(plan: dict) -> bool:
 
 
 def consequential_action(
-    plan: dict, target_label: str = ""
+    plan: dict,
+    target_label: str = "",
+    *,
+    target_role: str = "",
+    app_name: str = "",
 ) -> ApprovalRequirement | None:
     """Return an exact approval request for an externally committing action."""
     action = str(plan.get("action", ""))
@@ -86,13 +90,31 @@ def consequential_action(
         )
     if action not in {"click", "press"}:
         return None
-    if is_keyboard_activation(plan) and not target_label.strip():
-        return ApprovalRequirement(
-            kind="external_commit",
-            action=action,
-            target="focused control (unverified)",
-            instruction=instruction[:240],
-        )
+    if is_keyboard_activation(plan):
+        label = target_label.strip()
+        role = target_role.strip()
+        finder_input = app_name.casefold() == "finder" and role in {
+            "AXRow",
+            "AXTextField",
+        }
+        editable_input = role in {
+            "AXTextField",
+            "AXTextArea",
+            "AXComboBox",
+            "AXSearchField",
+        }
+        read_only_activation = bool(READ_ONLY_SUBMIT_RE.search(label))
+        if finder_input or (editable_input and not CONSEQUENTIAL_RE.search(label)):
+            return None
+        if read_only_activation and not CONSEQUENTIAL_RE.search(label):
+            return None
+        if not label or not CONSEQUENTIAL_RE.search(f"{label} {instruction}"):
+            return ApprovalRequirement(
+                kind="external_commit",
+                action=action,
+                target=label[:160] or "focused control (unverified)",
+                instruction=instruction[:240],
+            )
     target = target_label.strip() or f"element {plan.get('element_index', -1)}"
     haystack = f"{target_label} {instruction}"
     if not CONSEQUENTIAL_RE.search(haystack):
