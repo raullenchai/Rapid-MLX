@@ -1764,6 +1764,199 @@ def _finder_file_reference_path(value: object) -> str | None:
     return str(path) if path else None
 
 
+def _finder_rename_path_state(binding: dict[str, Any]) -> tuple[str, str]:
+    """Classify the exact bound Finder item without trusting a rebuilt AX tree."""
+    actual_path = _finder_file_reference_path(binding["file_reference"])
+    if actual_path is None:
+        raise ComputerUseError(
+            "target_drift", "Finder rename file reference is no longer available"
+        )
+    original_path = str(binding["original_path"])
+    requested_path = str(Path(original_path).with_name(binding["requested_basename"]))
+    if actual_path == original_path:
+        return "unchanged", actual_path
+    if actual_path == requested_path:
+        return "committed", actual_path
+    raise ComputerUseError(
+        "target_drift", "Finder rename target moved or changed unexpectedly"
+    )
+
+
+def _finder_transaction_editor(
+    binding: dict[str, Any], snapshot: dict, element_index: int
+) -> object:
+    """Revalidate the exact selected Finder editor captured before approval."""
+    if (
+        int(snapshot.get("app", {}).get("pid", -1)) != binding["pid"]
+        or str(snapshot.get("window_id") or "") != binding["window_id"]
+    ):
+        raise ComputerUseError(
+            "target_drift", "Finder rename app or window changed after approval"
+        )
+    entry = _element(snapshot, element_index)
+    if entry.get("role") != "AXTextField" or entry.get("parent_role") != "AXCell":
+        raise ComputerUseError(
+            "target_drift", "Finder rename editor shape changed after approval"
+        )
+    live = _live_element(snapshot, element_index, validate_point=False)
+    if live is None or not _is_selected_finder_row_under_focused_outline(
+        snapshot, live
+    ):
+        raise ComputerUseError(
+            "target_drift", "Finder rename editor is no longer in the selected row"
+        )
+    reference = _finder_file_reference_for_editor(
+        live, snapshot, allow_selected_row_rebind=True
+    )
+    if reference != binding["file_reference"]:
+        raise ComputerUseError(
+            "target_drift", "Finder rename editor no longer identifies the approved item"
+        )
+    return live
+
+
+def inspect_finder_rename(
+    snapshot: dict, element_index: int, requested_basename: str
+) -> dict[str, Any]:
+    """Bind a proposed inline rename to one selected Finder file reference."""
+    if str(snapshot.get("app", {}).get("name", "")).casefold() != "finder":
+        raise ComputerUseError("invalid_argument", "target is not a Finder rename")
+    requested = requested_basename.replace("\u200b", "").replace("\ufeff", "")
+    if not requested or requested != Path(requested).name:
+        raise ComputerUseError("invalid_argument", "Finder rename requires one basename")
+    live = _live_element(snapshot, element_index, validate_point=False)
+    if live is None or not _is_selected_finder_row_under_focused_outline(
+        snapshot, live
+    ):
+        raise ComputerUseError(
+            "target_drift",
+            "Finder rename target is not the selected item under the focused outline",
+        )
+    entry = _element(snapshot, element_index)
+    if entry.get("role") != "AXTextField" or entry.get("parent_role") != "AXCell":
+        raise ComputerUseError("target_drift", "Finder rename target is not an item editor")
+    reference = _finder_file_reference_for_editor(live, snapshot)
+    original_path = _finder_file_reference_path(reference) if reference is not None else None
+    if original_path is None:
+        raise ComputerUseError(
+            "target_drift", "Finder rename target has no stable file reference"
+        )
+    binding: dict[str, Any] = {
+        "pid": int(snapshot["app"]["pid"]),
+        "window_id": str(snapshot.get("window_id") or ""),
+        "file_reference": reference,
+        "original_path": original_path,
+        "requested_basename": requested,
+    }
+    _finder_rename_path_state(binding)
+    return binding
+
+
+def set_finder_rename_value(
+    app: str,
+    snapshot: dict,
+    element_index: int,
+    binding: dict[str, Any],
+) -> dict:
+    """Write an approved Finder basename only while its exact binding is valid."""
+    _finder_rename_path_state(binding)
+    live = _finder_transaction_editor(binding, snapshot, element_index)
+    from ApplicationServices import (  # type: ignore[import-untyped]
+        AXUIElementSetAttributeValue,
+        kAXValueAttribute,
+    )
+
+    err = AXUIElementSetAttributeValue(
+        live, kAXValueAttribute, binding["requested_basename"]
+    )
+    if err != 0 or _read_value(live) != binding["requested_basename"]:
+        raise ComputerUseError("action_failed", "Finder rejected the approved rename value")
+    state, actual_path = _finder_rename_path_state(binding)
+    if state == "committed":
+        _clear_finder_rename_binding(snapshot)
+    return _finish_action(
+        app,
+        snapshot,
+        {
+            "mode": "AXSetValue",
+            "element_index": element_index,
+            "verification_source": (
+                "finder_file_reference_basename" if state == "committed" else "pending"
+            ),
+            "actual_basename": Path(actual_path).name,
+        },
+        verified=True if state == "committed" else None,
+        verification=(
+            "Finder file-reference URL resolved to the requested basename"
+            if state == "committed"
+            else "approved Finder rename value is staged but not committed"
+        ),
+    )
+
+
+def commit_finder_rename(
+    app: str,
+    snapshot: dict,
+    element_index: int,
+    binding: dict[str, Any],
+) -> dict:
+    """Commit one previously approved Finder rename, or verify it already landed."""
+    state, actual_path = _finder_rename_path_state(binding)
+    if state == "committed":
+        _clear_finder_rename_binding(snapshot)
+        result = _finish_action(
+            app,
+            snapshot,
+            {
+                "mode": "FinderRenameAlreadyCommitted",
+                "key": "enter",
+                "executed": False,
+                "verification_source": "finder_file_reference_basename",
+                "actual_basename": Path(actual_path).name,
+            },
+            verified=True,
+            verification="Finder file-reference URL already resolved to the requested basename",
+        )
+        result["attempted"] = False
+        return result
+    live = _finder_transaction_editor(binding, snapshot, element_index)
+    if _read_value(live) != binding["requested_basename"]:
+        raise ComputerUseError(
+            "target_drift", "Finder rename editor no longer contains the approved basename"
+        )
+    prepared = _prepare_synthetic_action(app, None, snapshot, element_index)
+    inspect_focused_element(prepared, element_index, allow_selected_finder_row=True)
+    _finder_rename_path_state(binding)
+    ax_driver._press_key(KEY_ALIASES["enter"])
+    actual_path = binding["original_path"]
+    for _ in range(10):
+        state, actual_path = _finder_rename_path_state(binding)
+        if state == "committed":
+            break
+        time.sleep(0.1)
+    verified = state == "committed"
+    if verified:
+        _clear_finder_rename_binding(snapshot)
+    return _finish_action(
+        app,
+        snapshot,
+        {
+            "ok": verified,
+            "mode": "CGEvent-keycode",
+            "key": "enter",
+            "executed": True,
+            "verification_source": "finder_file_reference_basename",
+            "actual_basename": Path(actual_path).name,
+        },
+        verified=verified,
+        verification=(
+            "Finder file-reference URL resolved to the requested basename"
+            if verified
+            else "Finder file-reference URL did not resolve to the requested basename"
+        ),
+    )
+
+
 def _finder_rename_binding_key(snapshot: dict) -> tuple[int, str]:
     return int(snapshot["app"]["pid"]), str(snapshot.get("window_id") or "")
 

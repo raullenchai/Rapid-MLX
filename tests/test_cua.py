@@ -4060,7 +4060,15 @@ def test_finder_disk_verified_fill_allows_done(fake_backend, tmp_path, monkeypat
     monkeypatch.setattr(fake_backend, "get_app_state", lambda *a, **k: dict(snapshot))
     monkeypatch.setattr(
         fake_backend,
-        "set_value",
+        "inspect_finder_rename",
+        lambda *a, **k: {
+            "original_path": "/tmp/Old Folder",
+            "requested_basename": "Verified Folder",
+        },
+    )
+    monkeypatch.setattr(
+        fake_backend,
+        "set_finder_rename_value",
         lambda *a, **k: {
             "ok": True,
             "executed": True,
@@ -4074,6 +4082,7 @@ def test_finder_disk_verified_fill_allows_done(fake_backend, tmp_path, monkeypat
         "Finder",
         "rename folder to Verified Folder",
         tmp_path / "verified-finder-rename",
+        gate=lambda _reason: asyncio.sleep(0, result=True),
     )
     planner = _FakePlanner(
         [
@@ -4099,6 +4108,173 @@ def test_finder_disk_verified_fill_allows_done(fake_backend, tmp_path, monkeypat
     assert asyncio.run(runner.step(planner, 2)) == {
         "status": "done",
         "summary": "Renamed and verified the folder.",
+    }
+
+
+def _finder_transaction_snapshot():
+    return {
+        "app": {"name": "Finder", "pid": 42},
+        "window_id": "cg:1",
+        "window_index": 0,
+        "window": {
+            "window_id": "cg:1",
+            "title": "Files",
+            "x": 0,
+            "y": 0,
+            "width": 500,
+            "height": 400,
+        },
+        "elements": [
+            {
+                "index": 1,
+                "label": "Before",
+                "role": "AXTextField",
+                "parent_role": "AXCell",
+                "x": 10,
+                "y": 10,
+                "width": 100,
+                "height": 20,
+                "center": [60, 20],
+                "source_window_id": "cg:1",
+            }
+        ],
+        "tree_text": "[1] AXTextField Before",
+    }
+
+
+def test_finder_rename_denial_precedes_value_write(
+    fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    snapshot = _finder_transaction_snapshot()
+    monkeypatch.setattr(fake_backend, "get_app_state", lambda *a, **k: snapshot)
+    binding = {"original_path": "/tmp/Before", "requested_basename": "After"}
+    monkeypatch.setattr(fake_backend, "inspect_finder_rename", lambda *a, **k: binding)
+    writes = []
+    monkeypatch.setattr(
+        fake_backend,
+        "set_finder_rename_value",
+        lambda *a, **k: writes.append(True) or {"verified": None},
+    )
+
+    async def deny(_reason):
+        assert writes == []
+        return False
+
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path), "Finder", "rename Before to After", tmp_path / "deny",
+        gate=deny,
+    )
+    planner = _FakePlanner(
+        [{"action": "fill", "step_instruction": "rename item", "element_index": 1,
+          "text": "After", "final_summary": ""}]
+    )
+
+    result = asyncio.run(runner.step(planner, 1))
+    assert result == {"status": "stopped", "reason": "external_commit not approved"}
+    assert writes == []
+
+
+def test_finder_rename_fill_fails_closed_when_binding_is_untrusted(
+    fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.computer_use.errors import ComputerUseError
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    snapshot = _finder_transaction_snapshot()
+    monkeypatch.setattr(fake_backend, "get_app_state", lambda *a, **k: snapshot)
+    monkeypatch.setattr(
+        fake_backend,
+        "inspect_finder_rename",
+        lambda *a, **k: (_ for _ in ()).throw(
+            ComputerUseError("target_drift", "Finder reference changed")
+        ),
+    )
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path), "Finder", "rename Before to After", tmp_path / "drift"
+    )
+    planner = _FakePlanner(
+        [{"action": "fill", "step_instruction": "rename item", "element_index": 1,
+          "text": "After", "final_summary": ""}]
+    )
+
+    result = asyncio.run(runner.step(planner, 1))
+    assert result == {
+        "status": "stopped", "reason": "Finder reference changed", "error": "target_drift"
+    }
+
+
+def test_finder_rename_approval_is_reused_and_focus_loss_is_verified(
+    fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    snapshot = _finder_transaction_snapshot()
+    monkeypatch.setattr(fake_backend, "get_app_state", lambda *a, **k: snapshot)
+    binding = {"original_path": "/tmp/Before", "requested_basename": "After"}
+    monkeypatch.setattr(fake_backend, "inspect_finder_rename", lambda *a, **k: binding)
+    monkeypatch.setattr(
+        fake_backend,
+        "set_finder_rename_value",
+        lambda *a, **k: {
+            "ok": True,
+            "executed": True,
+            "verified": None,
+            "verification_source": "pending",
+        },
+    )
+    commits = []
+    monkeypatch.setattr(
+        fake_backend,
+        "commit_finder_rename",
+        lambda *a, **k: commits.append(True) or {
+            "ok": True,
+            "executed": False,
+            "attempted": False,
+            "verified": True,
+            "verification_source": "finder_file_reference_basename",
+            "actual_basename": "After",
+        },
+    )
+    approvals = []
+
+    async def approve(reason):
+        approvals.append(reason)
+        return True
+
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path), "Finder", "rename Before to After", tmp_path / "approve",
+        gate=approve,
+    )
+    planner = _FakePlanner(
+        [
+            {"action": "fill", "step_instruction": "set the new name", "element_index": 1,
+             "text": "After", "final_summary": ""},
+            {"action": "press", "step_instruction": "commit the rename", "element_index": 1,
+             "key": "Enter", "final_summary": ""},
+            {"action": "done", "step_instruction": "finish", "element_index": -1,
+             "final_summary": "Renamed."},
+        ]
+    )
+
+    assert asyncio.run(runner.step(planner, 1)) is None
+    assert runner._last_commit_unverified is True
+    assert asyncio.run(runner.step(planner, 2)) is None
+    assert len(approvals) == 1
+    assert commits == [True]
+    assert runner._last_finder_rename_verified is True
+    assert asyncio.run(runner.step(planner, 3)) == {
+        "status": "done", "summary": "Renamed."
     }
 
 

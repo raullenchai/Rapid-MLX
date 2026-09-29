@@ -98,6 +98,7 @@ class CUARun:
         self._last_execution_failed = False
         self._last_commit_unverified = False
         self._last_finder_rename_verified = False
+        self._approved_finder_rename: dict[str, Any] | None = None
         self._failed_completion_rejections = 0
         self._trusted_transient_window_id: str | None = None
         self._empty_snapshots = 0
@@ -464,6 +465,7 @@ class CUARun:
         plan: dict,
         snapshot: dict,
         save_identity: tuple[str, ...] | None = None,
+        finder_rename: dict[str, Any] | None = None,
     ) -> dict:
         action = plan["action"]
         index = plan.get("element_index", -1)
@@ -474,15 +476,29 @@ class CUARun:
                     backend.click(self.backend_app, index, expected_snapshot=snapshot)
                 )
             elif action == "fill":
-                result.update(
-                    backend.set_value(
-                        self.backend_app,
-                        index,
-                        plan.get("text", ""),
-                        expected_snapshot=snapshot,
+                if finder_rename is not None:
+                    result.update(
+                        backend.set_finder_rename_value(
+                            self.backend_app, snapshot, index, finder_rename
+                        )
                     )
-                )
+                else:
+                    result.update(
+                        backend.set_value(
+                            self.backend_app,
+                            index,
+                            plan.get("text", ""),
+                            expected_snapshot=snapshot,
+                        )
+                    )
             elif action == "press":
+                if finder_rename is not None:
+                    result.update(
+                        backend.commit_finder_rename(
+                            self.backend_app, snapshot, index, finder_rename
+                        )
+                    )
+                    return result
                 if gates.is_keyboard_activation(plan):
                     # Enter and Space activate whichever control has keyboard
                     # focus. Re-bind the serialized index to the exact live AX
@@ -718,6 +734,39 @@ class CUARun:
             target_label = str(target.get("label", ""))
         save_identity: tuple[str, ...] | None = None
         save_persistence_verified = False
+        finder_rename: dict[str, Any] | None = None
+        finder_rename_fill = (
+            plan["action"] == "fill"
+            and str(snapshot.get("app", {}).get("name", "")).casefold() == "finder"
+            and str(target.get("role", "")) == "AXTextField"
+            and str(target.get("parent_role", "")) == "AXCell"
+        )
+        if finder_rename_fill:
+            try:
+                finder_rename = backend.inspect_finder_rename(
+                    snapshot,
+                    plan.get("element_index", -1),
+                    str(plan.get("text", "")),
+                )
+            except ComputerUseError as exc:
+                self._record(
+                    {
+                        "step": step_no,
+                        "plan": plan,
+                        "stop": exc.message,
+                        "error_code": exc.code,
+                    }
+                )
+                return {"status": "stopped", "reason": exc.message, "error": exc.code}
+            target_label = Path(str(finder_rename["original_path"])).name
+        elif (
+            plan["action"] == "press"
+            and str(plan.get("key", "")).casefold() in {"enter", "return"}
+            and self._approved_finder_rename is not None
+        ):
+            finder_rename = self._approved_finder_rename
+        elif plan["action"] not in {"done", "partial", "blocked"}:
+            self._approved_finder_rename = None
         if plan["action"] == "save":
             try:
                 save_binding = backend.inspect_save_document(self.backend_app, snapshot)
@@ -830,13 +879,32 @@ class CUARun:
                 self._record({"step": step_no, "plan": plan, "gate": "timeout"})
                 return {"status": "stopped", "reason": "sign-in gate not approved"}
 
-        approval = gates.consequential_action(
-            plan,
-            target_label,
-            target_role=str(target.get("role", "")),
-            target_parent_role=str(target.get("parent_role", "")),
-            app_name=str(snapshot.get("app", {}).get("name", self.app)),
+        approval = (
+            gates.ApprovalRequirement(
+                kind="external_commit",
+                action="rename",
+                target=(
+                    f"{target_label} to {finder_rename['requested_basename']}"
+                    if finder_rename is not None
+                    else target_label
+                ),
+                instruction=plan["step_instruction"],
+            )
+            if finder_rename_fill
+            else None
         )
+        if approval is None and not (
+            plan["action"] == "press"
+            and finder_rename is self._approved_finder_rename
+            and finder_rename is not None
+        ):
+            approval = gates.consequential_action(
+                plan,
+                target_label,
+                target_role=str(target.get("role", "")),
+                target_parent_role=str(target.get("parent_role", "")),
+                app_name=str(snapshot.get("app", {}).get("name", self.app)),
+            )
         if approval is not None:
             approval_reason = f"{approval.reason}; app={self.app!r}"
             approved = await self._request_approval(
@@ -850,10 +918,18 @@ class CUARun:
                     "reason": f"{approval.kind} not approved",
                 }
 
+            # Finder rename authority is bound to its opaque file reference.
+            # Revalidating that reference adjacent to AXSetValue avoids relying
+            # on the AX tree rebuilt by the approval card's focus transition.
+            if finder_rename_fill:
+                self._approved_finder_rename = finder_rename
             # Approval binds to the observed target. Re-observe after the human
             # pause and fail closed if the indexed control or domain changed.
             try:
-                fresh = self._get_app_state(screenshot=not planner.text_only)
+                if finder_rename_fill:
+                    fresh = snapshot
+                else:
+                    fresh = self._get_app_state(screenshot=not planner.text_only)
             except ComputerUseError as exc:
                 reason = (
                     f"selected window unavailable after approval: {exc.message}"
@@ -878,7 +954,7 @@ class CUARun:
             fresh_target_identity = self._target_identity(fresh_target)
             original_window_identity = self._window_identity(snapshot)
             fresh_window_identity = self._window_identity(fresh)
-            stale = any(
+            stale = False if finder_rename_fill else any(
                 (
                     plan["action"] != "save" and original_target_identity is None,
                     plan["action"] != "save" and fresh_target_identity is None,
@@ -966,7 +1042,13 @@ class CUARun:
             return {"status": "stopped", "reason": pre_action_guard}
         url_now = pre_action_url
         before_sig = _tree_signature(snapshot)
-        executed = await self._execute(plan, snapshot, save_identity)
+        executed = await self._execute(plan, snapshot, save_identity, finder_rename)
+        if finder_rename_fill and executed.get("verification_source") != (
+            "finder_file_reference_basename"
+        ):
+            self._approved_finder_rename = finder_rename
+        elif finder_rename is not None:
+            self._approved_finder_rename = None
         target_source_window = target.get("source_window_id", snapshot.get("window_id"))
         can_recover_occlusion = (
             self.window_id is not None
@@ -1022,7 +1104,9 @@ class CUARun:
             target = recovered_target
             url_now = recovered_url
             before_sig = _tree_signature(recovered)
-            executed = await self._execute(plan, recovered, save_identity)
+            executed = await self._execute(
+                plan, recovered, save_identity, finder_rename
+            )
             if executed.get("error_code") == "target_occluded":
                 reason = "selected window remains occluded after one raise attempt"
                 self._record(
