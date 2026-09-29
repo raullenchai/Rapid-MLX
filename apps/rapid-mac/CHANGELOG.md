@@ -17,7 +17,27 @@ can actually understand.
 
 ## [Unreleased]
 
+## [0.15.3] — 2026-09-29
+
+Rapid-MLX Desktop 0.15.3 adds supervised Computer Use for general Mac tasks.
+Describe the task, choose a planning Model, and approve consequential actions;
+Rapid resolves the app scope and asks you to choose when several scopes fit.
+
 ### Added
+- **Task-first Computer Use.** Describe the task first. Rapid resolves a
+  bounded scope from open apps and windows, asks you to choose when several
+  scopes fit, and limits each run to at most three apps or windows. Progress,
+  results, approval, and cancellation stay in the same workspace. Add or select a
+  local or HTTPS OpenAI-compatible planning Model directly in the panel.
+  The Computer Use service starts without loading a chat model.
+- **Mac permission guidance.** The Desktop app requests Screen Recording
+  while its bundled helper requests Accessibility. Browser tasks can ask
+  macOS for Desktop-to-browser Automation access before app scope is
+  resolved; if authorization is unavailable, the panel explains how to retry.
+- **Client API.** The authenticated local `/v1/cua` API supports target
+  discovery, bounded observations, run and event polling, approval decisions,
+  and cancellation for clients with their own interface. Screenshot responses
+  require an explicit server and request opt-in.
 - **Anonymous first-run funnel counts.** Official Desktop builds now send
   identifier-free, once-per-install setup milestones for installs whose first
   setup starts on this version or later; existing installs and re-shown setup
@@ -28,6 +48,21 @@ can actually understand.
   are durably excluded, only the engine start caused by first-run setup is
   counted, failed milestone requests are not retried, and development or
   dogfood packages cannot enable the sender.
+
+### Changed
+- **Computer Use starts from a general task.** Retired predefined workflows
+  and their controls have been removed from the panel.
+
+### Fixed
+- **Task scope and completion.** Runs remain bound to the resolved or approved
+  app and website scope, validate browser domains before input, and reject
+  completion claims that cannot be verified. Failed setup and interrupted run
+  creation expose recovery controls instead of leaving an invisible run.
+  If the optional local outcome ranker is unavailable, the task continues
+  with observed execution and readback as the authority.
+- **Blank PDF import.** Exact-white rendered pages skip text recognition;
+  nonblank pages still use OCR, and unreadable documents retain their existing
+  rejection behavior.
 
 ## [0.15.2] — 2026-09-24
 
@@ -4098,7 +4133,8 @@ Older versions: see the
 [GitHub Releases page](https://github.com/machinefi/rapid-desktop/releases)
 for auto-generated notes against earlier tags.
 
-[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.15.2...HEAD
+[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.15.3...HEAD
+[0.15.3]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.15.2...rapid-mac-v0.15.3
 [0.15.2]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.15.1...rapid-mac-v0.15.2
 [0.15.1]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.15.0...rapid-mac-v0.15.1
 [0.15.0]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.14.3...rapid-mac-v0.15.0

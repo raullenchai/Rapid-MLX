@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rapid-mlx"
-version = "0.15.2"
+version = "0.15.3"
 description = "Rapid-MLX is an open-source (Apache 2.0) OpenAI- and Anthropic-compatible LLM inference server and Mac app for Apple Silicon, built on MLX, focused on reliable tool calling for coding agents."
 readme = "README.md"
 license = {text = "Apache-2.0"}
