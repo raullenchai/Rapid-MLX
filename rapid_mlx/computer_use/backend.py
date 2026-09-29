@@ -934,11 +934,27 @@ def _window_center(snapshot: dict) -> tuple[float, float]:
 def _validate_focused_window(
     snapshot: dict, expected_window: dict | None = None
 ) -> None:
-    workspace = ax_driver.AS.NSWorkspace.sharedWorkspace() if ax_driver.AS else None
-    frontmost = workspace.frontmostApplication() if workspace is not None else None
-    if frontmost is None or int(frontmost.processIdentifier()) != int(
-        snapshot["app"]["pid"]
-    ):
+    services = ax_driver.AS
+    expected_pid = int(snapshot["app"]["pid"])
+    application_class = getattr(services, "NSRunningApplication", None)
+    resolver = getattr(
+        application_class, "runningApplicationWithProcessIdentifier_", None
+    )
+    if resolver is not None:
+        try:
+            running = resolver(expected_pid)
+            is_active = getattr(running, "isActive", None)
+            active = bool(is_active()) if callable(is_active) else False
+        except Exception:  # noqa: BLE001 - identity probes fail closed
+            active = False
+    else:
+        # Compatibility fallback for older framework bridges. Production
+        # PyObjC exposes NSRunningApplication.isActive. This fallback is used
+        # only when an older bridge lacks that resolver API entirely.
+        workspace = services.NSWorkspace.sharedWorkspace() if services else None
+        frontmost = workspace.frontmostApplication() if workspace is not None else None
+        active = frontmost is not None and int(frontmost.processIdentifier()) == expected_pid
+    if not active:
         raise ComputerUseError(
             "target_drift",
             f"pid {snapshot['app']['pid']} is no longer frontmost; re-observe",

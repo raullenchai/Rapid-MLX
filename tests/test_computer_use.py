@@ -1465,6 +1465,70 @@ def test_synthetic_input_rejects_background_process(monkeypatch):
     assert excinfo.value.code == "target_drift"
 
 
+def test_focused_window_uses_fresh_running_application_activity(monkeypatch):
+    snapshot = _stable_snapshot()
+    stale_frontmost = types.SimpleNamespace(processIdentifier=lambda: 99)
+    workspace = types.SimpleNamespace(frontmostApplication=lambda: stale_frontmost)
+    fresh = types.SimpleNamespace(isActive=lambda: True)
+    services = types.SimpleNamespace(
+        NSWorkspace=types.SimpleNamespace(sharedWorkspace=lambda: workspace),
+        NSRunningApplication=types.SimpleNamespace(
+            runningApplicationWithProcessIdentifier_=lambda pid: fresh
+        ),
+    )
+    monkeypatch.setattr(backend.ax_driver, "AS", services)
+    monkeypatch.setattr(backend, "_focused_ax_window", lambda app: "focused")
+    monkeypatch.setattr(
+        backend.ax_driver, "_point_size", lambda *a: (0.0, 0.0, 100.0, 100.0)
+    )
+
+    backend._validate_focused_window(snapshot)
+
+
+def test_focused_window_rejects_inactive_fresh_running_application(monkeypatch):
+    snapshot = _stable_snapshot()
+    stale_frontmost = types.SimpleNamespace(processIdentifier=lambda: 4)
+    workspace = types.SimpleNamespace(frontmostApplication=lambda: stale_frontmost)
+    fresh = types.SimpleNamespace(isActive=lambda: False)
+    services = types.SimpleNamespace(
+        NSWorkspace=types.SimpleNamespace(sharedWorkspace=lambda: workspace),
+        NSRunningApplication=types.SimpleNamespace(
+            runningApplicationWithProcessIdentifier_=lambda pid: fresh
+        ),
+    )
+    monkeypatch.setattr(backend.ax_driver, "AS", services)
+
+    with pytest.raises(errors.ComputerUseError) as excinfo:
+        backend._validate_focused_window(snapshot)
+    assert excinfo.value.code == "target_drift"
+
+
+@pytest.mark.parametrize("resolver_result", [None, RuntimeError("bridge failed")])
+def test_focused_window_fails_closed_when_fresh_resolution_fails(
+    monkeypatch, resolver_result
+):
+    snapshot = _stable_snapshot()
+    stale_frontmost = types.SimpleNamespace(processIdentifier=lambda: 4)
+    workspace = types.SimpleNamespace(frontmostApplication=lambda: stale_frontmost)
+
+    def resolve(pid):
+        if isinstance(resolver_result, Exception):
+            raise resolver_result
+        return resolver_result
+
+    services = types.SimpleNamespace(
+        NSWorkspace=types.SimpleNamespace(sharedWorkspace=lambda: workspace),
+        NSRunningApplication=types.SimpleNamespace(
+            runningApplicationWithProcessIdentifier_=resolve
+        ),
+    )
+    monkeypatch.setattr(backend.ax_driver, "AS", services)
+
+    with pytest.raises(errors.ComputerUseError) as excinfo:
+        backend._validate_focused_window(snapshot)
+    assert excinfo.value.code == "target_drift"
+
+
 def test_focused_window_and_post_action_state_contract(monkeypatch):
     snapshot = _stable_snapshot()
     frontmost = types.SimpleNamespace(processIdentifier=lambda: 4)
