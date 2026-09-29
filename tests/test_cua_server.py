@@ -384,6 +384,32 @@ def test_target_resolver_never_substitutes_for_named_running_app_missing_catalog
     assert planner_called is False
 
 
+def test_missing_common_name_app_does_not_veto_directed_finder_task(
+    client, monkeypatch
+):
+    from rapid_mlx.computer_use import backend
+
+    monkeypatch.setattr(
+        backend,
+        "list_apps",
+        lambda: [
+            {"name": "Finder", "bundleId": "com.apple.finder", "pid": 42},
+            {"name": "Notes", "bundleId": "com.apple.Notes", "pid": 44},
+        ],
+    )
+    body = client.post(
+        "/v1/cua/targets/resolve",
+        headers=AUTH,
+        json={
+            "goal": "Open the notes file in Finder",
+            "planner": "local-9b",
+        },
+    ).json()
+
+    assert body["status"] == "resolved"
+    assert body["targets"][0]["pid"] == 42
+
+
 def test_target_resolver_rejects_unknown_model_catalog_id(client, monkeypatch):
     async def unknown(self, goal, catalog):
         raise ValueError("unknown catalog ID")

@@ -642,6 +642,19 @@ def _explicit_app_matches(goal: str, catalog: list[dict]) -> set[str]:
     }
 
 
+def _directed_app_matches(goal: str, catalog: list[dict]) -> set[str]:
+    folded = goal.casefold()
+    return {
+        item["catalog_id"]
+        for item in catalog
+        if len(str(item.get("app_name") or "").strip()) >= 3
+        and re.search(
+            rf"(?<!\w)(?:in|use|using|with|from)\s+(?:the\s+)?{re.escape(str(item['app_name']).casefold())}(?!\w)",
+            folded,
+        )
+    }
+
+
 def _title_matches_goal(goal: str, title: str) -> bool:
     normalized = title.strip().casefold()
     return (
@@ -722,7 +735,7 @@ async def resolve_targets(request: CUATargetResolveRequest) -> CUATargetResoluti
         for item in running_apps
         if item.get("pid") is not None
     ]
-    explicitly_named_running = _explicit_app_matches(request.goal, running_catalog)
+    explicitly_named_running = _directed_app_matches(request.goal, running_catalog)
     catalog_pids = set(windows_by_pid)
     missing_explicit = [
         item
