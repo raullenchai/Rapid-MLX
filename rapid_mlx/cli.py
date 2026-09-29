@@ -1058,6 +1058,40 @@ def _print_unknown_model_help(name: str, *, full_path_example: str) -> None:
     print(f"  or pass a full path like: {full_path_example}")
 
 
+def _print_model_load_error(args: argparse.Namespace, exc: BaseException) -> None:
+    """Render local, Hub-not-found, and generic load failures consistently."""
+    from huggingface_hub.utils import RepositoryNotFoundError
+
+    from rapid_mlx.local_model_path import (
+        is_local_model_ref,
+        local_model_failure_message,
+    )
+
+    model_ref = getattr(args, "_original_alias", None) or args.model
+    local_message = local_model_failure_message(
+        model_ref, exc, include_supplied_path=True
+    )
+    if local_message is not None:
+        print(f"\n  Error: {local_message}", file=sys.stderr)
+        return
+    if isinstance(exc, RepositoryNotFoundError) and is_local_model_ref(model_ref):
+        # A Hub 404 while loading a local primary model belongs to an auxiliary
+        # repository. Keep that typed failure instead of blaming the checkpoint.
+        print(f"\n  Error loading model: {exc}")
+        return
+    if (
+        isinstance(exc, RepositoryNotFoundError)
+        or "404" in str(exc)
+        or "not found" in str(exc).lower()
+    ):
+        print(f"\n  Error: Model '{model_ref}' not found on HuggingFace.")
+        _print_unknown_model_help(
+            model_ref, full_path_example="mlx-community/Qwen3.5-9B-4bit"
+        )
+        return
+    print(f"\n  Error loading model: {exc}")
+
+
 def _embedding_not_found_exception_classes() -> tuple[type[BaseException], ...]:
     """Return the concrete exception classes the embedding loader raises
     for a missing model.
@@ -6750,23 +6784,7 @@ def serve_command(args):
             alias_or_path=getattr(args, "_original_alias", None) or args.model,
             auto_selected=bool(getattr(args, "_telemetry_auto_selected", False)),
         )
-        # Show clean error instead of raw traceback. Catch the typed
-        # HF exception class for the 404 case; fall back to substring
-        # match for legacy callers (older huggingface_hub) and for
-        # non-HF errors that still spell out "not found".
-        from huggingface_hub.utils import RepositoryNotFoundError
-
-        is_404 = isinstance(e, RepositoryNotFoundError) or (
-            "404" in str(e) or "not found" in str(e).lower()
-        )
-        if is_404:
-            shown = getattr(args, "_original_alias", args.model)
-            print(f"\n  Error: Model '{shown}' not found on HuggingFace.")
-            _print_unknown_model_help(
-                shown, full_path_example="mlx-community/Qwen3.5-9B-4bit"
-            )
-        else:
-            print(f"\n  Error loading model: {e}")
+        _print_model_load_error(args, e)
         sys.exit(1)
 
     # Task #292 / codex r1 BLOCKING defense-in-depth: ``load_model``
@@ -7600,21 +7618,7 @@ def bench_command(args):
                 alias_or_path=getattr(args, "_original_alias", None) or args.model,
                 auto_selected=bool(getattr(args, "_telemetry_auto_selected", False)),
             )
-            # Mirror serve_command: clean message instead of a 30-line
-            # traceback when the user typed a missing repo / bad alias.
-            from huggingface_hub.utils import RepositoryNotFoundError
-
-            is_404 = isinstance(e, RepositoryNotFoundError) or (
-                "404" in str(e) or "not found" in str(e).lower()
-            )
-            if is_404:
-                shown = getattr(args, "_original_alias", args.model)
-                print(f"\n  Error: Model '{shown}' not found on HuggingFace.")
-                _print_unknown_model_help(
-                    shown, full_path_example="mlx-community/Qwen3.5-9B-4bit"
-                )
-            else:
-                print(f"\n  Error loading model: {e}")
+            _print_model_load_error(args, e)
             sys.exit(1)
 
         from rapid_mlx.telemetry.model_events import emit_model_served
@@ -15710,11 +15714,26 @@ def main():
         and args.model
         and getattr(args, "command", None) not in ("doctor", "service", "system-one")
     ):
+        from rapid_mlx.local_model_path import (
+            local_model_failure_message,
+            raise_if_missing_local_model,
+        )
         from rapid_mlx.model_aliases import RetiredModelAliasError, resolve_model
         from rapid_mlx.user_aliases import UserAliasError
 
         try:
+            raise_if_missing_local_model(args.model)
             resolved = resolve_model(args.model)
+        except FileNotFoundError as exc:
+            if getattr(args, "command", None) == "serve":
+                from rapid_mlx.telemetry.model_events import emit_model_serve_failed
+
+                emit_model_serve_failed(exc, alias_or_path=args.model)
+            message = local_model_failure_message(
+                args.model, exc, include_supplied_path=True
+            )
+            print(f"\n  Error: {message}", file=sys.stderr)
+            raise SystemExit(1) from None
         except (RetiredModelAliasError, UserAliasError) as exc:
             print(f"\n  Error: {exc}", file=sys.stderr)
             raise SystemExit(1) from None

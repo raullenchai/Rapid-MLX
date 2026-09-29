@@ -205,10 +205,10 @@
       "values": ["network", "gated", "disk_full", "not_found", "other"]
     },
     "serve_error_class": {
-      "_about": "Design sec 1.3, model_serve_failed. Verbatim from the table.",
+      "_about": "Closed model_serve_failed categories. local_path_missing distinguishes a user-supplied local path or required local file from Hub/download availability; no path or filename is sent.",
       "values": [
         "unsupported_architecture", "insufficient_memory",
-        "corrupt_weights", "download_failed", "missing_extra",
+        "corrupt_weights", "download_failed", "local_path_missing", "missing_extra",
         "invalid_config", "tokenizer_load_failed", "incompatible_weights",
         "quantization_mismatch", "other"
       ]

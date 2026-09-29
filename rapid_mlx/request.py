@@ -429,7 +429,7 @@ def lifecycle_cancel_error_payload() -> dict:
     }
 
 
-def model_load_error_payload(exc: BaseException) -> dict:
+def model_load_error_payload(exc: BaseException, *, model_ref: object = None) -> dict:
     """OpenAI-shaped ``error`` for a model that failed to LOAD (demand-load or
     startup), classified into a stable, client-safe code.
 
@@ -449,6 +449,16 @@ def model_load_error_payload(exc: BaseException) -> dict:
             ),
             "type": "server_error",
             "code": ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY,
+            "param": None,
+        }
+    from .local_model_path import local_model_failure_message
+
+    local_message = local_model_failure_message(model_ref, exc)
+    if local_message is not None:
+        return {
+            "message": local_message,
+            "type": "server_error",
+            "code": MODEL_LOAD_FAILED_CODE,
             "param": None,
         }
     return {

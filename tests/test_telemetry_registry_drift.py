@@ -177,6 +177,7 @@ def test_serve_error_class_scale_is_exact(registry):
         "insufficient_memory",
         "corrupt_weights",
         "download_failed",
+        "local_path_missing",
         "missing_extra",
         "invalid_config",
         "tokenizer_load_failed",

@@ -88,6 +88,13 @@ service:
     string supplied by the request.
   * Closed-set error categories and non-reversible stack fingerprints; no
     exception message or raw traceback.
+  * A failed model serve uses one closed error class: `unsupported_architecture`,
+    `insufficient_memory`, `corrupt_weights`, `download_failed`,
+    `local_path_missing`, `missing_extra`, `invalid_config`,
+    `tokenizer_load_failed`, `incompatible_weights`, `quantization_mismatch`,
+    or `other`. `local_path_missing` says only that a user-supplied local model
+    path or a required file was missing; the path and missing filenames are
+    never sent.
   * Whether the preceding server start ended without reporting ready or failed.
     The local marker's process ID, process creation time, system boot time, and
     app version stay on the device; local crash-file contents and paths are

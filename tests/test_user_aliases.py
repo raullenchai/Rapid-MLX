@@ -152,12 +152,14 @@ def test_model_registry_resolves_user_alias_through_shared_choke_point(
     builtins = list_builtin_aliases()
     set_user_alias("my-smart", "qwen3.5-9b-4bit", builtins)
     set_user_alias("my-repo", "example/model", builtins)
+    set_user_alias("my-cased-repo", builtins["qwen3.5-9b-4bit"].swapcase(), builtins)
 
     assert resolve_model("my-smart") == builtins["qwen3.5-9b-4bit"]
     assert resolve_model("my-repo") == "example/model"
     assert resolve_profile("my-smart") == resolve_profile("qwen3.5-9b-4bit")
     assert resolve_profile("my-repo").hf_path == "example/model"
     assert list_profiles()["my-smart"].hf_path == builtins["qwen3.5-9b-4bit"]
+    assert list_profiles()["my-cased-repo"] == resolve_profile("qwen3.5-9b-4bit")
 
 
 def test_cli_alias_commands_share_the_same_store(

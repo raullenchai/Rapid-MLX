@@ -2990,7 +2990,8 @@ def get_engine(model_name: str | None = None) -> BaseEngine:
 async def ensure_engine_ready(engine: BaseEngine) -> BaseEngine:
     """Demand-load ``engine`` when it is the configured standby primary."""
 
-    lifecycle = get_config().primary_model_lifecycle
+    cfg = get_config()
+    lifecycle = cfg.primary_model_lifecycle
     if lifecycle is not None and engine is lifecycle.engine:
         lifecycle.acquire_request()
         try:
@@ -3009,7 +3010,9 @@ async def ensure_engine_ready(engine: BaseEngine) -> BaseEngine:
             # returned to the client.
             from ..request import model_load_error_payload
 
-            payload = model_load_error_payload(exc)
+            payload = model_load_error_payload(
+                exc, model_ref=getattr(cfg, "model_path", None)
+            )
             # A 503 means "temporarily unavailable", so keep the pre-existing
             # ``Retry-After`` uniformly: a load failure can be transient (a
             # backend-init race, a passing I/O fault) as readily as permanent,

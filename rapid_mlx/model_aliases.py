@@ -97,13 +97,12 @@ DFLASH_KIND: str = "dflash"
 DDTREE_KIND: str = "ddtree"
 
 _aliases: dict[str, "AliasProfile"] | None = None
-# Reverse index: hf_path → first alias that references it. Built once
+# Reverse index: lowercased hf_path → first alias that references it. Built once
 # alongside ``_aliases`` so reverse lookups in ``resolve_profile`` are
 # O(1) instead of scanning all 50+ profiles on every cache-miss.
-# When two aliases share the same hf_path (e.g. ``nemotron-30b-4bit`` and
-# ``nemotron-30b-4bit`` both pointing at the same MLX repo), the first one
-# in JSON order wins. The contract is "any profile valid for this
-# path" rather than "the canonical alias", so this is fine.
+# When aliases share an hf_path, the first one in aliases.json wins, including
+# when later aliases declare different capability profiles. This preserves the
+# established insertion-order contract for a raw repo id.
 _hf_to_alias: dict[str, str] | None = None
 
 
@@ -761,9 +760,22 @@ def _load() -> dict[str, AliasProfile]:
         # wins" rule is deterministic.
         index: dict[str, str] = {}
         for alias, profile in parsed.items():
-            index.setdefault(profile.hf_path, alias)
+            index.setdefault(profile.hf_path.lower(), alias)
         _aliases, _hf_to_alias = parsed, index
+    elif _hf_to_alias is None:
+        # Keep the derived index recoverable if registry state is reset or
+        # replaced independently (notably by tests and embedded reloaders).
+        index = {}
+        for alias, profile in _aliases.items():
+            index.setdefault(profile.hf_path.lower(), alias)
+        _hf_to_alias = index
     return _aliases
+
+
+def _alias_for_hf_path(hf_path: str) -> str | None:
+    """Return the first catalog alias for an HF path from a loaded index."""
+    _load()
+    return _hf_to_alias.get(hf_path.lower()) if _hf_to_alias is not None else None
 
 
 def _assert_subfolder_is_unambiguous(profiles: dict[str, AliasProfile]) -> None:
@@ -849,7 +861,9 @@ def resolve_model(name: str) -> str:
 
     If a local file/directory with the name exists, prefer that.
     If a configured external-model root contains the repo, serve it in place.
-    If name contains '/' it's already a full Hugging Face path — pass through.
+    If name is a curated Hugging Face path, return its catalog spelling so
+    revision pins and lane-specific download checks see the same identity as
+    the alias. Other org/name paths pass through unchanged.
     If name is a retired, known-broken alias, raise before any download or load.
     If name matches an alias, return the mapped HF path.
     Otherwise return unchanged.
@@ -871,14 +885,19 @@ def resolve_model(name: str) -> str:
     # must not introduce a cache/download-gate probe.
     if not os.environ.get("RAPID_MLX_EXTRA_MODEL_ROOTS", "").strip():
         if "/" in name:
+            canonical = _alias_for_hf_path(name)
+            if canonical is not None:
+                return _load()[canonical].hf_path
             return name
         profile = _load().get(name)
         return profile.hf_path if profile is not None else name
     if "/" in name:
-        if not _managed_hub_model_is_runnable(name):
-            if external := _resolve_external_model_path(name):
+        canonical = _alias_for_hf_path(name)
+        repo_name = _load()[canonical].hf_path if canonical is not None else name
+        if not _managed_hub_model_is_runnable(repo_name):
+            if external := _resolve_external_model_path(repo_name):
                 return external
-        return name
+        return repo_name
     if _managed_hub_model_is_runnable(name):
         profile = _load().get(name)
         return profile.hf_path if profile is not None else name
@@ -1072,8 +1091,8 @@ def list_profiles() -> dict[str, AliasProfile]:
     )
     for alias, target in users.items():
         target_profile = profiles.get(target)
-        if target_profile is None and _hf_to_alias is not None:
-            canonical = _hf_to_alias.get(target)
+        if target_profile is None:
+            canonical = _alias_for_hf_path(target)
             if canonical is not None:
                 target_profile = profiles[canonical]
         profiles[alias] = target_profile or AliasProfile(hf_path=target)
@@ -1085,8 +1104,10 @@ def resolve_profile(name: str) -> AliasProfile | None:
 
     Two lookups in order:
     1. Direct alias name match (``qwen3.5-4b-4bit``).
-    2. Reverse HF-path match (``mlx-community/Qwen3.5-4B-MLX-4bit``)
-       via the pre-built ``_hf_to_alias`` index — O(1).
+    2. Case-insensitive reverse HF-path match
+       (``mlx-community/Qwen3.5-4B-MLX-4bit``) via the pre-built
+       ``_hf_to_alias`` index — O(1). When paths are shared, the first alias
+       in aliases.json wins.
 
     Returns ``None`` if no alias covers this name/path — caller should
     then fall back to the regex-based ``detect_model_config``.
@@ -1103,13 +1124,13 @@ def resolve_profile(name: str) -> AliasProfile | None:
     )
     if target := users.get(name):
         target_profile = profiles.get(target)
-        if target_profile is None and _hf_to_alias is not None:
-            canonical = _hf_to_alias.get(target)
+        if target_profile is None:
+            canonical = _alias_for_hf_path(target)
             if canonical is not None:
                 target_profile = profiles[canonical]
         return target_profile or AliasProfile(hf_path=target)
-    if "/" in name and _hf_to_alias is not None:
-        canonical = _hf_to_alias.get(name)
+    if "/" in name:
+        canonical = _alias_for_hf_path(name)
         if canonical is not None:
             return profiles[canonical]
     return None
