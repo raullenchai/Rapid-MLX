@@ -1181,6 +1181,186 @@ def test_final_action_budget_gets_one_fresh_terminal_only_assessment(
     assert final_plan["action"] == "done"
 
 
+def test_final_assessment_honors_preexisting_cancellation(
+    fake_backend, tmp_path, monkeypatch
+):
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path), "Chrome", "g", tmp_path / "final-cancelled"
+    )
+    runner.stop_event.set()
+
+    result = asyncio.run(
+        runner.final_assessment(
+            _FakePlanner([{"action": "done", "final_summary": "done"}]), 2
+        )
+    )
+
+    assert result == {"status": "stopped", "reason": "cancelled by client"}
+
+
+def test_final_assessment_reports_observation_failure(
+    fake_backend, tmp_path, monkeypatch
+):
+    from rapid_mlx.computer_use.errors import ComputerUseError
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    monkeypatch.setattr(
+        fake_backend,
+        "get_app_state",
+        lambda *a, **k: (_ for _ in ()).throw(
+            ComputerUseError("window_not_found", "window closed")
+        ),
+    )
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path), "Chrome", "g", tmp_path / "final-observation-failed"
+    )
+
+    result = asyncio.run(
+        runner.final_assessment(
+            _FakePlanner([{"action": "done", "final_summary": "done"}]), 2
+        )
+    )
+
+    assert result["status"] == "stalled"
+    assert result["error"] == "window_not_found"
+    assert "window closed" in result["reason"]
+
+
+def test_final_assessment_rejects_empty_accessibility_state(
+    fake_backend, tmp_path, monkeypatch
+):
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    monkeypatch.setattr(
+        fake_backend,
+        "get_app_state",
+        lambda *a, **k: {"app": {"name": "Chrome"}, "elements": []},
+    )
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path), "Chrome", "g", tmp_path / "final-empty"
+    )
+
+    result = asyncio.run(
+        runner.final_assessment(
+            _FakePlanner([{"action": "done", "final_summary": "done"}]), 2
+        )
+    )
+
+    assert result == {
+        "status": "stalled",
+        "reason": "final accessibility observation is unavailable",
+    }
+
+
+def test_final_assessment_rejects_domain_drift(fake_backend, tmp_path, monkeypatch):
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    config = _make_config(tmp_path)
+    config.allowed_domain = "example.com"
+    runner = loop_mod.CUARun(config, "Chrome", "g", tmp_path / "final-domain")
+
+    result = asyncio.run(
+        runner.final_assessment(
+            _FakePlanner([{"action": "done", "final_summary": "done"}]), 2
+        )
+    )
+
+    assert result["status"] == "stalled"
+    assert result["error"] == "domain_guard"
+
+
+def test_final_assessment_honors_cancellation_after_observation(
+    fake_backend, tmp_path, monkeypatch
+):
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path), "Chrome", "g", tmp_path / "final-observed-cancel"
+    )
+    original_get_state = runner._get_app_state
+
+    def cancelling_observation(*args, **kwargs):
+        snapshot = original_get_state(*args, **kwargs)
+        runner.stop_event.set()
+        return snapshot
+
+    monkeypatch.setattr(runner, "_get_app_state", cancelling_observation)
+    result = asyncio.run(
+        runner.final_assessment(
+            _FakePlanner([{"action": "done", "final_summary": "done"}]), 2
+        )
+    )
+
+    assert result == {"status": "stopped", "reason": "cancelled by client"}
+
+
+def test_final_assessment_reports_target_loss_after_planning(
+    fake_backend, tmp_path, monkeypatch
+):
+    from rapid_mlx.computer_use.errors import ComputerUseError
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path), "Chrome", "g", tmp_path / "final-target-loss"
+    )
+    original_get_state = runner._get_app_state
+    observations = 0
+
+    def losing_target(*args, **kwargs):
+        nonlocal observations
+        observations += 1
+        if observations == 2:
+            raise ComputerUseError("target_drift", "window identity changed")
+        return original_get_state(*args, **kwargs)
+
+    monkeypatch.setattr(runner, "_get_app_state", losing_target)
+    result = asyncio.run(
+        runner.final_assessment(
+            _FakePlanner([{"action": "done", "final_summary": "done"}]), 2
+        )
+    )
+
+    assert result["status"] == "stalled"
+    assert result["error"] == "target_drift"
+    assert "window identity changed" in result["reason"]
+
+
+def test_final_assessment_honors_cancellation_after_fresh_url_read(
+    fake_backend, tmp_path, monkeypatch
+):
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path), "Chrome", "g", tmp_path / "final-url-cancel"
+    )
+    reads = 0
+
+    def cancelling_url(_snapshot):
+        nonlocal reads
+        reads += 1
+        if reads == 2:
+            runner.stop_event.set()
+        return ""
+
+    monkeypatch.setattr(runner, "_read_url", cancelling_url)
+    result = asyncio.run(
+        runner.final_assessment(
+            _FakePlanner([{"action": "done", "final_summary": "done"}]), 2
+        )
+    )
+
+    assert result == {"status": "stopped", "reason": "cancelled by client"}
+
+
 def test_final_assessment_never_dispatches_another_action(
     config_dir, fake_backend, tmp_path, monkeypatch
 ):
