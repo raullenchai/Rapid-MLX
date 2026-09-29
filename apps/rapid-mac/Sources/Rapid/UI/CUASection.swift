@@ -435,6 +435,53 @@ struct CUASection: View {
                 .accessibilityIdentifier("ComputerUse.Agent.Target.Window")
             }
 
+            TextField("Browser domain (required for browser targets)", text: $viewModel.allowedDomain)
+                .textFieldStyle(.roundedBorder)
+                .disabled(viewModel.phase.isBusy || viewModel.selectedApp?.isBrowser != true)
+                .accessibilityIdentifier("ComputerUse.Agent.Target.Domain")
+            if let domainError = viewModel.selectedBrowserDomainError {
+                Text(domainError)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .accessibilityIdentifier("ComputerUse.Agent.Target.DomainRequired")
+            }
+
+            if !viewModel.selectedTargets.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Authorized windows")
+                        .font(.caption.weight(.semibold))
+                    ForEach(viewModel.selectedTargets) { target in
+                        HStack(alignment: .firstTextBaseline) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(target.displayName).font(.caption)
+                                Text(
+                                    target.allowedDomain.isEmpty
+                                        ? "Domain: not restricted"
+                                        : "Domain: \(target.allowedDomain)"
+                                )
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("Remove") { viewModel.removeSelectedTarget(id: target.id) }
+                                .buttonStyle(.borderless)
+                                .disabled(viewModel.phase.isBusy)
+                                .accessibilityLabel("Remove \(target.displayName)")
+                        }
+                        .accessibilityElement(children: .contain)
+                        .accessibilityIdentifier("ComputerUse.Agent.TargetSet.Item")
+                    }
+                }
+                .accessibilityIdentifier("ComputerUse.Agent.TargetSet")
+            }
+
+            Button(viewModel.selectedTargets.isEmpty ? "Authorize selected window" : "Add selected window") {
+                viewModel.addSelectedTarget()
+            }
+            .buttonStyle(.bordered)
+            .disabled(!viewModel.canAddSelectedTarget)
+            .accessibilityIdentifier("ComputerUse.Agent.Target.Add")
+
             if viewModel.appOptions.isEmpty, !viewModel.isLoadingApps,
                viewModel.targetError == nil
             {
@@ -577,12 +624,34 @@ struct CUASection: View {
                 .textSelection(.enabled)
                 .accessibilityIdentifier("ComputerUse.Agent.RunContext.Goal")
             HStack(spacing: 14) {
-                Label(context.targetDisplayName, systemImage: "macwindow")
+                Label(
+                    context.targets.isEmpty
+                        ? context.targetDisplayName
+                        : "Active: \(viewModel.activeTargetDisplayName ?? context.targetDisplayName)",
+                    systemImage: "macwindow"
+                )
                 Label(context.plannerDisplayName, systemImage: "brain")
                 Label("Up to \(context.maxSteps) steps", systemImage: "list.number")
             }
             .font(.caption)
             .foregroundStyle(.secondary)
+            if context.targets.count > 1 {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Authorized windows").font(.caption.weight(.semibold))
+                    ForEach(context.targets) { target in
+                        HStack {
+                            Text(target.displayName)
+                            Spacer()
+                            Text(target.allowedDomain.isEmpty ? "No domain restriction" : target.allowedDomain)
+                        }
+                        .font(.caption)
+                        .foregroundStyle(
+                            target.targetID == viewModel.activeTargetID ? .primary : .secondary
+                        )
+                    }
+                }
+                .accessibilityIdentifier("ComputerUse.Agent.RunContext.Targets")
+            }
         }
         .padding(12)
         .background(RapidTheme.surfaceCanvas, in: RoundedRectangle(cornerRadius: 10))
@@ -683,7 +752,10 @@ struct CUASection: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .accessibilityIdentifier("ComputerUse.Agent.Failure.Details")
                     if !viewModel.events.isEmpty {
-                        CUAEventList(events: Array(viewModel.events.reversed()))
+                        CUAEventList(
+                            events: Array(viewModel.events.reversed()),
+                            targetNames: viewModel.runTargetNames
+                        )
                     }
                 }
                 .padding(.top, 6)
@@ -720,7 +792,10 @@ struct CUASection: View {
                         .accessibilityIdentifier("ComputerUse.Agent.Evidence")
                 }
                 if !viewModel.events.isEmpty {
-                    CUAEventList(events: Array(viewModel.events.reversed()))
+                    CUAEventList(
+                        events: Array(viewModel.events.reversed()),
+                        targetNames: viewModel.runTargetNames
+                    )
                 }
             }
             .padding(.top, 6)
@@ -751,6 +826,12 @@ struct CUASection: View {
                 .font(.callout.weight(.semibold))
                 .foregroundStyle(.orange)
             LabeledContent("App", value: approval.app)
+            if let targetID = approval.targetID,
+               let targetName = viewModel.runTargetNames[targetID]
+            {
+                LabeledContent("Authorized window", value: targetName)
+                    .accessibilityIdentifier("ComputerUse.Agent.Approval.TargetWindow")
+            }
             if let action = approval.action, !action.isEmpty {
                 LabeledContent("Action", value: action)
             }
@@ -800,6 +881,7 @@ private extension CUAPhase {
 /// Compact, newest-first step feed (step number, action, instruction, outcome).
 struct CUAEventList: View {
     let events: [CUAEvent]
+    var targetNames: [String: String] = [:]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -835,6 +917,10 @@ struct CUAEventList: View {
             return "Waiting for your approval at a sign-in page"
         case "gate_resolved":
             return "Approval resolved"
+        case "target_switched":
+            let destination = event.targetID.flatMap { targetNames[$0] }
+                ?? event.targetID ?? "authorized window"
+            return "Switched to \(destination)"
         case "terminal":
             return "Run \(event.status ?? "ended")"
         default:

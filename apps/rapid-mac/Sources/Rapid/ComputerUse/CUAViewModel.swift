@@ -20,13 +20,23 @@ protocol CUAAPI: Sendable {
 struct CUACapabilities: Codable, Equatable, Sendable {
     struct Features: Codable, Equatable, Sendable {
         var idempotentRunCreate: Bool
+        var multiTargetRuns: Bool? = nil
+        var switchTarget: Bool? = nil
 
         enum CodingKeys: String, CodingKey {
             case idempotentRunCreate = "idempotent_run_create"
+            case multiTargetRuns = "multi_target_runs"
+            case switchTarget = "switch_target"
         }
     }
 
     var features: Features
+    var maxRunTargets: Int? = nil
+
+    enum CodingKeys: String, CodingKey {
+        case features
+        case maxRunTargets = "max_run_targets"
+    }
 }
 
 /// Phase of the agent-task panel.
@@ -54,6 +64,23 @@ struct CUAPendingApproval: Equatable, Sendable {
     var action: String?
     var target: String?
     var reason: String
+    var targetID: String? = nil
+}
+
+struct CUASelectedTarget: Equatable, Identifiable, Sendable {
+    let targetID: String
+    let app: CUAAppOption
+    let window: CUAWindowOption
+    let allowedDomain: String
+
+    var id: String { targetID }
+    var displayName: String { "\(window.displayName) in \(app.displayName)" }
+    var requestTarget: CUARunTarget {
+        CUARunTarget(
+            targetID: targetID, app: "pid:\(app.pid)", pid: app.pid,
+            windowID: window.windowID, allowedDomain: allowedDomain
+        )
+    }
 }
 
 struct CUAPermissionStatus: Codable, Equatable, Sendable {
@@ -97,6 +124,25 @@ struct CUARunContext: Equatable, Sendable {
     let windowID: String
     let targetDisplayName: String
     let maxSteps: Int
+    let targets: [CUASelectedTarget]
+    let initialTargetID: String?
+
+    init(
+        goal: String, plannerName: String, plannerDisplayName: String,
+        appSelector: String, windowID: String, targetDisplayName: String,
+        maxSteps: Int, targets: [CUASelectedTarget] = [], initialTargetID: String? = nil
+    ) {
+        self.goal = goal
+        self.plannerName = plannerName
+        self.plannerDisplayName = plannerDisplayName
+        self.appSelector = appSelector
+        self.windowID = windowID
+        self.targetDisplayName = targetDisplayName
+        self.maxSteps = maxSteps
+        self.targets = targets
+        self.initialTargetID = initialTargetID
+    }
+
 }
 
 /// Drives one agent task from the GUI: create on the app-owned server, poll
@@ -121,6 +167,8 @@ final class CUAViewModel: ObservableObject {
     @Published var windowOptions: [CUAWindowOption] = []
     @Published var selectedPID: Int?
     @Published var selectedWindowID: String?
+    @Published private(set) var selectedTargets: [CUASelectedTarget] = []
+    @Published private(set) var activeTargetID: String?
     @Published var targetError: String?
     @Published var isLoadingApps = false
     @Published var isLoadingWindows = false
@@ -143,6 +191,7 @@ final class CUAViewModel: ObservableObject {
     private var lifecycleGeneration = 0
     private var stoppingStartGeneration: Int?
     private var pendingCreateRecovery: CUARunRequest?
+    private var maxRunTargets = 3
 
     init(api: CUAAPI?, pollIntervalNanos: UInt64 = 700_000_000) {
         self.api = api ?? NullCUAAPI()
@@ -150,13 +199,33 @@ final class CUAViewModel: ObservableObject {
     }
 
     var canStart: Bool {
-        !isSessionDetached
+        let targetReady = selectedTargets.isEmpty
+            ? (selectedApp != nil && selectedWindow != nil)
+            : selectedTargets.count >= 2
+        return !isSessionDetached
             && !goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !phase.isBusy
             && runContext == nil
-            && selectedApp != nil
-            && selectedWindow != nil
+            && targetReady
             && openURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var canAddSelectedTarget: Bool {
+        guard !phase.isBusy, selectedTargets.count < maxRunTargets,
+              let app = selectedApp, let window = selectedWindow
+        else { return false }
+        let domain = Self.normalizedDomain(allowedDomain)
+        return (!app.isBrowser || Self.isValidDomain(domain)) && !selectedTargets.contains {
+            $0.app.pid == app.pid && $0.window.windowID == window.windowID
+        }
+    }
+
+    var selectedBrowserDomainError: String? {
+        guard selectedApp?.isBrowser == true else { return nil }
+        let domain = Self.normalizedDomain(allowedDomain)
+        if domain.isEmpty { return "Enter the site domain this browser window may use during the task." }
+        if !Self.isValidDomain(domain) { return "Enter a domain such as example.com, without a path or port." }
+        return nil
     }
 
     var selectedApp: CUAAppOption? {
@@ -174,9 +243,58 @@ final class CUAViewModel: ObservableObject {
         return "\(window.displayName) in \(app.displayName)"
     }
 
+    var runTargetNames: [String: String] {
+        Dictionary(uniqueKeysWithValues: (runContext?.targets ?? []).map {
+            ($0.targetID, $0.displayName)
+        })
+    }
+
+    var activeTargetDisplayName: String? {
+        guard let activeTargetID else { return runContext?.targetDisplayName }
+        return runTargetNames[activeTargetID]
+    }
+
+    func addSelectedTarget() {
+        guard canAddSelectedTarget, let app = selectedApp, let window = selectedWindow else {
+            return
+        }
+        let nextIndex = (1 ... maxRunTargets).first { index in
+            !selectedTargets.contains { $0.targetID == "target_\(index)" }
+        } ?? (selectedTargets.count + 1)
+        let target = CUASelectedTarget(
+            targetID: "target_\(nextIndex)",
+            app: app,
+            window: window,
+            allowedDomain: app.isBrowser ? Self.normalizedDomain(allowedDomain) : ""
+        )
+        selectedTargets.append(target)
+        selectedPID = nil
+        selectedWindowID = nil
+        windowOptions = []
+        allowedDomain = ""
+        targetError = selectedTargets.count == 1
+            ? "Add one more authorized window to start a multi-window task."
+            : nil
+    }
+
+    func removeSelectedTarget(id: String) {
+        guard !phase.isBusy else { return }
+        selectedTargets.removeAll { $0.targetID == id }
+        if selectedTargets.count == 1 {
+            targetError = "Add one more authorized window, or remove this target to use one window."
+        } else if selectedTargets.isEmpty {
+            targetError = nil
+        }
+    }
+
     var canApprove: Bool {
-        !isSessionDetached && phase == .awaitingApproval && pendingApproval?.gateID != nil
-            && !requiresBindingCleanup && !isStopping
+        guard !isSessionDetached, phase == .awaitingApproval,
+              pendingApproval?.gateID != nil, !requiresBindingCleanup, !isStopping
+        else { return false }
+        guard runContext?.targets.isEmpty == false else { return true }
+        guard let targetID = pendingApproval?.targetID else { return false }
+        return runContext?.targets.contains(where: { $0.targetID == targetID }) == true
+            && targetID == activeTargetID
     }
 
     var isRecoveringCreate: Bool { pendingCreateRecovery != nil && runID == nil }
@@ -188,6 +306,9 @@ final class CUAViewModel: ObservableObject {
         }
         if requiresBindingCleanup {
             return "Rapid could not verify this task start. Approval is disabled; stop the task immediately."
+        }
+        if runContext?.targets.isEmpty == false {
+            return "This approval is not bound to the active authorized window. Stop the task and retry."
         }
         return "This approval is missing its gate identity. Stop the task and retry."
     }
@@ -234,6 +355,26 @@ final class CUAViewModel: ObservableObject {
             }
             guard generation == targetDiscoveryGeneration else { return }
             appOptions = discovered
+            if !selectedTargets.isEmpty {
+                for target in selectedTargets {
+                    guard let liveApp = discovered.first(where: { $0.pid == target.app.pid }),
+                          liveApp.name == target.app.name,
+                          liveApp.bundleID == target.app.bundleID
+                    else {
+                        selectedTargets = []
+                        targetError = "An authorized app changed or closed. Select every target again."
+                        return
+                    }
+                    let liveWindows = try await api.windows(app: "pid:\(target.app.pid)")
+                    guard generation == targetDiscoveryGeneration else { return }
+                    guard liveWindows.contains(where: { $0.windowID == target.window.windowID })
+                    else {
+                        selectedTargets = []
+                        targetError = "An authorized window changed or closed. Select every target again."
+                        return
+                    }
+                }
+            }
             guard let selectedPID, discovered.contains(where: { $0.pid == selectedPID }) else {
                 self.selectedPID = nil
                 selectedWindowID = nil
@@ -249,6 +390,7 @@ final class CUAViewModel: ObservableObject {
             windowOptions = []
             selectedPID = nil
             selectedWindowID = nil
+            selectedTargets = []
             targetError = targetDiscoveryMessage(error)
         }
     }
@@ -260,6 +402,7 @@ final class CUAViewModel: ObservableObject {
         selectedPID = pid
         selectedWindowID = nil
         windowOptions = []
+        allowedDomain = ""
         targetError = nil
         guard let pid else { return }
         appName = appOptions.first(where: { $0.pid == pid })?.name ?? "PID \(pid)"
@@ -400,7 +543,17 @@ final class CUAViewModel: ObservableObject {
 
     func start() async {
         guard canStart else { return }
-        guard let app = selectedApp, let window = selectedWindow else { return }
+        let frozenTargets = selectedTargets
+        let app: CUAAppOption
+        let window: CUAWindowOption
+        if let first = frozenTargets.first {
+            app = first.app
+            window = first.window
+        } else {
+            guard let selectedApp, let selectedWindow else { return }
+            app = selectedApp
+            window = selectedWindow
+        }
         let context = CUARunContext(
             goal: goal.trimmingCharacters(in: .whitespacesAndNewlines),
             plannerName: plannerName,
@@ -409,7 +562,9 @@ final class CUAViewModel: ObservableObject {
             appSelector: "pid:\(app.pid)",
             windowID: window.windowID,
             targetDisplayName: "\(window.displayName) in \(app.displayName)",
-            maxSteps: maxSteps
+            maxSteps: maxSteps,
+            targets: frozenTargets,
+            initialTargetID: frozenTargets.first?.targetID
         )
         lifecycleGeneration += 1
         let generation = lifecycleGeneration
@@ -426,6 +581,7 @@ final class CUAViewModel: ObservableObject {
         stopPolling()
         runID = nil
         runContext = context
+        activeTargetID = context.initialTargetID
         do {
             let capabilities = try await api.capabilities()
             guard generation == lifecycleGeneration else { return }
@@ -440,6 +596,21 @@ final class CUAViewModel: ObservableObject {
                     message: "This local server cannot safely recover an interrupted task start. Update or restart Rapid before starting Computer Use."
                 )
                 return
+            }
+            if !frozenTargets.isEmpty {
+                guard capabilities.features.multiTargetRuns == true,
+                      capabilities.features.switchTarget == true
+                else {
+                    phase = .failed(
+                        message: "This local server cannot safely run across an authorized window set. Update or restart Rapid before retrying."
+                    )
+                    return
+                }
+                maxRunTargets = capabilities.maxRunTargets ?? 3
+                guard frozenTargets.count <= maxRunTargets else {
+                    phase = .failed(message: "This server allows up to \(maxRunTargets) targets per task.")
+                    return
+                }
             }
         } catch {
             guard generation == lifecycleGeneration else { return }
@@ -463,7 +634,9 @@ final class CUAViewModel: ObservableObject {
             maxSteps: context.maxSteps,
             humanLogin: true,
             windowID: context.windowID,
-            clientRequestID: UUID().uuidString.lowercased()
+            clientRequestID: UUID().uuidString.lowercased(),
+            targets: frozenTargets.isEmpty ? nil : frozenTargets.map(\.requestTarget),
+            initialTargetID: context.initialTargetID
         )
         do {
             let createdRunID = try await api.create(request)
@@ -534,6 +707,20 @@ final class CUAViewModel: ObservableObject {
                 }
                 return
             }
+            if case let CUAClientError.targetBinding(createdRunID, cancellationFailed) = error {
+                stoppingStartGeneration = nil
+                isStopping = false
+                selectedTargets = []
+                if cancellationFailed {
+                    quarantine(runID: createdRunID, warning: Self.bindingCleanupWarning)
+                } else if stopWasRequested {
+                    actionError = nil
+                    phase = .idle
+                } else {
+                    phase = .failed(message: Self.describe(error))
+                }
+                return
+            }
             if Self.isAmbiguousCreateError(error) {
                 stoppingStartGeneration = nil
                 await recoverAmbiguousCreate(request, generation: generation)
@@ -560,6 +747,7 @@ final class CUAViewModel: ObservableObject {
             }
             if typedTargetFailure {
                 selectedWindowID = nil
+                if !frozenTargets.isEmpty { selectedTargets = [] }
                 var message = Self.describe(error)
                 if !message.localizedCaseInsensitiveContains("refresh") {
                     message += " Refresh the window list and choose it again."
@@ -588,6 +776,7 @@ final class CUAViewModel: ObservableObject {
         stopPolling()
         runID = nil
         runContext = nil
+        activeTargetID = nil
         goal = ""
         events = []
         pendingGateReason = nil
@@ -740,7 +929,8 @@ final class CUAViewModel: ObservableObject {
 
     private static func isAmbiguousCreateError(_ error: Error) -> Bool {
         switch error {
-        case CUAClientError.windowBinding, CUAClientError.requestBinding:
+        case CUAClientError.windowBinding, CUAClientError.requestBinding,
+             CUAClientError.targetBinding:
             return false
         case let CUAClientError.typedHTTP(status, _, _, _),
              let CUAClientError.http(status, _):
@@ -755,7 +945,8 @@ final class CUAViewModel: ObservableObject {
     ) -> (runID: String, cancellationFailed: Bool)? {
         switch error {
         case let CUAClientError.windowBinding(_, _, runID, cancellationFailed),
-             let CUAClientError.requestBinding(_, _, runID, cancellationFailed):
+             let CUAClientError.requestBinding(_, _, runID, cancellationFailed),
+             let CUAClientError.targetBinding(runID, cancellationFailed):
             return (runID, cancellationFailed)
         default:
             return nil
@@ -796,6 +987,8 @@ final class CUAViewModel: ObservableObject {
         targetDiscoveryGeneration += 1
         selectedPID = nil
         selectedWindowID = nil
+        selectedTargets = []
+        activeTargetID = nil
         appOptions = []
         windowOptions = []
         targetError = nil
@@ -839,6 +1032,7 @@ final class CUAViewModel: ObservableObject {
                     events.append(contentsOf: view.events)
                     lastSeq = view.events.map(\.seq).max() ?? lastSeq
                 }
+                if let active = view.activeTargetID { activeTargetID = active }
                 if let gate = view.pendingGate {
                     pendingGateReason = gate.reason ?? "approval required"
                     pendingApproval = CUAPendingApproval(
@@ -846,7 +1040,8 @@ final class CUAViewModel: ObservableObject {
                         app: view.app,
                         action: gate.action,
                         target: gate.target,
-                        reason: gate.reason ?? "Approval is required before Rapid continues."
+                        reason: gate.reason ?? "Approval is required before Rapid continues.",
+                        targetID: gate.targetID
                     )
                     phase = .awaitingApproval
                 } else {
@@ -859,7 +1054,8 @@ final class CUAViewModel: ObservableObject {
                             action: event.action,
                             target: event.target ?? event.targetLabel,
                             reason: event.reason
-                                ?? "Approval is required before Rapid continues."
+                                ?? "Approval is required before Rapid continues.",
+                            targetID: event.targetID
                         )
                         phase = .awaitingApproval
                     }
@@ -874,7 +1070,8 @@ final class CUAViewModel: ObservableObject {
                             target: event.target ?? event.targetLabel
                                 ?? pendingApproval?.target,
                             reason: event.reason ?? pendingApproval?.reason
-                                ?? "Approval is required before Rapid continues."
+                                ?? "Approval is required before Rapid continues.",
+                            targetID: event.targetID ?? pendingApproval?.targetID
                         )
                     }
                 }
@@ -905,6 +1102,7 @@ final class CUAViewModel: ObservableObject {
                             )
                         if Self.invalidatesSelectedTarget(code: event.error, message: message) {
                             selectedWindowID = nil
+                            if runContext?.targets.isEmpty == false { selectedTargets = [] }
                             phase = .failed(
                                 message: "\(message) Refresh the window list and choose it again."
                             )
@@ -930,6 +1128,7 @@ final class CUAViewModel: ObservableObject {
                         )
                     if Self.invalidatesSelectedTarget(code: view.error, message: message) {
                         selectedWindowID = nil
+                        if runContext?.targets.isEmpty == false { selectedTargets = [] }
                         phase = .failed(
                             message: "\(message) Refresh the window list and choose it again."
                         )
@@ -967,10 +1166,31 @@ final class CUAViewModel: ObservableObject {
         (error as? LocalizedError)?.errorDescription ?? String(describing: error)
     }
 
+    private static func normalizedDomain(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+    }
+
+    private static func isValidDomain(_ value: String) -> Bool {
+        guard !value.isEmpty, value.count <= 200 else { return false }
+        let labels = value.split(separator: ".", omittingEmptySubsequences: false)
+        return labels.allSatisfy { label in
+            guard 1 ... 63 ~= label.count,
+                  let first = label.first, let last = label.last,
+                  first.isASCII && (first.isLetter || first.isNumber),
+                  last.isASCII && (last.isLetter || last.isNumber)
+            else { return false }
+            return label.allSatisfy {
+                $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-")
+            }
+        }
+    }
+
     private static func invalidatesSelectedTarget(code: String?, message: String) -> Bool {
         let targetCodes = [
             "window_not_found", "window_stale", "target_drift", "target_stale",
-            "stale_observation",
+            "stale_observation", "unknown_target", "target_unavailable",
+            "target_identity_changed", "invalid_target_set",
         ]
         if let code, targetCodes.contains(code.lowercased()) { return true }
         let lower = message.lowercased()

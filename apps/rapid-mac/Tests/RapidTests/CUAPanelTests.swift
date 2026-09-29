@@ -15,6 +15,7 @@ private final class MockAgentAPI: CUAAPI, @unchecked Sendable {
             x: 0, y: 0, width: 1200, height: 800
         ),
     ]
+    var windowsByApp: [String: [CUAWindowOption]] = [:]
     var discoveryShouldFail = false
     var discoveryError: Error?
     var appsCalls = 0
@@ -22,6 +23,7 @@ private final class MockAgentAPI: CUAAPI, @unchecked Sendable {
     var queuedCreateErrors: [Error] = []
     var createAttempts = 0
     var capabilitiesSupported = true
+    var multiTargetSupported = true
     var capabilitiesDelayNanos: UInt64 = 0
     var lookupResult: CUARunCreated?
     var lookupHandler: ((String) -> CUARunCreated)?
@@ -44,6 +46,7 @@ private final class MockAgentAPI: CUAAPI, @unchecked Sendable {
     var eventsCalls = 0
     var permissionsResult = CUAPermissionStatus(accessibility: true, screenRecording: true)
     var pendingGateResult: CUAPendingGate?
+    var activeTargetIDResult: String?
 
     var addedPlanners: [CUAPlannerCreateRequest] = []
     var deletedPlannerNames: [String] = []
@@ -54,7 +57,12 @@ private final class MockAgentAPI: CUAAPI, @unchecked Sendable {
             try? await Task.sleep(nanoseconds: capabilitiesDelayNanos)
         }
         return CUACapabilities(
-            features: .init(idempotentRunCreate: capabilitiesSupported)
+            features: .init(
+                idempotentRunCreate: capabilitiesSupported,
+                multiTargetRuns: multiTargetSupported,
+                switchTarget: multiTargetSupported
+            ),
+            maxRunTargets: 3
         )
     }
 
@@ -72,7 +80,7 @@ private final class MockAgentAPI: CUAAPI, @unchecked Sendable {
     func windows(app: String) async throws -> [CUAWindowOption] {
         if let discoveryError { throw discoveryError }
         if discoveryShouldFail { throw Failure.requested }
-        return windowsResult
+        return windowsByApp[app] ?? windowsResult
     }
 
     func addPlanner(_ request: CUAPlannerCreateRequest) async throws {
@@ -121,7 +129,8 @@ private final class MockAgentAPI: CUAAPI, @unchecked Sendable {
                     outcome: event.outcome, targetLabel: event.targetLabel,
                     status: event.status, finalSummary: event.finalSummary,
                     reason: event.reason, error: event.error, app: event.app,
-                    gateID: event.gateID, target: event.target
+                    gateID: event.gateID, target: event.target,
+                    targetID: event.targetID, fromTargetID: event.fromTargetID
                 )
             })
         }
@@ -135,7 +144,8 @@ private final class MockAgentAPI: CUAAPI, @unchecked Sendable {
             planner: "local-9b [local]",
             eventsAfterSeq: after,
             events: events,
-            pendingGate: pendingGateResult
+            pendingGate: pendingGateResult,
+            activeTargetID: activeTargetIDResult
         )
     }
 
@@ -226,13 +236,14 @@ struct CUAViewModelTests {
         instruction: String? = nil, outcome: String? = nil,
         target: String? = nil, status: String? = nil, summary: String? = nil,
         reason: String? = nil, error: String? = nil, app: String? = nil,
-        gateID: String? = nil, gateTarget: String? = nil
+        gateID: String? = nil, gateTarget: String? = nil, targetID: String? = nil
     ) -> CUAEvent {
         CUAEvent(
             seq: seq, kind: kind, step: step, action: action,
             stepInstruction: instruction, outcome: outcome,
             targetLabel: target, status: status, finalSummary: summary, reason: reason,
-            error: error, app: app, gateID: gateID, target: gateTarget
+            error: error, app: app, gateID: gateID, target: gateTarget,
+            targetID: targetID
         )
     }
 
@@ -296,6 +307,112 @@ struct CUAViewModelTests {
         #expect(viewModel.events.isEmpty)
         #expect(viewModel.plannerName == "local-27b")
         #expect(viewModel.selectedWindowID == "cg:123")
+    }
+
+    @Test("Start freezes an ordered authorized target set with per-target domains")
+    func startFreezesMultiTargetSet() async {
+        let api = MockAgentAPI()
+        let viewModel = CUAViewModel(api: api, pollIntervalNanos: 5_000_000)
+        let safari = CUAAppOption(name: "Safari", bundleID: "com.apple.Safari", pid: 42)
+        let textEdit = CUAAppOption(name: "TextEdit", bundleID: "com.apple.TextEdit", pid: 43)
+        viewModel.appOptions = [safari, textEdit]
+        viewModel.windowOptions = [
+            CUAWindowOption(
+                windowID: "cg:1", index: 0, title: "Research", x: nil, y: nil,
+                width: 900, height: 700
+            ),
+        ]
+        viewModel.selectedPID = 42
+        viewModel.selectedWindowID = "cg:1"
+        viewModel.allowedDomain = "example.com"
+        viewModel.addSelectedTarget()
+        #expect(!viewModel.canStart)
+
+        viewModel.windowOptions = [
+            CUAWindowOption(
+                windowID: "cg:2", index: 0, title: "Notes", x: nil, y: nil,
+                width: 700, height: 600
+            ),
+        ]
+        viewModel.selectedPID = 43
+        viewModel.selectedWindowID = "cg:2"
+        viewModel.addSelectedTarget()
+        viewModel.goal = "read the page and update notes"
+        #expect(viewModel.canStart)
+
+        await viewModel.start()
+
+        let request = api.attemptedRequests.first
+        #expect(request?.targets?.map(\.windowID) == ["cg:1", "cg:2"])
+        #expect(request?.targets?.map(\.allowedDomain) == ["example.com", ""])
+        #expect(request?.initialTargetID == request?.targets?.first?.targetID)
+        #expect(viewModel.runContext?.targets.map(\.displayName).count == 2)
+        #expect(viewModel.activeTargetID == request?.initialTargetID)
+        viewModel.invalidateSession()
+    }
+
+    @Test("Multi-window approval requires the active target identity")
+    func multiTargetApprovalIsTargetBound() async {
+        let api = MockAgentAPI()
+        api.pendingGateResult = CUAPendingGate(
+            gateID: "gate-1", reason: "confirm", action: "click", target: "Send",
+            targetID: "target_2"
+        )
+        api.activeTargetIDResult = "target_1"
+        let viewModel = CUAViewModel(api: api, pollIntervalNanos: 5_000_000)
+        viewModel.appOptions = [
+            CUAAppOption(name: "TextEdit", bundleID: "com.apple.TextEdit", pid: 42),
+            CUAAppOption(name: "Notes", bundleID: "com.apple.Notes", pid: 43),
+        ]
+        viewModel.windowOptions = [
+            CUAWindowOption(
+                windowID: "cg:1", index: 0, title: "First", x: nil, y: nil,
+                width: nil, height: nil
+            ),
+        ]
+        viewModel.selectedPID = 42
+        viewModel.selectedWindowID = "cg:1"
+        viewModel.addSelectedTarget()
+        viewModel.windowOptions = [
+            CUAWindowOption(
+                windowID: "cg:2", index: 0, title: "Second", x: nil, y: nil,
+                width: nil, height: nil
+            ),
+        ]
+        viewModel.selectedPID = 43
+        viewModel.selectedWindowID = "cg:2"
+        viewModel.addSelectedTarget()
+        viewModel.goal = "work across both windows"
+
+        await viewModel.start()
+        await drain()
+
+        #expect(viewModel.phase == .awaitingApproval)
+        #expect(!viewModel.canApprove)
+        #expect(viewModel.approvalUnavailableMessage?.contains("active authorized window") == true)
+        await viewModel.approve()
+        #expect(api.approveCalls == 0)
+        viewModel.invalidateSession()
+    }
+
+    @Test("Browser target requires an explicit domain before authorization")
+    func browserTargetRequiresDomain() {
+        let viewModel = CUAViewModel(api: MockAgentAPI())
+        viewModel.appOptions = [
+            CUAAppOption(name: "Safari", bundleID: "com.apple.Safari", pid: 42),
+        ]
+        viewModel.windowOptions = [
+            CUAWindowOption(
+                windowID: "cg:1", index: 0, title: "Research", x: nil, y: nil,
+                width: nil, height: nil
+            ),
+        ]
+        viewModel.selectedPID = 42
+        viewModel.selectedWindowID = "cg:1"
+
+        #expect(!viewModel.canAddSelectedTarget)
+        viewModel.allowedDomain = "example.com"
+        #expect(viewModel.canAddSelectedTarget)
     }
 
     @Test("Start freezes request fields before asynchronous preflight")
@@ -905,6 +1022,73 @@ struct CUAViewModelTests {
         #expect(viewModel.targetError?.contains("no longer available") == true)
     }
 
+    @Test("Refresh clears the whole authorized set when one frozen window disappears")
+    func refreshRevalidatesAuthorizedSet() async {
+        let api = MockAgentAPI()
+        let safari = CUAAppOption(name: "Safari", bundleID: "com.apple.Safari", pid: 42)
+        let textEdit = CUAAppOption(name: "TextEdit", bundleID: "com.apple.TextEdit", pid: 43)
+        let web = CUAWindowOption(
+            windowID: "cg:1", index: 0, title: "Web", x: nil, y: nil,
+            width: nil, height: nil
+        )
+        let notes = CUAWindowOption(
+            windowID: "cg:2", index: 0, title: "Notes", x: nil, y: nil,
+            width: nil, height: nil
+        )
+        api.appsResult = [safari, textEdit]
+        api.windowsByApp = ["pid:42": [web], "pid:43": [notes]]
+        let viewModel = CUAViewModel(api: api)
+        viewModel.appOptions = api.appsResult
+        viewModel.windowOptions = [web]
+        viewModel.selectedPID = 42
+        viewModel.selectedWindowID = "cg:1"
+        viewModel.allowedDomain = "example.com"
+        viewModel.addSelectedTarget()
+        viewModel.windowOptions = [notes]
+        viewModel.selectedPID = 43
+        viewModel.selectedWindowID = "cg:2"
+        viewModel.addSelectedTarget()
+        api.windowsByApp["pid:43"] = []
+
+        await viewModel.loadTargets()
+
+        #expect(viewModel.selectedTargets.isEmpty)
+        #expect(viewModel.targetError?.contains("Select every target again") == true)
+    }
+
+    @Test("Discovery failure clears every authorized target")
+    func discoveryFailureClearsAuthorizedSet() async {
+        let api = MockAgentAPI()
+        let first = CUAWindowOption(
+            windowID: "cg:1", index: 0, title: "First", x: nil, y: nil,
+            width: nil, height: nil
+        )
+        let second = CUAWindowOption(
+            windowID: "cg:2", index: 0, title: "Second", x: nil, y: nil,
+            width: nil, height: nil
+        )
+        let viewModel = CUAViewModel(api: api)
+        viewModel.appOptions = [
+            CUAAppOption(name: "TextEdit", bundleID: "com.apple.TextEdit", pid: 42),
+            CUAAppOption(name: "Notes", bundleID: "com.apple.Notes", pid: 43),
+        ]
+        viewModel.windowOptions = [first]
+        viewModel.selectedPID = 42
+        viewModel.selectedWindowID = first.windowID
+        viewModel.addSelectedTarget()
+        viewModel.windowOptions = [second]
+        viewModel.selectedPID = 43
+        viewModel.selectedWindowID = second.windowID
+        viewModel.addSelectedTarget()
+        api.discoveryShouldFail = true
+
+        await viewModel.loadTargets()
+
+        #expect(viewModel.selectedTargets.isEmpty)
+        #expect(!viewModel.canStart)
+        #expect(viewModel.targetError != nil)
+    }
+
     @Test("Replacement session discovery and refresh use only the new API")
     func replacementSessionUsesCurrentDiscoveryAPI() async {
         let oldAPI = MockAgentAPI()
@@ -1156,6 +1340,81 @@ struct CUAClientTests {
         #expect(json["app"] as? String == "pid:42")
         #expect(json["window_id"] as? String == "opaque:abc")
         #expect(json["client_request_id"] as? String == "request-1")
+    }
+
+    @Test("Multi-target create omits legacy binding and verifies the full echoed set")
+    func multiTargetCreateContract() async throws {
+        let targets = [
+            CUARunTarget(
+                targetID: "target_1", app: "pid:42", pid: 42,
+                windowID: "cg:1", allowedDomain: "example.com"
+            ),
+            CUARunTarget(
+                targetID: "target_2", app: "pid:43", pid: 43,
+                windowID: "cg:2", allowedDomain: ""
+            ),
+        ]
+        let response = CUARunCreated(
+            runID: "multi", status: "running", windowID: "cg:1",
+            clientRequestID: "request-multi", targets: targets,
+            activeTargetID: "target_1"
+        )
+        RecordingURLProtocol.stubResponse(
+            path: "/v1/cua/runs", body: try JSONEncoder().encode(response)
+        )
+        let request = CUARunRequest(
+            app: "pid:42", goal: "read then edit", planner: "brain", openURL: "",
+            allowedDomain: "", maxSteps: 12, humanLogin: true, windowID: "cg:1",
+            clientRequestID: "request-multi", targets: targets,
+            initialTargetID: "target_1"
+        )
+
+        #expect(try await makeClient().create(request) == "multi")
+        let sent = try #require(RecordingURLProtocol.captured["/v1/cua/runs"]?.body)
+        let json = try #require(JSONSerialization.jsonObject(with: sent) as? [String: Any])
+        #expect(json["targets"] != nil)
+        #expect(json["initial_target_id"] as? String == "target_1")
+        #expect(json["window_id"] == nil)
+        #expect(json["allowed_domain"] == nil)
+    }
+
+    @Test("Multi-target create mismatch cancels the concrete run")
+    func multiTargetCreateMismatchFailsClosed() async throws {
+        let requested = [
+            CUARunTarget(
+                targetID: "target_1", app: "pid:42", pid: 42,
+                windowID: "cg:1", allowedDomain: "example.com"
+            ),
+            CUARunTarget(
+                targetID: "target_2", app: "pid:43", pid: 43,
+                windowID: "cg:2", allowedDomain: ""
+            ),
+        ]
+        RecordingURLProtocol.stubResponse(
+            path: "/v1/cua/runs",
+            body: try JSONEncoder().encode(
+                CUARunCreated(
+                    runID: "unsafe", status: "running", windowID: "cg:1",
+                    clientRequestID: "request-multi", targets: Array(requested.reversed()),
+                    activeTargetID: "target_1"
+                )
+            )
+        )
+        RecordingURLProtocol.stubResponse(path: "/v1/cua/runs/unsafe/cancel")
+        let request = CUARunRequest(
+            app: "pid:42", goal: "g", planner: "brain", openURL: "",
+            allowedDomain: "", maxSteps: 12, humanLogin: true, windowID: "cg:1",
+            clientRequestID: "request-multi", targets: requested,
+            initialTargetID: "target_1"
+        )
+
+        do {
+            _ = try await makeClient().create(request)
+            Issue.record("expected target binding rejection")
+        } catch let error as CUAClientError {
+            #expect(error == .targetBinding(runID: "unsafe", cancellationFailed: false))
+        }
+        #expect(RecordingURLProtocol.captured["/v1/cua/runs/unsafe/cancel"] != nil)
     }
 
     @Test("Create rejects missing or changed window binding and cancels the run")
@@ -1768,6 +2027,11 @@ struct CUATargetUISourceTests {
         #expect(section.contains("ComputerUse.Agent.Target.Window"))
         #expect(section.contains("ComputerUse.Agent.Target.Refresh"))
         #expect(section.contains("ComputerUse.Agent.Target.Error"))
+        #expect(section.contains("ComputerUse.Agent.Target.Domain"))
+        #expect(section.contains("ComputerUse.Agent.Target.Add"))
+        #expect(section.contains("ComputerUse.Agent.TargetSet"))
+        #expect(section.contains("ComputerUse.Agent.RunContext.Targets"))
+        #expect(section.contains("ComputerUse.Agent.Approval.TargetWindow"))
         #expect(section.contains("Retry Recovery"))
         #expect(section.contains("Describe what you want Rapid to do"))
         #expect(section.contains("accessibilityLabel(\"Task goal\")"))

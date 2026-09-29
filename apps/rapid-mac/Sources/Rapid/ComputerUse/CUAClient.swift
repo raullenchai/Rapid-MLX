@@ -10,6 +10,14 @@ struct CUAAppOption: Codable, Equatable, Identifiable, Sendable {
         let label = name?.nilIfBlank ?? bundleID?.nilIfBlank ?? "Unknown app"
         return "\(label) — PID \(pid)"
     }
+    var isBrowser: Bool {
+        let bundle = (bundleID ?? "").lowercased()
+        return bundle == "com.apple.safari"
+            || bundle == "com.apple.safaritechnologypreview"
+            || bundle.hasPrefix("com.google.chrome")
+            || bundle.hasPrefix("com.microsoft.edgemac")
+            || bundle.hasPrefix("org.chromium.chromium")
+    }
 
     enum CodingKeys: String, CodingKey {
         case name, pid
@@ -39,6 +47,23 @@ struct CUAWindowOption: Codable, Equatable, Identifiable, Sendable {
     enum CodingKeys: String, CodingKey {
         case index, title, x, y, width, height
         case windowID = "window_id"
+    }
+}
+
+struct CUARunTarget: Codable, Equatable, Identifiable, Sendable {
+    var targetID: String
+    var app: String
+    var pid: Int
+    var windowID: String
+    var allowedDomain: String
+
+    var id: String { targetID }
+
+    enum CodingKeys: String, CodingKey {
+        case app, pid
+        case targetID = "target_id"
+        case windowID = "window_id"
+        case allowedDomain = "allowed_domain"
     }
 }
 
@@ -143,10 +168,14 @@ struct CUAEvent: Codable, Equatable, Sendable {
     var app: String? = nil
     var gateID: String? = nil
     var target: String? = nil
+    var targetID: String? = nil
+    var fromTargetID: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case seq, kind, step, action, outcome, status, reason, error, app, target
         case gateID = "gate_id"
+        case targetID = "target_id"
+        case fromTargetID = "from_target_id"
         case stepInstruction = "step_instruction"
         case targetLabel = "target_label"
         case finalSummary = "final_summary"
@@ -171,10 +200,12 @@ struct CUAPendingGate: Codable, Equatable, Sendable {
     var reason: String?
     var action: String?
     var target: String?
+    var targetID: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case gateID = "gate_id"
         case reason, action, target
+        case targetID = "target_id"
     }
 }
 
@@ -191,6 +222,8 @@ struct CUARunView: Codable, Equatable, Sendable {
     var events: [CUAEvent]
     var pendingGate: CUAPendingGate? = nil
     var windowID: String? = nil
+    var targets: [CUARunTarget]? = nil
+    var activeTargetID: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case runID = "run_id"
@@ -199,6 +232,8 @@ struct CUARunView: Codable, Equatable, Sendable {
         case eventsAfterSeq = "events_after_seq"
         case pendingGate = "pending_gate"
         case windowID = "window_id"
+        case targets
+        case activeTargetID = "active_target_id"
     }
 }
 
@@ -207,12 +242,16 @@ struct CUARunCreated: Codable, Equatable, Sendable {
     var status: String
     var windowID: String?
     var clientRequestID: String?
+    var targets: [CUARunTarget]? = nil
+    var activeTargetID: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case runID = "run_id"
         case status
         case windowID = "window_id"
         case clientRequestID = "client_request_id"
+        case targets
+        case activeTargetID = "active_target_id"
     }
 }
 
@@ -227,11 +266,14 @@ struct CUARunRequest: Codable, Equatable, Sendable {
     var humanLogin: Bool
     var windowID: String
     var clientRequestID: String
+    var targets: [CUARunTarget]?
+    var initialTargetID: String?
 
     init(
         app: String, goal: String, planner: String, openURL: String,
         allowedDomain: String, maxSteps: Int, humanLogin: Bool, windowID: String,
-        clientRequestID: String = UUID().uuidString.lowercased()
+        clientRequestID: String = UUID().uuidString.lowercased(),
+        targets: [CUARunTarget]? = nil, initialTargetID: String? = nil
     ) {
         self.app = app
         self.goal = goal
@@ -242,6 +284,8 @@ struct CUARunRequest: Codable, Equatable, Sendable {
         self.humanLogin = humanLogin
         self.windowID = windowID
         self.clientRequestID = clientRequestID
+        self.targets = targets
+        self.initialTargetID = initialTargetID
     }
 
     enum CodingKeys: String, CodingKey {
@@ -252,6 +296,26 @@ struct CUARunRequest: Codable, Equatable, Sendable {
         case humanLogin = "human_login"
         case windowID = "window_id"
         case clientRequestID = "client_request_id"
+        case targets
+        case initialTargetID = "initial_target_id"
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(app, forKey: .app)
+        try container.encode(goal, forKey: .goal)
+        try container.encode(planner, forKey: .planner)
+        try container.encode(openURL, forKey: .openURL)
+        try container.encode(maxSteps, forKey: .maxSteps)
+        try container.encode(humanLogin, forKey: .humanLogin)
+        try container.encode(clientRequestID, forKey: .clientRequestID)
+        if let targets {
+            try container.encode(targets, forKey: .targets)
+            try container.encode(initialTargetID, forKey: .initialTargetID)
+        } else {
+            try container.encode(allowedDomain, forKey: .allowedDomain)
+            try container.encode(windowID, forKey: .windowID)
+        }
     }
 }
 
@@ -264,6 +328,7 @@ enum CUAClientError: LocalizedError, Equatable {
     case requestBinding(
         expected: String, actual: String?, runID: String, cancellationFailed: Bool
     )
+    case targetBinding(runID: String, cancellationFailed: Bool)
 
     var errorDescription: String? {
         switch self {
@@ -284,6 +349,11 @@ enum CUAClientError: LocalizedError, Equatable {
                 ? " The unverified task may still be executing. Stop it immediately."
                 : " The unverified task was stopped."
             return "The server did not confirm create request '\(expected)' (received \(received)).\(stop)"
+        case let .targetBinding(_, cancellationFailed):
+            let stop = cancellationFailed
+                ? " The unverified task may still be executing. Stop it immediately."
+                : " The unverified task was stopped."
+            return "The server did not bind the exact authorized target set.\(stop) Refresh every target and try again."
         }
     }
 }
@@ -363,8 +433,10 @@ struct CUAClient: CUAAPI, Sendable {
             path: "/v1/cua/runs", method: "POST", body: body
         )
         let created = try decode(CUARunCreated.self, from: data, response: response)
-        guard created.windowID == request.windowID,
-              created.clientRequestID == request.clientRequestID
+        let targetBindingMatches = request.targets.map {
+            created.targets == $0 && created.activeTargetID == request.initialTargetID
+        } ?? (created.windowID == request.windowID)
+        guard targetBindingMatches, created.clientRequestID == request.clientRequestID
         else {
             var cancellationFailed = false
             do {
@@ -372,7 +444,12 @@ struct CUAClient: CUAAPI, Sendable {
             } catch {
                 cancellationFailed = true
             }
-            if created.windowID != request.windowID {
+            if request.targets != nil && !targetBindingMatches {
+                throw CUAClientError.targetBinding(
+                    runID: created.runID, cancellationFailed: cancellationFailed
+                )
+            }
+            if request.targets == nil && created.windowID != request.windowID {
                 throw CUAClientError.windowBinding(
                     expected: request.windowID, actual: created.windowID,
                     runID: created.runID, cancellationFailed: cancellationFailed
