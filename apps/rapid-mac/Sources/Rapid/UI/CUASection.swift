@@ -458,7 +458,21 @@ struct CUASection: View {
                     ForEach(viewModel.selectedTargets) { target in
                         HStack(alignment: .firstTextBaseline) {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(target.displayName).font(.caption)
+                                HStack(spacing: 6) {
+                                    Text(target.displayName).font(.caption)
+                                    if target.targetID == viewModel.selectedInitialTargetID {
+                                        Text("STARTS HERE")
+                                            .font(.caption2.weight(.bold))
+                                            .foregroundStyle(.blue)
+                                            .padding(.horizontal, 5)
+                                            .padding(.vertical, 2)
+                                            .background(.blue.opacity(0.1), in: Capsule())
+                                            .accessibilityLabel("Starts here")
+                                            .accessibilityIdentifier(
+                                                "ComputerUse.Agent.TargetSet.Initial"
+                                            )
+                                    }
+                                }
                                 Text(
                                     target.allowedDomain.isEmpty
                                         ? "Domain: not restricted"
@@ -468,6 +482,17 @@ struct CUASection: View {
                                 .foregroundStyle(.secondary)
                             }
                             Spacer()
+                            if target.targetID != viewModel.selectedInitialTargetID {
+                                Button("Start here") {
+                                    viewModel.setInitialTarget(id: target.targetID)
+                                }
+                                .buttonStyle(.borderless)
+                                .disabled(viewModel.phase.isBusy)
+                                .accessibilityLabel("Start in \(target.displayName)")
+                                .accessibilityIdentifier(
+                                    "ComputerUse.Agent.TargetSet.SetInitial"
+                                )
+                            }
                             Button("Remove") { viewModel.removeSelectedTarget(id: target.id) }
                                 .buttonStyle(.borderless)
                                 .disabled(viewModel.phase.isBusy)

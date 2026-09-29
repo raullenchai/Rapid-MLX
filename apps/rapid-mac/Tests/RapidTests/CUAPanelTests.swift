@@ -338,6 +338,8 @@ struct CUAViewModelTests {
         viewModel.selectedPID = 43
         viewModel.selectedWindowID = "cg:2"
         viewModel.addSelectedTarget()
+        let secondTargetID = try! #require(viewModel.selectedTargets.last?.targetID)
+        viewModel.setInitialTarget(id: secondTargetID)
         viewModel.goal = "read the page and update notes"
         #expect(viewModel.canStart)
 
@@ -346,11 +348,39 @@ struct CUAViewModelTests {
         let request = api.attemptedRequests.first
         #expect(request?.targets?.map(\.windowID) == ["cg:1", "cg:2"])
         #expect(request?.targets?.map(\.allowedDomain) == ["example.com", ""])
-        #expect(request?.initialTargetID == request?.targets?.first?.targetID)
+        #expect(request?.initialTargetID == secondTargetID)
+        #expect(request?.app == "pid:43")
+        #expect(request?.windowID == "cg:2")
         #expect(viewModel.runContext?.targets.map(\.displayName).count == 2)
         #expect(viewModel.runContext?.allowedDomain.isEmpty == true)
         #expect(viewModel.activeTargetID == request?.initialTargetID)
         viewModel.invalidateSession()
+    }
+
+    @Test("Removing the starting target safely falls back to the first remaining target")
+    func removingInitialTargetChoosesSafeFallback() {
+        let viewModel = CUAViewModel(api: MockAgentAPI())
+        viewModel.appOptions = [
+            CUAAppOption(name: "TextEdit", bundleID: "com.apple.TextEdit", pid: 42),
+            CUAAppOption(name: "Notes", bundleID: "com.apple.Notes", pid: 43),
+        ]
+        for (pid, id, title) in [(42, "cg:1", "Draft"), (43, "cg:2", "Notes")] {
+            viewModel.windowOptions = [
+                CUAWindowOption(
+                    windowID: id, index: 0, title: title, x: nil, y: nil,
+                    width: nil, height: nil
+                ),
+            ]
+            viewModel.selectedPID = pid
+            viewModel.selectedWindowID = id
+            viewModel.addSelectedTarget()
+        }
+        let second = viewModel.selectedTargets[1].targetID
+        viewModel.setInitialTarget(id: second)
+
+        viewModel.removeSelectedTarget(id: second)
+
+        #expect(viewModel.selectedInitialTargetID == viewModel.selectedTargets.first?.targetID)
     }
 
     @Test("Multi-window approval requires the active target identity")
@@ -2084,6 +2114,8 @@ struct CUATargetUISourceTests {
         #expect(section.contains("ComputerUse.Agent.Target.Domain"))
         #expect(section.contains("ComputerUse.Agent.Target.Add"))
         #expect(section.contains("ComputerUse.Agent.TargetSet"))
+        #expect(section.contains("ComputerUse.Agent.TargetSet.Initial"))
+        #expect(section.contains("ComputerUse.Agent.TargetSet.SetInitial"))
         #expect(section.contains("ComputerUse.Agent.RunContext.Targets"))
         #expect(section.contains("ComputerUse.Agent.RunContext.Domain"))
         #expect(section.contains("ComputerUse.Agent.Approval.TargetWindow"))

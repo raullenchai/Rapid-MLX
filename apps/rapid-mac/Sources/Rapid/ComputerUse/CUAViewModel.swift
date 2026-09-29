@@ -171,6 +171,7 @@ final class CUAViewModel: ObservableObject {
     @Published var selectedPID: Int?
     @Published var selectedWindowID: String?
     @Published private(set) var selectedTargets: [CUASelectedTarget] = []
+    @Published private(set) var selectedInitialTargetID: String?
     @Published private(set) var activeTargetID: String?
     @Published var targetError: String?
     @Published var isLoadingApps = false
@@ -276,6 +277,9 @@ final class CUAViewModel: ObservableObject {
             allowedDomain: app.isBrowser ? Self.normalizedDomain(allowedDomain) : ""
         )
         selectedTargets.append(target)
+        if selectedInitialTargetID == nil {
+            selectedInitialTargetID = target.targetID
+        }
         selectedPID = nil
         selectedWindowID = nil
         windowOptions = []
@@ -288,11 +292,21 @@ final class CUAViewModel: ObservableObject {
     func removeSelectedTarget(id: String) {
         guard !phase.isBusy else { return }
         selectedTargets.removeAll { $0.targetID == id }
+        if selectedInitialTargetID == id {
+            selectedInitialTargetID = selectedTargets.first?.targetID
+        }
         if selectedTargets.count == 1 {
             targetError = "Add one more authorized window, or remove this target to use one window."
         } else if selectedTargets.isEmpty {
             targetError = nil
         }
+    }
+
+    func setInitialTarget(id: String) {
+        guard !phase.isBusy, selectedTargets.contains(where: { $0.targetID == id }) else {
+            return
+        }
+        selectedInitialTargetID = id
     }
 
     var canApprove: Bool {
@@ -370,6 +384,7 @@ final class CUAViewModel: ObservableObject {
                           liveApp.bundleID == target.app.bundleID
                     else {
                         selectedTargets = []
+                        selectedInitialTargetID = nil
                         targetError = "An authorized app changed or closed. Select every target again."
                         return
                     }
@@ -378,6 +393,7 @@ final class CUAViewModel: ObservableObject {
                     guard liveWindows.contains(where: { $0.windowID == target.window.windowID })
                     else {
                         selectedTargets = []
+                        selectedInitialTargetID = nil
                         targetError = "An authorized window changed or closed. Select every target again."
                         return
                     }
@@ -399,6 +415,7 @@ final class CUAViewModel: ObservableObject {
             selectedPID = nil
             selectedWindowID = nil
             selectedTargets = []
+            selectedInitialTargetID = nil
             targetError = targetDiscoveryMessage(error)
         }
     }
@@ -554,9 +571,12 @@ final class CUAViewModel: ObservableObject {
         let frozenTargets = selectedTargets
         let app: CUAAppOption
         let window: CUAWindowOption
-        if let first = frozenTargets.first {
-            app = first.app
-            window = first.window
+        let frozenInitialTargetID = frozenTargets.isEmpty
+            ? nil
+            : (selectedInitialTargetID ?? frozenTargets.first?.targetID)
+        if let initial = frozenTargets.first(where: { $0.targetID == frozenInitialTargetID }) {
+            app = initial.app
+            window = initial.window
         } else {
             guard let selectedApp, let selectedWindow else { return }
             app = selectedApp
@@ -575,7 +595,7 @@ final class CUAViewModel: ObservableObject {
                 : "",
             maxSteps: maxSteps,
             targets: frozenTargets,
-            initialTargetID: frozenTargets.first?.targetID
+            initialTargetID: frozenInitialTargetID
         )
         lifecycleGeneration += 1
         let generation = lifecycleGeneration
@@ -723,6 +743,7 @@ final class CUAViewModel: ObservableObject {
                 stoppingStartGeneration = nil
                 isStopping = false
                 selectedTargets = []
+                selectedInitialTargetID = nil
                 if cancellationFailed {
                     quarantine(runID: createdRunID, warning: Self.bindingCleanupWarning)
                 } else if stopWasRequested {
@@ -760,7 +781,10 @@ final class CUAViewModel: ObservableObject {
             }
             if typedTargetFailure {
                 selectedWindowID = nil
-                if !frozenTargets.isEmpty { selectedTargets = [] }
+                if !frozenTargets.isEmpty {
+                    selectedTargets = []
+                    selectedInitialTargetID = nil
+                }
                 var message = Self.describe(error)
                 if !message.localizedCaseInsensitiveContains("refresh") {
                     message += " Refresh the window list and choose it again."
@@ -1002,6 +1026,7 @@ final class CUAViewModel: ObservableObject {
         selectedPID = nil
         selectedWindowID = nil
         selectedTargets = []
+        selectedInitialTargetID = nil
         activeTargetID = nil
         appOptions = []
         windowOptions = []
@@ -1120,7 +1145,10 @@ final class CUAViewModel: ObservableObject {
                             )
                         if Self.invalidatesSelectedTarget(code: event.error, message: message) {
                             selectedWindowID = nil
-                            if runContext?.targets.isEmpty == false { selectedTargets = [] }
+                            if runContext?.targets.isEmpty == false {
+                                selectedTargets = []
+                                selectedInitialTargetID = nil
+                            }
                             phase = .failed(
                                 message: "\(message) Refresh the window list and choose it again."
                             )
@@ -1149,7 +1177,10 @@ final class CUAViewModel: ObservableObject {
                         )
                     if Self.invalidatesSelectedTarget(code: view.error, message: message) {
                         selectedWindowID = nil
-                        if runContext?.targets.isEmpty == false { selectedTargets = [] }
+                        if runContext?.targets.isEmpty == false {
+                            selectedTargets = []
+                            selectedInitialTargetID = nil
+                        }
                         phase = .failed(
                             message: "\(message) Refresh the window list and choose it again."
                         )
