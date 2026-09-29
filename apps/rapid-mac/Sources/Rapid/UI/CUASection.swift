@@ -156,6 +156,10 @@ struct CUASection: View {
     @State private var brainDraftAPIKey = ""
     @State private var brainDraftTextOnly = false
     @State private var brainDraftAllowRemote = false
+  @State private var showManageModels = false
+  @State private var modelPendingDeletion: CUAPlannerOption?
+  @State private var showAdvanced = false
+  @State private var addModelAfterManaging = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.md) {
@@ -202,52 +206,54 @@ struct CUASection: View {
                 .overlay(RoundedRectangle(cornerRadius: 10).stroke(.secondary.opacity(0.2)))
             }
 
-            HStack(alignment: .top, spacing: 12) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Brain").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                    HStack(spacing: 6) {
-                        Picker("Brain", selection: $viewModel.plannerName) {
-                            ForEach(viewModel.plannerOptions) { option in
-                                Text(option.displayName).tag(option.name)
-                            }
-                            if viewModel.plannerOptions.isEmpty {
-                                Text(viewModel.plannerName).tag(viewModel.plannerName)
-                            }
-                        }
-                        .labelsHidden()
-                        .frame(maxWidth: 340)
-                        .accessibilityIdentifier("ComputerUse.Agent.Planner")
-                        Button {
-                            viewModel.showAddBrain = true
-                        } label: {
-                            Image(systemName: "plus.circle")
-                        }
-                        .buttonStyle(.borderless)
-                        .help("Add an OpenAI-compatible brain")
-                        .accessibilityIdentifier("ComputerUse.Agent.AddBrain")
-                    }
-                }
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Max steps").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                    Stepper("\(viewModel.maxSteps)", value: $viewModel.maxSteps, in: 1 ... 40)
-                        .accessibilityIdentifier("ComputerUse.Agent.MaxSteps")
-                }
-            }
-
-            targetPicker
+        modelConfiguration
 
             Label(viewModel.plannerDisclosure, systemImage: "desktopcomputer")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .accessibilityIdentifier("ComputerUse.Agent.BrainDisclosure")
+                .accessibilityIdentifier("ComputerUse.Agent.ModelDisclosure")
 
-            if !viewModel.phase.isBusy {
-                Button("Start") {
-                    Task { await viewModel.start() }
+            if viewModel.selectedPlannerIsRemote {
+                Toggle(
+                    "Allow this model to receive this task and the names of open apps to choose where to work",
+                    isOn: $viewModel.allowRemoteAppDiscovery
+                )
+                .font(.caption)
+                .accessibilityIdentifier("ComputerUse.Agent.RemoteAppDiscoveryConsent")
+            }
+
+        DisclosureGroup("Advanced", isExpanded: $showAdvanced) {
+          Stepper("Maximum steps: \(viewModel.maxSteps)", value: $viewModel.maxSteps, in: 1...40)
+            .padding(.top, 6)
+            .accessibilityIdentifier("ComputerUse.Agent.MaxSteps")
+        }
+        .font(.caption)
+        .accessibilityIdentifier("ComputerUse.Agent.Advanced")
+
+        if let resolution = viewModel.targetResolutionApproval,
+          let approval = resolution.approval
+        {
+          targetResolutionApproval(approval)
+            } else if let error = viewModel.targetError {
+                Label(error, systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+                    .accessibilityIdentifier("ComputerUse.Agent.ScopeError")
+                if viewModel.browserAutomationRecoveryRequired {
+                    Button("Open Automation Settings") {
+                        MacAutomationPermissions.openAutomationSettings()
+                    }
+                    .accessibilityIdentifier("ComputerUse.Agent.Scope.OpenAutomationSettings")
+                }
+            }
+
+        if !viewModel.phase.isBusy, viewModel.targetResolutionApproval == nil {
+          Button(viewModel.isResolvingTargets ? "Finding the right apps…" : "Start") {
+            Task { await viewModel.resolveAndStart() }
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(
-                    !viewModel.canStart || viewModel.executorPermissions?.isReady == false
+            !viewModel.canResolveTask || viewModel.executorPermissions?.isReady == false
                 )
                 .accessibilityIdentifier("ComputerUse.Agent.Start")
             }
@@ -292,7 +298,6 @@ struct CUASection: View {
             guard !viewModel.isSessionDetached else { return }
             await viewModel.loadPlanners()
             await viewModel.loadPermissions()
-            await viewModel.loadTargets()
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
@@ -301,34 +306,46 @@ struct CUASection: View {
                 }
             }
         }
+        .onChange(of: viewModel.goal) { _, _ in
+            viewModel.allowRemoteAppDiscovery = false
+      if viewModel.targetResolutionApproval != nil {
+        viewModel.cancelTargetResolution()
+      }
+    }
+        .onChange(of: viewModel.plannerName) { _, _ in
+            viewModel.allowRemoteAppDiscovery = false
+      if viewModel.targetResolutionApproval != nil {
+        viewModel.cancelTargetResolution()
+      }
+    }
         .sheet(isPresented: $viewModel.showAddBrain) {
             VStack(alignment: .leading, spacing: 12) {
-                Text("Add a Brain").font(.headline)
+        Text("Add Model").font(.headline)
                 Text(
                     "Rapid always executes actions on this Mac. Choose where the planning model runs and exactly what it may receive."
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 Form {
-                    TextField("Name (e.g. deepseek)", text: $brainDraftName)
-                        .accessibilityIdentifier("ComputerUse.Agent.BrainName")
-                    TextField("Model (e.g. deepseek-reasoner)", text: $brainDraftModel)
-                        .accessibilityIdentifier("ComputerUse.Agent.BrainModel")
+          TextField("Name (for example, My Local Model)", text: $brainDraftName)
+            .accessibilityIdentifier("ComputerUse.Agent.ModelName")
+          TextField("Model name", text: $brainDraftModel)
+            .accessibilityIdentifier("ComputerUse.Agent.ModelNameAtEndpoint")
                     TextField("Endpoint URL", text: $brainDraftURL)
-                        .accessibilityIdentifier("ComputerUse.Agent.BrainURL")
+            .accessibilityIdentifier("ComputerUse.Agent.ModelURL")
                         .onChange(of: brainDraftURL) { _, _ in
                             brainDraftAllowRemote = false
                         }
                     SecureField("API key (optional)", text: $brainDraftAPIKey)
-                        .accessibilityIdentifier("ComputerUse.Agent.BrainKey")
+            .accessibilityIdentifier("ComputerUse.Agent.ModelKey")
                     Toggle("Text only — do not send screenshots", isOn: $brainDraftTextOnly)
-                        .accessibilityIdentifier("ComputerUse.Agent.BrainTextOnly")
+            .accessibilityIdentifier("ComputerUse.Agent.ModelTextOnly")
                     if !brainDraftURL.isEmpty && !CUAViewModel.isLoopbackEndpoint(brainDraftURL) {
                         Toggle(
-                            "Allow this endpoint to receive the task goal, Accessibility snapshot\(brainDraftTextOnly ? "" : ", and screenshot")",
+              "Allow this endpoint to receive the task goal and, during execution, the Accessibility snapshot\(brainDraftTextOnly ? "" : ", and screenshot")",
                             isOn: $brainDraftAllowRemote
                         )
-                        .accessibilityIdentifier("ComputerUse.Agent.BrainRemoteConsent")
+            .accessibilityIdentifier("ComputerUse.Agent.ModelRemoteConsent")
                         Text("External endpoints must use HTTPS. LAN addresses are also treated as external.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -344,8 +361,8 @@ struct CUASection: View {
                 HStack {
                     Spacer()
                     Button("Cancel") { viewModel.showAddBrain = false }
-                        .accessibilityIdentifier("ComputerUse.Agent.BrainCancel")
-                    Button("Save Brain") {
+            .accessibilityIdentifier("ComputerUse.Agent.ModelCancel")
+          Button("Save Model") {
                         viewModel.newBrainName = brainDraftName
                         viewModel.newBrainURL = brainDraftURL
                         viewModel.newBrainModel = brainDraftModel
@@ -356,7 +373,7 @@ struct CUASection: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(brainDraftName.isEmpty || brainDraftURL.isEmpty || brainDraftModel.isEmpty)
-                    .accessibilityIdentifier("ComputerUse.Agent.BrainSave")
+          .accessibilityIdentifier("ComputerUse.Agent.ModelSave")
                 }
             }
             .padding(20)
@@ -381,158 +398,133 @@ struct CUASection: View {
                 brainDraftAllowRemote = false
             }
         }
+    .sheet(isPresented: $showManageModels, onDismiss: {
+      if addModelAfterManaging {
+        addModelAfterManaging = false
+        viewModel.showAddBrain = true
+      }
+    }) {
+      manageModelsSheet
+    }
     }
 
-    private var targetPicker: some View {
-        VStack(alignment: .leading, spacing: 8) {
+  private func targetResolutionApproval(_ approval: CUATargetApproval) -> some View {
+    VStack(alignment: .leading, spacing: 10) {
+      Label("Confirm app access", systemImage: "macwindow.on.rectangle")
+        .font(.callout.weight(.semibold))
+      Text(approval.prompt)
+        .font(.callout)
             HStack {
-                Text("Target window")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+        Button("Cancel") { viewModel.cancelTargetResolution() }
                 Spacer()
-                if viewModel.isLoadingApps || viewModel.isLoadingWindows {
-                    ProgressView().controlSize(.small)
+        ForEach(approval.options) { option in
+          Button(option.label) {
+            Task { await viewModel.approveResolvedTargets(optionID: option.optionID) }
                 }
-                Button("Refresh") {
-                    Task { await viewModel.loadTargets() }
+          .buttonStyle(.borderedProminent)
+          .accessibilityIdentifier("ComputerUse.Agent.ScopeOption")
                 }
-                .buttonStyle(.borderless)
-                .disabled(viewModel.phase.isBusy || viewModel.isLoadingApps)
-                .accessibilityIdentifier("ComputerUse.Agent.Target.Refresh")
+      }
+    }
+    .padding(12)
+    .background(RapidTheme.surfaceCanvas, in: RoundedRectangle(cornerRadius: 10))
+    .overlay(RoundedRectangle(cornerRadius: 10).stroke(.secondary.opacity(0.2)))
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("ComputerUse.Agent.ScopeApproval")
             }
 
-            HStack(spacing: 10) {
-                Picker(
-                    "Process",
-                    selection: Binding(
-                        get: { viewModel.selectedPID },
-                        set: { pid in Task { await viewModel.selectApp(pid: pid) } }
-                    )
-                ) {
-                    Text("Choose an app process…").tag(Int?.none)
-                    ForEach(viewModel.appOptions) { app in
-                        Text(app.displayName).tag(Optional(app.pid))
+  private var modelConfiguration: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      Text("Model")
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(.secondary)
+      HStack(spacing: 8) {
+        Picker("Model", selection: $viewModel.plannerName) {
+          ForEach(viewModel.plannerOptions) { option in
+            Text(option.displayName).tag(option.name)
+          }
+          if viewModel.plannerOptions.isEmpty {
+            Text("Add a model to continue").tag("")
                     }
                 }
-                .disabled(viewModel.phase.isBusy || viewModel.isLoadingApps)
-                .accessibilityIdentifier("ComputerUse.Agent.Target.Process")
+        .labelsHidden()
+        .frame(maxWidth: 360)
+        .disabled(viewModel.plannerOptions.isEmpty)
+        .accessibilityIdentifier("ComputerUse.Agent.Model")
 
-                Picker("Window", selection: $viewModel.selectedWindowID) {
-                    Text("Choose a window…").tag(String?.none)
-                    ForEach(viewModel.windowOptions) { window in
-                        Text(window.displayName).tag(Optional(window.windowID))
+        Button("Add Model…") { viewModel.showAddBrain = true }
+          .accessibilityIdentifier("ComputerUse.Agent.AddModel")
+        Button("Manage Models…") { showManageModels = true }
+          .disabled(viewModel.plannerOptions.isEmpty)
+          .accessibilityIdentifier("ComputerUse.Agent.ManageModels")
                     }
                 }
-                .disabled(
-                    viewModel.phase.isBusy || viewModel.selectedPID == nil
-                        || viewModel.isLoadingWindows || viewModel.windowOptions.isEmpty
-                )
-                .accessibilityIdentifier("ComputerUse.Agent.Target.Window")
             }
 
-            TextField("Browser domain (required for browser targets)", text: $viewModel.allowedDomain)
-                .textFieldStyle(.roundedBorder)
-                .disabled(viewModel.phase.isBusy || viewModel.selectedApp?.isBrowser != true)
-                .accessibilityIdentifier("ComputerUse.Agent.Target.Domain")
-            if let domainError = viewModel.selectedBrowserDomainError {
-                Text(domainError)
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                    .accessibilityIdentifier("ComputerUse.Agent.Target.DomainRequired")
-            } else if viewModel.selectedApp?.isBrowser == true {
-                Text("Rapid will stop before acting if this window leaves this domain or its subdomains.")
+  private var manageModelsSheet: some View {
+    VStack(alignment: .leading, spacing: 14) {
+      Text("Manage Models").font(.headline)
+      Text("Choose the local or cloud OpenAI-compatible endpoint Rapid uses to plan this task.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .accessibilityIdentifier("ComputerUse.Agent.Target.DomainScope")
-            }
-
-            if !viewModel.selectedTargets.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Authorized windows")
-                        .font(.caption.weight(.semibold))
-                    ForEach(viewModel.selectedTargets) { target in
+      List(viewModel.plannerOptions) { model in
                         HStack(alignment: .firstTextBaseline) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                HStack(spacing: 6) {
-                                    Text(target.displayName).font(.caption)
-                                    if target.targetID == viewModel.selectedInitialTargetID {
-                                        Text("STARTS HERE")
-                                            .font(.caption2.weight(.bold))
-                                            .foregroundStyle(.blue)
-                                            .padding(.horizontal, 5)
-                                            .padding(.vertical, 2)
-                                            .background(.blue.opacity(0.1), in: Capsule())
-                                            .accessibilityLabel("Starts here")
-                                            .accessibilityIdentifier(
-                                                "ComputerUse.Agent.TargetSet.Initial"
-                                            )
-                                    }
-                                }
-                                Text(
-                                    target.allowedDomain.isEmpty
-                                        ? "Domain: not restricted"
-                                        : "Domain: \(target.allowedDomain)"
-                                )
-                                .font(.caption2)
+          VStack(alignment: .leading, spacing: 3) {
+            Text(model.displayName)
+            Text(model.url)
+              .font(.caption)
                                 .foregroundStyle(.secondary)
+              .lineLimit(1)
                             }
                             Spacer()
-                            if target.targetID != viewModel.selectedInitialTargetID {
-                                Button("Start here") {
-                                    viewModel.setInitialTarget(id: target.targetID)
+          if model.userCreated {
+            Button("Remove…", role: .destructive) {
+              modelPendingDeletion = model
                                 }
-                                .buttonStyle(.borderless)
-                                .disabled(viewModel.phase.isBusy)
-                                .accessibilityLabel("Start in \(target.displayName)")
-                                .accessibilityIdentifier(
-                                    "ComputerUse.Agent.TargetSet.SetInitial"
-                                )
-                            }
-                            Button("Remove") { viewModel.removeSelectedTarget(id: target.id) }
-                                .buttonStyle(.borderless)
-                                .disabled(viewModel.phase.isBusy)
-                                .accessibilityLabel("Remove \(target.displayName)")
-                                .accessibilityIdentifier("ComputerUse.Agent.TargetSet.Remove")
-                        }
-                        .accessibilityElement(children: .contain)
-                        .accessibilityIdentifier("ComputerUse.Agent.TargetSet.Item")
+            .accessibilityLabel("Remove \(model.displayName)")
+          } else {
+            Text("Built in")
+              .font(.caption)
+              .foregroundStyle(.secondary)
                     }
                 }
-                .accessibilityIdentifier("ComputerUse.Agent.TargetSet")
             }
-
-            Button(viewModel.selectedTargets.isEmpty ? "Authorize selected window" : "Add selected window") {
-                viewModel.addSelectedTarget()
+      if let error = viewModel.brainError {
+        Text(error).font(.caption).foregroundStyle(.red)
             }
-            .buttonStyle(.bordered)
-            .disabled(!viewModel.canAddSelectedTarget)
-            .accessibilityIdentifier("ComputerUse.Agent.Target.Add")
-
-            if viewModel.appOptions.isEmpty, !viewModel.isLoadingApps,
-               viewModel.targetError == nil
-            {
-                Text("No controllable app processes were found. Open an app, then refresh.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .accessibilityIdentifier("ComputerUse.Agent.Target.Empty")
-            }
-            if let summary = viewModel.targetSummary {
-                Label(summary, systemImage: "macwindow")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .accessibilityIdentifier("ComputerUse.Agent.Target.Selection")
-            }
-            if let error = viewModel.targetError {
-                Label(error, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                    .accessibilityIdentifier("ComputerUse.Agent.Target.Error")
-            }
+      HStack {
+        Button("Add Model…") {
+          addModelAfterManaging = true
+          showManageModels = false
         }
-        .padding(10)
-        .background(RapidTheme.surfaceCanvas, in: RoundedRectangle(cornerRadius: 10))
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("ComputerUse.Agent.Target")
+        Spacer()
+        Button("Done") { showManageModels = false }
+          .keyboardShortcut(.defaultAction)
+            }
+            }
+    .padding(20)
+    .frame(width: 520, height: 360)
+    .accessibilityIdentifier("ComputerUse.Agent.Models")
+    .confirmationDialog(
+      "Remove this model?",
+      isPresented: Binding(
+        get: { modelPendingDeletion != nil },
+        set: { if !$0 { modelPendingDeletion = nil } }
+      ),
+      presenting: modelPendingDeletion
+    ) { model in
+      Button("Remove \(model.name)", role: .destructive) {
+        Task {
+          await viewModel.deleteModel(named: model.name)
+          modelPendingDeletion = nil
+        }
+      }
+      Button("Cancel", role: .cancel) { modelPendingDeletion = nil }
+    } message: { model in
+      Text(
+        "Rapid will remove the saved endpoint for \(model.displayName). You can add it again later."
+      )
+        }
     }
 
     private var permissionReadiness: some View {
@@ -680,7 +672,7 @@ struct CUASection: View {
                         : "Active: \(viewModel.activeTargetDisplayName ?? context.targetDisplayName)",
                     systemImage: "macwindow"
                 )
-                Label(context.plannerDisplayName, systemImage: "brain")
+                Label(context.plannerDisplayName, systemImage: "cpu")
                 Label("Up to \(context.maxSteps) steps", systemImage: "list.number")
             }
             .font(.caption)
@@ -694,7 +686,7 @@ struct CUASection: View {
             }
             if context.targets.count > 1 {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Authorized windows").font(.caption.weight(.semibold))
+                    Text("Apps used").font(.caption.weight(.semibold))
                     ForEach(context.targets) { target in
                         HStack {
                             Text(target.displayName)
@@ -828,7 +820,7 @@ struct CUASection: View {
                     .buttonStyle(.borderedProminent)
                     .accessibilityIdentifier("ComputerUse.Agent.Failure.RetrySetup")
                     Text(
-                        "Restores this task as a draft. Review and authorize every target window and browser domain again before Start."
+                        "Restores this task as a draft. Rapid will choose the apps again and ask before accessing a website."
                     )
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -926,7 +918,7 @@ struct CUASection: View {
             if let targetID = approval.targetID,
                let targetName = viewModel.runTargetNames[targetID]
             {
-                LabeledContent("Authorized window", value: targetName)
+                LabeledContent("App in use", value: targetName)
                     .accessibilityIdentifier("ComputerUse.Agent.Approval.TargetWindow")
             }
             if let action = approval.action, !action.isEmpty {
@@ -1016,7 +1008,7 @@ struct CUAEventList: View {
             return "Approval resolved"
         case "target_switched":
             let destination = event.targetID.flatMap { targetNames[$0] }
-                ?? event.targetID ?? "authorized window"
+                ?? "another app"
             return "Switched to \(destination)"
         case "terminal":
             return "Run \(event.status ?? "ended")"
