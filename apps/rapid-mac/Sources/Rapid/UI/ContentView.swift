@@ -131,7 +131,15 @@ struct ContentView: View {
     /// from a real user override while launch probing is suspended.
     @State private var userSelectionRevision: UInt = 0
     /// Which detail surface the sidebar shows (chat vs the Launch page).
-    @State private var section: SidebarSection = .chat
+    /// Starts on Chat unless a GUI harness asked for another surface — see
+    /// ``SidebarSection/harnessRequested(environment:)``, which is inert
+    /// outside golden mode.
+    @State private var section: SidebarSection = SidebarSection.harnessRequested() ?? .chat
+    /// Measured width of the whole shell, used for the one responsive
+    /// decision the chrome makes: whether the rail is collapsed. Zero until
+    /// the first layout pass, which is why ``usesCompactRail`` treats zero as
+    /// "not yet known" rather than "narrow".
+    @State private var shellWidth: CGFloat = 0
     @AppStorage(VideoFeatureConfig.enabledKey)
     private var videoGenerationEnabled = VideoFeatureConfig.defaultEnabled
     @AppStorage(ComputerUseFeatureConfig.enabledKey)
@@ -208,9 +216,13 @@ struct ContentView: View {
         handedOffVersion: String?,
         onboardingVisible: Bool,
         blockingOverlayVisible: Bool,
-        hasAction: Bool
+        hasAction: Bool,
+        /// Set only by a visual-review capture; see
+        /// ``suppressesReviewChrome(environment:)``. Defaulted so every
+        /// existing caller and test keeps its current meaning.
+        suppressedForReview: Bool = false
     ) -> Bool {
-        guard let releaseVersion, hasAction else { return false }
+        guard let releaseVersion, hasAction, !suppressedForReview else { return false }
         return !onboardingVisible
             && !blockingOverlayVisible
             && dismissedVersion != releaseVersion
@@ -231,6 +243,36 @@ struct ContentView: View {
         return true
     }
 
+    /// Whether the rail is collapsed to Paper's icon rail.
+    ///
+    /// Zero means "not measured yet" — the shell starts on the full column
+    /// and collapses on the first layout pass if it has to, rather than
+    /// flashing a collapsed rail on every launch.
+    private var usesCompactRail: Bool {
+        shellWidth > 0 && shellWidth <= SidebarView.compactBreakpoint
+    }
+
+    /// Whether this process is a visual-review capture and should not paint
+    /// opportunistic chrome over the surface under review.
+    ///
+    /// Two keys, both required, matching the existing
+    /// ``RAPID_GUI_UPDATE_BUSY_FIXTURE`` / dictation fixtures: a normal
+    /// launch — and a dev launch, and a golden-flow launch that has not asked
+    /// for this — never reads it, so update discovery keeps working exactly
+    /// as it ships. It suppresses PRESENTATION only; the checker still runs,
+    /// still records what it found, and the menu path to it is untouched.
+    ///
+    /// This exists because the review screenshots were not usable artifacts:
+    /// the update card is a bottom-trailing overlay, and in every capture it
+    /// sat on top of the workbench's lower-right corner — the reward panel on
+    /// My Contribution, the contribution band on Pool.
+    static func suppressesReviewChrome(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        environment["RAPID_GUI_GOLDEN_MODE"] == "1"
+            && environment["RAPID_GUI_SUPPRESS_REVIEW_CHROME"] == "1"
+    }
+
     private var presentedUpdateRelease: UpdateChecker.Release? {
         guard let release = updater.availableUpdate else { return nil }
         let releaseURL = Self.missingOverlayDownloadURL(for: release)
@@ -240,7 +282,8 @@ struct ContentView: View {
             handedOffVersion: updateHandedOffVersion,
             onboardingVisible: quickstartVisible,
             blockingOverlayVisible: showConversationSearch || showCommandPalette,
-            hasAction: sparkleUpdater.isEnabled || releaseURL != nil
+            hasAction: sparkleUpdater.isEnabled || releaseURL != nil,
+            suppressedForReview: Self.suppressesReviewChrome()
         ) else { return nil }
         return release
     }
@@ -664,6 +707,7 @@ struct ContentView: View {
             }
             NavigationSplitView {
                 SidebarView(
+                    isCompact: usesCompactRail,
                     selection: $section,
                     videoGenerationEnabled: videoGenerationEnabled,
                     computerUseEnabled: computerUseEnabled,
@@ -691,10 +735,14 @@ struct ContentView: View {
             // cool translucent grey that fought the warm canvas beside
             // it — the two planes read as belonging to different apps.
             .background(RapidTheme.surfaceSidebar)
+            // Pinned to a single value in the compact state: the collapsed
+            // rail is a fixed 64pt object, and leaving a min/ideal/max range
+            // there would let the divider be dragged into a width the icon
+            // rail has no layout for.
             .navigationSplitViewColumnWidth(
-                min: SidebarView.columnMinWidth,
-                ideal: SidebarView.columnIdealWidth,
-                max: SidebarView.columnMaxWidth
+                min: usesCompactRail ? SidebarView.compactWidth : SidebarView.columnMinWidth,
+                ideal: usesCompactRail ? SidebarView.compactWidth : SidebarView.columnIdealWidth,
+                max: usesCompactRail ? SidebarView.compactWidth : SidebarView.columnMaxWidth
             )
             } detail: {
                 detailArea
@@ -726,6 +774,20 @@ struct ContentView: View {
                 .frame(minWidth: 440)
                     .background(RapidTheme.surfaceCanvas)
             }
+            // Drives the responsive rail. Measured on the split view itself,
+            // which is the shell's full width — the rail collapsing does not
+            // change this number, so there is no feedback loop between the
+            // measurement and the decision it feeds.
+            .background {
+                GeometryReader { proxy in
+                    Color.clear
+                        .onAppear { shellWidth = proxy.size.width }
+                        .onChange(of: proxy.size.width) { _, width in
+                            shellWidth = width
+                        }
+                }
+                .accessibilityHidden(true)
+            }
             // Background pulls are process-wide, not chat-only.  Keep their
             // progress visible whichever sidebar destination is selected.
             DownloadStrip(
@@ -754,7 +816,10 @@ struct ContentView: View {
             statusFooter
         }
         .overlay(alignment: .bottomTrailing) {
-            if githubStarPrompt.isPresented {
+            // Same gate as the update card: the star prompt is the other
+            // bottom-trailing overlay that can land on the surface under
+            // review.
+            if githubStarPrompt.isPresented, !Self.suppressesReviewChrome() {
                 GitHubStarPromptCard()
                     .padding(.trailing, 16)
                     .padding(.bottom, 40)

@@ -12,6 +12,37 @@ enum SidebarSection: Hashable {
     case launch
     case benchmark
     case shareCompute
+
+    /// The surface a GUI harness asked the app to open on.
+    ///
+    /// Screenshot and golden-flow runs need the window to come up on the
+    /// surface under review. Clicking the sidebar requires macOS
+    /// Accessibility permission, which is granted per-binary and is not
+    /// available to every harness, so this gives those runs a permission-free
+    /// way in.
+    ///
+    /// Gated behind ``RAPID_GUI_GOLDEN_MODE`` — the same marker the existing
+    /// update and dictation fixtures in ``RapidApp`` use. A normal launch
+    /// never reads ``RAPID_GUI_INITIAL_SECTION`` at all and always starts on
+    /// Chat. Returns `nil` when the harness is not active or the name is not
+    /// recognised, so the caller keeps its own default.
+    static func harnessRequested(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> SidebarSection? {
+        guard environment["RAPID_GUI_GOLDEN_MODE"] == "1",
+              let name = environment["RAPID_GUI_INITIAL_SECTION"] else { return nil }
+        switch name {
+        case "chat": return .chat
+        case "images": return .images
+        case "audio": return .audio
+        case "video": return .video
+        case "computerUse": return .computerUse
+        case "launch": return .launch
+        case "benchmark": return .benchmark
+        case "shareCompute": return .shareCompute
+        default: return nil
+        }
+    }
 }
 
 enum CUASidebarStatus: Equatable {
@@ -63,6 +94,33 @@ struct SidebarView: View {
     static let columnMinWidth: CGFloat = 176
     static let columnIdealWidth: CGFloat = 200
     static let columnMaxWidth: CGFloat = 260
+
+    /// Width of the collapsed icon rail. Paper's narrow artboards draw the
+    /// navigation as a 64pt rail in every state, so this is a spec value.
+    static let compactWidth: CGFloat = 64
+
+    /// The window width at or below which the rail collapses to
+    /// ``compactWidth``.
+    ///
+    /// 900 rather than a number derived from the rail itself, because what
+    /// the breakpoint protects is the DETAIL column: at 720pt — the window
+    /// floor, and the narrow review size — a 200pt rail leaves the detail
+    /// ~500pt, which is where Share Compute's three-step path, pool rows, and
+    /// history table start having to choose between wrapping and truncating.
+    /// Paper's narrow boards assume the 656pt the collapsed rail leaves.
+    ///
+    /// Stated here rather than at the ``ContentView`` call site so the rail
+    /// owns its own responsive behaviour and every surface behind it gets the
+    /// same treatment — this is navigation chrome, not a Share Compute
+    /// special case.
+    static let compactBreakpoint: CGFloat = 900
+
+    /// Whether to render the collapsed icon rail instead of the full column.
+    ///
+    /// Presentation only: the same destinations, the same selection binding,
+    /// the same identifiers. Nothing about which sections exist or what
+    /// selecting one does changes with the breakpoint.
+    var isCompact: Bool = false
 
     @Binding var selection: SidebarSection
     /// Video is intentionally opt-in because its models require substantially
@@ -215,7 +273,9 @@ struct SidebarView: View {
         }
     }
 
-    var body: some View {
+    /// The full rail: brand lockup, named destinations, conversation history,
+    /// residency footer. Everything the app has always shown.
+    private var fullColumn: some View {
         VStack(alignment: .leading, spacing: 1) {
             brandLockup
             row(
@@ -344,6 +404,16 @@ struct SidebarView: View {
         .padding(.horizontal, RapidTheme.Space.sm)
         .padding(.vertical, RapidTheme.Space.md)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    var body: some View {
+        Group {
+            if isCompact {
+                compactRail
+            } else {
+                fullColumn
+            }
+        }
         // Column-scoped toolbar content renders beside the native sidebar
         // toggle instead of in the detail column's title group.
         .toolbar {
@@ -527,6 +597,164 @@ struct SidebarView: View {
     /// the menu-bar status item renders, so the two brand surfaces cannot
     /// drift apart. Template rendering means it tracks the label colour
     /// in both appearances rather than needing a second asset for Dark.
+    // MARK: - Collapsed rail
+
+    /// The navigation at narrow widths: Paper's 64pt icon rail.
+    ///
+    /// Same destinations, same selection binding, same accessibility
+    /// identifiers as ``fullColumn`` — a narrow window loses the labels and
+    /// the conversation history, not the ability to go anywhere. Every icon
+    /// keeps its name as its accessibility label and its help tag, so the
+    /// rail is no less navigable by keyboard or VoiceOver than the full
+    /// column is.
+    ///
+    /// History is dropped rather than squeezed: a conversation title has
+    /// nothing meaningful to show in 40pt, and the search command (⌘K, still
+    /// mounted in the toolbar above) is the better way to reach one at this
+    /// width.
+    ///
+    /// Metrics are Paper's: 18pt of vertical padding, an 18pt gap, a 36pt
+    /// brand tile, a 40pt hairline, and 40pt icon slots.
+    private var compactRail: some View {
+        VStack(spacing: 18) {
+            compactBrandTile
+            Rectangle()
+                .fill(RapidTheme.hairline)
+                .frame(width: 40, height: 1)
+                .accessibilityHidden(true)
+
+            compactItem(
+                title: String(localized: "New Chat"),
+                systemImage: "square.and.pencil",
+                isSelected: selection == .chat,
+                action: onNewChat
+            )
+            .accessibilityIdentifier("Sidebar.NewChat")
+            compactItem(
+                title: String(localized: "Images"),
+                systemImage: "photo",
+                isSelected: selection == .images,
+                action: { selection = .images }
+            )
+            .accessibilityIdentifier("Sidebar.Images")
+            compactItem(
+                title: String(localized: "Audio"),
+                systemImage: "waveform",
+                isSelected: selection == .audio,
+                action: { selection = .audio }
+            )
+            .accessibilityIdentifier("Sidebar.Audio")
+            compactItem(
+                title: String(localized: "Launch"),
+                systemImage: "paperplane",
+                isSelected: selection == .launch,
+                action: { selection = .launch }
+            )
+            .accessibilityIdentifier("Sidebar.Launch")
+
+            if videoGenerationEnabled {
+                compactItem(
+                    title: String(localized: "Video"),
+                    systemImage: "film",
+                    isSelected: selection == .video,
+                    action: { selection = .video }
+                )
+                .accessibilityIdentifier("Sidebar.Video")
+            }
+            if computerUseEnabled {
+                compactItem(
+                    title: String(localized: "Computer Use"),
+                    systemImage: "macwindow.on.rectangle",
+                    isSelected: selection == .computerUse,
+                    action: { selection = .computerUse }
+                )
+                .accessibilityIdentifier("Sidebar.ComputerUse")
+            }
+            if benchmarkEnabled {
+                compactItem(
+                    title: String(localized: "Benchmark"),
+                    systemImage: "gauge.with.dots.needle.50percent",
+                    isSelected: selection == .benchmark,
+                    action: { selection = .benchmark }
+                )
+                .accessibilityIdentifier("Sidebar.CommunityBenchmark")
+            }
+            if shareComputeEnabled {
+                compactItem(
+                    title: shareComputeActive
+                        ? String(localized: "Share Compute · On")
+                        : String(localized: "Share Compute"),
+                    systemImage: "bolt.horizontal.circle",
+                    isSelected: selection == .shareCompute,
+                    action: { selection = .shareCompute }
+                )
+                .accessibilityIdentifier("Sidebar.ShareCompute")
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 18)
+        .padding(.horizontal, 10)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    private var compactBrandTile: some View {
+        Group {
+            if let mark = RapidRMark.menuBarTemplateImage(height: 17) {
+                Image(nsImage: mark)
+                    .renderingMode(.template)
+                    .foregroundStyle(RapidTheme.textPrimary)
+            }
+        }
+        .frame(width: 36, height: 36)
+        .background(
+            RapidTheme.surfaceRaised,
+            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+        )
+        .accessibilityHidden(true)
+    }
+
+    /// One icon destination.
+    ///
+    /// The selected treatment is the amber tint plus an amber border and an
+    /// amber glyph — three signals, the same reasoning as ``SidebarRow``'s
+    /// bar. A bar in the leading gutter is not available here: there is no
+    /// gutter in a 40pt square, and a tint alone would be the single
+    /// least robust signal the rail could use.
+    private func compactItem(
+        title: String,
+        systemImage: String,
+        isSelected: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button {
+            cancelRename()
+            action()
+        } label: {
+            Image(systemName: systemImage)
+                .font(.system(size: 16, weight: isSelected ? .semibold : .medium))
+                .foregroundStyle(
+                    isSelected ? RapidTheme.brandPrimaryDeep : RapidTheme.textSecondary
+                )
+                .frame(width: 40, height: 40)
+                .background {
+                    if isSelected {
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .fill(RapidTheme.brandPrimaryTint)
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                    .strokeBorder(RapidTheme.brandPrimaryDeep, lineWidth: 1)
+                            }
+                    }
+                }
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(title)
+        .accessibilityLabel(title)
+        .accessibilityAddTraits(isSelected ? [.isSelected, .isButton] : .isButton)
+    }
+
     private var brandLockup: some View {
         HStack(spacing: RapidTheme.Space.sm) {
             if let mark = RapidRMark.menuBarTemplateImage(height: 15) {
