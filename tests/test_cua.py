@@ -4294,6 +4294,41 @@ def test_user_preset_crud_and_consent(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(
+    ("name", "url", "model", "allow_remote", "expected"),
+    [
+        ("custom", "file:///tmp/model", "m", False, "model URL must start"),
+        ("custom", "http://", "m", False, "model URL must include"),
+        ("custom", "https://api.example.com/v1", "m", False, "remote model requires"),
+        ("custom", "http://api.example.com/v1", "m", True, "remote model URL"),
+        ("custom", "http://127.0.0.1:8080/v1", "", False, "model name is required"),
+        ("local-27b", "http://127.0.0.1:8080/v1", "m", False, "built-in model"),
+    ],
+)
+def test_user_preset_validation_uses_model_language(
+    tmp_path, monkeypatch, name, url, model, allow_remote, expected
+):
+    from rapid_mlx.cua import config as config_mod
+
+    monkeypatch.setattr(config_mod, "CONFIG_PATH", tmp_path / "cua-config.json")
+    with pytest.raises(ValueError) as raised:
+        config_mod.save_user_preset(name, url, model, allow_remote=allow_remote)
+    message = str(raised.value)
+    assert expected in message
+    assert "brain" not in message.casefold()
+
+
+def test_duplicate_user_preset_error_uses_model_language(tmp_path, monkeypatch):
+    from rapid_mlx.cua import config as config_mod
+
+    monkeypatch.setattr(config_mod, "CONFIG_PATH", tmp_path / "cua-config.json")
+    args = ("custom", "http://127.0.0.1:8080/v1", "m")
+    config_mod.save_user_preset(*args)
+    with pytest.raises(ValueError, match="model 'custom' already exists") as raised:
+        config_mod.save_user_preset(*args)
+    assert "brain" not in str(raised.value).casefold()
+
+
+@pytest.mark.parametrize(
     ("base_url", "expected_url"),
     [
         ("https://api.example.com", "https://api.example.com/v1/chat/completions"),
