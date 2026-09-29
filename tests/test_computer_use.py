@@ -890,6 +890,99 @@ def test_get_app_state_merges_only_verified_transient_targets(monkeypatch):
     assert state["elements"][1]["label"] == "untitled folder"
 
 
+def test_get_app_state_bounds_transient_and_total_target_counts(monkeypatch):
+    app_info = {"name": "Finder", "bundleId": "com.apple.finder", "pid": 716}
+    anchor = _window(window_id=1647, index=1)
+    popup = _window(window_id=1803, index=0, x=10, y=10, width=20, height=20)
+    monkeypatch.setattr(backend, "_resolve_app", lambda app: (object(), app_info))
+    monkeypatch.setattr(backend, "_select_window", lambda *a, **k: anchor)
+    monkeypatch.setattr(backend, "_window_records", lambda app: [popup, anchor])
+    monkeypatch.setattr(backend, "_focused_transient_window", lambda *a, **k: popup)
+    monkeypatch.setattr(backend, "MAX_TRANSIENT_TARGETS", 2)
+    monkeypatch.setattr(backend.ax_driver, "MAX_NODES", 3)
+
+    def targets(count):
+        return [
+            {
+                "target_id": f"t{index:03d}",
+                "role": "AXButton",
+                "text": f"item {index}",
+                "actions": ["AXPress"],
+                "rect": [0, 0, 10, 10],
+            }
+            for index in range(count)
+        ]
+
+    monkeypatch.setattr(
+        backend,
+        "_collect_with_timeout",
+        lambda app, **kwargs: targets(
+            4 if kwargs["window"]["window_id"] == "cg:1803" else 2
+        ),
+    )
+    state = backend.get_app_state(
+        "pid:716",
+        screenshot=False,
+        use_cache=False,
+        window_id="cg:1647",
+        transient_baseline_window_ids={"cg:1647"},
+    )
+
+    assert len(state["elements"]) == 3
+    assert state["truncated"] is True
+    assert [item["source_window_id"] for item in state["elements"]] == [
+        "cg:1647",
+        "cg:1803",
+        "cg:1803",
+    ]
+
+
+def test_finder_file_reference_resolution_fails_closed_on_bridge_error(monkeypatch):
+    class BrokenURL:
+        @staticmethod
+        def URLWithString_(value):
+            raise RuntimeError("Foundation bridge unavailable")
+
+    _install_module(monkeypatch, "Foundation", NSURL=BrokenURL)
+    assert backend._finder_file_reference_path("file:///.file/id=1") is None
+
+
+def test_finder_editor_reference_records_exact_row_binding(monkeypatch):
+    snapshot = _stable_snapshot()
+    live, cell, row, reference = (object() for _ in range(4))
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_get",
+        lambda element, attr: {
+            live: {"AXParent": cell, "AXURL": reference},
+            cell: {"AXParent": row},
+        }.get(element, {}).get(attr),
+    )
+    monkeypatch.setattr(
+        backend, "_finder_file_reference_path", lambda value: "/tmp/Original"
+    )
+    monkeypatch.setattr(backend.time, "monotonic", lambda: 42.0)
+    backend._finder_rename_bindings.clear()
+
+    assert backend._finder_file_reference_for_editor(live, snapshot) is reference
+    assert backend._finder_rename_bindings[(4, "cg:101")][:3] == (
+        row,
+        reference,
+        "/tmp/Original",
+    )
+
+
+def test_pid_bound_url_read_requires_accessibility_runtime(monkeypatch):
+    app_info = {"name": "Browser", "bundleId": "com.example.browser", "pid": 4}
+    window = _window()
+    monkeypatch.setattr(backend, "_resolve_app", lambda *a, **k: (object(), app_info))
+    monkeypatch.setattr(backend, "_select_window", lambda *a, **k: window)
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a, **k: None)
+    monkeypatch.setattr(backend.ax_driver, "AS", None)
+
+    assert backend.read_url("pid:4") == ""
+
+
 def test_select_window_id_is_bound_to_resolved_app_pid(monkeypatch):
     monkeypatch.setattr(
         backend,
