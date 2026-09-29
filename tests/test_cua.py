@@ -2317,9 +2317,7 @@ def test_execute_all_action_variants(fake_backend, tmp_path, monkeypatch):
 
     monkeypatch.setattr(loop_mod.asyncio, "sleep", no_sleep)
     runner = loop_mod.CUARun(_make_config(tmp_path), "Chrome", "g", tmp_path / "run")
-    snapshot = {
-        "elements": [{"index": 1, "label": "Search", "role": "AXTextField"}]
-    }
+    snapshot = {"elements": [{"index": 1, "label": "Search", "role": "AXTextField"}]}
     fill = asyncio.run(
         runner._execute(
             {"action": "fill", "element_index": 1, "text": "hello"}, snapshot
