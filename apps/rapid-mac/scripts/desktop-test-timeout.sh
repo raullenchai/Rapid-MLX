@@ -76,10 +76,11 @@ if [[ $hang_detected -eq 1 ]]; then
     descendant_pairs=()
     collect_descendants() {
         local parent_pid="$1" child_pid
+        [[ ${#descendant_pairs[@]} -lt 32 ]] || return
         while IFS= read -r child_pid; do
+            [[ ${#descendant_pairs[@]} -lt 32 ]] || return
             [[ "$child_pid" =~ ^[0-9]+$ ]] || continue
             descendant_pairs+=("$child_pid:$parent_pid")
-            [[ ${#descendant_pairs[@]} -lt 32 ]] || return
             collect_descendants "$child_pid"
         done < <(pgrep -P "$parent_pid" 2>/dev/null || true)
     }
