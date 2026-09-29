@@ -1989,6 +1989,152 @@ def test_focused_ax_window_accepts_exact_focused_ui_element_listed_as_window(
     assert backend._focused_ax_window({"name": "Finder", "pid": 716}) is inline_editor
 
 
+def test_focused_ax_window_walks_from_focused_control_to_listed_window(monkeypatch):
+    application = object()
+    window = object()
+    parent = object()
+    control = object()
+    monkeypatch.setattr(backend.ax_driver, "_app_element", lambda *a, **k: application)
+
+    def get(element, attribute):
+        if element is application:
+            return {
+                "AXWindows": [window],
+                "AXFocusedWindow": None,
+                "AXFocusedUIElement": control,
+            }.get(attribute)
+        if attribute == "AXRole":
+            return "AXWindow" if element is window else "AXGroup"
+        if attribute == "AXParent":
+            return {control: parent, parent: window}.get(element)
+        return None
+
+    monkeypatch.setattr(backend.ax_driver, "_get", get)
+
+    assert backend._focused_ax_window({"name": "Finder", "pid": 716}) is window
+
+
+@pytest.mark.parametrize("parent_mode", ["cycle", "too_deep"])
+def test_focused_ax_window_rejects_unbounded_parent_chains(monkeypatch, parent_mode):
+    application = object()
+    control = object()
+    window = object()
+    chain = [object() for _ in range(13)]
+    monkeypatch.setattr(backend.ax_driver, "_app_element", lambda *a, **k: application)
+
+    def get(element, attribute):
+        if element is application:
+            return {
+                "AXWindows": [window],
+                "AXFocusedWindow": None,
+                "AXFocusedUIElement": control,
+            }.get(attribute)
+        if attribute == "AXRole":
+            return "AXGroup"
+        if attribute == "AXParent":
+            if parent_mode == "cycle":
+                return control
+            if element is control:
+                return chain[0]
+            index = chain.index(element)
+            return chain[index + 1] if index + 1 < len(chain) else None
+        return None
+
+    monkeypatch.setattr(backend.ax_driver, "_get", get)
+
+    assert backend._focused_ax_window({"name": "Finder", "pid": 716}) is None
+
+
+def test_focused_ax_element_is_pid_bound(monkeypatch):
+    application = object()
+    control = object()
+    calls = []
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_app_element",
+        lambda name, expected_pid: calls.append((name, expected_pid)) or application,
+    )
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_get",
+        lambda element, attribute: (
+            control if attribute == "AXFocusedUIElement" else None
+        ),
+    )
+
+    assert backend._focused_ax_element({"name": "Finder", "pid": "716"}) is control
+    assert calls == [("Finder", 716)]
+
+
+def test_transient_companion_rejects_missing_frame_or_anchor_sized_window(monkeypatch):
+    anchor = {
+        "index": 1,
+        "window_id": "cg:1",
+        "x": 100,
+        "y": 100,
+        "width": 500,
+        "height": 400,
+    }
+    monkeypatch.setattr(backend, "_focused_ax_window", lambda app: object())
+    monkeypatch.setattr(backend.ax_driver, "_point_size", lambda element: None)
+    assert (
+        backend._focused_transient_window(
+            {"name": "Finder", "pid": 4}, anchor, baseline_window_ids={"cg:1"}
+        )
+        is None
+    )
+
+    monkeypatch.setattr(
+        backend.ax_driver, "_point_size", lambda element: (100, 100, 500, 400)
+    )
+    assert (
+        backend._focused_transient_window(
+            {"name": "Finder", "pid": 4}, anchor, baseline_window_ids={"cg:1"}
+        )
+        is None
+    )
+
+
+def test_transient_companion_requires_unique_record_and_trusted_identity(monkeypatch):
+    anchor = {
+        "index": 2,
+        "window_id": "cg:1",
+        "x": 100,
+        "y": 100,
+        "width": 500,
+        "height": 400,
+    }
+    candidate = {
+        "index": 0,
+        "window_id": "cg:2",
+        "x": 120,
+        "y": 120,
+        "width": 100,
+        "height": 40,
+    }
+    monkeypatch.setattr(backend, "_focused_ax_window", lambda app: object())
+    monkeypatch.setattr(
+        backend.ax_driver, "_point_size", lambda element: (120, 120, 100, 40)
+    )
+    monkeypatch.setattr(
+        backend, "_window_records", lambda app: [candidate, dict(candidate)]
+    )
+    assert (
+        backend._focused_transient_window(
+            {"name": "Finder", "pid": 4}, anchor, trusted_window_id="cg:2"
+        )
+        is None
+    )
+
+    monkeypatch.setattr(backend, "_window_records", lambda app: [candidate])
+    assert (
+        backend._focused_transient_window(
+            {"name": "Finder", "pid": 4}, anchor, trusted_window_id="cg:99"
+        )
+        is None
+    )
+
+
 @pytest.mark.parametrize(
     "popup",
     [
