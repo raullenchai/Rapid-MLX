@@ -8,9 +8,9 @@ from types import SimpleNamespace
 import pytest
 
 from rapid_mlx.computer_use.errors import ComputerUseError
+from rapid_mlx.cua import loop as loop_mod
 from rapid_mlx.cua.config import CUAConfig, PlannerConfig
 from rapid_mlx.cua.gates import ConsentError
-from rapid_mlx.cua import loop as loop_mod
 
 
 def _snapshot() -> dict:
@@ -404,9 +404,7 @@ def test_human_signin_gate_timeout_stops_before_input(tmp_path, monkeypatch):
     assert run.trace["human_gate"] == "sign-in gate timed out"
 
 
-def test_save_binding_changed_after_approval_is_window_stale(
-    tmp_path, monkeypatch
-):
+def test_save_binding_changed_after_approval_is_window_stale(tmp_path, monkeypatch):
     run, _ = _runner(tmp_path, monkeypatch, plan=_plan("save"))
     monkeypatch.setattr(
         loop_mod.gates,
@@ -436,9 +434,7 @@ def test_save_binding_changed_after_approval_is_window_stale(
     assert calls == 2
 
 
-def test_unselected_app_post_action_observation_error_bubbles(
-    tmp_path, monkeypatch
-):
+def test_unselected_app_post_action_observation_error_bubbles(tmp_path, monkeypatch):
     run, _ = _runner(tmp_path, monkeypatch, window_id=None)
     calls = 0
 
@@ -471,9 +467,7 @@ def test_non_signin_file_gate_carries_exact_action_reason(tmp_path, monkeypatch)
     assert seen[0][3] == {"reason": "delete external file"}
 
 
-def test_repeated_false_done_claim_stops_after_two_rejections(
-    tmp_path, monkeypatch
-):
+def test_repeated_false_done_claim_stops_after_two_rejections(tmp_path, monkeypatch):
     run, _ = _runner(tmp_path, monkeypatch, plan=_plan("done"))
     run._last_commit_unverified = True
     first = asyncio.run(run.step(SimpleNamespace(text_only=True), 1))
