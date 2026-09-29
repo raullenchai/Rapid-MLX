@@ -3848,3 +3848,71 @@ def test_permission_request_failure_is_typed_and_unknown_value_never_prompts(
     with pytest.raises(ValueError, match="unsupported computer use permission"):
         backend.request_permission("automation")
     assert calls == [{"prompt": True}]
+
+
+def test_ax_discovery_handles_unavailable_services_and_stale_processes(monkeypatch):
+    monkeypatch.setattr(ax_driver, "AS", None)
+    assert ax_driver._application_for_pid(42) is None
+    assert ax_driver._running_applications() == []
+
+    terminated = _RunningApp("Old App", pid=42)
+    terminated.isTerminated = lambda: True
+    services = types.SimpleNamespace(
+        NSWorkspace=types.SimpleNamespace(
+            sharedWorkspace=lambda: _Workspace([terminated])
+        ),
+        NSRunningApplication=types.SimpleNamespace(
+            runningApplicationWithProcessIdentifier_=lambda pid: terminated
+        ),
+    )
+    monkeypatch.setattr(ax_driver, "AS", services)
+    _install_module(
+        monkeypatch,
+        "Quartz",
+        kCGWindowListOptionAll=1,
+        kCGNullWindowID=0,
+        CGWindowListCopyWindowInfo=lambda *_: [],
+    )
+    assert ax_driver._running_applications() == []
+
+
+def test_ax_selector_rejects_stale_pid_and_unrelated_name(monkeypatch):
+    mismatched_pid = _RunningApp("Target App", pid=99)
+    unrelated_name = _RunningApp("Other App", pid=42)
+    monkeypatch.setattr(ax_driver, "AS", object())
+    monkeypatch.setattr(ax_driver, "_application_for_pid", lambda pid: mismatched_pid)
+    with pytest.raises(SystemExit, match="not found"):
+        ax_driver._app_element("Target App", expected_pid=42)
+
+    monkeypatch.setattr(
+        ax_driver, "_running_applications", lambda: [unrelated_name]
+    )
+    with pytest.raises(SystemExit, match="not found"):
+        ax_driver._app_element("Target App")
+
+
+def test_ax_running_apps_filters_terminated_cached_entry(monkeypatch):
+    terminated = _RunningApp("Old App", pid=42)
+    terminated.isTerminated = lambda: True
+    services = types.SimpleNamespace(
+        NSWorkspace=types.SimpleNamespace(
+            sharedWorkspace=lambda: _Workspace([terminated])
+        ),
+        NSRunningApplication=object(),
+    )
+    monkeypatch.setattr(ax_driver, "AS", services)
+    _install_module(
+        monkeypatch,
+        "Quartz",
+        kCGWindowListOptionAll=1,
+        kCGNullWindowID=0,
+        CGWindowListCopyWindowInfo=lambda *_: [],
+    )
+    assert ax_driver._running_applications() == []
+
+
+def test_ax_selector_ignores_unresolved_expected_pid(monkeypatch):
+    monkeypatch.setattr(ax_driver, "AS", object())
+    monkeypatch.setattr(ax_driver, "_application_for_pid", lambda pid: None)
+    with pytest.raises(SystemExit, match="not found"):
+        ax_driver._app_element("Target App", expected_pid=42)
