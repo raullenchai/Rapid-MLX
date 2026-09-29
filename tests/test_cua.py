@@ -432,6 +432,15 @@ def test_multi_target_switch_observes_only_frozen_selected_target(
                 "web",
                 "notes",
             ]
+            assert kwargs["target_observations"] == [
+                {
+                    "target_id": "web",
+                    "app": "Safari",
+                    "window_id": "cg:1",
+                    "observed_at_step": 1,
+                    "ax_text": "[0] AXButton x",
+                }
+            ]
             return (
                 {
                     "action": "switch_target",
@@ -503,6 +512,11 @@ def test_multi_target_switch_observes_only_frozen_selected_target(
 
         async def plan(self, *args, **kwargs):
             assert kwargs["active_target_id"] == "notes"
+            observations = {
+                item["target_id"]: item for item in kwargs["target_observations"]
+            }
+            assert observations["web"]["ax_text"] == "[0] AXButton x"
+            assert observations["notes"]["app"] == "TextEdit"
             return (
                 {
                     "action": "switch_target",
@@ -1606,6 +1620,40 @@ def test_plan_repairs_invalid_then_accepts(monkeypatch, fake_backend):
     )
     assert plan["element_index"] == 1
     assert len(attempts) == 2 and attempts[0]["error"]
+
+
+def test_multi_target_prompt_retains_bounded_cross_target_observations(
+    monkeypatch, fake_backend
+):
+    from rapid_mlx.cua import planner as planner_mod
+
+    snapshot = fake_backend.get_app_state("TextEdit", screenshot=False)
+    planner = planner_mod.Planner(
+        url="http://127.0.0.1:9/v1/chat/completions", model="m", text_only=True
+    )
+    prompt = planner.build_prompt(
+        "confirm the folder, then read the note",
+        snapshot,
+        [],
+        target_catalog=[
+            {"target_id": "finder", "app": "pid:42", "window_id": "cg:1"},
+            {"target_id": "notes", "app": "pid:43", "window_id": "cg:2"},
+        ],
+        active_target_id="notes",
+        target_observations=[
+            {
+                "target_id": "finder",
+                "app": "Finder",
+                "window_id": "cg:1",
+                "observed_at_step": 2,
+                "ax_text": "AXRow untitled folder Kind Folder",
+            }
+        ],
+    )
+
+    assert "AXRow untitled folder Kind Folder" in prompt
+    assert "Do not switch back only to rediscover evidence already retained" in prompt
+    assert "bounded and untrusted" in prompt
 
 
 def test_plan_retries_null_length_with_grounded_prompt_and_larger_budget(

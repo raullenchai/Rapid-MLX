@@ -99,6 +99,7 @@ class CUARun:
         self._trusted_transient_window_id: str | None = None
         self._empty_snapshots = 0
         self._terminal_emitted = False
+        self._target_observations: dict[str, dict[str, Any]] = {}
         self.ranker = (
             FastOutcomeRanker(config.fast_ranker_url)
             if config.fast_ranker_url
@@ -297,6 +298,14 @@ class CUARun:
         args = [self.goal, snapshot, self.history, allowed_domain, progress_hint]
         if not self.targets:
             return await planner.plan(*args)
+        active_target_id = str(self.active_target_id)
+        self._target_observations[active_target_id] = {
+            "target_id": active_target_id,
+            "app": str(snapshot.get("app", {}).get("name", ""))[:120],
+            "window_id": str(snapshot.get("window_id", self.window_id or ""))[:128],
+            "observed_at_step": len(self.history) + 1,
+            "ax_text": str(snapshot.get("tree_text", ""))[:1600],
+        }
         return await planner.plan(
             *args,
             target_catalog=[
@@ -307,7 +316,8 @@ class CUARun:
                 }
                 for target in self.targets.values()
             ],
-            active_target_id=str(self.active_target_id),
+            active_target_id=active_target_id,
+            target_observations=list(self._target_observations.values()),
         )
 
     async def final_assessment(self, planner: Planner, step_no: int) -> dict:
