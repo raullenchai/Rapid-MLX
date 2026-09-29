@@ -928,6 +928,25 @@ def test_synthetic_keyboard_actions_activate_target_app(monkeypatch):
     assert calls == [("Target App", None), ("Target App", None)]
 
 
+def test_direct_press_key_without_planner_target_preserves_cli_action(monkeypatch):
+    snapshot = _stable_snapshot()
+    dispatched = []
+    monkeypatch.setattr(backend, "_prepare_synthetic_action", lambda *a, **k: snapshot)
+    monkeypatch.setattr(
+        backend,
+        "inspect_focused_element",
+        lambda *a, **k: pytest.fail("direct CLI key has no planner target"),
+    )
+    monkeypatch.setattr(
+        backend.ax_driver, "_press_key", lambda key: dispatched.append(key)
+    )
+
+    result = backend.press_key("Target App", "return")
+
+    assert result["key"] == "return"
+    assert dispatched == [backend.KEY_ALIASES["return"]]
+
+
 def test_hotkey_and_scroll_activate_target_before_posting(monkeypatch):
     snapshot = _stable_snapshot()
     calls = []
@@ -3155,7 +3174,9 @@ def test_finder_selected_row_enter_is_not_misclassified_as_commit(monkeypatch):
     assert backend._finder_inline_rename("pid:4", snapshot, 0) is None
 
 
-def test_finder_selected_row_under_focused_outline_is_valid_keyboard_target(monkeypatch):
+def test_finder_selected_row_under_focused_outline_is_valid_keyboard_target(
+    monkeypatch,
+):
     snapshot = _finder_rename_snapshot()
     snapshot["elements"][0].update(
         {"role": "AXRow", "parent_role": "AXOutline", "label": "Selected item"}
@@ -3172,9 +3193,10 @@ def test_finder_selected_row_under_focused_outline_is_valid_keyboard_target(monk
         }.get(element, {}).get(attr),
     )
 
-    assert backend.inspect_focused_element(
-        snapshot, 0, allow_selected_finder_row=True
-    ) == snapshot["elements"][0]
+    assert (
+        backend.inspect_focused_element(snapshot, 0, allow_selected_finder_row=True)
+        == snapshot["elements"][0]
+    )
 
 
 @pytest.mark.parametrize("selected", [False, None])
@@ -3196,9 +3218,7 @@ def test_finder_unselected_row_under_focused_outline_is_rejected(monkeypatch, se
     )
 
     with pytest.raises(errors.ComputerUseError, match="exact focused"):
-        backend.inspect_focused_element(
-            snapshot, 0, allow_selected_finder_row=True
-        )
+        backend.inspect_focused_element(snapshot, 0, allow_selected_finder_row=True)
 
 
 def test_activation_key_rechecks_exact_focus_immediately_before_dispatch(monkeypatch):
