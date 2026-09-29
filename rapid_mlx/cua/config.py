@@ -159,8 +159,8 @@ def resolve_planner(
             # A URL override would send the preset's credential to a
             # different endpoint than the one the user consented to.
             raise ValueError(
-                "planner URL override is not allowed for a brain saved with "
-                "credentials or remote-data consent; create a separate brain instead"
+                "planner URL override is not allowed for a model saved with "
+                "credentials or remote-data consent; create a separate model instead"
             )
         return PlannerConfig(
             preset=spec,
@@ -223,34 +223,34 @@ def save_user_preset(
         )
     url = (url or "").strip()
     if not url.startswith(("http://", "https://")):
-        raise ValueError("brain URL must start with http:// or https://")
+        raise ValueError("model URL must start with http:// or https://")
     from urllib.parse import urlparse
 
     parsed = urlparse(url)
     if not parsed.hostname:
-        raise ValueError("brain URL must include a hostname")
+        raise ValueError("model URL must include a hostname")
     remote = not is_loopback_url(url)
     if remote and not allow_remote:
         raise ValueError(
-            "remote brain requires explicit consent to send the task goal, "
+            "remote model requires explicit consent to send the task goal, "
             "Accessibility snapshot, and optional screenshot"
         )
     if remote and url.startswith("http://"):
         raise ValueError(
-            "remote brain URL must be HTTPS (task data leaves the machine)"
+            "remote model URL must be HTTPS (task data leaves the machine)"
         )
     if not (model or "").strip():
-        raise ValueError("brain model is required")
+        raise ValueError("model name is required")
     url = _chat_completions_url(url)
     if name in DEFAULT_PRESETS:
-        raise ValueError(f"{name!r} is a built-in brain; choose a different name")
+        raise ValueError(f"{name!r} is a built-in model; choose a different name")
     stored = _read_stored()
     presets = stored.setdefault("presets", {})
     if name in presets and not presets[name].get("user_created"):
         raise ValueError(f"preset name {name!r} is reserved")
     if name in presets:
         raise ValueError(
-            f"brain {name!r} already exists; delete it first to replace it"
+            f"model {name!r} already exists; delete it first to replace it"
         )
     presets[name] = {
         "url": url,
