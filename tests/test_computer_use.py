@@ -3296,6 +3296,92 @@ def test_finder_rename_resume_reopens_same_bound_row_after_approval(monkeypatch)
     assert actions == [(rename_item, "AXPress")]
 
 
+def test_finder_rename_resume_accepts_exact_detached_focused_editor(monkeypatch):
+    snapshot = _finder_rename_snapshot()
+    editor, app_root, row, outline, reference = (object() for _ in range(5))
+    backend._finder_rename_bindings[backend._finder_rename_binding_key(snapshot)] = (
+        row,
+        reference,
+        "/tmp/Before",
+        backend.time.monotonic(),
+    )
+
+    def get(element, attr):
+        return {
+            editor: {
+                "AXRole": "AXTextField",
+                "AXParent": app_root,
+                "AXURL": None,
+                "AXFocused": True,
+                "AXValue": "Before\u200b",
+            },
+            app_root: {"AXRole": "AXApplication"},
+            row: {"AXRole": "AXRow", "AXParent": outline, "AXSelected": True},
+            outline: {"AXRole": "AXOutline", "AXChildren": [row]},
+        }.get(element, {}).get(attr)
+
+    monkeypatch.setattr(backend.ax_driver, "_get", get)
+    monkeypatch.setattr(backend, "_focused_ax_element", lambda *a: editor)
+    monkeypatch.setattr(
+        backend,
+        "_finder_file_reference_path",
+        lambda value: "/tmp/Before" if value is reference else None,
+    )
+    monkeypatch.setattr(
+        backend,
+        "_focused_ax_window",
+        lambda *a: pytest.fail("exact detached editor must not use tree fallback"),
+    )
+
+    assert backend._finder_item_editor_for_path(snapshot, "/tmp/Before", row) is editor
+
+
+@pytest.mark.parametrize("mutation", ["value", "selection", "reference"])
+def test_finder_rename_resume_rejects_unbound_detached_editor(monkeypatch, mutation):
+    snapshot = _finder_rename_snapshot()
+    editor, app_root, row, other_row, outline, reference = (object() for _ in range(6))
+    backend._finder_rename_bindings[backend._finder_rename_binding_key(snapshot)] = (
+        row,
+        reference,
+        "/tmp/Before",
+        backend.time.monotonic(),
+    )
+
+    def get(element, attr):
+        selected = [row, other_row] if mutation == "selection" else [row]
+        return {
+            editor: {
+                "AXRole": "AXTextField",
+                "AXParent": app_root,
+                "AXURL": None,
+                "AXFocused": True,
+                "AXValue": "Other" if mutation == "value" else "Before",
+            },
+            app_root: {"AXRole": "AXApplication"},
+            row: {"AXRole": "AXRow", "AXParent": outline, "AXSelected": True},
+            other_row: {"AXRole": "AXRow", "AXSelected": True},
+            outline: {"AXRole": "AXOutline", "AXChildren": selected},
+        }.get(element, {}).get(attr)
+
+    monkeypatch.setattr(backend.ax_driver, "_get", get)
+    monkeypatch.setattr(backend, "_focused_ax_element", lambda *a: editor)
+    monkeypatch.setattr(backend, "_focused_ax_window", lambda *a: None)
+    monkeypatch.setattr(
+        backend,
+        "_finder_file_reference_path",
+        lambda value: (
+            "/tmp/Other"
+            if mutation == "reference" and value is reference
+            else "/tmp/Before"
+            if value is reference
+            else None
+        ),
+    )
+
+    with pytest.raises(errors.ComputerUseError, match="unavailable or ambiguous"):
+        backend._finder_item_editor_for_path(snapshot, "/tmp/Before", row)
+
+
 def test_finder_rename_resume_rejects_different_selected_row(monkeypatch):
     snapshot = _finder_rename_snapshot()
     row, other_row, outline, reference = (object() for _ in range(4))

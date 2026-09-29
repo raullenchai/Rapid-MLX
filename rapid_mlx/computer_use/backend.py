@@ -2336,6 +2336,42 @@ def _finder_item_editor_for_path(
             )
         ):
             return focused_element
+        # Recent Finder versions can detach the active rename editor directly
+        # under AXApplication. Accept that shape only when the retained opaque
+        # binding still names this exact row/path, the row is the sole selected
+        # item in its outline, and the focused value is still the original name.
+        key = _finder_rename_binding_key(snapshot)
+        with _finder_rename_binding_lock:
+            cached = _finder_rename_bindings.get(key)
+        if cached is not None:
+            bound_row, bound_reference, bound_path, observed_at = cached
+            outline = ax_driver._get(expected_row, "AXParent")
+            selected_rows = [
+                candidate
+                for candidate in ax_driver._as_list(
+                    ax_driver._get(outline, "AXChildren")
+                )
+                if ax_driver._get(candidate, "AXRole") == "AXRow"
+                and ax_driver._get(candidate, "AXSelected") is True
+            ]
+            detached_matches = (
+                time.monotonic() - observed_at <= SNAPSHOT_TTL_S
+                and bound_row == expected_row
+                and bound_path == expected_path
+                and _finder_file_reference_path(bound_reference) == expected_path
+                and ax_driver._get(focused_element, "AXRole") == "AXTextField"
+                and ax_driver._get(focused_element, "AXFocused") is True
+                and ax_driver._get(focused_element, "AXURL") is None
+                and ax_driver._get(focused_cell, "AXRole") == "AXApplication"
+                and ax_driver._get(expected_row, "AXRole") == "AXRow"
+                and ax_driver._get(expected_row, "AXSelected") is True
+                and ax_driver._get(outline, "AXRole") == "AXOutline"
+                and selected_rows == [expected_row]
+                and _normalized_finder_editor_value(focused_element)
+                == Path(expected_path).name
+            )
+            if detached_matches:
+                return focused_element
     window = _focused_ax_window(snapshot["app"])
     matches: list[object] = []
     seen = 0

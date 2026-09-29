@@ -2,8 +2,9 @@
 
 - **Owner:** Vector, coordinated by Atlas
 - **Branch:** `vector/cua-approval-resume-focus`
-- **Base:** signed integration `39f964a8cbae588d3365c25008b469f074d5aaad`
-- **Reproduction:** Mini run `9877fa2826d1`, Finder PID `93136`, window `cg:11409`
+- **Base:** signed integration `2f443ced1b211b2ed36003cb2eb23420c8088ec2`
+- **Reproduction:** Mini runs `9877fa2826d1`, `2f4fa7d7566a`, and
+  `ca67fc70bfcc`; Finder PID `93136`, window `cg:11409`
 - **Scope:** exact selected-window focus restoration and focused backend tests
 
 ## Finding
@@ -42,6 +43,13 @@ and focus plus sole-row, reference, and path checks run again immediately before
 `AXPress`; exact window and focus are checked again after editor reacquisition
 and adjacent to `AXSetValue`.
 
+Live inspection after the signed `ca67fc70bfcc` refusal confirmed Finder's
+replacement editor is a focused `AXTextField` directly under `AXApplication`,
+with no `AXURL` and the unchanged original basename. That detached shape is now
+accepted only when it is still focused, its normalized value is the original
+basename, and the cached row, opaque reference, original path, sole selection,
+window, and process identity all remain exact.
+
 This follows the established observe, exact actuation, fresh observation pattern
 reviewed in Orca while retaining Rapid's stronger PID, CGWindowID, and opaque
 Finder file-reference binding. No proprietary code was copied.
@@ -57,6 +65,8 @@ Finder file-reference binding. No proprietary code was copied.
 - Approval-closed editor recovery is covered for the same bound row, reference,
   and path; a different selected row fails before the native Rename command.
 - Selection or window drift during menu resolution cannot reach `AXPress`.
+- Detached-editor tests cover the observed app-root shape plus wrong value,
+  multiple selection, and opaque-reference drift.
 - Ruff format/check: passed.
 
 ## Remaining live check
