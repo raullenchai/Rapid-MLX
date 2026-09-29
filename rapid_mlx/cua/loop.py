@@ -268,6 +268,167 @@ class CUARun:
                     )
         return snapshot
 
+    async def _request_plan(
+        self, planner: Planner, snapshot: dict, progress_hint: str = ""
+    ) -> tuple[dict, str, float, list[dict]]:
+        allowed_domain = (
+            str(self.targets[self.active_target_id].get("allowed_domain", ""))
+            if self.active_target_id is not None
+            else self.config.allowed_domain
+        )
+        args = [self.goal, snapshot, self.history, allowed_domain, progress_hint]
+        if not self.targets:
+            return await planner.plan(*args)
+        return await planner.plan(
+            *args,
+            target_catalog=[
+                {
+                    "target_id": target["target_id"],
+                    "app": target["app"],
+                    "window_id": target["window_id"],
+                }
+                for target in self.targets.values()
+            ],
+            active_target_id=str(self.active_target_id),
+        )
+
+    async def final_assessment(self, planner: Planner, step_no: int) -> dict:
+        """Use one fresh observation for a terminal-only decision after the action budget."""
+        if self.stop_event.is_set():
+            reason = "cancelled by client"
+            self._record({"step": step_no, "assessment_only": True, "stop": reason})
+            return {"status": "stopped", "reason": reason}
+        try:
+            snapshot = self._get_app_state(screenshot=not planner.text_only)
+        except ComputerUseError as exc:
+            reason = f"final observation unavailable: {exc.message}"
+            self._record({"step": step_no, "stop": reason, "error_code": exc.code})
+            return {"status": "stalled", "reason": reason, "error": exc.code}
+        if not snapshot.get("elements") or snapshot.get("ax_unavailable"):
+            reason = "final accessibility observation is unavailable"
+            self._record({"step": step_no, "stop": reason})
+            return {"status": "stalled", "reason": reason}
+        if self.stop_event.is_set():
+            reason = "cancelled by client"
+            self._record({"step": step_no, "assessment_only": True, "stop": reason})
+            return {"status": "stopped", "reason": reason}
+        url_now = backend.read_url(
+            self.backend_app, window_id=self.window_id or snapshot.get("window_id")
+        )
+        guard = self._check_domain(url_now)
+        if guard:
+            self._record({"step": step_no, "stop": guard, "url": url_now})
+            return {"status": "stalled", "reason": guard, "error": "domain_guard"}
+        assessed_target_id = self.active_target_id
+        plan, _raw, latency, attempts = await self._request_plan(
+            planner,
+            snapshot,
+            "FINAL ASSESSMENT ONLY: the action budget is exhausted. Send no input. "
+            "Return done, partial, or blocked from this fresh observation.",
+        )
+        if self.stop_event.is_set():
+            reason = "cancelled by client"
+            self._record({"step": step_no, "assessment_only": True, "stop": reason})
+            return {"status": "stopped", "reason": reason}
+        try:
+            fresh = self._get_app_state(screenshot=False)
+        except ComputerUseError as exc:
+            reason = f"final assessment target changed: {exc.message}"
+            self._record({"step": step_no, "stop": reason, "error_code": exc.code})
+            return {"status": "stalled", "reason": reason, "error": exc.code}
+        fresh_url = backend.read_url(
+            self.backend_app, window_id=self.window_id or fresh.get("window_id")
+        )
+        if self.stop_event.is_set():
+            reason = "cancelled by client"
+            self._record({"step": step_no, "assessment_only": True, "stop": reason})
+            return {"status": "stopped", "reason": reason}
+        fresh_guard = self._check_domain(fresh_url)
+        drifted = any(
+            (
+                assessed_target_id != self.active_target_id,
+                self._window_identity(snapshot) != self._window_identity(fresh),
+                snapshot.get("window") != fresh.get("window"),
+                _tree_signature(snapshot) != _tree_signature(fresh),
+                url_now != fresh_url,
+            )
+        )
+        if fresh_guard or drifted:
+            reason = fresh_guard or "final assessment target changed during planning"
+            error_code = "domain_guard" if fresh_guard else "target_drift"
+            self._record(
+                {
+                    "step": step_no,
+                    "assessment_only": True,
+                    "stop": reason,
+                    "error_code": error_code,
+                }
+            )
+            return {
+                "status": "stalled",
+                "reason": reason,
+                "error": error_code,
+            }
+        self._emit(
+            {
+                "kind": "plan",
+                "step": step_no,
+                "action": plan["action"],
+                "step_instruction": plan["step_instruction"],
+                "element_index": plan.get("element_index", -1),
+                "latency_s": round(latency, 2),
+                "assessment_only": True,
+            }
+        )
+        if plan["action"] in {"done", "partial", "blocked"}:
+            summary = plan["final_summary"]
+            if plan["action"] == "done" and (
+                self._last_execution_failed or self._last_commit_unverified
+            ):
+                reason = (
+                    "the previous commit could not be verified"
+                    if self._last_commit_unverified
+                    else "the previous action failed"
+                )
+                self._record(
+                    {
+                        "step": step_no,
+                        "plan": plan,
+                        "assessment_only": True,
+                        "completion_rejected": reason,
+                    }
+                )
+                return {"status": "stalled", "reason": reason}
+            self.trace["final_summary"] = summary
+            self.trace["completion_disposition"] = plan["action"]
+            self._record(
+                {
+                    "step": step_no,
+                    "plan": plan,
+                    "assessment_only": True,
+                    "plan_attempts": attempts,
+                    "planner_latency_s": round(latency, 2),
+                }
+            )
+            if plan["action"] == "done":
+                return {"status": "done", "summary": summary}
+            return {
+                "status": "stalled",
+                "reason": summary,
+                "completion_disposition": plan["action"],
+            }
+        reason = "maximum step count reached; final assessment requested another action"
+        self.trace["final_summary"] = reason
+        self._record(
+            {
+                "step": step_no,
+                "plan": plan,
+                "assessment_only": True,
+                "stop": reason,
+            }
+        )
+        return {"status": "stalled", "reason": reason}
+
     async def _execute(
         self,
         plan: dict,
@@ -420,32 +581,9 @@ class CUARun:
         progress_hint = (
             self.tracker.take_hint(snapshot) if self.tracker.should_intervene() else ""
         )
-        plan_args = [
-            self.goal,
-            snapshot,
-            self.history,
-            (
-                str(self.targets[self.active_target_id].get("allowed_domain", ""))
-                if self.active_target_id is not None
-                else self.config.allowed_domain
-            ),
-            progress_hint,
-        ]
-        if self.targets:
-            plan, raw, latency, attempts = await planner.plan(
-                *plan_args,
-                target_catalog=[
-                    {
-                        "target_id": target["target_id"],
-                        "app": target["app"],
-                        "window_id": target["window_id"],
-                    }
-                    for target in self.targets.values()
-                ],
-                active_target_id=str(self.active_target_id),
-            )
-        else:
-            plan, raw, latency, attempts = await planner.plan(*plan_args)
+        plan, raw, latency, attempts = await self._request_plan(
+            planner, snapshot, progress_hint
+        )
         if plan["action"] == "switch_target":
             previous = str(self.active_target_id)
             requested = str(plan["target_id"])
@@ -885,7 +1023,7 @@ class CUARun:
                 delta["fast_outcome"] = {**verdict, "advisory": True}
             except (RuntimeError, KeyError, ValueError):
                 delta["fast_outcome"] = {"outcome": "unavailable"}
-        self.tracker.record(plan, outcome)
+        self.tracker.record(plan, outcome, observed_change=bool(delta["tree_changed"]))
         event = {
             "kind": "executed",
             "step": step_no,
@@ -1038,9 +1176,7 @@ async def run(
                 break
         else:
             cua_run.trace["max_steps_reached"] = limit
-            reason = f"maximum step count reached ({limit})"
-            cua_run.trace["final_summary"] = reason
-            terminal = {"status": "stalled", "reason": reason}
+            terminal = await cua_run.final_assessment(planner, limit + 1)
     except (ValueError, KeyError) as exc:
         # A planner repair exhaustion or malformed plan must not surface as a
         # bare traceback or raw model response in the user-facing result.

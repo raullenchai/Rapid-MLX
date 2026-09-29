@@ -199,6 +199,37 @@ def test_tracker_detects_stall():
     assert tracker.should_intervene()
 
 
+def test_tracker_treats_changed_uncertain_as_progress_but_keeps_repeat_guard():
+    tracker = NoProgressTracker()
+    for index in range(6):
+        tracker.record(
+            {"step_instruction": f"open distinct control {index}"},
+            "uncertain",
+            observed_change=True,
+        )
+    assert tracker.consecutive_bad == 0
+    assert not tracker.should_intervene()
+
+    for _ in range(3):
+        tracker.record(
+            {"step_instruction": "repeat the same click"},
+            "uncertain",
+            observed_change=True,
+        )
+    assert tracker.should_intervene()
+
+
+def test_tracker_still_intervenes_for_unchanged_uncertain_actions():
+    tracker = NoProgressTracker()
+    for index in range(3):
+        tracker.record(
+            {"step_instruction": f"different attempt {index}"},
+            "uncertain",
+            observed_change=False,
+        )
+    assert tracker.should_intervene()
+
+
 def test_tracker_exhaustion():
     tracker = NoProgressTracker()
     plan = {"step_instruction": "same"}
@@ -903,6 +934,250 @@ def test_max_steps_returns_stalled_instead_of_crashing(
     assert trace["max_steps_reached"] == 1
     assert events[-1]["kind"] == "terminal"
     assert events[-1]["status"] == "stalled"
+    assert planner.calls == 2
+
+
+def test_final_action_budget_gets_one_fresh_terminal_only_assessment(
+    config_dir, fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    planner = _FakePlanner(
+        [
+            {
+                "action": "wait",
+                "step_instruction": "let final results settle",
+                "final_summary": "",
+            },
+            {
+                "action": "done",
+                "step_instruction": "report the fresh results",
+                "final_summary": "The sorted result is visible.",
+            },
+        ]
+    )
+    events: list[dict] = []
+    trace = asyncio.run(
+        loop_mod.run(
+            _make_config(tmp_path),
+            "Chrome",
+            "g",
+            max_steps=1,
+            planner=planner,
+            event_sink=events.append,
+        )
+    )
+    assert trace["status"] == "done"
+    assert trace["final_summary"] == "The sorted result is visible."
+    assert planner.calls == 2
+    final_plan = next(event for event in events if event.get("assessment_only"))
+    assert final_plan["action"] == "done"
+
+
+def test_final_assessment_never_dispatches_another_action(
+    config_dir, fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    clicks = []
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    monkeypatch.setattr(
+        fake_backend,
+        "click",
+        lambda *args, **kwargs: clicks.append((args, kwargs)) or {"ok": True},
+    )
+    planner = _FakePlanner(
+        [
+            {"action": "wait", "step_instruction": "settle", "final_summary": ""},
+            {
+                "action": "click",
+                "step_instruction": "one more click",
+                "element_index": 1,
+                "final_summary": "",
+            },
+        ]
+    )
+    trace = asyncio.run(
+        loop_mod.run(
+            _make_config(tmp_path),
+            "Chrome",
+            "g",
+            max_steps=1,
+            planner=planner,
+        )
+    )
+    assert trace["status"] == "stalled"
+    assert "requested another action" in trace["final_summary"]
+    assert clicks == []
+
+
+def test_final_assessment_cannot_complete_after_failed_last_action(
+    config_dir, fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    monkeypatch.setattr(
+        fake_backend,
+        "click",
+        lambda *args, **kwargs: {
+            "ok": False,
+            "executed": False,
+            "error": "rejected",
+            "error_code": "target_drift",
+        },
+    )
+    planner = _FakePlanner(
+        [
+            {
+                "action": "click",
+                "step_instruction": "try the action",
+                "element_index": 1,
+                "final_summary": "",
+            },
+            {
+                "action": "done",
+                "step_instruction": "claim completion",
+                "final_summary": "Everything succeeded.",
+            },
+        ]
+    )
+    trace = asyncio.run(
+        loop_mod.run(
+            _make_config(tmp_path),
+            "Chrome",
+            "g",
+            max_steps=1,
+            planner=planner,
+        )
+    )
+    assert trace["status"] == "stalled"
+    assert trace["final_summary"] == "the previous action failed"
+
+
+def test_stop_during_final_assessment_cannot_report_completion(
+    config_dir, fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    stop_event = asyncio.Event()
+
+    class CancelDuringAssessmentPlanner(_FakePlanner):
+        async def plan(self, *args, **kwargs):
+            result = await super().plan(*args, **kwargs)
+            if self.calls == 2:
+                stop_event.set()
+            return result
+
+    planner = CancelDuringAssessmentPlanner(
+        [
+            {"action": "wait", "step_instruction": "settle", "final_summary": ""},
+            {
+                "action": "done",
+                "step_instruction": "finish",
+                "final_summary": "This must not be accepted.",
+            },
+        ]
+    )
+    trace = asyncio.run(
+        loop_mod.run(
+            _make_config(tmp_path),
+            "Chrome",
+            "g",
+            max_steps=1,
+            planner=planner,
+            stop_event=stop_event,
+        )
+    )
+    assert trace["status"] == "stopped"
+    assert trace["final_summary"] == "cancelled by client"
+
+
+def test_final_assessment_rejects_domain_change_during_planner_wait(
+    fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    url = {"value": "https://example.com/results"}
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    monkeypatch.setattr(fake_backend, "read_url", lambda *args, **kwargs: url["value"])
+    config = _make_config(tmp_path)
+    config.allowed_domain = "example.com"
+    runner = loop_mod.CUARun(config, "Browser", "g", tmp_path / "domain-drift")
+
+    class DomainDriftPlanner(_FakePlanner):
+        async def plan(self, *args, **kwargs):
+            result = await super().plan(*args, **kwargs)
+            url["value"] = "https://outside.example/results"
+            return result
+
+    planner = DomainDriftPlanner(
+        [
+            {
+                "action": "done",
+                "step_instruction": "report",
+                "final_summary": "Must not complete.",
+            }
+        ]
+    )
+    result = asyncio.run(runner.final_assessment(planner, 2))
+    assert result["status"] == "stalled"
+    assert result["error"] == "domain_guard"
+
+
+def test_final_assessment_rejects_tree_drift_during_planner_wait(
+    fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    tree = {"value": "[1] AXStaticText first result"}
+
+    def state(app, **kwargs):
+        return {
+            "app": {"name": app},
+            "elements": [{"index": 1, "role": "AXStaticText", "label": "result"}],
+            "tree_text": tree["value"],
+        }
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    monkeypatch.setattr(fake_backend, "get_app_state", state)
+    monkeypatch.setattr(fake_backend, "read_url", lambda *args, **kwargs: "")
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path), "Browser", "g", tmp_path / "tree-drift"
+    )
+
+    class TreeDriftPlanner(_FakePlanner):
+        async def plan(self, *args, **kwargs):
+            result = await super().plan(*args, **kwargs)
+            tree["value"] = "[1] AXStaticText different result"
+            return result
+
+    planner = TreeDriftPlanner(
+        [
+            {
+                "action": "done",
+                "step_instruction": "report",
+                "final_summary": "Must not complete.",
+            }
+        ]
+    )
+    result = asyncio.run(runner.final_assessment(planner, 2))
+    assert result["status"] == "stalled"
+    assert result["error"] == "target_drift"
 
 
 def test_loop_reports_invalid_plan_and_runtime_failures(

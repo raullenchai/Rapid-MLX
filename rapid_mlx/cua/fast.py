@@ -88,11 +88,19 @@ class NoProgressTracker:
     interventions: int = 0
     last_intervention_was_consecutive: bool = False
 
-    def record(self, plan: dict, outcome: str) -> None:
+    def record(
+        self, plan: dict, outcome: str, *, observed_change: bool = False
+    ) -> None:
         instruction = str(plan.get("step_instruction", "")).strip().lower()
         if instruction:
             self.instruction_counts[instruction] += 1
-        if outcome in self.bad_outcomes:
+        # An unverified action remains `uncertain` in the protocol, but a
+        # fresh structural AX change is still evidence that the UI progressed.
+        # Keep repeated-instruction detection active so dynamic content cannot
+        # hide a planner retry loop.
+        if outcome == "uncertain" and observed_change:
+            self.consecutive_bad = 0
+        elif outcome in self.bad_outcomes:
             self.consecutive_bad += 1
         else:
             self.consecutive_bad = 0
