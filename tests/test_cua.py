@@ -352,7 +352,7 @@ def test_consequential_action_requires_typed_targeted_approval(label, instructio
     assert f"target={label!r}" in requirement.reason
 
 
-def test_read_only_and_draft_actions_do_not_require_approval():
+def test_read_only_actions_skip_approval_but_fill_requires_it():
     assert (
         gates.consequential_action(
             {
@@ -364,17 +364,17 @@ def test_read_only_and_draft_actions_do_not_require_approval():
         )
         is None
     )
-    assert (
-        gates.consequential_action(
-            {
-                "action": "fill",
-                "element_index": 2,
-                "step_instruction": "draft the email",
-            },
-            "Message body",
-        )
-        is None
+    requirement = gates.consequential_action(
+        {
+            "action": "fill",
+            "element_index": 2,
+            "step_instruction": "draft the email",
+        },
+        "Message body",
     )
+    assert requirement is not None
+    assert requirement.action == "fill"
+    assert requirement.target == "Message body"
 
 
 @pytest.mark.parametrize("key", ["Enter", "Return", "Space"])
@@ -1008,6 +1008,33 @@ def test_incomplete_disposition_never_becomes_completed(
     from rapid_mlx.cua import loop as loop_mod
 
     monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    snapshot = {
+        "app": {"name": "TextEdit", "pid": 101, "processStartTime": 123.0},
+        "window_index": 0,
+        "window_id": "cg:55",
+        "window": {
+            "window_id": "cg:55",
+            "title": "Untitled",
+            "x": 0,
+            "y": 0,
+            "width": 500,
+            "height": 400,
+        },
+        "elements": [
+            {
+                "index": 1,
+                "label": "Search",
+                "role": "AXTextField",
+                "x": 10,
+                "y": 20,
+                "width": 480,
+                "height": 360,
+                "center": [250, 200],
+            }
+        ],
+        "tree_text": "stable",
+    }
+    monkeypatch.setattr(fake_backend, "get_app_state", lambda *a, **k: dict(snapshot))
     events: list[dict] = []
     summary = (
         "The text was updated, but saving could not be verified; persistence "
@@ -1050,6 +1077,7 @@ def test_incomplete_disposition_never_becomes_completed(
             max_steps=5,
             planner=planner,
             event_sink=events.append,
+            gate=lambda _reason: asyncio.sleep(0, result=True),
         )
     )
 
@@ -2991,6 +3019,198 @@ def test_save_stops_when_menu_identity_changes_after_approval(
         "reason": "approved target changed before execution",
     }
     assert saves == []
+
+
+def test_textedit_existing_document_fill_denial_prevents_delayed_autosave(
+    fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    snapshot = {
+        "app": {
+            "name": "TextEdit",
+            "bundleId": "com.apple.TextEdit",
+            "pid": 101,
+            "processStartTime": 123.0,
+        },
+        "window_index": 0,
+        "window_id": "cg:55",
+        "window": {
+            "window_id": "cg:55",
+            "title": "notes.txt",
+            "x": 0,
+            "y": 0,
+            "width": 500,
+            "height": 400,
+        },
+        "elements": [{"index": 1, "label": "Body", "role": "AXTextArea"}],
+        "tree_text": "original",
+    }
+    monkeypatch.setattr(fake_backend, "get_app_state", lambda *a, **k: dict(snapshot))
+    document_identity = ("file:///tmp/notes.txt", 101, 123.0, "cg:55")
+    monkeypatch.setattr(
+        fake_backend,
+        "inspect_autosaving_document",
+        lambda *a, **k: {"autosave_identity": document_identity},
+        raising=False,
+    )
+    delayed_autosave = {"scheduled": False, "disk": "original"}
+
+    def fill(*args, **kwargs):
+        delayed_autosave["scheduled"] = True
+        return {"ok": True, "verified": True}
+
+    monkeypatch.setattr(fake_backend, "set_value", fill)
+
+    async def deny(_reason):
+        return False
+
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path),
+        "TextEdit",
+        "replace notes",
+        tmp_path / "autosave-deny",
+        gate=deny,
+    )
+    runner.window_id = "cg:55"
+    planner = _FakePlanner(
+        [
+            {
+                "action": "fill",
+                "step_instruction": "replace the document text",
+                "element_index": 1,
+                "text": "generated",
+            }
+        ]
+    )
+
+    assert asyncio.run(runner.step(planner, 1)) == {
+        "status": "stopped",
+        "reason": "external_commit not approved",
+    }
+    # Simulate waiting beyond TextEdit's observed autosave delay. No write was
+    # dispatched, so there is no delayed mutation to persist.
+    if delayed_autosave["scheduled"]:
+        delayed_autosave["disk"] = "generated"
+    assert delayed_autosave == {"scheduled": False, "disk": "original"}
+
+
+@pytest.mark.parametrize("failure", [None, "initial", "raise", "reinspect"])
+def test_textedit_existing_document_fill_revalidates_binding_after_approval(
+    failure, fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.computer_use.errors import ComputerUseError
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    observations = {"count": 0}
+
+    def snapshot():
+        observations["count"] += 1
+        return {
+            "app": {
+                "name": "TextEdit",
+                "bundleId": "com.apple.TextEdit",
+                "pid": 101,
+                "processStartTime": 123.0,
+            },
+            "window_index": 0,
+            "window_id": "cg:55",
+            "window": {
+                "window_id": "cg:55",
+                "title": "notes.txt",
+                "x": 0,
+                "y": 0,
+                "width": 500,
+                "height": 400,
+            },
+            "elements": [
+                {
+                    "index": 1,
+                    "label": "Body",
+                    "role": "AXTextArea",
+                    "x": 10,
+                    "y": 20,
+                    "width": 480,
+                    "height": 360,
+                    "center": [250, 200],
+                }
+            ],
+            "tree_text": f"focus-state-{observations['count']}",
+        }
+
+    monkeypatch.setattr(fake_backend, "get_app_state", lambda *a, **k: snapshot())
+    document_identity = ("file:///tmp/notes.txt", 101, 123.0, "cg:55")
+    inspections = []
+
+    def inspect(*args, **kwargs):
+        inspections.append(True)
+        if failure == "initial" and len(inspections) == 1:
+            raise ComputerUseError("target_drift", "document changed")
+        if failure == "reinspect" and len(inspections) == 2:
+            raise ComputerUseError("target_drift", "document changed")
+        return {"autosave_identity": document_identity}
+
+    monkeypatch.setattr(
+        fake_backend, "inspect_autosaving_document", inspect, raising=False
+    )
+    raises = []
+
+    def raise_selected(app, observed):
+        raises.append((app, observed["window_id"]))
+        if failure == "raise":
+            raise ComputerUseError("target_drift", "window changed")
+        return observed["window"]
+
+    monkeypatch.setattr(fake_backend, "raise_selected_window", raise_selected)
+    fills = []
+    monkeypatch.setattr(
+        fake_backend,
+        "set_value",
+        lambda *a, **k: fills.append(a[2]) or {"ok": True, "verified": True},
+    )
+
+    async def approve(_reason):
+        return True
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(loop_mod.asyncio, "sleep", no_sleep)
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path),
+        "TextEdit",
+        "replace notes",
+        tmp_path / "autosave-approve",
+        gate=approve,
+    )
+    runner.window_id = "cg:55"
+    planner = _FakePlanner(
+        [
+            {
+                "action": "fill",
+                "step_instruction": "replace the document text",
+                "element_index": 1,
+                "text": "generated",
+            }
+        ]
+    )
+
+    result = asyncio.run(runner.step(planner, 1))
+    if failure is None:
+        assert result is None
+        assert inspections == [True, True]
+        assert raises == [("TextEdit", "cg:55")]
+        assert fills == ["generated"]
+    else:
+        assert result["status"] == "stopped"
+        assert result["error"] in {"target_drift", "window_stale"}
+        assert fills == []
 
 
 def test_save_restores_exact_target_after_approval_focus_transition(

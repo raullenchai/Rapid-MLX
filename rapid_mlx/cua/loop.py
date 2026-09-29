@@ -733,6 +733,7 @@ class CUARun:
                 return {"status": "stopped", "reason": reason, "error": exc.code}
             target_label = str(target.get("label", ""))
         save_identity: tuple[str, ...] | None = None
+        autosave_identity: tuple[object, ...] | None = None
         save_persistence_verified = False
         finder_rename: dict[str, Any] | None = None
         finder_rename_fill = (
@@ -787,6 +788,31 @@ class CUARun:
             target_label = str(
                 snapshot.get("window", {}).get("title") or "selected document"
             )
+        if (
+            plan["action"] == "fill"
+            and str(snapshot.get("app", {}).get("bundleId") or "").casefold()
+            == "com.apple.textedit"
+        ):
+            try:
+                autosave_binding = backend.inspect_autosaving_document(
+                    self.backend_app, snapshot
+                )
+            except ComputerUseError as exc:
+                self._record(
+                    {
+                        "step": step_no,
+                        "plan": plan,
+                        "stop": exc.message,
+                        "error_code": exc.code,
+                    }
+                )
+                return {"status": "stopped", "reason": exc.message, "error": exc.code}
+            raw_autosave_identity = autosave_binding.get("autosave_identity")
+            if raw_autosave_identity is not None:
+                autosave_identity = tuple(raw_autosave_identity)
+                target_label = str(
+                    snapshot.get("window", {}).get("title") or target_label
+                )
         try:
             gates.check_plan_consents(plan, target_label)
         except ConsentError as exc:
@@ -984,7 +1010,8 @@ class CUARun:
                             original_target_identity is None,
                             fresh_target_identity is None,
                             original_target_identity != fresh_target_identity,
-                            _tree_signature(fresh) != _tree_signature(snapshot),
+                            autosave_identity is None
+                            and _tree_signature(fresh) != _tree_signature(snapshot),
                         )
                     )
             if plan["action"] == "save" and not stale:
@@ -993,6 +1020,18 @@ class CUARun:
                         self.backend_app, fresh
                     )
                     stale = tuple(fresh_binding["save_identity"]) != save_identity
+                except ComputerUseError:
+                    stale = True
+            if autosave_identity is not None and not stale:
+                try:
+                    fresh_binding = backend.inspect_autosaving_document(
+                        self.backend_app, fresh
+                    )
+                    fresh_autosave_identity = fresh_binding.get("autosave_identity")
+                    stale = (
+                        fresh_autosave_identity is None
+                        or tuple(fresh_autosave_identity) != autosave_identity
+                    )
                 except ComputerUseError:
                     stale = True
             try:

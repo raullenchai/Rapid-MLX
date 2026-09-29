@@ -182,6 +182,65 @@ def test_native_save_reports_rejected_axpress(monkeypatch):
     assert excinfo.value.code == "action_failed"
 
 
+def _install_autosave_document(monkeypatch, document):
+    monkeypatch.setattr(backend, "_validate_snapshot_window", lambda snapshot: {})
+    monkeypatch.setattr(
+        backend, "_validate_focused_window", lambda snapshot, window: None
+    )
+    focused = object()
+    monkeypatch.setattr(backend, "_focused_ax_window", lambda app: focused)
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_get",
+        lambda element, attribute: document if attribute == "AXDocument" else None,
+    )
+
+
+def test_autosaving_document_binds_exact_existing_textedit_file(monkeypatch):
+    _install_autosave_document(monkeypatch, "file:///tmp/My%20Notes.txt")
+    snapshot = _textedit_snapshot()
+    snapshot["app"]["processStartTime"] = 123.0
+    snapshot["window_id"] = "cg:55"
+
+    result = backend.inspect_autosaving_document("TextEdit", snapshot)
+
+    assert result == {
+        "autosave_identity": ("file:///tmp/My%20Notes.txt", 4, 123.0, "cg:55")
+    }
+
+
+def test_autosaving_document_allows_untitled_textedit_document(monkeypatch):
+    _install_autosave_document(monkeypatch, None)
+
+    assert backend.inspect_autosaving_document("TextEdit", _textedit_snapshot()) == {
+        "autosave_identity": None
+    }
+
+
+@pytest.mark.parametrize(
+    ("bundle_id", "document"),
+    [
+        ("com.example.Editor", "file:///tmp/notes.txt"),
+        ("com.apple.TextEdit", object()),
+        ("com.apple.TextEdit", "https://example.com/notes.txt"),
+        ("com.apple.TextEdit", "http://["),
+        ("com.apple.TextEdit", "file://remote.example/tmp/notes.txt"),
+        ("com.apple.TextEdit", "file:relative.txt"),
+    ],
+)
+def test_autosaving_document_rejects_untrusted_identity(
+    monkeypatch, bundle_id, document
+):
+    _install_autosave_document(monkeypatch, document)
+    snapshot = _textedit_snapshot()
+    snapshot["app"]["bundleId"] = bundle_id
+
+    with pytest.raises(errors.ComputerUseError) as excinfo:
+        backend.inspect_autosaving_document("TextEdit", snapshot)
+
+    assert excinfo.value.code in {"invalid_argument", "target_drift"}
+
+
 def test_validate_selected_window_focus_runs_both_authority_checks(monkeypatch):
     snapshot = _stable_snapshot()
     calls = []

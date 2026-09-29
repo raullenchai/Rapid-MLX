@@ -1262,6 +1262,58 @@ def inspect_save_document(app: str, snapshot: dict) -> dict:
     return {"save_identity": (document, *identity)}
 
 
+def inspect_autosaving_document(app: str, snapshot: dict) -> dict:
+    """Bind a TextEdit fill to the exact existing file it may autosave."""
+
+    del app
+    bundle = str(
+        snapshot.get("app", {}).get("bundleId")
+        or snapshot.get("app", {}).get("bundle_id")
+        or ""
+    ).casefold()
+    if bundle != "com.apple.textedit":
+        raise ComputerUseError(
+            "invalid_argument", "autosaving document inspection requires TextEdit"
+        )
+    expected_window = _validate_snapshot_window(snapshot)
+    _validate_focused_window(snapshot, expected_window)
+    focused = _focused_ax_window(snapshot["app"])
+    document = ax_driver._get(focused, "AXDocument") if focused is not None else None
+    if document is None or document == "":
+        return {"autosave_identity": None}
+    if not isinstance(document, str):
+        raise ComputerUseError(
+            "target_drift", "selected TextEdit document identity is invalid"
+        )
+    try:
+        parsed = urlparse(document)
+        path = Path(unquote(parsed.path))
+    except (TypeError, ValueError) as exc:
+        raise ComputerUseError(
+            "target_drift", "selected TextEdit document identity is invalid"
+        ) from exc
+    if (
+        parsed.scheme != "file"
+        or parsed.netloc not in {"", "localhost"}
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+        or not path.is_absolute()
+    ):
+        raise ComputerUseError(
+            "target_drift", "selected TextEdit document is not a stable local file"
+        )
+    app_info = snapshot["app"]
+    return {
+        "autosave_identity": (
+            document,
+            int(app_info["pid"]),
+            app_info.get("processStartTime"),
+            str(snapshot.get("window_id") or ""),
+        )
+    }
+
+
 def _unique_textedit_plain_text_value(
     snapshot: dict, focused_window: object
 ) -> str | None:

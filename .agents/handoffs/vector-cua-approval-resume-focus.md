@@ -61,6 +61,18 @@ differences only after its exact native document/menu identity is re-inspected
 and matches the pre-approval binding. Other approved actions retain target and
 tree equality checks.
 
+The same run also proved that a successful TextEdit `fill` can reach disk later
+through native autosave even when the subsequent Save approval is refused. All
+`fill` actions now require `external_commit` approval before any AX write,
+because persistence semantics cannot be inferred safely for an arbitrary
+editable surface. Existing TextEdit files receive an additional exact binding
+from the focused window's local `AXDocument` URL plus PID, process start time,
+and CGWindowID. That identity is inspected before approval and again after exact
+window restoration, adjacent to `AXSetValue`. Unsupported or ambiguous document
+identity fails closed. Denial dispatches no write, so no delayed autosave can be
+scheduled. Finder rename keeps its existing opaque-reference approval and does
+not receive a second approval.
+
 This follows the established observe, exact actuation, fresh observation pattern
 reviewed in Orca while retaining Rapid's stronger PID, CGWindowID, and opaque
 Finder file-reference binding. No proprietary code was copied.
@@ -81,6 +93,12 @@ Finder file-reference binding. No proprietary code was copied.
 - TextEdit Save regression covers Rapid taking focus, changed AX tree shape,
   exact-window restoration, unchanged document binding, then Save dispatch;
   changed menu/document identity still blocks with zero dispatch.
+- TextEdit autosave regressions cover denial with no scheduled write, successful
+  exact document revalidation after approval, and fail-closed initial inspect,
+  window restore, and post-approval document drift paths.
+- Combined backend/CUA tests: 437 passed.
+- Changed Python line coverage against signed base `2f443ced`: 74/74, 100%.
+- Mypy error budget: no growth (811 grandfathered errors across 153 files).
 - Ruff format/check: passed.
 
 ## Remaining live check
@@ -89,4 +107,7 @@ Harbor should integrate this commit onto the signed stack and rerun the disposab
 Finder rename fixture. Confirm the approval card leaves Rapid frontmost, Approve
 restores PID/window `93136`/`cg:11409` (or the fresh fixture equivalents), and
 only the approved exact file reference changes. Deny must keep both Before and
-the sentinel unchanged. Pixel should verify the approval card and result states.
+the sentinel unchanged. For TextEdit, wait beyond the observed autosave interval
+after Deny and confirm the existing file remains unchanged; Approve must update
+only the exact bound document. Pixel should verify the approval card and result
+states.
