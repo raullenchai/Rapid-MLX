@@ -606,7 +606,25 @@ class CUARun:
                 return None
             try:
                 self._activate_target(requested)
+                # App activation alone cannot choose one exact window when a
+                # frozen target set contains two windows from the same PID.
+                # Resolve the preauthorized anchor, raise only its unique AX
+                # window, then observe again. Do not announce a successful
+                # switch until focus and the frozen window identity are both
+                # established.
+                switch_candidate = self._get_app_state(screenshot=False)
+                backend.raise_selected_window(self.backend_app, switch_candidate)
                 switched = self._get_app_state(screenshot=False)
+                if (
+                    self._window_identity(switch_candidate)
+                    != self._window_identity(switched)
+                    or switch_candidate.get("window") != switched.get("window")
+                ):
+                    raise ComputerUseError(
+                        "target_drift",
+                        "selected target changed while establishing window focus",
+                    )
+                backend.validate_selected_window_focus(switched)
                 switched_url = self._read_url(switched)
                 guard = self._check_domain(switched_url)
                 if guard:

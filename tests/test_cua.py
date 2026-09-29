@@ -404,6 +404,19 @@ def test_multi_target_switch_observes_only_frozen_selected_target(
         }
 
     monkeypatch.setattr(backend_mod, "get_app_state", get_state)
+    raised = []
+    monkeypatch.setattr(
+        backend_mod,
+        "raise_selected_window",
+        lambda app, snapshot: raised.append((app, snapshot["window_id"]))
+        or snapshot["window"],
+    )
+    focused = []
+    monkeypatch.setattr(
+        backend_mod,
+        "validate_selected_window_focus",
+        lambda snapshot: focused.append(snapshot["window_id"]),
+    )
     monkeypatch.setattr(
         backend_mod,
         "read_url",
@@ -474,7 +487,13 @@ def test_multi_target_switch_observes_only_frozen_selected_target(
         initial_target_id="web",
     )
     assert asyncio.run(runner.step(SwitchingPlanner(), 1)) is None
-    assert observed == [("pid:42", "cg:1"), ("pid:43", "cg:2")]
+    assert observed == [
+        ("pid:42", "cg:1"),
+        ("pid:43", "cg:2"),
+        ("pid:43", "cg:2"),
+    ]
+    assert raised == [("pid:43", "cg:2")]
+    assert focused == ["cg:2"]
     switched = next(event for event in events if event["kind"] == "target_switched")
     assert switched["from_target_id"] == "web"
     assert switched["target_id"] == "notes"
@@ -508,7 +527,137 @@ def test_multi_target_switch_observes_only_frozen_selected_target(
     stopped = asyncio.run(runner.step(SwitchBackPlanner(), 2))
     assert stopped["status"] == "stopped"
     assert stopped["error"] == "domain_guard"
+    assert raised[-1] == ("pid:42", "cg:1")
+    assert focused[-1] == "cg:1"
     assert len([event for event in events if event["kind"] == "target_switched"]) == 1
+
+
+@pytest.mark.parametrize("mode", ["success", "raise_fails", "post_raise_drift"])
+def test_same_pid_switch_requires_exact_window_raise_before_success(
+    tmp_path, monkeypatch, mode
+):
+    from rapid_mlx.computer_use import backend as backend_mod
+    from rapid_mlx.computer_use.errors import ComputerUseError
+    from rapid_mlx.cua.loop import CUARun
+
+    targets = [
+        {
+            "target_id": target_id,
+            "app": "pid:42",
+            "pid": 42,
+            "window_id": window_id,
+            "allowed_domain": "",
+            "expected_app": {
+                "name": "TextEdit",
+                "bundleId": "com.apple.TextEdit",
+                "pid": 42,
+            },
+        }
+        for target_id, window_id in (("first", "cg:1"), ("second", "cg:2"))
+    ]
+    events = []
+
+    observations = 0
+
+    def get_state(app, **kwargs):
+        nonlocal observations
+        observations += 1
+        window_id = kwargs["window_id"]
+        drifted = mode == "post_raise_drift" and observations == 3
+        return {
+            "app": dict(targets[0]["expected_app"]),
+            "window_id": window_id,
+            "window_index": 0,
+            "window": {
+                "window_id": window_id,
+                "index": 0,
+                "x": 0,
+                "y": 0,
+                "width": 101 if drifted else 100,
+                "height": 100,
+            },
+            "elements": [{"index": 0, "role": "AXButton", "label": "x"}],
+            "tree_text": "[0] AXButton x",
+        }
+
+    monkeypatch.setattr(backend_mod, "get_app_state", get_state)
+    monkeypatch.setattr(backend_mod, "read_url", lambda *args, **kwargs: "")
+    raised = []
+
+    def raise_window(app, snapshot):
+        raised.append((app, snapshot["window_id"]))
+        if mode == "raise_fails":
+            raise ComputerUseError("target_drift", "exact selected window lost focus")
+        return snapshot["window"]
+
+    monkeypatch.setattr(backend_mod, "raise_selected_window", raise_window)
+    focused = []
+    monkeypatch.setattr(
+        backend_mod,
+        "validate_selected_window_focus",
+        lambda snapshot: focused.append(snapshot["window_id"]),
+    )
+
+    class Planner:
+        text_only = True
+
+        async def plan(self, *args, **kwargs):
+            return (
+                {
+                    "action": "switch_target",
+                    "target_id": "second",
+                    "step_instruction": "switch",
+                    "element_index": -1,
+                    "text": "",
+                    "key": "",
+                    "direction": "",
+                    "final_summary": "",
+                },
+                "",
+                0.01,
+                [],
+            )
+
+    runner = CUARun(
+        _make_config(tmp_path),
+        "pid:42",
+        "g",
+        tmp_path,
+        event_sink=events.append,
+        window_id="cg:1",
+        backend_app="pid:42",
+        expected_app=targets[0]["expected_app"],
+        targets=targets,
+        initial_target_id="first",
+    )
+    stopped = asyncio.run(runner.step(Planner(), 1))
+
+    assert raised == [("pid:42", "cg:2")]
+    if mode == "raise_fails":
+        assert stopped == {
+            "status": "stopped",
+            "reason": "target switch failed closed: exact selected window lost focus",
+            "error": "target_drift",
+        }
+        assert focused == []
+        assert not any(event["kind"] == "target_switched" for event in events)
+    elif mode == "post_raise_drift":
+        assert stopped == {
+            "status": "stopped",
+            "reason": (
+                "target switch failed closed: selected target changed while "
+                "establishing window focus"
+            ),
+            "error": "target_drift",
+        }
+        assert focused == []
+        assert not any(event["kind"] == "target_switched" for event in events)
+    else:
+        assert stopped is None
+        assert focused == ["cg:2"]
+        switched = next(event for event in events if event["kind"] == "target_switched")
+        assert switched["from_target_id"] == "first"
+        assert switched["target_id"] == "second"
 
 
 @pytest.fixture()

@@ -1042,6 +1042,13 @@ def raise_selected_window(app: str, snapshot: dict) -> dict:
     return after
 
 
+def validate_selected_window_focus(snapshot: dict) -> None:
+    """Revalidate an exact observed window's identity and current AX focus."""
+
+    _validate_snapshot_window(snapshot)
+    _validate_focused_window(snapshot)
+
+
 SAVE_MENU_MAX_NODES = 128
 SAVE_MENU_MAX_DEPTH = 6
 TEXTEDIT_SAVE_MAX_BYTES = 1_048_576
