@@ -111,3 +111,22 @@ the sentinel unchanged. For TextEdit, wait beyond the observed autosave interval
 after Deny and confirm the existing file remains unchanged; Approve must update
 only the exact bound document. Pixel should verify the approval card and result
 states.
+
+## Signed d4ac Finder focus follow-up
+
+Signed run `385bb5bf81f6` remained fail closed but showed that activating Finder
+and sending `AXRaise` does not reliably make the already-bound CG window its AX
+focused window. The approved fill therefore stopped before `AXSetValue`; the
+Before fixture and sentinel remained unchanged.
+
+Finder rename recovery now requests `AXMain=true` on the uniquely matched AX
+window after the existing PID, process-start, bundle, CGWindowID, frame, opaque
+file-reference, and path checks, then performs `AXRaise` and the existing fresh
+focused-window validation. A rejected focus request fails closed before
+`AXRaise`. General window restoration keeps its prior behavior; the stronger
+focus mutation is opt-in only for the Finder rename write and commit paths.
+
+Verification on exact signed base `d4ac4107`: 441 backend/CUA tests passed;
+changed-line coverage 8/8 (100%); Ruff and the mypy error budget passed. Harbor
+must independently review, integrate onto the current test-only head, and rerun
+signed Finder Deny and Approve fixtures before release.

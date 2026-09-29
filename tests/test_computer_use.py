@@ -1924,6 +1924,15 @@ def test_raise_selected_window_uses_unique_pid_bound_ax_window(monkeypatch):
         lambda element: ["AXRaise"] if element is selected_ax else [],
     )
     actions = []
+    focused_windows = []
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "AXUIElementSetAttributeValue",
+        lambda element, attribute, value: (
+            focused_windows.append((element, attribute, value))
+            or backend.ax_driver.kAXErrorSuccess
+        ),
+    )
     monkeypatch.setattr(
         backend.ax_driver,
         "AXUIElementPerformAction",
@@ -1943,7 +1952,11 @@ def test_raise_selected_window_uses_unique_pid_bound_ax_window(monkeypatch):
     )
     monkeypatch.setattr(backend.time, "sleep", lambda _: None)
 
-    assert backend.raise_selected_window("pid:4", snapshot) == snapshot["window"]
+    assert (
+        backend.raise_selected_window("pid:4", snapshot, focus_exact_window=True)
+        == snapshot["window"]
+    )
+    assert focused_windows == [(selected_ax, "AXMain", True)]
     assert actions == [(selected_ax, "AXRaise")]
     assert focused == [snapshot]
     assert resolutions == [("pid:4", False), ("pid:4", True)]
@@ -2002,6 +2015,7 @@ def test_raise_selected_window_requires_snapshot_identity():
         ("window_drift", "target_drift"),
         ("activated_window_drift", "target_drift"),
         ("post_activate_ax_drift", "target_occluded"),
+        ("focus_rejected", "target_occluded"),
         ("raise_rejected", "target_occluded"),
         ("post_raise_drift", "target_drift"),
     ],
@@ -2076,11 +2090,20 @@ def test_raise_selected_window_fails_closed_across_identity_boundaries(
         "AXUIElementPerformAction",
         perform_action,
     )
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "AXUIElementSetAttributeValue",
+        lambda *args: (
+            1 if failure == "focus_rejected" else backend.ax_driver.kAXErrorSuccess
+        ),
+    )
     monkeypatch.setattr(backend.time, "sleep", lambda _: None)
     monkeypatch.setattr(backend, "_validate_focused_window", lambda value: None)
 
     with pytest.raises(errors.ComputerUseError) as excinfo:
-        backend.raise_selected_window("pid:4", snapshot)
+        backend.raise_selected_window(
+            "pid:4", snapshot, focus_exact_window=failure == "focus_rejected"
+        )
     assert excinfo.value.code == code
     if failure == "process_start_drift":
         assert resolutions == [False]
@@ -3250,9 +3273,9 @@ def test_finder_rename_transaction_stages_then_commits_exact_editor(monkeypatch)
     raises = []
     foreground = {"finder": False}  # Approval card left Rapid frontmost.
 
-    def restore_finder(*args):
+    def restore_finder(*args, **kwargs):
         assert foreground["finder"] is False
-        raises.append(args)
+        raises.append((args, kwargs))
         foreground["finder"] = True
         return snapshot["window"]
 
@@ -3280,7 +3303,7 @@ def test_finder_rename_transaction_stages_then_commits_exact_editor(monkeypatch)
 
     assert committed["verified"] is True
     assert committed["actual_basename"] == "After"
-    assert raises == [("pid:4", snapshot)]
+    assert raises == [(("pid:4", snapshot), {"focus_exact_window": True})]
     assert presses == [backend.KEY_ALIASES["enter"]]
 
 
@@ -3851,8 +3874,8 @@ def test_finder_rename_focus_restore_commit_skips_duplicate_enter(monkeypatch):
     }
     raises = []
 
-    def raise_window(*args):
-        raises.append(args)
+    def raise_window(*args, **kwargs):
+        raises.append((args, kwargs))
         path_state[0] = "/tmp/After"
         return snapshot["window"]
 
@@ -3867,7 +3890,7 @@ def test_finder_rename_focus_restore_commit_skips_duplicate_enter(monkeypatch):
     assert result["verified"] is True
     assert result["executed"] is False
     assert result["verification_source"] == "finder_file_reference_basename"
-    assert raises == [("pid:4", snapshot)]
+    assert raises == [(("pid:4", snapshot), {"focus_exact_window": True})]
     assert presses == []
 
 
@@ -3885,7 +3908,7 @@ def test_finder_rename_drift_during_focus_restore_dispatches_no_enter(monkeypatc
         "requested_basename": "After",
     }
 
-    def raise_window(*_args):
+    def raise_window(*_args, **_kwargs):
         path_state[0] = "/tmp/Unexpected"
         return snapshot["window"]
 
@@ -6113,7 +6136,7 @@ def test_finder_rename_commit_rejects_editor_drift_during_focus_restore(monkeypa
         backend, "_normalized_finder_editor_value", lambda _live: editor_value["value"]
     )
 
-    def restore(_app, _snapshot):
+    def restore(_app, _snapshot, **_kwargs):
         editor_value["value"] = "Different"
         return snapshot["window"]
 

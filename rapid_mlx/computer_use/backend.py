@@ -1085,7 +1085,9 @@ def _validate_focused_window(
         )
 
 
-def raise_selected_window(app: str, snapshot: dict) -> dict:
+def raise_selected_window(
+    app: str, snapshot: dict, *, focus_exact_window: bool = False
+) -> dict:
     """Raise only the exact PID-bound selected AX window.
 
     This is a bounded recovery for an already observed occlusion. It never
@@ -1156,11 +1158,17 @@ def raise_selected_window(app: str, snapshot: dict) -> dict:
             "target_occluded",
             "selected window changed while restoring application focus",
         )
+    if focus_exact_window:
+        focus_err = ax_driver.AXUIElementSetAttributeValue(matches[0], "AXMain", True)
+        if focus_err != ax_driver.kAXErrorSuccess:
+            raise ComputerUseError(
+                "target_occluded", "selected window rejected exact focus restoration"
+            )
     err = ax_driver.AXUIElementPerformAction(matches[0], "AXRaise")
     if err != ax_driver.kAXErrorSuccess:
         raise ComputerUseError("target_occluded", "selected window rejected AXRaise")
     time.sleep(0.2)
-    after = _select_window(app_info, window_id=expected["window_id"])
+    after = _select_window(activated_info, window_id=expected["window_id"])
     if not _same_window(expected, after):
         raise ComputerUseError(
             "target_drift", "selected window changed during recovery"
@@ -2065,7 +2073,7 @@ def set_finder_rename_value(
     # The approval card made Rapid frontmost. Restore only the exact approved
     # Finder window, with the original opaque reference checked on both sides,
     # before reacquiring its focused inline editor.
-    raise_selected_window(app, snapshot)
+    raise_selected_window(app, snapshot, focus_exact_window=True)
     _finder_rename_path_state(binding)
     from ApplicationServices import (  # type: ignore[import-untyped]
         AXUIElementSetAttributeValue,
@@ -2153,7 +2161,7 @@ def commit_finder_rename(
     # checked immediately before and after focus changes. Raising Finder may
     # itself commit the staged rename, in which case no Enter is needed.
     _finder_rename_path_state(binding)
-    raise_selected_window(app, snapshot)
+    raise_selected_window(app, snapshot, focus_exact_window=True)
     state, actual_path = _finder_rename_path_state(binding)
     if state == "committed":
         _clear_finder_rename_binding(snapshot)
