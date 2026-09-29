@@ -139,6 +139,68 @@ def test_native_save_verifies_only_exact_edited_transition(monkeypatch):
     assert result["verification_source"] == "ax_edited_same_document"
 
 
+@pytest.mark.parametrize("failure", ["document", "menu_bar"])
+def test_native_save_requires_stable_document_and_accessible_menu(monkeypatch, failure):
+    _install_save_menu(monkeypatch, [_save_item()])
+    if failure == "document":
+        monkeypatch.setattr(backend, "_focused_ax_window", lambda app: {})
+    else:
+        monkeypatch.setattr(
+            backend.ax_driver, "_app_element", lambda *a, **k: {"AXMenuBar": None}
+        )
+
+    with pytest.raises(errors.ComputerUseError) as excinfo:
+        backend.inspect_save_document(
+            "pid:4", _stable_snapshot(observed_at=backend.time.time())
+        )
+    assert excinfo.value.code in {"target_drift", "element_not_found"}
+
+
+def test_native_save_menu_walk_is_depth_bounded(monkeypatch):
+    item = _save_item()
+    for _ in range(backend.SAVE_MENU_MAX_DEPTH + 2):
+        item = {"AXRole": "AXMenu", "AXChildren": [item]}
+    _install_save_menu(monkeypatch, [item])
+
+    with pytest.raises(errors.ComputerUseError) as excinfo:
+        backend.inspect_save_document(
+            "pid:4", _stable_snapshot(observed_at=backend.time.time())
+        )
+    assert excinfo.value.code == "element_not_found"
+
+
+def test_native_save_reports_rejected_axpress(monkeypatch):
+    _install_save_menu(monkeypatch, [_save_item()])
+    snapshot = _stable_snapshot(observed_at=backend.time.time())
+    binding = backend.inspect_save_document("pid:4", snapshot)
+    monkeypatch.setattr(backend.ax_driver, "AXUIElementPerformAction", lambda *a: 1)
+
+    with pytest.raises(errors.ComputerUseError) as excinfo:
+        backend.save_document(
+            "pid:4", snapshot, expected_identity=tuple(binding["save_identity"])
+        )
+    assert excinfo.value.code == "action_failed"
+
+
+def test_validate_selected_window_focus_runs_both_authority_checks(monkeypatch):
+    snapshot = _stable_snapshot()
+    calls = []
+    monkeypatch.setattr(
+        backend,
+        "_validate_snapshot_window",
+        lambda value: calls.append(("snapshot", value)),
+    )
+    monkeypatch.setattr(
+        backend,
+        "_validate_focused_window",
+        lambda value: calls.append(("focus", value)),
+    )
+
+    backend.validate_selected_window_focus(snapshot)
+
+    assert calls == [("snapshot", snapshot), ("focus", snapshot)]
+
+
 def _textedit_snapshot():
     snapshot = _stable_snapshot(observed_at=backend.time.time())
     snapshot["app"]["bundleId"] = "com.apple.TextEdit"
@@ -1280,6 +1342,36 @@ def test_live_element_rejects_snapshot_index_drift(monkeypatch):
     )
     with pytest.raises(errors.ComputerUseError, match="changed since snapshot"):
         backend._live_element(snapshot, 2)
+
+
+@pytest.mark.parametrize("failure", ["missing_identity", "lost_focus", "synthetic"])
+def test_live_transient_element_requires_trusted_exact_action(monkeypatch, failure):
+    snapshot = _stable_snapshot(
+        elements=[
+            {
+                "index": 2,
+                "role": "AXButton",
+                "label": "Confirm",
+                "center": [10, 20],
+                "source_window_id": "cg:202",
+            }
+        ]
+    )
+    transient = _window(window_id=202, x=5, y=5, width=20, height=20)
+    if failure != "missing_identity":
+        snapshot["transient_window"] = transient
+    monkeypatch.setattr(
+        backend, "_validate_snapshot_window", lambda *a, **k: snapshot["window"]
+    )
+    monkeypatch.setattr(
+        backend,
+        "_focused_transient_window",
+        lambda *a, **k: None if failure == "lost_focus" else transient,
+    )
+
+    with pytest.raises(errors.ComputerUseError) as excinfo:
+        backend._live_element(snapshot, 2, validate_point=failure == "synthetic")
+    assert excinfo.value.code in {"target_drift", "synthetic_input_blocked"}
 
 
 def test_window_id_survives_window_reorder(monkeypatch):
