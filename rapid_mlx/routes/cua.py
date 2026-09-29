@@ -745,7 +745,7 @@ async def resolve_targets(request: CUATargetResolveRequest) -> CUATargetResoluti
     ]
     if missing_explicit:
         app_names = ", ".join(
-            item["app_name"] or "the named app" for item in missing_explicit
+            str(item["app_name"] or "the named app") for item in missing_explicit
         )
         return CUATargetResolution(
             status="unresolved",
