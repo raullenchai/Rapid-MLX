@@ -1197,6 +1197,7 @@ def save_document(
         raise ComputerUseError("action_failed", "native Save command rejected AXPress")
     time.sleep(0.2)
     verified = None
+    verification_source = "unverified"
     try:
         _, after_identity, after_document = _save_menu_candidate(snapshot)
         focused_after = _focused_ax_window(snapshot["app"])
@@ -1206,11 +1207,14 @@ def save_document(
             else None
         )
         same_binding = after_identity == identity and after_document == document
-        if same_binding and (
-            (edited_before is True and edited_after is False)
-            or _verify_textedit_plain_text_save(snapshot, document, focused_after)
+        if same_binding and edited_before is True and edited_after is False:
+            verified = True
+            verification_source = "ax_edited_same_document"
+        elif same_binding and _verify_textedit_plain_text_save(
+            snapshot, document, focused_after
         ):
             verified = True
+            verification_source = "textedit_plain_text_exact_disk_match"
     except ComputerUseError:
         # AXPress was accepted already. A post-action focus/menu change cannot
         # retroactively become an execution rejection; report it as unverified.
@@ -1223,7 +1227,12 @@ def save_document(
     return _finish_action(
         app,
         snapshot,
-        {"ok": True, "mode": "AXPress", "executed": True},
+        {
+            "ok": True,
+            "mode": "AXPress",
+            "executed": True,
+            "verification_source": verification_source,
+        },
         verified=verified,
         verification=verification,
     )

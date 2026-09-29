@@ -1685,7 +1685,13 @@ def test_save_is_approval_bound_and_unverified_dispatch_stays_uncertain(
         "save_document",
         lambda *a, **k: (
             saves.append(k["expected_identity"])
-            or {"ok": True, "executed": True, "verified": None, "mode": "AXPress"}
+            or {
+                "ok": True,
+                "executed": True,
+                "verified": None,
+                "mode": "AXPress",
+                "verification_source": "textedit_plain_text_exact_disk_match",
+            }
         ),
     )
     events = []
@@ -1716,6 +1722,8 @@ def test_save_is_approval_bound_and_unverified_dispatch_stays_uncertain(
     executed = next(event for event in events if event["kind"] == "executed")
     assert executed["action"] == "save"
     assert executed["outcome"] == "uncertain"
+    assert runner.history[-1]["verified_persistence"] is False
+    assert runner.history[-1]["verification_source"] == "unverified"
     gate = next(event for event in events if event["kind"] == "gate")
     assert gate["action"] == "save" and gate["target"] == "notes.txt"
     later_action = _FakePlanner(
@@ -1742,6 +1750,112 @@ def test_save_is_approval_bound_and_unverified_dispatch_stays_uncertain(
         "the previous commit could not be verified; use partial or blocked unless "
         "fresh evidence proves completion"
     )
+
+
+def test_verified_save_persistence_reaches_next_planner_input(
+    fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+    from rapid_mlx.cua.planner import Planner
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    snapshot = {
+        "app": {"name": "TextEdit", "pid": 101, "bundle_id": "textedit"},
+        "window_index": 0,
+        "window_id": "cg:55",
+        "window": {
+            "window_id": "cg:55",
+            "title": "notes.txt",
+            "x": 0,
+            "y": 0,
+            "width": 500,
+            "height": 400,
+        },
+        "elements": [{"index": 1, "label": "Body", "role": "AXTextArea"}],
+        "tree_text": "[1] AXTextArea Body",
+        "visible_window_ids": ["cg:55"],
+    }
+    monkeypatch.setattr(fake_backend, "get_app_state", lambda *a, **k: dict(snapshot))
+    monkeypatch.setattr(
+        fake_backend,
+        "inspect_save_document",
+        lambda *a, **k: {"save_identity": ("document", "File", "Save", "s", "0", "")},
+    )
+    monkeypatch.setattr(
+        fake_backend,
+        "save_document",
+        lambda *a, **k: {
+            "ok": True,
+            "executed": True,
+            "verified": True,
+            "mode": "AXPress",
+            "verification_source": "textedit_plain_text_exact_disk_match",
+        },
+    )
+
+    async def approve(_reason):
+        return True
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(loop_mod.asyncio, "sleep", no_sleep)
+    received_history = []
+
+    class CapturingPlanner:
+        text_only = True
+        calls = 0
+
+        async def plan(self, goal, state, history, *args):
+            self.calls += 1
+            received_history.append([dict(entry) for entry in history])
+            if self.calls == 1:
+                return (
+                    {"action": "save", "step_instruction": "Save current changes"},
+                    "",
+                    0.01,
+                    [],
+                )
+            return (
+                {
+                    "action": "done",
+                    "step_instruction": "finish",
+                    "final_summary": "The document was saved.",
+                },
+                "",
+                0.01,
+                [],
+            )
+
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path),
+        "TextEdit",
+        "save notes",
+        tmp_path / "save-verified-history",
+        gate=approve,
+    )
+    planner = CapturingPlanner()
+    assert asyncio.run(runner.step(planner, 1)) is None
+    assert asyncio.run(runner.step(planner, 2)) == {
+        "status": "done",
+        "summary": "The document was saved.",
+    }
+    evidence = received_history[1][-1]
+    assert evidence["verified_persistence"] is True
+    assert evidence["verification_source"] == ("textedit_plain_text_exact_disk_match")
+    assert "document" not in evidence
+    assert "text" not in evidence
+    prompt = Planner.build_prompt(  # type: ignore[arg-type]
+        None,
+        "save notes",
+        snapshot,
+        [evidence],
+    )
+    assert '"verified_persistence": true' in prompt
+    assert "trusted host evidence" in prompt
+    assert "verified_persistence=false means persistence is unknown" in prompt
 
 
 def test_save_stops_when_menu_identity_changes_after_approval(

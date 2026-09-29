@@ -396,6 +396,7 @@ class CUARun:
         target = self._target(snapshot, plan.get("element_index", -1))
         target_label = str(target.get("label", ""))
         save_identity: tuple[str, ...] | None = None
+        save_persistence_verified = False
         if plan["action"] == "save":
             try:
                 save_binding = backend.inspect_save_document(self.backend_app, snapshot)
@@ -717,6 +718,24 @@ class CUARun:
             "outcome": outcome,
             "url_after": url_after[:120],
         }
+        if plan["action"] == "save":
+            safe_source = str(executed.get("verification_source", "unverified"))
+            if (
+                safe_source
+                not in {
+                    "ax_edited_same_document",
+                    "textedit_plain_text_exact_disk_match",
+                }
+                or verification is not True
+            ):
+                safe_source = "unverified"
+            save_persistence_verified = safe_source != "unverified"
+            history_entry.update(
+                {
+                    "verified_persistence": save_persistence_verified,
+                    "verification_source": safe_source,
+                }
+            )
         if execution_rejected:
             event.update(
                 {
@@ -734,7 +753,7 @@ class CUARun:
                     "recovery": list(executed.get("recovery", [])),
                 }
             )
-        save_unverified = plan["action"] == "save" and verification is not True
+        save_unverified = plan["action"] == "save" and not save_persistence_verified
         if execution_failed:
             self._last_execution_failed = True
         elif executed.get("executed") is True:
@@ -747,7 +766,7 @@ class CUARun:
             # AXPress without same-document verification remains pending even
             # if later navigation succeeds: only partial/blocked may terminate.
             self._last_commit_unverified = True
-        elif plan["action"] == "save" and verification is True:
+        elif plan["action"] == "save" and save_persistence_verified:
             self._last_commit_unverified = False
         self._emit(event)
         self.history.append(history_entry)

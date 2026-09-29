@@ -123,6 +123,7 @@ def test_native_save_uses_unique_command_and_stays_unverified_without_axedited(
     assert pressed == [(save, "AXPress")]
     assert result["executed"] is True
     assert result["verified"] is None
+    assert result["verification_source"] == "unverified"
     assert "could not be verified" in result["verification"]
 
 
@@ -135,6 +136,7 @@ def test_native_save_verifies_only_exact_edited_transition(monkeypatch):
         "pid:4", snapshot, expected_identity=tuple(binding["save_identity"])
     )
     assert result["verified"] is True
+    assert result["verification_source"] == "ax_edited_same_document"
 
 
 def _textedit_snapshot():
@@ -291,6 +293,7 @@ def test_native_save_uses_exact_textedit_disk_match_when_axedited_is_absent(
         expected_identity=expected,
     )
     assert result["verified"] is True
+    assert result["verification_source"] == "textedit_plain_text_exact_disk_match"
     assert result["verification"] == "same-document persistence was verified"
 
 

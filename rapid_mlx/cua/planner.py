@@ -392,6 +392,12 @@ finish with done and an honest blocker summary.
 Recent history:
 {json.dumps(history[-4:], ensure_ascii=False)}
 
+For a save history entry, verified_persistence=true is trusted host evidence
+that the exact selected document was persisted; verification_source names the
+bounded host check. Use it as concrete completion evidence and do not repeat
+that Save. verified_persistence=false means persistence is unknown, never that
+it succeeded; use fresh evidence or finish partial/blocked rather than claim it.
+
 Progress hint from the fast local monitor:
 {progress_hint or "(none)"}
 
