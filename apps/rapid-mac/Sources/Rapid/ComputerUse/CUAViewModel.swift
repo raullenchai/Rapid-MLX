@@ -751,7 +751,7 @@ final class CUAViewModel: ObservableObject {
                     else {
                         selectedTargets = []
                         selectedInitialTargetID = nil
-                        targetError = "An authorized app changed or closed. Select every target again."
+                        targetError = "An app used by this task changed or closed. Start setup again."
                         return
                     }
                     let liveWindows = try await api.windows(app: "pid:\(target.app.pid)")
@@ -824,9 +824,9 @@ final class CUAViewModel: ObservableObject {
             selectedWindowID = discovered.contains(where: { $0.windowID == oldSelection })
                 ? oldSelection : nil
             if discovered.isEmpty {
-                targetError = "No usable windows were found for this process. Open a window, then refresh."
+                targetError = "Rapid could not find an open item in this app. Open the item you want to use, then try again."
             } else if oldSelection != nil, selectedWindowID == nil {
-                targetError = "The selected window is no longer available. Choose a window again."
+                targetError = "The app item previously used by this task is no longer available. Start setup again."
             }
         } catch {
             guard generation == targetDiscoveryGeneration, selectedPID == pid else { return }
@@ -841,17 +841,17 @@ final class CUAViewModel: ObservableObject {
             let hint = recovery.first.map { " \($0)" } ?? ""
             switch code {
             case "app_not_found":
-                return "The selected app process is no longer running. Refresh the app list.\(hint)"
+                return "The app is no longer open. Open it, then try again.\(hint)"
             case "window_not_found":
-                return "No usable windows were found for this process. Open a window, then refresh.\(hint)"
+                return "Rapid could not find the app item needed for this task. Open it, then try again.\(hint)"
             default:
-                return "Could not load apps and windows: \(message)\(hint)"
+                return "Rapid could not find the apps needed for this task: \(message)\(hint)"
             }
         }
         if case let CUAClientError.http(code, _) = error, code == 404 {
-            return "This local server does not support window selection. Update or restart Rapid, then refresh."
+            return "This local server does not support automatic app selection. Update or restart Rapid, then try again."
         }
-        return "Could not load apps and windows: \(Self.describe(error)) Refresh to try again."
+        return "Rapid could not find the apps needed for this task: \(Self.describe(error)) Try again."
     }
 
     // MARK: Add-brain settings
@@ -1180,7 +1180,7 @@ final class CUAViewModel: ObservableObject {
                 }
                 var message = Self.describe(error)
                 if !message.localizedCaseInsensitiveContains("refresh") {
-                    message += " Refresh the window list and choose it again."
+                    message += " Start setup again so Rapid can find the app."
                 }
                 phase = .failed(message: message)
             } else {
@@ -1598,7 +1598,7 @@ final class CUAViewModel: ObservableObject {
                                 selectedInitialTargetID = nil
                             }
                             phase = .failed(
-                                message: "\(message) Refresh the window list and choose it again."
+                                message: "\(message) Start setup again so Rapid can find the app."
                             )
                         } else {
                             phase = .failed(message: message)
@@ -1630,7 +1630,7 @@ final class CUAViewModel: ObservableObject {
                             selectedInitialTargetID = nil
                         }
                         phase = .failed(
-                            message: "\(message) Refresh the window list and choose it again."
+                            message: "\(message) Start setup again so Rapid can find the app."
                         )
                     } else {
                         phase = .failed(message: message)

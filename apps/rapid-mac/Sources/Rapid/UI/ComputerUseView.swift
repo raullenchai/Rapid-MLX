@@ -21,16 +21,10 @@ struct ComputerUseView: View {
                 HStack(alignment: .top) {
                     SectionHeader(
                         "Computer Use",
-                        subtitle: "Actions run on this Mac. You choose the brain endpoint used for planning.",
+                        subtitle: "Actions run on this Mac using the local or cloud model you choose.",
                         emphasis: .page
                     )
                     Spacer()
-                    Text("EXPERIMENTAL")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.orange)
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 5)
-                        .background(.orange.opacity(0.1), in: Capsule())
                 }
 
                 cuaRuntimeSection

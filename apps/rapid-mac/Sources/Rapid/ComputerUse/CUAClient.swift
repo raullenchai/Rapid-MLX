@@ -432,23 +432,21 @@ enum CUAClientError: LocalizedError, Equatable {
         case let .typedHTTP(code, errorCode, message, recovery):
             let hint = recovery.first.map { " \($0)" } ?? ""
             return "CUA request failed (HTTP \(code), \(errorCode)): \(message)\(hint)"
-        case let .windowBinding(expected, actual, _, cancellationFailed):
-            let received = actual.map { "'\($0)'" } ?? "no window identity"
+        case let .windowBinding(_, _, _, cancellationFailed):
             let stop = cancellationFailed
                 ? " Rapid could not confirm that the rejected run stopped. Stop the local server before retrying."
                 : " The rejected run was stopped."
-            return "The server did not bind the run to selected window '\(expected)' (received \(received)).\(stop) Refresh the window list and choose it again."
-        case let .requestBinding(expected, actual, _, cancellationFailed):
-            let received = actual.map { "'\($0)'" } ?? "no request identity"
+            return "Rapid could not confirm the app selected for this task.\(stop) Start setup again."
+        case let .requestBinding(_, _, _, cancellationFailed):
             let stop = cancellationFailed
                 ? " The unverified task may still be executing. Stop it immediately."
                 : " The unverified task was stopped."
-            return "The server did not confirm create request '\(expected)' (received \(received)).\(stop)"
+            return "Rapid could not confirm that the task started safely.\(stop)"
         case let .targetBinding(_, cancellationFailed):
             let stop = cancellationFailed
                 ? " The unverified task may still be executing. Stop it immediately."
                 : " The unverified task was stopped."
-            return "The server did not bind the exact authorized target set.\(stop) Refresh every target and try again."
+            return "Rapid could not confirm the apps approved for this task.\(stop) Start setup again."
         }
     }
 }
