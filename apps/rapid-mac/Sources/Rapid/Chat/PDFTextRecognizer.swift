@@ -7,6 +7,8 @@ import Vision
 enum PDFTextRecognizer {
     static let renderScale: CGFloat = 1.5
     static let languages = ["zh-Hans", "zh-Hant", "en-US"]
+    /// Receives the rendered image, remaining character budget, and zero-based page index.
+    typealias VisionRequest = @Sendable (CGImage, Int, Int) -> String?
 
     static func needsRecognition(_ page: PDFPage) -> Bool {
         (page.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").isEmpty
@@ -35,6 +37,7 @@ enum PDFTextRecognizer {
         range: Range<Int>,
         characterBudget: Int = .max,
         recognizeScans: Bool = true,
+        visionRequest: VisionRequest? = nil,
         onPageComplete: (() -> Void)? = nil
     ) -> Extraction {
         var pages: [String] = []
@@ -71,7 +74,16 @@ enum PDFTextRecognizer {
                     // nil means recognition itself failed (render or Vision
                     // error) — distinct from a page that is genuinely blank.
                     // The pass must not report completion over a lost page.
-                    if let recognized = recognize(page: page, characterBudget: remaining) {
+                    if let recognized = recognize(
+                        page: page,
+                        characterBudget: remaining,
+                        using: { image, budget in
+                            if let visionRequest {
+                                return visionRequest(image, budget, index)
+                            }
+                            return recognizeImage(image, characterBudget: budget)
+                        }
+                    ) {
                         text = recognized
                     } else {
                         recognitionFailed = true

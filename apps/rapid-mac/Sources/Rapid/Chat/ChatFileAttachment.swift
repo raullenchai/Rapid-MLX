@@ -201,7 +201,11 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
     }
 
     /// Imports a user-selected file; `cache` is injectable for isolated tests.
-    init(contentsOf url: URL, cache: DocumentContentCache = .shared) throws {
+    init(
+        contentsOf url: URL,
+        cache: DocumentContentCache = .shared,
+        visionRequest: PDFTextRecognizer.VisionRequest? = nil
+    ) throws {
         let values = try url.resourceValues(forKeys: [.fileSizeKey, .contentTypeKey])
         if let size = values.fileSize, size > Self.maxSourceBytes {
             throw ValidationError.tooLarge
@@ -214,7 +218,12 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         let contentType = values.contentType
         let extensionType = UTType(filenameExtension: url.pathExtension)
         if contentType?.conforms(to: .pdf) == true || extensionType?.conforms(to: .pdf) == true {
-            try self.init(pdfFilename: url.lastPathComponent, data: data, cache: cache)
+            try self.init(
+                pdfFilename: url.lastPathComponent,
+                data: data,
+                cache: cache,
+                visionRequest: visionRequest
+            )
         } else if contentType?.conforms(to: .commaSeparatedText) == true
             || extensionType?.conforms(to: .commaSeparatedText) == true {
             try self.init(csvFilename: url.lastPathComponent, data: data, cache: cache)
@@ -233,7 +242,12 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
     private static let maxOutlineNodes = 2_000
     private static let maxOutlineTitleCharacters = 200
 
-    private init(pdfFilename filename: String, data: Data, cache: DocumentContentCache) throws {
+    private init(
+        pdfFilename filename: String,
+        data: Data,
+        cache: DocumentContentCache,
+        visionRequest: PDFTextRecognizer.VisionRequest?
+    ) throws {
         guard let document = PDFDocument(data: data), document.pageCount > 0 else {
             throw ValidationError.invalidPDF
         }
@@ -253,7 +267,8 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
                 filename: filename,
                 data: data,
                 cache: cache,
-                outline: outline
+                outline: outline,
+                visionRequest: visionRequest
             )
             return
         }
@@ -304,6 +319,7 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
                 of: workerDocument,
                 range: 0..<pageCount,
                 characterBudget: Self.maxExtractedCharacters,
+                visionRequest: visionRequest,
                 onPageComplete: { cache.reportProgress(id) }
             )
             let full = Self.collapsingLayoutNoise(extracted.text)
@@ -341,7 +357,8 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         filename: String,
         data: Data,
         cache: DocumentContentCache,
-        outline: [DocumentContentCache.OutlineNode]
+        outline: [DocumentContentCache.OutlineNode],
+        visionRequest: PDFTextRecognizer.VisionRequest?
     ) throws {
         let probeLimit = min(Self.maxEagerOCRProbePages, document.pageCount)
         var recognizedPages: [String] = []
@@ -353,7 +370,8 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         for pageIndex in 0..<probeLimit {
             let probed = PDFTextRecognizer.recognizePages(
                 of: document,
-                range: pageIndex..<(pageIndex + 1)
+                range: pageIndex..<(pageIndex + 1),
+                visionRequest: visionRequest
             )
             pagesInspected = pageIndex + 1
             if !probed.reachedEnd { probeHealthy = false }
@@ -410,6 +428,7 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
                 of: workerDocument,
                 range: 0..<pageCount,
                 characterBudget: Self.maxExtractedCharacters,
+                visionRequest: visionRequest,
                 onPageComplete: { cache.reportProgress(id) }
             )
             let full = Self.collapsingLayoutNoise(extracted.text)
