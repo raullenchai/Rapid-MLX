@@ -220,8 +220,13 @@ def test_discovery_contract(client):
     assert capabilities.json()["max_run_targets"] == 3
 
     permissions = client.get("/v1/cua/permissions", headers=AUTH)
-    assert permissions.json()["accessibility"] is True
-    assert permissions.json()["screen_recording"] is False
+    assert permissions.status_code == 200
+    if cua_routes.sys.platform == "darwin":
+        assert permissions.json()["accessibility"] is True
+        assert permissions.json()["screen_recording"] is False
+    else:
+        assert permissions.json()["accessibility"] is None
+        assert permissions.json()["screen_recording"] is None
 
     apps = client.get("/v1/cua/apps", headers=AUTH)
     assert apps.json() == [
