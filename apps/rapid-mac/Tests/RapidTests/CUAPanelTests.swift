@@ -45,6 +45,14 @@ private final class MockAgentAPI: CUAAPI, @unchecked Sendable {
     var eventsShouldFail = false
     var eventsCalls = 0
     var permissionsResult = CUAPermissionStatus(accessibility: true, screenRecording: true)
+    var permissionRequestSupported = true
+    var permissionRequestError: Error?
+    var requestedPermissions: [MacAutomationPermission] = []
+    var permissionsCalls = 0
+    var suspendPermissionRequest = false
+    var permissionRequestContinuation: CheckedContinuation<Void, Never>?
+    var suspendPermissions = false
+    var permissionsContinuation: CheckedContinuation<Void, Never>?
     var pendingGateResult: CUAPendingGate?
     var activeTargetIDResult: String?
 
@@ -60,7 +68,8 @@ private final class MockAgentAPI: CUAAPI, @unchecked Sendable {
             features: .init(
                 idempotentRunCreate: capabilitiesSupported,
                 multiTargetRuns: multiTargetSupported,
-                switchTarget: multiTargetSupported
+                switchTarget: multiTargetSupported,
+                permissionRequest: permissionRequestSupported
             ),
             maxRunTargets: 3
         )
@@ -112,7 +121,37 @@ private final class MockAgentAPI: CUAAPI, @unchecked Sendable {
     }
 
     func permissions() async throws -> CUAPermissionStatus {
-        permissionsResult
+        permissionsCalls += 1
+        if suspendPermissions {
+            await withCheckedContinuation { permissionsContinuation = $0 }
+        }
+        return permissionsResult
+    }
+
+    func requestPermission(
+        _ permission: MacAutomationPermission
+    ) async throws -> CUAPermissionRequestResult {
+        requestedPermissions.append(permission)
+        if suspendPermissionRequest {
+            await withCheckedContinuation { permissionRequestContinuation = $0 }
+        }
+        if let permissionRequestError { throw permissionRequestError }
+        return CUAPermissionRequestResult(
+            permission: permission == .accessibility
+                ? "accessibility" : "screen_recording",
+            granted: permissionsResult.isGranted(permission),
+            permissions: permissionsResult
+        )
+    }
+
+    func resumePermissionRequest() {
+        permissionRequestContinuation?.resume()
+        permissionRequestContinuation = nil
+    }
+
+    func resumePermissions() {
+        permissionsContinuation?.resume()
+        permissionsContinuation = nil
     }
 
     func events(runID: String, after: Int) async throws -> CUARunView {
@@ -193,6 +232,16 @@ private actor WindowDiscoveryRaceAPI: CUAAPI {
     }
     func permissions() async throws -> CUAPermissionStatus {
         CUAPermissionStatus(accessibility: true, screenRecording: true)
+    }
+    func requestPermission(
+        _ permission: MacAutomationPermission
+    ) async throws -> CUAPermissionRequestResult {
+        CUAPermissionRequestResult(
+            permission: "accessibility", granted: true,
+            permissions: CUAPermissionStatus(
+                accessibility: true, screenRecording: true
+            )
+        )
     }
     func events(runID: String, after: Int) async throws -> CUARunView {
         CUARunView(
@@ -1290,6 +1339,100 @@ struct CUAViewModelTests {
         #expect(viewModel.executorPermissions?.accessibility == true)
         #expect(viewModel.executorPermissions?.screenRecording == false)
         #expect(viewModel.executorPermissions?.isReady == false)
+        #expect(viewModel.supportsPermissionRequest)
+    }
+
+    @Test("Permission request is explicit, capability gated, and refreshed")
+    func permissionRequestUsesHelperAndRefreshes() async {
+        let api = MockAgentAPI()
+        api.permissionsResult = CUAPermissionStatus(
+            accessibility: false, screenRecording: true
+        )
+        let viewModel = CUAViewModel(api: api)
+
+        await viewModel.loadPermissions()
+        #expect(api.requestedPermissions.isEmpty)
+        let readsBeforeClick = api.permissionsCalls
+
+        await viewModel.requestPermission(.accessibility)
+        #expect(api.requestedPermissions == [.accessibility])
+        #expect(api.permissionsCalls == readsBeforeClick + 1)
+        #expect(viewModel.executorPermissions?.accessibility == false)
+        #expect(viewModel.permissionRequestMessage?.contains("still shows") == true)
+    }
+
+    @Test("Unsupported servers never receive a permission request")
+    func permissionRequestRequiresCapability() async {
+        let api = MockAgentAPI()
+        api.permissionRequestSupported = false
+        let viewModel = CUAViewModel(api: api)
+
+        await viewModel.loadPermissions()
+        await viewModel.requestPermission(.screenRecording)
+
+        #expect(!viewModel.supportsPermissionRequest)
+        #expect(api.requestedPermissions.isEmpty)
+    }
+
+    @Test("Permission request errors still refresh helper status")
+    func permissionRequestFailureRefreshes() async {
+        let api = MockAgentAPI()
+        api.permissionsResult = CUAPermissionStatus(
+            accessibility: true, screenRecording: false
+        )
+        api.permissionRequestError = MockAgentAPI.Failure.requested
+        let viewModel = CUAViewModel(api: api)
+
+        await viewModel.loadPermissions()
+        let readsBeforeClick = api.permissionsCalls
+        await viewModel.requestPermission(.screenRecording)
+
+        #expect(api.requestedPermissions == [.screenRecording])
+        #expect(api.permissionsCalls == readsBeforeClick + 1)
+        #expect(viewModel.executorPermissions?.screenRecording == false)
+        #expect(viewModel.permissionRequestMessage != nil)
+    }
+
+    @Test("Detached session ignores a late permission load")
+    func detachedSessionIgnoresLatePermissionLoad() async {
+        let api = MockAgentAPI()
+        api.permissionsResult = CUAPermissionStatus(
+            accessibility: true, screenRecording: true
+        )
+        api.suspendPermissions = true
+        let viewModel = CUAViewModel(api: api)
+
+        let load = Task { await viewModel.loadPermissions() }
+        while api.permissionsContinuation == nil { await Task.yield() }
+        viewModel.detachFromSession()
+        api.resumePermissions()
+        await load.value
+
+        #expect(viewModel.executorPermissions == nil)
+        #expect(!viewModel.supportsPermissionRequest)
+        #expect(viewModel.permissionRequestMessage == nil)
+        #expect(viewModel.permissionRequestInFlight == nil)
+    }
+
+    @Test("Detached session stops a delayed permission request before refresh")
+    func detachedSessionStopsLatePermissionRequest() async {
+        let api = MockAgentAPI()
+        let viewModel = CUAViewModel(api: api)
+        await viewModel.loadPermissions()
+        let readsBeforeRequest = api.permissionsCalls
+        api.suspendPermissionRequest = true
+
+        let request = Task { await viewModel.requestPermission(.accessibility) }
+        while api.permissionRequestContinuation == nil { await Task.yield() }
+        viewModel.detachFromSession()
+        api.resumePermissionRequest()
+        await request.value
+
+        #expect(api.permissionsCalls == readsBeforeRequest)
+        #expect(viewModel.executorPermissions == nil)
+        #expect(!viewModel.supportsPermissionRequest)
+        #expect(viewModel.permissionRequestMessage == nil)
+        #expect(viewModel.permissionRequestInFlight == nil)
     }
 
     @Test("Terminal failure surfaces the reason")
@@ -1707,6 +1850,31 @@ struct CUAClientTests {
         #expect(status.accessibility)
         #expect(status.screenRecording == false)
         #expect(!status.isReady)
+    }
+
+    @Test("Permission request sends the authenticated helper contract")
+    func permissionRequestContract() async throws {
+        RecordingURLProtocol.stubResponse(
+            path: "/v1/cua/permissions/request",
+            body: Data(
+                #"{"permission":"screen_recording","granted":false,"permissions":{"accessibility":true,"screen_recording":false}}"#.utf8
+            )
+        )
+
+        let result = try await makeClient().requestPermission(.screenRecording)
+        let captured = try #require(
+            RecordingURLProtocol.captured["/v1/cua/permissions/request"]
+        )
+        let json = try #require(
+            JSONSerialization.jsonObject(with: captured.body) as? [String: Any]
+        )
+
+        #expect(captured.request.httpMethod == "POST")
+        #expect(captured.request.value(forHTTPHeaderField: "Authorization") == "Bearer tok")
+        #expect(json["permission"] as? String == "screen_recording")
+        #expect(json.count == 1)
+        #expect(!result.granted)
+        #expect(result.permissions.accessibility)
     }
 
     @Test("HTTP errors surface as typed failures")

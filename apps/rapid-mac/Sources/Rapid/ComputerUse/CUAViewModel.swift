@@ -12,6 +12,9 @@ protocol CUAAPI: Sendable {
     func create(_ request: CUARunRequest) async throws -> String
     func run(clientRequestID: String) async throws -> CUARunCreated
     func permissions() async throws -> CUAPermissionStatus
+    func requestPermission(
+        _ permission: MacAutomationPermission
+    ) async throws -> CUAPermissionRequestResult
     func events(runID: String, after: Int) async throws -> CUARunView
     func approve(runID: String, gateID: String) async throws
     func cancel(runID: String) async throws
@@ -22,11 +25,13 @@ struct CUACapabilities: Codable, Equatable, Sendable {
         var idempotentRunCreate: Bool
         var multiTargetRuns: Bool? = nil
         var switchTarget: Bool? = nil
+        var permissionRequest: Bool? = nil
 
         enum CodingKeys: String, CodingKey {
             case idempotentRunCreate = "idempotent_run_create"
             case multiTargetRuns = "multi_target_runs"
             case switchTarget = "switch_target"
+            case permissionRequest = "permission_request"
         }
     }
 
@@ -93,6 +98,19 @@ struct CUAPermissionStatus: Codable, Equatable, Sendable {
     }
 
     var isReady: Bool { accessibility && screenRecording == true }
+
+    func isGranted(_ permission: MacAutomationPermission) -> Bool {
+        switch permission {
+        case .accessibility: accessibility
+        case .screenRecording: screenRecording == true
+        }
+    }
+}
+
+struct CUAPermissionRequestResult: Codable, Equatable, Sendable {
+    var permission: String
+    var granted: Bool
+    var permissions: CUAPermissionStatus
 }
 
 struct CUAProgressPresentation: Equatable, Sendable {
@@ -164,6 +182,9 @@ final class CUAViewModel: ObservableObject {
     @Published var pendingGateReason: String?
     @Published var pendingApproval: CUAPendingApproval?
     @Published var executorPermissions: CUAPermissionStatus?
+    @Published private(set) var supportsPermissionRequest = false
+    @Published private(set) var permissionRequestInFlight: MacAutomationPermission?
+    @Published var permissionRequestMessage: String?
     @Published var actionError: String?
     @Published private(set) var runContext: CUARunContext?
     @Published var appOptions: [CUAAppOption] = []
@@ -366,7 +387,60 @@ final class CUAViewModel: ObservableObject {
     }
 
     func loadPermissions() async {
-        executorPermissions = try? await api.permissions()
+        guard !isSessionDetached else { return }
+        let generation = lifecycleGeneration
+        async let capabilitiesRequest = try? api.capabilities()
+        async let permissionsRequest = try? api.permissions()
+        let (capabilities, permissions) = await (
+            capabilitiesRequest, permissionsRequest
+        )
+        guard generation == lifecycleGeneration, !isSessionDetached else { return }
+        supportsPermissionRequest = capabilities?.features.permissionRequest == true
+        executorPermissions = permissions
+    }
+
+    func requestPermission(_ permission: MacAutomationPermission) async {
+        guard !isSessionDetached, supportsPermissionRequest,
+              permissionRequestInFlight == nil
+        else { return }
+        let generation = lifecycleGeneration
+        permissionRequestInFlight = permission
+        permissionRequestMessage = nil
+        defer {
+            if generation == lifecycleGeneration, !isSessionDetached {
+                permissionRequestInFlight = nil
+            }
+        }
+
+        var requestError: Error?
+        do {
+            _ = try await api.requestPermission(permission)
+        } catch {
+            requestError = error
+        }
+        guard generation == lifecycleGeneration, !isSessionDetached else { return }
+
+        // The prompt response can race the TCC database update. Readiness is
+        // always replaced from a fresh helper-owned GET, including after an
+        // error or a normal user denial.
+        let refreshedPermissions: CUAPermissionStatus
+        do {
+            refreshedPermissions = try await api.permissions()
+        } catch {
+            guard generation == lifecycleGeneration, !isSessionDetached else { return }
+            permissionRequestMessage = requestError.map(Self.describe)
+                ?? "Rapid Computer Use could not refresh its permission status. Try Refresh."
+            return
+        }
+        guard generation == lifecycleGeneration, !isSessionDetached else { return }
+        executorPermissions = refreshedPermissions
+
+        if let requestError {
+            permissionRequestMessage = Self.describe(requestError)
+        } else if executorPermissions?.isGranted(permission) != true {
+            permissionRequestMessage =
+                "macOS still shows \(permission.title) as not allowed for Rapid Computer Use. Review it in System Settings, then refresh."
+        }
     }
 
     func loadTargets() async {
@@ -1073,6 +1147,9 @@ final class CUAViewModel: ObservableObject {
         actionError = nil
         showingPollError = false
         executorPermissions = nil
+        supportsPermissionRequest = false
+        permissionRequestInFlight = nil
+        permissionRequestMessage = nil
         targetDiscoveryGeneration += 1
         selectedPID = nil
         selectedWindowID = nil
@@ -1358,6 +1435,12 @@ private struct NullCUAAPI: CUAAPI {
     }
 
     func permissions() async throws -> CUAPermissionStatus {
+        throw Unavailable()
+    }
+
+    func requestPermission(
+        _ permission: MacAutomationPermission
+    ) async throws -> CUAPermissionRequestResult {
         throw Unavailable()
     }
 

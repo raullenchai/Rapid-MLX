@@ -150,7 +150,6 @@ struct CUAFailurePresentation: Equatable {
 struct CUASection: View {
     @ObservedObject var viewModel: CUAViewModel
     @Environment(\.scenePhase) private var scenePhase
-    @State private var permissionSnapshot = MacAutomationPermissions.snapshot()
     @State private var brainDraftName = ""
     @State private var brainDraftURL = ""
     @State private var brainDraftModel = ""
@@ -171,9 +170,7 @@ struct CUASection: View {
                 }
             }
 
-            if viewModel.executorPermissions?.isReady != true
-                || !permissionSnapshot.isReadyForComputerUse
-            {
+            if viewModel.executorPermissions?.isReady != true {
                 permissionReadiness
             }
 
@@ -296,11 +293,9 @@ struct CUASection: View {
             await viewModel.loadPlanners()
             await viewModel.loadPermissions()
             await viewModel.loadTargets()
-            permissionSnapshot = MacAutomationPermissions.snapshot()
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
-                permissionSnapshot = MacAutomationPermissions.snapshot()
                 if !viewModel.isSessionDetached {
                     Task { await viewModel.loadPermissions() }
                 }
@@ -546,22 +541,41 @@ struct CUASection: View {
             Text(permissionReadinessMessage)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            HStack {
+            HStack(spacing: 8) {
                 ForEach(permissionSettingsLinks, id: \.rawValue) { permission in
-                    Button("Open \(permission.title) Settings") {
+                    if viewModel.supportsPermissionRequest {
+                        Button(
+                            viewModel.permissionRequestInFlight == permission
+                                ? "Requesting…" : "Allow \(permission.title)…"
+                        ) {
+                            Task { await viewModel.requestPermission(permission) }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(viewModel.permissionRequestInFlight != nil)
+                        .accessibilityIdentifier(
+                            "ComputerUse.Agent.Permission.Request.\(permission.rawValue)"
+                        )
+                    }
+                    Button("Open Settings") {
                         MacAutomationPermissions.openSystemPrivacyPane(for: permission)
                     }
                     .buttonStyle(.bordered)
+                    .help("Open \(permission.title) in System Settings")
                     .accessibilityIdentifier(
-                        "ComputerUse.Agent.Permission.\(permission.rawValue)"
+                        "ComputerUse.Agent.Permission.Settings.\(permission.rawValue)"
                     )
                 }
                 Button("Refresh") {
-                    permissionSnapshot = MacAutomationPermissions.snapshot()
                     Task { await viewModel.loadPermissions() }
                 }
                 .buttonStyle(.borderless)
                 .accessibilityIdentifier("ComputerUse.Agent.Permission.Refresh")
+            }
+            if let message = viewModel.permissionRequestMessage {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("ComputerUse.Agent.Permission.Message")
             }
         }
         .padding(10)
@@ -573,18 +587,23 @@ struct CUASection: View {
     private var permissionReadinessMessage: String {
         if let permissions = viewModel.executorPermissions {
             if permissions.isReady {
-                return "The local executor has Screen Recording and Accessibility access. The app check below may differ because macOS grants access per process."
+                return "Rapid Computer Use has Screen Recording and Accessibility access."
             }
-            return "The local executor needs Screen Recording and Accessibility access. Open System Settings, then refresh the server check."
+            if viewModel.supportsPermissionRequest {
+                return "Rapid Computer Use needs the permissions below. Each Allow button asks macOS on behalf of that helper."
+            }
+            return "Rapid Computer Use needs the permissions below. Open System Settings, allow the Rapid Computer Use helper, then refresh."
         }
-        return "The server could not report its permission status. The settings links use this app's status as a guide; the executor will check its own access when the task starts."
+        return "Rapid Computer Use could not report its permission status. Open System Settings and review the Rapid Computer Use helper, then refresh."
     }
 
     private var permissionSettingsLinks: [MacAutomationPermission] {
-        if viewModel.executorPermissions?.isReady != true {
+        guard let permissions = viewModel.executorPermissions else {
             return MacAutomationPermission.allCases
         }
-        return permissionSnapshot.missingForComputerUse
+        return MacAutomationPermission.allCases.filter {
+            !permissions.isGranted($0)
+        }
     }
 
     private var activeProgress: some View {

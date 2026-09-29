@@ -195,6 +195,10 @@ private struct CUAApprovalRequest: Codable {
     }
 }
 
+private struct CUAPermissionRequest: Codable {
+    let permission: String
+}
+
 struct CUAPendingGate: Codable, Equatable, Sendable {
     var gateID: String
     var reason: String?
@@ -478,6 +482,24 @@ struct CUAClient: CUAAPI, Sendable {
     func permissions() async throws -> CUAPermissionStatus {
         let (data, response) = try await send(path: "/v1/cua/permissions", method: "GET")
         return try decode(CUAPermissionStatus.self, from: data, response: response)
+    }
+
+    func requestPermission(
+        _ permission: MacAutomationPermission
+    ) async throws -> CUAPermissionRequestResult {
+        let wirePermission = switch permission {
+        case .accessibility: "accessibility"
+        case .screenRecording: "screen_recording"
+        }
+        let body = try JSONEncoder().encode(
+            CUAPermissionRequest(permission: wirePermission)
+        )
+        let (data, response) = try await send(
+            path: "/v1/cua/permissions/request", method: "POST", body: body
+        )
+        return try decode(
+            CUAPermissionRequestResult.self, from: data, response: response
+        )
     }
 
     func events(runID: String, after: Int) async throws -> CUARunView {
