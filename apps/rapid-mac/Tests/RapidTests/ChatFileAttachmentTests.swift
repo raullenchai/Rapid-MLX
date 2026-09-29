@@ -121,6 +121,35 @@ struct ChatFileAttachmentTests {
         }
     }
 
+    @Test("Blank rendered PDF pages bypass Vision; nonblank pages still use it")
+    func blankPageSkipsVision() throws {
+        let blankView = NSView(frame: NSRect(x: 0, y: 0, width: 100, height: 100))
+        let blankDocument = try #require(PDFDocument(
+            data: blankView.dataWithPDF(inside: blankView.bounds)
+        ))
+        let blankPage = try #require(blankDocument.page(at: 0))
+        var requestCount = 0
+        let blankText = PDFTextRecognizer.recognize(page: blankPage) { _, _ in
+            requestCount += 1
+            return "unexpected Vision result"
+        }
+        #expect(blankText == "")
+        #expect(requestCount == 0)
+
+        let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 200, height: 100))
+        textView.string = "Visible ink"
+        let textDocument = try #require(PDFDocument(
+            data: textView.dataWithPDF(inside: textView.bounds)
+        ))
+        let textPage = try #require(textDocument.page(at: 0))
+        let recognizedText = PDFTextRecognizer.recognize(page: textPage) { _, _ in
+            requestCount += 1
+            return "vision path"
+        }
+        #expect(recognizedText == "vision path")
+        #expect(requestCount == 1)
+    }
+
     @Test("Blank front matter does not hide readable scanned pages", .timeLimit(.minutes(1)))
     func blankLeadingScanPagesAreProbed() throws {
         let url = try scannedPDFWithBlankFrontMatter()
