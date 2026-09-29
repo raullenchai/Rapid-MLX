@@ -336,9 +336,7 @@ def test_screenshot_requires_png_bytes_from_bound_window(
 ):
     client, backend = observation_client
     monkeypatch.setenv("RAPID_MLX_CUA_EXPOSE_SCREENSHOTS", "1")
-    monkeypatch.setattr(
-        backend, "get_app_state", lambda *args, **kwargs: _snapshot()
-    )
+    monkeypatch.setattr(backend, "get_app_state", lambda *args, **kwargs: _snapshot())
     response = client.post(
         "/v1/cua/observations", headers=AUTH, json={**REQUEST, "screenshot": True}
     )

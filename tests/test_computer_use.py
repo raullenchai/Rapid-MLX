@@ -4466,9 +4466,7 @@ def test_ax_selector_rejects_stale_pid_and_unrelated_name(monkeypatch):
     with pytest.raises(SystemExit, match="not found"):
         ax_driver._app_element("Target App", expected_pid=42)
 
-    monkeypatch.setattr(
-        ax_driver, "_running_applications", lambda: [unrelated_name]
-    )
+    monkeypatch.setattr(ax_driver, "_running_applications", lambda: [unrelated_name])
     with pytest.raises(SystemExit, match="not found"):
         ax_driver._app_element("Target App")
 

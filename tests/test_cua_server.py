@@ -1589,31 +1589,84 @@ def test_loop_gate_callback_wiring(client, tmp_path):
     [
         ({"initial_target_id": "orphan"}, "initial_target_id requires targets"),
         (
-            {"targets": [
-                {"target_id": "same", "app": "pid:42", "pid": 42, "window_id": "cg:1"},
-                {"target_id": "same", "app": "pid:43", "pid": 43, "window_id": "cg:2"},
-            ], "initial_target_id": "same"},
+            {
+                "targets": [
+                    {
+                        "target_id": "same",
+                        "app": "pid:42",
+                        "pid": 42,
+                        "window_id": "cg:1",
+                    },
+                    {
+                        "target_id": "same",
+                        "app": "pid:43",
+                        "pid": 43,
+                        "window_id": "cg:2",
+                    },
+                ],
+                "initial_target_id": "same",
+            },
             "target_id values must be unique",
         ),
         (
-            {"targets": [
-                {"target_id": "one", "app": "pid:42", "pid": 42, "window_id": "cg:1"},
-                {"target_id": "two", "app": "pid:42", "pid": 42, "window_id": "cg:1"},
-            ], "initial_target_id": "one"},
+            {
+                "targets": [
+                    {
+                        "target_id": "one",
+                        "app": "pid:42",
+                        "pid": 42,
+                        "window_id": "cg:1",
+                    },
+                    {
+                        "target_id": "two",
+                        "app": "pid:42",
+                        "pid": 42,
+                        "window_id": "cg:1",
+                    },
+                ],
+                "initial_target_id": "one",
+            },
             "distinct process window",
         ),
         (
-            {"targets": [
-                {"target_id": "one", "app": "pid:42", "pid": 42, "window_id": "cg:1"},
-                {"target_id": "two", "app": "pid:43", "pid": 43, "window_id": "cg:2"},
-            ], "initial_target_id": "missing"},
+            {
+                "targets": [
+                    {
+                        "target_id": "one",
+                        "app": "pid:42",
+                        "pid": 42,
+                        "window_id": "cg:1",
+                    },
+                    {
+                        "target_id": "two",
+                        "app": "pid:43",
+                        "pid": 43,
+                        "window_id": "cg:2",
+                    },
+                ],
+                "initial_target_id": "missing",
+            },
             "initial_target_id must name",
         ),
         (
-            {"app": "pid:43", "targets": [
-                {"target_id": "one", "app": "pid:42", "pid": 42, "window_id": "cg:1"},
-                {"target_id": "two", "app": "pid:43", "pid": 43, "window_id": "cg:2"},
-            ], "initial_target_id": "one"},
+            {
+                "app": "pid:43",
+                "targets": [
+                    {
+                        "target_id": "one",
+                        "app": "pid:42",
+                        "pid": 42,
+                        "window_id": "cg:1",
+                    },
+                    {
+                        "target_id": "two",
+                        "app": "pid:43",
+                        "pid": 43,
+                        "window_id": "cg:2",
+                    },
+                ],
+                "initial_target_id": "one",
+            },
             "app must match the initial",
         ),
     ],
@@ -1764,9 +1817,7 @@ def test_multi_target_freeze_rejects_changed_pid_identity(client, monkeypatch):
     assert client.fresh_service.list_runs() == []
 
 
-def test_service_shutdown_during_window_freeze_does_not_commit_run(
-    client, monkeypatch
-):
+def test_service_shutdown_during_window_freeze_does_not_commit_run(client, monkeypatch):
     from rapid_mlx.computer_use import backend as backend_mod
 
     def shutdown_during_validation(app, window_id):
