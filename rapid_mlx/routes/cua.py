@@ -706,6 +706,38 @@ async def resolve_targets(request: CUATargetResolveRequest) -> CUATargetResoluti
         {"catalog_id": item["catalog_id"], "app_name": item["app_name"]}
         for item in app_catalog
     ]
+    try:
+        running_apps = await run_in_threadpool(_backend().list_apps)
+    except (ComputerUseError, ImportError):
+        return CUATargetResolution(
+            status="unresolved",
+            reason="Rapid could not verify the open apps. Try again.",
+        )
+    running_catalog = [
+        {
+            "catalog_id": f"p{int(item['pid'])}",
+            "app_name": str(item.get("name") or "")[:120],
+            "pid": int(item["pid"]),
+        }
+        for item in running_apps
+        if item.get("pid") is not None
+    ]
+    explicitly_named_running = _explicit_app_matches(request.goal, running_catalog)
+    catalog_pids = set(windows_by_pid)
+    missing_explicit = [
+        item
+        for item in running_catalog
+        if item["catalog_id"] in explicitly_named_running
+        and item["pid"] not in catalog_pids
+    ]
+    if missing_explicit:
+        app_names = ", ".join(
+            item["app_name"] or "the named app" for item in missing_explicit
+        )
+        return CUATargetResolution(
+            status="unresolved",
+            reason=f"Rapid could not see an eligible item in {app_names}. Bring the app forward and try again.",
+        )
     explicit = _explicit_app_matches(request.goal, app_catalog)
     selected_ids: list[str]
     diagnostic = ""
