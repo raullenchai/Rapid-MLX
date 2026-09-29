@@ -916,19 +916,27 @@ def _read_value(live_element: object) -> str | None:
 
 
 def _is_selected_finder_row_under_focused_outline(snapshot: dict, live: object) -> bool:
-    """Allow Enter to start rename only for Finder's exact selected row."""
+    """Allow Enter only for Finder's exact selected item or inline editor."""
     if str(snapshot.get("app", {}).get("name", "")).casefold() != "finder":
-        return False
-    if (
-        ax_driver._get(live, "AXRole") != "AXRow"
-        or ax_driver._get(live, "AXSelected") is not True
-    ):
         return False
     focused = _focused_ax_element(snapshot["app"])
     if focused is None or ax_driver._get(focused, "AXRole") != "AXOutline":
         return False
+    role = ax_driver._get(live, "AXRole")
     parent = ax_driver._get(live, "AXParent")
-    return parent == focused
+    if role == "AXRow":
+        return ax_driver._get(live, "AXSelected") is True and parent == focused
+    if role != "AXTextField" or ax_driver._get(live, "AXSelected") is not True:
+        return False
+    cell = parent
+    row = ax_driver._get(cell, "AXParent") if cell is not None else None
+    return (
+        ax_driver._get(cell, "AXRole") == "AXCell"
+        and ax_driver._get(cell, "AXSelected") is True
+        and ax_driver._get(row, "AXRole") == "AXRow"
+        and ax_driver._get(row, "AXSelected") is True
+        and ax_driver._get(row, "AXParent") == focused
+    )
 
 
 def inspect_focused_element(

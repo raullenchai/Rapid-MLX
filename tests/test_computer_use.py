@@ -3199,6 +3199,57 @@ def test_finder_selected_row_under_focused_outline_is_valid_keyboard_target(
     )
 
 
+def test_finder_selected_inline_editor_under_focused_outline_is_valid(monkeypatch):
+    snapshot = _finder_rename_snapshot()
+    editor, cell, row, outline = (object() for _ in range(4))
+    monkeypatch.setattr(backend, "_live_element", lambda *a, **k: editor)
+    monkeypatch.setattr(backend, "_focused_ax_element", lambda app: outline)
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_get",
+        lambda element, attr: {
+            editor: {
+                "AXRole": "AXTextField",
+                "AXSelected": True,
+                "AXParent": cell,
+            },
+            cell: {"AXRole": "AXCell", "AXSelected": True, "AXParent": row},
+            row: {"AXRole": "AXRow", "AXSelected": True, "AXParent": outline},
+            outline: {"AXRole": "AXOutline"},
+        }.get(element, {}).get(attr),
+    )
+
+    assert (
+        backend.inspect_focused_element(snapshot, 0, allow_selected_finder_row=True)
+        == snapshot["elements"][0]
+    )
+
+
+def test_finder_dialog_text_field_is_not_valid_rename_target(monkeypatch):
+    snapshot = _finder_rename_snapshot()
+    editor, group, outline = object(), object(), object()
+    monkeypatch.setattr(backend, "_live_element", lambda *a, **k: editor)
+    monkeypatch.setattr(backend, "_focused_ax_element", lambda app: outline)
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_get",
+        lambda element, attr: {
+            editor: {
+                "AXRole": "AXTextField",
+                "AXSelected": True,
+                "AXParent": group,
+            },
+            group: {"AXRole": "AXGroup", "AXSelected": True},
+            outline: {"AXRole": "AXOutline"},
+        }.get(element, {}).get(attr),
+    )
+
+    with pytest.raises(errors.ComputerUseError, match="exact focused"):
+        backend.inspect_focused_element(
+            snapshot, 0, allow_selected_finder_row=True
+        )
+
+
 @pytest.mark.parametrize("selected", [False, None])
 def test_finder_unselected_row_under_focused_outline_is_rejected(monkeypatch, selected):
     snapshot = _finder_rename_snapshot()

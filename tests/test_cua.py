@@ -353,16 +353,15 @@ def test_ambiguous_focused_activation_requires_approval(label):
 
 
 @pytest.mark.parametrize(
-    ("app_name", "role", "label"),
+    ("app_name", "role", "parent_role", "label"),
     [
-        ("Safari", "AXSearchField", "Search"),
-        ("TextEdit", "AXTextArea", "Body"),
-        ("Finder", "AXTextField", "Folder name"),
-        ("Finder", "AXRow", "Selected folder"),
+        ("Safari", "AXSearchField", "AXGroup", "Search"),
+        ("Finder", "AXTextField", "AXCell", "Folder name"),
+        ("Finder", "AXRow", "AXOutline", "Selected folder"),
     ],
 )
-def test_focused_input_and_finder_rename_activation_stay_ungated(
-    app_name, role, label
+def test_proven_search_and_finder_rename_activation_stay_ungated(
+    app_name, role, parent_role, label
 ):
     assert (
         gates.consequential_action(
@@ -374,10 +373,41 @@ def test_focused_input_and_finder_rename_activation_stay_ungated(
             },
             label,
             target_role=role,
+            target_parent_role=parent_role,
             app_name=app_name,
         )
         is None
     )
+
+
+@pytest.mark.parametrize(
+    ("app_name", "role", "parent_role", "label"),
+    [
+        ("Finder", "AXTextField", "AXSheet", "New Folder"),
+        ("Finder", "AXTextField", "AXGroup", "Server Address"),
+        ("Finder", "AXRow", "AXTable", "Connect"),
+        ("Mail", "AXTextField", "AXGroup", "Message"),
+        ("Messages", "AXTextArea", "AXGroup", "Message"),
+    ],
+)
+def test_dialog_and_message_input_activation_requires_approval(
+    app_name, role, parent_role, label
+):
+    requirement = gates.consequential_action(
+        {
+            "action": "press",
+            "element_index": 1,
+            "key": "Enter",
+            "step_instruction": "activate focused control",
+        },
+        label,
+        target_role=role,
+        target_parent_role=parent_role,
+        app_name=app_name,
+    )
+
+    assert requirement is not None
+    assert requirement.target == label
 
 
 @pytest.mark.parametrize("key", ["Escape", "Tab", "ArrowDown", "ArrowUp"])
@@ -3477,7 +3507,6 @@ def test_loop_unverified_ranker_success_remains_uncertain(
     from rapid_mlx.cua import loop as loop_mod
 
     monkeypatch.setattr(loop_mod, "backend", fake_backend)
-
     async def no_sleep(_seconds):
         return None
 
@@ -3915,8 +3944,30 @@ def test_finder_generic_text_field_enter_does_not_arm_rename_commit(
 
     monkeypatch.setattr(loop_mod, "backend", fake_backend)
     snapshot = {
-        "app": {"name": "Finder"},
-        "elements": [{"index": 1, "label": "Documents", "role": "AXTextField"}],
+        "app": {"name": "Finder", "pid": 42},
+        "window_id": "cg:1",
+        "window_index": 0,
+        "window": {
+            "window_id": "cg:1",
+            "title": "Finder",
+            "x": 0,
+            "y": 0,
+            "width": 500,
+            "height": 400,
+        },
+        "elements": [
+            {
+                "index": 1,
+                "label": "Documents",
+                "role": "AXTextField",
+                "x": 10,
+                "y": 10,
+                "width": 120,
+                "height": 20,
+                "center": [70, 20],
+                "source_window_id": "cg:1",
+            }
+        ],
         "tree_text": "[1] AXTextField Documents",
     }
     monkeypatch.setattr(fake_backend, "get_app_state", lambda *a, **k: dict(snapshot))
@@ -3925,8 +3976,16 @@ def test_finder_generic_text_field_enter_does_not_arm_rename_commit(
         return None
 
     monkeypatch.setattr(loop_mod.asyncio, "sleep", no_sleep)
+
+    async def approve(_reason):
+        return True
+
     runner = loop_mod.CUARun(
-        _make_config(tmp_path), "Finder", "go to Documents", tmp_path / "finder-go"
+        _make_config(tmp_path),
+        "Finder",
+        "go to Documents",
+        tmp_path / "finder-go",
+        gate=approve,
     )
     planner = _FakePlanner(
         [
@@ -3947,10 +4006,9 @@ def test_finder_generic_text_field_enter_does_not_arm_rename_commit(
     )
 
     assert asyncio.run(runner.step(planner, 1)) is None
-    assert asyncio.run(runner.step(planner, 2)) == {
-        "status": "done",
-        "summary": "Documents is visible.",
-    }
+    assert runner._last_finder_rename_verified is False
+    assert runner._last_commit_unverified is True
+    assert asyncio.run(runner.step(planner, 2)) is None
 
 
 def test_finder_disk_verified_fill_allows_done(fake_backend, tmp_path, monkeypatch):
@@ -4024,6 +4082,9 @@ def test_unverified_browser_enter_can_complete_from_fresh_observation(
     from rapid_mlx.cua import loop as loop_mod
 
     monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    snapshot = fake_backend.get_app_state("Google Chrome", screenshot=False)
+    snapshot["elements"][0]["role"] = "AXSearchField"
+    monkeypatch.setattr(fake_backend, "get_app_state", lambda *a, **k: dict(snapshot))
 
     async def no_sleep(_seconds):
         return None

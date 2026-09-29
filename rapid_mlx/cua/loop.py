@@ -834,6 +834,7 @@ class CUARun:
             plan,
             target_label,
             target_role=str(target.get("role", "")),
+            target_parent_role=str(target.get("parent_role", "")),
             app_name=str(snapshot.get("app", {}).get("name", self.app)),
         )
         if approval is not None:
