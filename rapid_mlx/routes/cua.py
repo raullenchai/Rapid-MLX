@@ -640,7 +640,7 @@ async def resolve_targets(request: CUATargetResolveRequest) -> CUATargetResoluti
     if not catalog:
         return CUATargetResolution(
             status="unresolved",
-            reason="No eligible app windows are open. Open the apps needed for the task and try again.",
+            reason="No eligible apps are open. Open the apps needed for the task and try again.",
         )
     catalog = [
         item
@@ -651,7 +651,7 @@ async def resolve_targets(request: CUATargetResolveRequest) -> CUATargetResoluti
     if not catalog:
         return CUATargetResolution(
             status="unresolved",
-            reason="No eligible app windows have a verifiable application identity. Try again.",
+            reason="Rapid could not verify the open apps. Try again.",
         )
 
     windows_by_pid: dict[int, list[dict]] = {}
@@ -726,7 +726,7 @@ async def resolve_targets(request: CUATargetResolveRequest) -> CUATargetResoluti
     ]
     if len(selected_apps) != len(selected_ids) or not 1 <= len(selected_apps) <= 3:
         return CUATargetResolution(
-            status="unresolved", reason="The proposed app windows changed. Try again."
+            status="unresolved", reason="The proposed apps changed. Try again."
         )
 
     selected: list[dict] = []
@@ -735,7 +735,7 @@ async def resolve_targets(request: CUATargetResolveRequest) -> CUATargetResoluti
         if len(candidates) != 1:
             return CUATargetResolution(
                 status="unresolved",
-                reason=f"{app['app_name']} has multiple eligible windows. Close unrelated windows or clarify the task and try again.",
+                reason=f"{app['app_name']} has multiple open items. Close unrelated items or clarify the task and try again.",
             )
         selected.append(candidates[0])
 
@@ -760,7 +760,7 @@ async def resolve_targets(request: CUATargetResolveRequest) -> CUATargetResoluti
             if not hostname:
                 return CUATargetResolution(
                     status="unresolved",
-                    reason="Rapid could not verify the website in the proposed browser window. Bring it forward and try again.",
+                    reason="Rapid could not verify the website in the proposed browser. Bring it forward and try again.",
                 )
             domain = hostname
         app_name = str(app.get("name") or "App")[:120]
@@ -797,7 +797,7 @@ async def resolve_targets(request: CUATargetResolveRequest) -> CUATargetResoluti
             options=[
                 CUATargetApprovalOption(
                     option_id="use_proposed",
-                    label="Use these windows",
+                    label="Use these apps",
                     target_ids=[target.target_id for target in targets],
                 )
             ],

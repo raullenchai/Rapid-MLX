@@ -2078,6 +2078,22 @@ final class RecordingURLProtocol: URLProtocol {
 
 @Suite(.serialized)
 struct CUATaskFirstResolutionTests {
+  private actor AutomationGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private(set) var requestedBundleID: String?
+
+    func wait(bundleID: String) async -> BrowserAutomationAuthorization {
+      requestedBundleID = bundleID
+      await withCheckedContinuation { continuation = $0 }
+      return .authorized
+    }
+
+    func release() {
+      continuation?.resume()
+      continuation = nil
+    }
+  }
+
   @MainActor
   private static func viewModel(
     api: MockAgentAPI,
@@ -2233,6 +2249,49 @@ struct CUATaskFirstResolutionTests {
     await vm.resolveAndStart()
 
     #expect(api.targetResolutionRequests.first?.allowRemoteAppDiscovery == true)
+  }
+
+  @MainActor
+  @Test func automationPreflightKeepsResolvedScopeFrozen() async {
+    let api = MockAgentAPI()
+    let safari = Self.target(domain: "example.test")
+    api.targetResolutionResult = CUATargetResolution(
+      status: "needs_approval", targets: [safari], initialTargetID: safari.targetID,
+      reason: "", approval: CUATargetApproval(
+        kind: "website_scope", prompt: "Use example.test?",
+        options: [
+          CUATargetApprovalOption(
+            optionID: "site", label: "Use this website", targetIDs: [safari.targetID]
+          )
+        ]
+      )
+    )
+    let gate = AutomationGate()
+    let vm = Self.viewModel(api: api) { await gate.wait(bundleID: $0) }
+    vm.goal = "Read the page"
+    await vm.resolveAndStart()
+
+    let approval = Task { await vm.approveResolvedTargets(optionID: "site") }
+    while await gate.requestedBundleID == nil { await Task.yield() }
+    #expect(!vm.canResolveTask)
+
+    let chrome = CUATargetProposal(
+      targetID: "target_2", app: "pid:99", pid: 99, windowID: "cg:99",
+      allowedDomain: "other.test", displayName: "Browser — other.test",
+      bundleID: "com.google.Chrome", processStartTime: 2345.6
+    )
+    api.targetResolutionResult = CUATargetResolution(
+      status: "resolved", targets: [chrome], initialTargetID: chrome.targetID,
+      reason: "", approval: nil
+    )
+    await vm.resolveAndStart()
+    #expect(api.targetResolutionRequests.count == 1)
+    #expect(api.createAttempts == 0)
+
+    await gate.release()
+    await approval.value
+    #expect(api.createAttempts == 1)
+    #expect(api.attemptedRequests.first?.bundleID == "com.apple.Safari")
   }
 }
 
