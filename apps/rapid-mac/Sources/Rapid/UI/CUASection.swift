@@ -544,7 +544,7 @@ struct CUASection: View {
                 .foregroundStyle(.secondary)
             HStack(spacing: 8) {
                 ForEach(permissionSettingsLinks, id: \.rawValue) { permission in
-                    if viewModel.supportsPermissionRequest {
+                    if viewModel.canRequestPermission(permission) {
                         Button(
                             viewModel.permissionRequestInFlight == permission
                                 ? "Requesting…" : "Allow \(permission.title)…"
@@ -588,12 +588,12 @@ struct CUASection: View {
     private var permissionReadinessMessage: String {
         if let permissions = viewModel.executorPermissions {
             if permissions.isReady {
-                return "Rapid-MLX Desktop has Screen Recording and Accessibility access for Computer Use."
+                return "Rapid-MLX Desktop has Screen Recording access, and its bundled helper has Accessibility access for Computer Use."
             }
             if viewModel.supportsPermissionRequest {
-                return "Rapid-MLX Desktop needs the permissions below for Computer Use. Each Allow button asks macOS for the current app."
+                return "Computer Use needs Screen Recording for Rapid-MLX Desktop and Accessibility for its bundled helper. Each Allow button asks macOS for the app that uses that permission."
             }
-            return "Rapid-MLX Desktop needs the permissions below for Computer Use. Allow this app in System Settings, then refresh."
+            return "Computer Use needs Screen Recording for Rapid-MLX Desktop and Accessibility for its bundled helper. Allow each app in System Settings, then refresh."
         }
         return "Rapid Computer Use could not report its permission status. Review Rapid-MLX Desktop in System Settings, then refresh."
     }

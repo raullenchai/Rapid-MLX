@@ -203,6 +203,7 @@ final class CUAViewModel: ObservableObject {
     @Published private(set) var browserAutomationRecoveryRequired = false
 
     private let api: CUAAPI
+    private let mainAppScreenRecordingRequest: () -> Bool
     private var runID: String?
     private var pollTask: Task<Void, Never>?
     private var showingPollError = false
@@ -219,9 +220,20 @@ final class CUAViewModel: ObservableObject {
     private var pendingCreateRecovery: CUARunRequest?
     private var maxRunTargets = 3
 
-    init(api: CUAAPI?, pollIntervalNanos: UInt64 = 700_000_000) {
+    init(
+        api: CUAAPI?,
+        pollIntervalNanos: UInt64 = 700_000_000,
+        mainAppScreenRecordingRequest: @escaping () -> Bool = {
+            MacAutomationPermissions.request(.screenRecording)
+        }
+    ) {
         self.api = api ?? NullCUAAPI()
         self.pollIntervalNanos = pollIntervalNanos
+        self.mainAppScreenRecordingRequest = mainAppScreenRecordingRequest
+    }
+
+    func canRequestPermission(_ permission: MacAutomationPermission) -> Bool {
+        permission == .screenRecording || supportsPermissionRequest
     }
 
     var canStart: Bool {
@@ -396,7 +408,7 @@ final class CUAViewModel: ObservableObject {
     }
 
     func requestPermission(_ permission: MacAutomationPermission) async {
-        guard !isSessionDetached, supportsPermissionRequest,
+        guard !isSessionDetached, canRequestPermission(permission),
               permissionRequestInFlight == nil
         else { return }
         let generation = lifecycleGeneration
@@ -409,10 +421,18 @@ final class CUAViewModel: ObservableObject {
         }
 
         var requestError: Error?
-        do {
-            _ = try await api.requestPermission(permission)
-        } catch {
-            requestError = error
+        switch permission {
+        case .screenRecording:
+            // macOS attributes Screen Recording to the responsible foreground
+            // app, so the Desktop process must issue this explicit user-click
+            // request. The helper remains authoritative when status refreshes.
+            _ = mainAppScreenRecordingRequest()
+        case .accessibility:
+            do {
+                _ = try await api.requestPermission(permission)
+            } catch {
+                requestError = error
+            }
         }
         guard generation == lifecycleGeneration, !isSessionDetached else { return }
 
@@ -434,8 +454,11 @@ final class CUAViewModel: ObservableObject {
         if let requestError {
             permissionRequestMessage = Self.describe(requestError)
         } else if executorPermissions?.isGranted(permission) != true {
+            let owner = permission == .screenRecording
+                ? "Rapid-MLX Desktop"
+                : "the Rapid Computer Use helper"
             permissionRequestMessage =
-                "macOS still shows \(permission.title) as not allowed for Rapid-MLX Desktop. Review it in System Settings, then refresh."
+                "macOS still shows \(permission.title) as not allowed for \(owner). Review it in System Settings, then refresh."
         }
     }
 
