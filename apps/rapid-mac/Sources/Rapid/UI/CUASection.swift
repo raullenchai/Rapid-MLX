@@ -416,6 +416,7 @@ struct CUASection: View {
         .font(.callout)
             HStack {
         Button("Cancel") { viewModel.cancelTargetResolution() }
+          .accessibilityIdentifier("ComputerUse.Agent.ScopeCancel")
                 Spacer()
         ForEach(approval.options) { option in
           Button(option.label) {
@@ -482,6 +483,7 @@ struct CUASection: View {
               modelPendingDeletion = model
                                 }
             .accessibilityLabel("Remove \(model.displayName)")
+            .accessibilityIdentifier("ComputerUse.Agent.ModelRemove")
           } else {
             Text("Built in")
               .font(.caption)
@@ -497,9 +499,11 @@ struct CUASection: View {
           addModelAfterManaging = true
           showManageModels = false
         }
+        .accessibilityIdentifier("ComputerUse.Agent.ModelsAdd")
         Spacer()
         Button("Done") { showManageModels = false }
           .keyboardShortcut(.defaultAction)
+          .accessibilityIdentifier("ComputerUse.Agent.ModelsDone")
             }
             }
     .padding(20)
@@ -519,7 +523,9 @@ struct CUASection: View {
           modelPendingDeletion = nil
         }
       }
+      .accessibilityIdentifier("ComputerUse.Agent.ModelRemoveConfirm")
       Button("Cancel", role: .cancel) { modelPendingDeletion = nil }
+        .accessibilityIdentifier("ComputerUse.Agent.ModelRemoveCancel")
     } message: { model in
       Text(
         "Rapid will remove the saved endpoint for \(model.displayName). You can add it again later."
