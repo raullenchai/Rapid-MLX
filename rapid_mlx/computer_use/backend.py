@@ -948,8 +948,9 @@ def inspect_focused_element(
     live = _live_element(snapshot, element_index, validate_point=False)
     focused = _focused_ax_element(snapshot["app"])
     exact_focus = focused is not None and live == focused
-    finder_row = allow_selected_finder_row and _is_selected_finder_row_under_focused_outline(
-        snapshot, live
+    finder_row = (
+        allow_selected_finder_row
+        and _is_selected_finder_row_under_focused_outline(snapshot, live)
     )
     if not exact_focus and not finder_row:
         raise ComputerUseError(
@@ -2099,10 +2100,14 @@ def press_key(
             element_index,
             allow_focused_editable_enter=normalized == "enter",
         )
-        if normalized in {"enter", "return", "space"}:
-            # Keyboard activation follows focus, not the serialized element
-            # index. Bind again after all preparation and immediately before
-            # dispatch so an in-window focus change cannot redirect the key.
+        if (
+            normalized in {"enter", "return", "space"}
+            and expected_snapshot is not None
+            and element_index is not None
+        ):
+            # Planner-bound keyboard activation follows focus, not the
+            # serialized index. Re-bind immediately before dispatch. The
+            # user-directed press-key CLI has no indexed planner target.
             inspect_focused_element(
                 snapshot,
                 element_index,
