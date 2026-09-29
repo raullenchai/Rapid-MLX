@@ -123,6 +123,7 @@ struct CUARunContext: Equatable, Sendable {
     let appSelector: String
     let windowID: String
     let targetDisplayName: String
+    let allowedDomain: String
     let maxSteps: Int
     let targets: [CUASelectedTarget]
     let initialTargetID: String?
@@ -130,7 +131,8 @@ struct CUARunContext: Equatable, Sendable {
     init(
         goal: String, plannerName: String, plannerDisplayName: String,
         appSelector: String, windowID: String, targetDisplayName: String,
-        maxSteps: Int, targets: [CUASelectedTarget] = [], initialTargetID: String? = nil
+        allowedDomain: String = "", maxSteps: Int, targets: [CUASelectedTarget] = [],
+        initialTargetID: String? = nil
     ) {
         self.goal = goal
         self.plannerName = plannerName
@@ -138,6 +140,7 @@ struct CUARunContext: Equatable, Sendable {
         self.appSelector = appSelector
         self.windowID = windowID
         self.targetDisplayName = targetDisplayName
+        self.allowedDomain = allowedDomain
         self.maxSteps = maxSteps
         self.targets = targets
         self.initialTargetID = initialTargetID
@@ -202,11 +205,15 @@ final class CUAViewModel: ObservableObject {
         let targetReady = selectedTargets.isEmpty
             ? (selectedApp != nil && selectedWindow != nil)
             : selectedTargets.count >= 2
+        let legacyDomainReady = !selectedTargets.isEmpty
+            || selectedApp?.isBrowser != true
+            || selectedBrowserDomainError == nil
         return !isSessionDetached
             && !goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !phase.isBusy
             && runContext == nil
             && targetReady
+            && legacyDomainReady
             && openURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
@@ -562,6 +569,9 @@ final class CUAViewModel: ObservableObject {
             appSelector: "pid:\(app.pid)",
             windowID: window.windowID,
             targetDisplayName: "\(window.displayName) in \(app.displayName)",
+            allowedDomain: frozenTargets.isEmpty && app.isBrowser
+                ? Self.normalizedDomain(allowedDomain)
+                : "",
             maxSteps: maxSteps,
             targets: frozenTargets,
             initialTargetID: frozenTargets.first?.targetID
@@ -630,7 +640,7 @@ final class CUAViewModel: ObservableObject {
             goal: context.goal,
             planner: context.plannerName,
             openURL: openURL.trimmingCharacters(in: .whitespacesAndNewlines),
-            allowedDomain: allowedDomain.trimmingCharacters(in: .whitespacesAndNewlines),
+            allowedDomain: context.allowedDomain,
             maxSteps: context.maxSteps,
             humanLogin: true,
             windowID: context.windowID,
@@ -1167,8 +1177,9 @@ final class CUAViewModel: ObservableObject {
     }
 
     private static func normalizedDomain(_ value: String) -> String {
-        value.trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        var domain = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        while domain.hasSuffix(".") { domain.removeLast() }
+        return domain
     }
 
     private static func isValidDomain(_ value: String) -> Bool {

@@ -444,6 +444,11 @@ struct CUASection: View {
                     .font(.caption)
                     .foregroundStyle(.orange)
                     .accessibilityIdentifier("ComputerUse.Agent.Target.DomainRequired")
+            } else if viewModel.selectedApp?.isBrowser == true {
+                Text("Rapid will stop before acting if this window leaves this domain or its subdomains.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("ComputerUse.Agent.Target.DomainScope")
             }
 
             if !viewModel.selectedTargets.isEmpty {
@@ -635,6 +640,13 @@ struct CUASection: View {
             }
             .font(.caption)
             .foregroundStyle(.secondary)
+            if context.targets.isEmpty, !context.allowedDomain.isEmpty {
+                Label("Reviewed domain: \(context.allowedDomain)", systemImage: "network")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .accessibilityIdentifier("ComputerUse.Agent.RunContext.Domain")
+            }
             if context.targets.count > 1 {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Authorized windows").font(.caption.weight(.semibold))
@@ -826,6 +838,10 @@ struct CUASection: View {
                 .font(.callout.weight(.semibold))
                 .foregroundStyle(.orange)
             LabeledContent("App", value: approval.app)
+            if let context = viewModel.runContext, !context.allowedDomain.isEmpty {
+                LabeledContent("Reviewed domain", value: context.allowedDomain)
+                    .accessibilityIdentifier("ComputerUse.Agent.Approval.Domain")
+            }
             if let targetID = approval.targetID,
                let targetName = viewModel.runTargetNames[targetID]
             {

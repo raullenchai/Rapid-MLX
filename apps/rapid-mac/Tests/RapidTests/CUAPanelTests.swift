@@ -224,6 +224,7 @@ private func selectTarget(_ viewModel: CUAViewModel) {
     viewModel.selectedPID = 42
     viewModel.selectedWindowID = "cg:123"
     viewModel.appName = "Google Chrome"
+    viewModel.allowedDomain = "example.com"
 }
 
 // MARK: - View model
@@ -347,6 +348,7 @@ struct CUAViewModelTests {
         #expect(request?.targets?.map(\.allowedDomain) == ["example.com", ""])
         #expect(request?.initialTargetID == request?.targets?.first?.targetID)
         #expect(viewModel.runContext?.targets.map(\.displayName).count == 2)
+        #expect(viewModel.runContext?.allowedDomain.isEmpty == true)
         #expect(viewModel.activeTargetID == request?.initialTargetID)
         viewModel.invalidateSession()
     }
@@ -442,6 +444,7 @@ struct CUAViewModelTests {
         viewModel.maxSteps = 39
         viewModel.selectedPID = nil
         viewModel.selectedWindowID = nil
+        viewModel.allowedDomain = "changed.example"
         await start.value
 
         #expect(api.attemptedRequests.first?.goal == "original goal")
@@ -449,7 +452,9 @@ struct CUAViewModelTests {
         #expect(api.attemptedRequests.first?.maxSteps == 7)
         #expect(api.attemptedRequests.first?.app == "pid:42")
         #expect(api.attemptedRequests.first?.windowID == "cg:123")
+        #expect(api.attemptedRequests.first?.allowedDomain == "example.com")
         #expect(viewModel.runContext?.maxSteps == 7)
+        #expect(viewModel.runContext?.allowedDomain == "example.com")
         let frozenContext = viewModel.runContext
         viewModel.newTask()
         #expect(viewModel.runContext == frozenContext)
@@ -998,7 +1003,30 @@ struct CUAViewModelTests {
         )
         #expect(viewModel.selectedWindowID == nil)
         viewModel.selectedWindowID = "cg:123"
+        #expect(!viewModel.canStart)
+        #expect(viewModel.selectedBrowserDomainError != nil)
+        viewModel.allowedDomain = " Flights.Example.COM. "
         #expect(viewModel.canStart)
+        #expect(viewModel.selectedBrowserDomainError == nil)
+    }
+
+    @Test("Single-browser scope rejects blank and ambiguous host input")
+    func singleBrowserDomainValidation() {
+        let viewModel = CUAViewModel(api: MockAgentAPI())
+        viewModel.goal = "compare flights"
+        selectTarget(viewModel)
+
+        for invalid in ["", ".example.com", "example.com/path", "example.com:443", "exa_mple.com"] {
+            viewModel.allowedDomain = invalid
+            #expect(!viewModel.canStart)
+            #expect(viewModel.selectedBrowserDomainError != nil)
+        }
+
+        for valid in ["example.com", "flights.example.com", "EXAMPLE.COM."] {
+            viewModel.allowedDomain = valid
+            #expect(viewModel.canStart)
+            #expect(viewModel.selectedBrowserDomainError == nil)
+        }
     }
 
     @Test("Refresh clears a window that moved or disappeared")
@@ -2031,7 +2059,9 @@ struct CUATargetUISourceTests {
         #expect(section.contains("ComputerUse.Agent.Target.Add"))
         #expect(section.contains("ComputerUse.Agent.TargetSet"))
         #expect(section.contains("ComputerUse.Agent.RunContext.Targets"))
+        #expect(section.contains("ComputerUse.Agent.RunContext.Domain"))
         #expect(section.contains("ComputerUse.Agent.Approval.TargetWindow"))
+        #expect(section.contains("ComputerUse.Agent.Approval.Domain"))
         #expect(section.contains("Retry Recovery"))
         #expect(section.contains("Describe what you want Rapid to do"))
         #expect(section.contains("accessibilityLabel(\"Task goal\")"))
