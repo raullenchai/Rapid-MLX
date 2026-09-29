@@ -912,6 +912,9 @@ def fake_backend(monkeypatch):
             entry for entry in snapshot["elements"] if entry["index"] == index
         ),
     )
+    monkeypatch.setattr(
+        backend_mod, "raise_selected_window", lambda app, snapshot: snapshot["window"]
+    )
     return backend_mod
 
 
@@ -2988,6 +2991,91 @@ def test_save_stops_when_menu_identity_changes_after_approval(
         "reason": "approved target changed before execution",
     }
     assert saves == []
+
+
+def test_save_restores_exact_target_after_approval_focus_transition(
+    fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    frontmost = {"textedit": True}
+    observations = {"count": 0}
+
+    def snapshot():
+        observations["count"] += 1
+        return {
+            "app": {
+                "name": "TextEdit",
+                "bundleId": "com.apple.TextEdit",
+                "pid": 101,
+                "processStartTime": 123.0,
+            },
+            "window_index": 0,
+            "window_id": "cg:55",
+            "window": {
+                "window_id": "cg:55",
+                "title": "notes.txt",
+                "x": 0,
+                "y": 0,
+                "width": 500,
+                "height": 400,
+            },
+            "elements": [{"index": 1, "label": "Body", "role": "AXTextArea"}],
+            # Approval focus can change AX focus/tree representation. Save
+            # authority comes from the exact document identity below.
+            "tree_text": f"focus-state-{observations['count']}",
+        }
+
+    monkeypatch.setattr(fake_backend, "get_app_state", lambda *a, **k: snapshot())
+    raises = []
+
+    def restore(app, observed):
+        assert frontmost["textedit"] is False
+        raises.append((app, observed["window_id"]))
+        frontmost["textedit"] = True
+        return observed["window"]
+
+    monkeypatch.setattr(fake_backend, "raise_selected_window", restore)
+    identity = ("file:///tmp/notes.txt", "File", "Save", "s", "0", "")
+    monkeypatch.setattr(
+        fake_backend,
+        "inspect_save_document",
+        lambda *a, **k: {"save_identity": identity},
+    )
+    saves = []
+    monkeypatch.setattr(
+        fake_backend,
+        "save_document",
+        lambda *a, **k: (
+            saves.append(k["expected_identity"])
+            or {"ok": True, "executed": True, "verified": True}
+        ),
+    )
+
+    async def approve(_reason):
+        frontmost["textedit"] = False  # Rapid approval sheet took focus.
+        return True
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(loop_mod.asyncio, "sleep", no_sleep)
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path),
+        "TextEdit",
+        "save notes",
+        tmp_path / "save-focus-resume",
+        gate=approve,
+    )
+    runner.window_id = "cg:55"
+    planner = _FakePlanner([{"action": "save", "step_instruction": "Save"}])
+
+    assert asyncio.run(runner.step(planner, 1)) is None
+    assert raises == [("TextEdit", "cg:55")]
+    assert saves == [identity]
 
 
 def test_approved_action_executes_only_after_stable_revalidation(

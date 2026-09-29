@@ -50,6 +50,17 @@ accepted only when it is still focused, its normalized value is the original
 basename, and the cached row, opaque reference, original path, sole selection,
 window, and process identity all remain exact.
 
+Cross-app signed run `f0d245996bc3` then exposed the same approval-focus
+boundary for TextEdit Save: the approval card changed AX focus/tree state, and
+the loop rejected before the backend could restore the exact document window.
+For every non-Finder approved action with a bound window, the loop now raises
+only that exact PID/window before fresh observation. It freezes the active
+target ID and compares PID, bundle ID, name, process start time, window identity,
+frame, and domain after approval. Save alone ignores focus-induced AX tree
+differences only after its exact native document/menu identity is re-inspected
+and matches the pre-approval binding. Other approved actions retain target and
+tree equality checks.
+
 This follows the established observe, exact actuation, fresh observation pattern
 reviewed in Orca while retaining Rapid's stronger PID, CGWindowID, and opaque
 Finder file-reference binding. No proprietary code was copied.
@@ -67,6 +78,9 @@ Finder file-reference binding. No proprietary code was copied.
 - Selection or window drift during menu resolution cannot reach `AXPress`.
 - Detached-editor tests cover the observed app-root shape plus wrong value,
   multiple selection, and opaque-reference drift.
+- TextEdit Save regression covers Rapid taking focus, changed AX tree shape,
+  exact-window restoration, unchanged document binding, then Save dispatch;
+  changed menu/document identity still blocks with zero dispatch.
 - Ruff format/check: passed.
 
 ## Remaining live check

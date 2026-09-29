@@ -910,6 +910,7 @@ class CUARun:
             )
         if approval is not None:
             approval_reason = f"{approval.reason}; app={self.app!r}"
+            approved_target_id = self.active_target_id
             approved = await self._request_approval(
                 approval_reason, action=approval.action, target=approval.target
             )
@@ -930,6 +931,8 @@ class CUARun:
                 if finder_rename_fill:
                     fresh = snapshot
                 else:
+                    if self.window_id is not None:
+                        backend.raise_selected_window(self.backend_app, snapshot)
                     fresh = self._get_app_state(screenshot=not planner.text_only)
             except ComputerUseError as exc:
                 reason = (
@@ -955,24 +958,35 @@ class CUARun:
             fresh_target_identity = self._target_identity(fresh_target)
             original_window_identity = self._window_identity(snapshot)
             fresh_window_identity = self._window_identity(fresh)
-            stale = (
-                False
-                if finder_rename_fill
-                else any(
+            original_app = snapshot.get("app") or {}
+            fresh_app = fresh.get("app") or {}
+            app_identity_changed = any(
+                original_app.get(key) is not None
+                and fresh_app.get(key) != original_app.get(key)
+                for key in ("pid", "bundleId", "name", "processStartTime")
+            )
+            stale = False
+            if not finder_rename_fill:
+                stale = any(
                     (
-                        plan["action"] != "save" and original_target_identity is None,
-                        plan["action"] != "save" and fresh_target_identity is None,
-                        plan["action"] != "save"
-                        and original_target_identity != fresh_target_identity,
+                        approved_target_id != self.active_target_id,
+                        app_identity_changed,
                         original_window_identity is None,
                         fresh_window_identity is None,
                         original_window_identity != fresh_window_identity,
                         snapshot.get("window") != fresh.get("window"),
                         fresh_url != url_now,
-                        _tree_signature(fresh) != _tree_signature(snapshot),
                     )
                 )
-            )
+                if plan["action"] != "save":
+                    stale = stale or any(
+                        (
+                            original_target_identity is None,
+                            fresh_target_identity is None,
+                            original_target_identity != fresh_target_identity,
+                            _tree_signature(fresh) != _tree_signature(snapshot),
+                        )
+                    )
             if plan["action"] == "save" and not stale:
                 try:
                     fresh_binding = backend.inspect_save_document(
