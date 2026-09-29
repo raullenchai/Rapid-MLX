@@ -142,12 +142,34 @@ class CUATargetApproval(BaseModel):
     options: list[CUATargetApprovalOption] = Field(min_length=1, max_length=3)
 
 
+class CUAAutomationPreflight(BaseModel):
+    bundle_id: str = Field(min_length=1, max_length=300)
+    display_name: str = Field(min_length=1, max_length=120)
+
+
 class CUATargetResolution(BaseModel):
-    status: Literal["resolved", "needs_approval", "unresolved"]
+    status: Literal["resolved", "needs_approval", "needs_automation", "unresolved"]
     targets: list[CUATargetProposal] = Field(default_factory=list, max_length=3)
     initial_target_id: str | None = None
     reason: str = Field(default="", max_length=500)
     approval: CUATargetApproval | None = None
+    automation: CUAAutomationPreflight | None = None
+
+    @model_validator(mode="after")
+    def validate_automation_preflight(self) -> CUATargetResolution:
+        if self.status == "needs_automation":
+            if (
+                self.automation is None
+                or self.targets
+                or self.initial_target_id is not None
+                or self.approval is not None
+            ):
+                raise ValueError(
+                    "needs_automation may carry only browser preflight metadata"
+                )
+        elif self.automation is not None:
+            raise ValueError("automation metadata requires needs_automation status")
+        return self
 
 
 class CUARunCreateRequest(BaseModel):
@@ -770,7 +792,16 @@ async def resolve_targets(request: CUATargetResolveRequest) -> CUATargetResoluti
                     window["window_id"],
                     require_permission=True,
                 )
-            except ComputerUseError:
+            except ComputerUseError as exc:
+                if exc.code == "automation_permission_required":
+                    return CUATargetResolution(
+                        status="needs_automation",
+                        reason="Browser access needs macOS approval before Rapid can verify the website.",
+                        automation=CUAAutomationPreflight(
+                            bundle_id=str(app["bundleId"]),
+                            display_name=str(app.get("name") or "Browser")[:120],
+                        ),
+                    )
                 url = ""
             hostname = (urlparse(url).hostname or "").casefold().rstrip(".")
             if not hostname:
