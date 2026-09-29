@@ -2459,6 +2459,119 @@ def test_finder_generic_enter_uses_bound_reference_for_replacement_editor(monkey
     assert key not in backend._finder_rename_bindings
 
 
+def test_finder_replacement_binding_fails_closed_on_missing_or_drift(monkeypatch):
+    snapshot = _finder_rename_snapshot()
+    live, cell, row, other_row, reference = (object() for _ in range(5))
+    key = backend._finder_rename_binding_key(snapshot)
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_get",
+        lambda element, attr: {
+            live: {"AXParent": cell, "AXURL": None},
+            cell: {"AXParent": row},
+        }.get(element, {}).get(attr),
+    )
+    backend._finder_rename_bindings.pop(key, None)
+    assert backend._finder_file_reference_for_editor(live, snapshot) is None
+
+    backend._finder_rename_bindings[key] = (
+        other_row,
+        reference,
+        "/tmp/Original",
+        backend.time.monotonic(),
+    )
+    assert backend._finder_file_reference_for_editor(live, snapshot) is None
+    assert key not in backend._finder_rename_bindings
+
+
+def test_finder_replacement_binding_expires_without_authorizing_editor(monkeypatch):
+    snapshot = _finder_rename_snapshot()
+    live, cell, row, reference = (object() for _ in range(4))
+    key = backend._finder_rename_binding_key(snapshot)
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_get",
+        lambda element, attr: {
+            live: {"AXParent": cell, "AXURL": None},
+            cell: {"AXParent": row},
+        }.get(element, {}).get(attr),
+    )
+    monkeypatch.setattr(
+        backend, "_finder_file_reference_path", lambda value: "/tmp/Original"
+    )
+    backend._finder_rename_bindings[key] = (
+        row,
+        reference,
+        "/tmp/Original",
+        backend.time.monotonic() - backend.SNAPSHOT_TTL_S - 1,
+    )
+
+    assert backend._finder_file_reference_for_editor(live, snapshot) is None
+    assert key not in backend._finder_rename_bindings
+
+
+def test_finder_rename_menu_requires_one_enabled_native_command(monkeypatch):
+    snapshot = _finder_rename_snapshot()
+    app_element, menu_bar, first, second = (object() for _ in range(4))
+    children = [first, second]
+    monkeypatch.setattr(backend.ax_driver, "_app_element", lambda *a, **k: app_element)
+
+    def get(element, attr):
+        if element is app_element and attr == "AXMenuBar":
+            return menu_bar
+        if element is menu_bar and attr == "AXChildren":
+            return children
+        if element in {first, second}:
+            return {
+                "AXRole": "AXMenuItem",
+                "AXMenuItemCmdChar": "\r",
+                "AXMenuItemCmdModifiers": 0,
+                "AXEnabled": True,
+                "AXChildren": [],
+            }.get(attr)
+        return None
+
+    monkeypatch.setattr(backend.ax_driver, "_get", get)
+    monkeypatch.setattr(backend.ax_driver, "_action_names", lambda item: ["AXPress"])
+
+    with pytest.raises(errors.ComputerUseError) as excinfo:
+        backend._finder_rename_menu_item(snapshot)
+    assert excinfo.value.code == "element_not_found"
+
+    children.pop()
+    assert backend._finder_rename_menu_item(snapshot) is first
+
+
+def test_finder_replacement_editor_traversal_requires_unique_bound_path(monkeypatch):
+    snapshot = _finder_rename_snapshot()
+    expected_row, window, editor, cell, reference = (object() for _ in range(5))
+    monkeypatch.setattr(backend, "_focused_ax_element", lambda app: None)
+    monkeypatch.setattr(backend, "_focused_ax_window", lambda app: window)
+
+    def get(element, attr):
+        return {
+            window: {"AXChildren": [editor]},
+            editor: {
+                "AXRole": "AXTextField",
+                "AXParent": cell,
+                "AXURL": reference,
+                "AXChildren": [],
+            },
+            cell: {"AXRole": "AXCell", "AXParent": expected_row},
+            expected_row: {"AXSelected": True},
+        }.get(element, {}).get(attr)
+
+    monkeypatch.setattr(backend.ax_driver, "_get", get)
+    monkeypatch.setattr(
+        backend, "_finder_file_reference_path", lambda value: "/tmp/Original"
+    )
+
+    assert (
+        backend._finder_item_editor_for_path(snapshot, "/tmp/Original", expected_row)
+        is editor
+    )
+
+
 def test_finder_inline_rename_rejects_focus_drift_before_typing(monkeypatch):
     snapshot = _finder_rename_snapshot()
     live, cell, row, rename_item = object(), object(), object(), object()
