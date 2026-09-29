@@ -620,6 +620,15 @@ def _explicit_app_matches(goal: str, catalog: list[dict]) -> set[str]:
     }
 
 
+def _title_matches_goal(goal: str, title: str) -> bool:
+    normalized = title.strip().casefold()
+    return (
+        len(normalized) >= 3
+        and re.search(rf"(?<!\w){re.escape(normalized)}(?!\w)", goal.casefold())
+        is not None
+    )
+
+
 def _is_browser(bundle_id: str) -> bool:
     bundle = bundle_id.casefold()
     return bundle in {
@@ -730,14 +739,21 @@ async def resolve_targets(request: CUATargetResolveRequest) -> CUATargetResoluti
         )
 
     selected: list[dict] = []
+    locally_disambiguated = False
     for app in selected_apps:
         candidates = windows_by_pid[app["pid"]]
-        if len(candidates) != 1:
-            return CUATargetResolution(
-                status="unresolved",
-                reason=f"{app['app_name']} has multiple open items. Close unrelated items or clarify the task and try again.",
-            )
-        selected.append(candidates[0])
+        if len(candidates) == 1:
+            selected.append(candidates[0])
+            continue
+        title_matches = [
+            item
+            for item in candidates
+            if _title_matches_goal(request.goal, str(item["window"].get("title") or ""))
+        ]
+        # The catalog is an atomic front-to-back snapshot, so its first item is
+        # the safest local fallback. Titles are used locally, never by the planner.
+        selected.append(title_matches[0] if len(title_matches) == 1 else candidates[0])
+        locally_disambiguated = True
 
     targets: list[CUATargetProposal] = []
     has_browser = False
@@ -779,7 +795,9 @@ async def resolve_targets(request: CUATargetResolveRequest) -> CUATargetResoluti
             )
         )
 
-    needs_approval = has_browser or len(targets) > 1 or not deterministic
+    needs_approval = (
+        has_browser or len(targets) > 1 or not deterministic or locally_disambiguated
+    )
     approval = None
     if needs_approval:
         labels = ", ".join(target.display_name for target in targets)
@@ -798,7 +816,7 @@ async def resolve_targets(request: CUATargetResolveRequest) -> CUATargetResoluti
             options=[
                 CUATargetApprovalOption(
                     option_id="use_proposed",
-                    label="Use these apps",
+                    label="Use this app" if len(targets) == 1 else "Use these apps",
                     target_ids=[target.target_id for target in targets],
                 )
             ],
