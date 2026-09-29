@@ -37,6 +37,10 @@ sole selected row in the same outline. It invokes Finder's unique native Rename
 command, reacquires an editor for that same row, path, and reference, and only
 then performs the adjacent approved `AXSetValue`. It does not click, reuse the
 stale serialized index as authority, or transfer approval to another selection.
+Because native menu resolution can itself change Finder UI state, exact window
+and focus plus sole-row, reference, and path checks run again immediately before
+`AXPress`; exact window and focus are checked again after editor reacquisition
+and adjacent to `AXSetValue`.
 
 This follows the established observe, exact actuation, fresh observation pattern
 reviewed in Orca while retaining Rapid's stronger PID, CGWindowID, and opaque
@@ -52,6 +56,7 @@ Finder file-reference binding. No proprietary code was copied.
   observed after activation cannot reach `AXRaise`.
 - Approval-closed editor recovery is covered for the same bound row, reference,
   and path; a different selected row fails before the native Rename command.
+- Selection or window drift during menu resolution cannot reach `AXPress`.
 - Ruff format/check: passed.
 
 ## Remaining live check

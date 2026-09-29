@@ -2990,6 +2990,10 @@ def _install_selected_finder_editor(monkeypatch, snapshot, path_state):
     monkeypatch.setattr(
         backend, "raise_selected_window", lambda *a, **k: snapshot["window"]
     )
+    monkeypatch.setattr(
+        backend, "_validate_snapshot_window", lambda *a, **k: snapshot["window"]
+    )
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a, **k: None)
     monkeypatch.setattr(backend, "_focused_ax_element", lambda *a, **k: outline)
     monkeypatch.setattr(backend.ax_driver, "_get", get)
     monkeypatch.setattr(
@@ -3256,6 +3260,10 @@ def test_finder_rename_resume_reopens_same_bound_row_after_approval(monkeypatch)
         }.get(element, {}).get(attr)
 
     monkeypatch.setattr(backend.ax_driver, "_get", get)
+    monkeypatch.setattr(
+        backend, "_validate_snapshot_window", lambda value: value["window"]
+    )
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a: None)
     monkeypatch.setattr(backend, "_finder_rename_menu_item", lambda _: rename_item)
     actions = []
     monkeypatch.setattr(
@@ -3339,6 +3347,8 @@ def test_finder_rename_resume_rejects_different_selected_row(monkeypatch):
     ("failure", "message"),
     [
         ("missing_binding", "binding is no longer available"),
+        ("menu_selection_drift", "approved Finder row changed"),
+        ("menu_window_drift", "window changed during menu resolution"),
         ("rename_rejected", "Rename command rejected"),
         ("restored_reference", "not the approved item"),
     ],
@@ -3378,19 +3388,49 @@ def test_finder_rename_resume_fails_closed_at_each_reentry_boundary(
         lambda value: "/tmp/Before" if value is reference else None,
     )
 
+    selected = {"value": True}
+
     def get(element, attr):
         return {
-            row: {"AXParent": outline, "AXRole": "AXRow", "AXSelected": True},
+            row: {
+                "AXParent": outline,
+                "AXRole": "AXRow",
+                "AXSelected": selected["value"],
+            },
             outline: {"AXRole": "AXOutline", "AXChildren": [row]},
         }.get(element, {}).get(attr)
 
     monkeypatch.setattr(backend.ax_driver, "_get", get)
-    monkeypatch.setattr(backend, "_finder_rename_menu_item", lambda _: rename_item)
+
+    def resolve_menu(_snapshot):
+        if failure == "menu_selection_drift":
+            selected["value"] = False
+        return rename_item
+
+    monkeypatch.setattr(backend, "_finder_rename_menu_item", resolve_menu)
+    monkeypatch.setattr(
+        backend,
+        "_validate_snapshot_window",
+        lambda value: (
+            (_ for _ in ()).throw(
+                errors.ComputerUseError(
+                    "target_drift", "window changed during menu resolution"
+                )
+            )
+            if failure == "menu_window_drift"
+            else value["window"]
+        ),
+    )
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a: None)
+    actions = []
     monkeypatch.setattr(
         backend.ax_driver,
         "AXUIElementPerformAction",
         lambda *a: (
-            1 if failure == "rename_rejected" else backend.ax_driver.kAXErrorSuccess
+            actions.append(a)
+            or (
+                1 if failure == "rename_rejected" else backend.ax_driver.kAXErrorSuccess
+            )
         ),
     )
     monkeypatch.setattr(backend.time, "sleep", lambda _: None)
@@ -3405,6 +3445,8 @@ def test_finder_rename_resume_fails_closed_at_each_reentry_boundary(
 
     with pytest.raises(errors.ComputerUseError, match=message):
         backend._resume_finder_transaction_editor(binding, snapshot, 0)
+    if failure in {"menu_selection_drift", "menu_window_drift"}:
+        assert actions == []
 
 
 def test_finder_rename_transaction_fails_closed_on_reference_drift(monkeypatch):

@@ -1893,28 +1893,35 @@ def _resume_finder_transaction_editor(
             "target_drift", "approved Finder rename binding is no longer available"
         )
     row, reference, path, observed_at = cached
-    parent = ax_driver._get(row, "AXParent")
-    selected_rows = [
-        candidate
-        for candidate in ax_driver._as_list(ax_driver._get(parent, "AXChildren"))
-        if ax_driver._get(candidate, "AXRole") == "AXRow"
-        and ax_driver._get(candidate, "AXSelected") is True
-    ]
-    if (
-        time.monotonic() - observed_at > SNAPSHOT_TTL_S
-        or reference != binding["file_reference"]
-        or path != binding["original_path"]
-        or _finder_file_reference_path(reference) != binding["original_path"]
-        or ax_driver._get(row, "AXRole") != "AXRow"
-        or ax_driver._get(row, "AXSelected") is not True
-        or ax_driver._get(parent, "AXRole") != "AXOutline"
-        or selected_rows != [row]
-    ):
-        raise ComputerUseError(
-            "target_drift", "approved Finder row changed while restoring rename"
-        )
+
+    def validate_bound_row() -> None:
+        parent = ax_driver._get(row, "AXParent")
+        selected_rows = [
+            candidate
+            for candidate in ax_driver._as_list(ax_driver._get(parent, "AXChildren"))
+            if ax_driver._get(candidate, "AXRole") == "AXRow"
+            and ax_driver._get(candidate, "AXSelected") is True
+        ]
+        if (
+            time.monotonic() - observed_at > SNAPSHOT_TTL_S
+            or reference != binding["file_reference"]
+            or path != binding["original_path"]
+            or _finder_file_reference_path(reference) != binding["original_path"]
+            or ax_driver._get(row, "AXRole") != "AXRow"
+            or ax_driver._get(row, "AXSelected") is not True
+            or ax_driver._get(parent, "AXRole") != "AXOutline"
+            or selected_rows != [row]
+        ):
+            raise ComputerUseError(
+                "target_drift", "approved Finder row changed while restoring rename"
+            )
+
+    validate_bound_row()
     rename_item = _finder_rename_menu_item(snapshot)
+    expected_window = _validate_snapshot_window(snapshot)
+    _validate_focused_window(snapshot, expected_window)
     _finder_rename_path_state(binding)
+    validate_bound_row()
     if (
         ax_driver.AXUIElementPerformAction(rename_item, "AXPress")
         != ax_driver.kAXErrorSuccess
@@ -1934,6 +1941,8 @@ def _resume_finder_transaction_editor(
         raise ComputerUseError(
             "target_drift", "restored Finder editor is not the approved item"
         )
+    expected_window = _validate_snapshot_window(snapshot)
+    _validate_focused_window(snapshot, expected_window)
     return live
 
 
@@ -2015,6 +2024,8 @@ def set_finder_rename_value(
     # Keep the opaque-reference check adjacent to the irreversible AX write.
     # The approval pause and editor lookup must not leave a race window in
     # which a moved item receives the approved basename.
+    expected_window = _validate_snapshot_window(snapshot)
+    _validate_focused_window(snapshot, expected_window)
     _finder_rename_path_state(binding)
     err = AXUIElementSetAttributeValue(
         live, kAXValueAttribute, binding["requested_basename"]
