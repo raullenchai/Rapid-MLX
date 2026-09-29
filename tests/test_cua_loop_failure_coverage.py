@@ -74,6 +74,11 @@ def _runner(tmp_path, monkeypatch, *, window_id="cg:1", plan=None):
         loop_mod.gates, "consequential_action", lambda *args, **kwargs: None
     )
     monkeypatch.setattr(loop_mod.backend, "read_url", lambda *args, **kwargs: "")
+    monkeypatch.setattr(
+        loop_mod.backend,
+        "raise_selected_window",
+        lambda app, snapshot: snapshot["window"],
+    )
     monkeypatch.setattr(loop_mod.backend, "click", lambda *args, **kwargs: {"ok": True})
 
     async def request_plan(*args, **kwargs):
