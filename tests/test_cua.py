@@ -4296,6 +4296,7 @@ def test_user_preset_crud_and_consent(tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     ("name", "url", "model", "allow_remote", "expected"),
     [
+        ("Bad Name!", "http://127.0.0.1:8080/v1", "m", False, "model name must"),
         ("custom", "file:///tmp/model", "m", False, "model URL must start"),
         ("custom", "http://", "m", False, "model URL must include"),
         ("custom", "https://api.example.com/v1", "m", False, "remote model requires"),
@@ -4326,6 +4327,38 @@ def test_duplicate_user_preset_error_uses_model_language(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="model 'custom' already exists") as raised:
         config_mod.save_user_preset(*args)
     assert "brain" not in str(raised.value).casefold()
+
+
+def test_model_config_resolve_and_delete_errors_use_model_language(
+    tmp_path, monkeypatch
+):
+    from rapid_mlx.cua import config as config_mod
+
+    monkeypatch.setattr(config_mod, "CONFIG_PATH", tmp_path / "cua-config.json")
+    config_mod.save_user_preset(
+        "cloud",
+        "https://api.example.com/v1",
+        "m",
+        api_key="secret",
+        allow_remote=True,
+    )
+    operations = [
+        lambda: config_mod.resolve_planner(
+            "cloud", url_override="https://other.example.com/v1"
+        ),
+        lambda: config_mod.resolve_planner("https://api.example.com/v1"),
+        lambda: config_mod.resolve_planner("missing"),
+        lambda: config_mod.delete_user_preset("local-27b"),
+        lambda: config_mod.delete_user_preset("missing"),
+    ]
+    for operation in operations:
+        with pytest.raises(ValueError) as raised:
+            operation()
+        message = str(raised.value).casefold()
+        assert "model" in message
+        assert "brain" not in message
+        assert "preset" not in message
+        assert "planner" not in message
 
 
 @pytest.mark.parametrize(
