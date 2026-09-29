@@ -70,7 +70,9 @@ def _runner(tmp_path, monkeypatch, *, window_id="cg:1", plan=None):
     monkeypatch.setattr(run, "_get_app_state", lambda **kwargs: _snapshot())
     monkeypatch.setattr(run, "_read_url", lambda snapshot: "")
     monkeypatch.setattr(loop_mod.gates, "check_plan_consents", lambda *args: None)
-    monkeypatch.setattr(loop_mod.gates, "consequential_action", lambda *args: None)
+    monkeypatch.setattr(
+        loop_mod.gates, "consequential_action", lambda *args, **kwargs: None
+    )
     monkeypatch.setattr(loop_mod.backend, "read_url", lambda *args, **kwargs: "")
     monkeypatch.setattr(loop_mod.backend, "click", lambda *args, **kwargs: {"ok": True})
 
@@ -170,7 +172,7 @@ def test_approved_target_reobserve_failure_blocks_input(tmp_path, monkeypatch):
     monkeypatch.setattr(
         loop_mod.gates,
         "consequential_action",
-        lambda *args: SimpleNamespace(
+        lambda *args, **kwargs: SimpleNamespace(
             reason="external commit", action="click", target="Apply", kind="commit"
         ),
     )
@@ -190,7 +192,7 @@ def test_approved_target_rechecks_consent_after_pause(tmp_path, monkeypatch):
     monkeypatch.setattr(
         loop_mod.gates,
         "consequential_action",
-        lambda *args: SimpleNamespace(
+        lambda *args, **kwargs: SimpleNamespace(
             reason="external commit", action="click", target="Apply", kind="commit"
         ),
     )
@@ -409,7 +411,7 @@ def test_save_binding_changed_after_approval_is_window_stale(tmp_path, monkeypat
     monkeypatch.setattr(
         loop_mod.gates,
         "consequential_action",
-        lambda *args: SimpleNamespace(
+        lambda *args, **kwargs: SimpleNamespace(
             reason="save file", action="save", target="Note", kind="commit"
         ),
     )
