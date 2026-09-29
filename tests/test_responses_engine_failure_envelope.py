@@ -1516,8 +1516,7 @@ class TestResponsesStreamFailureEnvelope:
             if name == "response.output_item.added"
             and data.get("item", {}).get("type") == "function_call"
         )
-        assert reasoning_done < message_added
-        assert message_added < function_call_added
+        assert reasoning_done < message_added < function_call_added
         assert "response.function_call_arguments.delta" in names
         text = "".join(
             str(data.get("delta") or "")

@@ -276,12 +276,12 @@
         "multi_sample_unsupported       -> routes/chat.py:4275, routes/completions.py:104/113",
         "logprobs_unsupported           -> routes/completions.py:371 (HTTP 501), :149",
         "logit_bias_unsupported         -> routes/chat.py:4326",
-        "structured_output_unsupported  -> routes/completions.py:264, routes/chat.py:5295,",
-        "                                  routes/responses.py:1096/1127, api/anthropic_adapter.py:925",
+        "structured_output_unsupported  -> routes/completions.py:296,",
+        "                                  api/anthropic_adapter.py:937",
         "tool_type_unsupported          -> api/responses_adapter.py:105",
         "stateless_api_only             -> routes/responses.py:904 (previous_response_id)",
         "fim_suffix_unsupported         -> routes/completions.py:88",
-        "context_length_exceeded        -> service/helpers.py:4919",
+        "context_length_exceeded        -> service/helpers.py:5021/5092",
         "speculative_decoding_unsupported -> cli.py:2658/2767/2899, server.py:2261",
         "mcp_unsupported                -> cli.py:4873",
         "speech_capability_unsupported  -> routes/audio.py:554/605/1991/3029/3056/3114",
@@ -313,6 +313,15 @@
         "runtime_extra_missing",
         "response_format_unsupported",
         "perf_overrides_unsupported",
+        "other"
+      ]
+    },
+    "reject_reason": {
+      "_about": "Closed reason for structured-output and context-budget capability rejections.",
+      "values": [
+        "format_type_unsupported",
+        "prompt_over_window",
+        "operational_cap",
         "other"
       ]
     },
@@ -562,12 +571,27 @@
       }
     },
     "capability_rejected": {
-      "_about": "Features people reach for that we do not have.",
+      "_about": [
+        "Features people reach for that we do not have.",
+        "reject_reason is present only for structured_output_unsupported and",
+        "context_length_exceeded, and contains no free-form text."
+      ],
       "props": {
         "capability": {"kind": "enum", "enum": "capability", "required": true},
         "model_type": {"kind": "enum", "enum": "model_type", "required": true},
         "model": {"kind": "model_id", "required": false},
-        "caller": {"kind": "enum", "enum": "caller", "required": false}
+        "caller": {"kind": "enum", "enum": "caller", "required": false},
+        "reject_reason": {
+          "kind": "enum",
+          "enum": "reject_reason",
+          "required": false,
+          "only_when": {
+            "capability": [
+              "structured_output_unsupported",
+              "context_length_exceeded"
+            ]
+          }
+        }
       }
     },
     "inference_bucket_reached": {

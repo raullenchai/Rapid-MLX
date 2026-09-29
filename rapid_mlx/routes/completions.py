@@ -298,6 +298,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
 
             emit_capability_rejected(
                 "structured_output_unsupported",
+                reject_reason="format_type_unsupported",
                 caller_agent=_caller_agent,
                 caller_client=_caller_client,
             )
@@ -402,7 +403,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
         # ``service/helpers.py::enforce_context_length_for_prompt``.
         _resolved_max = _resolve_max_tokens(request.max_tokens)
         for _p in prompts:
-            enforce_context_length_for_prompt(
+            _clamped_max = enforce_context_length_for_prompt(
                 engine,
                 _p,
                 max_tokens=_resolved_max,
@@ -410,6 +411,9 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
                 caller_agent=_caller_agent,
                 caller_client=_caller_client,
             )
+            if _clamped_max is not None:
+                _resolved_max = _clamped_max
+        request.max_tokens = _resolved_max
 
         # Codex r2/r3 BLOCKING: engine capability guard for ``logprobs``
         # applies to BOTH streaming and non-streaming paths. Without

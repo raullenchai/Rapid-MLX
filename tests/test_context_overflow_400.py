@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -105,9 +106,14 @@ class _StubEngine:
         raise AssertionError("engine.stream_chat must not be reached on the 400 path")
 
 
-def _make_app(routes: list[Any], *, max_prompt_tokens: int | None = None) -> TestClient:
+def _make_app(
+    routes: list[Any],
+    *,
+    max_prompt_tokens: int | None = None,
+    engine: _StubEngine | None = None,
+) -> TestClient:
     cfg = reset_config()
-    cfg.engine = _StubEngine()
+    cfg.engine = engine or _StubEngine()
     cfg.model_name = "qwen3-0.6b-8bit"
     cfg.model_registry = None
     cfg.no_thinking = True
@@ -315,3 +321,108 @@ def test_chat_completions_passes_when_within_context_window():
     }
     resp = client.post("/v1/chat/completions", json=payload)
     assert resp.status_code == 200, resp.text
+
+
+class _ClampEngine(_StubEngine):
+    def __init__(self):
+        super().__init__()
+        self.captured_max_tokens: list[int | None] = []
+
+    def _output(self, max_tokens):
+        from rapid_mlx.engine.base import GenerationOutput
+
+        self.captured_max_tokens.append(max_tokens)
+        return GenerationOutput(
+            text="x" * int(max_tokens or 0),
+            new_text="x" * int(max_tokens or 0),
+            prompt_tokens=_CONTEXT_WINDOW - 10,
+            completion_tokens=int(max_tokens or 0),
+            finished=True,
+            finish_reason="length",
+            channel=None,
+        )
+
+    async def chat(self, *args, **kwargs):  # noqa: ARG002
+        return self._output(kwargs.get("max_tokens"))
+
+    async def generate(self, **kwargs):
+        return self._output(kwargs.get("max_tokens"))
+
+
+@pytest.mark.parametrize("surface", ["chat", "completions", "responses", "messages"])
+def test_routes_clamp_large_completion_budget_and_report_length(surface):
+    """Every compatibility surface sends only the remaining budget downstream."""
+    from rapid_mlx.routes.anthropic import router as anthropic_router
+    from rapid_mlx.routes.chat import router as chat_router
+    from rapid_mlx.routes.completions import router as completions_router
+    from rapid_mlx.routes.responses import router as responses_router
+
+    prompt = _huge_text(_CONTEXT_WINDOW - 10)
+    cases = {
+        "chat": (
+            chat_router,
+            "/v1/chat/completions",
+            {
+                "model": "qwen3-0.6b-8bit",
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 1000,
+            },
+        ),
+        "completions": (
+            completions_router,
+            "/v1/completions",
+            {
+                "model": "qwen3-0.6b-8bit",
+                "prompt": prompt,
+                "max_tokens": 1000,
+            },
+        ),
+        "responses": (
+            responses_router,
+            "/v1/responses",
+            {
+                "model": "qwen3-0.6b-8bit",
+                "input": prompt,
+                "max_output_tokens": 1000,
+            },
+        ),
+        "messages": (
+            anthropic_router,
+            "/v1/messages",
+            {
+                "model": "qwen3-0.6b-8bit",
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 1000,
+            },
+        ),
+    }
+    engine = _ClampEngine()
+    router, path, payload = cases[surface]
+    response = _make_app([router], engine=engine).post(path, json=payload)
+
+    assert response.status_code == 200, response.text
+    assert engine.captured_max_tokens == [10]
+    body = response.json()
+    if surface in {"chat", "completions"}:
+        assert body["choices"][0]["finish_reason"] == "length"
+    elif surface == "responses":
+        assert body["status"] == "incomplete"
+        assert body["incomplete_details"]["reason"] == "max_output_tokens"
+    else:
+        assert body["stop_reason"] == "max_tokens"
+
+
+def test_empty_completion_prompt_keeps_requested_budget(monkeypatch):
+    """An empty legacy prompt has no context cost and bypasses tokenization."""
+    from rapid_mlx.service import helpers
+
+    monkeypatch.setattr(
+        helpers,
+        "count_prompt_tokens",
+        lambda *_args, **_kwargs: pytest.fail("empty prompt must not be tokenized"),
+    )
+
+    assert (
+        helpers.enforce_context_length_for_prompt(_StubEngine(), "", max_tokens=321)
+        == 321
+    )

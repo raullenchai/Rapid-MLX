@@ -322,6 +322,7 @@ async def emit_failed_on_stream_error(
 def emit_capability_rejected(
     capability: str,
     *,
+    reject_reason: str | None = None,
     model_type: str = "other",
     model: str | None = None,
     caller_agent: str | None = None,
@@ -335,6 +336,7 @@ def emit_capability_rejected(
             partial(
                 _record_capability_rejected,
                 capability=capability,
+                reject_reason=reject_reason,
                 model_type=model_type,
                 model=model,
                 caller_agent=caller_agent,
@@ -348,6 +350,7 @@ def emit_capability_rejected(
 def _record_capability_rejected(
     *,
     capability: str,
+    reject_reason: str | None = None,
     model_type: str,
     model: str | None = None,
     caller_agent: str | None = None,
@@ -362,6 +365,8 @@ def _record_capability_rejected(
             "capability": capability,
             "model_type": model_type_token(model_type),
         }
+        if reject_reason is not None:
+            props["reject_reason"] = reject_reason
         if model is not None:
             props["model"] = model_id.telemetry_model_id(model)
         if caller_agent is not None or caller_client is not None:

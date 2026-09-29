@@ -75,6 +75,7 @@ from ..service.helpers import (
     _wait_with_disconnect,
     build_extended_sampling_kwargs,
     count_prompt_tokens,
+    enforce_context_length,
     enforce_context_length_for_messages,
     ensure_engine_ready,
     get_engine,
@@ -869,6 +870,20 @@ async def create_anthropic_message(
             caller_agent=_caller_agent,
             caller_client=_caller_client,
         )
+        if _ctx_prompt_tokens is not None:
+            _clamped_max_tokens = enforce_context_length(
+                engine,
+                _ctx_prompt_tokens,
+                max_tokens=_resolve_max_tokens(
+                    openai_request.max_tokens,
+                    _resolve_enable_thinking(openai_request),
+                ),
+                telemetry_model=_served_telemetry_id,
+                caller_agent=_caller_agent,
+                caller_client=_caller_client,
+            )
+            if _clamped_max_tokens is not None:
+                openai_request.max_tokens = _clamped_max_tokens
 
         if anthropic_request.stream:
             _admission_committed = True

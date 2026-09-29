@@ -919,20 +919,8 @@ def test_completions_json_schema_rejected_never_silent_200():
     assert engine.chat_calls == []
 
 
-def test_responses_strict_stream_rejected_before_generation(_rate_limiter_state):
-    """Round-3 #3 pin: ``/v1/responses`` NEVER has the chat streaming's silent
-    gap because a strict schema with ``stream=true`` is rejected UP-FRONT with
-    a 400 (``strict_stream_unsupported``) — constrained decoding on this surface
-    is buffered-only, so ``_stream_responses`` never calls
-    ``generate_with_schema`` and no compile error can surface mid-SSE. This is
-    the structural reason the compile-error 400 for ``/v1/responses`` lives only
-    on the non-stream path (``test_responses_nonstrict_invalid_schema_returns_400``).
-
-    Guarding this here means a future change that lets strict schemas stream on
-    ``/v1/responses`` (re-opening the silent-degrade hole) turns this test red.
-    ``guided_raises`` is set so that IF generation were (wrongly) reached, the
-    engine would blow up — but it must not be reached at all.
-    """
+def test_responses_strict_stream_buffers_failure_before_sse(_rate_limiter_state):
+    """A constrained-generation failure remains an HTTP 502 before SSE starts."""
     engine = _Engine(guided_raises=_COMPILE_ERR)
     client = _make_responses_client(engine)
     resp = client.post(
@@ -951,13 +939,11 @@ def test_responses_strict_stream_rejected_before_generation(_rate_limiter_state)
             },
         },
     )
-    assert resp.status_code == 400, resp.text
+    assert resp.status_code == 502, resp.text
     err = resp.json()["error"]
-    assert err["type"] == "invalid_request_error"
-    assert err["code"] == "strict_stream_unsupported"
-    assert engine.guided_calls == [], (
-        "strict+stream must be rejected before any generation is attempted"
-    )
+    assert err["type"] == "api_error"
+    assert err["code"] == "strict_schema_violation"
+    assert len(engine.guided_calls) == 1
     assert engine.chat_calls == []
 
 
