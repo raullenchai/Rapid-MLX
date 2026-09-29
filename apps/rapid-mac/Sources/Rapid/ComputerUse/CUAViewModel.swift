@@ -7,6 +7,9 @@ protocol CUAAPI: Sendable {
     func apps() async throws -> [CUAAppOption]
     func windows(app: String) async throws -> [CUAWindowOption]
     func planners() async throws -> [CUAPlannerOption]
+    func resolveTargets(
+        goal: String, planner: String, allowRemoteAppDiscovery: Bool
+    ) async throws -> CUATargetResolution
     func addPlanner(_ request: CUAPlannerCreateRequest) async throws
     func deletePlanner(name: String) async throws
     func create(_ request: CUARunRequest) async throws -> String
@@ -77,13 +80,19 @@ struct CUASelectedTarget: Equatable, Identifiable, Sendable {
     let app: CUAAppOption
     let window: CUAWindowOption
     let allowedDomain: String
+    var bundleID: String? = nil
+    var processStartTime: Double? = nil
+    var resolvedDisplayName: String? = nil
 
     var id: String { targetID }
-    var displayName: String { "\(window.displayName) in \(app.displayName)" }
+    var displayName: String {
+        resolvedDisplayName ?? "\(window.displayName) in \(app.displayName)"
+    }
     var requestTarget: CUARunTarget {
         CUARunTarget(
             targetID: targetID, app: "pid:\(app.pid)", pid: app.pid,
-            windowID: window.windowID, allowedDomain: allowedDomain
+            windowID: window.windowID, allowedDomain: allowedDomain,
+            bundleID: bundleID, processStartTime: processStartTime
         )
     }
 }
@@ -179,6 +188,7 @@ final class CUAViewModel: ObservableObject {
     @Published var phase: CUAPhase = .idle
     @Published var events: [CUAEvent] = []
     @Published var plannerOptions: [CUAPlannerOption] = []
+    @Published var allowRemoteAppDiscovery = false
     @Published var pendingGateReason: String?
     @Published var pendingApproval: CUAPendingApproval?
     @Published var executorPermissions: CUAPermissionStatus?
@@ -201,9 +211,12 @@ final class CUAViewModel: ObservableObject {
     @Published private(set) var isSessionDetached = false
     @Published private(set) var wasSessionInterrupted = false
     @Published private(set) var browserAutomationRecoveryRequired = false
+    @Published private(set) var targetResolutionApproval: CUATargetResolution?
+    @Published private(set) var isResolvingTargets = false
 
     private let api: CUAAPI
     private let mainAppScreenRecordingRequest: () -> Bool
+    private let browserAutomationRequest: @Sendable (String) async -> BrowserAutomationAuthorization
     private var runID: String?
     private var pollTask: Task<Void, Never>?
     private var showingPollError = false
@@ -219,17 +232,23 @@ final class CUAViewModel: ObservableObject {
     private var stoppingStartGeneration: Int?
     private var pendingCreateRecovery: CUARunRequest?
     private var maxRunTargets = 3
+    private var pendingResolutionGoal: String?
+    private var pendingResolutionPlanner: String?
 
     init(
         api: CUAAPI?,
         pollIntervalNanos: UInt64 = 700_000_000,
         mainAppScreenRecordingRequest: @escaping () -> Bool = {
             MacAutomationPermissions.request(.screenRecording)
+        },
+        browserAutomationRequest: @escaping @Sendable (String) async -> BrowserAutomationAuthorization = {
+            await BrowserAutomationAuthorizer.request(bundleIdentifier: $0)
         }
     ) {
         self.api = api ?? NullCUAAPI()
         self.pollIntervalNanos = pollIntervalNanos
         self.mainAppScreenRecordingRequest = mainAppScreenRecordingRequest
+        self.browserAutomationRequest = browserAutomationRequest
     }
 
     func canRequestPermission(_ permission: MacAutomationPermission) -> Bool {
@@ -245,6 +264,7 @@ final class CUAViewModel: ObservableObject {
             || selectedBrowserDomainError == nil
         return !isSessionDetached
             && !goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !plannerName.isEmpty
             && !phase.isBusy
             && runContext == nil
             && targetReady
@@ -252,12 +272,195 @@ final class CUAViewModel: ObservableObject {
             && openURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    var canResolveTask: Bool {
+        !isSessionDetached
+            && !goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !plannerName.isEmpty
+            && selectedPlanner != nil
+            && (!selectedPlannerIsRemote || allowRemoteAppDiscovery)
+            && !phase.isBusy
+            && !isResolvingTargets
+            && runContext == nil
+            && openURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    func resolveAndStart() async {
+      guard canResolveTask else { return }
+      let requestedGoal = goal.trimmingCharacters(in: .whitespacesAndNewlines)
+      let requestedPlanner = plannerName
+      let generation = lifecycleGeneration
+      isResolvingTargets = true
+      targetError = nil
+      browserAutomationRecoveryRequired = false
+      targetResolutionApproval = nil
+      pendingResolutionGoal = nil
+      pendingResolutionPlanner = nil
+      defer {
+        if generation == lifecycleGeneration, !isSessionDetached {
+          isResolvingTargets = false
+        }
+      }
+      do {
+        let resolution = try await api.resolveTargets(
+          goal: requestedGoal, planner: requestedPlanner,
+          allowRemoteAppDiscovery: allowRemoteAppDiscovery
+        )
+        guard generation == lifecycleGeneration, !isSessionDetached,
+          goal.trimmingCharacters(in: .whitespacesAndNewlines) == requestedGoal,
+          plannerName == requestedPlanner
+        else { return }
+        switch resolution.status {
+        case "resolved":
+          guard applyTargetResolution(resolution, targetIDs: resolution.targets.map(\.targetID))
+          else {
+            targetError = "Rapid could not verify the proposed app scope. Try again."
+            return
+          }
+          isResolvingTargets = false
+          guard await authorizeResolvedBrowsers(
+            generation: generation, goal: requestedGoal, planner: requestedPlanner
+          ) else { return }
+          await start()
+        case "needs_approval":
+          guard validateTargetResolution(resolution), resolution.approval != nil else {
+            targetError = "Rapid could not verify the proposed app scope. Try again."
+            return
+          }
+          targetResolutionApproval = resolution
+          pendingResolutionGoal = requestedGoal
+          pendingResolutionPlanner = requestedPlanner
+        default:
+          targetError =
+            resolution.reason.isEmpty
+            ? "Rapid could not determine which open apps this task needs. Clarify the task and try again."
+            : resolution.reason
+        }
+      } catch {
+        guard generation == lifecycleGeneration, !isSessionDetached else { return }
+        targetError = "Rapid could not determine which open apps this task needs. Try again."
+      }
+    }
+
+    func approveResolvedTargets(optionID: String) async {
+      guard !isSessionDetached, !phase.isBusy,
+        let resolution = targetResolutionApproval,
+        goal.trimmingCharacters(in: .whitespacesAndNewlines) == pendingResolutionGoal,
+        plannerName == pendingResolutionPlanner,
+        let option = resolution.approval?.options.first(where: { $0.optionID == optionID }),
+        applyTargetResolution(resolution, targetIDs: option.targetIDs)
+      else { return }
+      let generation = lifecycleGeneration
+      let requestedGoal = goal.trimmingCharacters(in: .whitespacesAndNewlines)
+      let requestedPlanner = plannerName
+      targetResolutionApproval = nil
+      pendingResolutionGoal = nil
+      pendingResolutionPlanner = nil
+      guard await authorizeResolvedBrowsers(
+        generation: generation, goal: requestedGoal, planner: requestedPlanner
+      ) else { return }
+      await start()
+    }
+
+    private func authorizeResolvedBrowsers(
+      generation: Int, goal requestedGoal: String, planner requestedPlanner: String
+    ) async -> Bool {
+      let browserBundles = Set(selectedTargets.compactMap(\.bundleID).filter {
+        BrowserAutomationAuthorizer.supports(bundleIdentifier: $0)
+      })
+      for bundleID in browserBundles.sorted() {
+        let result = await browserAutomationRequest(bundleID)
+        guard generation == lifecycleGeneration, !isSessionDetached,
+          goal.trimmingCharacters(in: .whitespacesAndNewlines) == requestedGoal,
+          plannerName == requestedPlanner
+        else {
+          if !isSessionDetached {
+            selectedTargets = []
+            selectedInitialTargetID = nil
+          }
+          return false
+        }
+        switch result {
+        case .authorized:
+          continue
+        case .denied:
+          targetError = "Browser control is not allowed. Allow Rapid to control the browser in System Settings, then try again."
+          browserAutomationRecoveryRequired = true
+        case .targetUnavailable:
+          targetError = "The proposed browser is no longer open. Open it and try again."
+        case .timedOut:
+          targetError = "macOS did not finish the browser access request. Review Automation in System Settings, then try again."
+          browserAutomationRecoveryRequired = true
+        case .failed:
+          targetError = "Rapid could not request browser access. Review Automation in System Settings, then try again."
+          browserAutomationRecoveryRequired = true
+        }
+        selectedTargets = []
+        selectedInitialTargetID = nil
+        return false
+      }
+      return true
+    }
+
+    func cancelTargetResolution() {
+      guard !phase.isBusy else { return }
+      targetResolutionApproval = nil
+      pendingResolutionGoal = nil
+      pendingResolutionPlanner = nil
+      selectedTargets = []
+      selectedInitialTargetID = nil
+    }
+
+    private func validateTargetResolution(_ resolution: CUATargetResolution) -> Bool {
+      guard (1...maxRunTargets).contains(resolution.targets.count) else { return false }
+      let ids = resolution.targets.map(\.targetID)
+      guard Set(ids).count == ids.count,
+        resolution.initialTargetID.map(ids.contains) ?? false,
+        resolution.targets.allSatisfy({
+          $0.app == "pid:\($0.pid)" && !$0.windowID.isEmpty && !$0.displayName.isEmpty
+            && !$0.bundleID.isEmpty && $0.processStartTime.isFinite && $0.processStartTime > 0
+        })
+      else { return false }
+      return resolution.approval?.options.allSatisfy { option in
+        !option.label.isEmpty && !option.targetIDs.isEmpty
+          && Set(option.targetIDs).count == option.targetIDs.count
+          && option.targetIDs.allSatisfy(ids.contains)
+      } ?? true
+    }
+
+    private func applyTargetResolution(
+      _ resolution: CUATargetResolution, targetIDs: [String]
+    ) -> Bool {
+      guard validateTargetResolution(resolution), !targetIDs.isEmpty else { return false }
+      let byID = Dictionary(uniqueKeysWithValues: resolution.targets.map { ($0.targetID, $0) })
+      guard targetIDs.allSatisfy({ byID[$0] != nil }) else { return false }
+      selectedTargets = targetIDs.compactMap { id in
+        guard let target = byID[id] else { return nil }
+        return CUASelectedTarget(
+          targetID: target.targetID,
+          app: CUAAppOption(name: nil, bundleID: nil, pid: target.pid),
+          window: CUAWindowOption(
+            windowID: target.windowID, index: 0, title: "",
+            x: nil, y: nil, width: nil, height: nil
+          ),
+          allowedDomain: target.allowedDomain,
+          bundleID: target.bundleID,
+          processStartTime: target.processStartTime,
+          resolvedDisplayName: target.displayName
+        )
+      }
+      selectedInitialTargetID =
+        targetIDs.contains(resolution.initialTargetID ?? "")
+        ? resolution.initialTargetID : targetIDs.first
+      return selectedTargets.count == targetIDs.count
+    }
+
     var canAddSelectedTarget: Bool {
         guard !phase.isBusy, selectedTargets.count < maxRunTargets,
               let app = selectedApp, let window = selectedWindow
         else { return false }
         let domain = Self.normalizedDomain(allowedDomain)
-        return (!app.isBrowser || Self.isValidDomain(domain)) && !selectedTargets.contains {
+    return (!app.isBrowser || Self.isValidDomain(domain))
+      && !selectedTargets.contains {
             $0.app.pid == app.pid && $0.window.windowID == window.windowID
         }
     }
@@ -368,7 +571,7 @@ final class CUAViewModel: ObservableObject {
             return "Rapid could not verify this task start. Approval is disabled; stop the task immediately."
         }
         if runContext?.targets.isEmpty == false {
-            return "This approval is not bound to the active authorized window. Stop the task and retry."
+            return "This approval no longer matches the active app. Stop the task and try again."
         }
         return "This approval is missing its gate identity. Stop the task and retry."
     }
@@ -392,6 +595,9 @@ final class CUAViewModel: ObservableObject {
 
     func loadPlanners() async {
         plannerOptions = (try? await api.planners()) ?? []
+    if !plannerOptions.contains(where: { $0.name == plannerName }) {
+      plannerName = plannerOptions.first?.name ?? ""
+    }
     }
 
     func loadPermissions() async {
@@ -496,7 +702,7 @@ final class CUAViewModel: ObservableObject {
                     else {
                         selectedTargets = []
                         selectedInitialTargetID = nil
-                        targetError = "An authorized window changed or closed. Select every target again."
+                        targetError = "An app used by this task changed or closed. Start setup again."
                         return
                     }
                 }
@@ -635,22 +841,39 @@ final class CUAViewModel: ObservableObject {
         }
     }
 
+  func deleteModel(named name: String) async {
+    guard plannerOptions.contains(where: { $0.name == name && $0.userCreated }) else {
+      return
+    }
+    brainError = nil
+    do {
+      try await api.deletePlanner(name: name)
+      await loadPlanners()
+    } catch {
+      brainError = "Could not remove this model: \(Self.describe(error))"
+    }
+  }
+
     var selectedPlanner: CUAPlannerOption? {
         plannerOptions.first { $0.name == plannerName }
     }
 
+    var selectedPlannerIsRemote: Bool {
+        selectedPlanner.map { !Self.isLoopbackEndpoint($0.url) } ?? false
+    }
+
     var plannerDisclosure: String {
         guard let planner = selectedPlanner else {
-            return "Actions run on this Mac. Select a brain to review what it receives."
+      return "Actions run on this Mac. Add a model to review what it receives."
         }
         if Self.isLoopbackEndpoint(planner.url) {
             return planner.textOnly
-                ? "Actions run on this Mac. The planner request goes to the configured loopback endpoint, which may forward it. It receives the goal and Accessibility snapshot."
-                : "Actions run on this Mac. The planner request goes to the configured loopback endpoint, which may forward it. It receives the goal, Accessibility snapshot, and screenshot."
+        ? "Actions run on this Mac. The model request goes to the configured loopback endpoint, which may forward it. App selection shares the task and names of open apps only after you allow it. During the task, it receives the Accessibility snapshot."
+        : "Actions run on this Mac. The model request goes to the configured loopback endpoint, which may forward it. App selection shares the task and names of open apps only after you allow it. During the task, it receives the Accessibility snapshot and screenshot."
         }
         return planner.textOnly
-            ? "Actions run on this Mac. This external brain receives the goal and Accessibility snapshot over HTTPS."
-            : "Actions run on this Mac. This external brain receives the goal, Accessibility snapshot, and screenshot over HTTPS."
+      ? "Actions run on this Mac. App selection shares the task and names of open apps only after you allow it. During the task, this external model receives the Accessibility snapshot over HTTPS."
+      : "Actions run on this Mac. App selection shares the task and names of open apps only after you allow it. During the task, this external model receives the Accessibility snapshot and screenshot over HTTPS."
     }
 
     static func isLoopbackEndpoint(_ value: String) -> Bool {
@@ -674,7 +897,9 @@ final class CUAViewModel: ObservableObject {
         let usesMultiTargetContract = frozenTargets.count >= 2
         let app: CUAAppOption
         let window: CUAWindowOption
-        let frozenInitialTargetID = usesMultiTargetContract
+    let targetDisplayName: String
+    let frozenInitialTargetID =
+      usesMultiTargetContract
             ? (selectedInitialTargetID ?? frozenTargets.first?.targetID)
             : nil
         if let authorized = frozenTargets.first(where: {
@@ -682,10 +907,12 @@ final class CUAViewModel: ObservableObject {
         }) {
             app = authorized.app
             window = authorized.window
+      targetDisplayName = authorized.displayName
         } else {
             guard let selectedApp, let selectedWindow else { return }
             app = selectedApp
             window = selectedWindow
+      targetDisplayName = "\(window.displayName) in \(app.displayName)"
         }
         let context = CUARunContext(
             goal: goal.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -694,7 +921,7 @@ final class CUAViewModel: ObservableObject {
                 ?? plannerName,
             appSelector: "pid:\(app.pid)",
             windowID: window.windowID,
-            targetDisplayName: "\(window.displayName) in \(app.displayName)",
+      targetDisplayName: targetDisplayName,
             allowedDomain: usesMultiTargetContract
                 ? ""
                 : (frozenTargets.first?.allowedDomain
@@ -740,7 +967,7 @@ final class CUAViewModel: ObservableObject {
                       capabilities.features.switchTarget == true
                 else {
                     phase = .failed(
-                        message: "This local server cannot safely run across an authorized window set. Update or restart Rapid before retrying."
+                        message: "This local server cannot safely run across the required apps. Update or restart Rapid before trying again."
                     )
                     return
                 }
@@ -774,7 +1001,9 @@ final class CUAViewModel: ObservableObject {
             windowID: context.windowID,
             clientRequestID: UUID().uuidString.lowercased(),
             targets: usesMultiTargetContract ? frozenTargets.map(\.requestTarget) : nil,
-            initialTargetID: context.initialTargetID
+            initialTargetID: context.initialTargetID,
+            bundleID: usesMultiTargetContract ? nil : frozenTargets.first?.bundleID,
+            processStartTime: usesMultiTargetContract ? nil : frozenTargets.first?.processStartTime
         )
         do {
             let createdRunID = try await api.create(request)
@@ -922,6 +1151,7 @@ final class CUAViewModel: ObservableObject {
         activeTargetID = nil
         browserAutomationRecoveryRequired = false
         goal = ""
+        allowRemoteAppDiscovery = false
         events = []
         pendingGateReason = nil
         pendingApproval = nil
@@ -932,6 +1162,9 @@ final class CUAViewModel: ObservableObject {
         wasSessionInterrupted = false
         isStopping = false
         phase = .idle
+    targetResolutionApproval = nil
+    pendingResolutionGoal = nil
+    pendingResolutionPlanner = nil
     }
 
     /// Returns a failed task to an editable draft without carrying any target
@@ -967,12 +1200,12 @@ final class CUAViewModel: ObservableObject {
         selectedTargets = []
         windowOptions = []
         allowedDomain = ""
-        targetError = "Select and authorize each target window again before starting."
+        targetError = "Rapid needs to choose the apps for this task again before starting."
         phase = .idle
 
         await loadTargets()
         if targetError == nil {
-            targetError = "Select and authorize each target window again before starting."
+            targetError = "Rapid needs to choose the apps for this task again before starting."
         }
     }
 
@@ -1182,12 +1415,18 @@ final class CUAViewModel: ObservableObject {
         appOptions = []
         windowOptions = []
         targetError = nil
+        allowRemoteAppDiscovery = false
+    targetResolutionApproval = nil
+    pendingResolutionGoal = nil
+    pendingResolutionPlanner = nil
+    isResolvingTargets = false
         isLoadingApps = false
         isLoadingWindows = false
         if hadActiveAuthority {
             wasSessionInterrupted = true
             phase = .failed(
-                message: "The task was interrupted because the local Computer Use service stopped. It cannot resume."
+        message:
+          "The task was interrupted because the local Computer Use service stopped. It cannot resume."
             )
         }
     }
@@ -1436,6 +1675,12 @@ private struct NullCUAAPI: CUAAPI {
     func planners() async throws -> [CUAPlannerOption] {
         throw Unavailable()
     }
+
+    func resolveTargets(
+        goal: String, planner: String, allowRemoteAppDiscovery: Bool
+    ) async throws -> CUATargetResolution {
+    throw Unavailable()
+  }
 
     func apps() async throws -> [CUAAppOption] { throw Unavailable() }
 

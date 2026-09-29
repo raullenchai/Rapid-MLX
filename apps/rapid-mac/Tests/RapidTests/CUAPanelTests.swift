@@ -55,6 +55,13 @@ private final class MockAgentAPI: CUAAPI, @unchecked Sendable {
     var permissionsContinuation: CheckedContinuation<Void, Never>?
     var pendingGateResult: CUAPendingGate?
     var activeTargetIDResult: String?
+  var targetResolutionResult = CUATargetResolution(
+    status: "unresolved", targets: [], initialTargetID: nil,
+    reason: "No matching app", approval: nil
+  )
+  var targetResolutionRequests: [
+    (goal: String, planner: String, allowRemoteAppDiscovery: Bool)
+  ] = []
 
     var addedPlanners: [CUAPlannerCreateRequest] = []
     var deletedPlannerNames: [String] = []
@@ -78,6 +85,13 @@ private final class MockAgentAPI: CUAAPI, @unchecked Sendable {
     func planners() async throws -> [CUAPlannerOption] {
         plannersResult
     }
+
+  func resolveTargets(
+    goal: String, planner: String, allowRemoteAppDiscovery: Bool
+  ) async throws -> CUATargetResolution {
+    targetResolutionRequests.append((goal, planner, allowRemoteAppDiscovery))
+    return targetResolutionResult
+  }
 
     func apps() async throws -> [CUAAppOption] {
         appsCalls += 1
@@ -219,11 +233,19 @@ private actor WindowDiscoveryRaceAPI: CUAAPI {
             CUAWindowOption(
                 windowID: call == 1 ? "cg:old" : "cg:new", index: 0,
                 title: call == 1 ? "Old" : "New", x: 0, y: 0, width: 900, height: 700
-            ),
+      )
         ]
     }
 
     func planners() async throws -> [CUAPlannerOption] { [] }
+  func resolveTargets(
+    goal: String, planner: String, allowRemoteAppDiscovery: Bool
+  ) async throws -> CUATargetResolution {
+    CUATargetResolution(
+      status: "unresolved", targets: [], initialTargetID: nil,
+      reason: "Unavailable", approval: nil
+    )
+  }
     func addPlanner(_ request: CUAPlannerCreateRequest) async throws {}
     func deletePlanner(name: String) async throws {}
     func create(_ request: CUARunRequest) async throws -> String { "run" }
@@ -508,7 +530,7 @@ struct CUAViewModelTests {
 
         #expect(viewModel.phase == .awaitingApproval)
         #expect(!viewModel.canApprove)
-        #expect(viewModel.approvalUnavailableMessage?.contains("active authorized window") == true)
+        #expect(viewModel.approvalUnavailableMessage?.contains("active app") == true)
         await viewModel.approve()
         #expect(api.approveCalls == 0)
         viewModel.invalidateSession()
@@ -1198,7 +1220,7 @@ struct CUAViewModelTests {
         await viewModel.loadTargets()
 
         #expect(viewModel.selectedTargets.isEmpty)
-        #expect(viewModel.targetError?.contains("Select every target again") == true)
+        #expect(viewModel.targetError?.contains("Start setup again") == true)
     }
 
     @Test("Discovery failure clears every authorized target")
@@ -1583,7 +1605,7 @@ struct CUAViewModelTests {
         #expect(!viewModel.canStart)
         #expect(api.createdRequests.count == createCount)
         #expect(api.appsCalls == 1)
-        #expect(viewModel.targetError?.contains("authorize each target") == true)
+        #expect(viewModel.targetError?.contains("choose the apps") == true)
     }
 
     @Test("Typed stale terminal clears the frozen window before retry")
@@ -2055,6 +2077,166 @@ final class RecordingURLProtocol: URLProtocol {
 // MARK: - Add-brain settings
 
 @Suite(.serialized)
+struct CUATaskFirstResolutionTests {
+  @MainActor
+  private static func viewModel(
+    api: MockAgentAPI,
+    browserAutomationRequest: @escaping @Sendable (String) async -> BrowserAutomationAuthorization = { _ in .authorized }
+  ) -> CUAViewModel {
+    let vm = CUAViewModel(api: api, browserAutomationRequest: browserAutomationRequest)
+    vm.plannerOptions = [
+      CUAPlannerOption(
+        name: "local-27b", model: "local", url: "http://127.0.0.1:8080/v1",
+        textOnly: true
+      )
+    ]
+    return vm
+  }
+
+  private static func target(
+    id: String = "target_1", pid: Int = 42, domain: String = ""
+  ) -> CUATargetProposal {
+    CUATargetProposal(
+      targetID: id, app: "pid:\(pid)", pid: pid,
+      windowID: "cg:\(pid)", allowedDomain: domain,
+      displayName: domain.isEmpty ? "Notes — Project" : "Browser — \(domain)",
+      bundleID: domain.isEmpty ? "com.apple.Notes" : "com.apple.Safari",
+      processStartTime: 1234.5
+    )
+  }
+
+  @MainActor
+  @Test func resolvedSingleTargetStartsWithLegacyWireShape() async {
+    let api = MockAgentAPI()
+    api.targetResolutionResult = CUATargetResolution(
+      status: "resolved", targets: [Self.target()], initialTargetID: "target_1",
+      reason: "", approval: nil
+    )
+    let vm = Self.viewModel(api: api)
+    vm.goal = "Summarize the project note"
+
+    await vm.resolveAndStart()
+
+    #expect(api.targetResolutionRequests.count == 1)
+    let request = try? #require(api.attemptedRequests.first)
+    #expect(request?.app == "pid:42")
+    #expect(request?.windowID == "cg:42")
+    #expect(request?.targets == nil)
+    #expect(request?.initialTargetID == nil)
+    #expect(request?.bundleID == "com.apple.Notes")
+    #expect(request?.processStartTime == 1234.5)
+    #expect(vm.runContext?.targetDisplayName == "Notes — Project")
+  }
+
+  @MainActor
+  @Test func websiteScopeWaitsForPlainLanguageApproval() async {
+    let api = MockAgentAPI()
+    let target = Self.target(domain: "example.test")
+    api.targetResolutionResult = CUATargetResolution(
+      status: "needs_approval", targets: [target], initialTargetID: target.targetID,
+      reason: "",
+      approval: CUATargetApproval(
+        kind: "website_scope",
+        prompt:
+          "Rapid plans to work in Browser. Website access is limited to example.test. Continue?",
+        options: [
+          CUATargetApprovalOption(
+            optionID: "use_proposed", label: "Use this website", targetIDs: [target.targetID]
+          )
+        ]
+      )
+    )
+    let vm = Self.viewModel(api: api)
+    vm.goal = "Summarize the open article"
+
+    await vm.resolveAndStart()
+    #expect(api.createAttempts == 0)
+    #expect(vm.targetResolutionApproval?.approval?.kind == "website_scope")
+
+    await vm.approveResolvedTargets(optionID: "use_proposed")
+    #expect(api.createAttempts == 1)
+    #expect(api.attemptedRequests.first?.allowedDomain == "example.test")
+  }
+
+  @MainActor
+  @Test func changingTaskInvalidatesPendingScope() async {
+    let api = MockAgentAPI()
+    let target = Self.target()
+    api.targetResolutionResult = CUATargetResolution(
+      status: "needs_approval", targets: [target], initialTargetID: target.targetID,
+      reason: "",
+      approval: CUATargetApproval(
+        kind: "ambiguity", prompt: "Use Notes?",
+        options: [
+          CUATargetApprovalOption(
+            optionID: "notes", label: "Use Notes", targetIDs: [target.targetID]
+          )
+        ]
+      )
+    )
+    let vm = Self.viewModel(api: api)
+    vm.goal = "Read the note"
+    await vm.resolveAndStart()
+
+    vm.goal = "Delete the note"
+    await vm.approveResolvedTargets(optionID: "notes")
+
+    #expect(api.createAttempts == 0)
+  }
+
+  @MainActor
+  @Test func deniedBrowserAutomationBlocksCreateAndOffersRecovery() async {
+    let api = MockAgentAPI()
+    let target = Self.target(domain: "example.test")
+    api.targetResolutionResult = CUATargetResolution(
+      status: "needs_approval", targets: [target], initialTargetID: target.targetID,
+      reason: "", approval: CUATargetApproval(
+        kind: "website_scope", prompt: "Use example.test?",
+        options: [
+          CUATargetApprovalOption(
+            optionID: "site", label: "Use this website", targetIDs: [target.targetID]
+          )
+        ]
+      )
+    )
+    let vm = Self.viewModel(api: api) { bundleID in
+      #expect(bundleID == "com.apple.Safari")
+      return .denied
+    }
+    vm.goal = "Read the page"
+
+    await vm.resolveAndStart()
+    await vm.approveResolvedTargets(optionID: "site")
+
+    #expect(api.createAttempts == 0)
+    #expect(vm.browserAutomationRecoveryRequired)
+    #expect(vm.selectedTargets.isEmpty)
+    #expect(vm.targetError?.contains("Browser control is not allowed") == true)
+  }
+
+  @MainActor
+  @Test func remoteModelRequiresPerTaskAppDiscoveryConsent() async {
+    let api = MockAgentAPI()
+    let vm = CUAViewModel(api: api)
+    vm.plannerName = "cloud"
+    vm.plannerOptions = [
+      CUAPlannerOption(
+        name: "cloud", model: "custom", url: "https://models.example/v1",
+        textOnly: true, allowRemote: true
+      )
+    ]
+    vm.goal = "Read the note"
+
+    #expect(!vm.canResolveTask)
+    vm.allowRemoteAppDiscovery = true
+    #expect(vm.canResolveTask)
+    await vm.resolveAndStart()
+
+    #expect(api.targetResolutionRequests.first?.allowRemoteAppDiscovery == true)
+  }
+}
+
+@Suite(.serialized)
 struct CUAAddBrainTests {
     @MainActor
     @Test func saveBrainPostsRequestAndReloads() async throws {
@@ -2089,6 +2271,32 @@ struct CUAAddBrainTests {
         #expect(vm.showAddBrain == true)
     }
 
+  @MainActor
+  @Test func plannerLoadSelectsAnAvailableModelAndDeleteIsUserCreatedOnly() async {
+    let api = MockAgentAPI()
+    api.plannersResult = [
+      CUAPlannerOption(
+        name: "built-in", model: "local", url: "http://127.0.0.1:8080/v1",
+        textOnly: true
+      ),
+      CUAPlannerOption(
+        name: "mine", model: "custom", url: "https://models.example/v1",
+        textOnly: true, userCreated: true, allowRemote: true
+      ),
+    ]
+    let vm = CUAViewModel(api: api)
+    vm.plannerName = "missing"
+
+    await vm.loadPlanners()
+    #expect(vm.plannerName == "built-in")
+
+    await vm.deleteModel(named: "built-in")
+    #expect(api.deletedPlannerNames.isEmpty)
+
+    await vm.deleteModel(named: "mine")
+    #expect(api.deletedPlannerNames == ["mine"])
+  }
+
     @MainActor
     @Test func addBrainIsValidRequiresAllFields() {
         let api = MockAgentAPI()
@@ -2112,7 +2320,7 @@ struct CUAAddBrainTests {
             )
         ]
         #expect(vm.plannerDisclosure.contains("Actions run on this Mac"))
-        #expect(vm.plannerDisclosure.contains("external brain"))
+    #expect(vm.plannerDisclosure.contains("external model"))
         #expect(vm.plannerDisclosure.contains("screenshot"))
 
         vm.plannerOptions[0].textOnly = true
@@ -2374,16 +2582,14 @@ struct CUATargetUISourceTests {
             encoding: .utf8
         )
 
-        #expect(section.contains("ComputerUse.Agent.Target.Process"))
-        #expect(section.contains("ComputerUse.Agent.Target.Window"))
-        #expect(section.contains("ComputerUse.Agent.Target.Refresh"))
-        #expect(section.contains("ComputerUse.Agent.Target.Error"))
-        #expect(section.contains("ComputerUse.Agent.Target.Domain"))
-        #expect(section.contains("ComputerUse.Agent.Target.Add"))
-        #expect(section.contains("ComputerUse.Agent.TargetSet"))
-        #expect(section.contains("ComputerUse.Agent.TargetSet.Initial"))
-        #expect(section.contains("ComputerUse.Agent.TargetSet.SetInitial"))
-        #expect(section.contains("ComputerUse.Agent.TargetSet.Remove"))
+    #expect(!section.contains("ComputerUse.Agent.Target.Process"))
+    #expect(!section.contains("ComputerUse.Agent.Target.Window"))
+    #expect(!section.contains("ComputerUse.Agent.Target.Domain"))
+    #expect(section.contains("ComputerUse.Agent.ScopeApproval"))
+    #expect(section.contains("ComputerUse.Agent.ScopeOption"))
+    #expect(section.contains("ComputerUse.Agent.Model"))
+    #expect(section.contains("ComputerUse.Agent.AddModel"))
+    #expect(section.contains("ComputerUse.Agent.ManageModels"))
         #expect(section.contains("ComputerUse.Agent.RunContext.Targets"))
         #expect(section.contains("ComputerUse.Agent.RunContext.Domain"))
         #expect(section.contains("ComputerUse.Agent.Approval.TargetWindow"))

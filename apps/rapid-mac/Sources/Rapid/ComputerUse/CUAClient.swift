@@ -56,6 +56,8 @@ struct CUARunTarget: Codable, Equatable, Identifiable, Sendable {
     var pid: Int
     var windowID: String
     var allowedDomain: String
+    var bundleID: String? = nil
+    var processStartTime: Double? = nil
 
     var id: String { targetID }
 
@@ -64,6 +66,75 @@ struct CUARunTarget: Codable, Equatable, Identifiable, Sendable {
         case targetID = "target_id"
         case windowID = "window_id"
         case allowedDomain = "allowed_domain"
+        case bundleID = "bundle_id"
+        case processStartTime = "process_start_time"
+    }
+}
+
+struct CUATargetResolveRequest: Codable, Equatable, Sendable {
+    var goal: String
+    var planner: String
+    var allowRemoteAppDiscovery: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case goal, planner
+        case allowRemoteAppDiscovery = "allow_remote_app_discovery"
+    }
+}
+
+struct CUATargetProposal: Codable, Equatable, Identifiable, Sendable {
+    var targetID: String
+    var app: String
+    var pid: Int
+    var windowID: String
+    var allowedDomain: String
+    var displayName: String
+    var bundleID: String
+    var processStartTime: Double
+
+    var id: String { targetID }
+
+    enum CodingKeys: String, CodingKey {
+        case app, pid
+        case targetID = "target_id"
+        case windowID = "window_id"
+        case allowedDomain = "allowed_domain"
+        case displayName = "display_name"
+        case bundleID = "bundle_id"
+        case processStartTime = "process_start_time"
+    }
+}
+
+struct CUATargetApprovalOption: Codable, Equatable, Identifiable, Sendable {
+    var optionID: String
+    var label: String
+    var targetIDs: [String]
+
+    var id: String { optionID }
+
+    enum CodingKeys: String, CodingKey {
+        case label
+        case optionID = "option_id"
+        case targetIDs = "target_ids"
+    }
+}
+
+struct CUATargetApproval: Codable, Equatable, Sendable {
+    var kind: String
+    var prompt: String
+    var options: [CUATargetApprovalOption]
+}
+
+struct CUATargetResolution: Codable, Equatable, Sendable {
+    var status: String
+    var targets: [CUATargetProposal]
+    var initialTargetID: String?
+    var reason: String
+    var approval: CUATargetApproval?
+
+    enum CodingKeys: String, CodingKey {
+        case status, targets, reason, approval
+        case initialTargetID = "initial_target_id"
     }
 }
 
@@ -272,12 +343,15 @@ struct CUARunRequest: Codable, Equatable, Sendable {
     var clientRequestID: String
     var targets: [CUARunTarget]?
     var initialTargetID: String?
+    var bundleID: String?
+    var processStartTime: Double?
 
     init(
         app: String, goal: String, planner: String, openURL: String,
         allowedDomain: String, maxSteps: Int, humanLogin: Bool, windowID: String,
         clientRequestID: String = UUID().uuidString.lowercased(),
-        targets: [CUARunTarget]? = nil, initialTargetID: String? = nil
+        targets: [CUARunTarget]? = nil, initialTargetID: String? = nil,
+        bundleID: String? = nil, processStartTime: Double? = nil
     ) {
         self.app = app
         self.goal = goal
@@ -290,6 +364,8 @@ struct CUARunRequest: Codable, Equatable, Sendable {
         self.clientRequestID = clientRequestID
         self.targets = targets
         self.initialTargetID = initialTargetID
+        self.bundleID = bundleID
+        self.processStartTime = processStartTime
     }
 
     enum CodingKeys: String, CodingKey {
@@ -302,6 +378,8 @@ struct CUARunRequest: Codable, Equatable, Sendable {
         case clientRequestID = "client_request_id"
         case targets
         case initialTargetID = "initial_target_id"
+        case bundleID = "bundle_id"
+        case processStartTime = "process_start_time"
     }
 
     func encode(to encoder: Encoder) throws {
@@ -319,6 +397,8 @@ struct CUARunRequest: Codable, Equatable, Sendable {
         } else {
             try container.encode(allowedDomain, forKey: .allowedDomain)
             try container.encode(windowID, forKey: .windowID)
+            try container.encodeIfPresent(bundleID, forKey: .bundleID)
+            try container.encodeIfPresent(processStartTime, forKey: .processStartTime)
         }
     }
 }
@@ -397,6 +477,21 @@ struct CUAClient: CUAAPI, Sendable {
     func planners() async throws -> [CUAPlannerOption] {
         let (data, response) = try await send(path: "/v1/cua/planners", method: "GET")
         return try decode([CUAPlannerOption].self, from: data, response: response)
+    }
+
+    func resolveTargets(
+        goal: String, planner: String, allowRemoteAppDiscovery: Bool
+    ) async throws -> CUATargetResolution {
+        let body = try JSONEncoder().encode(
+            CUATargetResolveRequest(
+                goal: goal, planner: planner,
+                allowRemoteAppDiscovery: allowRemoteAppDiscovery
+            )
+        )
+        let (data, response) = try await send(
+            path: "/v1/cua/targets/resolve", method: "POST", body: body
+        )
+        return try decode(CUATargetResolution.self, from: data, response: response)
     }
 
     func apps() async throws -> [CUAAppOption] {
