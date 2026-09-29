@@ -176,6 +176,51 @@ struct CUAServerManagerTests {
         #expect(manager.viewModel?.phase == .idle)
     }
 
+    @Test("Closed sidecar output pipes detach their readers while the session stays ready")
+    @MainActor
+    func outputReadersDetachAtEOF() async throws {
+        var output: Pipe?
+        var errors: Pipe?
+        let manager = CUAServerManager(
+            binaryPath: URL(fileURLWithPath: "/usr/bin/true"),
+            portProvider: { 7_675 },
+            bearerProvider: { "secret" },
+            readinessProbe: { _, _, _ in true },
+            launcher: { _, _, _, stdout, stderr, _ in
+                output = stdout
+                errors = stderr
+                return ProcessGroupChild.testStub()
+            }
+        )
+
+        await manager.ensureRunning()
+        let stdout = try #require(output)
+        let stderr = try #require(errors)
+        #expect(manager.state == .ready)
+        #expect(stdout.fileHandleForReading.readabilityHandler != nil)
+        #expect(stderr.fileHandleForReading.readabilityHandler != nil)
+
+        // An open writer with no buffered data is not EOF. The handler must
+        // stay installed until all writers close.
+        try stdout.fileHandleForWriting.write(contentsOf: Data("log\n".utf8))
+        try stderr.fileHandleForWriting.write(contentsOf: Data("error\n".utf8))
+        for _ in 0..<20 { await Task.yield() }
+        #expect(stdout.fileHandleForReading.readabilityHandler != nil)
+        #expect(stderr.fileHandleForReading.readabilityHandler != nil)
+
+        try stdout.fileHandleForWriting.close()
+        try stderr.fileHandleForWriting.close()
+        for _ in 0..<100 {
+            if stdout.fileHandleForReading.readabilityHandler == nil
+                && stderr.fileHandleForReading.readabilityHandler == nil { break }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(manager.state == .ready)
+        #expect(stdout.fileHandleForReading.readabilityHandler == nil)
+        #expect(stderr.fileHandleForReading.readabilityHandler == nil)
+        await manager.stop()
+    }
+
     @Test("Unexpected sidecar exit preserves context but revokes run authority")
     @MainActor
     func unexpectedExitInterruptsAndRestoresReadOnlyContext() async throws {

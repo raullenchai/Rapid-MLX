@@ -372,8 +372,12 @@ final class CUAServerManager {
 
     private nonisolated static func drain(_ pipe: Pipe) {
         let drainer = PipeDrainer(pipe.fileHandleForReading)
-        pipe.fileHandleForReading.readabilityHandler = { _ in
-            _ = drainer.drain()
+        pipe.fileHandleForReading.readabilityHandler = { handle in
+            // EOF remains read-ready forever. Detach now rather than spinning
+            // on empty drains until a later session teardown.
+            if drainer.drain().atEOF {
+                handle.readabilityHandler = nil
+            }
         }
     }
 
