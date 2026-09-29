@@ -1,8 +1,41 @@
+import Foundation
 import Testing
 @testable import Rapid
 
 @Suite("Mac automation permissions")
 struct MacAutomationPermissionsTests {
+    @Test("Packaged app can request target-specific browser Automation access")
+    func browserAutomationPackagingContract() throws {
+        let infoData = try Data(contentsOf: Self.sourceFile("Resources/Info.plist"))
+        let info = try #require(
+            PropertyListSerialization.propertyList(from: infoData, format: nil)
+                as? [String: Any]
+        )
+        let purpose = try #require(info["NSAppleEventsUsageDescription"] as? String)
+        #expect(!purpose.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+        for path in [
+            "Resources/Rapid.entitlements",
+            "scripts/sidecar-entitlements.plist",
+        ] {
+            let data = try Data(contentsOf: Self.sourceFile(path))
+            let entitlements = try #require(
+                PropertyListSerialization.propertyList(from: data, format: nil)
+                    as? [String: Any]
+            )
+            #expect(
+                entitlements["com.apple.security.automation.apple-events"] as? Bool
+                    == true
+            )
+        }
+
+        let buildScript = try String(
+            contentsOf: Self.sourceFile("scripts/build.sh"), encoding: .utf8
+        )
+        #expect(!buildScript.contains("SIDECAR_ARGS+=(--skip-codesign --skip-verify)"))
+        #expect(buildScript.contains("packaged sidecar Python lacks"))
+    }
+
     @Test("Computer Use requires both observation and control grants")
     func readinessRequiresBoth() {
         let none = MacAutomationPermissionSnapshot(
@@ -44,5 +77,13 @@ struct MacAutomationPermissionsTests {
         #expect(!snapshot.isGranted(.accessibility))
         #expect(MacAutomationPermission.screenRecording.title == "Screen Recording")
         #expect(MacAutomationPermission.accessibility.title == "Accessibility")
+    }
+
+    private static func sourceFile(_ relative: String) -> URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent(relative)
     }
 }

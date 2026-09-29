@@ -505,10 +505,27 @@ def test_read_url_uses_trusted_active_tab_and_fails_closed(monkeypatch):
         backend.subprocess,
         "run",
         lambda cmd, **k: types.SimpleNamespace(
-            stdout="", stderr="denied", returncode=1
+            stdout="",
+            stderr="Not authorized to send Apple events to Safari. (-1743)",
+            returncode=1,
         ),
     )
     assert backend.read_url("Safari") == ""
+    with pytest.raises(backend.ComputerUseError) as permission_error:
+        backend.read_url("Safari", require_permission=True)
+    assert permission_error.value.code == "automation_permission_required"
+    assert "System Settings > Privacy & Security > Automation" in str(
+        permission_error.value
+    )
+
+    monkeypatch.setattr(
+        backend.subprocess,
+        "run",
+        lambda cmd, **k: types.SimpleNamespace(
+            stdout="", stderr="browser has no front window (-1728)", returncode=1
+        ),
+    )
+    assert backend.read_url("Safari", require_permission=True) == ""
 
     app_info["bundleId"] = "com.example.unsupported"
     monkeypatch.setattr(

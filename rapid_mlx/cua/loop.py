@@ -228,6 +228,18 @@ class CUARun:
             )
         return None
 
+    def _read_url(self, snapshot: dict) -> str:
+        allowed = self.config.allowed_domain.strip()
+        if self.active_target_id is not None:
+            allowed = str(
+                self.targets[self.active_target_id].get("allowed_domain", "")
+            ).strip()
+        return backend.read_url(
+            self.backend_app,
+            window_id=self.window_id or snapshot.get("window_id"),
+            require_permission=bool(allowed),
+        )
+
     def _activate_target(self, target_id: str) -> None:
         target = self.targets.get(target_id)
         if target is None:
@@ -312,9 +324,7 @@ class CUARun:
             reason = "cancelled by client"
             self._record({"step": step_no, "assessment_only": True, "stop": reason})
             return {"status": "stopped", "reason": reason}
-        url_now = backend.read_url(
-            self.backend_app, window_id=self.window_id or snapshot.get("window_id")
-        )
+        url_now = self._read_url(snapshot)
         guard = self._check_domain(url_now)
         if guard:
             self._record({"step": step_no, "stop": guard, "url": url_now})
@@ -336,9 +346,7 @@ class CUARun:
             reason = f"final assessment target changed: {exc.message}"
             self._record({"step": step_no, "stop": reason, "error_code": exc.code})
             return {"status": "stalled", "reason": reason, "error": exc.code}
-        fresh_url = backend.read_url(
-            self.backend_app, window_id=self.window_id or fresh.get("window_id")
-        )
+        fresh_url = self._read_url(fresh)
         if self.stop_event.is_set():
             reason = "cancelled by client"
             self._record({"step": step_no, "assessment_only": True, "stop": reason})
@@ -569,9 +577,7 @@ class CUARun:
                 return {"status": "stopped", "reason": reason}
             return None
         self._empty_snapshots = 0
-        url_now = backend.read_url(
-            self.backend_app, window_id=self.window_id or snapshot.get("window_id")
-        )
+        url_now = self._read_url(snapshot)
         guard = self._check_domain(url_now)
         if guard:
             self.trace["guard_stop"] = guard
@@ -601,9 +607,7 @@ class CUARun:
             try:
                 self._activate_target(requested)
                 switched = self._get_app_state(screenshot=False)
-                switched_url = backend.read_url(
-                    self.backend_app, window_id=self.window_id
-                )
+                switched_url = self._read_url(switched)
                 guard = self._check_domain(switched_url)
                 if guard:
                     raise ComputerUseError("domain_guard", guard)
@@ -784,9 +788,7 @@ class CUARun:
                     }
                 )
                 return {"status": "stopped", "reason": reason, "error": exc.code}
-            fresh_url = backend.read_url(
-                self.backend_app, window_id=self.window_id or fresh.get("window_id")
-            )
+            fresh_url = self._read_url(fresh)
             fresh_guard = self._check_domain(fresh_url)
             fresh_target = self._target(fresh, plan.get("element_index", -1))
             fresh_label = str(fresh_target.get("label", ""))
@@ -867,9 +869,7 @@ class CUARun:
                 return {"status": "stopped", "reason": reason, "error": "target_stale"}
             snapshot = fresh
             target = fresh_target
-        pre_action_url = backend.read_url(
-            self.backend_app, window_id=self.window_id or snapshot.get("window_id")
-        )
+        pre_action_url = self._read_url(snapshot)
         pre_action_guard = self._check_domain(pre_action_url)
         if pre_action_guard:
             self.trace["guard_stop"] = pre_action_guard
@@ -906,10 +906,7 @@ class CUARun:
                     }
                 )
                 return {"status": "stopped", "reason": reason, "error": exc.code}
-            recovered_url = backend.read_url(
-                self.backend_app,
-                window_id=self.window_id or recovered.get("window_id"),
-            )
+            recovered_url = self._read_url(recovered)
             recovered_target = self._target(recovered, plan.get("element_index", -1))
             drifted = any(
                 (
@@ -974,9 +971,7 @@ class CUARun:
             )
             return {"status": "stopped", "reason": reason, "error": exc.code}
         after_sig = _tree_signature(after)
-        url_after = backend.read_url(
-            self.backend_app, window_id=self.window_id or after.get("window_id")
-        )
+        url_after = self._read_url(after)
         delta = {
             "executed": executed,
             "tree_changed": before_sig != after_sig,
@@ -1185,6 +1180,17 @@ async def run(
         cua_run.trace["status"] = "stopped"
         cua_run.trace["final_summary"] = reason
         terminal = {"status": "stopped", "reason": reason}
+    except ComputerUseError as exc:
+        # Backend authority failures that occur during observation (for
+        # example a denied browser Automation grant) need to stay typed for
+        # native and third-party clients. The message is deliberately
+        # bounded and contains no Apple Event response body.
+        terminal = {
+            "status": "failed",
+            "reason": exc.message,
+            "error": exc.code,
+            "recovery": list(exc.recovery),
+        }
     except asyncio.CancelledError:
         reason = "cancelled by client"
         cua_run.trace["final_summary"] = reason
@@ -1197,6 +1203,7 @@ async def run(
         cua_run.trace["status"] = terminal.get("status", "incomplete")
         reason = str(terminal.get("reason", ""))
         error = str(terminal.get("error", ""))
+        recovery = terminal.get("recovery")
         if reason and not cua_run.trace.get("final_summary"):
             cua_run.trace["final_summary"] = reason
         if not cua_run._terminal_emitted:
@@ -1211,6 +1218,7 @@ async def run(
                     "final_summary": str(cua_run.trace.get("final_summary", "")),
                     **({"reason": reason} if reason else {}),
                     **({"error": error} if error else {}),
+                    **({"recovery": recovery} if recovery else {}),
                 }
             )
         (run_dir / "trace.json").write_text(

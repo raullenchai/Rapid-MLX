@@ -164,6 +164,7 @@ class CUAEvent(BaseModel):
     status: str | None = None
     final_summary: str | None = None
     error: str | None = None
+    recovery: list[str] = Field(default_factory=list)
 
 
 class CUAPendingGate(BaseModel):

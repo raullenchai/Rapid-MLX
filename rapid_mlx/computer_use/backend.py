@@ -1844,7 +1844,12 @@ def list_apps() -> list[dict]:
     return apps
 
 
-def read_url(app: str, window_id: int | str | None = None) -> str:
+def read_url(
+    app: str,
+    window_id: int | str | None = None,
+    *,
+    require_permission: bool = False,
+) -> str:
     """Read the browser's active-tab URL from a trusted application API.
 
     Accessibility values are page-controlled and must never authorize a domain
@@ -1896,10 +1901,25 @@ def read_url(app: str, window_id: int | str | None = None) -> str:
             timeout=5,
         )
         if result.returncode != 0:
+            stderr = result.stderr or ""
+            permission_denied = "(-1743)" in stderr or (
+                "not authorized to send apple events" in stderr.lower()
+            )
+            if require_permission and permission_denied:
+                raise ComputerUseError(
+                    "automation_permission_required",
+                    "browser URL access is not authorized; allow Rapid-MLX to "
+                    "control the selected browser in System Settings > Privacy "
+                    "& Security > Automation, then retry",
+                )
             return ""
         url = result.stdout.strip()
         if url.startswith(("http://", "https://")):
             return url
+    except ComputerUseError as exc:
+        if exc.code == "automation_permission_required":
+            raise
+        return ""
     except Exception:  # noqa: BLE001
         pass
     return ""

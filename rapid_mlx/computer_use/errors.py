@@ -33,6 +33,10 @@ RECOVERY_HINTS: dict[str, tuple[str, ...]] = {
         "(System Settings > Privacy & Security > Accessibility),",
         "then retry. `computer permissions --json` reports status.",
     ),
+    "automation_permission_required": (
+        "Allow Rapid-MLX to control the selected browser in System Settings",
+        "> Privacy & Security > Automation, then retry the task.",
+    ),
     "window_stale": ("The window was replaced or moved; re-run get-app-state.",),
     "action_timeout": (
         "The app did not settle in time; retry once, then re-observe",

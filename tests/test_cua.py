@@ -595,6 +595,46 @@ def test_loop_done_path(config_dir, fake_backend, tmp_path, monkeypatch):
     assert len(trace["steps"]) == 2
 
 
+def test_loop_surfaces_typed_browser_automation_denial(
+    config_dir, fake_backend, tmp_path, monkeypatch
+):
+    from rapid_mlx.computer_use.backend import ComputerUseError
+    from rapid_mlx.cua import loop as loop_mod
+
+    config = _make_config(tmp_path)
+    config.allowed_domain = "example.com"
+    events = []
+
+    def deny_url(app, **kwargs):
+        assert kwargs["require_permission"] is True
+        raise ComputerUseError(
+            "automation_permission_required",
+            "allow browser Automation access, then retry",
+        )
+
+    monkeypatch.setattr(fake_backend, "read_url", deny_url)
+    trace = asyncio.run(
+        loop_mod.run(
+            config,
+            "Safari",
+            "inspect page",
+            max_steps=1,
+            planner=_FakePlanner([]),
+            event_sink=events.append,
+        )
+    )
+
+    assert trace["status"] == "failed"
+    assert trace["final_summary"] == "allow browser Automation access, then retry"
+    terminal = next(event for event in events if event["kind"] == "terminal")
+    assert terminal["status"] == "failed"
+    assert terminal["error"] == "automation_permission_required"
+    assert terminal["recovery"] == [
+        "Allow Rapid-MLX to control the selected browser in System Settings",
+        "> Privacy & Security > Automation, then retry the task.",
+    ]
+
+
 @pytest.mark.parametrize("disposition", ["partial", "blocked"])
 def test_incomplete_disposition_never_becomes_completed(
     disposition, config_dir, fake_backend, tmp_path, monkeypatch
@@ -784,7 +824,7 @@ def test_loop_domain_guard(config_dir, fake_backend, tmp_path, monkeypatch):
     monkeypatch.setattr(
         fake_backend,
         "read_url",
-        lambda app, window_id=None: (
+        lambda app, window_id=None, **kwargs: (
             observed_window_ids.append(window_id) or "https://www.wikipedia.org/"
         ),
     )
@@ -2437,7 +2477,7 @@ def test_domain_is_rechecked_after_planning_before_any_action(
     monkeypatch.setattr(
         fake_backend,
         "read_url",
-        lambda _app, window_id=None: (
+        lambda _app, window_id=None, **kwargs: (
             observed_window_ids.append(window_id) or next(urls)
         ),
     )

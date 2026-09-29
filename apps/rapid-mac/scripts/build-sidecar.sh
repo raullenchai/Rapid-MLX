@@ -1149,6 +1149,13 @@ else
                 exit 1
             }
     done < "$MACHOS_LIST"
+    automation_events=$(codesign -d --entitlements :- \
+        "$STAGE/python/bin/python3.12" 2>/dev/null \
+        | plutil -extract 'com\.apple\.security\.automation\.apple-events' raw -o - - 2>/dev/null || true)
+    if [ "$automation_events" != "true" ]; then
+        echo "ERR: sealed sidecar Python lacks com.apple.security.automation.apple-events=true" >&2
+        exit 1
+    fi
 fi
 
 # ----- step 6: smoke test (codex r1 B1: BEFORE packaging) --------------
