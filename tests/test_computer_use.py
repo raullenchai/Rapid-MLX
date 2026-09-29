@@ -137,6 +137,163 @@ def test_native_save_verifies_only_exact_edited_transition(monkeypatch):
     assert result["verified"] is True
 
 
+def _textedit_snapshot():
+    snapshot = _stable_snapshot(observed_at=backend.time.time())
+    snapshot["app"]["bundleId"] = "com.apple.TextEdit"
+    return snapshot
+
+
+def _ax_text_window(value, *, duplicate=False):
+    children = [
+        {
+            "AXRole": "AXTextArea",
+            "AXSubrole": None,
+            "AXValue": value,
+            "AXChildren": [],
+        }
+    ]
+    if duplicate:
+        children.append(dict(children[0]))
+    return {"AXRole": "AXWindow", "AXChildren": children}
+
+
+def test_textedit_plain_text_save_verifies_exact_stable_utf8_match(
+    monkeypatch, tmp_path
+):
+    path = tmp_path / "notes.txt"
+    path.write_text("saved line\n", encoding="utf-8")
+    monkeypatch.setattr(
+        backend.ax_driver, "_get", lambda element, attr: element.get(attr)
+    )
+    assert backend._verify_textedit_plain_text_save(
+        _textedit_snapshot(), path.as_uri(), _ax_text_window("saved line\n")
+    )
+
+
+@pytest.mark.parametrize("failure", ["mismatch", "duplicate", "wrong_bundle", "binary"])
+def test_textedit_plain_text_save_rejects_ambiguous_or_inexact_evidence(
+    monkeypatch, tmp_path, failure
+):
+    path = tmp_path / "notes.txt"
+    path.write_bytes(b"saved line\n" if failure != "binary" else b"\xff\xfe")
+    snapshot = _textedit_snapshot()
+    if failure == "wrong_bundle":
+        snapshot["app"]["bundleId"] = "com.example.Editor"
+    window = _ax_text_window(
+        "different" if failure == "mismatch" else "saved line\n",
+        duplicate=failure == "duplicate",
+    )
+    monkeypatch.setattr(
+        backend.ax_driver, "_get", lambda element, attr: element.get(attr)
+    )
+    assert not backend._verify_textedit_plain_text_save(snapshot, path.as_uri(), window)
+
+
+def test_textedit_plain_text_save_rejects_symlink_non_txt_and_oversize(
+    monkeypatch, tmp_path
+):
+    target = tmp_path / "target.txt"
+    target.write_text("same", encoding="utf-8")
+    link = tmp_path / "link.txt"
+    link.symlink_to(target)
+    markdown = tmp_path / "notes.md"
+    markdown.write_text("same", encoding="utf-8")
+    large = tmp_path / "large.txt"
+    large.write_bytes(b"x" * (backend.TEXTEDIT_SAVE_MAX_BYTES + 1))
+    window = _ax_text_window("same")
+    monkeypatch.setattr(
+        backend.ax_driver, "_get", lambda element, attr: element.get(attr)
+    )
+    for path in (link, markdown, large):
+        assert not backend._verify_textedit_plain_text_save(
+            _textedit_snapshot(), path.as_uri(), window
+        )
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        "https://example.com/notes.txt",
+        "file://remote.example/notes.txt",
+        "file://user@localhost/notes.txt",
+        "file://localhost:123/notes.txt",
+        "file:///tmp/notes.txt?version=1",
+        "file:///tmp/notes.txt#fragment",
+        "file://[invalid/notes.txt",
+    ],
+)
+def test_textedit_plain_text_save_rejects_nonlocal_or_ambiguous_urls(
+    monkeypatch, document
+):
+    monkeypatch.setattr(
+        backend.ax_driver, "_get", lambda element, attr: element.get(attr)
+    )
+    assert not backend._verify_textedit_plain_text_save(
+        _textedit_snapshot(), document, _ax_text_window("same")
+    )
+
+
+def test_textedit_plain_text_save_rejects_path_replaced_by_same_inode_symlink(
+    monkeypatch, tmp_path
+):
+    path = tmp_path / "notes.txt"
+    alias = tmp_path / "same-inode.txt"
+    path.write_text("same", encoding="utf-8")
+    backend.os.link(path, alias)
+    window = _ax_text_window("same")
+    monkeypatch.setattr(
+        backend.ax_driver, "_get", lambda element, attr: element.get(attr)
+    )
+    original_close = backend.os.close
+    replaced = False
+
+    def close_and_replace(fd):
+        nonlocal replaced
+        original_close(fd)
+        path.unlink()
+        path.symlink_to(alias)
+        replaced = True
+
+    monkeypatch.setattr(backend.os, "close", close_and_replace)
+    assert not backend._verify_textedit_plain_text_save(
+        _textedit_snapshot(), path.as_uri(), window
+    )
+    assert replaced
+
+
+def test_native_save_uses_exact_textedit_disk_match_when_axedited_is_absent(
+    monkeypatch,
+):
+    live = object()
+    focused = {}
+    monkeypatch.setattr(
+        backend,
+        "_save_menu_candidate",
+        lambda snapshot: (
+            live,
+            ("File", "Save", "s", "0", ""),
+            "file:///tmp/a.txt",
+        ),
+    )
+    monkeypatch.setattr(backend, "_focused_ax_window", lambda app: focused)
+    monkeypatch.setattr(backend.ax_driver, "_get", lambda *a: None)
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "AXUIElementPerformAction",
+        lambda *a: backend.ax_driver.kAXErrorSuccess,
+    )
+    monkeypatch.setattr(backend.time, "sleep", lambda _: None)
+    monkeypatch.setattr(backend, "_verify_textedit_plain_text_save", lambda *a: True)
+    expected = ("file:///tmp/a.txt", "File", "Save", "s", "0", "")
+    result = backend.save_document(
+        "pid:4",
+        _textedit_snapshot(),
+        expected_identity=expected,
+    )
+    assert result["verified"] is True
+    assert result["verification"] == "same-document persistence was verified"
+
+
 @pytest.mark.parametrize(
     "items",
     [

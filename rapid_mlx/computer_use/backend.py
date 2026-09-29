@@ -12,13 +12,16 @@ Qwen) drives the machine through these calls.
 
 from __future__ import annotations
 
+import os
 import re
+import stat
 import subprocess
 import tempfile
 import time
 import uuid
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import unquote, urlparse
 
 from .errors import ComputerUseError
 
@@ -958,6 +961,9 @@ def _validate_focused_window(
 
 SAVE_MENU_MAX_NODES = 128
 SAVE_MENU_MAX_DEPTH = 6
+TEXTEDIT_SAVE_MAX_BYTES = 1_048_576
+TEXTEDIT_VALUE_MAX_NODES = 256
+TEXTEDIT_VALUE_MAX_DEPTH = 12
 
 
 def _save_menu_candidate(snapshot: dict) -> tuple[object, tuple[str, ...], object]:
@@ -1039,6 +1045,141 @@ def inspect_save_document(app: str, snapshot: dict) -> dict:
     return {"save_identity": (document, *identity)}
 
 
+def _unique_textedit_plain_text_value(
+    snapshot: dict, focused_window: object
+) -> str | None:
+    bundle = str(
+        snapshot.get("app", {}).get("bundleId")
+        or snapshot.get("app", {}).get("bundle_id")
+        or ""
+    ).casefold()
+    if bundle != "com.apple.textedit":
+        return None
+    values: list[str] = []
+    visited = 0
+
+    def walk(element: object, depth: int) -> None:
+        nonlocal visited
+        if depth > TEXTEDIT_VALUE_MAX_DEPTH or visited >= TEXTEDIT_VALUE_MAX_NODES:
+            return
+        visited += 1
+        role = ax_driver._get(element, "AXRole")
+        subrole = ax_driver._get(element, "AXSubrole")
+        if role == "AXTextArea" and subrole != "AXSecureTextField":
+            value = ax_driver._get(element, "AXValue")
+            if isinstance(value, str):
+                values.append(value)
+        for child in ax_driver._as_list(ax_driver._get(element, "AXChildren")):
+            walk(child, depth + 1)
+
+    walk(focused_window, 0)
+    if len(values) != 1:
+        return None
+    try:
+        if len(values[0].encode("utf-8")) > TEXTEDIT_SAVE_MAX_BYTES:
+            return None
+    except UnicodeEncodeError:
+        return None
+    return values[0]
+
+
+def _verify_textedit_plain_text_save(
+    snapshot: dict, document: object, focused_window: object
+) -> bool:
+    """Compare one exact TextEdit AX value with a stable local UTF-8 file.
+
+    Contents never leave this function. Any URL, file-identity, encoding,
+    size, or AX ambiguity returns unknown rather than a false verification.
+    """
+
+    value = _unique_textedit_plain_text_value(snapshot, focused_window)
+    if value is None or not isinstance(document, str):
+        return False
+    try:
+        parsed = urlparse(document)
+        invalid_url = (
+            parsed.scheme != "file"
+            or parsed.netloc not in {"", "localhost"}
+            or parsed.params
+            or parsed.query
+            or parsed.fragment
+        )
+    except ValueError:
+        return False
+    if invalid_url:
+        return False
+    try:
+        path = Path(unquote(parsed.path))
+    except (TypeError, ValueError):
+        return False
+    if not path.is_absolute() or path.suffix.casefold() != ".txt":
+        return False
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        before = path.lstat()
+        if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+            return False
+        if before.st_size > TEXTEDIT_SAVE_MAX_BYTES:
+            return False
+        fd = os.open(path, flags)
+        try:
+            opened = os.fstat(fd)
+            before_identity = (
+                before.st_dev,
+                before.st_ino,
+                before.st_size,
+                before.st_mtime_ns,
+            )
+            opened_identity = (
+                opened.st_dev,
+                opened.st_ino,
+                opened.st_size,
+                opened.st_mtime_ns,
+            )
+            if opened_identity != before_identity:
+                return False
+            chunks = []
+            remaining = TEXTEDIT_SAVE_MAX_BYTES + 1
+            while remaining > 0:
+                chunk = os.read(fd, min(65_536, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            raw = b"".join(chunks)
+            after_fd = os.fstat(fd)
+        finally:
+            os.close(fd)
+        after_path = path.lstat()
+    except (OSError, ValueError):
+        return False
+    after_fd_identity = (
+        after_fd.st_dev,
+        after_fd.st_ino,
+        after_fd.st_size,
+        after_fd.st_mtime_ns,
+    )
+    after_path_identity = (
+        after_path.st_dev,
+        after_path.st_ino,
+        after_path.st_size,
+        after_path.st_mtime_ns,
+    )
+    if (
+        len(raw) > TEXTEDIT_SAVE_MAX_BYTES
+        or stat.S_ISLNK(after_path.st_mode)
+        or not stat.S_ISREG(after_path.st_mode)
+        or after_fd_identity != opened_identity
+        or after_path_identity != opened_identity
+        or after_fd.st_size != len(raw)
+    ):
+        return False
+    try:
+        return raw.decode("utf-8") == value
+    except UnicodeDecodeError:
+        return False
+
+
 def save_document(
     app: str, snapshot: dict, *, expected_identity: tuple[str, ...]
 ) -> dict:
@@ -1064,11 +1205,10 @@ def save_document(
             if focused_after is not None
             else None
         )
-        if (
-            after_identity == identity
-            and after_document == document
-            and edited_before is True
-            and edited_after is False
+        same_binding = after_identity == identity and after_document == document
+        if same_binding and (
+            (edited_before is True and edited_after is False)
+            or _verify_textedit_plain_text_save(snapshot, document, focused_after)
         ):
             verified = True
     except ComputerUseError:
@@ -1076,7 +1216,7 @@ def save_document(
         # retroactively become an execution rejection; report it as unverified.
         pass
     verification = (
-        "AXEdited changed from true to false for the same document"
+        "same-document persistence was verified"
         if verified is True
         else "native Save AXPress was accepted; persistence could not be verified"
     )
