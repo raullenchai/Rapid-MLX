@@ -159,7 +159,7 @@ def resolve_planner(
             # A URL override would send the preset's credential to a
             # different endpoint than the one the user consented to.
             raise ValueError(
-                "planner URL override is not allowed for a model saved with "
+                "model URL override is not allowed for a model saved with "
                 "credentials or remote-data consent; create a separate model instead"
             )
         return PlannerConfig(
@@ -174,7 +174,7 @@ def resolve_planner(
     if spec.startswith(("http://", "https://")):
         if not model_override:
             raise ValueError(
-                f"--planner-model is required when --planner is a URL: {spec}"
+                f"a model name is required when the model endpoint is a URL: {spec}"
             )
         return PlannerConfig(
             preset="custom",
@@ -183,7 +183,7 @@ def resolve_planner(
             text_only=bool(text_only_override),
         )
     known = ", ".join(sorted(presets))
-    raise ValueError(f"unknown planner preset {spec!r} (known: {known})")
+    raise ValueError(f"unknown model {spec!r} (known: {known})")
 
 
 PRESET_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
@@ -219,7 +219,7 @@ def save_user_preset(
     name = re.sub(r"\s+", "-", (name or "").strip()).lower()
     if not PRESET_NAME_RE.match(name):
         raise ValueError(
-            "preset name must be 1-32 chars: lowercase letters, digits, dashes"
+            "model name must be 1-32 chars: lowercase letters, digits, dashes"
         )
     url = (url or "").strip()
     if not url.startswith(("http://", "https://")):
@@ -247,7 +247,7 @@ def save_user_preset(
     stored = _read_stored()
     presets = stored.setdefault("presets", {})
     if name in presets and not presets[name].get("user_created"):
-        raise ValueError(f"preset name {name!r} is reserved")
+        raise ValueError(f"model name {name!r} is reserved")
     if name in presets:
         raise ValueError(
             f"model {name!r} already exists; delete it first to replace it"
@@ -270,10 +270,10 @@ def delete_user_preset(name: str) -> None:
     """Remove a user-defined preset. Built-in defaults cannot be deleted."""
     name = name.strip().lower()
     if name in DEFAULT_PRESETS:
-        raise ValueError(f"built-in preset {name!r} cannot be deleted")
+        raise ValueError(f"built-in model {name!r} cannot be deleted")
     stored = _read_stored()
     presets = stored.get("presets", {})
     if name not in presets:
-        raise ValueError(f"unknown preset {name!r}")
+        raise ValueError(f"unknown model {name!r}")
     del presets[name]
     _write_stored(stored)
