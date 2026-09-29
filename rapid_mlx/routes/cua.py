@@ -742,14 +742,16 @@ async def create_run(request: CUARunCreateRequest) -> CUARunCreated:
         status=run.status,
         window_id=run.window_id,
         client_request_id=run.client_request_id,
-        targets=run.targets,
+        targets=[CUATarget.model_validate(target) for target in run.targets],
         active_target_id=run.active_target_id,
     )
 
 
 @router.get("/runs", response_model=CUARunList)
 async def list_runs() -> CUARunList:
-    return CUARunList(runs=_service().list_runs())
+    return CUARunList(
+        runs=[CUARunSummary.model_validate(run) for run in _service().list_runs()]
+    )
 
 
 @router.get("/runs/by-request/{client_request_id}", response_model=CUARunCreated)
@@ -765,7 +767,7 @@ async def get_run_by_request(
         status=run.status,
         window_id=run.window_id,
         client_request_id=run.client_request_id,
-        targets=run.targets,
+        targets=[CUATarget.model_validate(target) for target in run.targets],
         active_target_id=run.active_target_id,
     )
 

@@ -492,6 +492,7 @@ struct CUASection: View {
                                 .buttonStyle(.borderless)
                                 .disabled(viewModel.phase.isBusy)
                                 .accessibilityLabel("Remove \(target.displayName)")
+                                .accessibilityIdentifier("ComputerUse.Agent.TargetSet.Remove")
                         }
                         .accessibilityElement(children: .contain)
                         .accessibilityIdentifier("ComputerUse.Agent.TargetSet.Item")

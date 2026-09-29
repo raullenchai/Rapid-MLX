@@ -295,7 +295,7 @@ class CUARun:
             if self.active_target_id is not None
             else self.config.allowed_domain
         )
-        args = [self.goal, snapshot, self.history, allowed_domain, progress_hint]
+        args = (self.goal, snapshot, self.history, allowed_domain, progress_hint)
         if not self.targets:
             return await planner.plan(*args)
         active_target_id = str(self.active_target_id)
@@ -631,11 +631,9 @@ class CUARun:
                 switch_candidate = self._get_app_state(screenshot=False)
                 backend.raise_selected_window(self.backend_app, switch_candidate)
                 switched = self._get_app_state(screenshot=False)
-                if (
-                    self._window_identity(switch_candidate)
-                    != self._window_identity(switched)
-                    or switch_candidate.get("window") != switched.get("window")
-                ):
+                if self._window_identity(switch_candidate) != self._window_identity(
+                    switched
+                ) or switch_candidate.get("window") != switched.get("window"):
                     raise ComputerUseError(
                         "target_drift",
                         "selected target changed while establishing window focus",

@@ -408,8 +408,9 @@ def test_multi_target_switch_observes_only_frozen_selected_target(
     monkeypatch.setattr(
         backend_mod,
         "raise_selected_window",
-        lambda app, snapshot: raised.append((app, snapshot["window_id"]))
-        or snapshot["window"],
+        lambda app, snapshot: (
+            raised.append((app, snapshot["window_id"])) or snapshot["window"]
+        ),
     )
     focused = []
     monkeypatch.setattr(
@@ -3509,8 +3510,7 @@ def test_done_cannot_claim_folder_rename_after_unverified_enter(
             }
         ],
         "tree_text": (
-            "[1] AXTextField Rapid CUA Dogfood 2026-09-28\u200b\u200b "
-            "Kind Folder"
+            "[1] AXTextField Rapid CUA Dogfood 2026-09-28\u200b\u200b Kind Folder"
         ),
     }
     monkeypatch.setattr(fake_backend, "get_app_state", lambda *a, **k: dict(snapshot))

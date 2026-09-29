@@ -365,13 +365,21 @@ def _focused_transient_window(
     frame = ax_driver._point_size(focused) if focused is not None else None
     if frame is None:
         return None
-    anchor_frame = tuple(float(anchor[key]) for key in ("x", "y", "width", "height"))
+    anchor_frame = (
+        float(anchor["x"]),
+        float(anchor["y"]),
+        float(anchor["width"]),
+        float(anchor["height"]),
+    )
     if _ax_cg_frames_match(frame, anchor_frame):
         return None
     matches = []
     for candidate in _window_records(app_info):
-        candidate_frame = tuple(
-            float(candidate[key]) for key in ("x", "y", "width", "height")
+        candidate_frame = (
+            float(candidate["x"]),
+            float(candidate["y"]),
+            float(candidate["width"]),
+            float(candidate["height"]),
         )
         if _ax_cg_frames_match(frame, candidate_frame):
             matches.append(candidate)
@@ -966,7 +974,9 @@ def _validate_focused_window(
         # only when an older bridge lacks that resolver API entirely.
         workspace = services.NSWorkspace.sharedWorkspace() if services else None
         frontmost = workspace.frontmostApplication() if workspace is not None else None
-        active = frontmost is not None and int(frontmost.processIdentifier()) == expected_pid
+        active = (
+            frontmost is not None and int(frontmost.processIdentifier()) == expected_pid
+        )
     if not active:
         raise ComputerUseError(
             "target_drift",
@@ -1021,7 +1031,12 @@ def raise_selected_window(app: str, snapshot: dict) -> dict:
     current = _select_window(app_info, window_id=expected["window_id"])
     if not _same_window(expected, current):
         raise ComputerUseError("target_drift", "selected window moved before recovery")
-    frame = tuple(float(current[key]) for key in ("x", "y", "width", "height"))
+    frame = (
+        float(current["x"]),
+        float(current["y"]),
+        float(current["width"]),
+        float(current["height"]),
+    )
     matches = [
         window
         for window in ax_driver._as_list(ax_driver._get(app_element, "AXWindows"))
