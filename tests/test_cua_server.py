@@ -1737,3 +1737,47 @@ def test_permission_prompt_rejects_unparseable_peer_address(client, monkeypatch)
     assert response.status_code == 403
     assert response.json()["detail"]["code"] == "local_request_required"
     assert calls == []
+
+
+def test_multi_target_freeze_rejects_changed_pid_identity(client, monkeypatch):
+    from rapid_mlx.computer_use import backend as backend_mod
+
+    monkeypatch.setattr(
+        backend_mod,
+        "validate_window",
+        lambda app, window_id: {
+            "app": {"name": "Finder", "bundleId": "com.apple.finder", "pid": 99},
+            "window_id": window_id,
+        },
+    )
+    response = _post_run(
+        client,
+        app="pid:42",
+        initial_target_id="one",
+        targets=[
+            {"target_id": "one", "app": "pid:42", "pid": 42, "window_id": "cg:1"},
+            {"target_id": "two", "app": "pid:43", "pid": 43, "window_id": "cg:2"},
+        ],
+    )
+    assert response.status_code == 400
+    assert "process identity changed" in response.text
+    assert client.fresh_service.list_runs() == []
+
+
+def test_service_shutdown_during_window_freeze_does_not_commit_run(
+    client, monkeypatch
+):
+    from rapid_mlx.computer_use import backend as backend_mod
+
+    def shutdown_during_validation(app, window_id):
+        client.fresh_service._closing = True
+        return {
+            "app": {"name": "Finder", "bundleId": "com.apple.finder", "pid": 42},
+            "window_id": window_id,
+        }
+
+    monkeypatch.setattr(backend_mod, "validate_window", shutdown_during_validation)
+    response = _post_run(client, window_id="cg:1")
+    assert response.status_code == 409
+    assert "shutting down" in response.json()["detail"]
+    assert client.fresh_service.list_runs() == []
