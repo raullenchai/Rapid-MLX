@@ -3238,6 +3238,109 @@ def test_transient_enter_requires_same_focused_companion(monkeypatch):
     assert pressed == [backend.KEY_ALIASES["enter"]]
 
 
+@pytest.mark.parametrize("failure", ["missing_identity", "companion_drift"])
+def test_synthetic_transient_dispatch_revalidates_window_identity(monkeypatch, failure):
+    snapshot = _stable_snapshot(
+        elements=[
+            {
+                "index": 0,
+                "role": "AXTextField",
+                "label": "name",
+                "center": [10, 10],
+                "source_window_id": "cg:1803",
+            }
+        ]
+    )
+    transient = _window(window_id=1803, x=5, y=5, width=20, height=20)
+    if failure != "missing_identity":
+        snapshot["transient_window"] = transient
+    live = object()
+    monkeypatch.setattr(backend, "_live_element", lambda *a, **k: live)
+    monkeypatch.setattr(backend, "_focused_ax_window", lambda *a: live)
+    monkeypatch.setattr(backend.ax_driver, "_get", lambda *a: True)
+    monkeypatch.setattr(
+        backend, "_validate_snapshot_window", lambda *a, **k: snapshot["window"]
+    )
+    monkeypatch.setattr(backend, "_focused_transient_window", lambda *a, **k: None)
+
+    with pytest.raises(errors.ComputerUseError) as excinfo:
+        backend._prepare_synthetic_action(
+            "pid:4", None, snapshot, 0, allow_focused_editable_enter=True
+        )
+    assert excinfo.value.code == "target_drift"
+
+
+def test_synthetic_focused_editable_requires_numeric_center(monkeypatch):
+    snapshot = _stable_snapshot(
+        elements=[
+            {
+                "index": 0,
+                "role": "AXTextField",
+                "label": "name",
+                "center": ["left", 10],
+            }
+        ]
+    )
+    live = object()
+    monkeypatch.setattr(backend, "_live_element", lambda *a, **k: live)
+    monkeypatch.setattr(backend, "_focused_ax_element", lambda *a: live)
+    monkeypatch.setattr(
+        backend, "_validate_snapshot_window", lambda *a, **k: snapshot["window"]
+    )
+
+    with pytest.raises(errors.ComputerUseError) as excinfo:
+        backend._prepare_synthetic_action(
+            "pid:4", None, snapshot, 0, allow_focused_editable_enter=True
+        )
+    assert excinfo.value.code == "target_drift"
+
+
+def test_synthetic_noneditable_target_uses_window_center_validation(monkeypatch):
+    snapshot = _stable_snapshot(
+        elements=[{"index": 0, "role": "AXButton", "label": "Open", "center": [5, 5]}]
+    )
+    validated = []
+    monkeypatch.setattr(
+        backend,
+        "_validate_snapshot_window",
+        lambda value, **kwargs: (
+            validated.append(kwargs.get("point")) or snapshot["window"]
+        ),
+    )
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a: None)
+
+    assert backend._prepare_synthetic_action("pid:4", None, snapshot, 0) is snapshot
+    assert validated == [(50.0, 50.0)]
+
+
+def test_finder_rename_menu_walk_is_depth_bounded(monkeypatch):
+    leaf = {
+        "AXRole": "AXMenuItem",
+        "AXTitle": "Rename",
+        "AXEnabled": True,
+        "actions": ["AXPress"],
+        "AXChildren": [],
+    }
+    menu = leaf
+    for _ in range(backend.SAVE_MENU_MAX_DEPTH + 2):
+        menu = {"AXRole": "AXMenu", "AXChildren": [menu]}
+    monkeypatch.setattr(
+        backend.ax_driver, "_app_element", lambda *a, **k: {"AXMenuBar": menu}
+    )
+    monkeypatch.setattr(
+        backend.ax_driver, "_get", lambda element, attr: element.get(attr)
+    )
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_action_names",
+        lambda element: list(element.get("actions", [])),
+    )
+
+    with pytest.raises(errors.ComputerUseError) as excinfo:
+        backend._finder_rename_menu_item(_finder_rename_snapshot())
+    assert excinfo.value.code == "element_not_found"
+
+
 def test_transient_companion_rejects_non_enter_key_before_dispatch(monkeypatch):
     snapshot = _stable_snapshot(
         elements=[
