@@ -4056,6 +4056,24 @@ def test_target_window_discovery_is_bounded_ordered_and_excludes_rapid(monkeypat
     assert catalog[0]["window"]["window_id"] == "cg:2"
 
 
+def test_resolved_app_info_falls_back_to_process_create_time(monkeypatch):
+    running = types.SimpleNamespace(
+        localizedName=lambda: "Finder",
+        bundleIdentifier=lambda: "com.apple.finder",
+        processIdentifier=lambda: 42,
+        launchDate=lambda: None,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "psutil",
+        types.SimpleNamespace(
+            Process=lambda pid: types.SimpleNamespace(create_time=lambda: 1234.5)
+        ),
+    )
+
+    assert backend._resolved_app_info(running)["processStartTime"] == 1234.5
+
+
 def test_resolved_app_info_includes_process_incarnation_marker():
     launched = types.SimpleNamespace(timeIntervalSince1970=lambda: 1234.5)
     running = types.SimpleNamespace(

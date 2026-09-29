@@ -329,6 +329,61 @@ def test_target_resolver_does_not_treat_app_name_substring_as_explicit(
     assert "window" not in body["targets"][0]["display_name"].casefold()
 
 
+def test_target_resolver_never_substitutes_for_named_running_app_missing_catalog(
+    client, monkeypatch
+):
+    from rapid_mlx.computer_use import backend
+
+    monkeypatch.setattr(
+        backend,
+        "discover_target_windows",
+        lambda: [
+            {
+                "catalog_id": "w1",
+                "app": {
+                    "name": "System Settings",
+                    "bundleId": "com.apple.systempreferences",
+                    "pid": 70,
+                    "processStartTime": 1004.0,
+                },
+                "window": {"window_id": "cg:700", "title": "Automation"},
+                "z_order": 0,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        backend,
+        "list_apps",
+        lambda: [
+            {"name": "Finder", "bundleId": "com.apple.finder", "pid": 42},
+            {
+                "name": "System Settings",
+                "bundleId": "com.apple.systempreferences",
+                "pid": 70,
+            },
+        ],
+    )
+    planner_called = False
+
+    async def choose(self, goal, catalog):
+        nonlocal planner_called
+        planner_called = True
+        return {"target_ids": ["a1"], "reason": "substitute system settings"}
+
+    monkeypatch.setattr(cua_routes.Planner, "resolve_targets", choose)
+    body = client.post(
+        "/v1/cua/targets/resolve",
+        headers=AUTH,
+        json={"goal": "In Finder, rename the project folder", "planner": "local-9b"},
+    ).json()
+
+    assert body["status"] == "unresolved"
+    assert body["targets"] == []
+    assert "Finder" in body["reason"]
+    assert "Bring the app forward" in body["reason"]
+    assert planner_called is False
+
+
 def test_target_resolver_rejects_unknown_model_catalog_id(client, monkeypatch):
     async def unknown(self, goal, catalog):
         raise ValueError("unknown catalog ID")

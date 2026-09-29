@@ -92,8 +92,13 @@ def _resolved_app_info(running: Any) -> dict:
     try:
         launched = running.launchDate()
         started_at = float(launched.timeIntervalSince1970())
-    except Exception:  # noqa: BLE001 - older bridges may omit launchDate
-        return info
+    except Exception:  # noqa: BLE001 - Finder/older bridges may omit launchDate
+        try:
+            import psutil
+
+            started_at = float(psutil.Process(info["pid"]).create_time())
+        except Exception:  # noqa: BLE001 - unavailable identity fails closed upstream
+            return info
     if started_at > 0:
         # Internal only: HTTP response models intentionally drop this field.
         info["processStartTime"] = started_at
