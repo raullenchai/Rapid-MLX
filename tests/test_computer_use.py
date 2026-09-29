@@ -213,6 +213,83 @@ def test_textedit_plain_text_save_rejects_symlink_non_txt_and_oversize(
 
 
 @pytest.mark.parametrize(
+    "value",
+    ["x" * (backend.TEXTEDIT_SAVE_MAX_BYTES + 1), "bad-surrogate-\ud800"],
+)
+def test_textedit_ax_value_rejects_oversize_or_non_utf8(monkeypatch, value):
+    monkeypatch.setattr(
+        backend.ax_driver, "_get", lambda element, attr: element.get(attr)
+    )
+    assert (
+        backend._unique_textedit_plain_text_value(
+            _textedit_snapshot(), _ax_text_window(value)
+        )
+        is None
+    )
+
+
+def test_textedit_ax_value_bounds_tree_depth(monkeypatch):
+    leaf = _ax_text_window("hidden")["AXChildren"][0]
+    root = leaf
+    for _ in range(backend.TEXTEDIT_VALUE_MAX_DEPTH + 2):
+        root = {"AXRole": "AXGroup", "AXChildren": [root]}
+    monkeypatch.setattr(
+        backend.ax_driver, "_get", lambda element, attr: element.get(attr)
+    )
+    assert backend._unique_textedit_plain_text_value(_textedit_snapshot(), root) is None
+
+
+def test_textedit_save_rejects_path_parse_and_io_failures(monkeypatch, tmp_path):
+    window = _ax_text_window("same")
+    monkeypatch.setattr(
+        backend.ax_driver, "_get", lambda element, attr: element.get(attr)
+    )
+    monkeypatch.setattr(
+        backend, "Path", lambda value: (_ for _ in ()).throw(ValueError("bad path"))
+    )
+    assert not backend._verify_textedit_plain_text_save(
+        _textedit_snapshot(), "file:///tmp/notes.txt", window
+    )
+
+    monkeypatch.undo()
+    monkeypatch.setattr(
+        backend.ax_driver, "_get", lambda element, attr: element.get(attr)
+    )
+    path = tmp_path / "notes.txt"
+    path.write_text("same", encoding="utf-8")
+    monkeypatch.setattr(
+        backend.os, "open", lambda *a, **k: (_ for _ in ()).throw(OSError("denied"))
+    )
+    assert not backend._verify_textedit_plain_text_save(
+        _textedit_snapshot(), path.as_uri(), window
+    )
+
+
+def test_textedit_save_rejects_open_file_identity_mismatch(monkeypatch, tmp_path):
+    path = tmp_path / "notes.txt"
+    path.write_text("same", encoding="utf-8")
+    window = _ax_text_window("same")
+    monkeypatch.setattr(
+        backend.ax_driver, "_get", lambda element, attr: element.get(attr)
+    )
+    original_fstat = backend.os.fstat
+
+    def changed_fstat(fd):
+        current = original_fstat(fd)
+        return types.SimpleNamespace(
+            st_dev=current.st_dev,
+            st_ino=current.st_ino + 1,
+            st_size=current.st_size,
+            st_mtime_ns=current.st_mtime_ns,
+        )
+
+    monkeypatch.setattr(backend.os, "fstat", changed_fstat)
+    assert not backend._verify_textedit_plain_text_save(
+        _textedit_snapshot(), path.as_uri(), window
+    )
+
+
+@pytest.mark.parametrize(
     "document",
     [
         "https://example.com/notes.txt",
@@ -1471,6 +1548,77 @@ def test_raise_selected_window_rejects_ambiguous_ax_match(monkeypatch):
     with pytest.raises(errors.ComputerUseError) as excinfo:
         backend.raise_selected_window("pid:4", snapshot)
     assert excinfo.value.code == "target_occluded"
+
+
+def test_raise_selected_window_requires_snapshot_identity():
+    with pytest.raises(errors.ComputerUseError) as excinfo:
+        backend.raise_selected_window("Finder", {"window": {}})
+    assert excinfo.value.code == "stale_observation"
+
+
+@pytest.mark.parametrize(
+    ("failure", "code"),
+    [
+        ("app_drift", "target_drift"),
+        ("window_drift", "target_drift"),
+        ("raise_rejected", "target_occluded"),
+        ("post_raise_drift", "target_drift"),
+    ],
+)
+def test_raise_selected_window_fails_closed_across_identity_boundaries(
+    monkeypatch, failure, code
+):
+    snapshot = _stable_snapshot(observed_at=backend.time.time())
+    selected_ax = object()
+    app_element = object()
+    monkeypatch.setattr(
+        backend, "_validate_snapshot_window", lambda value: value["window"]
+    )
+    app_info = dict(snapshot["app"])
+    if failure == "app_drift":
+        app_info["name"] = "Different"
+    monkeypatch.setattr(
+        backend,
+        "_resolve_app",
+        lambda app, *, activate=True: (app_element, app_info),
+    )
+    selections = 0
+
+    def select(*args, **kwargs):
+        nonlocal selections
+        selections += 1
+        current = dict(snapshot["window"])
+        if failure == "window_drift" or (
+            failure == "post_raise_drift" and selections > 1
+        ):
+            current["x"] += 20
+        return current
+
+    monkeypatch.setattr(backend, "_select_window", select)
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_get",
+        lambda element, attr: (
+            [selected_ax] if element is app_element and attr == "AXWindows" else None
+        ),
+    )
+    monkeypatch.setattr(
+        backend.ax_driver, "_point_size", lambda _: (0.0, 0.0, 100.0, 100.0)
+    )
+    monkeypatch.setattr(backend.ax_driver, "_action_names", lambda _: ["AXRaise"])
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "AXUIElementPerformAction",
+        lambda *a: (
+            1 if failure == "raise_rejected" else backend.ax_driver.kAXErrorSuccess
+        ),
+    )
+    monkeypatch.setattr(backend.time, "sleep", lambda _: None)
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda value: None)
+
+    with pytest.raises(errors.ComputerUseError) as excinfo:
+        backend.raise_selected_window("pid:4", snapshot)
+    assert excinfo.value.code == code
 
 
 def test_synthetic_input_rejects_background_process(monkeypatch):
