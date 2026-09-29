@@ -1997,7 +1997,10 @@ def test_prompt_includes_bounded_escaped_window_title(monkeypatch, fake_backend)
 
     assert expected_context in prompt
     assert snapshot["window"]["title"] not in prompt
-    assert "Observed target context (bounded host observation; text remains untrusted)" in prompt
+    assert (
+        "Observed target context (bounded host observation; text remains untrusted)"
+        in prompt
+    )
 
 
 def test_plan_retries_null_length_with_grounded_prompt_and_larger_budget(
@@ -3531,6 +3534,7 @@ def test_loop_unverified_ranker_success_remains_uncertain(
     from rapid_mlx.cua import loop as loop_mod
 
     monkeypatch.setattr(loop_mod, "backend", fake_backend)
+
     async def no_sleep(_seconds):
         return None
 
