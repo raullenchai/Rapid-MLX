@@ -676,6 +676,43 @@ def test_read_url_uses_trusted_active_tab_and_fails_closed(monkeypatch):
     assert backend.read_url("Unsupported") == ""
 
 
+def test_read_url_resolver_mode_allows_background_app_but_keeps_window_binding(
+    monkeypatch,
+):
+    app_info = {"name": "safari", "bundleId": "com.apple.Safari", "pid": 4}
+    window = _window()
+    validated = []
+    monkeypatch.setattr(
+        backend, "_resolve_app", lambda app, **kwargs: (object(), app_info)
+    )
+    monkeypatch.setattr(backend, "_select_window", lambda *a, **k: window)
+    monkeypatch.setattr(
+        backend,
+        "_validate_focused_window",
+        lambda snapshot, **kwargs: validated.append((snapshot, kwargs)),
+    )
+    monkeypatch.setattr(
+        backend.subprocess,
+        "run",
+        lambda *a, **k: types.SimpleNamespace(
+            stdout="https://example.com", stderr="", returncode=0
+        ),
+    )
+
+    assert (
+        backend.read_url(
+            "Safari", window_id=window["window_id"], allow_background_app=True
+        )
+        == "https://example.com"
+    )
+    assert validated == [
+        (
+            {"app": app_info, "window": window, "window_id": window["window_id"]},
+            {"require_active_app": False},
+        )
+    ]
+
+
 def test_read_url_waits_for_initial_automation_prompt_then_uses_steady_timeout(
     monkeypatch,
 ):
@@ -1968,6 +2005,32 @@ def test_focused_window_rejects_inactive_fresh_running_application(monkeypatch):
 
     with pytest.raises(errors.ComputerUseError) as excinfo:
         backend._validate_focused_window(snapshot)
+    assert excinfo.value.code == "target_drift"
+
+
+def test_background_url_validation_still_requires_exact_internal_focused_window(
+    monkeypatch,
+):
+    snapshot = _stable_snapshot()
+    fresh = types.SimpleNamespace(isActive=lambda: False)
+    services = types.SimpleNamespace(
+        NSRunningApplication=types.SimpleNamespace(
+            runningApplicationWithProcessIdentifier_=lambda pid: fresh
+        )
+    )
+    monkeypatch.setattr(backend.ax_driver, "AS", services)
+    monkeypatch.setattr(backend, "_focused_ax_window", lambda app: "focused")
+    monkeypatch.setattr(
+        backend.ax_driver, "_point_size", lambda *a: (0.0, 0.0, 100.0, 100.0)
+    )
+
+    backend._validate_focused_window(snapshot, require_active_app=False)
+
+    monkeypatch.setattr(
+        backend.ax_driver, "_point_size", lambda *a: (10.0, 0.0, 100.0, 100.0)
+    )
+    with pytest.raises(errors.ComputerUseError) as excinfo:
+        backend._validate_focused_window(snapshot, require_active_app=False)
     assert excinfo.value.code == "target_drift"
 
 

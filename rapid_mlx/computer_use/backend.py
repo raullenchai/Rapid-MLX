@@ -960,7 +960,10 @@ def _window_center(snapshot: dict) -> tuple[float, float]:
 
 
 def _validate_focused_window(
-    snapshot: dict, expected_window: dict | None = None
+    snapshot: dict,
+    expected_window: dict | None = None,
+    *,
+    require_active_app: bool = True,
 ) -> None:
     services = ax_driver.AS
     expected_pid = int(snapshot["app"]["pid"])
@@ -984,7 +987,7 @@ def _validate_focused_window(
         active = (
             frontmost is not None and int(frontmost.processIdentifier()) == expected_pid
         )
-    if not active:
+    if require_active_app and not active:
         raise ComputerUseError(
             "target_drift",
             f"pid {snapshot['app']['pid']} is no longer frontmost; re-observe",
@@ -2370,6 +2373,7 @@ def read_url(
     window_id: int | str | None = None,
     *,
     require_permission: bool = False,
+    allow_background_app: bool = False,
 ) -> str:
     """Read the browser's active-tab URL from a trusted application API.
 
@@ -2382,9 +2386,19 @@ def read_url(
         window = _select_window(app_info, window_id=window_id)
         if window["index"] != 0:
             return ""
-        _validate_focused_window(
-            {"app": app_info, "window": window, "window_id": window["window_id"]}
-        )
+        selected = {
+            "app": app_info,
+            "window": window,
+            "window_id": window["window_id"],
+        }
+        if allow_background_app:
+            # Resolver-only read: Rapid is foreground because Start was
+            # clicked. Still require the exact selected item to be this
+            # browser process's own front/focused window before asking its
+            # trusted Automation API for the front-tab URL.
+            _validate_focused_window(selected, require_active_app=False)
+        else:
+            _validate_focused_window(selected)
         bundle_id = str(app_info.get("bundleId") or "")
         if not re.fullmatch(r"[A-Za-z0-9.-]+", bundle_id):
             return ""
