@@ -1102,7 +1102,7 @@ def raise_selected_window(app: str, snapshot: dict) -> dict:
     app_element, app_info = _resolve_app(
         f"pid:{int(expected_app['pid'])}", activate=False
     )
-    for key in ("pid", "bundleId", "name"):
+    for key in ("pid", "bundleId", "name", "processStartTime"):
         wanted = expected_app.get(key)
         if wanted is not None and app_info.get(key) != wanted:
             raise ComputerUseError("target_drift", "selected app identity changed")
@@ -1125,6 +1125,36 @@ def raise_selected_window(app: str, snapshot: dict) -> dict:
         raise ComputerUseError(
             "target_occluded",
             "selected window cannot be raised unambiguously; move the covering window",
+        )
+
+    # The approval sheet leaves Rapid frontmost. Only after the PID, window ID,
+    # frame, and unique AX window have matched the approved observation may we
+    # activate that exact process. Activation can change AX/window ordering, so
+    # resolve and validate the same identities again before AXRaise.
+    app_element, activated_info = _resolve_app(
+        f"pid:{int(expected_app['pid'])}", activate=True
+    )
+    for key in ("pid", "bundleId", "name", "processStartTime"):
+        wanted = expected_app.get(key)
+        if wanted is not None and activated_info.get(key) != wanted:
+            raise ComputerUseError(
+                "target_drift", "selected app identity changed during focus recovery"
+            )
+    activated = _select_window(activated_info, window_id=expected["window_id"])
+    if not _same_window(expected, activated):
+        raise ComputerUseError(
+            "target_drift", "selected window moved during focus recovery"
+        )
+    matches = [
+        window
+        for window in ax_driver._as_list(ax_driver._get(app_element, "AXWindows"))
+        if (candidate := ax_driver._point_size(window)) is not None
+        and _ax_cg_frames_match(candidate, frame)
+    ]
+    if len(matches) != 1 or "AXRaise" not in ax_driver._action_names(matches[0]):
+        raise ComputerUseError(
+            "target_occluded",
+            "selected window changed while restoring application focus",
         )
     err = ax_driver.AXUIElementPerformAction(matches[0], "AXRaise")
     if err != ax_driver.kAXErrorSuccess:

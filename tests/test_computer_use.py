@@ -1829,9 +1829,12 @@ def test_raise_selected_window_uses_unique_pid_bound_ax_window(monkeypatch):
         backend, "_validate_snapshot_window", lambda value: value["window"]
     )
     resolutions = []
+    foreground = {"finder": False}  # Rapid approval sheet is frontmost.
 
     def resolve(app, *, activate=True):
         resolutions.append((app, activate))
+        if activate:
+            foreground["finder"] = True
         return app_element, dict(snapshot["app"])
 
     monkeypatch.setattr(backend, "_resolve_app", resolve)
@@ -1871,14 +1874,20 @@ def test_raise_selected_window_uses_unique_pid_bound_ax_window(monkeypatch):
     )
     focused = []
     monkeypatch.setattr(
-        backend, "_validate_focused_window", lambda value: focused.append(value)
+        backend,
+        "_validate_focused_window",
+        lambda value: (
+            focused.append(value)
+            if foreground["finder"]
+            else pytest.fail("approved action resumed before Finder was frontmost")
+        ),
     )
     monkeypatch.setattr(backend.time, "sleep", lambda _: None)
 
     assert backend.raise_selected_window("pid:4", snapshot) == snapshot["window"]
     assert actions == [(selected_ax, "AXRaise")]
     assert focused == [snapshot]
-    assert resolutions == [("pid:4", False)]
+    assert resolutions == [("pid:4", False), ("pid:4", True)]
 
 
 def test_raise_selected_window_rejects_ambiguous_ax_match(monkeypatch):
@@ -1928,7 +1937,11 @@ def test_raise_selected_window_requires_snapshot_identity():
     ("failure", "code"),
     [
         ("app_drift", "target_drift"),
+        ("activated_app_drift", "target_drift"),
+        ("process_start_drift", "target_drift"),
+        ("activated_process_start_drift", "target_drift"),
         ("window_drift", "target_drift"),
+        ("post_activate_ax_drift", "target_occluded"),
         ("raise_rejected", "target_occluded"),
         ("post_raise_drift", "target_drift"),
     ],
@@ -1937,19 +1950,28 @@ def test_raise_selected_window_fails_closed_across_identity_boundaries(
     monkeypatch, failure, code
 ):
     snapshot = _stable_snapshot(observed_at=backend.time.time())
+    snapshot["app"]["processStartTime"] = 100.0
     selected_ax = object()
     app_element = object()
     monkeypatch.setattr(
         backend, "_validate_snapshot_window", lambda value: value["window"]
     )
-    app_info = dict(snapshot["app"])
-    if failure == "app_drift":
-        app_info["name"] = "Different"
-    monkeypatch.setattr(
-        backend,
-        "_resolve_app",
-        lambda app, *, activate=True: (app_element, app_info),
-    )
+    activated = {"value": False}
+    resolutions = []
+
+    def resolve(app, *, activate=True):
+        resolutions.append(activate)
+        activated["value"] = activate
+        app_info = dict(snapshot["app"])
+        if failure == "app_drift" or (failure == "activated_app_drift" and activate):
+            app_info["name"] = "Different"
+        if failure == "process_start_drift" or (
+            failure == "activated_process_start_drift" and activate
+        ):
+            app_info["processStartTime"] = 200.0
+        return app_element, app_info
+
+    monkeypatch.setattr(backend, "_resolve_app", resolve)
     selections = 0
 
     def select(*args, **kwargs):
@@ -1967,19 +1989,30 @@ def test_raise_selected_window_fails_closed_across_identity_boundaries(
         backend.ax_driver,
         "_get",
         lambda element, attr: (
-            [selected_ax] if element is app_element and attr == "AXWindows" else None
+            [selected_ax, object()]
+            if failure == "post_activate_ax_drift"
+            and activated["value"]
+            and element is app_element
+            and attr == "AXWindows"
+            else [selected_ax]
+            if element is app_element and attr == "AXWindows"
+            else None
         ),
     )
     monkeypatch.setattr(
         backend.ax_driver, "_point_size", lambda _: (0.0, 0.0, 100.0, 100.0)
     )
     monkeypatch.setattr(backend.ax_driver, "_action_names", lambda _: ["AXRaise"])
+    actions = []
+
+    def perform_action(*args):
+        actions.append(args)
+        return 1 if failure == "raise_rejected" else backend.ax_driver.kAXErrorSuccess
+
     monkeypatch.setattr(
         backend.ax_driver,
         "AXUIElementPerformAction",
-        lambda *a: (
-            1 if failure == "raise_rejected" else backend.ax_driver.kAXErrorSuccess
-        ),
+        perform_action,
     )
     monkeypatch.setattr(backend.time, "sleep", lambda _: None)
     monkeypatch.setattr(backend, "_validate_focused_window", lambda value: None)
@@ -1987,6 +2020,12 @@ def test_raise_selected_window_fails_closed_across_identity_boundaries(
     with pytest.raises(errors.ComputerUseError) as excinfo:
         backend.raise_selected_window("pid:4", snapshot)
     assert excinfo.value.code == code
+    if failure == "process_start_drift":
+        assert resolutions == [False]
+        assert actions == []
+    elif failure == "activated_process_start_drift":
+        assert resolutions == [False, True]
+        assert actions == []
 
 
 def test_synthetic_input_rejects_background_process(monkeypatch):
