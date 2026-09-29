@@ -1096,6 +1096,11 @@ if sys.argv[1:3] == ["serve", "gemma-4-e4b-4bit"]:
     def _missing_vision_runtime(_args):
         barrier_dir = os.environ.get("TEL_DEDUPE_BARRIER_DIR")
         if barrier_dir is not None:
+            from rapid_mlx.telemetry import model_events
+
+            # Exercise ledger serialization without the production latency
+            # escape hatch; unit tests separately cover timeout fail-open.
+            model_events._SERVE_FAILED_LOCK_WAIT_SECONDS = 5.0
             barrier = pathlib.Path(barrier_dir)
             (barrier / f"ready-{os.getpid()}").write_text("ready")
             deadline = time.monotonic() + 5
