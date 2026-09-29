@@ -50,7 +50,7 @@ def test_resolve_preset(config_dir):
 
 
 def test_resolve_custom_url_requires_model(config_dir):
-    with pytest.raises(ValueError, match="--planner-model"):
+    with pytest.raises(ValueError, match="a model name is required"):
         resolve_planner("http://127.0.0.1:9999/v1/chat/completions")
     planner = resolve_planner(
         "http://127.0.0.1:9999/v1/chat/completions", model_override="m"
@@ -4668,7 +4668,7 @@ def test_delete_preset_unknown(tmp_path, monkeypatch, config_dir):
     from rapid_mlx.cua import config as config_mod
 
     monkeypatch.setattr(config_mod, "CONFIG_PATH", tmp_path / "cua-config.json")
-    with pytest.raises(ValueError, match="unknown preset"):
+    with pytest.raises(ValueError, match="unknown model"):
         config_mod.delete_user_preset("nope")
 
 
