@@ -1859,6 +1859,128 @@ def test_permissions_apps_windows_and_read_url_failures(monkeypatch):
     assert app_services.NSWorkspace is _NSWorkspace
 
 
+def test_live_app_discovery_refreshes_stale_workspace_by_pid(monkeypatch):
+    cached = _RunningApp("Target App", "com.test.app", 42)
+    terminated = _RunningApp("Old App", "com.test.old", 50)
+    terminated.isTerminated = lambda: True
+    safari = _RunningApp("Safari", "com.apple.Safari", 23429)
+    resolved = {42: cached, 50: terminated, 23429: safari}
+    fake_as = types.SimpleNamespace(
+        NSWorkspace=types.SimpleNamespace(
+            sharedWorkspace=lambda: _Workspace([cached, terminated])
+        ),
+        NSRunningApplication=types.SimpleNamespace(
+            runningApplicationWithProcessIdentifier_=lambda pid: resolved.get(pid)
+        ),
+    )
+    monkeypatch.setattr(ax_driver, "AS", fake_as)
+    _install_module(
+        monkeypatch,
+        "ApplicationServices",
+        NSWorkspace=fake_as.NSWorkspace,
+        NSRunningApplication=fake_as.NSRunningApplication,
+    )
+    _install_module(
+        monkeypatch,
+        "Quartz",
+        kCGWindowListOptionAll=1,
+        kCGNullWindowID=0,
+        CGWindowListCopyWindowInfo=lambda *_: [
+            {"kCGWindowOwnerPID": 23429},
+        ],
+    )
+
+    assert [app.processIdentifier() for app in ax_driver._running_applications()] == [
+        42,
+        23429,
+    ]
+    assert backend.list_apps() == [
+        {"name": "Target App", "bundleId": "com.test.app", "pid": 42},
+        {"name": "Safari", "bundleId": "com.apple.Safari", "pid": 23429},
+    ]
+
+    monkeypatch.setattr(
+        backend,
+        "_ax_app_element",
+        lambda app, activate: ("ax", app.processIdentifier()),
+    )
+    element, info = backend._resolve_app("pid:23429", activate=False)
+    assert element == ("ax", 23429)
+    assert info == {"name": "safari", "bundleId": "com.apple.safari", "pid": 23429}
+
+    monkeypatch.setattr(
+        ax_driver, "AXUIElementCreateApplication", lambda pid: ("ax", pid)
+    )
+    monkeypatch.setattr(ax_driver.time, "sleep", lambda _: None)
+    assert ax_driver._app_element("safari", expected_pid=23429) == ("ax", 23429)
+
+
+def test_live_duplicate_browser_pid_keeps_url_guard_fail_closed(monkeypatch):
+    selected = _RunningApp("Safari", "com.apple.Safari", 23429)
+    duplicate = _RunningApp("Safari", "com.apple.Safari", 23430)
+    resolved = {23429: selected, 23430: duplicate}
+    fake_as = types.SimpleNamespace(
+        NSWorkspace=types.SimpleNamespace(
+            sharedWorkspace=lambda: _Workspace([selected])
+        ),
+        NSRunningApplication=types.SimpleNamespace(
+            runningApplicationWithProcessIdentifier_=lambda pid: resolved.get(pid)
+        ),
+    )
+    monkeypatch.setattr(ax_driver, "AS", fake_as)
+    _install_module(
+        monkeypatch,
+        "Quartz",
+        kCGWindowListOptionAll=1,
+        kCGNullWindowID=0,
+        CGWindowListCopyWindowInfo=lambda *_: [
+            {"kCGWindowOwnerPID": 23429},
+            {"kCGWindowOwnerPID": 23430},
+        ],
+    )
+    monkeypatch.setattr(
+        backend,
+        "_resolve_app",
+        lambda *a, **k: (
+            object(),
+            {"name": "safari", "bundleId": "com.apple.safari", "pid": 23429},
+        ),
+    )
+    monkeypatch.setattr(backend, "_select_window", lambda *a, **k: {"index": 0})
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a, **k: None)
+    monkeypatch.setattr(
+        backend.subprocess,
+        "run",
+        lambda *a, **k: pytest.fail("ambiguous browser must not reach AppleScript"),
+    )
+
+    assert backend.read_url("pid:23429", window_id="cg:1") == ""
+
+
+def test_live_app_discovery_falls_back_when_core_graphics_fails(monkeypatch):
+    cached = _RunningApp("Target App", "com.test.app", 42)
+    fake_as = types.SimpleNamespace(
+        NSWorkspace=types.SimpleNamespace(sharedWorkspace=lambda: _Workspace([cached])),
+        NSRunningApplication=types.SimpleNamespace(
+            runningApplicationWithProcessIdentifier_=lambda pid: (
+                cached if pid == 42 else None
+            )
+        ),
+    )
+    monkeypatch.setattr(ax_driver, "AS", fake_as)
+    _install_module(
+        monkeypatch,
+        "Quartz",
+        kCGWindowListOptionAll=1,
+        kCGNullWindowID=0,
+        CGWindowListCopyWindowInfo=lambda *_: (_ for _ in ()).throw(
+            RuntimeError("CG service unavailable")
+        ),
+    )
+
+    assert ax_driver._running_applications() == [cached]
+
+
 def test_secure_ax_subrole_is_redacted_before_snapshot_and_tree(monkeypatch):
     secret = "hunter2-private"
     accessed = []

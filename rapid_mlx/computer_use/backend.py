@@ -83,7 +83,6 @@ def _resolve_app(app: str, *, activate: bool = True) -> tuple[object, dict]:
             "unsupported_platform", "computer-use actions require macOS with PyObjC"
         ) from exc
 
-    workspace = AS.NSWorkspace.sharedWorkspace()
     wanted_pid = None
     if app.startswith("pid:"):
         try:
@@ -93,7 +92,19 @@ def _resolve_app(app: str, *, activate: bool = True) -> tuple[object, dict]:
                 "invalid_argument", f"bad pid spec: {app!r}"
             ) from exc
     lowered = app.lower()
-    for running in workspace.runningApplications():
+    if wanted_pid is not None:
+        running = ax_driver._application_for_pid(wanted_pid, AS)
+        if running is not None:
+            pid = int(running.processIdentifier())
+            name = (running.localizedName() or "").lower()
+            bundle = (running.bundleIdentifier() or "").lower()
+            return _ax_app_element(running, activate=activate), {
+                "name": name,
+                "bundleId": bundle,
+                "pid": pid,
+            }
+        raise ComputerUseError("app_not_found", f"no running app matches {app!r}")
+    for running in ax_driver._running_applications(AS):
         if (
             not running.isActive()
             and wanted_pid is None
@@ -103,14 +114,6 @@ def _resolve_app(app: str, *, activate: bool = True) -> tuple[object, dict]:
         name = (running.localizedName() or "").lower()
         bundle = (running.bundleIdentifier() or "").lower()
         pid = int(running.processIdentifier())
-        if wanted_pid is not None:
-            if pid == wanted_pid:
-                return _ax_app_element(running, activate=activate), {
-                    "name": name,
-                    "bundleId": bundle,
-                    "pid": pid,
-                }
-            continue
         if lowered in (name, bundle) or lowered in name or lowered in bundle:
             return _ax_app_element(running, activate=activate), {
                 "name": name,
@@ -1423,9 +1426,8 @@ def permissions() -> dict:
 def list_apps() -> list[dict]:
     import ApplicationServices as AS  # type: ignore[import-untyped]  # noqa: N813, N817  # camelcase pyobjc module, alias is conventional
 
-    workspace = AS.NSWorkspace.sharedWorkspace()
     apps = []
-    for running in workspace.runningApplications():
+    for running in ax_driver._running_applications(AS):
         if running.activationPolicy() != 0:  # regular apps only
             continue
         apps.append(
@@ -1458,14 +1460,11 @@ def read_url(app: str, window_id: int | str | None = None) -> str:
             return ""
         bundle_key = bundle_id.lower()
         if app.startswith("pid:"):
-            workspace = (
-                ax_driver.AS.NSWorkspace.sharedWorkspace() if ax_driver.AS else None
-            )
-            if workspace is None:
+            if ax_driver.AS is None:
                 return ""
             same_bundle_pids = {
                 int(running.processIdentifier())
-                for running in workspace.runningApplications()
+                for running in ax_driver._running_applications()
                 if (running.bundleIdentifier() or "").lower() == bundle_key
                 and running.activationPolicy() == 0
             }

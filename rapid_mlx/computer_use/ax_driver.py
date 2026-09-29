@@ -281,10 +281,84 @@ def _walk(element: object, depth: int, out: list[dict], counter: list[int]) -> N
             return
 
 
+def _application_for_pid(
+    pid: int, application_services: Any | None = None
+) -> Any | None:
+    services = application_services or AS
+    if services is None:
+        return None
+    application_class = getattr(services, "NSRunningApplication", None)
+    resolver = getattr(
+        application_class, "runningApplicationWithProcessIdentifier_", None
+    )
+    if resolver is not None:
+        app = resolver(pid)
+    else:
+        app = next(
+            (
+                candidate
+                for candidate in services.NSWorkspace.sharedWorkspace().runningApplications()
+                if int(candidate.processIdentifier()) == pid
+            ),
+            None,
+        )
+    is_terminated = getattr(app, "isTerminated", None)
+    return None if callable(is_terminated) and is_terminated() else app
+
+
+def _running_applications(application_services: Any | None = None) -> list[Any]:
+    """Return live applications without relying on NSWorkspace notifications.
+
+    The model-free sidecar has no AppKit event loop.  A long-lived
+    ``NSWorkspace.runningApplications`` collection can therefore miss apps
+    launched after the process.  CoreGraphics supplies a current PID set;
+    resolving those PIDs through ``NSRunningApplication`` refreshes identity
+    while the workspace PIDs preserve windowless-app compatibility.
+    """
+    services = application_services or AS
+    if services is None:
+        return []
+    workspace_apps = list(services.NSWorkspace.sharedWorkspace().runningApplications())
+    cached = {int(app.processIdentifier()): app for app in workspace_apps}
+    pids = set(cached)
+    try:
+        import Quartz  # type: ignore[import-untyped]  # noqa: N813
+
+        records = Quartz.CGWindowListCopyWindowInfo(
+            Quartz.kCGWindowListOptionAll, Quartz.kCGNullWindowID
+        )
+        pids.update(
+            int(record.get("kCGWindowOwnerPID", 0))
+            for record in records or []
+            if int(record.get("kCGWindowOwnerPID", 0)) > 0
+        )
+    except Exception:  # noqa: BLE001 - optional CG refresh must retain workspace fallback
+        pass
+
+    applications = []
+    resolver = getattr(
+        getattr(services, "NSRunningApplication", None),
+        "runningApplicationWithProcessIdentifier_",
+        None,
+    )
+    for pid in sorted(pids):
+        app = (
+            _application_for_pid(pid, services)
+            if resolver is not None
+            else cached.get(pid)
+        )
+        if app is None:
+            continue
+        is_terminated = getattr(app, "isTerminated", None)
+        if callable(is_terminated) and is_terminated():
+            continue
+        applications.append(app)
+    return applications
+
+
 def _app_element(app_name: str, expected_pid: int | None = None) -> object:
     if AS is None:
         raise RuntimeError("computer-use actions require macOS with PyObjC installed")
-    workspace = AS.NSWorkspace.sharedWorkspace()
     # Dogfood find (2026-09-27): substring matching picked up system XPC
     # helpers whose localized name merely contains the app name (e.g.
     # "ThemeWidgetControlViewService (Rapid)"), yielding an AX element with
@@ -293,7 +367,14 @@ def _app_element(app_name: str, expected_pid: int | None = None) -> object:
     candidates: list[Any] = []
     exact: list[Any] = []
     wanted = app_name.lower()
-    for app in workspace.runningApplications():
+    applications = (
+        [_application_for_pid(expected_pid)]
+        if expected_pid is not None
+        else _running_applications()
+    )
+    for app in applications:
+        if app is None:
+            continue
         if expected_pid is not None and int(app.processIdentifier()) != expected_pid:
             continue
         name = (app.localizedName() or "").lower()
