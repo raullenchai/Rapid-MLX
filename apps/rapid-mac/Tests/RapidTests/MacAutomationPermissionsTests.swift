@@ -36,6 +36,36 @@ struct MacAutomationPermissionsTests {
         #expect(buildScript.contains("packaged sidecar Python lacks"))
     }
 
+    @Test("Computer Use is packaged as a stable helper process")
+    func computerUseHelperPackagingContract() throws {
+        let infoData = try Data(contentsOf: Self.sourceFile(
+            "Resources/RapidComputerUseHelper-Info.plist"
+        ))
+        let info = try #require(
+            PropertyListSerialization.propertyList(from: infoData, format: nil)
+                as? [String: Any]
+        )
+        #expect(info["CFBundleIdentifier"] as? String == "com.rapidmlx.rapid.computer-use")
+        #expect(info["CFBundleExecutable"] as? String == "RapidComputerUse")
+        for key in [
+            "NSAccessibilityUsageDescription",
+            "NSScreenCaptureUsageDescription",
+            "NSAppleEventsUsageDescription",
+        ] {
+            let purpose = try #require(info[key] as? String)
+            #expect(!purpose.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+
+        let buildScript = try String(
+            contentsOf: Self.sourceFile("scripts/build.sh"), encoding: .utf8
+        )
+        #expect(buildScript.contains("python/bin/python3.12"))
+        #expect(buildScript.contains("Rapid Computer Use.app"))
+        #expect(buildScript.contains("com.rapidmlx.rapid.computer-use"))
+        #expect(!buildScript.contains("RapidComputerUseHelper/main.c"))
+        #expect(buildScript.contains("Computer Use helper has unstable identity"))
+    }
+
     @Test("Computer Use requires both observation and control grants")
     func readinessRequiresBoth() {
         let none = MacAutomationPermissionSnapshot(

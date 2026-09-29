@@ -42,6 +42,34 @@ struct CUAServerManagerTests {
         #expect(!Set(CUAServerManager.candidatePorts).isEmpty)
     }
 
+    @Test("Packaged permission helper runs Python in its own process identity")
+    func permissionHelperLaunchContract() throws {
+        let outer = URL(fileURLWithPath: "/Applications/Rapid-MLX Desktop.app")
+        let helper = outer.appendingPathComponent(
+            "Contents/Helpers/Rapid Computer Use.app/Contents/MacOS/RapidComputerUse"
+        )
+        let located = CUAServerManager.locateExecutable(
+            bundleURL: outer,
+            isExecutable: { $0 == helper.path }
+        )
+        #expect(located == helper)
+        #expect(CUAServerManager.isPermissionHelper(helper))
+
+        let arguments = CUAServerManager.serveArguments(
+            host: "127.0.0.1", port: 7_659, usesEmbeddedPython: true
+        )
+        #expect(arguments.prefix(5) == ["-P", "-u", "-s", "-m", "rapid_mlx.cli"])
+        #expect(arguments.dropFirst(5).prefix(2) == ["serve", "--cua-only"])
+
+        let environment = CUAServerManager.embeddedPythonEnvironment(
+            helperExecutable: helper
+        )
+        #expect(environment["PYTHONHOME"] == outer.path + "/Contents/Resources/rapid-mlx/python")
+        #expect(environment["PYTHONPATH"] == outer.path + "/Contents/Resources/rapid-mlx/site-packages")
+        #expect(environment["PYTHONNOUSERSITE"] == "1")
+        #expect(environment["PYTHONDONTWRITEBYTECODE"] == "1")
+    }
+
     @Test("An occupied chat port is skipped without sweeping its listener")
     func occupiedPortIsNeverSwept() throws {
         let listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)

@@ -61,8 +61,8 @@ final class CUAServerManager {
 
     init(
         host: String = "127.0.0.1",
-        binaryPath: URL? = ServerLocator.locate()?.binary,
-        binaryRefresh: @escaping @MainActor () -> URL? = { ServerLocator.locate()?.binary },
+        binaryPath: URL? = CUAServerManager.locateExecutable(),
+        binaryRefresh: @escaping @MainActor () -> URL? = { CUAServerManager.locateExecutable() },
         initialState: CUAServerState = .idle,
         portProvider: @escaping PortProvider = {
             await PortSweep.awaitLaunchSweep()
@@ -87,6 +87,21 @@ final class CUAServerManager {
         self.readinessProbe = readinessProbe
         self.launcher = launcher
         self.stopSignaler = stopSignaler
+    }
+
+    /// Production Computer Use runs inside a stable helper app so macOS can
+    /// bind Accessibility and Screen Capture grants to the process that makes
+    /// the protected calls. Source builds without the packaged helper retain
+    /// the existing sidecar lookup for developer and test compatibility.
+    nonisolated static func locateExecutable(
+        bundleURL: URL = Bundle.main.bundleURL,
+        isExecutable: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
+    ) -> URL? {
+        let helper = bundleURL
+            .appendingPathComponent("Contents/Helpers/Rapid Computer Use.app", isDirectory: true)
+            .appendingPathComponent("Contents/MacOS/RapidComputerUse", isDirectory: false)
+        if isExecutable(helper.path) { return helper }
+        return ServerLocator.locate()?.binary
     }
 
     var client: CUAClient? {
@@ -153,12 +168,22 @@ final class CUAServerManager {
         // can block the sidecar while it writes routine request logs.
         stdoutPipe = output
         stderrPipe = errors
-        let environment = ServerManager.serveEnvironmentAdditions(
+        var environment = ServerManager.serveEnvironmentAdditions(
             bearer: bearer,
             ambient: ProcessInfo.processInfo.environment,
             supervisorPID: ProcessInfo.processInfo.processIdentifier
         )
-        let arguments = Self.serveArguments(host: host, port: allocatedPort)
+        let usesPermissionHelper = Self.isPermissionHelper(binaryPath)
+        if usesPermissionHelper {
+            environment.merge(Self.embeddedPythonEnvironment(helperExecutable: binaryPath)) {
+                _, helperValue in helperValue
+            }
+        }
+        let arguments = Self.serveArguments(
+            host: host,
+            port: allocatedPort,
+            usesEmbeddedPython: usesPermissionHelper
+        )
         let launched: ProcessGroupChild
         do {
             launched = try launcher(
@@ -245,13 +270,48 @@ final class CUAServerManager {
         clearSession(nextState: .idle, preserveContinuity: false)
     }
 
-    nonisolated static func serveArguments(host: String, port: Int) -> [String] {
-        [
+    nonisolated static func serveArguments(
+        host: String,
+        port: Int,
+        usesEmbeddedPython: Bool = false
+    ) -> [String] {
+        let serverArguments = [
             "serve", "--cua-only",
             "--host", host,
             "--port", String(port),
             "--cors-origins", "http://127.0.0.1", "http://localhost",
         ]
+        guard usesEmbeddedPython else { return serverArguments }
+        return ["-P", "-u", "-s", "-m", "rapid_mlx.cli"] + serverArguments
+    }
+
+    nonisolated static func isPermissionHelper(_ executable: URL) -> Bool {
+        executable.path.hasSuffix(
+            "/Contents/Helpers/Rapid Computer Use.app/Contents/MacOS/RapidComputerUse"
+        )
+    }
+
+    nonisolated static func embeddedPythonEnvironment(
+        helperExecutable: URL
+    ) -> [String: String] {
+        var outerContents = helperExecutable
+        for _ in 0..<5 { outerContents.deleteLastPathComponent() }
+        let runtime = outerContents
+            .appendingPathComponent("Resources/rapid-mlx", isDirectory: true)
+        var environment = [
+            "PYTHONHOME": runtime.appendingPathComponent("python", isDirectory: true).path,
+            "PYTHONPATH": runtime.appendingPathComponent("site-packages", isDirectory: true).path,
+            "PYTHONNOUSERSITE": "1",
+            "PYTHONSAFEPATH": "1",
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONUNBUFFERED": "1",
+            "PYTHONSTARTUP": "",
+        ]
+        let ffmpeg = runtime.appendingPathComponent("bin/ffmpeg", isDirectory: false)
+        if FileManager.default.isExecutableFile(atPath: ffmpeg.path) {
+            environment["FFMPEG_BINARY"] = ffmpeg.path
+        }
+        return environment
     }
 
     /// Selects without the model server allocator's destructive orphan sweep.
