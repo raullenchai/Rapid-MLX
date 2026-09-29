@@ -10,11 +10,21 @@ exactly one run may be active.
 from __future__ import annotations
 
 import base64
+import ipaddress
 import os
 import sys
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Path,
+    Query,
+    Request,
+    Response,
+    status,
+)
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.concurrency import run_in_threadpool
@@ -229,6 +239,7 @@ class CUACapabilityFeatures(BaseModel):
     idempotent_run_create: bool = True
     multi_target_runs: bool = True
     switch_target: bool = True
+    permission_request: bool = False
 
 
 class CUACapabilities(BaseModel):
@@ -246,6 +257,18 @@ class CUAPermissions(BaseModel):
     accessibility: bool | None
     screen_recording: bool | None
     hints: list[str] = Field(default_factory=list)
+
+
+class CUAPermissionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    permission: Literal["accessibility", "screen_recording"]
+
+
+class CUAPermissionRequestResult(BaseModel):
+    permission: Literal["accessibility", "screen_recording"]
+    granted: bool
+    permissions: CUAPermissions
 
 
 class CUAApp(BaseModel):
@@ -371,6 +394,7 @@ def _http_error(exc: Exception) -> HTTPException:
             "window_not_found": status.HTTP_404_NOT_FOUND,
             "unsupported_platform": status.HTTP_501_NOT_IMPLEMENTED,
             "permission_denied": status.HTTP_403_FORBIDDEN,
+            "permission_request_failed": status.HTTP_500_INTERNAL_SERVER_ERROR,
             "app_mismatch": status.HTTP_409_CONFLICT,
             "window_stale": status.HTTP_409_CONFLICT,
             "target_drift": status.HTTP_409_CONFLICT,
@@ -446,6 +470,9 @@ async def get_capabilities() -> CUACapabilities:
                 and _screenshots_enabled()
             ),
             observation_without_activation=native_observation and accessibility_ready,
+            permission_request=(
+                native_observation and get_config().cua_permission_requests_enabled
+            ),
         ),
     )
 
@@ -462,6 +489,50 @@ async def get_permissions() -> CUAPermissions:
         payload = await run_in_threadpool(_backend().permissions)
         return CUAPermissions(**payload)
     except (ComputerUseError, ImportError) as exc:
+        raise _discovery_error(exc) from exc
+
+
+@router.post("/permissions/request", response_model=CUAPermissionRequestResult)
+async def request_permission(
+    request: CUAPermissionRequest,
+    http_request: Request,
+) -> CUAPermissionRequestResult:
+    """Request one macOS grant only after an explicit authenticated POST."""
+    if not get_config().cua_permission_requests_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "local_request_required",
+                "message": "permission prompts require a direct loopback CUA server",
+                "recovery": [],
+            },
+        )
+    client_host = http_request.client.host if http_request.client is not None else ""
+    try:
+        is_loopback = ipaddress.ip_address(client_host).is_loopback
+    except ValueError:
+        is_loopback = False
+    if not is_loopback:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "local_request_required",
+                "message": "permission prompts require a loopback client",
+                "recovery": [],
+            },
+        )
+    if sys.platform != "darwin":
+        raise _discovery_error(
+            ComputerUseError(
+                "unsupported_platform", "computer use permissions require macOS"
+            )
+        )
+    try:
+        payload = await run_in_threadpool(
+            _backend().request_permission, request.permission
+        )
+        return CUAPermissionRequestResult(**payload)
+    except (ComputerUseError, ImportError, ValueError) as exc:
         raise _discovery_error(exc) from exc
 
 

@@ -81,6 +81,10 @@ class ServerConfig:
     bind_host: str | None = None
     bind_port: int | None = None
     bind_listen_fd: int | None = None
+    # Permission prompts are enabled only by the CUA-only startup path when it
+    # owns an explicit loopback listener. Request metadata can be rewritten by
+    # proxy middleware, so routes must not infer this property from client.host.
+    cua_permission_requests_enabled: bool = False
 
     # --- Defaults ---
     default_max_tokens: int = 4096

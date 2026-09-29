@@ -147,6 +147,7 @@ are marked; multimodal and MCP surfaces link to their own guides.
 | `/metrics` | GET | Prometheus metrics |
 | `/v1/cua/capabilities` | GET | Authenticated computer-use protocol and host availability |
 | `/v1/cua/permissions` | GET | Authenticated macOS Accessibility and Screen Recording readiness |
+| `/v1/cua/permissions/request` | POST | Request one macOS CUA permission after an explicit user action |
 | `/v1/cua/apps` | GET | Authenticated running-app discovery for custom CUA clients |
 | `/v1/cua/apps/{app}/windows` | GET | Authenticated window discovery for an app |
 | `/v1/cua/observations` | POST | Fresh, authenticated observation of an exact app process and window |
@@ -173,6 +174,20 @@ residency flags. `GET /health/ready` reports `ready: true`, `model: null`, and
 `model_loaded: false` once the listener is ready. Clients should then verify an
 authenticated `GET /v1/cua/capabilities` before enabling Computer Use. An API
 key is mandatory, including for loopback listeners.
+
+`GET /v1/cua/permissions` is always read-only. A native client may request one
+grant in direct response to a permission button by posting
+`{"permission":"accessibility"}` or
+`{"permission":"screen_recording"}` to
+`/v1/cua/permissions/request`. The endpoint requires a loopback connection plus
+the same bearer and rate limit as every CUA route, accepts no prompt-control
+options, and serializes requests. Its response contains `permission`, `granted`, and a fresh full
+`permissions` snapshot. A user denial is a successful response with
+`granted:false`; clients must continue to block observation or input until the
+read-only status reports the required grant. Discovery and polling never open a
+system prompt. The server process must be the signed native Computer Use helper
+that owns the macOS privacy grants; a standalone child process does not inherit
+another application's grants.
 
 The Desktop sidecar includes the native macOS framework bindings. Standalone
 Python installs that use local macOS Computer Use should install the matching

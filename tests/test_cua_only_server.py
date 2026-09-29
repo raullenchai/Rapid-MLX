@@ -82,6 +82,7 @@ def test_cua_only_configures_model_free_authenticated_app(monkeypatch):
         assert app is cua_server.app
         assert args.port == 8123
         assert callable(kwargs["on_server_accepting"])
+        assert kwargs["proxy_headers"] is False
         raise _ServerStartedError
 
     monkeypatch.setattr(cli, "_run_uvicorn", started)
@@ -96,3 +97,33 @@ def test_cua_only_configures_model_free_authenticated_app(monkeypatch):
     assert cfg.enable_audio_lane is False
     assert cfg.bind_host == "127.0.0.1"
     assert cfg.bind_port == 8123
+    assert cfg.cua_permission_requests_enabled is True
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"host": "0.0.0.0"},
+        {"host": "192.0.2.10"},
+        {"listen_fd": 7},
+    ],
+)
+def test_cua_permission_prompts_require_explicit_loopback_listener(
+    monkeypatch, overrides
+):
+    from rapid_mlx.cua import server as cua_server
+
+    reset_config()
+    monkeypatch.setattr(cua_server, "_configured", False)
+    monkeypatch.setenv("RAPID_MLX_API_KEY", "cua-secret")
+    monkeypatch.setattr(cli, "_resolve_serve_port", lambda *args, **kwargs: 8123)
+    monkeypatch.setattr(
+        cli,
+        "_run_uvicorn",
+        lambda *args, **kwargs: (_ for _ in ()).throw(_ServerStartedError()),
+    )
+
+    with pytest.raises(_ServerStartedError):
+        cli._serve_cua_only_mode(_args(**overrides))
+
+    assert get_config().cua_permission_requests_enabled is False

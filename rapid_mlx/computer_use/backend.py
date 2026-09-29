@@ -17,6 +17,7 @@ import re
 import stat
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -24,6 +25,8 @@ from typing import Any, cast
 from urllib.parse import unquote, urlparse
 
 from .errors import ComputerUseError
+
+_permission_request_lock = threading.Lock()
 
 SNAPSHOT_TTL_S = 120.0
 AX_COLLECT_TIMEOUT_S = 20.0
@@ -1831,6 +1834,45 @@ def permissions() -> dict:
             "Grant Accessibility for keystroke injection, window control, UI automation.",
             "Grant Screen Recording for screenshots and visual verification.",
         ],
+    }
+
+
+def request_permission(permission: str) -> dict:
+    """Request one CUA permission after an explicit authenticated POST."""
+    if permission not in {"accessibility", "screen_recording"}:
+        raise ValueError(f"unsupported computer use permission: {permission}")
+
+    import ApplicationServices as AS  # type: ignore[import-untyped]  # noqa: N813, N817
+    import Quartz
+
+    # Permission sheets are process-global. Do not race two authenticated
+    # clients into concurrent system prompts.
+    with _permission_request_lock:
+        try:
+            if permission == "accessibility":
+                _ = bool(
+                    AS.AXIsProcessTrustedWithOptions(
+                        {AS.kAXTrustedCheckOptionPrompt: True}
+                    )
+                )
+            else:
+                _ = bool(Quartz.CGRequestScreenCaptureAccess())
+            current = permissions()
+        except Exception as exc:
+            raise ComputerUseError(
+                "permission_request_failed",
+                f"macOS could not request {permission.replace('_', ' ')} permission",
+                recovery=(
+                    "Open System Settings > Privacy & Security and review the Computer Use helper permission.",
+                ),
+            ) from exc
+
+    # Request APIs may return before a Settings change is observable. Never
+    # promote the grant above a fresh preflight from this same helper process.
+    return {
+        "permission": permission,
+        "granted": current.get(permission) is True,
+        "permissions": current,
     }
 
 

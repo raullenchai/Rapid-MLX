@@ -18,6 +18,7 @@ Usage:
 import argparse
 import atexit
 import functools
+import ipaddress
 import os
 import shlex
 import sys
@@ -752,7 +753,14 @@ def _cache_memory_percent(args) -> float:
     return _DEFAULT_CACHE_MEMORY_PERCENT if value is None else value
 
 
-def _run_uvicorn(app, args, log_level: str, *, on_server_accepting=None) -> None:
+def _run_uvicorn(
+    app,
+    args,
+    log_level: str,
+    *,
+    on_server_accepting=None,
+    proxy_headers: bool = True,
+) -> None:
     """Dispatch through Rapid-MLX's Uvicorn startup seam with the kwargs that match the
     current ``--listen-fd`` / ``--host``/``--port`` mode.
 
@@ -810,6 +818,7 @@ def _run_uvicorn(app, args, log_level: str, *, on_server_accepting=None) -> None
                 fd=listen_fd,
                 log_level=log_level,
                 timeout_keep_alive=30,
+                proxy_headers=proxy_headers,
                 on_server_accepting=on_server_accepting,
                 port_explicit=port_explicit_for(args),
             )
@@ -821,6 +830,7 @@ def _run_uvicorn(app, args, log_level: str, *, on_server_accepting=None) -> None
                 port=port,
                 log_level=log_level,
                 timeout_keep_alive=30,
+                proxy_headers=proxy_headers,
                 on_server_accepting=on_server_accepting,
                 port_explicit=port_explicit_for(args),
             )
@@ -4861,10 +4871,17 @@ def _serve_cua_only_mode(args) -> None:
     cfg.bind_host = None
     cfg.bind_port = None
     cfg.bind_listen_fd = None
+    cfg.cua_permission_requests_enabled = False
     listen_fd = getattr(args, "listen_fd", None)
     if listen_fd is None:
         cfg.bind_host = "localhost" if args.host == "0.0.0.0" else args.host
         cfg.bind_port = args.port
+        try:
+            cfg.cua_permission_requests_enabled = (
+                args.host == "localhost" or ipaddress.ip_address(args.host).is_loopback
+            )
+        except ValueError:
+            cfg.cua_permission_requests_enabled = False
     else:
         cfg.bind_listen_fd = listen_fd
 
@@ -4888,6 +4905,9 @@ def _serve_cua_only_mode(args) -> None:
         args,
         uvicorn_log_level,
         on_server_accepting=lambda: None,
+        # Permission prompting relies on request.client being the TCP peer.
+        # The helper has no proxy use case; never let X-Forwarded-For rewrite it.
+        proxy_headers=False,
     )
     _hard_exit_after_serve()
 

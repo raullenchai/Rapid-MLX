@@ -31,6 +31,8 @@ def client(monkeypatch, tmp_path, authorized):
     from rapid_mlx.computer_use import backend as backend_mod
     from rapid_mlx.cua import config as config_mod
 
+    authorized.cua_permission_requests_enabled = True
+
     # isolated run dir + config
     monkeypatch.setattr(config_mod, "RUNS_DIR", tmp_path / "runs")
     monkeypatch.setattr(config_mod, "CONFIG_PATH", tmp_path / "cua-config.json")
@@ -51,6 +53,19 @@ def client(monkeypatch, tmp_path, authorized):
             "accessibility": True,
             "screen_recording": False,
             "hints": ["Grant Screen Recording."],
+        },
+    )
+    monkeypatch.setattr(
+        backend_mod,
+        "request_permission",
+        lambda permission: {
+            "permission": permission,
+            "granted": permission == "accessibility",
+            "permissions": {
+                "accessibility": permission == "accessibility",
+                "screen_recording": False,
+                "hints": ["Review Computer Use permissions."],
+            },
         },
     )
     monkeypatch.setattr(
@@ -107,7 +122,7 @@ def client(monkeypatch, tmp_path, authorized):
     monkeypatch.setattr(cua_routes, "get_config", get_config, raising=False)
     app = FastAPI()
     app.include_router(cua_routes.router)
-    with TestClient(app) as test_client:
+    with TestClient(app, client=("127.0.0.1", 50_000)) as test_client:
         test_client.fresh_service = fresh  # type: ignore[attr-defined]
         yield test_client
 
@@ -149,6 +164,7 @@ def test_cua_routes_fail_closed_without_server_api_key(client, api_key):
         ("get", "/v1/cua/planners"),
         ("get", "/v1/cua/capabilities"),
         ("get", "/v1/cua/permissions"),
+        ("post", "/v1/cua/permissions/request"),
         ("get", "/v1/cua/apps"),
         ("get", "/v1/cua/apps/Finder/windows"),
         ("post", "/v1/cua/observations"),
@@ -198,6 +214,7 @@ def test_discovery_contract(client):
         "idempotent_run_create": True,
         "multi_target_runs": True,
         "switch_target": True,
+        "permission_request": cua_routes.sys.platform == "darwin",
     }
     assert capabilities.json()["protocol_version"] == 2
     assert capabilities.json()["max_run_targets"] == 3
@@ -216,6 +233,111 @@ def test_discovery_contract(client):
 
     event_schema = client.app.openapi()["components"]["schemas"]["CUAEvent"]
     assert "target" in event_schema["properties"]
+
+
+def test_permission_request_requires_explicit_authenticated_post(client, monkeypatch):
+    calls: list[str] = []
+
+    def request(permission: str):
+        calls.append(permission)
+        return {
+            "permission": permission,
+            "granted": False,
+            "permissions": {
+                "accessibility": False,
+                "screen_recording": False,
+                "hints": ["Review Computer Use permissions."],
+            },
+        }
+
+    monkeypatch.setattr(cua_routes.sys, "platform", "darwin")
+    monkeypatch.setattr(cua_routes._backend(), "request_permission", request)
+
+    assert client.get("/v1/cua/permissions", headers=AUTH).status_code == 200
+    assert calls == []
+    assert (
+        client.post(
+            "/v1/cua/permissions/request",
+            json={"permission": "accessibility"},
+        ).status_code
+        == 401
+    )
+    assert calls == []
+
+    response = client.post(
+        "/v1/cua/permissions/request",
+        headers=AUTH,
+        json={"permission": "accessibility"},
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "permission": "accessibility",
+        "granted": False,
+        "permissions": {
+            "accessibility": False,
+            "screen_recording": False,
+            "hints": ["Review Computer Use permissions."],
+        },
+    }
+    assert calls == ["accessibility"]
+
+
+def test_permission_request_rejects_unknown_or_extra_input_without_prompt(
+    client, monkeypatch
+):
+    calls: list[str] = []
+    monkeypatch.setattr(cua_routes.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        cua_routes._backend(),
+        "request_permission",
+        lambda permission: calls.append(permission),
+    )
+
+    for body in (
+        {"permission": "automation"},
+        {"permission": "accessibility", "prompt": True},
+        {},
+    ):
+        response = client.post("/v1/cua/permissions/request", headers=AUTH, json=body)
+        assert response.status_code == 422
+    assert calls == []
+
+
+def test_permission_request_is_typed_unsupported_off_macos(client, monkeypatch):
+    monkeypatch.setattr(cua_routes.sys, "platform", "linux")
+    response = client.post(
+        "/v1/cua/permissions/request",
+        headers=AUTH,
+        json={"permission": "screen_recording"},
+    )
+    assert response.status_code == 501
+    assert response.json()["detail"]["code"] == "unsupported_platform"
+
+
+def test_permission_request_rejects_authenticated_non_loopback_client(
+    monkeypatch, authorized
+):
+    calls: list[str] = []
+    authorized.cua_permission_requests_enabled = True
+    monkeypatch.setattr(cua_routes.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        cua_routes._backend(),
+        "request_permission",
+        lambda permission: calls.append(permission),
+    )
+    app = FastAPI()
+    app.include_router(cua_routes.router)
+    with TestClient(app, client=("192.0.2.10", 50_000)) as remote:
+        response = remote.post(
+            "/v1/cua/permissions/request",
+            json={"permission": "accessibility"},
+            # CUA-only disables Uvicorn proxy-header rewriting. A forwarded
+            # loopback claim therefore cannot replace the real remote peer.
+            headers={**AUTH, "X-Forwarded-For": "127.0.0.1"},
+        )
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "local_request_required"
+    assert calls == []
 
 
 def test_create_run_freezes_selected_window_and_rejects_open_url(client, monkeypatch):

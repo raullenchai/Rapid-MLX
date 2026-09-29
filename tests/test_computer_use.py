@@ -3203,3 +3203,62 @@ def test_ax_driver_non_macos_stub():
     if hasattr(ax_driver, "_macos_only"):
         with pytest.raises(RuntimeError, match="macOS"):
             ax_driver._macos_only()
+
+
+def test_permission_request_prompts_exact_grant_and_returns_fresh_preflight(
+    monkeypatch,
+):
+    calls = []
+    application_services = types.SimpleNamespace(
+        kAXTrustedCheckOptionPrompt="prompt",
+        AXIsProcessTrustedWithOptions=lambda options: (
+            calls.append(("ax", options)) or True
+        ),
+    )
+    quartz = types.SimpleNamespace(
+        CGRequestScreenCaptureAccess=lambda: calls.append(("screen", None)) or True,
+    )
+    monkeypatch.setitem(sys.modules, "ApplicationServices", application_services)
+    monkeypatch.setitem(sys.modules, "Quartz", quartz)
+    monkeypatch.setattr(
+        backend,
+        "permissions",
+        lambda: {
+            "accessibility": False,
+            "screen_recording": True,
+            "hints": [],
+        },
+    )
+
+    accessibility = backend.request_permission("accessibility")
+    screen = backend.request_permission("screen_recording")
+
+    assert calls == [("ax", {"prompt": True}), ("screen", None)]
+    # A request result never promotes a permission above fresh preflight.
+    assert accessibility["granted"] is False
+    assert screen["granted"] is True
+    assert accessibility["permissions"]["accessibility"] is False
+
+
+def test_permission_request_failure_is_typed_and_unknown_value_never_prompts(
+    monkeypatch,
+):
+    calls = []
+    application_services = types.SimpleNamespace(
+        kAXTrustedCheckOptionPrompt="prompt",
+        AXIsProcessTrustedWithOptions=lambda options: (
+            calls.append(options) or (_ for _ in ()).throw(RuntimeError("denied"))
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "ApplicationServices", application_services)
+    monkeypatch.setitem(sys.modules, "Quartz", types.SimpleNamespace())
+
+    with pytest.raises(errors.ComputerUseError) as excinfo:
+        backend.request_permission("accessibility")
+    assert excinfo.value.code == "permission_request_failed"
+    assert "denied" not in excinfo.value.message
+    assert calls == [{"prompt": True}]
+
+    with pytest.raises(ValueError, match="unsupported computer use permission"):
+        backend.request_permission("automation")
+    assert calls == [{"prompt": True}]
