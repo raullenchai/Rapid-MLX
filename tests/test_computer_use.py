@@ -2129,6 +2129,471 @@ def test_transient_exact_set_value_succeeds_with_readback(monkeypatch):
     assert result["verified"] is True
 
 
+class _FinderFileReference:
+    def __init__(self, current_path):
+        self.current_path = current_path
+
+    def filePathURL(self):
+        return self
+
+    def path(self):
+        return self.current_path()
+
+
+def _finder_rename_snapshot():
+    snapshot = _stable_snapshot(
+        elements=[
+            {
+                "index": 0,
+                "role": "AXTextField",
+                "parent_role": "AXCell",
+                "label": "Verified CUA Folder",
+                "center": [50, 50],
+                "actions": [],
+                "source_window_id": "cg:101",
+            }
+        ]
+    )
+    snapshot["app"] = {"name": "Finder", "bundleId": "com.apple.finder", "pid": 4}
+    return snapshot
+
+
+def test_finder_set_value_reports_exact_disk_persistence(monkeypatch):
+    snapshot = _finder_rename_snapshot()
+    live, reference = object(), object()
+    monkeypatch.setattr(backend, "_live_element", lambda *a, **k: live)
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_get",
+        lambda element, attr: {
+            "AXValue": "Verified CUA Folder",
+            "AXURL": reference,
+        }.get(attr),
+    )
+    monkeypatch.setattr(
+        backend,
+        "_finder_file_reference_path",
+        lambda value: "/tmp/Verified CUA Folder",
+    )
+    _install_module(
+        monkeypatch,
+        "ApplicationServices",
+        AXUIElementSetAttributeValue=lambda *a: 0,
+        kAXValueAttribute="AXValue",
+    )
+
+    result = backend.set_value(
+        "pid:4", 0, "Verified CUA Folder", expected_snapshot=snapshot
+    )
+
+    assert result["verified"] is True
+    assert result["verification_source"] == "finder_file_reference_basename"
+    assert result["actual_basename"] == "Verified CUA Folder"
+
+
+def _install_finder_rename_tree(
+    monkeypatch, live, reference, value, selected_state=None
+):
+    selected_state = selected_state or [True]
+    cell, row, menu_bar, rename_item, app_element = (object() for _ in range(5))
+
+    def get(element, attr):
+        values = {
+            live: {
+                "AXURL": reference,
+                "AXValue": value,
+                "AXParent": cell,
+                "AXFocused": True,
+            },
+            cell: {"AXRole": "AXCell", "AXParent": row},
+            row: {"AXRole": "AXRow", "AXSelected": selected_state[0]},
+            app_element: {"AXMenuBar": menu_bar},
+            menu_bar: {"AXChildren": [rename_item]},
+            rename_item: {
+                "AXRole": "AXMenuItem",
+                "AXTitle": "Rename",
+                "AXEnabled": True,
+                "AXChildren": [],
+            },
+        }
+        return values.get(element, {}).get(attr)
+
+    monkeypatch.setattr(backend.ax_driver, "_get", get)
+    monkeypatch.setattr(backend.ax_driver, "_app_element", lambda *a, **k: app_element)
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_action_names",
+        lambda element: ["AXPress"] if element is rename_item else [],
+    )
+    return rename_item
+
+
+def test_finder_inline_rename_verifies_committed_file_reference(monkeypatch):
+    snapshot = _finder_rename_snapshot()
+    live = object()
+    paths = iter(
+        [
+            "/tmp/untitled folder",
+            "/tmp/untitled folder",
+            "/tmp/untitled folder",
+            "/tmp/Verified CUA Folder",
+        ]
+    )
+    last_path = ["/tmp/untitled folder"]
+
+    def current_path():
+        try:
+            last_path[0] = next(paths)
+        except StopIteration:
+            pass
+        return last_path[0]
+
+    reference = _FinderFileReference(current_path)
+    selected_state = [False]
+    monkeypatch.setattr(backend, "_live_element", lambda *a, **k: live)
+    monkeypatch.setattr(
+        backend, "_validate_snapshot_window", lambda snapshot: snapshot["window"]
+    )
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a: None)
+    rename_item = _install_finder_rename_tree(
+        monkeypatch,
+        live,
+        reference,
+        "Verified CUA Folder\u200b\u200b",
+        selected_state,
+    )
+    monkeypatch.setattr(backend, "_finder_item_editor_for_path", lambda *a: live)
+    keys = []
+    typed = []
+    _install_module(
+        monkeypatch,
+        "ApplicationServices",
+        AXUIElementPerformAction=lambda element, action: int(
+            element is not rename_item
+        ),
+        AXUIElementSetAttributeValue=lambda *args: (
+            selected_state.__setitem__(0, True) or 0
+        ),
+        kAXErrorSuccess=0,
+    )
+    _install_module(monkeypatch, "Foundation", NSURL=object())
+    monkeypatch.setattr(backend.time, "sleep", lambda _: None)
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_press_key",
+        lambda key, modifiers=0: keys.append((key, modifiers)),
+    )
+    monkeypatch.setattr(backend.ax_driver, "_type_text", typed.append)
+
+    result = backend.press_key(
+        "pid:4", "enter", expected_snapshot=snapshot, element_index=0
+    )
+
+    assert keys == [
+        (backend.ax_driver._keycode_for("a"), backend.ax_driver.FLAG_COMMAND),
+        (backend.KEY_ALIASES["enter"], 0),
+    ]
+    assert typed == ["Verified CUA Folder"]
+    assert result["ok"] is True
+    assert result["verified"] is True
+    assert result["actual_basename"] == "Verified CUA Folder"
+    assert result["verification_source"] == "finder_file_reference_basename"
+
+
+def test_finder_inline_rename_rejects_uncommitted_ax_value(monkeypatch):
+    snapshot = _finder_rename_snapshot()
+    live = object()
+    reference = _FinderFileReference(lambda: "/tmp/untitled folder")
+    monkeypatch.setattr(backend, "_live_element", lambda *a, **k: live)
+    monkeypatch.setattr(
+        backend, "_validate_snapshot_window", lambda snapshot: snapshot["window"]
+    )
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a: None)
+    rename_item = _install_finder_rename_tree(
+        monkeypatch, live, reference, "Verified CUA Folder"
+    )
+    monkeypatch.setattr(backend, "_finder_item_editor_for_path", lambda *a: live)
+    _install_module(
+        monkeypatch,
+        "ApplicationServices",
+        AXUIElementPerformAction=lambda element, action: int(
+            element is not rename_item
+        ),
+        kAXErrorSuccess=0,
+    )
+    _install_module(monkeypatch, "Foundation", NSURL=object())
+    monkeypatch.setattr(backend.time, "sleep", lambda _: None)
+    monkeypatch.setattr(backend.ax_driver, "_press_key", lambda *a, **k: None)
+    monkeypatch.setattr(backend.ax_driver, "_type_text", lambda text: None)
+
+    result = backend.press_key(
+        "pid:4", "enter", expected_snapshot=snapshot, element_index=0
+    )
+
+    assert result["ok"] is False
+    assert result["verified"] is False
+    assert result["actual_basename"] == "untitled folder"
+
+
+def test_finder_inline_rename_rejects_unselectable_exact_row(monkeypatch):
+    snapshot = _finder_rename_snapshot()
+    live, cell, row = object(), object(), object()
+    reference = _FinderFileReference(lambda: "/tmp/Original Folder")
+    monkeypatch.setattr(backend, "_live_element", lambda *a, **k: live)
+    monkeypatch.setattr(
+        backend, "_validate_snapshot_window", lambda snapshot: snapshot["window"]
+    )
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a: None)
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_get",
+        lambda element, attr: {
+            live: {
+                "AXURL": reference,
+                "AXValue": "Verified CUA Folder",
+                "AXParent": cell,
+            },
+            cell: {"AXRole": "AXCell", "AXParent": row},
+            row: {"AXRole": "AXRow", "AXSelected": False},
+        }.get(element, {}).get(attr),
+    )
+    _install_module(monkeypatch, "Foundation", NSURL=object())
+    _install_module(
+        monkeypatch,
+        "ApplicationServices",
+        AXUIElementSetAttributeValue=lambda *a: 1,
+        kAXErrorSuccess=0,
+    )
+
+    with pytest.raises(errors.ComputerUseError) as excinfo:
+        backend.press_key("pid:4", "enter", expected_snapshot=snapshot, element_index=0)
+
+    assert excinfo.value.code == "target_drift"
+    assert "could not be selected" in excinfo.value.message
+
+
+def test_finder_selected_row_enter_is_not_misclassified_as_commit(monkeypatch):
+    snapshot = _finder_rename_snapshot()
+    live = object()
+    reference = _FinderFileReference(lambda: "/tmp/Verified CUA Folder")
+    monkeypatch.setattr(backend, "_live_element", lambda *a, **k: live)
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_get",
+        lambda element, attr: {
+            "AXURL": reference,
+            "AXValue": "Verified CUA Folder",
+        }.get(attr),
+    )
+    _install_module(monkeypatch, "Foundation", NSURL=object())
+
+    assert backend._finder_inline_rename("pid:4", snapshot, 0) is None
+
+
+def test_finder_generic_enter_verifies_same_file_reference_commit(monkeypatch):
+    snapshot = _finder_rename_snapshot()
+    live, reference = object(), object()
+    paths = iter(["/tmp/Original", "/tmp/Original", "/tmp/Verified CUA Folder"])
+    monkeypatch.setattr(backend, "_finder_inline_rename", lambda *a, **k: None)
+    monkeypatch.setattr(backend, "_live_element", lambda *a, **k: live)
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_get",
+        lambda element, attr: {
+            "AXURL": reference,
+            "AXValue": "Verified CUA Folder",
+        }.get(attr),
+    )
+    monkeypatch.setattr(
+        backend, "_finder_file_reference_path", lambda value: next(paths)
+    )
+    monkeypatch.setattr(backend, "_prepare_synthetic_action", lambda *a, **k: snapshot)
+    monkeypatch.setattr(backend.ax_driver, "_press_key", lambda key: None)
+
+    result = backend.press_key(
+        "pid:4", "enter", expected_snapshot=snapshot, element_index=0
+    )
+
+    assert result["verified"] is True
+    assert result["verification_source"] == "finder_file_reference_basename"
+    assert result["actual_basename"] == "Verified CUA Folder"
+
+
+def test_finder_generic_enter_uses_bound_reference_for_replacement_editor(monkeypatch):
+    snapshot = _finder_rename_snapshot()
+    live, cell, row, reference = object(), object(), object(), object()
+    paths = iter(["/tmp/Original", "/tmp/Original", "/tmp/Verified CUA Folder"])
+    key = backend._finder_rename_binding_key(snapshot)
+    backend._finder_rename_bindings[key] = (
+        row,
+        reference,
+        "/tmp/Original",
+        backend.time.monotonic(),
+    )
+    monkeypatch.setattr(backend, "_finder_inline_rename", lambda *a, **k: None)
+    monkeypatch.setattr(backend, "_live_element", lambda *a, **k: live)
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_get",
+        lambda element, attr: {
+            live: {
+                "AXURL": None,
+                "AXValue": "Verified CUA Folder",
+                "AXParent": cell,
+            },
+            cell: {"AXParent": row},
+        }.get(element, {}).get(attr),
+    )
+    monkeypatch.setattr(
+        backend, "_finder_file_reference_path", lambda value: next(paths)
+    )
+    monkeypatch.setattr(backend, "_prepare_synthetic_action", lambda *a, **k: snapshot)
+    monkeypatch.setattr(backend.ax_driver, "_press_key", lambda key: None)
+
+    result = backend.press_key(
+        "pid:4", "enter", expected_snapshot=snapshot, element_index=0
+    )
+
+    assert result["verified"] is True
+    assert result["verification_source"] == "finder_file_reference_basename"
+    assert key not in backend._finder_rename_bindings
+
+
+def test_finder_inline_rename_rejects_focus_drift_before_typing(monkeypatch):
+    snapshot = _finder_rename_snapshot()
+    live, cell, row, rename_item = object(), object(), object(), object()
+    reference = object()
+    validations = []
+    monkeypatch.setattr(backend, "_live_element", lambda *a, **k: live)
+    monkeypatch.setattr(
+        backend,
+        "_validate_snapshot_window",
+        lambda snapshot: (
+            validations.append(True),
+            snapshot["window"]
+            if len(validations) == 1
+            else (_ for _ in ()).throw(
+                errors.ComputerUseError("target_drift", "focus changed")
+            ),
+        )[1],
+    )
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a: None)
+    monkeypatch.setattr(
+        backend, "_finder_file_reference_path", lambda value: "/tmp/Original"
+    )
+    monkeypatch.setattr(
+        backend, "_finder_rename_menu_item", lambda snapshot: rename_item
+    )
+    monkeypatch.setattr(backend, "_finder_item_editor_for_path", lambda *a: live)
+    monkeypatch.setattr(backend, "_focused_ax_element", lambda app: live)
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_get",
+        lambda element, attr: {
+            live: {
+                "AXURL": reference,
+                "AXValue": "Renamed",
+                "AXParent": cell,
+                "AXFocused": True,
+            },
+            cell: {"AXRole": "AXCell", "AXParent": row},
+            row: {"AXRole": "AXRow", "AXSelected": True},
+        }.get(element, {}).get(attr),
+    )
+    _install_module(
+        monkeypatch,
+        "ApplicationServices",
+        AXUIElementPerformAction=lambda *a: 0,
+        kAXErrorSuccess=0,
+    )
+    monkeypatch.setattr(backend.time, "sleep", lambda _: None)
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_press_key",
+        lambda *a, **k: pytest.fail("focus drift must not emit a key"),
+    )
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_type_text",
+        lambda *a: pytest.fail("focus drift must not emit text"),
+    )
+
+    with pytest.raises(errors.ComputerUseError) as excinfo:
+        backend.press_key("pid:4", "enter", expected_snapshot=snapshot, element_index=0)
+
+    assert excinfo.value.code == "target_drift"
+    assert len(validations) == 2
+
+
+def test_finder_replacement_editor_rejects_a_different_selected_row(monkeypatch):
+    snapshot = _finder_rename_snapshot()
+    editor, cell, other_row, expected_row, window = (object() for _ in range(5))
+    monkeypatch.setattr(backend, "_focused_ax_element", lambda app: editor)
+    monkeypatch.setattr(backend, "_focused_ax_window", lambda app: window)
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_get",
+        lambda element, attr: {
+            editor: {"AXRole": "AXTextField", "AXParent": cell, "AXURL": None},
+            cell: {"AXRole": "AXCell", "AXParent": other_row},
+            other_row: {"AXSelected": True},
+            window: {"AXChildren": []},
+        }.get(element, {}).get(attr),
+    )
+
+    with pytest.raises(errors.ComputerUseError) as excinfo:
+        backend._finder_item_editor_for_path(snapshot, "/tmp/Original", expected_row)
+
+    assert excinfo.value.code == "target_drift"
+
+
+def test_finder_inline_rename_rejects_drift_during_menu_resolution(monkeypatch):
+    snapshot = _finder_rename_snapshot()
+    live, cell, row, rename_item = object(), object(), object(), object()
+    reference = object()
+    selected = [True]
+    monkeypatch.setattr(backend, "_live_element", lambda *a, **k: live)
+    monkeypatch.setattr(
+        backend, "_validate_snapshot_window", lambda snapshot: snapshot["window"]
+    )
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a: None)
+    monkeypatch.setattr(
+        backend, "_finder_file_reference_path", lambda value: "/tmp/Original"
+    )
+    monkeypatch.setattr(
+        backend,
+        "_finder_rename_menu_item",
+        lambda snapshot: (selected.__setitem__(0, False), rename_item)[1],
+    )
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_get",
+        lambda element, attr: {
+            live: {
+                "AXURL": reference,
+                "AXValue": "Renamed",
+                "AXParent": cell,
+            },
+            cell: {"AXRole": "AXCell", "AXParent": row},
+            row: {"AXRole": "AXRow", "AXSelected": selected[0]},
+        }.get(element, {}).get(attr),
+    )
+    _install_module(
+        monkeypatch,
+        "ApplicationServices",
+        AXUIElementPerformAction=lambda *a: pytest.fail(
+            "selection drift must prevent Rename AXPress"
+        ),
+        kAXErrorSuccess=0,
+    )
+
+    with pytest.raises(errors.ComputerUseError) as excinfo:
+        backend.press_key("pid:4", "enter", expected_snapshot=snapshot, element_index=0)
+
+    assert excinfo.value.code == "target_drift"
+    assert "menu resolution" in excinfo.value.message
+
+
 def test_transient_enter_requires_same_focused_companion(monkeypatch):
     snapshot = _stable_snapshot(
         elements=[
