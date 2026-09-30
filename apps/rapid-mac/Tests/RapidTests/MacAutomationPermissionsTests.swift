@@ -101,6 +101,11 @@ struct MacAutomationPermissionsTests {
         )
         #expect(!buildScript.contains("SIDECAR_ARGS+=(--skip-codesign --skip-verify)"))
         #expect(buildScript.contains("packaged sidecar Python lacks"))
+        #expect(
+            buildScript.contains(
+                "if [[ \"$SKIP_SIDECAR\" != \"1\" ]]; then\n    nested_automation="
+            )
+        )
     }
 
     @Test("Computer Use is packaged as a stable helper process")

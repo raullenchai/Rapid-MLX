@@ -902,12 +902,14 @@ if [[ "$automation_events" != "true" ]]; then
     echo "ERROR: sealed entitlements lack com.apple.security.automation.apple-events=true (got: '${automation_events:-absent}') — browser domain guards could not request Automation access" >&2
     exit 1
 fi
-nested_automation=$(codesign -d --entitlements :- \
-    "$APP/Contents/Resources/rapid-mlx/python/bin/python3.12" 2>/dev/null \
-    | plutil -extract 'com\.apple\.security\.automation\.apple-events' raw -o - - 2>/dev/null || true)
-if [[ "$nested_automation" != "true" ]]; then
-    echo "ERROR: packaged sidecar Python lacks com.apple.security.automation.apple-events=true (got: '${nested_automation:-absent}') — macOS would deny browser URL access without a consent prompt" >&2
-    exit 1
+if [[ "$SKIP_SIDECAR" != "1" ]]; then
+    nested_automation=$(codesign -d --entitlements :- \
+        "$APP/Contents/Resources/rapid-mlx/python/bin/python3.12" 2>/dev/null \
+        | plutil -extract 'com\.apple\.security\.automation\.apple-events' raw -o - - 2>/dev/null || true)
+    if [[ "$nested_automation" != "true" ]]; then
+        echo "ERROR: packaged sidecar Python lacks com.apple.security.automation.apple-events=true (got: '${nested_automation:-absent}') — macOS would deny browser URL access without a consent prompt" >&2
+        exit 1
+    fi
 fi
 
 echo
