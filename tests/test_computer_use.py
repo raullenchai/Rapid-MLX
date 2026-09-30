@@ -3944,6 +3944,43 @@ def test_finder_rename_commit_rejects_changed_editor_and_unverified_dispatch(
     assert result["executed"] is True
 
 
+def test_finder_rename_commit_rejects_focus_drift_adjacent_to_enter(monkeypatch):
+    snapshot = _finder_rename_snapshot()
+    live, reference, unrelated = object(), object(), object()
+    binding = {
+        "pid": 4,
+        "window_id": "cg:101",
+        "file_reference": reference,
+        "original_path": "/tmp/Before",
+        "requested_basename": "After",
+    }
+    monkeypatch.setattr(
+        backend,
+        "_finder_rename_path_state",
+        lambda binding: ("unchanged", "/tmp/Before"),
+    )
+    monkeypatch.setattr(backend, "_finder_transaction_editor", lambda *a, **k: live)
+    monkeypatch.setattr(
+        backend, "_normalized_finder_editor_value", lambda element: "After"
+    )
+    monkeypatch.setattr(
+        backend, "raise_selected_window", lambda *a, **k: snapshot["window"]
+    )
+    monkeypatch.setattr(backend, "_prepare_synthetic_action", lambda *a, **k: snapshot)
+    monkeypatch.setattr(backend, "_focused_ax_element", lambda app: unrelated)
+    monkeypatch.setattr(
+        backend, "_is_selected_finder_row_under_focused_outline", lambda *a: False
+    )
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_press_key",
+        lambda key: pytest.fail("focus-drifted editor must not receive Enter"),
+    )
+
+    with pytest.raises(errors.ComputerUseError, match="before approved Enter"):
+        backend.commit_finder_rename("pid:4", snapshot, 0, binding)
+
+
 def test_finder_rename_focus_restore_commit_skips_duplicate_enter(monkeypatch):
     snapshot = _finder_rename_snapshot()
     path_state = ["/tmp/Before"]
@@ -4927,6 +4964,88 @@ def test_synthetic_noneditable_target_uses_window_center_validation(monkeypatch)
 
     assert backend._prepare_synthetic_action("pid:4", None, snapshot, 0) is snapshot
     assert validated == [(50.0, 50.0)]
+
+
+@pytest.mark.parametrize("finder_commit", [False, True])
+def test_synthetic_window_validation_enables_main_fallback_only_for_finder_commit(
+    monkeypatch, finder_commit
+):
+    snapshot = _stable_snapshot(
+        elements=[{"index": 0, "role": "AXButton", "label": "Open", "center": [5, 5]}]
+    )
+    monkeypatch.setattr(
+        backend, "_validate_snapshot_window", lambda *a, **k: snapshot["window"]
+    )
+    calls = []
+    monkeypatch.setattr(
+        backend,
+        "_validate_focused_window",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    assert (
+        backend._prepare_synthetic_action(
+            "pid:4",
+            None,
+            snapshot,
+            0,
+            allow_finder_main_window=finder_commit,
+        )
+        is snapshot
+    )
+    assert calls == [
+        (
+            (snapshot, snapshot["window"]),
+            {"allow_exact_main_window": True} if finder_commit else {},
+        )
+    ]
+
+
+def test_finder_commit_validates_anchor_without_rebinding_transient_editor_index(
+    monkeypatch,
+):
+    snapshot = _stable_snapshot(
+        elements=[
+            {
+                "index": 0,
+                "role": "AXTextField",
+                "label": "After",
+                "center": [25, 25],
+                "source_window_id": "cg:202",
+            }
+        ]
+    )
+    snapshot["transient_window"] = _window(
+        window_id=202, x=20, y=20, width=40, height=20
+    )
+    validated_points = []
+    monkeypatch.setattr(
+        backend,
+        "_validate_snapshot_window",
+        lambda value, **kwargs: (
+            validated_points.append(kwargs.get("point")) or snapshot["window"]
+        ),
+    )
+    calls = []
+    monkeypatch.setattr(
+        backend,
+        "_validate_focused_window",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    assert (
+        backend._prepare_synthetic_action(
+            "pid:4", None, snapshot, allow_finder_main_window=True
+        )
+        is snapshot
+    )
+    assert validated_points == [(50.0, 50.0)]
+    assert calls == [
+        (
+            (snapshot, snapshot["window"]),
+            {"allow_exact_main_window": True},
+        )
+    ]
 
 
 def test_finder_rename_menu_walk_is_depth_bounded(monkeypatch):

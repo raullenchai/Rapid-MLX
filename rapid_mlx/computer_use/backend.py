@@ -1801,6 +1801,7 @@ def _prepare_synthetic_action(
     element_index: int | None = None,
     *,
     allow_focused_editable_enter: bool = False,
+    allow_finder_main_window: bool = False,
 ) -> dict:
     snapshot = expected_snapshot or get_app_state(
         app, screenshot=False, use_cache=False, window_id=window_id
@@ -1872,7 +1873,14 @@ def _prepare_synthetic_action(
         expected_window = _validate_snapshot_window(
             snapshot, point=_window_center(snapshot)
         )
-    _validate_focused_window(snapshot, expected_window)
+    if allow_finder_main_window:
+        _validate_focused_window(
+            snapshot,
+            snapshot["window"],
+            allow_exact_main_window=True,
+        )
+    else:
+        _validate_focused_window(snapshot, expected_window)
     return snapshot
 
 
@@ -2230,8 +2238,29 @@ def commit_finder_rename(
         raise ComputerUseError(
             "target_drift", "Finder rename editor changed during focus restoration"
         )
-    prepared = _prepare_synthetic_action(app, None, snapshot, element_index)
-    inspect_focused_element(prepared, element_index, allow_selected_finder_row=True)
+    prepared = _prepare_synthetic_action(
+        app,
+        None,
+        snapshot,
+        allow_finder_main_window=True,
+    )
+    focused = _focused_ax_element(prepared["app"])
+    exact_editor_focus = live == focused
+    selected_editor_under_focused_outline = (
+        _is_selected_finder_row_under_focused_outline(prepared, live)
+    )
+    if (not exact_editor_focus and not selected_editor_under_focused_outline) or (
+        _finder_transaction_reference(
+            live,
+            prepared,
+            detached_expected_value=str(binding["requested_basename"]),
+        )
+        != binding["file_reference"]
+    ):
+        raise ComputerUseError(
+            "target_drift",
+            "Finder rename editor changed before approved Enter dispatch",
+        )
     # This is the last operation before the single approved key dispatch.
     _finder_rename_path_state(binding)
     ax_driver._press_key(KEY_ALIASES["enter"])
