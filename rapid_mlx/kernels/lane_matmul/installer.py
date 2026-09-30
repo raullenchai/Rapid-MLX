@@ -433,7 +433,9 @@ def install(
         if kind not in _SWAP and kind not in _RESTORE:
             continue
         module_format = format_class(module)
-        rows = min_rows_by_format.get(module_format) if module_format is not None else None
+        rows = (
+            min_rows_by_format.get(module_format) if module_format is not None else None
+        )
         if rows is None or rows > max_rows:
             if kind in _RESTORE:
                 # Covered by an earlier install, not by this one: back to stock
