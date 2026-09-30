@@ -51,7 +51,7 @@ _COMMON_KEYS = frozenset(
 
 _METHOD_KEYS = {
     "ddtree": frozenset({"model", "num_speculative_tokens", "tree_budget"}),
-    "dflash": frozenset({"model"}),
+    "dflash": frozenset({"model", "backend"}),
     # ``model`` selects the qualified companion-drafter server. Omitting it
     # preserves the original DeepSeek V4 checkpoint-native DSpark path.
     "dspark": frozenset({"model", "num_speculative_tokens"}),
@@ -205,8 +205,10 @@ def parse_speculative_config(value: str | None) -> SpeculativeConfig | None:
         raise SpeculativeConfigError(
             "allow_dynamic_membership requires continuous_batching=true"
         )
-    if config.backend not in (None, "native"):
-        raise SpeculativeConfigError("backend must be 'native' when specified")
+    allowed_backends = (None, "tensorfold") if method == "dflash" else (None, "native")
+    if config.backend not in allowed_backends:
+        expected = "'tensorfold'" if method == "dflash" else "'native'"
+        raise SpeculativeConfigError(f"backend must be {expected} when specified")
     if config.backend == "native" and config.continuous_batching is True:
         raise SpeculativeConfigError(
             "backend='native' is serial and cannot use continuous_batching=true"
