@@ -11,7 +11,8 @@ struct DownloadCatalogHardeningTests {
           "text": [
             {"alias":"qwen3.5-9b-4bit","hf_path":"mlx-community/Qwen3.5-9B-4bit","is_builtin":true,"is_text_only":false,"supports_spec_decode":false,"mtp_draft_model":"mlx-community/Qwen3.5-9B-MTP-4bit","mtp_speculative_tokens":2,"mtp_continuous_batching_tier":"verified"},
             {"alias":"qwen3.5-company-tuned","hf_path":"company/TextCheckpoint","is_builtin":false,"is_text_only":false,"supports_spec_decode":false},
-            {"alias":"qwen3.5-4b-4bit","hf_path":"mlx-community/Qwen3.5-4B-MLX-4bit","is_builtin":true,"is_text_only":true,"supports_spec_decode":false}
+            {"alias":"qwen3.5-4b-4bit","hf_path":"mlx-community/Qwen3.5-4B-MLX-4bit","is_builtin":true,"is_text_only":true,"supports_spec_decode":false},
+            {"alias":"qwen3.8-27b-tensorfold","hf_path":"Vontra/Qwen3.8-27B-MLX-4bit","is_builtin":true,"is_text_only":true,"supports_spec_decode":false,"supports_dflash":true,"dflash_draft_model":"z-lab/Qwen3.8-27B-DFlash2","dflash_algorithm":"dflash2","dflash_backend":"tensorfold"}
           ],
           "audio": [{"alias":"whisper"}], "video": [], "image": [{"alias":"flux-dev"}]
         }
@@ -19,12 +20,22 @@ struct DownloadCatalogHardeningTests {
         let parsed = try #require(ModelCatalog.parseAvailableJSON(output))
         #expect(parsed.entries.map(\.0) == [
             "qwen3.5-9b-4bit", "qwen3.5-company-tuned", "qwen3.5-4b-4bit",
+            "qwen3.8-27b-tensorfold",
         ])
         #expect(parsed.profiles["qwen3.5-9b-4bit"]?.isBuiltin == true)
         #expect(parsed.profiles["qwen3.5-4b-4bit"]?.isTextOnly == true)
         #expect(parsed.profiles["qwen3.5-company-tuned"]?.isBuiltin == false)
         #expect(parsed.speculative["qwen3.5-9b-4bit"]?.isDefaultEnabled == true)
         #expect(parsed.speculative["qwen3.5-company-tuned"] == nil)
+        let dflash = try #require(parsed.speculative["qwen3.8-27b-tensorfold"])
+        #expect(dflash.method == .dflash)
+        #expect(dflash.model == "z-lab/Qwen3.8-27B-DFlash2")
+        #expect(dflash.backend == "tensorfold")
+        #expect(!dflash.isDefaultEnabled)
+        #expect(dflash.launchFlags == [
+            "--speculative-config",
+            #"{"method":"dflash","model":"z-lab/Qwen3.8-27B-DFlash2","backend":"tensorfold"}"#,
+        ])
         #expect(parsed.excluded == ["whisper", "flux-dev"])
     }
 

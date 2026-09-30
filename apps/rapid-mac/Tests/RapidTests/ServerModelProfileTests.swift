@@ -150,6 +150,28 @@ final class ServerModelProfileTests {
         #expect(availability?.help().isEmpty == false)
     }
 
+    @Test("An active runtime that rejects tools names the ordinary-mode remedy")
+    func speculativeStatusReportsUnsupportedTools() throws {
+        let json = #"{"id":"qwen3.8-27b-tensorfold","fallback_model":"qwen3.8-27b-4bit","min_memory_gb":48,"speculative_decoding":{"configured":true,"method":"dflash","runtime_state":"active","request_fallback_features":[],"backend":"tensorfold","unsupported_features":["tools","media","grammar"]}}"#
+        let profile = try JSONDecoder().decode(
+            ServerModelProfile.self, from: Data(json.utf8)
+        )
+        #expect(profile.speculativeDecoding?.backend == "tensorfold")
+        #expect(profile.fallbackModel == "qwen3.8-27b-4bit")
+        #expect(profile.minMemoryGB == 48)
+        #expect(profile.speculativeDecoding?.unsupportedFeatures == [
+            "tools", "media", "grammar",
+        ])
+
+        let availability = SpeculativeDecodingAvailability.resolve(
+            profile: profile,
+            sendsTools: true
+        )
+        #expect(availability?.state == .unsupportedTools)
+        #expect(availability?.label().contains("limits tools") == true)
+        #expect(availability?.help().contains("Settings → Performance") == true)
+    }
+
     @Test("A method that supports tools stays ready when tools are sent")
     func speculativeStatusUsesEngineAdvertisedFallbacks() {
         let availability = SpeculativeDecodingAvailability.resolve(
