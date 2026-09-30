@@ -2183,7 +2183,7 @@ class BatchedEngine(BaseEngine):
             # installer stacks those four into one launch itself.
             from ..kernels.lane_matmul import install_lane_matmul
 
-            self._lane_matmul_receipt = self._model_load_executor.submit(
+            self._lane_matmul_receipt = self._model_load_executor.submit(  # type: ignore[attr-defined]
                 install_lane_matmul, self._model
             ).result()
 

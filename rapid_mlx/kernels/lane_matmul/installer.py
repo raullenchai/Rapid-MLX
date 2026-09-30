@@ -192,7 +192,9 @@ def _stock_stacked(module, group: _Group, x):
     return y if bias is None else y + bias
 
 
-def _probe_stock_stack(members, group: _Group, rows_below: int, seen: dict) -> bool:
+def _probe_stock_stack(
+    members, group: _Group, rows_below: int, seen: dict[tuple, bool]
+) -> bool:
     """Stacked stock launch bitwise equal to the members' own stock calls?
 
     Checked on this GPU for every row count that takes the stock path below
@@ -209,7 +211,7 @@ def _probe_stock_stack(members, group: _Group, rows_below: int, seen: dict) -> b
         rows_below,
     )
     if key in seen:
-        return seen[key]
+        return bool(seen[key])
     k = group.lw.k
     same = True
     # Both activation dtypes a model may run: MLX specializes kernels by dtype.
@@ -430,7 +432,8 @@ def install(
         kind = type(module)
         if kind not in _SWAP and kind not in _RESTORE:
             continue
-        rows = min_rows_by_format.get(format_class(module))
+        module_format = format_class(module)
+        rows = min_rows_by_format.get(module_format) if module_format is not None else None
         if rows is None or rows > max_rows:
             if kind in _RESTORE:
                 # Covered by an earlier install, not by this one: back to stock

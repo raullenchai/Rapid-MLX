@@ -853,7 +853,7 @@ def _launch(
             extra = (("B", bits),)
         sgs = max(1, 16 // ((32 // s) * nr)) if n > 2048 else 8
         per = sgs * (32 // s) * nr
-        consts = (
+        consts: tuple[tuple[str, int], ...] = (
             ("K", k),
             ("N", n),
             ("S", s),
@@ -1164,7 +1164,7 @@ def rerouted(n: int, k: int, group_size: int, bits: int) -> str | None:
 def available() -> bool:
     """True on an Apple GPU (the simdgroup matrix units every Metal GPU has)."""
     try:
-        return mx.default_device() == mx.gpu and mx.metal.is_available()
+        return bool(mx.default_device() == mx.gpu and mx.metal.is_available())
     except Exception:  # noqa: BLE001 - absent Metal means unavailable
         return False
 
