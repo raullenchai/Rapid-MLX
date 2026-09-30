@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 import queue
 import threading
 import uuid
@@ -39,8 +42,10 @@ class TensorFoldRequestProvider:
     text and gives qualification runs an exact token sequence to hash.
     """
 
-    def __init__(self, backend: TensorFoldQwen27Backend) -> None:
+    def __init__(self, backend: TensorFoldQwen27Backend, *, audit_path: str | None = None) -> None:
         self.backend = backend
+        self._audit_path = audit_path
+        self._audit_lock = threading.Lock()
         self.last_token_ids: list[int] = []
         self.last_outputs: list[RequestOutput] = []
 
@@ -127,6 +132,15 @@ class TensorFoldRequestProvider:
             cancellation.cancel()
             self.last_token_ids = list(collected)
             self.last_outputs = outputs
+            if self._audit_path:
+                encoded = ",".join(str(token) for token in collected).encode()
+                record = {
+                    "request_id": request_id,
+                    "token_ids": collected,
+                    "token_sha256": hashlib.sha256(encoded).hexdigest(),
+                }
+                with self._audit_lock, open(self._audit_path, "a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(record, separators=(",", ":")) + "\n")
 
     def stream_generate(self, _model: Any, _processor: Any, prompt: str, **kwargs: Any) -> Iterator[ProviderChunk]:
         for output in self._outputs(prompt, **kwargs):
@@ -220,7 +234,11 @@ def run_tensorfold_qwen27_server(
         main_model_repo, drafter_repo, served_name=served_model_name,
         max_tokens=default_max_tokens,
     )
-    provider = TensorFoldRequestProvider(backend)
+    # Qualification-only token evidence. Unset by default so production
+    # requests never persist generated token IDs.
+    provider = TensorFoldRequestProvider(
+        backend, audit_path=os.environ.get("RAPID_MLX_TENSORFOLD_AUDIT_PATH")
+    )
     from rapid_mlx.speculative.dflash.server import _build_app
 
     app = _build_app(

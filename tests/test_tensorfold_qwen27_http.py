@@ -65,7 +65,7 @@ def test_http_gate_rejects_unqualified_features_and_maps_sampling() -> None:
     assert "reasoning_max_tokens" in exc.value.detail
 
 
-def test_provider_preserves_exact_token_ids_and_request_outputs(monkeypatch) -> None:
+def test_provider_preserves_exact_token_ids_and_request_outputs(monkeypatch, tmp_path) -> None:
     class Cancellation:
         def cancel(self):
             pass
@@ -123,7 +123,8 @@ def test_provider_preserves_exact_token_ids_and_request_outputs(monkeypatch) -> 
         stop_ids=frozenset(), min_match=3, scheduler=Scheduler(),
         _resolve_sampling=lambda fields, temperature, prompt: (fields, temperature),
     )
-    provider = TensorFoldRequestProvider(SimpleNamespace(_app=app))
+    audit = tmp_path / "tokens.ndjson"
+    provider = TensorFoldRequestProvider(SimpleNamespace(_app=app), audit_path=str(audit))
     chunks = list(provider.stream_generate(None, None, "prompt", max_tokens=8))
 
     assert [chunk.token for chunk in chunks] == [21, 22]
@@ -131,6 +132,10 @@ def test_provider_preserves_exact_token_ids_and_request_outputs(monkeypatch) -> 
     assert provider.last_token_ids == [21, 22]
     assert provider.last_outputs[-1].finished
     assert provider.last_outputs[-1].cached_tokens == 3
+    import json
+    record = json.loads(audit.read_text())
+    assert record["token_ids"] == [21, 22]
+    assert len(record["token_sha256"]) == 64
 
 
 def test_http_stream_and_nonstream_use_provider_and_reject_tools() -> None:
