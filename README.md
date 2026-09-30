@@ -64,6 +64,8 @@ prefill, whole-batch throughput was 1.6×; single-stream decode was about 1.5×;
 a dense 12B model was no faster; and llama.cpp-family engines prefilled cold
 prompts faster ([method and raw data](https://rapidmlx.com/blog/rapid-mlx-vs-ollama-benchmark)).
 
+**Head-to-head with oMLX and Ollama** on the same Macs (18 GB and 48 GB) — decode, agent sessions, restart, concurrency, and where Rapid-MLX is slower, with raw data: [rapidmlx.com/compare](https://rapidmlx.com/compare).
+
 ---
 
 ## Works with your AI stack
