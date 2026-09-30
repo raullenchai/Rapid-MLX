@@ -92,6 +92,11 @@ struct SecurityKeychainItems: KeychainItemAccessing {
         var addQuery = baseQuery
         addQuery[kSecValueData as String] = data
         addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        // Prevent authentication UI during a new insert too. Reads and updates
+        // already use a non-interactive context; add must follow the same rule.
+        let addContext = LAContext()
+        addContext.interactionNotAllowed = true
+        addQuery[kSecUseAuthenticationContext as String] = addContext
         return SecItemAdd(addQuery as CFDictionary, nil) == errSecSuccess
     }
 
@@ -114,16 +119,11 @@ struct SecurityKeychainItems: KeychainItemAccessing {
 /// generic-password class (not internet-password) because provider keys are
 /// static credentials, not per-URL secrets.
 ///
-/// Codex audit batch 6 finding (KeychainStore.swift:63, P2):
-/// access policy is ``kSecAttrAccessibleWhenUnlockedThisDeviceOnly``.
-/// The pre-audit shape used ``kSecAttrAccessibleAfterFirstUnlock``,
-/// which (a) makes the key readable while the machine is locked
-/// after the user's first post-boot login (any background process
-/// running under the user account can read it) and (b) allows the
-/// secret to be migrated off-device via Keychain sync / Time
-/// Machine restore. ``WhenUnlockedThisDeviceOnly`` keeps the secret
-/// readable only while the screen is unlocked and only on the
-/// originating Mac.
+/// This adapter uses the macOS login Keychain for compatibility with existing
+/// items. Apple applies `kSecAttrAccessible` restrictions on macOS only with
+/// the data-protection Keychain or synchronizable items, so the requested
+/// `WhenUnlockedThisDeviceOnly` attribute must not be presented to users as an
+/// enforced lock-screen or migration guarantee on this path.
 struct SystemKeychain: KeychainStoring {
     /// The original unscoped service is read-only migration input. Local
     /// ad-hoc builds used the same service as notarized releases, so an item

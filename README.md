@@ -109,6 +109,7 @@ and image generation from one app.
 - [Download Rapid-MLX Desktop](https://rapidmlx.com/desktop)
 - [Browse signed Desktop releases](https://github.com/raullenchai/Rapid-MLX/releases?q=rapid-mac-v)
 - Requires an M-series Mac; Windows and Linux desktop builds are not available yet
+- [Share Compute setup and credit ledger](docs/guides/share-compute.md)
 
 ### CLI and server — macOS (Apple Silicon)
 

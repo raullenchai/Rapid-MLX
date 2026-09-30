@@ -128,10 +128,7 @@ struct ShareComputeReadKeyStore: Sendable {
 
     private let keychain: any KeychainStoring
 
-    /// Defaults to the system Keychain, which applies
-    /// `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` — readable only while the
-    /// screen is unlocked, and never migrated off this Mac by Keychain sync or
-    /// a Time Machine restore. Tests inject ``InMemoryKeychain``.
+    /// Uses the system Keychain. Tests inject ``InMemoryKeychain``.
     init(keychain: any KeychainStoring = SystemKeychain()) {
         self.keychain = keychain
     }
