@@ -338,6 +338,73 @@ struct ModelPerfConfigTests {
         #expect(merged == ["--no-spec-decode"])
     }
 
+    @Test("An untouched explicit-off preset crosses the engine default boundary")
+    func explicitOffPresetDisablesEngineAutoEnable() {
+        let preset = SpeculativeDecodingPreset(
+            method: .dflash,
+            model: "z-lab/Qwen3.8-27B-DFlash2",
+            tokens: nil,
+            backend: "tensorfold",
+            defaultEnabled: false
+        )
+        #expect(ServerManager.desktopCapabilityFlags(
+            forAlias: "qwen3.8-27b-tensorfold",
+            speculativePreset: preset,
+            existing: []
+        ) == ["--no-spec-decode"])
+    }
+
+    @Test("Turning an explicit-off preset on replaces the normal-mode flag")
+    func explicitOffPresetUserOptInWins() {
+        let preset = SpeculativeDecodingPreset(
+            method: .dflash,
+            model: "z-lab/Qwen3.8-27B-DFlash2",
+            tokens: nil,
+            backend: "tensorfold",
+            defaultEnabled: false
+        )
+        let defaults = ServerManager.desktopCapabilityFlags(
+            forAlias: "qwen3.8-27b-tensorfold",
+            speculativePreset: preset,
+            existing: []
+        )
+        #expect(ServerManager.mergedPerformanceFlags(
+            recommended: defaults,
+            userOverrides: ModelPerfConfig(speculativePreset: preset)
+                .launchFlags(forAlias: "qwen3.8-27b-tensorfold")
+        ) == preset.launchFlags)
+    }
+
+    @Test("Turning an explicit-off preset off remains normal mode")
+    func explicitOffPresetUserOptOutRemainsDisabled() {
+        let preset = SpeculativeDecodingPreset(
+            method: .dflash,
+            model: "z-lab/Qwen3.8-27B-DFlash2",
+            tokens: nil,
+            backend: "tensorfold",
+            defaultEnabled: false
+        )
+        let defaults = ServerManager.desktopCapabilityFlags(
+            forAlias: "qwen3.8-27b-tensorfold",
+            speculativePreset: preset,
+            existing: []
+        )
+        #expect(ServerManager.mergedPerformanceFlags(
+            recommended: defaults,
+            userOverrides: ModelPerfConfig(speculativeDecodingDisabled: true)
+                .launchFlags(forAlias: "qwen3.8-27b-tensorfold")
+        ) == ["--no-spec-decode"])
+    }
+
+    @Test("A normal model with no preset keeps its launch flags unchanged")
+    func modelWithoutPresetKeepsCompatibility() {
+        #expect(ServerManager.desktopCapabilityFlags(
+            forAlias: "ordinary-model",
+            speculativePreset: nil,
+            existing: ["--enable-prefix-cache"]
+        ) == ["--enable-prefix-cache"])
+    }
+
     @Test("Only Engine default and BF16 KV cache are continuous-MTP compatible")
     func continuousMTPKVCompatibility() {
         #expect(ModelPerfConfig().isContinuousMTPKVCompatible)

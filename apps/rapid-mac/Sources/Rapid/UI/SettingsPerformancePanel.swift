@@ -343,7 +343,7 @@ struct SettingsPerformancePanel: View {
                                 ? "Enabled by default for this qualified model. It accelerates text generation; turn it off and restart to use photo input."
                                 : "MTP accelerates text generation on this model; turn it off and restart to use photo input."
                             : preset?.method == .dflash
-                                ? "Off by default. This qualified text-only mode uses a paired draft model and one request at a time. Tools use ordinary decoding."
+                                ? "Off by default. This qualified text-only mode uses a paired draft model and one request at a time. To use tools, turn acceleration off and restart the model."
                                 : "Off by default. It can improve generation speed on some Macs, but may be slower on others; accepted output remains token-exact.",
                     warns: false
                 )

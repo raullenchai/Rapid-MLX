@@ -4607,6 +4607,15 @@ final class ServerManager {
         if speculativePreset?.isDefaultEnabled == true,
            !flags.contains("--speculative-config") {
             flags.append(contentsOf: speculativePreset?.launchFlags ?? [])
+        } else if speculativePreset?.defaultEnabled == false,
+                  !flags.contains("--speculative-config"),
+                  !flags.contains("--no-spec-decode") {
+            // Some specialized aliases enable their paired runtime in the
+            // engine unless Desktop states an opinion. An explicit catalog
+            // false therefore has to cross the process boundary; treating it
+            // like an omitted legacy field would make an untouched OFF toggle
+            // launch accelerated anyway.
+            flags.append("--no-spec-decode")
         }
         return speculativeTextLaneFlags(
             requested: speculativePreset?.isDefaultEnabled == true,
