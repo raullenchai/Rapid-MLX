@@ -5275,7 +5275,13 @@ def serve_command(args):
     # as the other extras so the error lands FIRST. ``importlib.util.
     # find_spec("mlx_vlm")`` doesn't trigger a load — safe to run on the
     # hot CLI path.
-    _wants_dflash = getattr(args, "enable_dflash", False)
+    _spec_config = getattr(args, "_speculative_config", None)
+    _wants_tensorfold = (
+        _spec_config is not None
+        and _spec_config.method == "dflash"
+        and _spec_config.backend == "tensorfold"
+    )
+    _wants_dflash = getattr(args, "enable_dflash", False) and not _wants_tensorfold
     if _wants_dflash:
         from .speculative.dflash.eligibility import have_runtime
 
@@ -5993,7 +5999,7 @@ def serve_command(args):
     # so the user sees a clean error rather than an optimistic "DFlash
     # enabled" feature line followed by an exit. Cheap (just reads
     # aliases.json + checks the module spec); no model load yet.
-    if args.enable_dflash:
+    if args.enable_dflash and not _wants_tensorfold:
         from .model_aliases import resolve_profile
         from .model_profile import ModelProfile
         from .speculative.dflash import DFlashUnavailable, check
