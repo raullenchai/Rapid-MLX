@@ -85,6 +85,7 @@ def test_provider_preserves_exact_token_ids_and_request_outputs(monkeypatch, tmp
     class StopPolicy:
         def __init__(self, fields, tokenizer, lock, eos_ids):
             self.ignore_eos = False
+            self.eos_ids = eos_ids
             self.strings = tuple(fields.get("stop") or ())
 
         def visible(self, text, partial=False):
@@ -120,7 +121,7 @@ def test_provider_preserves_exact_token_ids_and_request_outputs(monkeypatch, tmp
 
     app = SimpleNamespace(
         tokenizer=Tokenizer(), tokenizer_lock=__import__("threading").Lock(),
-        stop_ids=frozenset(), min_match=3, scheduler=Scheduler(),
+        stop_ids=frozenset({22}), min_match=3, scheduler=Scheduler(),
         _resolve_sampling=lambda fields, temperature, prompt: (fields, temperature),
     )
     audit = tmp_path / "tokens.ndjson"
@@ -128,7 +129,7 @@ def test_provider_preserves_exact_token_ids_and_request_outputs(monkeypatch, tmp
     chunks = list(provider.stream_generate(None, None, "prompt", max_tokens=8))
 
     assert [chunk.token for chunk in chunks] == [21, 22]
-    assert [chunk.text for chunk in chunks] == ["A", "B"]
+    assert [chunk.text for chunk in chunks] == ["A", ""]
     assert provider.last_token_ids == [21, 22]
     assert provider.last_outputs[-1].finished
     assert provider.last_outputs[-1].cached_tokens == 3

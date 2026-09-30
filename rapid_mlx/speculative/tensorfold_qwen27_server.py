@@ -99,8 +99,11 @@ class TensorFoldRequestProvider:
                 for token in chunk:
                     token = int(token)
                     collected.append(token)
+                    visible_ids = (
+                        collected[:-1] if token in stops.eos_ids else collected
+                    )
                     with app.tokenizer_lock:
-                        current = stops.visible(tokenizer.decode(collected), partial=True)
+                        current = stops.visible(tokenizer.decode(visible_ids), partial=True)
                     delta = current[len(decoded):] if current.startswith(decoded) else current
                     decoded = current
                     output = RequestOutput(
