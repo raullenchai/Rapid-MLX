@@ -1947,7 +1947,10 @@ def test_raise_selected_window_uses_unique_pid_bound_ax_window(monkeypatch):
             pytest.fail("approved action resumed before Finder was frontmost")
         focused.append(value)
         if len(focused) < 3:
-            raise errors.ComputerUseError("target_drift", "Finder AX tree settling")
+            raise errors.ComputerUseError(
+                "target_drift",
+                "window cg:101 is not the focused AX window; re-observe",
+            )
 
     monkeypatch.setattr(
         backend,
@@ -1955,6 +1958,11 @@ def test_raise_selected_window_uses_unique_pid_bound_ax_window(monkeypatch):
         validate_focus,
     )
     monkeypatch.setattr(backend.time, "sleep", lambda _: None)
+    running = object()
+    monkeypatch.setattr(backend.ax_driver, "_application_for_pid", lambda pid: running)
+    monkeypatch.setattr(
+        backend, "_resolved_app_info", lambda value: dict(snapshot["app"])
+    )
 
     assert (
         backend.raise_selected_window("pid:4", snapshot, focus_exact_window=True)
@@ -2022,6 +2030,8 @@ def test_raise_selected_window_requires_snapshot_identity():
         ("focus_rejected", "target_occluded"),
         ("focus_never_settles", "target_drift"),
         ("focus_settle_window_drift", "target_drift"),
+        ("focus_settle_identity_drift", "target_drift"),
+        ("focus_settle_app_exit", "target_drift"),
         ("raise_rejected", "target_occluded"),
         ("post_raise_drift", "target_drift"),
     ],
@@ -2105,12 +2115,29 @@ def test_raise_selected_window_fails_closed_across_identity_boundaries(
         ),
     )
     monkeypatch.setattr(backend.time, "sleep", lambda _: None)
+    running = object()
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_application_for_pid",
+        lambda pid: None if failure == "focus_settle_app_exit" else running,
+    )
+
+    def settled_info(_running):
+        info = dict(snapshot["app"])
+        if failure == "focus_settle_identity_drift":
+            info["processStartTime"] = 200.0
+        return info
+
+    monkeypatch.setattr(backend, "_resolved_app_info", settled_info)
     monkeypatch.setattr(
         backend,
         "_validate_focused_window",
         lambda value, **kwargs: (
             (_ for _ in ()).throw(
-                errors.ComputerUseError("target_drift", "focus unavailable")
+                errors.ComputerUseError(
+                    "target_drift",
+                    "window cg:101 is not the focused AX window; re-observe",
+                )
             )
             if failure == "focus_never_settles"
             else None
@@ -2122,7 +2149,13 @@ def test_raise_selected_window_fails_closed_across_identity_boundaries(
             "pid:4",
             snapshot,
             focus_exact_window=failure
-            in {"focus_rejected", "focus_never_settles", "focus_settle_window_drift"},
+            in {
+                "focus_rejected",
+                "focus_never_settles",
+                "focus_settle_window_drift",
+                "focus_settle_identity_drift",
+                "focus_settle_app_exit",
+            },
         )
     assert excinfo.value.code == code
     if failure == "process_start_drift":

@@ -1218,7 +1218,19 @@ def raise_selected_window(
     # same three-second class as other local AX stabilization waits.
     focus_attempts = 30 if focus_exact_window else 1
     for attempt in range(focus_attempts):
-        current = _select_window(activated_info, window_id=expected["window_id"])
+        running = ax_driver._application_for_pid(int(expected_app["pid"]))
+        if running is None:
+            raise ComputerUseError(
+                "target_drift", "selected app exited while focus settled"
+            )
+        settled_info = _resolved_app_info(running)
+        for key in ("pid", "bundleId", "name", "processStartTime"):
+            wanted = expected_app.get(key)
+            if wanted is not None and settled_info.get(key) != wanted:
+                raise ComputerUseError(
+                    "target_drift", "selected app identity changed while focus settled"
+                )
+        current = _select_window(settled_info, window_id=expected["window_id"])
         if not _same_window(expected, current):
             raise ComputerUseError(
                 "target_drift", "selected window changed while focus settled"
@@ -1228,8 +1240,9 @@ def raise_selected_window(
                 snapshot, allow_exact_main_window=focus_exact_window
             )
             break
-        except ComputerUseError:
-            if attempt + 1 == focus_attempts:
+        except ComputerUseError as exc:
+            focus_is_settling = "is not the focused AX window" in exc.message
+            if not focus_is_settling or attempt + 1 == focus_attempts:
                 raise
             time.sleep(0.1)
     return after
