@@ -46,6 +46,10 @@ struct MacAutomationPermissionSnapshot: Equatable, Sendable {
 /// UI therefore says "Not allowed" and offers the exact Settings pane instead
 /// of claiming a state macOS has not exposed to us.
 enum MacAutomationPermissions {
+    static let automationSettingsURL = URL(
+        string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation"
+    )!
+
     static func snapshot() -> MacAutomationPermissionSnapshot {
         MacAutomationPermissionSnapshot(
             screenRecording: CGPreflightScreenCaptureAccess(),
@@ -86,5 +90,10 @@ enum MacAutomationPermissions {
             string: "x-apple.systempreferences:com.apple.preference.security?\(anchor)"
         ) else { return }
         NSWorkspace.shared.open(url)
+    }
+
+    @MainActor
+    static func openAutomationSettings() {
+        NSWorkspace.shared.open(automationSettingsURL)
     }
 }

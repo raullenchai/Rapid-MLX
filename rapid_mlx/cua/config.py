@@ -39,6 +39,23 @@ DEFAULT_PRESETS: dict[str, dict] = {
 DEFAULT_FAST_RANKER_URL = "http://127.0.0.1:18700/v1/rank"
 
 
+def is_loopback_url(url: str) -> bool:
+    """Return whether an HTTP(S) endpoint is unambiguously on this Mac."""
+    import ipaddress
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return False
+    host = parsed.hostname.rstrip(".").lower()
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 @dataclass
 class PlannerConfig:
     preset: str
@@ -51,7 +68,7 @@ class PlannerConfig:
     allow_remote: bool = False
 
     def describe(self) -> str:
-        kind = "remote" if self.allow_remote or ":18888" in self.url else "local"
+        kind = "local" if is_loopback_url(self.url) else "remote"
         return f"{self.preset} [{kind}] {self.model}"
 
 
@@ -134,12 +151,16 @@ def resolve_planner(
     if spec in presets:
         preset = presets[spec]
         api_key = preset.get("api_key")
-        if url_override and api_key:
+        # Legacy presets had no explicit flag; the old effective permission
+        # was tied to a key. Keyless remote presets must be re-saved after the
+        # user reviews the current data disclosure.
+        allow_remote = bool(preset.get("allow_remote", bool(api_key)))
+        if url_override and (api_key or allow_remote):
             # A URL override would send the preset's credential to a
             # different endpoint than the one the user consented to.
             raise ValueError(
-                "planner URL override is not allowed for a brain saved with "
-                "an API key; create a separate brain instead"
+                "model URL override is not allowed for a model saved with "
+                "credentials or remote-data consent; create a separate model instead"
             )
         return PlannerConfig(
             preset=spec,
@@ -148,15 +169,12 @@ def resolve_planner(
             reasoning_effort=preset.get("reasoning_effort"),
             text_only=bool(preset.get("text_only", False)),
             api_key=api_key,
-            # A user-created preset with credentials is an explicit decision
-            # to send task data to that endpoint; that consent unlocks
-            # non-loopback planner URLs (https only, enforced in Planner).
-            allow_remote=bool(api_key),
+            allow_remote=allow_remote,
         )
     if spec.startswith(("http://", "https://")):
         if not model_override:
             raise ValueError(
-                f"--planner-model is required when --planner is a URL: {spec}"
+                f"a model name is required when the model endpoint is a URL: {spec}"
             )
         return PlannerConfig(
             preset="custom",
@@ -165,7 +183,7 @@ def resolve_planner(
             text_only=bool(text_only_override),
         )
     known = ", ".join(sorted(presets))
-    raise ValueError(f"unknown planner preset {spec!r} (known: {known})")
+    raise ValueError(f"unknown model {spec!r} (known: {known})")
 
 
 PRESET_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
@@ -190,48 +208,56 @@ def save_user_preset(
     api_key: str | None = None,
     reasoning_effort: str | None = None,
     text_only: bool = False,
+    allow_remote: bool = False,
 ) -> tuple[str, dict]:
     """Create or update a user-defined brain preset.
 
-    Product behavior (not POC): users add their own cloud brain from the app
-    settings. The endpoint URL and key live in the local config file (chmod
-    0600); a preset carrying an api_key is the user's explicit consent to
-    send task data to that endpoint, which is what allows non-loopback
-    planner URLs (https enforced by Planner).
+    Product behavior (not POC): users add an OpenAI-compatible brain from app
+    settings. Consent to send task data to a non-loopback endpoint is stored
+    independently from an optional API key. Remote endpoints require HTTPS.
     """
     name = re.sub(r"\s+", "-", (name or "").strip()).lower()
     if not PRESET_NAME_RE.match(name):
         raise ValueError(
-            "preset name must be 1-32 chars: lowercase letters, digits, dashes"
+            "model name must be 1-32 chars: lowercase letters, digits, dashes"
         )
     url = (url or "").strip()
     if not url.startswith(("http://", "https://")):
-        raise ValueError("brain URL must start with http:// or https://")
+        raise ValueError("model URL must start with http:// or https://")
     from urllib.parse import urlparse
 
-    remote = urlparse(url).hostname not in ("127.0.0.1", "::1", "localhost")
-    if remote and api_key and url.startswith("http://"):
+    parsed = urlparse(url)
+    if not parsed.hostname:
+        raise ValueError("model URL must include a hostname")
+    remote = not is_loopback_url(url)
+    if remote and not allow_remote:
         raise ValueError(
-            "remote brain URL must be HTTPS (task data leaves the machine)"
+            "remote model requires explicit consent to send the task goal, "
+            "Accessibility snapshot, and optional screenshot"
+        )
+    if remote and url.startswith("http://"):
+        raise ValueError(
+            "remote model URL must be HTTPS (task data leaves the machine)"
         )
     if not (model or "").strip():
-        raise ValueError("brain model is required")
+        raise ValueError("model name is required")
     url = _chat_completions_url(url)
     if name in DEFAULT_PRESETS:
-        raise ValueError(f"{name!r} is a built-in brain; choose a different name")
+        raise ValueError(f"{name!r} is a built-in model; choose a different name")
     stored = _read_stored()
     presets = stored.setdefault("presets", {})
     if name in presets and not presets[name].get("user_created"):
-        raise ValueError(f"preset name {name!r} is reserved")
+        raise ValueError(f"model name {name!r} is reserved")
     if name in presets:
         raise ValueError(
-            f"brain {name!r} already exists; delete it first to replace it"
+            f"model {name!r} already exists; delete it first to replace it"
         )
     presets[name] = {
         "url": url,
         "model": model.strip(),
         "reasoning_effort": reasoning_effort,
         "text_only": bool(text_only),
+        "allow_remote": bool(remote and allow_remote),
         **({"api_key": api_key} if api_key else {}),
         "user_created": True,
     }
@@ -244,10 +270,10 @@ def delete_user_preset(name: str) -> None:
     """Remove a user-defined preset. Built-in defaults cannot be deleted."""
     name = name.strip().lower()
     if name in DEFAULT_PRESETS:
-        raise ValueError(f"built-in preset {name!r} cannot be deleted")
+        raise ValueError(f"built-in model {name!r} cannot be deleted")
     stored = _read_stored()
     presets = stored.get("presets", {})
     if name not in presets:
-        raise ValueError(f"unknown preset {name!r}")
+        raise ValueError(f"unknown model {name!r}")
     del presets[name]
     _write_stored(stored)

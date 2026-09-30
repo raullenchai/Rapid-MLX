@@ -144,6 +144,9 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         "RAPID_MLX_TRUST_REMOTE_CODE",
         "RAPID_MLX_TRUSTED_HOSTS",
         "RAPID_MLX_ALLOW_UNSAFE_SA3_PICKLE",
+        # Explicit opt-in for returning CUA screenshots to an authenticated
+        # client. This is a privacy boundary, not model or parser routing.
+        "RAPID_MLX_CUA_EXPOSE_SCREENSHOTS",
         # MLLM media policy controls. These constrain which already-selected
         # request media sources may be read; they do not select a model,
         # parser, tier, or engine route.

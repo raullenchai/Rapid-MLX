@@ -111,7 +111,10 @@ LTX25_RUNTIME_SHA256="fa9a66a0c78721c3dce51d0f1dadcabad060682410303be748e529a846
 # the committed baseline had drifted by one and was being masked by
 # MACHO_TOLERANCE. The libpython trim brought that to 172; the bounded FFmpeg
 # executable added here brings the directly measured baseline back to 173.
-MACHO_BASELINE_COUNT="${MACHO_BASELINE_COUNT:-173}"
+# PyObjC's Computer Use framework closure adds 21 runtime extension modules
+# after its test/debug payload is trimmed below. They use the same signed
+# universal-wheel mechanism as the native extensions already in the bundle.
+MACHO_BASELINE_COUNT="${MACHO_BASELINE_COUNT:-194}"
 # Allow modest drift without blocking — wheel updates sometimes shift
 # 1-2 .so files. Bigger drift means a new dependency, needs review.
 # Kept at 5 across the 51 → 77 baseline rebase to give Pillow and
@@ -139,6 +142,7 @@ RAPID_MLX_SOURCE="${RAPID_MLX_SOURCE:-${ENGINE_ROOT}}"
 # fresh text-lane venv. Local builds retain the source-tree fallback.
 RAPID_MLX_WHEEL="${RAPID_MLX_WHEEL:-}"
 SIDECAR_CONSTRAINTS="${REPO_ROOT}/scripts/sidecar-constraints.txt"
+PYOBJC_LICENSE="${REPO_ROOT}/licenses/PyObjC-MIT.txt"
 OUT_DIR="${OUT_DIR:-${REPO_ROOT}/build/sidecar-stage}"
 DEVELOPER_ID="${DEVELOPER_ID:--}"
 SKIP_CODESIGN=0
@@ -194,6 +198,10 @@ if [ ! -f "$SIDECAR_CONSTRAINTS" ]; then
     echo "ERR: sidecar constraints missing at $SIDECAR_CONSTRAINTS" >&2
     exit 1
 fi
+if [ ! -f "$PYOBJC_LICENSE" ]; then
+    echo "ERR: PyObjC license notice missing at $PYOBJC_LICENSE" >&2
+    exit 1
+fi
 if [ -n "$RAPID_MLX_WHEEL" ] && [ ! -f "$RAPID_MLX_WHEEL" ]; then
     echo "ERR: RAPID_MLX_WHEEL does not exist: $RAPID_MLX_WHEEL" >&2
     exit 1
@@ -227,6 +235,8 @@ STAGE="${OUT_DIR}/rapid-mlx"
 
 rm -rf "$STAGE"
 mkdir -p "$STAGE/bin"
+mkdir -p "$STAGE/licenses"
+cp "$PYOBJC_LICENSE" "$STAGE/licenses/PyObjC-MIT.txt"
 
 # ----- step 1: embedded python interpreter -----------------------------
 
@@ -348,7 +358,7 @@ esac
 
 # ----- step 2: install rapid-mlx + runtime deps ------------------------
 
-echo "==> installing rapid-mlx into site-packages (no [vision] extras)"
+echo "==> installing rapid-mlx into site-packages (audio + Computer Use)"
 if [ ! -d "$RAPID_MLX_SOURCE" ] || [ ! -f "$RAPID_MLX_SOURCE/pyproject.toml" ]; then
     echo "ERR: rapid-mlx engine source tree missing at: $RAPID_MLX_SOURCE" >&2
     echo "     In the monorepo the engine is the repository root (two levels" >&2
@@ -385,7 +395,7 @@ fi
     --no-compile \
     --upgrade \
     --constraint "$SIDECAR_CONSTRAINTS" \
-    "${RAPID_MLX_INSTALL_TARGET}[audio-desktop]" \
+    "${RAPID_MLX_INSTALL_TARGET}[audio-desktop,computer-use]" \
     'mlx' \
     'transformers'
 
@@ -914,6 +924,13 @@ find "$STAGE/site-packages/numpy" -type d -name tests -prune -exec rm -rf {} + 2
 find "$STAGE/site-packages/scipy" -type d -name tests -prune -exec rm -rf {} + 2>/dev/null || true
 find "$STAGE/site-packages/mlx_audio" -type d -name tests -prune -exec rm -rf {} + 2>/dev/null || true
 
+# pyobjc-core wheels include their upstream extension test bundle and dSYM
+# companions. Neither is imported by ApplicationServices/Quartz at runtime;
+# leaving them would add more than a hundred debug/test Mach-Os to the signing
+# sweep. Keep the 21 framework/runtime extensions and remove only that payload.
+rm -rf "$STAGE/site-packages/PyObjCTest"
+find "$STAGE/site-packages" -type d -name '*.dSYM' -prune -exec rm -rf {} +
+
 # The desktop Audio surface uses scipy.signal for input resampling. Speech WAV
 # output uses the standard-library `wave` writer, so scipy.io is not required.
 # SciPy's
@@ -1132,6 +1149,13 @@ else
                 exit 1
             }
     done < "$MACHOS_LIST"
+    automation_events=$(codesign -d --entitlements :- \
+        "$STAGE/python/bin/python3.12" 2>/dev/null \
+        | plutil -extract 'com\.apple\.security\.automation\.apple-events' raw -o - - 2>/dev/null || true)
+    if [ "$automation_events" != "true" ]; then
+        echo "ERR: sealed sidecar Python lacks com.apple.security.automation.apple-events=true" >&2
+        exit 1
+    fi
 fi
 
 # ----- step 6: smoke test (codex r1 B1: BEFORE packaging) --------------
@@ -1183,6 +1207,18 @@ else
         exit 3
     }
     echo "    mlx import: $IMPORT_OUT"
+
+    CUA_IMPORT_OUT="$(env -i "${TELEMETRY_OFF_ENV[@]}" HOME="$SMOKE_HOME" PATH=/usr/bin:/bin \
+        PYTHONHOME="$STAGE/python" \
+        PYTHONPATH="$STAGE/site-packages" \
+        PYTHONNOUSERSITE=1 \
+        "$STAGE/python/bin/python3.12" -s -c \
+        'import ApplicationServices, Quartz; print("macOS Computer Use frameworks: OK")' 2>&1)" || {
+        echo "ERR: bundled macOS Computer Use framework import failed:" >&2
+        echo "$CUA_IMPORT_OUT" >&2
+        exit 3
+    }
+    echo "    $CUA_IMPORT_OUT"
 
     # mlx_vlm import smoke. The bundle ships mlx-vlm --no-deps (step 2.5)
     # because gemma-4 + DiffusionGemma loaders need the architecture

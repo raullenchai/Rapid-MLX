@@ -14,6 +14,36 @@ enum SidebarSection: Hashable {
     case shareCompute
 }
 
+enum CUASidebarStatus: Equatable {
+    case running
+    case awaitingApproval
+
+    init?(phase: CUAPhase) {
+        switch phase {
+        case .starting, .running:
+            self = .running
+        case .awaitingApproval:
+            self = .awaitingApproval
+        case .idle, .finished, .failed:
+            return nil
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .running: "Running"
+        case .awaitingApproval: "Approval"
+        }
+    }
+
+    var accessibilityValue: String {
+        switch self {
+        case .running: "Task running"
+        case .awaitingApproval: "Approval needed"
+        }
+    }
+}
+
 /// The left sidebar: a "New Chat" action at the
 /// top, an "Agent" page entry, then (later) the conversation history. It
 /// is the primary column of ``ContentView``'s ``NavigationSplitView``, so
@@ -49,6 +79,9 @@ struct SidebarView: View {
     var shareComputeEnabled: Bool = false
     /// Keeps an active pool session visible after the user navigates away.
     var shareComputeActive: Bool = false
+    /// The session-owned Computer Use model. A dedicated observed row reads
+    /// its phase so navigation away cannot hide active work or an approval.
+    var cuaViewModel: CUAViewModel? = nil
     /// The chat model — source of the conversation history list + the
     /// active conversation id (for highlighting).
     @Bindable var chat: ChatViewModel
@@ -214,11 +247,32 @@ struct SidebarView: View {
             )
             .accessibilityIdentifier("Sidebar.Launch")
 
+            if computerUseEnabled {
+                if let cuaViewModel {
+                    CUASidebarRow(
+                        isSelected: selection == .computerUse,
+                        viewModel: cuaViewModel,
+                        action: {
+                            cancelRename()
+                            selection = .computerUse
+                        }
+                    )
+                } else {
+                    row(
+                        title: "Computer Use",
+                        systemImage: "macwindow.on.rectangle",
+                        isSelected: selection == .computerUse,
+                        action: { selection = .computerUse }
+                    )
+                    .accessibilityIdentifier("Sidebar.ComputerUse")
+                }
+            }
+
             // Experimental workspaces live in their own labelled group below
             // the everyday tabs (rather than interleaved with them), so the
             // opt-in previews read as a distinct, still-being-validated set.
             // The header appears only when at least one is enabled.
-            if videoGenerationEnabled || computerUseEnabled || benchmarkEnabled || shareComputeEnabled {
+            if videoGenerationEnabled || benchmarkEnabled || shareComputeEnabled {
                 SectionHeader("Experimental")
                     .padding(.horizontal, RapidTheme.Space.sm)
                     .padding(.top, RapidTheme.Space.lg)
@@ -232,15 +286,6 @@ struct SidebarView: View {
                         action: { selection = .video }
                     )
                     .accessibilityIdentifier("Sidebar.Video")
-                }
-                if computerUseEnabled {
-                    row(
-                        title: "Computer Use",
-                        systemImage: "macwindow.on.rectangle",
-                        isSelected: selection == .computerUse,
-                        action: { selection = .computerUse }
-                    )
-                    .accessibilityIdentifier("Sidebar.ComputerUse")
                 }
                 if benchmarkEnabled {
                     row(
@@ -1535,6 +1580,40 @@ struct SidebarView: View {
                     .lineLimit(1)
             }
         }
+    }
+}
+
+private struct CUASidebarRow: View {
+    let isSelected: Bool
+    @ObservedObject var viewModel: CUAViewModel
+    let action: () -> Void
+
+    var body: some View {
+        SidebarRow(isSelected: isSelected, action: action) {
+            HStack(spacing: RapidTheme.Space.sm) {
+                Image(systemName: "macwindow.on.rectangle")
+                    .font(.system(size: 13, weight: isSelected ? .semibold : .medium))
+                    .frame(width: RapidTheme.Layout.iconSlot, alignment: .center)
+                Text("Computer Use")
+                    .font(isSelected ? RapidFont.bodyEmphasis : RapidFont.body)
+                    .lineLimit(1)
+                Spacer(minLength: RapidTheme.Space.xs)
+                if let status = CUASidebarStatus(phase: viewModel.phase) {
+                    Text(status.title)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(
+                            status == .awaitingApproval ? Color.orange : Color.secondary
+                        )
+                        .lineLimit(1)
+                        .accessibilityHidden(true)
+                }
+            }
+        }
+        .accessibilityLabel("Computer Use")
+        .accessibilityValue(
+            CUASidebarStatus(phase: viewModel.phase)?.accessibilityValue ?? "Idle"
+        )
+        .accessibilityIdentifier("Sidebar.ComputerUse")
     }
 }
 

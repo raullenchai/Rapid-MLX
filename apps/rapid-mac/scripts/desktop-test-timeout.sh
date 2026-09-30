@@ -70,9 +70,33 @@ fi
 # --- Reap the test process; on hang, kill it so nothing is orphaned ---------
 if [[ $hang_detected -eq 1 ]]; then
     echo "::error::Desktop test suite exceeded ${DEADLINE_MINUTES} min hard deadline; killing hung process $TEST_PID" >&2
+    # Snapshot descendants before killing swift-test. Killing the parent first
+    # reparents swiftpm-testing/xctest, so the old `pkill -P` missed them.
+    # Record only PID/PPID pairs, never argv (which may contain credentials).
+    descendant_pairs=()
+    collect_descendants() {
+        local parent_pid="$1" child_pid
+        [[ ${#descendant_pairs[@]} -lt 32 ]] || return
+        while IFS= read -r child_pid; do
+            [[ ${#descendant_pairs[@]} -lt 32 ]] || return
+            [[ "$child_pid" =~ ^[0-9]+$ ]] || continue
+            descendant_pairs+=("$child_pid:$parent_pid")
+            collect_descendants "$child_pid"
+        done < <(pgrep -P "$parent_pid" 2>/dev/null || true)
+    }
+    collect_descendants "$TEST_PID"
+    # Deepest children first; verify each still belongs to its captured parent
+    # so a rapidly recycled PID can never kill an unrelated process.
+    for (( i=${#descendant_pairs[@]}-1; i>=0; i-- )); do
+        pair="${descendant_pairs[$i]}"
+        child_pid="${pair%%:*}"
+        parent_pid="${pair##*:}"
+        current_parent="$(ps -p "$child_pid" -o ppid= 2>/dev/null | tr -d '[:space:]')"
+        if [[ "$current_parent" == "$parent_pid" ]]; then
+            kill -9 "$child_pid" 2>/dev/null || true
+        fi
+    done
     kill -9 "$TEST_PID" 2>/dev/null || true
-    # Also kill any swift-testing/xctest children that outlived the kill.
-    pkill -9 -P "$TEST_PID" 2>/dev/null || true
     # Surface the artifact path the watchdog wrote.
     if [[ -d "$ARTIFACT_DIR" ]]; then
         echo "hang sample artifact(s) under: $ARTIFACT_DIR" >&2

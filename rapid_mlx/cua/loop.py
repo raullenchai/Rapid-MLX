@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+import httpx
+
 from rapid_mlx.computer_use import backend
 from rapid_mlx.computer_use.errors import ComputerUseError
 from rapid_mlx.cua import config as config_mod
@@ -58,6 +60,11 @@ class CUARun:
         event_sink: Callable[[dict], None] | None = None,
         gate: Callable[[str], Any] | None = None,
         stop_event: asyncio.Event | None = None,
+        window_id: str | None = None,
+        backend_app: str | None = None,
+        expected_app: dict | None = None,
+        targets: list[dict] | None = None,
+        initial_target_id: str | None = None,
     ):
         self.config = config
         self.app = app
@@ -66,6 +73,13 @@ class CUARun:
         self.event_sink = event_sink
         self.gate = gate
         self.stop_event = stop_event or asyncio.Event()
+        self.window_id = window_id
+        self.backend_app = backend_app or app
+        self.expected_app = dict(expected_app) if expected_app is not None else None
+        self.targets = {
+            str(target["target_id"]): dict(target) for target in (targets or [])
+        }
+        self.active_target_id = initial_target_id
         run_dir.mkdir(parents=True, exist_ok=True)
         self.history: list[dict] = []
         self.trace: dict = {
@@ -73,10 +87,23 @@ class CUARun:
             "goal": goal,
             "planner": config.planner.describe(),
             "steps": [],
+            "window_id": window_id,
+            "targets": [
+                {key: value for key, value in target.items() if key != "expected_app"}
+                for target in self.targets.values()
+            ],
+            "active_target_id": initial_target_id,
         }
         self.tracker = NoProgressTracker()
+        self._last_execution_failed = False
+        self._last_commit_unverified = False
+        self._last_finder_rename_verified = False
+        self._approved_finder_rename: dict[str, Any] | None = None
+        self._failed_completion_rejections = 0
+        self._trusted_transient_window_id: str | None = None
         self._empty_snapshots = 0
         self._terminal_emitted = False
+        self._target_observations: dict[str, dict[str, Any]] = {}
         self.ranker = (
             FastOutcomeRanker(config.fast_ranker_url)
             if config.fast_ranker_url
@@ -84,6 +111,8 @@ class CUARun:
         )
 
     def _record(self, step: dict) -> None:
+        if self.active_target_id is not None:
+            step = {**step, "target_id": self.active_target_id}
         self.trace["steps"].append(step)
         (self.run_dir / "trace.json").write_text(
             json.dumps(self.trace, ensure_ascii=False, indent=2, default=str),
@@ -91,6 +120,8 @@ class CUARun:
         )
 
     def _emit(self, event: dict) -> None:
+        if self.active_target_id is not None:
+            event = {**event, "target_id": self.active_target_id}
         if event.get("kind") == "terminal":
             self._terminal_emitted = True
         if self.event_sink is None:
@@ -100,6 +131,42 @@ class CUARun:
         except Exception:  # noqa: BLE001 - events must never kill the run
             pass
 
+    async def _request_approval(
+        self, reason: str, *, action: str = "", target: str = ""
+    ) -> bool:
+        """Ask the human to approve one explicitly described action."""
+        if self.gate is None:
+            marker = (
+                "APPROVE_SIGNIN"
+                if reason == "sign-in"
+                else f"APPROVE_ACTION_{hashlib.sha256(reason.encode()).hexdigest()[:12]}"
+            )
+            if reason == "sign-in":
+                return await gates.wait_for_human(
+                    self.run_dir, marker, self.config.pause_timeout
+                )
+            return await gates.wait_for_human(
+                self.run_dir, marker, self.config.pause_timeout, reason=reason
+            )
+        event = {"kind": "gate", "reason": reason}
+        if action:
+            event.update({"action": action, "target": target})
+        self._emit(event)
+        try:
+            approved = bool(await self.gate(reason))
+        except Exception:  # noqa: BLE001 - a broken gate must not hang the run
+            approved = False
+        self._emit(
+            {
+                "kind": "gate_resolved",
+                "reason": reason,
+                "approved": approved,
+                "action": action,
+                "target": target,
+            }
+        )
+        return approved
+
     async def _request_signin_approval(self) -> bool:
         """Ask the human to approve a sign-in pause.
 
@@ -107,20 +174,56 @@ class CUARun:
         gate/gate_resolved events and resolved through the callback; without
         one (CLI mode) the file sentinel is the approval channel.
         """
-        if self.gate is None:
-            return await gates.wait_for_human(
-                self.run_dir, "APPROVE_SIGNIN", self.config.pause_timeout
+        return await self._request_approval("sign-in")
+
+    @staticmethod
+    def _target(snapshot: dict, index: int) -> dict:
+        return next(
+            (e for e in snapshot.get("elements", []) if e.get("index") == index), {}
+        )
+
+    @staticmethod
+    def _target_identity(target: dict) -> tuple[str, ...] | None:
+        required = ("index", "role", "label", "x", "y", "width", "height", "center")
+        if any(field not in target for field in required):
+            return None
+        return tuple(
+            json.dumps(target.get(field), ensure_ascii=False, sort_keys=True)
+            for field in (
+                *required,
+                "subrole",
+                "parent_role",
+                "actions",
+                "source_window_id",
             )
-        self._emit({"kind": "gate", "reason": "sign-in"})
-        try:
-            approved = bool(await self.gate("sign-in"))
-        except Exception:  # noqa: BLE001 - a broken gate must not hang the run
-            approved = False
-        self._emit({"kind": "gate_resolved", "approved": approved})
-        return approved
+        )
+
+    @staticmethod
+    def _window_identity(snapshot: dict) -> tuple[str, str, str, str, str] | None:
+        app = snapshot.get("app")
+        if (
+            not isinstance(app, dict)
+            or "pid" not in app
+            or "window_index" not in snapshot
+        ):
+            return None
+        return (
+            str(app.get("pid")),
+            str(app.get("bundle_id", "")),
+            str(app.get("name", "")),
+            str(snapshot.get("window_index")),
+            str(snapshot.get("window_id", "")),
+        )
 
     def _check_domain(self, url: str) -> str | None:
         allowed = self.config.allowed_domain.strip().lower().rstrip(".")
+        if self.active_target_id is not None:
+            allowed = (
+                str(self.targets[self.active_target_id].get("allowed_domain", ""))
+                .strip()
+                .lower()
+                .rstrip(".")
+            )
         if not allowed:
             return None
         if not url:
@@ -136,39 +239,329 @@ class CUARun:
             )
         return None
 
-    async def _execute(self, plan: dict, snapshot: dict) -> dict:
+    def _read_url(self, snapshot: dict) -> str:
+        allowed = self.config.allowed_domain.strip()
+        if self.active_target_id is not None:
+            allowed = str(
+                self.targets[self.active_target_id].get("allowed_domain", "")
+            ).strip()
+        return backend.read_url(
+            self.backend_app,
+            window_id=self.window_id or snapshot.get("window_id"),
+            require_permission=bool(allowed),
+        )
+
+    def _activate_target(self, target_id: str) -> None:
+        target = self.targets.get(target_id)
+        if target is None:
+            raise ComputerUseError("unknown_target", f"unknown target_id {target_id!r}")
+        self.active_target_id = target_id
+        self.app = str(target["app"])
+        self.backend_app = str(target["app"])
+        self.window_id = str(target["window_id"])
+        self.expected_app = dict(target["expected_app"])
+        self._trusted_transient_window_id = None
+        self.trace["active_target_id"] = target_id
+
+    def _get_app_state(
+        self, *, screenshot: bool, transient_baseline: set[str] | None = None
+    ) -> dict:
+        kwargs: dict[str, Any] = {"screenshot": screenshot, "use_cache": False}
+        if self.window_id is not None:
+            kwargs["window_id"] = self.window_id
+            if self._trusted_transient_window_id is not None:
+                kwargs["trusted_transient_window_id"] = (
+                    self._trusted_transient_window_id
+                )
+            if transient_baseline is not None:
+                kwargs["transient_baseline_window_ids"] = transient_baseline
+        snapshot = backend.get_app_state(self.backend_app, **kwargs)
+        transient = snapshot.get("transient_window")
+        self._trusted_transient_window_id = (
+            str(transient["window_id"]) if isinstance(transient, dict) else None
+        )
+        if self.expected_app is not None:
+            observed = snapshot.get("app") or {}
+            for key in ("pid", "bundleId", "name", "processStartTime"):
+                expected = self.expected_app.get(key)
+                if expected is not None and observed.get(key) != expected:
+                    raise ComputerUseError(
+                        "target_drift",
+                        f"selected app identity changed for pid {self.expected_app.get('pid')}",
+                    )
+        return snapshot
+
+    async def _request_plan(
+        self, planner: Planner, snapshot: dict, progress_hint: str = ""
+    ) -> tuple[dict, str, float, list[dict]]:
+        allowed_domain = (
+            str(self.targets[self.active_target_id].get("allowed_domain", ""))
+            if self.active_target_id is not None
+            else self.config.allowed_domain
+        )
+        args = (self.goal, snapshot, self.history, allowed_domain, progress_hint)
+        if not self.targets:
+            return await planner.plan(*args)
+        active_target_id = str(self.active_target_id)
+        self._target_observations[active_target_id] = {
+            "target_id": active_target_id,
+            "app": str(snapshot.get("app", {}).get("name", ""))[:120],
+            "window_id": str(snapshot.get("window_id", self.window_id or ""))[:128],
+            "observed_at_step": len(self.history) + 1,
+            "ax_text": str(snapshot.get("tree_text", ""))[:1600],
+        }
+        return await planner.plan(
+            *args,
+            target_catalog=[
+                {
+                    "target_id": target["target_id"],
+                    "app": target["app"],
+                    "window_id": target["window_id"],
+                }
+                for target in self.targets.values()
+            ],
+            active_target_id=active_target_id,
+            target_observations=list(self._target_observations.values()),
+        )
+
+    async def final_assessment(self, planner: Planner, step_no: int) -> dict:
+        """Use one fresh observation for a terminal-only decision after the action budget."""
+        if self.stop_event.is_set():
+            reason = "cancelled by client"
+            self._record({"step": step_no, "assessment_only": True, "stop": reason})
+            return {"status": "stopped", "reason": reason}
+        try:
+            snapshot = self._get_app_state(screenshot=not planner.text_only)
+        except ComputerUseError as exc:
+            reason = f"final observation unavailable: {exc.message}"
+            self._record({"step": step_no, "stop": reason, "error_code": exc.code})
+            return {"status": "stalled", "reason": reason, "error": exc.code}
+        if not snapshot.get("elements") or snapshot.get("ax_unavailable"):
+            reason = "final accessibility observation is unavailable"
+            self._record({"step": step_no, "stop": reason})
+            return {"status": "stalled", "reason": reason}
+        if self.stop_event.is_set():
+            reason = "cancelled by client"
+            self._record({"step": step_no, "assessment_only": True, "stop": reason})
+            return {"status": "stopped", "reason": reason}
+        url_now = self._read_url(snapshot)
+        guard = self._check_domain(url_now)
+        if guard:
+            self._record({"step": step_no, "stop": guard, "url": url_now})
+            return {"status": "stalled", "reason": guard, "error": "domain_guard"}
+        assessed_target_id = self.active_target_id
+        plan, _raw, latency, attempts = await self._request_plan(
+            planner,
+            snapshot,
+            "FINAL ASSESSMENT ONLY: the action budget is exhausted. Send no input. "
+            "Return done, partial, or blocked from this fresh observation.",
+        )
+        if self.stop_event.is_set():
+            reason = "cancelled by client"
+            self._record({"step": step_no, "assessment_only": True, "stop": reason})
+            return {"status": "stopped", "reason": reason}
+        try:
+            fresh = self._get_app_state(screenshot=False)
+        except ComputerUseError as exc:
+            reason = f"final assessment target changed: {exc.message}"
+            self._record({"step": step_no, "stop": reason, "error_code": exc.code})
+            return {"status": "stalled", "reason": reason, "error": exc.code}
+        fresh_url = self._read_url(fresh)
+        if self.stop_event.is_set():
+            reason = "cancelled by client"
+            self._record({"step": step_no, "assessment_only": True, "stop": reason})
+            return {"status": "stopped", "reason": reason}
+        fresh_guard = self._check_domain(fresh_url)
+        target_drifted = any(
+            (
+                assessed_target_id != self.active_target_id,
+                self._window_identity(snapshot) != self._window_identity(fresh),
+                snapshot.get("window") != fresh.get("window"),
+                url_now != fresh_url,
+            )
+        )
+        tree_drifted = _tree_signature(snapshot) != _tree_signature(fresh)
+        drifted = target_drifted or (
+            tree_drifted and not self._last_finder_rename_verified
+        )
+        if fresh_guard or drifted:
+            reason = fresh_guard or "final assessment target changed during planning"
+            error_code = "domain_guard" if fresh_guard else "target_drift"
+            self._record(
+                {
+                    "step": step_no,
+                    "assessment_only": True,
+                    "stop": reason,
+                    "error_code": error_code,
+                }
+            )
+            return {
+                "status": "stalled",
+                "reason": reason,
+                "error": error_code,
+            }
+        self._emit(
+            {
+                "kind": "plan",
+                "step": step_no,
+                "action": plan["action"],
+                "step_instruction": plan["step_instruction"],
+                "element_index": plan.get("element_index", -1),
+                "latency_s": round(latency, 2),
+                "assessment_only": True,
+            }
+        )
+        if plan["action"] in {"done", "partial", "blocked"}:
+            summary = plan["final_summary"]
+            if plan["action"] == "done" and (
+                self._last_execution_failed or self._last_commit_unverified
+            ):
+                reason = (
+                    "the previous commit could not be verified"
+                    if self._last_commit_unverified
+                    else "the previous action failed"
+                )
+                self._record(
+                    {
+                        "step": step_no,
+                        "plan": plan,
+                        "assessment_only": True,
+                        "completion_rejected": reason,
+                    }
+                )
+                return {"status": "stalled", "reason": reason}
+            self.trace["final_summary"] = summary
+            self.trace["completion_disposition"] = plan["action"]
+            self._record(
+                {
+                    "step": step_no,
+                    "plan": plan,
+                    "assessment_only": True,
+                    "plan_attempts": attempts,
+                    "planner_latency_s": round(latency, 2),
+                }
+            )
+            if plan["action"] == "done":
+                return {"status": "done", "summary": summary}
+            return {
+                "status": "stalled",
+                "reason": summary,
+                "completion_disposition": plan["action"],
+            }
+        reason = "maximum step count reached; final assessment requested another action"
+        self.trace["final_summary"] = reason
+        self._record(
+            {
+                "step": step_no,
+                "plan": plan,
+                "assessment_only": True,
+                "stop": reason,
+            }
+        )
+        return {"status": "stalled", "reason": reason}
+
+    async def _execute(
+        self,
+        plan: dict,
+        snapshot: dict,
+        save_identity: tuple[str, ...] | None = None,
+        finder_rename: dict[str, Any] | None = None,
+    ) -> dict:
         action = plan["action"]
         index = plan.get("element_index", -1)
         result: dict = {"action": action}
         try:
             if action == "click":
                 result.update(
-                    backend.click(self.app, index, expected_snapshot=snapshot)
+                    backend.click(self.backend_app, index, expected_snapshot=snapshot)
                 )
             elif action == "fill":
-                result.update(
-                    backend.set_value(
-                        self.app,
+                if finder_rename is not None:
+                    result.update(
+                        backend.set_finder_rename_value(
+                            self.backend_app, snapshot, index, finder_rename
+                        )
+                    )
+                else:
+                    result.update(
+                        backend.set_value(
+                            self.backend_app,
+                            index,
+                            plan.get("text", ""),
+                            expected_snapshot=snapshot,
+                        )
+                    )
+            elif action == "press":
+                if finder_rename is not None:
+                    result.update(
+                        backend.commit_finder_rename(
+                            self.backend_app, snapshot, index, finder_rename
+                        )
+                    )
+                    return result
+                if gates.is_keyboard_activation(plan):
+                    # Enter and Space activate whichever control has keyboard
+                    # focus. Re-bind the serialized index to the exact live AX
+                    # object immediately before dispatch. Do not focus through
+                    # click(), because AXPress on a button is itself the commit.
+                    backend.inspect_focused_element(
+                        snapshot,
                         index,
-                        plan.get("text", ""),
+                        allow_selected_finder_row=str(plan.get("key", "")).casefold()
+                        in {"enter", "return"},
+                    )
+                else:
+                    backend.click(
+                        self.backend_app,
+                        index,
                         expected_snapshot=snapshot,
+                        focus_only=True,
+                    )
+                    await asyncio.sleep(0.2)
+                result.update(
+                    backend.press_key(
+                        self.backend_app,
+                        plan.get("key", "Enter"),
+                        expected_snapshot=snapshot,
+                        element_index=index,
                     )
                 )
-            elif action == "press":
-                backend.click(self.app, index, expected_snapshot=snapshot)
-                await asyncio.sleep(0.2)
-                result.update(backend.press_key(self.app, plan.get("key", "Enter")))
             elif action == "scroll":
                 result.update(
-                    backend.scroll(self.app, plan.get("direction", "down"), 1.0)
+                    backend.scroll(
+                        self.backend_app,
+                        plan.get("direction", "down"),
+                        1.0,
+                        expected_snapshot=snapshot,
+                    )
                 )
             elif action == "wait":
                 await asyncio.sleep(2.0)
                 result.update({"ok": True})
+            elif action == "save":
+                if save_identity is None:
+                    raise ComputerUseError(
+                        "target_drift", "Save command was not bound before execution"
+                    )
+                result.update(
+                    backend.save_document(
+                        self.backend_app,
+                        snapshot,
+                        expected_identity=save_identity,
+                    )
+                )
         except ComputerUseError as exc:
             # A tool failure is an action-level outcome, not a run-level
             # crash: the tracker records it and the next step re-observes.
-            result.update({"ok": False, "error": str(exc), "executed": False})
+            result.update(
+                {
+                    "ok": False,
+                    "error": exc.message,
+                    "error_code": exc.code,
+                    "recovery": list(exc.recovery),
+                    "executed": False,
+                }
+            )
             return result
         result["executed"] = action != "wait"
         return result
@@ -182,10 +575,22 @@ class CUARun:
             self._emit({"kind": "terminal", "status": "stopped"})
             return {"status": "stopped", "reason": "cancelled by client"}
         try:
-            snapshot = backend.get_app_state(
-                self.app, screenshot=not planner.text_only, use_cache=False
-            )
+            snapshot = self._get_app_state(screenshot=not planner.text_only)
         except ComputerUseError as exc:
+            if self.window_id is not None:
+                reason = f"selected window unavailable: {exc.message}"
+                self.trace["status"] = "stopped"
+                self.trace["final_summary"] = reason
+                self._record({"step": step_no, "stop": reason, "error_code": exc.code})
+                self._emit(
+                    {
+                        "kind": "terminal",
+                        "status": "stopped",
+                        "reason": reason,
+                        "error": exc.code,
+                    }
+                )
+                return {"status": "stopped", "reason": reason, "error": exc.code}
             # AX watchdog tripped (wedged app accessibility service): treat as
             # an unusable snapshot and let the honest-stop path handle it.
             snapshot = {
@@ -222,7 +627,7 @@ class CUARun:
                 return {"status": "stopped", "reason": reason}
             return None
         self._empty_snapshots = 0
-        url_now = backend.read_url(self.app)
+        url_now = self._read_url(snapshot)
         guard = self._check_domain(url_now)
         if guard:
             self.trace["guard_stop"] = guard
@@ -232,22 +637,185 @@ class CUARun:
         progress_hint = (
             self.tracker.take_hint(snapshot) if self.tracker.should_intervene() else ""
         )
-        plan, raw, latency, attempts = await planner.plan(
-            self.goal,
-            snapshot,
-            self.history,
-            self.config.allowed_domain,
-            progress_hint,
+        plan, raw, latency, attempts = await self._request_plan(
+            planner, snapshot, progress_hint
         )
-        target: dict = next(
-            (
-                e
-                for e in snapshot.get("elements", [])
-                if e["index"] == plan.get("element_index")
-            ),
-            {},
-        )
+        if plan["action"] == "switch_target":
+            self._last_finder_rename_verified = False
+            previous = str(self.active_target_id)
+            requested = str(plan["target_id"])
+            if requested == previous:
+                self.history.append(
+                    {
+                        "step": step_no,
+                        "action": "switch_target",
+                        "target_id": requested,
+                        "outcome": "no_effect",
+                        "error": "target is already active",
+                    }
+                )
+                return None
+            try:
+                self._activate_target(requested)
+                # App activation alone cannot choose one exact window when a
+                # frozen target set contains two windows from the same PID.
+                # Resolve the preauthorized anchor, raise only its unique AX
+                # window, then observe again. Do not announce a successful
+                # switch until focus and the frozen window identity are both
+                # established.
+                switch_candidate = self._get_app_state(screenshot=False)
+                backend.raise_selected_window(self.backend_app, switch_candidate)
+                switched = self._get_app_state(screenshot=False)
+                if self._window_identity(switch_candidate) != self._window_identity(
+                    switched
+                ) or switch_candidate.get("window") != switched.get("window"):
+                    raise ComputerUseError(
+                        "target_drift",
+                        "selected target changed while establishing window focus",
+                    )
+                backend.validate_selected_window_focus(switched)
+                switched_url = self._read_url(switched)
+                guard = self._check_domain(switched_url)
+                if guard:
+                    raise ComputerUseError("domain_guard", guard)
+            except ComputerUseError as exc:
+                reason = f"target switch failed closed: {exc.message}"
+                self._record(
+                    {
+                        "step": step_no,
+                        "plan": plan,
+                        "stop": reason,
+                        "error_code": exc.code,
+                    }
+                )
+                return {"status": "stopped", "reason": reason, "error": exc.code}
+            event = {
+                "kind": "target_switched",
+                "step": step_no,
+                "action": "switch_target",
+                "outcome": "success",
+                "from_target_id": previous,
+                "target_id": requested,
+                "window_id": switched.get("window_id"),
+            }
+            self._emit(event)
+            self.history.append(
+                {
+                    "step": step_no,
+                    "action": "switch_target",
+                    "from_target_id": previous,
+                    "target_id": requested,
+                    "outcome": "success",
+                }
+            )
+            self._record({"step": step_no, "plan": plan, "target_switch": event})
+            return None
+        target = self._target(snapshot, plan.get("element_index", -1))
         target_label = str(target.get("label", ""))
+        approved_finder_commit = (
+            self._approved_finder_rename
+            if plan["action"] == "press"
+            and str(plan.get("key", "")).casefold() in {"enter", "return"}
+            and backend.is_finder_snapshot(snapshot)
+            else None
+        )
+        if gates.is_keyboard_activation(plan) and approved_finder_commit is None:
+            try:
+                target = backend.inspect_focused_element(
+                    snapshot,
+                    plan.get("element_index", -1),
+                    allow_selected_finder_row=str(plan.get("key", "")).casefold()
+                    in {"enter", "return"},
+                )
+            except ComputerUseError as exc:
+                reason = f"keyboard activation rejected: {exc.message}"
+                self._record(
+                    {
+                        "step": step_no,
+                        "plan": plan,
+                        "stop": reason,
+                        "error_code": exc.code,
+                    }
+                )
+                return {"status": "stopped", "reason": reason, "error": exc.code}
+            target_label = str(target.get("label", ""))
+        save_identity: tuple[str, ...] | None = None
+        autosave_identity: tuple[object, ...] | None = None
+        save_persistence_verified = False
+        finder_rename: dict[str, Any] | None = None
+        finder_rename_fill = (
+            plan["action"] == "fill"
+            and backend.is_finder_snapshot(snapshot)
+            and str(target.get("role", "")) == "AXTextField"
+        )
+        if finder_rename_fill:
+            # A new rename proposal supersedes any staged transaction before
+            # binding or approval. Denial and bind failure must not leave an
+            # older one-shot Enter authority reusable.
+            self._approved_finder_rename = None
+            try:
+                finder_rename = backend.inspect_finder_rename(
+                    snapshot,
+                    plan.get("element_index", -1),
+                    str(plan.get("text", "")),
+                )
+            except ComputerUseError as exc:
+                self._record(
+                    {
+                        "step": step_no,
+                        "plan": plan,
+                        "stop": exc.message,
+                        "error_code": exc.code,
+                    }
+                )
+                return {"status": "stopped", "reason": exc.message, "error": exc.code}
+            target_label = Path(str(finder_rename["original_path"])).name
+        elif approved_finder_commit is not None:
+            finder_rename = approved_finder_commit
+        elif plan["action"] not in {"done", "partial", "blocked"}:
+            self._approved_finder_rename = None
+        if plan["action"] == "save":
+            try:
+                save_binding = backend.inspect_save_document(self.backend_app, snapshot)
+            except ComputerUseError as exc:
+                self._record(
+                    {
+                        "step": step_no,
+                        "plan": plan,
+                        "stop": exc.message,
+                        "error_code": exc.code,
+                    }
+                )
+                return {"status": "stopped", "reason": exc.message, "error": exc.code}
+            save_identity = tuple(save_binding["save_identity"])
+            target_label = str(
+                snapshot.get("window", {}).get("title") or "selected document"
+            )
+        if (
+            plan["action"] == "fill"
+            and str(snapshot.get("app", {}).get("bundleId") or "").casefold()
+            == "com.apple.textedit"
+        ):
+            try:
+                autosave_binding = backend.inspect_autosaving_document(
+                    self.backend_app, snapshot
+                )
+            except ComputerUseError as exc:
+                self._record(
+                    {
+                        "step": step_no,
+                        "plan": plan,
+                        "stop": exc.message,
+                        "error_code": exc.code,
+                    }
+                )
+                return {"status": "stopped", "reason": exc.message, "error": exc.code}
+            raw_autosave_identity = autosave_binding.get("autosave_identity")
+            if raw_autosave_identity is not None:
+                autosave_identity = tuple(raw_autosave_identity)
+                target_label = str(
+                    snapshot.get("window", {}).get("title") or target_label
+                )
         try:
             gates.check_plan_consents(plan, target_label)
         except ConsentError as exc:
@@ -266,10 +834,75 @@ class CUARun:
                 "latency_s": round(latency, 2),
             }
         )
-        if plan["action"] == "done":
+        if plan["action"] in {"done", "partial", "blocked"}:
+            if self._last_execution_failed or self._last_commit_unverified:
+                if plan["action"] != "done":
+                    summary = plan["final_summary"]
+                    self.trace["final_summary"] = summary
+                    self.trace["completion_disposition"] = plan["action"]
+                    self._record(
+                        {
+                            "step": step_no,
+                            "plan": plan,
+                            "latency_s": latency,
+                            "completion_disposition": plan["action"],
+                        }
+                    )
+                    return {
+                        "status": "stalled",
+                        "reason": summary,
+                        "completion_disposition": plan["action"],
+                    }
+                self._failed_completion_rejections += 1
+                reason = (
+                    "the previous commit could not be verified; use partial or blocked "
+                    "unless fresh evidence proves completion"
+                    if self._last_commit_unverified
+                    else "the previous action failed; use the fresh observation to recover"
+                )
+                self.history.append(
+                    {
+                        "step": step_no,
+                        "action": "done",
+                        "instruction": plan["step_instruction"][:120],
+                        "outcome": "no_effect",
+                        "executed": False,
+                        "error": reason,
+                    }
+                )
+                self.tracker.record(plan, "no_effect")
+                self._record(
+                    {
+                        "step": step_no,
+                        "plan": plan,
+                        "completion_rejected": reason,
+                    }
+                )
+                if self._failed_completion_rejections >= 2:
+                    return {"status": "stopped", "reason": reason}
+                return None
             self.trace["final_summary"] = plan["final_summary"]
-            self._record({"step": step_no, "plan": plan, "latency_s": latency})
-            return {"status": "done", "summary": plan["final_summary"]}
+            self.trace["completion_disposition"] = plan["action"]
+            self._record(
+                {
+                    "step": step_no,
+                    "plan": plan,
+                    "latency_s": latency,
+                    "completion_disposition": plan["action"],
+                }
+            )
+            if plan["action"] == "done":
+                return {"status": "done", "summary": plan["final_summary"]}
+            return {
+                "status": "stalled",
+                "reason": plan["final_summary"],
+                "completion_disposition": plan["action"],
+            }
+
+        # Finder persistence evidence applies to the immediately following
+        # completion assessment only. Any later executable action must earn
+        # fresh authority before it can relax tree-only assessment drift.
+        self._last_finder_rename_verified = False
 
         if self.config.human_login and gates.looks_like_sign_in(snapshot):
             approved = await self._request_signin_approval()
@@ -278,12 +911,299 @@ class CUARun:
                 self._record({"step": step_no, "plan": plan, "gate": "timeout"})
                 return {"status": "stopped", "reason": "sign-in gate not approved"}
 
+        approval = (
+            gates.ApprovalRequirement(
+                kind="external_commit",
+                action="rename",
+                target=(
+                    f"{target_label} to {finder_rename['requested_basename']}"
+                    if finder_rename is not None
+                    else target_label
+                ),
+                instruction=plan["step_instruction"],
+            )
+            if finder_rename_fill
+            else None
+        )
+        if approval is None and not (
+            plan["action"] == "press"
+            and finder_rename is self._approved_finder_rename
+            and finder_rename is not None
+        ):
+            approval = gates.consequential_action(
+                plan,
+                target_label,
+                target_role=str(target.get("role", "")),
+                target_parent_role=str(target.get("parent_role", "")),
+                app_name=str(snapshot.get("app", {}).get("name", self.app)),
+            )
+        if approval is not None:
+            approval_reason = f"{approval.reason}; app={self.app!r}"
+            approved_target_id = self.active_target_id
+            approved = await self._request_approval(
+                approval_reason, action=approval.action, target=approval.target
+            )
+            if not approved:
+                self.trace["human_gate"] = f"{approval.kind} not approved"
+                self._record({"step": step_no, "plan": plan, "gate": "not approved"})
+                return {
+                    "status": "stopped",
+                    "reason": f"{approval.kind} not approved",
+                }
+
+            # Finder rename authority is bound to its opaque file reference.
+            # Revalidating that reference adjacent to AXSetValue avoids relying
+            # on the AX tree rebuilt by the approval card's focus transition.
+            # Approval binds to the observed target. Re-observe after the human
+            # pause and fail closed if the indexed control or domain changed.
+            try:
+                if finder_rename_fill:
+                    fresh = snapshot
+                else:
+                    if self.window_id is not None:
+                        backend.raise_selected_window(self.backend_app, snapshot)
+                    fresh = self._get_app_state(screenshot=not planner.text_only)
+            except ComputerUseError as exc:
+                reason = (
+                    f"selected window unavailable after approval: {exc.message}"
+                    if self.window_id is not None
+                    else f"could not revalidate approved target: {exc}"
+                )
+                self._record(
+                    {
+                        "step": step_no,
+                        "plan": plan,
+                        "gate": "stale",
+                        "stop": reason,
+                        "error_code": exc.code,
+                    }
+                )
+                return {"status": "stopped", "reason": reason, "error": exc.code}
+            fresh_url = self._read_url(fresh)
+            fresh_guard = self._check_domain(fresh_url)
+            fresh_target = self._target(fresh, plan.get("element_index", -1))
+            fresh_label = str(fresh_target.get("label", ""))
+            original_target_identity = self._target_identity(target)
+            fresh_target_identity = self._target_identity(fresh_target)
+            original_window_identity = self._window_identity(snapshot)
+            fresh_window_identity = self._window_identity(fresh)
+            original_app = snapshot.get("app") or {}
+            fresh_app = fresh.get("app") or {}
+            app_identity_changed = any(
+                original_app.get(key) is not None
+                and fresh_app.get(key) != original_app.get(key)
+                for key in ("pid", "bundleId", "name", "processStartTime")
+            )
+            stale = False
+            if not finder_rename_fill:
+                stale = any(
+                    (
+                        approved_target_id != self.active_target_id,
+                        app_identity_changed,
+                        original_window_identity is None,
+                        fresh_window_identity is None,
+                        original_window_identity != fresh_window_identity,
+                        snapshot.get("window") != fresh.get("window"),
+                        fresh_url != url_now,
+                    )
+                )
+                if plan["action"] != "save":
+                    stale = stale or any(
+                        (
+                            original_target_identity is None,
+                            fresh_target_identity is None,
+                            original_target_identity != fresh_target_identity,
+                            autosave_identity is None
+                            and _tree_signature(fresh) != _tree_signature(snapshot),
+                        )
+                    )
+            if plan["action"] == "save" and not stale:
+                try:
+                    fresh_binding = backend.inspect_save_document(
+                        self.backend_app, fresh
+                    )
+                    stale = tuple(fresh_binding["save_identity"]) != save_identity
+                except ComputerUseError:
+                    stale = True
+            if autosave_identity is not None and not stale:
+                try:
+                    fresh_binding = backend.inspect_autosaving_document(
+                        self.backend_app, fresh
+                    )
+                    fresh_autosave_identity = fresh_binding.get("autosave_identity")
+                    stale = (
+                        fresh_autosave_identity is None
+                        or tuple(fresh_autosave_identity) != autosave_identity
+                    )
+                except ComputerUseError:
+                    stale = True
+            try:
+                gates.check_plan_consents(plan, fresh_label)
+            except ConsentError as exc:
+                self.trace["consent_stop"] = str(exc)
+                self._record({"step": step_no, "plan": plan, "consent_stop": str(exc)})
+                return {"status": "stopped", "reason": str(exc)}
+            if fresh_guard or stale:
+                reason = fresh_guard or "approved target changed before execution"
+                self._record(
+                    {"step": step_no, "plan": plan, "gate": "stale", "stop": reason}
+                )
+                result = {"status": "stopped", "reason": reason}
+                if self.window_id is not None and stale:
+                    result["error"] = "window_stale"
+                return result
+            snapshot = fresh
+            url_now = fresh_url
+
+        # Planning and human approval are await points during which the active
+        # browser location can change. Enforce the domain boundary again at
+        # the last possible moment before any input is dispatched.
+        if self.window_id is not None and approval is None:
+            try:
+                fresh = self._get_app_state(screenshot=not planner.text_only)
+            except ComputerUseError as exc:
+                reason = f"selected window unavailable before action: {exc.message}"
+                self._record(
+                    {
+                        "step": step_no,
+                        "plan": plan,
+                        "stop": reason,
+                        "error_code": exc.code,
+                    }
+                )
+                return {"status": "stopped", "reason": reason, "error": exc.code}
+            if self._window_identity(snapshot) != self._window_identity(
+                fresh
+            ) or snapshot.get("window") != fresh.get("window"):
+                reason = "selected window moved or was replaced before action"
+                self._record({"step": step_no, "plan": plan, "stop": reason})
+                return {"status": "stopped", "reason": reason, "error": "window_stale"}
+            if approved_finder_commit is None:
+                original_target = self._target(snapshot, plan.get("element_index", -1))
+                fresh_target = self._target(fresh, plan.get("element_index", -1))
+                if self._target_identity(original_target) != self._target_identity(
+                    fresh_target
+                ):
+                    reason = "planned target changed before action"
+                    self._record({"step": step_no, "plan": plan, "stop": reason})
+                    return {
+                        "status": "stopped",
+                        "reason": reason,
+                        "error": "target_stale",
+                    }
+                snapshot = fresh
+                target = fresh_target
+            else:
+                snapshot = fresh
+        pre_action_url = self._read_url(snapshot)
+        pre_action_guard = self._check_domain(pre_action_url)
+        if pre_action_guard:
+            self.trace["guard_stop"] = pre_action_guard
+            self._record(
+                {
+                    "step": step_no,
+                    "plan": plan,
+                    "stop": pre_action_guard,
+                    "url": pre_action_url,
+                }
+            )
+            return {"status": "stopped", "reason": pre_action_guard}
+        url_now = pre_action_url
         before_sig = _tree_signature(snapshot)
-        executed = await self._execute(plan, snapshot)
+        executed = await self._execute(plan, snapshot, save_identity, finder_rename)
+        if finder_rename_fill and executed.get("verification_source") == "pending":
+            self._approved_finder_rename = finder_rename
+        elif finder_rename is not None:
+            self._approved_finder_rename = None
+        target_source_window = target.get("source_window_id", snapshot.get("window_id"))
+        can_recover_occlusion = (
+            self.window_id is not None
+            and executed.get("error_code") == "target_occluded"
+            and target_source_window == snapshot.get("window_id")
+        )
+        if can_recover_occlusion:
+            try:
+                backend.raise_selected_window(self.backend_app, snapshot)
+                recovered = self._get_app_state(screenshot=not planner.text_only)
+            except ComputerUseError as exc:
+                reason = f"selected window remains occluded: {exc.message}"
+                self._record(
+                    {
+                        "step": step_no,
+                        "plan": plan,
+                        "stop": reason,
+                        "error_code": exc.code,
+                    }
+                )
+                return {"status": "stopped", "reason": reason, "error": exc.code}
+            recovered_url = self._read_url(recovered)
+            recovered_target = self._target(recovered, plan.get("element_index", -1))
+            drifted = any(
+                (
+                    self._window_identity(snapshot) != self._window_identity(recovered),
+                    snapshot.get("window") != recovered.get("window"),
+                    self._target_identity(target)
+                    != self._target_identity(recovered_target),
+                    _tree_signature(snapshot) != _tree_signature(recovered),
+                    recovered_url != url_now,
+                )
+            )
+            recovered_guard = self._check_domain(recovered_url)
+            try:
+                gates.check_plan_consents(plan, str(recovered_target.get("label", "")))
+            except ConsentError as exc:
+                return {"status": "stopped", "reason": str(exc)}
+            if recovered_guard or drifted:
+                reason = (
+                    recovered_guard
+                    or "selected target changed during occlusion recovery"
+                )
+                self._record(
+                    {"step": step_no, "plan": plan, "stop": reason, "gate": "stale"}
+                )
+                return {
+                    "status": "stopped",
+                    "reason": reason,
+                    "error": "target_stale" if drifted else "domain_guard",
+                }
+            snapshot = recovered
+            target = recovered_target
+            url_now = recovered_url
+            before_sig = _tree_signature(recovered)
+            executed = await self._execute(
+                plan, recovered, save_identity, finder_rename
+            )
+            if executed.get("error_code") == "target_occluded":
+                reason = "selected window remains occluded after one raise attempt"
+                self._record(
+                    {
+                        "step": step_no,
+                        "plan": plan,
+                        "stop": reason,
+                        "error_code": "target_occluded",
+                    }
+                )
+                return {
+                    "status": "stopped",
+                    "reason": reason,
+                    "error": "target_occluded",
+                }
         await asyncio.sleep(1.2)
-        after = backend.get_app_state(self.app, screenshot=False, use_cache=False)
+        try:
+            after = self._get_app_state(
+                screenshot=False,
+                transient_baseline=set(snapshot.get("visible_window_ids", [])),
+            )
+        except ComputerUseError as exc:
+            if self.window_id is None:
+                raise
+            reason = f"selected window unavailable after action: {exc.message}"
+            self._record(
+                {"step": step_no, "plan": plan, "stop": reason, "error_code": exc.code}
+            )
+            return {"status": "stopped", "reason": reason, "error": exc.code}
         after_sig = _tree_signature(after)
-        url_after = backend.read_url(self.app)
+        url_after = self._read_url(after)
         delta = {
             "executed": executed,
             "tree_changed": before_sig != after_sig,
@@ -291,37 +1211,143 @@ class CUARun:
             "url_after": url_after,
         }
 
-        outcome = "uncertain"
+        execution_rejected = executed.get("ok") is False
+        verification = executed.get("verified")
+        verification_failed = verification is False
+        execution_failed = execution_rejected or verification_failed
+        if execution_failed:
+            outcome = "no_effect"
+        elif verification is True:
+            outcome = "success"
+        else:
+            outcome = "uncertain"
         ranker_latency = 0.0
-        if self.ranker is not None:
+        if execution_failed:
+            # Executor rejection and explicit failed verification are observed
+            # facts. A probabilistic verifier must never relabel either one.
+            delta["fast_outcome"] = {
+                "outcome": outcome,
+                "confidence": 1.0,
+                "source": (
+                    "execution" if execution_rejected else "execution-verification"
+                ),
+            }
+        elif verification is True:
+            # Exact readback is stronger evidence than a semantic classifier.
+            delta["fast_outcome"] = {
+                "outcome": outcome,
+                "confidence": 1.0,
+                "source": "execution-verification",
+            }
+        elif self.ranker is not None:
             try:
                 verdict, ranker_latency = await self.ranker.assess(
                     self.goal, plan, delta
                 )
-                outcome = verdict["outcome"]
-                delta["fast_outcome"] = verdict
-            except (RuntimeError, KeyError, ValueError):
+                # The current ranker sees only coarse structured deltas. Keep
+                # its result for diagnostics, but do not promote an unverified
+                # dispatch to user-visible success (or suppress recovery).
+                delta["fast_outcome"] = {**verdict, "advisory": True}
+            except (httpx.TransportError, RuntimeError, KeyError, ValueError):
+                # The local ranker is advisory. Connection, timeout, and
+                # protocol failures must not discard an already executed
+                # action or bypass the planner's terminal decision.
                 delta["fast_outcome"] = {"outcome": "unavailable"}
-        self.tracker.record(plan, outcome)
-        self._emit(
-            {
-                "kind": "executed",
-                "step": step_no,
-                "action": plan["action"],
-                "outcome": outcome,
-                "tree_changed": delta["tree_changed"],
-                "url_after": url_after[:120],
-            }
+        self.tracker.record(plan, outcome, observed_change=bool(delta["tree_changed"]))
+        event = {
+            "kind": "executed",
+            "step": step_no,
+            "action": plan["action"],
+            "outcome": outcome,
+            "tree_changed": delta["tree_changed"],
+            "url_after": url_after[:120],
+        }
+        history_entry = {
+            "step": step_no,
+            "action": plan["action"],
+            "instruction": plan["step_instruction"][:120],
+            "outcome": outcome,
+            "url_after": url_after[:120],
+        }
+        if plan["action"] == "save":
+            safe_source = str(executed.get("verification_source", "unverified"))
+            if (
+                safe_source
+                not in {
+                    "ax_edited_same_document",
+                    "textedit_plain_text_exact_disk_match",
+                }
+                or verification is not True
+            ):
+                safe_source = "unverified"
+            save_persistence_verified = safe_source != "unverified"
+            history_entry.update(
+                {
+                    "verified_persistence": save_persistence_verified,
+                    "verification_source": safe_source,
+                }
+            )
+        if execution_rejected:
+            event.update(
+                {
+                    "error": str(executed.get("error", "action was not executed"))[
+                        :240
+                    ],
+                    "error_code": str(executed.get("error_code", "execution_failed")),
+                }
+            )
+            history_entry.update(
+                {
+                    "executed": False,
+                    "error": event["error"],
+                    "error_code": event["error_code"],
+                    "recovery": list(executed.get("recovery", [])),
+                }
+            )
+        save_unverified = plan["action"] == "save" and not save_persistence_verified
+        finder_persistence_verified = (
+            plan["action"] in {"fill", "press"}
+            and verification is True
+            and executed.get("verification_source") == "finder_file_reference_basename"
         )
-        self.history.append(
-            {
-                "step": step_no,
-                "action": plan["action"],
-                "instruction": plan["step_instruction"][:120],
-                "outcome": outcome,
-                "url_after": url_after[:120],
-            }
+        finder_rename_unverified = (
+            backend.is_finder_snapshot(snapshot)
+            and plan["action"] == "press"
+            and str(plan.get("key", "")).casefold() in {"enter", "return"}
+            and str(target.get("role", "")) == "AXTextField"
+            and str(target.get("parent_role", "")) == "AXCell"
+            and outcome == "uncertain"
+            and not self._last_finder_rename_verified
         )
+        approved_commit_unverified = approval is not None and verification is not True
+        if execution_failed:
+            self._last_execution_failed = True
+        elif executed.get("executed") is True:
+            # Ordinary synthetic actions remain eligible for assessment from
+            # their fresh post-action observation. Persistence boundaries are
+            # tracked separately below because UI state alone is insufficient.
+            self._last_execution_failed = False
+            self._failed_completion_rejections = 0
+        if finder_persistence_verified:
+            self._last_finder_rename_verified = True
+            self._last_commit_unverified = False
+            history_entry.update(
+                {
+                    "verified_persistence": True,
+                    "verification_source": "finder_file_reference_basename",
+                }
+            )
+        elif save_unverified or finder_rename_unverified or approved_commit_unverified:
+            # Saving is the goal-changing side effect itself. An accepted
+            # AXPress, Finder's Enter on an inline rename editor, or any approved
+            # external commit remains pending without bounded host verification,
+            # even when the AX tree displays the requested value: only
+            # partial/blocked may terminate.
+            self._last_commit_unverified = True
+        elif plan["action"] == "save" and save_persistence_verified:
+            self._last_commit_unverified = False
+        self._emit(event)
+        self.history.append(history_entry)
         self._record(
             {
                 "step": step_no,
@@ -353,6 +1379,11 @@ async def run(
     event_sink: Callable[[dict], None] | None = None,
     gate: Callable[[str], Any] | None = None,
     stop_event: asyncio.Event | None = None,
+    window_id: str | None = None,
+    backend_app: str | None = None,
+    expected_app: dict | None = None,
+    targets: list[dict] | None = None,
+    initial_target_id: str | None = None,
 ) -> dict:
     """Run the loop. Pass `planner` to inject a custom brain (SDK/testing use)."""
     run_dir = config_mod.RUNS_DIR / (
@@ -379,8 +1410,15 @@ async def run(
         event_sink=event_sink,
         gate=gate,
         stop_event=stop_event,
+        window_id=window_id,
+        backend_app=backend_app,
+        expected_app=expected_app,
+        targets=targets,
+        initial_target_id=initial_target_id,
     )
-    cua_run._emit({"kind": "started", "app": app, "run_dir": str(run_dir)})
+    cua_run._emit(
+        {"kind": "started", "app": app, "run_dir": str(run_dir), "window_id": window_id}
+    )
     limit = max_steps or config.max_steps
     terminal: dict = {"status": "incomplete"}
     try:
@@ -395,16 +1433,26 @@ async def run(
                 break
         else:
             cua_run.trace["max_steps_reached"] = limit
-            reason = f"maximum step count reached ({limit})"
-            cua_run.trace["final_summary"] = reason
-            terminal = {"status": "stalled", "reason": reason}
+            terminal = await cua_run.final_assessment(planner, limit + 1)
     except (ValueError, KeyError) as exc:
         # A planner repair exhaustion or malformed plan must not surface as a
-        # bare traceback with status "incomplete"; stop with a readable reason.
-        reason = f"planner produced invalid plans: {exc}"
+        # bare traceback or raw model response in the user-facing result.
+        reason = "planner did not return a valid action after one repair attempt"
+        cua_run.trace["planner_error"] = str(exc)[:800]
         cua_run.trace["status"] = "stopped"
         cua_run.trace["final_summary"] = reason
         terminal = {"status": "stopped", "reason": reason}
+    except ComputerUseError as exc:
+        # Backend authority failures that occur during observation (for
+        # example a denied browser Automation grant) need to stay typed for
+        # native and third-party clients. The message is deliberately
+        # bounded and contains no Apple Event response body.
+        terminal = {
+            "status": "failed",
+            "reason": exc.message,
+            "error": exc.code,
+            "recovery": list(exc.recovery),
+        }
     except asyncio.CancelledError:
         reason = "cancelled by client"
         cua_run.trace["final_summary"] = reason
@@ -416,6 +1464,8 @@ async def run(
     finally:
         cua_run.trace["status"] = terminal.get("status", "incomplete")
         reason = str(terminal.get("reason", ""))
+        error = str(terminal.get("error", ""))
+        recovery = terminal.get("recovery")
         if reason and not cua_run.trace.get("final_summary"):
             cua_run.trace["final_summary"] = reason
         if not cua_run._terminal_emitted:
@@ -429,6 +1479,8 @@ async def run(
                     "status": public_status,
                     "final_summary": str(cua_run.trace.get("final_summary", "")),
                     **({"reason": reason} if reason else {}),
+                    **({"error": error} if error else {}),
+                    **({"recovery": recovery} if recovery else {}),
                 }
             )
         (run_dir / "trace.json").write_text(
