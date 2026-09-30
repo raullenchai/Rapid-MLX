@@ -11,6 +11,7 @@ from collections.abc import Callable
 from typing import Any
 
 import uvicorn
+from uvicorn.main import STARTUP_FAILURE
 
 ServerAcceptingCallback = Callable[[], None]
 logger = logging.getLogger(__name__)
@@ -70,15 +71,20 @@ class AcceptingConnectionsServer(uvicorn.Server):
                     file=sys.stderr,
                 )
                 exc.rapid_mlx_bind_reported = True  # type: ignore[attr-defined]
+                # Uvicorn 0.42 changed this path from STARTUP_FAILURE (3) to
+                # a generic SystemExit(1). Keep Rapid-MLX's stable process
+                # contract for supervisors and the Desktop sidecar.
+                exc.code = STARTUP_FAILURE
             raise
 
         if getattr(self, "lifespan", None) is not None and self.lifespan.should_exit:
-            # Older Uvicorn releases return instead of raising after a lifespan
-            # startup failure. Preserve the same deterministic classification.
+            # Uvicorn releases that return here leave ``Server.serve()`` with a
+            # successful process status. Preserve a deterministic non-zero
+            # startup result for supervisors and the Desktop sidecar.
             from rapid_mlx.telemetry.server_start import failed
 
             failed("engine_start")
-            return
+            raise SystemExit(STARTUP_FAILURE)
 
         listeners = getattr(self, "servers", ())
         listener_created = bool(listeners) and all(
