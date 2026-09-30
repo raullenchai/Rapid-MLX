@@ -20,6 +20,8 @@ def test_dflash_tensorfold_config_is_explicit_and_method_scoped() -> None:
         '{"method":"dflash","backend":"tensorfold","model":"/pinned/drafter"}'
     )
     assert config is not None and config.backend == "tensorfold"
+    native = parse_speculative_config('{"method":"dflash","backend":"native","model":"x"}')
+    assert native is not None and native.backend == "native"
     with pytest.raises(SpeculativeConfigError):
         parse_speculative_config('{"method":"mtp","backend":"tensorfold"}')
 
@@ -29,6 +31,7 @@ def test_http_gate_rejects_unqualified_features_and_maps_sampling() -> None:
 
     request = SimpleNamespace(
         tools=[{"type": "function"}], response_format=None,
+        messages=[SimpleNamespace(content="hi")],
         repetition_penalty=None, presence_penalty=None,
         frequency_penalty=None, logit_bias=None,
     )
@@ -38,6 +41,7 @@ def test_http_gate_rejects_unqualified_features_and_maps_sampling() -> None:
 
     request = SimpleNamespace(
         top_k=20, min_p=0.05, seed=42, stop=["END"],
+        messages=[SimpleNamespace(content="hi")],
         tools=None, response_format=None, repetition_penalty=None,
         presence_penalty=None, frequency_penalty=None, logit_bias=None,
     )
@@ -48,6 +52,17 @@ def test_http_gate_rejects_unqualified_features_and_maps_sampling() -> None:
         "max_tokens": 9, "temperature": 0.7, "top_p": 0.9,
         "top_k": 20, "min_p": 0.05, "seed": 42, "stop": ["END"],
     }
+
+    request.messages = [SimpleNamespace(content=[{"type": "image_url"}])]
+    with pytest.raises(HTTPException) as exc:
+        validate_http_request(request)
+    assert exc.value.status_code == 400
+
+    request.messages = [SimpleNamespace(content="hi")]
+    request.reasoning_max_tokens = 128
+    with pytest.raises(HTTPException) as exc:
+        validate_http_request(request)
+    assert "reasoning_max_tokens" in exc.value.detail
 
 
 def test_provider_preserves_exact_token_ids_and_request_outputs(monkeypatch) -> None:

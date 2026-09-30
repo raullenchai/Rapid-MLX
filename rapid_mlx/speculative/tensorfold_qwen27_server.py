@@ -158,9 +158,19 @@ def validate_http_request(request: Any) -> None:
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if any(not isinstance(getattr(message, "content", None), str) for message in request.messages):
+        raise HTTPException(
+            status_code=400,
+            detail="TensorFold Qwen3.8-27B supports text message content only",
+        )
     unsupported = [
-        name for name in ("repetition_penalty", "presence_penalty", "frequency_penalty", "logit_bias")
-        if getattr(request, name, None) not in (None, {}, 0, 0.0)
+        name for name in (
+            "repetition_penalty", "presence_penalty", "frequency_penalty",
+            "logit_bias", "top_logprobs", "video_fps", "video_max_frames",
+            "reasoning_max_tokens", "reasoning_effort", "chat_template_kwargs",
+            "parallel_tool_calls", "tool_choice",
+        )
+        if getattr(request, name, None) not in (None, {})
     ]
     if unsupported:
         raise HTTPException(
