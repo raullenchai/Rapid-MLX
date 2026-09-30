@@ -939,8 +939,10 @@ async def test_lifespan_failure_return_emits_engine_start_without_ready(monkeypa
         uvicorn.Config(_asgi_app, host="127.0.0.1", port=0, log_level="error")
     )
 
-    await instance.startup()
+    with pytest.raises(SystemExit) as caught:
+        await instance.startup()
 
+    assert caught.value.code == STARTUP_FAILURE
     assert [(event["state"], event.get("failure_stage")) for event in events] == [
         ("attempted", None),
         ("failed", "engine_start"),
