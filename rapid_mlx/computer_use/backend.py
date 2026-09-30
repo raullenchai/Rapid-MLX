@@ -1032,6 +1032,7 @@ def _validate_focused_window(
     expected_window: dict | None = None,
     *,
     require_active_app: bool = True,
+    allow_exact_main_window: bool = False,
 ) -> None:
     services = ax_driver.AS
     expected_pid = int(snapshot["app"]["pid"])
@@ -1061,6 +1062,45 @@ def _validate_focused_window(
             f"pid {snapshot['app']['pid']} is no longer frontmost; re-observe",
         )
     focused = _focused_ax_window(snapshot["app"])
+    if focused is None and allow_exact_main_window:
+        app_element = ax_driver._app_element(
+            snapshot["app"]["name"], expected_pid=expected_pid
+        )
+        main = ax_driver._get(app_element, "AXMainWindow")
+        windows = ax_driver._as_list(ax_driver._get(app_element, "AXWindows"))
+        detached = ax_driver._get(app_element, "AXFocusedUIElement")
+        main_frame = ax_driver._point_size(main) if main is not None else None
+        detached_frame = (
+            ax_driver._point_size(detached) if detached is not None else None
+        )
+        detached_parent = (
+            ax_driver._get(detached, "AXParent") if detached is not None else None
+        )
+        main_x, main_y, main_w, main_h = main_frame or (0.0, 0.0, 0.0, 0.0)
+        detached_x, detached_y, detached_w, detached_h = detached_frame or (
+            -1.0,
+            -1.0,
+            0.0,
+            0.0,
+        )
+        detached_is_bound = (
+            main_frame is not None
+            and detached_frame is not None
+            and ax_driver._get(detached, "AXRole") == "AXTextField"
+            and ax_driver._get(detached, "AXFocused") is True
+            and detached_parent == app_element
+            and detached_x >= main_x
+            and detached_y >= main_y
+            and detached_x + detached_w <= main_x + main_w
+            and detached_y + detached_h <= main_y + main_h
+        )
+        if (
+            detached_is_bound
+            and main is not None
+            and any(main == window for window in windows)
+            and any(detached == window for window in windows)
+        ):
+            focused = main
     focused_frame = ax_driver._point_size(focused) if focused is not None else None
     expected = expected_window or snapshot["window"]
     expected_frame = (
@@ -1173,7 +1213,7 @@ def raise_selected_window(
         raise ComputerUseError(
             "target_drift", "selected window changed during recovery"
         )
-    _validate_focused_window(snapshot)
+    _validate_focused_window(snapshot, allow_exact_main_window=focus_exact_window)
     return after
 
 
@@ -1979,7 +2019,7 @@ def _resume_finder_transaction_editor(
     validate_bound_row()
     rename_item = _finder_rename_menu_item(snapshot)
     expected_window = _validate_snapshot_window(snapshot)
-    _validate_focused_window(snapshot, expected_window)
+    _validate_focused_window(snapshot, expected_window, allow_exact_main_window=True)
     _finder_rename_path_state(binding)
     validate_bound_row()
     if (
@@ -2002,7 +2042,7 @@ def _resume_finder_transaction_editor(
             "target_drift", "restored Finder editor is not the approved item"
         )
     expected_window = _validate_snapshot_window(snapshot)
-    _validate_focused_window(snapshot, expected_window)
+    _validate_focused_window(snapshot, expected_window, allow_exact_main_window=True)
     return live
 
 
@@ -2085,7 +2125,7 @@ def set_finder_rename_value(
     # The approval pause and editor lookup must not leave a race window in
     # which a moved item receives the approved basename.
     expected_window = _validate_snapshot_window(snapshot)
-    _validate_focused_window(snapshot, expected_window)
+    _validate_focused_window(snapshot, expected_window, allow_exact_main_window=True)
     _finder_rename_path_state(binding)
     err = AXUIElementSetAttributeValue(
         live, kAXValueAttribute, binding["requested_basename"]

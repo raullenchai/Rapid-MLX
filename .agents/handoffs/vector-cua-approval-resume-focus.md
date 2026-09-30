@@ -130,3 +130,15 @@ Verification on exact signed base `d4ac4107`: 441 backend/CUA tests passed;
 changed-line coverage 8/8 (100%); Ruff and the mypy error budget passed. Harbor
 must independently review, integrate onto the current test-only head, and rerun
 signed Finder Deny and Approve fixtures before release.
+
+Signed follow-up `7180688b19d7` proved `AXMain=true` succeeded but Finder reports
+`AXFocusedWindow=nil` during inline rename. A read-only live dump bound
+`cg:11657` and `AXMainWindow` to the same `(567,213,920,436)` frame while the
+focused app-root rename text field appeared as a contained transient entry in
+both Finder `AXWindows` and CG (`cg:11673`). Finder rename validation now accepts
+that exact live shape only when the app is active, the exact main window frame
+matches, and the focused app-root text field is contained and listed. The
+existing cached sole-row, opaque reference, path, and normalized editor-value
+checks still run before menu dispatch and adjacent to `AXSetValue`; unrelated
+app-root fields therefore cannot receive the approved write. Generic action
+validation remains unchanged.

@@ -644,7 +644,7 @@ def test_read_url_ignores_page_controlled_axvalue_spoof(monkeypatch):
         lambda *a: "https://allowed.example/spoofed-by-page",
     )
     monkeypatch.setattr(backend, "_select_window", lambda *a, **k: window)
-    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a: None)
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a, **k: None)
     monkeypatch.setattr(
         backend.subprocess,
         "run",
@@ -666,7 +666,7 @@ def test_read_url_uses_trusted_active_tab_and_fails_closed(monkeypatch):
         backend, "_resolve_app", lambda app, **kwargs: (object(), app_info)
     )
     monkeypatch.setattr(backend, "_select_window", lambda *a, **k: _window())
-    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a: None)
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a, **k: None)
 
     def trusted_url(cmd, **kwargs):
         captured["cmd"] = cmd
@@ -780,7 +780,7 @@ def test_read_url_waits_for_initial_automation_prompt_then_uses_steady_timeout(
         backend, "_resolve_app", lambda app, **kwargs: (object(), app_info)
     )
     monkeypatch.setattr(backend, "_select_window", lambda *a, **k: _window())
-    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a: None)
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a, **k: None)
     monkeypatch.setattr(backend, "_AUTOMATION_READY_BUNDLES", set())
     timeouts = []
 
@@ -805,7 +805,7 @@ def test_read_url_timeout_revokes_ready_bundle(monkeypatch):
         backend, "_resolve_app", lambda app, **kwargs: (object(), app_info)
     )
     monkeypatch.setattr(backend, "_select_window", lambda *a, **k: _window())
-    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a: None)
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a, **k: None)
     monkeypatch.setattr(backend, "_AUTOMATION_READY_BUNDLES", {"com.apple.safari"})
     timeouts = []
 
@@ -830,7 +830,7 @@ def test_read_url_denial_revokes_ready_bundle(monkeypatch):
         backend, "_resolve_app", lambda app, **kwargs: (object(), app_info)
     )
     monkeypatch.setattr(backend, "_select_window", lambda *a, **k: _window())
-    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a: None)
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a, **k: None)
     monkeypatch.setattr(backend, "_AUTOMATION_READY_BUNDLES", {"com.apple.safari"})
     timeouts = []
 
@@ -859,7 +859,7 @@ def test_read_url_surfaces_initial_automation_timeout(monkeypatch):
         backend, "_resolve_app", lambda app, **kwargs: (object(), app_info)
     )
     monkeypatch.setattr(backend, "_select_window", lambda *a, **k: _window())
-    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a: None)
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a, **k: None)
     monkeypatch.setattr(backend, "_AUTOMATION_READY_BUNDLES", set())
     timeouts = []
 
@@ -900,7 +900,7 @@ def test_read_url_rejects_active_tab_from_different_selected_window(monkeypatch)
 
     app_info["bundleId"] = 'com.bad"\nscript'
     monkeypatch.setattr(backend, "_select_window", lambda *a, **k: _window())
-    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a: None)
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a, **k: None)
     monkeypatch.setattr(
         backend.subprocess,
         "run",
@@ -915,7 +915,7 @@ def test_read_url_pid_target_rejects_duplicate_browser_bundle(monkeypatch):
         backend, "_resolve_app", lambda app, **kwargs: (object(), app_info)
     )
     monkeypatch.setattr(backend, "_select_window", lambda *a, **k: _window())
-    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a: None)
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a, **k: None)
 
     def running(pid):
         return types.SimpleNamespace(
@@ -1019,7 +1019,7 @@ def test_hotkey_and_scroll_activate_target_before_posting(monkeypatch):
     monkeypatch.setattr(
         backend, "_validate_snapshot_window", lambda *a, **k: snapshot["window"]
     )
-    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a: None)
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a, **k: None)
     fake_quartz = types.SimpleNamespace(
         CGEventCreateKeyboardEvent=lambda *_args: object(),
         CGEventSetFlags=lambda *_args: None,
@@ -1944,7 +1944,7 @@ def test_raise_selected_window_uses_unique_pid_bound_ax_window(monkeypatch):
     monkeypatch.setattr(
         backend,
         "_validate_focused_window",
-        lambda value: (
+        lambda value, **kwargs: (
             focused.append(value)
             if foreground["finder"]
             else pytest.fail("approved action resumed before Finder was frontmost")
@@ -2147,6 +2147,91 @@ def test_focused_window_uses_fresh_running_application_activity(monkeypatch):
     )
 
     backend._validate_focused_window(snapshot)
+
+
+@pytest.mark.parametrize("main_state", ["wrong_frame", "unlisted"])
+def test_finder_exact_main_window_fallback_is_frame_and_membership_bound(
+    monkeypatch, main_state
+):
+    snapshot = _stable_snapshot()
+    application = object()
+    main = object()
+    fresh = types.SimpleNamespace(isActive=lambda: True)
+    services = types.SimpleNamespace(
+        NSRunningApplication=types.SimpleNamespace(
+            runningApplicationWithProcessIdentifier_=lambda pid: fresh
+        )
+    )
+    monkeypatch.setattr(backend.ax_driver, "AS", services)
+    monkeypatch.setattr(backend, "_focused_ax_window", lambda app: None)
+    monkeypatch.setattr(backend.ax_driver, "_app_element", lambda *a, **k: application)
+
+    def get(element, attribute):
+        if element is application and attribute == "AXMainWindow":
+            return main
+        if element is application and attribute == "AXWindows":
+            return [] if main_state == "unlisted" else [main]
+        return None
+
+    monkeypatch.setattr(backend.ax_driver, "_get", get)
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_point_size",
+        lambda element: (
+            (10.0, 0.0, 100.0, 100.0)
+            if main_state == "wrong_frame"
+            else (0.0, 0.0, 100.0, 100.0)
+        ),
+    )
+
+    with pytest.raises(errors.ComputerUseError, match="not the focused AX window"):
+        backend._validate_focused_window(snapshot, allow_exact_main_window=True)
+
+
+def test_finder_exact_main_window_fallback_accepts_live_detached_editor_shape(
+    monkeypatch,
+):
+    snapshot = _stable_snapshot()
+    application = object()
+    main = object()
+    detached_editor = object()
+    fresh = types.SimpleNamespace(isActive=lambda: True)
+    services = types.SimpleNamespace(
+        NSRunningApplication=types.SimpleNamespace(
+            runningApplicationWithProcessIdentifier_=lambda pid: fresh
+        )
+    )
+    monkeypatch.setattr(backend.ax_driver, "AS", services)
+    monkeypatch.setattr(backend, "_focused_ax_window", lambda app: None)
+    monkeypatch.setattr(backend.ax_driver, "_app_element", lambda *a, **k: application)
+
+    def get(element, attribute):
+        if element is application:
+            return {
+                "AXMainWindow": main,
+                "AXWindows": [detached_editor, main],
+                "AXFocusedUIElement": detached_editor,
+            }.get(attribute)
+        if element is detached_editor:
+            return {
+                "AXRole": "AXTextField",
+                "AXFocused": True,
+                "AXParent": application,
+            }.get(attribute)
+        return None
+
+    monkeypatch.setattr(backend.ax_driver, "_get", get)
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_point_size",
+        lambda element: (
+            (0.0, 0.0, 100.0, 100.0) if element is main else (20, 20, 40, 20)
+        ),
+    )
+
+    backend._validate_focused_window(snapshot, allow_exact_main_window=True)
+    with pytest.raises(errors.ComputerUseError, match="not the focused AX window"):
+        backend._validate_focused_window(snapshot)
 
 
 def test_focused_window_rejects_inactive_fresh_running_application(monkeypatch):
@@ -3348,7 +3433,7 @@ def test_finder_rename_resume_reopens_same_bound_row_after_approval(monkeypatch)
     monkeypatch.setattr(
         backend, "_validate_snapshot_window", lambda value: value["window"]
     )
-    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a: None)
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a, **k: None)
     monkeypatch.setattr(backend, "_finder_rename_menu_item", lambda _: rename_item)
     actions = []
     monkeypatch.setattr(
@@ -3592,7 +3677,7 @@ def test_finder_rename_resume_fails_closed_at_each_reentry_boundary(
             else value["window"]
         ),
     )
-    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a: None)
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a, **k: None)
     actions = []
     monkeypatch.setattr(
         backend.ax_driver,
@@ -3949,7 +4034,7 @@ def test_finder_inline_rename_verifies_committed_file_reference(monkeypatch):
     monkeypatch.setattr(
         backend, "_validate_snapshot_window", lambda snapshot: snapshot["window"]
     )
-    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a: None)
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a, **k: None)
     rename_item = _install_finder_rename_tree(
         monkeypatch,
         live,
@@ -4003,7 +4088,7 @@ def test_finder_inline_rename_rejects_uncommitted_ax_value(monkeypatch):
     monkeypatch.setattr(
         backend, "_validate_snapshot_window", lambda snapshot: snapshot["window"]
     )
-    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a: None)
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a, **k: None)
     rename_item = _install_finder_rename_tree(
         monkeypatch, live, reference, "Verified CUA Folder"
     )
@@ -4038,7 +4123,7 @@ def test_finder_inline_rename_rejects_unselectable_exact_row(monkeypatch):
     monkeypatch.setattr(
         backend, "_validate_snapshot_window", lambda snapshot: snapshot["window"]
     )
-    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a: None)
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a, **k: None)
     monkeypatch.setattr(
         backend.ax_driver,
         "_get",
@@ -4095,7 +4180,7 @@ def test_finder_inline_rename_fails_closed_at_each_native_boundary(
     monkeypatch.setattr(
         backend, "_validate_snapshot_window", lambda value: value["window"]
     )
-    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a: None)
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a, **k: None)
     rename_item = _install_finder_rename_tree(
         monkeypatch, live, reference, "Renamed", selected
     )
@@ -4524,7 +4609,7 @@ def test_finder_inline_rename_rejects_focus_drift_before_typing(monkeypatch):
             ),
         )[1],
     )
-    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a: None)
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a, **k: None)
     monkeypatch.setattr(
         backend, "_finder_file_reference_path", lambda value: "/tmp/Original"
     )
@@ -4678,7 +4763,7 @@ def test_finder_inline_rename_rejects_drift_during_menu_resolution(monkeypatch):
     monkeypatch.setattr(
         backend, "_validate_snapshot_window", lambda snapshot: snapshot["window"]
     )
-    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a: None)
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a, **k: None)
     monkeypatch.setattr(
         backend, "_finder_file_reference_path", lambda value: "/tmp/Original"
     )
@@ -4838,7 +4923,7 @@ def test_synthetic_noneditable_target_uses_window_center_validation(monkeypatch)
             validated.append(kwargs.get("point")) or snapshot["window"]
         ),
     )
-    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a: None)
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a, **k: None)
 
     assert backend._prepare_synthetic_action("pid:4", None, snapshot, 0) is snapshot
     assert validated == [(50.0, 50.0)]
@@ -5045,7 +5130,7 @@ def test_set_value_and_synthetic_fill_paths(monkeypatch):
     monkeypatch.setattr(backend.time, "sleep", lambda _: None)
     monkeypatch.setattr(backend, "_select_window", lambda *a, **k: _window())
     monkeypatch.setattr(backend, "_validate_snapshot_window", lambda *a, **k: _window())
-    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a: None)
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a, **k: None)
     monkeypatch.setattr(
         backend.ax_driver,
         "collect",
@@ -5096,7 +5181,7 @@ def test_press_hotkey_scroll_and_secondary_paths(monkeypatch):
         "_validate_snapshot_window",
         lambda *a, **k: snapshot_for_input["window"],
     )
-    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a: None)
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a, **k: None)
     monkeypatch.setattr(
         backend.ax_driver, "_press_key", lambda *a, **k: calls.append(("key", a, k))
     )
@@ -5708,7 +5793,7 @@ def test_remaining_small_backend_branches(monkeypatch):
 
     snapshot = _stable_snapshot(elements=[{"index": 0, "center": [1, 2]}])
     monkeypatch.setattr(backend, "_validate_snapshot_window", lambda *a, **k: _window())
-    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a: None)
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a, **k: None)
     monkeypatch.setattr(backend, "_select_window", lambda *a, **k: _window())
     monkeypatch.setattr(backend.ax_driver, "_cg_click", lambda *a, **k: None)
     monkeypatch.setattr(backend.ax_driver, "_press_key", lambda *a, **k: None)
