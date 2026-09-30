@@ -189,7 +189,7 @@ struct ShareComputePreparingView: View {
                     .font(.system(size: 11))
                     .foregroundStyle(RapidTheme.bandReady)
                     .accessibilityHidden(true)
-                Text("Rapid restores your previous model after this reward session ends.")
+                Text("Rapid requests a restart of your previous model when this reward session ends.")
                     .font(.system(size: 12))
                     .foregroundStyle(RapidTheme.bandInkSecondary)
                     .fixedSize(horizontal: false, vertical: true)

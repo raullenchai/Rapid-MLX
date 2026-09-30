@@ -339,7 +339,7 @@ struct ShareComputeShareTab: View {
         AdaptiveAssuranceRow(isNarrow: isNarrow) {
             HStack(spacing: 22) {
                 assurance(String(localized: "One model serves at a time"))
-                assurance(String(localized: "Your current model returns after Stop"))
+                assurance(String(localized: "Rapid requests a restart after Stop"))
             }
         } trailing: {
             HStack(spacing: 10) {

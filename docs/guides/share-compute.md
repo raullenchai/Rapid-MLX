@@ -16,7 +16,8 @@ provider key (`qsppk-`). The model weights are downloaded once if needed.
    local provider process; it does not save the provider key in app settings.
 4. Wait for **Your Mac is contributing** and **Provider: Connected**. The Mac
    can receive work while the app and share session remain running. Use
-   **Stop sharing** to leave the pool and restore your previous local model.
+   **Stop sharing** to leave the pool. Rapid requests a restart of your previous
+   local model; check that it becomes ready before using it again.
 
 For earnings, open **Credits** and save a separate QuickSilver read-only key
 (`qsprk-`). Rapid stores it in this Mac's Keychain. The credit ledger shows

@@ -80,8 +80,8 @@ struct ShareComputeConnectionReview: View {
             )
             assurance(
                 systemImage: "arrow.uturn.backward",
-                title: String(localized: "Restore after Stop"),
-                detail: String(localized: "Rapid leaves the pool and reloads your previous model automatically.")
+                title: String(localized: "Restart after Stop"),
+                detail: String(localized: "Rapid leaves the pool and requests a restart of your previous model. Check that it becomes ready.")
             )
         }
     }
