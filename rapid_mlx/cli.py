@@ -3864,6 +3864,28 @@ def _preflight_dflash_mutexes_or_exit(args) -> None:
         sys.exit(2)
 
 
+def _preflight_tensorfold_qwen27_or_exit() -> None:
+    """Reject an unusable TensorFold runtime before downloading the 27B pair."""
+
+    from .runtime.optional_runtime import optional_extra_install_hint
+    from .speculative.tensorfold_qwen27 import (
+        TensorFoldUnavailable,
+        require_environment,
+        require_runtime,
+    )
+
+    try:
+        require_runtime()
+        require_environment()
+    except TensorFoldUnavailable as exc:
+        print(
+            "\n  Error: the TensorFold Qwen 27B profile is unavailable: "
+            f"{exc}.\n\n  {optional_extra_install_hint('tensorfold-qwen27')}\n",
+            file=sys.stderr,
+        )
+        raise SystemExit(1) from exc
+
+
 def _preflight_ddtree_or_exit(args):
     """Validate DDTree flag/alias/runtime gates and cache the profile."""
     import sys
@@ -5309,6 +5331,8 @@ def serve_command(args):
         and _spec_config.method == "dflash"
         and _spec_config.backend == "tensorfold"
     )
+    if _wants_tensorfold:
+        _preflight_tensorfold_qwen27_or_exit()
     _wants_dflash = getattr(args, "enable_dflash", False) and not _wants_tensorfold
     if _wants_dflash:
         from .speculative.dflash.eligibility import have_runtime

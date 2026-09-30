@@ -1,10 +1,13 @@
 import asyncio
+import inspect
 import json
 import sys
 import tempfile
 import types
 import unittest
 from pathlib import Path
+
+import pytest
 
 from rapid_mlx.speculative.tensorfold_qwen27 import (
     TensorFoldQwen27Backend,
@@ -30,6 +33,55 @@ def test_product_alias_declares_exact_tensorfold_pair() -> None:
     assert profile.min_memory_gb == 48
     assert profile.enforce_min_memory is True
     assert profile.experimental is True
+
+
+@pytest.mark.parametrize(
+    ("failed_check", "message"),
+    [("runtime", "optional tensorfold==0.5.0 runtime"), ("environment", "arm64/macOS")],
+)
+def test_cli_preflight_rejects_before_pair_download(
+    monkeypatch, capsys, failed_check: str, message: str
+) -> None:
+    from rapid_mlx import cli
+    from rapid_mlx.speculative import tensorfold_qwen27
+
+    calls: list[str] = []
+
+    def fail() -> None:
+        raise TensorFoldUnavailable(message)
+
+    monkeypatch.setattr(
+        tensorfold_qwen27,
+        "require_runtime",
+        fail if failed_check == "runtime" else lambda: None,
+    )
+    monkeypatch.setattr(
+        tensorfold_qwen27,
+        "require_environment",
+        fail if failed_check == "environment" else lambda: None,
+    )
+    monkeypatch.setattr(
+        tensorfold_qwen27,
+        "download_qualified_pair",
+        lambda: calls.append("download"),
+    )
+
+    with pytest.raises(SystemExit, match="1"):
+        cli._preflight_tensorfold_qwen27_or_exit()
+
+    assert calls == []
+    error = capsys.readouterr().err
+    assert message in error
+    assert "rapid-mlx[tensorfold-qwen27]" in error
+
+
+def test_cli_wires_tensorfold_preflight_before_pair_download() -> None:
+    from rapid_mlx import cli
+
+    source = inspect.getsource(cli.serve_command)
+    assert source.index("_preflight_tensorfold_qwen27_or_exit()") < source.index(
+        "download_qualified_pair"
+    )
 
 
 class FakeCancellation:
