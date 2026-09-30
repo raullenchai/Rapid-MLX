@@ -25,12 +25,60 @@ mapped every request ID to its actual route after the run.
   two calls at low concurrency. The measured times include client-to-gateway
   network and queueing.
 
+The exact client is [`scripts/benchmarks/qwen_pool_customer_ux.py`](../../../scripts/benchmarks/qwen_pool_customer_ux.py).
+With a separate consumer-account inference key stored in a mode-600 local
+file, run from the repository root on a Docker-capable Mac:
+
+```bash
+QSP_CONSUMER_KEY_FILE=/absolute/path/to/consumer.key  # mode 600, outside Git
+mkdir -p /private/tmp/rapid-mlx-qwen-ux
+docker run --rm \
+  -e QWEN_UX_CONCURRENCY=8 \
+  -e QWEN_UX_OUT=/work/out/results.json \
+  -v "$PWD/scripts/benchmarks/qwen_pool_customer_ux.py:/work/measure.py:ro" \
+  -v "$QSP_CONSUMER_KEY_FILE:/run/secrets/qsp_key:ro" \
+  -v /private/tmp/rapid-mlx-qwen-ux:/work/out \
+  python:3.12-alpine python /work/measure.py
+```
+
+Set `QWEN_UX_CONCURRENCY=2` and `QWEN_UX_OUT=/work/out/results-idle.json`
+for the low-concurrency follow-up. The script records response IDs; ask the
+gateway operator to map each ID to its actual pool node or cloud route. An ID
+prefix alone is insufficient route proof. The key file and raw answers stay
+outside Git.
+
 The eight requests began at 19:58:59–19:59:01 UTC. QuickSilver traced six to
 pool nodes: MZR-1, MZR-2, and a third Mac Studio each took two slots. The
 remaining two fell back to `qwen3.8-27b-cloud` (OpenRouter/Alibaba). All ten
 client calls, including the two later low-load calls, returned HTTP 200,
 continuous SSE, `finish_reason=stop`, and correct answers to these simple
 prompts.
+
+The measured client observations below retain every sample without response
+IDs, answer text, or credentials. Prompt A/B correspond to indices 0/1 in the
+script; route/node mapping came from QuickSilver's gateway trace of the
+response IDs. First token means first nonempty `delta.content`, not first SSE
+event. Times are seconds from immediately before `urlopen`; totals end at
+`[DONE]`. The pool rows below used the gateway's pre-fix 14-token usage, so
+their input-token figures are excluded from the latency table.
+
+| Run | Prompt | Route | First text | Total | Output tokens |
+| --- | --- | --- | ---: | ---: | ---: |
+| load-1 | A | MZR-2 | 2.380 | 10.816 | 110 |
+| load-2 | B | Mac Studio | 3.580 | 12.594 | 40 |
+| load-3 | A | Cloud fallback | 2.153 | 2.611 | 29 |
+| load-4 | B | Mac Studio | 3.582 | 12.600 | 40 |
+| load-5 | A | MZR-2 | 2.375 | 10.799 | 110 |
+| load-6 | B | MZR-1 | 2.917 | 6.184 | 40 |
+| load-7 | A | MZR-1 | 2.913 | 9.054 | 110 |
+| load-8 | B | Cloud fallback | 3.184 | 4.037 | 57 |
+| idle-1 | A | Pool | 1.206 | 6.005 | 110 |
+| idle-2 | B | Pool | 1.771 | 6.256 | 49 |
+
+The reported pool medians are `statistics.median` of the six load rows marked
+MZR-1, MZR-2, or Mac Studio: first text 2.915 s and total 10.8075 s (rounded
+to 10.808). The two cloud and two idle rows are shown individually because
+each group has only two samples.
 
 | Client path | Samples | First text token | Total response time |
 | --- | ---: | ---: | ---: |
