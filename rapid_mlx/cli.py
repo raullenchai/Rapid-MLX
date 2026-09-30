@@ -6309,7 +6309,11 @@ def serve_command(args):
                 _profile, _drafter_repo
             )
         _dflash_kwargs = dict(
-            main_model_repo=_profile.hf_path if _profile else args.model,
+            main_model_repo=(
+                args.model
+                if _dflash_backend == "tensorfold"
+                else (_profile.hf_path if _profile else args.model)
+            ),
             main_model_revision=_target_revision,
             drafter_repo=_drafter_repo,
             drafter_revision=_drafter_revision,
