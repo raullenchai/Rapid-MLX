@@ -1213,7 +1213,22 @@ def raise_selected_window(
         raise ComputerUseError(
             "target_drift", "selected window changed during recovery"
         )
-    _validate_focused_window(snapshot, allow_exact_main_window=focus_exact_window)
+    focus_attempts = 8 if focus_exact_window else 1
+    for attempt in range(focus_attempts):
+        current = _select_window(activated_info, window_id=expected["window_id"])
+        if not _same_window(expected, current):
+            raise ComputerUseError(
+                "target_drift", "selected window changed while focus settled"
+            )
+        try:
+            _validate_focused_window(
+                snapshot, allow_exact_main_window=focus_exact_window
+            )
+            break
+        except ComputerUseError:
+            if attempt + 1 == focus_attempts:
+                raise
+            time.sleep(0.1)
     return after
 
 

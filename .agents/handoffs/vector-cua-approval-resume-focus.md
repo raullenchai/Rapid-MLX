@@ -142,3 +142,12 @@ existing cached sole-row, opaque reference, path, and normalized editor-value
 checks still run before menu dispatch and adjacent to `AXSetValue`; unrelated
 app-root fields therefore cannot receive the approved write. Generic action
 validation remains unchanged.
+
+Signed V17 run `8e053ca63083` still hit the exact focus refusal at the fixed
+0.2-second post-raise check. A read-only predicate dump from the same signed
+runtime later showed every exact condition true for `cg:11688`, proving Finder's
+AX tree converges asynchronously after `AXMain`/`AXRaise`. Exact Finder focus
+recovery now polls the unchanged PID/window/frame/main/editor predicate for at
+most eight attempts at 100 ms intervals. Every attempt reselects the same
+CGWindowID and compares its frame; drift or timeout remains fail closed. Generic
+window recovery still performs one validation without polling.
