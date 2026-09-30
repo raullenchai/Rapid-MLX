@@ -34,6 +34,15 @@ final class ShareComputeManager {
     private(set) var snapshot: ShareComputeStatusSnapshot?
     private(set) var activeModel: ShareComputeModel?
 
+    /// What happened to the previously-serving model when the last session
+    /// ended.
+    ///
+    /// Read by the completion receipt, which has to state the restore outcome
+    /// rather than imply it. The value is written at the moment the restore
+    /// decision is taken — by which point ``restoreAlias`` has been consumed —
+    /// so the receipt cannot reconstruct it after the fact.
+    private(set) var lastRestoreOutcome: ShareComputeRestoreStatus = .notNeeded
+
     private weak var server: ServerManager?
     private var child: ProcessGroupChild?
     private var reservation: UUID?
@@ -487,7 +496,30 @@ final class ShareComputeManager {
         snapshot = nil
     }
 
+    /// What the restore step will do, given the state it runs in.
+    ///
+    /// Pure so the completion receipt's restore line can be asserted directly
+    /// rather than by driving a whole session. The three outcomes are
+    /// genuinely different things and the receipt has to say which happened:
+    /// nothing was serving before sharing (``notNeeded``), the previous model
+    /// was asked to restart (``requested``), or the restore was abandoned because
+    /// the app is going away or the server is gone (``skipped``).
+    nonisolated static func restoreOutcome(
+        pendingAlias: String?,
+        isShuttingDown: Bool,
+        hasServer: Bool
+    ) -> ShareComputeRestoreStatus {
+        guard pendingAlias != nil else { return .notNeeded }
+        guard !isShuttingDown, hasServer else { return .skipped }
+        return .requested
+    }
+
     private func restorePreviousModelIfNeeded() {
+        lastRestoreOutcome = Self.restoreOutcome(
+            pendingAlias: restoreAlias,
+            isShuttingDown: shuttingDown,
+            hasServer: server != nil
+        )
         guard !shuttingDown, let alias = restoreAlias, let server else {
             restoreAlias = nil
             return

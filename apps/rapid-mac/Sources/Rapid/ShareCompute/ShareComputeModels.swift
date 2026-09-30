@@ -13,6 +13,10 @@ struct ShareComputeModel: Identifiable, Hashable, Sendable {
 
     var id: String { catalogID }
 
+    var shortTitle: String {
+        title.components(separatedBy: " · ").first ?? title
+    }
+
     init(catalogID: String, alias: String, title: String, detail: String, minMemoryGB: Double = 0) {
         self.catalogID = catalogID
         self.alias = alias
