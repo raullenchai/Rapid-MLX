@@ -80,7 +80,7 @@ def test_provider_preserves_exact_token_ids_and_request_outputs(monkeypatch) -> 
             self.min_match = min_match
 
     modules = {
-        "tensorfold.engine.proposers": {"SuffixLookupProposer": SuffixLookupProposer},
+        "tensorfold.engine.lane_engine": {"SuffixLookupProposer": SuffixLookupProposer},
         "tensorfold.server.cancellation": {"Cancellation": Cancellation},
         "tensorfold.server.scheduler": {"ChatJob": ChatJob},
         "tensorfold.server.stopping": {"StopPolicy": StopPolicy},

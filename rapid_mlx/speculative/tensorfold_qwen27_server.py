@@ -45,7 +45,7 @@ class TensorFoldRequestProvider:
         self.last_outputs: list[RequestOutput] = []
 
     def _outputs(self, prompt: str, **kwargs: Any) -> Iterator[RequestOutput]:
-        from tensorfold.engine.proposers import SuffixLookupProposer
+        from tensorfold.engine.lane_engine import SuffixLookupProposer
         from tensorfold.server.cancellation import Cancellation
         from tensorfold.server.scheduler import ChatJob
         from tensorfold.server.stopping import StopPolicy
