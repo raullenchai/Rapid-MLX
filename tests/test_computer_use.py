@@ -2882,6 +2882,27 @@ def test_focused_ax_window_rejects_listed_nonwindow_focus(monkeypatch, source):
     assert backend._focused_ax_window({"name": "Finder", "pid": 716}) is None
 
 
+def test_focused_ax_window_accepts_listed_window_from_focused_ui_element(monkeypatch):
+    application = object()
+    window = object()
+    monkeypatch.setattr(backend.ax_driver, "_app_element", lambda *a, **k: application)
+
+    def get(element, attribute):
+        if element is application:
+            return {
+                "AXWindows": [window],
+                "AXFocusedWindow": None,
+                "AXFocusedUIElement": window,
+            }.get(attribute)
+        if element is window and attribute == "AXRole":
+            return "AXWindow"
+        return None
+
+    monkeypatch.setattr(backend.ax_driver, "_get", get)
+
+    assert backend._focused_ax_window({"name": "Finder", "pid": 716}) is window
+
+
 def test_focused_ax_window_walks_from_focused_control_to_listed_window(monkeypatch):
     application = object()
     window = object()
