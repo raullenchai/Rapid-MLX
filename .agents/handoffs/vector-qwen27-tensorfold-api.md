@@ -1,6 +1,6 @@
 # Vector: Qwen3.8-27B experimental TensorFold HTTP adapter
 
-Status: bounded Phase 2 proof complete; awaiting Atlas PR disposition
+Status: bounded Phase 2 proof complete; draft PR preparation in progress
 Owner: Vector
 Branch/worktree: vector/qwen27-tensorfold-api at /private/tmp/harbor-desk-qwen27-api
 Base: fc804cf7f35bcfc7102be5ecb7a593be0f2038a9
@@ -26,3 +26,34 @@ Verification: focused provider/unit tests; HTTP ASGI integration tests for strea
   stream; commit `1a618ce3a` fixes it and pins the regression test.
 - This remains an experimental serial text endpoint. It is not evidence for
   standard BatchedEngine parity, tools/grammar/media support, or a speed claim.
+
+## Delivery risks and remaining gates
+
+- **P0 — performance qualification is pending.** The HTTP proof establishes
+  correctness and lifecycle behavior only. Do not claim a speedup, recommend
+  this lane for production, or promote it beyond experimental opt-in until the
+  separately owned exact-pair benchmark records reproducible before/after
+  throughput, latency, acceptance, memory, and output-quality evidence.
+- **P0 — the supported environment is intentionally narrow.** Startup rejects
+  anything except Apple Silicon macOS, TensorFold 0.5.0 from commit
+  `9cd52ab4daba68ddd09be89be8f23ad43175e821`, and MLX 0.32.3. The target and
+  drafter must be the exact cached snapshots qualified by their full revisions;
+  broad model-family compatibility is unproved.
+- **P1 — installation is source-based and opt-in.** The
+  `tensorfold-qwen27` extra installs a revision-pinned Git dependency, so it
+  requires Git and network access (or an equivalent pre-populated installer
+  cache) and is unsuitable for the normal wheel-only/offline install path.
+  TensorFold and the DFlash weights remain separately distributed under their
+  own licenses; the repository's NOTICE retains the required attribution.
+- **P1 — one serial request lane only.** TensorFold owns the model, cache,
+  scheduler, and cancellation lifecycle. Rapid caps admission at one active
+  request; tools, grammar, media, general batching, and standard BatchedEngine
+  integration remain explicit non-goals for this PR.
+- Before merge disposition: complete the independent performance gate, finish
+  the scope-locked PR review loop, and retain the exact dependency/model pins.
+
+## Evidence archive
+
+The independent HTTP archive manifest was regenerated after clean shutdown so
+`SHA256SUMS` now records the final `server.log` digest
+`954790b2768471b42131c971058d23d918a261f9773f9f1876bb836bd14993ef`.
