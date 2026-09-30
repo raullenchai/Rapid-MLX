@@ -61,5 +61,10 @@
     -->
     <key>com.apple.security.device.audio-input</key>
     <true/>
+
+    <!-- Required for the browser URL Apple Event used by Computer Use's
+         fail-closed approved-domain guard. -->
+    <key>com.apple.security.automation.apple-events</key>
+    <true/>
 </dict>
 </plist>

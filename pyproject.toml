@@ -158,6 +158,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Native macOS Computer Use. Keep these Darwin-only so installing the extra on
+# Linux remains safe for server deployments that expose no local desktop.
+computer-use = [
+    "pyobjc-framework-ApplicationServices==12.2.2; platform_system == 'Darwin'",
+    "pyobjc-framework-Quartz==12.2.2; platform_system == 'Darwin'",
+]
 # Vision/multimodal models (Gemma 4, Qwen-VL, etc.) — adds ~322 MB
 # Required for any model with vision input. Text-only models work without this.
 # 0.5.0+ also unlocks DFlash speculative decoding (see [dflash] extras).
@@ -229,6 +235,9 @@ chat = [
 # Expanded directly to avoid a self-dependency that breaks
 # pip install .[all] and editable installs.
 all = [
+    # computer-use (Darwin only)
+    "pyobjc-framework-ApplicationServices==12.2.2; platform_system == 'Darwin'",
+    "pyobjc-framework-Quartz==12.2.2; platform_system == 'Darwin'",
     # vision
     "mlx-vlm==0.7.2",
     "opencv-python>=4.8.0",

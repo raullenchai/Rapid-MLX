@@ -116,10 +116,11 @@ jobs:
       SIGNED: ${{ secrets.MACOS_DEVID_CERT_P12_BASE64 != '' && secrets.MACOS_DEVID_CERT_PASSWORD != '' && secrets.AC_API_KEY_P8_BASE64 != '' && secrets.AC_API_KEY_ID != '' && secrets.AC_API_ISSUER_ID != '' }}
       # Absolute .app size ceiling — enforced by the "Bundle size gate"
       # step. The bundled sidecar (Contents/Resources/rapid-mlx) dominates.
-      # v0.13.0-rc1 measured 501 MB after MLX 0.32.1 added ~10 MB of
-      # uncompressed native code. Keep bounded headroom while the independent
-      # compressed-DMG delta gate below continues to catch shipping growth.
-      BUNDLE_SIZE_CAP_MB: "550"
+      # Signed v0.15.2 measured 549 MiB; Computer Use adds a separate 19 MiB
+      # TCC-stable helper and ~7 MiB of native macOS bridge packages (575 MiB
+      # total). Keep 15 MiB measured headroom. The independent compressed-DMG
+      # delta gate below still caps per-release growth at +50 MiB.
+      BUNDLE_SIZE_CAP_MB: "590"
       # Per-release DMG growth ceiling — enforced by the "Bundle size delta
       # gate" step against the previous rapid-mac release.
       BUNDLE_SIZE_DELTA_CAP_MB: "50"

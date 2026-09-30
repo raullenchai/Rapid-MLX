@@ -106,7 +106,7 @@ inputs:
   bundle_size_cap_mb:
     description: Absolute .app size ceiling, enforced before notarisation.
     required: false
-    default: '550'
+    default: '590'
   bundle_size_delta_cap_mb:
     description: Per-release DMG growth ceiling in MiB vs the previous rapid-mac release.
     required: false
@@ -305,7 +305,7 @@ runs:
         cd "${{ inputs.checkout_path }}/apps/rapid-mac"
         APP="build/Rapid-MLX Desktop.app"
         SIDECAR="$APP/Contents/Resources/rapid-mlx"
-        CAP_MB="${BUNDLE_SIZE_CAP_MB:-550}"
+        CAP_MB="${BUNDLE_SIZE_CAP_MB:-590}"
         if [[ ! -d "$APP" ]]; then
           echo "::error::Expected $APP to exist after build step but it does not."
           exit 1

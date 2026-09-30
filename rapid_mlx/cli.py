@@ -18,6 +18,7 @@ Usage:
 import argparse
 import atexit
 import functools
+import ipaddress
 import os
 import shlex
 import sys
@@ -756,7 +757,14 @@ def _cache_memory_percent(args) -> float:
     return _DEFAULT_CACHE_MEMORY_PERCENT if value is None else value
 
 
-def _run_uvicorn(app, args, log_level: str) -> None:
+def _run_uvicorn(
+    app,
+    args,
+    log_level: str,
+    *,
+    on_server_accepting=None,
+    proxy_headers: bool = True,
+) -> None:
     """Dispatch through Rapid-MLX's Uvicorn startup seam with the kwargs that match the
     current ``--listen-fd`` / ``--host``/``--port`` mode.
 
@@ -794,7 +802,11 @@ def _run_uvicorn(app, args, log_level: str) -> None:
     import errno
 
     from rapid_mlx._uvicorn import run_uvicorn
-    from rapid_mlx.server import print_ready_banner
+
+    if on_server_accepting is None:
+        from rapid_mlx.server import print_ready_banner
+
+        on_server_accepting = print_ready_banner
 
     listen_fd = getattr(args, "listen_fd", None)
     try:
@@ -810,7 +822,8 @@ def _run_uvicorn(app, args, log_level: str) -> None:
                 fd=listen_fd,
                 log_level=log_level,
                 timeout_keep_alive=30,
-                on_server_accepting=print_ready_banner,
+                proxy_headers=proxy_headers,
+                on_server_accepting=on_server_accepting,
                 port_explicit=port_explicit_for(args),
             )
         else:
@@ -821,7 +834,8 @@ def _run_uvicorn(app, args, log_level: str) -> None:
                 port=port,
                 log_level=log_level,
                 timeout_keep_alive=30,
-                on_server_accepting=print_ready_banner,
+                proxy_headers=proxy_headers,
+                on_server_accepting=on_server_accepting,
                 port_explicit=port_explicit_for(args),
             )
     except OSError as exc:
@@ -4869,6 +4883,146 @@ def system_one_command(args) -> None:
     )
 
 
+def _cua_only_incompatible_options(args) -> list[str]:
+    """Return model/lane options that cannot apply to a CUA-only server."""
+
+    checks = {
+        "model": getattr(args, "model", None),
+        "served-model-name": getattr(args, "served_model_name", None),
+        "embedding-model": getattr(args, "embedding_model", None),
+        "enable-audio": getattr(args, "enable_audio", False),
+        "mcp-config": getattr(args, "mcp_config", None),
+        "video-output-dir": getattr(args, "video_output_dir", None),
+        "image-weight-precision": getattr(args, "image_weight_precision", None),
+        "mllm": getattr(args, "mllm", False),
+        "no-mllm": getattr(args, "no_mllm", False),
+        "lazy-load": getattr(args, "lazy_load", False),
+        "idle-unload-seconds": getattr(args, "idle_unload_seconds", 0),
+        "disk-stream": getattr(args, "disk_stream", False),
+        "enable-dflash": getattr(args, "enable_dflash", False),
+        "enable-ddtree": getattr(args, "enable_ddtree", False),
+        "speculative-config": getattr(args, "speculative_config", None),
+        "mtp-sidecar": getattr(args, "mtp_sidecar", None),
+    }
+    return [f"--{name}" for name, value in checks.items() if value]
+
+
+def _serve_cua_only_mode(args) -> None:
+    """Start the authenticated CUA control plane without a model engine."""
+
+    import os
+    import sys
+
+    configured_api_key = args.api_key or os.environ.get("RAPID_MLX_API_KEY")
+    if not configured_api_key:
+        print(
+            "rapid-mlx serve --cua-only requires an API key via --api-key or "
+            "RAPID_MLX_API_KEY.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+    from .config import get_config
+    from .cua.server import app, configure_cua_server
+    from .middleware.auth import configure_rate_limiter
+
+    incompatible = _cua_only_incompatible_options(args)
+    if incompatible:
+        print(
+            "rapid-mlx serve --cua-only cannot be combined with "
+            + ", ".join(incompatible),
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+    args.port = _resolve_serve_port(
+        getattr(args, "host", "127.0.0.1"),
+        getattr(args, "port", None),
+        model="cua-only",
+        port_explicit=port_explicit_for(args),
+        listen_fd=getattr(args, "listen_fd", None),
+    )
+    uvicorn_log_level = args.log_level.lower()
+    cfg = get_config()
+    cfg.engine = None
+    cfg.model_name = None
+    cfg.model_alias = None
+    cfg.model_path = None
+    cfg.enable_audio_lane = False
+    cfg.api_key = configured_api_key
+    cfg.default_timeout = args.timeout
+
+    max_body = getattr(args, "max_request_bytes", None)
+    if max_body is not None:
+        cfg.max_request_bytes = max(0, int(max_body))
+    else:
+        raw_max_body = os.environ.get("RAPID_MLX_MAX_REQUEST_BYTES", "").strip()
+        if raw_max_body:
+            try:
+                cfg.max_request_bytes = max(0, int(raw_max_body))
+            except ValueError:
+                cfg.max_request_bytes = 8 * 1024 * 1024
+
+    raw_body_timeout = os.environ.get(
+        "RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS", ""
+    ).strip()
+    if raw_body_timeout:
+        try:
+            cfg.body_receive_timeout_seconds = max(0.0, float(raw_body_timeout))
+        except ValueError:
+            cfg.body_receive_timeout_seconds = 15.0
+
+    cors_origins = configure_cua_server(
+        cors_origins=args.cors_origins,
+        trusted_hosts=getattr(args, "trusted_hosts", None),
+    )
+    if args.rate_limit > 0:
+        configure_rate_limiter(args.rate_limit, enabled=True)
+
+    cfg.bind_host = None
+    cfg.bind_port = None
+    cfg.bind_listen_fd = None
+    cfg.cua_permission_requests_enabled = False
+    listen_fd = getattr(args, "listen_fd", None)
+    if listen_fd is None:
+        cfg.bind_host = "localhost" if args.host == "0.0.0.0" else args.host
+        cfg.bind_port = args.port
+        try:
+            cfg.cua_permission_requests_enabled = (
+                args.host == "localhost" or ipaddress.ip_address(args.host).is_loopback
+            )
+        except ValueError:
+            cfg.cua_permission_requests_enabled = False
+    else:
+        cfg.bind_listen_fd = listen_fd
+
+    print()
+    print("  🐆 Rapid-MLX CUA server")
+    print("  Model-free control plane; no model will be resolved or downloaded.")
+    features = ["cua-only", "auth: on"]
+    if args.rate_limit > 0:
+        features.append(f"rate-limit: {args.rate_limit}/min")
+    if cors_origins:
+        features.append(f"cors: {', '.join(cors_origins)}")
+    print(f"  Features: {', '.join(features)}")
+    if listen_fd is None:
+        print(f"  Starting server on http://{cfg.bind_host}:{args.port}")
+    else:
+        print(f"  Starting server on inherited fd {listen_fd}")
+    sys.stdout.flush()
+
+    _run_uvicorn(
+        app,
+        args,
+        uvicorn_log_level,
+        on_server_accepting=lambda: None,
+        # Permission prompting relies on request.client being the TCP peer.
+        # The helper has no proxy use case; never let X-Forwarded-For rewrite it.
+        proxy_headers=False,
+    )
+    _hard_exit_after_serve()
+
+
 def serve_command(args):
     """Start the OpenAI-compatible server."""
     import logging
@@ -4878,6 +5032,15 @@ def serve_command(args):
     from rapid_mlx.runtime import optional_runtime
 
     optional_runtime.set_assume_yes(getattr(args, "yes", False))
+
+    if getattr(args, "cua_only", False):
+        from ._parent_watchdog import install_parent_watchdog, resolve_expected_ppid
+
+        install_parent_watchdog(
+            resolve_expected_ppid(getattr(args, "watchdog_ppid", None))
+        )
+        _serve_cua_only_mode(args)
+        return
 
     _validate_primary_lifecycle_args(args)
 
@@ -13251,6 +13414,14 @@ Examples:
         "model", nargs="?", type=str, help="Model to serve"
     ).completer = alias_completer
     serve_parser.add_argument(
+        "--cua-only",
+        action="store_true",
+        help=(
+            "Start the authenticated Computer Use API without resolving, "
+            "downloading, or loading a model"
+        ),
+    )
+    serve_parser.add_argument(
         "--yes",
         "-y",
         action="store_true",
@@ -15560,7 +15731,11 @@ def main():
     # Keep the positional optional at parse time so this first-run mistake gets
     # a short recovery path. Explicit ``serve --help`` still exits from
     # argparse above and retains the complete reference.
-    if getattr(args, "command", None) == "serve" and not args.model:
+    if (
+        getattr(args, "command", None) == "serve"
+        and not args.model
+        and not getattr(args, "cua_only", False)
+    ):
         print("rapid-mlx serve: a model is required.", file=sys.stderr)
         print("  Pick one for this Mac:  rapid-mlx recipe", file=sys.stderr)
         print(

@@ -1,4 +1,5 @@
 import Foundation
+import os
 import Testing
 @testable import Rapid
 
@@ -51,24 +52,97 @@ struct ComputerUseFeatureTests {
         #expect(canonical.contains("section=Self.sectionAfterComputerUseGateChange(current:section,enabled:state.computerUseEnabled)"))
     }
 
-    @Test("Starter catalog is explicit about preview availability")
-    func starterCatalog() {
-        #expect(ComputerUseStarter.catalog.map(\.kind) == [
-            .freeUpSpace,
-            .tidyInbox,
-            .draftAndPost,
-            .prospectCustomers,
-            .createDemoVideo,
-            .reserved,
-        ])
-        #expect(ComputerUseStarter.catalog.first?.availability == .available)
-        #expect(ComputerUseStarter.catalog.first(where: { $0.kind == .draftAndPost })?.availability == .available)
-        #expect(ComputerUseStarter.catalog.filter {
-            $0.kind != .freeUpSpace && $0.kind != .draftAndPost && $0.kind != .reserved
-        }.allSatisfy { $0.availability == .comingSoon })
-        #expect(ComputerUseStarter.catalog.last?.availability == .reserved)
-        #expect(ComputerUseStarter.catalog.allSatisfy {
-            !$0.approvalNote.isEmpty
-        })
+    @Test("Startup model link maintenance never blocks MainActor")
+    @MainActor
+    func startupModelLinkMaintenanceIsDetached() async {
+        let coordinator = StartupModelLinkMaintenanceCoordinator()
+        let (started, startedContinuation) = AsyncStream<Void>.makeStream()
+        var startedIterator = started.makeAsyncIterator()
+        let release = DispatchSemaphore(value: 0)
+        let ranOnMainThread = OSAllocatedUnfairLock<Bool?>(initialState: nil)
+        let maintenance = Task { @MainActor in
+            await coordinator.run(generation: 1) {
+                ranOnMainThread.withLock { $0 = Thread.isMainThread }
+                startedContinuation.yield()
+                release.wait()
+            }
+        }
+        _ = await startedIterator.next()
+
+        // Reaching this assertion on MainActor while the maintenance closure
+        // is deliberately blocked proves the window/CUA actor remains free.
+        release.signal()
+        await maintenance.value
+        #expect(ranOnMainThread.withLock { $0 } == false)
+    }
+
+    @Test("Repeated restores share one model link maintenance operation")
+    func startupModelLinkMaintenanceIsSingleFlight() async {
+        let coordinator = StartupModelLinkMaintenanceCoordinator()
+        let (started, startedContinuation) = AsyncStream<Void>.makeStream()
+        var startedIterator = started.makeAsyncIterator()
+        let release = DispatchSemaphore(value: 0)
+        let count = OSAllocatedUnfairLock(initialState: 0)
+        let catalogReads = OSAllocatedUnfairLock(initialState: 0)
+        let operation: @Sendable () -> Void = {
+            count.withLock { $0 += 1 }
+            startedContinuation.yield()
+            release.wait()
+        }
+
+        let first = Task { await coordinator.run(generation: 1, operation) }
+        _ = await startedIterator.next()
+        let second = Task {
+            await coordinator.run(generation: 1, operation)
+            catalogReads.withLock { $0 += 1 }
+        }
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        #expect(count.withLock { $0 } == 1)
+        #expect(catalogReads.withLock { $0 } == 0)
+        release.signal()
+        await first.value
+        await second.value
+
+        #expect(count.withLock { $0 } == 1)
+        #expect(catalogReads.withLock { $0 } == 1)
+
+        release.signal()
+        await coordinator.run(generation: 2, operation)
+        #expect(count.withLock { $0 } == 2)
+    }
+
+    @Test("Newer model link maintenance satisfies older waiting generations")
+    func startupModelLinkMaintenanceNeverRegressesGeneration() async {
+        let coordinator = StartupModelLinkMaintenanceCoordinator()
+        let count = OSAllocatedUnfairLock(initialState: 0)
+        await coordinator.run(generation: 1) {
+            count.withLock { $0 += 1 }
+        }
+
+        let (started, startedContinuation) = AsyncStream<Void>.makeStream()
+        var startedIterator = started.makeAsyncIterator()
+        let release = DispatchSemaphore(value: 0)
+        let newest = Task {
+            await coordinator.run(generation: 3) {
+                count.withLock { $0 += 1 }
+                startedContinuation.yield()
+                release.wait()
+            }
+        }
+        _ = await startedIterator.next()
+        let stale = Task {
+            await coordinator.run(generation: 2) {
+                count.withLock { $0 += 1 }
+            }
+        }
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        stale.cancel()
+        release.signal()
+        await newest.value
+        await stale.value
+
+        await coordinator.run(generation: 2) { count.withLock { $0 += 1 } }
+        await coordinator.run(generation: 3) { count.withLock { $0 += 1 } }
+        #expect(count.withLock { $0 } == 2)
     }
 }

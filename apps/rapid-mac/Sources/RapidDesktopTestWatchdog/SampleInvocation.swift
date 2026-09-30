@@ -48,6 +48,18 @@ public enum SampleInvocation {
         // even if the stack sample below is truncated.
         try write("===== ps -p \(pid) -o pid,ppid,state,%cpu,%mem,rss,etime,comm =====\n")
         try write(shellOutput("/bin/ps", ["-p", String(pid), "-o", "pid,ppid,state,%cpu,%mem,rss,etime,comm"]))
+        // SwiftPM waits on its test-runner child. Sampling only swift-test
+        // leaves that child invisible when the parent is blocked in wait().
+        // Capture executable names, never argv, so command-line secrets stay
+        // out of the uploaded artifact.
+        let processTable = shellOutput("/bin/ps", ["-axo", "pid=,ppid=,state=,etime=,comm="])
+        let descendants = descendantProcesses(of: pid, processTable: processTable)
+        try write("\n===== descendant process tree (pid,ppid,state,etime,comm) =====\n")
+        if descendants.isEmpty {
+            try write("<none>\n")
+        } else {
+            for child in descendants { try write("\(child.summary)\n") }
+        }
         try write("\n===== vm_stat =====\n")
         try write(shellOutput("/usr/bin/vm_stat", []))
         try write("\n===== memory pressure -Q =====\n")
@@ -56,7 +68,64 @@ public enum SampleInvocation {
         // The stack capture proper.
         try write("\n===== /usr/bin/sample \(pid) \(config.sampleDurationSeconds) -file ... =====\n")
         try write(streamingSample(pid: pid, seconds: config.sampleDurationSeconds))
+        // At most two test runners: the bounded artifact still shows the
+        // process actually executing tests if SwiftPM itself is idle.
+        let runners = descendants.filter {
+            let name = $0.command.lowercased()
+            return name.contains("swiftpm-testing") || name.contains("xctest")
+                || name.contains("rapidtests")
+        }
+        for child in runners.prefix(2) {
+            try write("\n===== /usr/bin/sample child \(child.pid) \(config.sampleDurationSeconds) =====\n")
+            try write(streamingSample(pid: child.pid, seconds: config.sampleDurationSeconds))
+        }
         try write("===== end capture \(pid) =====\n")
+    }
+
+    struct ProcessEntry: Equatable {
+        let pid: pid_t
+        let parentPID: pid_t
+        let summary: String
+
+        var command: String {
+            summary.split(maxSplits: 4, whereSeparator: \.isWhitespace).last.map(String.init) ?? ""
+        }
+    }
+
+    /// Return only descendants of the wrapped process. The cap prevents a
+    /// runaway process tree from filling the CI artifact or delaying cleanup.
+    static func descendantProcesses(
+        of rootPID: pid_t,
+        processTable: String,
+        limit: Int = 32
+    ) -> [ProcessEntry] {
+        let entries: [ProcessEntry] = processTable.split(separator: "\n").compactMap { line in
+            let fields = line.split(maxSplits: 4, whereSeparator: \.isWhitespace)
+            guard fields.count == 5,
+                  let pid = pid_t(fields[0]),
+                  let parent = pid_t(fields[1])
+            else { return nil }
+            return ProcessEntry(
+                pid: pid,
+                parentPID: parent,
+                summary: fields.map(String.init).joined(separator: " ")
+            )
+        }
+        var known: Set<pid_t> = [rootPID]
+        var descendants: [ProcessEntry] = []
+        var cursor = 0
+        var parents = [rootPID]
+        while cursor < parents.count && descendants.count < max(0, limit) {
+            let parent = parents[cursor]
+            cursor += 1
+            for entry in entries where entry.parentPID == parent && !known.contains(entry.pid) {
+                known.insert(entry.pid)
+                parents.append(entry.pid)
+                descendants.append(entry)
+                if descendants.count >= limit { break }
+            }
+        }
+        return descendants
     }
 
     /// `/usr/bin/sample` streams to stdout; capture it into the artifact.
@@ -71,7 +140,11 @@ public enum SampleInvocation {
             try process.run()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
-            return String(decoding: data, as: UTF8.self)
+            let maxSampleBytes = 256 * 1024
+            let captured = String(decoding: data.prefix(maxSampleBytes), as: UTF8.self)
+            return data.count > maxSampleBytes
+                ? captured + "\n<sample truncated at \(maxSampleBytes) bytes>\n"
+                : captured
         } catch {
             return "<sample failed: \(error)>"
         }
