@@ -292,7 +292,7 @@ enum ShareComputePoolAction: Equatable, Sendable {
         guard let row else { return .none }
         // Order matters: a disabled model can be downloaded and still be
         // useless, so the upstream switch is checked FIRST.
-        if row.isDisabledUpstream { return .unavailable }
+        if !row.availability.acceptsConnections { return .unavailable }
         if !row.local.isReady,
            case .notEnoughSpace = row.storage {
             return .insufficientStorage

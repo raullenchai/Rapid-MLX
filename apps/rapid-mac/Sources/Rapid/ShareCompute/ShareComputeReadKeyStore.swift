@@ -18,6 +18,8 @@ enum ShareComputeReadKeyRejection: Error, Equatable, Sendable {
     /// Newlines, tabs, or other control characters. A newline is the classic
     /// copy-from-a-terminal artefact and would corrupt the header it lands in.
     case containsControlCharacters
+    /// The key was valid, but this Mac could not save it.
+    case keychainUnavailable
 
     var message: String {
         switch self {
@@ -31,6 +33,8 @@ enum ShareComputeReadKeyRejection: Error, Equatable, Sendable {
             return String(localized: "That read key is longer than QuickSilver issues.")
         case .containsControlCharacters:
             return String(localized: "That read key contains a line break or control character. Paste it as a single line.")
+        case .keychainUnavailable:
+            return String(localized: "This Mac couldn't save the read key. Unlock your Keychain and try again.")
         }
     }
 }

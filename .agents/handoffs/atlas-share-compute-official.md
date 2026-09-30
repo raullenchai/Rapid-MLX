@@ -8,7 +8,8 @@
 
 - The UI contribution includes Share, Live Pool, Credits, a Keychain-backed `qsprk-` read key, the pool-summary and ledger clients, and focused desktop tests.
 - The current-main memory floor remains enforced when the UI offers models to Share or Live Pool.
-- `cd apps/rapid-mac && swift test --filter ShareCompute` passed 123 tests in 7 suites on the Studio Mac.
+- `cd apps/rapid-mac && swift test --filter ShareCompute` passed 125 tests in 7 suites on the Studio Mac after the Keychain failure-path fixes.
+- An independent local reviewer found four actionable state defects. The PR now keeps failed Keychain saves/removals visible, labels restore as requested until readiness is known, and disables the Live Pool action when upstream availability is unreported.
 - `python3.12 -m pytest tests/test_rapid_mac_ax_identifiers.py -q` passed 69 tests.
 - `GET https://pay.quicksilverpro.io/v1/pool/summary` returned the expected top-level fields on 2026-09-30, but showed zero connected and ready nodes at that time.
 

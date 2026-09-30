@@ -58,23 +58,24 @@ enum ShareComputeRewardStatus: String, Codable, Sendable, CaseIterable {
     var hasProviderRecord: Bool { self != .notEligible }
 }
 
-/// Whether the model Rapid paused for the session came back afterwards.
+/// What Rapid could confirm about restoring the model paused for this session.
 ///
 /// Paper labels this slot `MODEL RESTORE`, not `Previous model` — the user is
-/// being told the outcome of an action Rapid took on their behalf, so the label
-/// has to name the action and carry a status.
+/// being told what Rapid attempted on their behalf. The receipt is written
+/// before the server can prove that the model is ready again.
 enum ShareComputeRestoreStatus: String, Codable, Sendable {
     /// There was no model serving when sharing started, so nothing to restore.
     case notNeeded
-    /// The previous alias was asked to start again.
-    case complete
+    /// Rapid asked the server to restart the previous alias; readiness is not
+    /// confirmed here. The raw value preserves receipts written by older builds.
+    case requested = "complete"
     /// Sharing ended as part of app shutdown; the restore never ran.
     case skipped
 
     var title: String {
         switch self {
         case .notNeeded: return String(localized: "Not needed")
-        case .complete: return String(localized: "Complete")
+        case .requested: return String(localized: "Restart requested")
         case .skipped: return String(localized: "Skipped")
         }
     }

@@ -502,7 +502,7 @@ final class ShareComputeManager {
     /// rather than by driving a whole session. The three outcomes are
     /// genuinely different things and the receipt has to say which happened:
     /// nothing was serving before sharing (``notNeeded``), the previous model
-    /// is being reloaded (``complete``), or the restore was abandoned because
+    /// was asked to restart (``requested``), or the restore was abandoned because
     /// the app is going away or the server is gone (``skipped``).
     nonisolated static func restoreOutcome(
         pendingAlias: String?,
@@ -511,7 +511,7 @@ final class ShareComputeManager {
     ) -> ShareComputeRestoreStatus {
         guard pendingAlias != nil else { return .notNeeded }
         guard !isShuttingDown, hasServer else { return .skipped }
-        return .complete
+        return .requested
     }
 
     private func restorePreviousModelIfNeeded() {

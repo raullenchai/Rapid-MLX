@@ -33,7 +33,7 @@ struct ShareComputeRedesignTests {
         started: Date,
         duration: TimeInterval = 3_600,
         reward: ShareComputeRewardStatus = .available,
-        restore: ShareComputeRestoreStatus = .complete,
+        restore: ShareComputeRestoreStatus = .requested,
         node: String? = "qs-node-a8c1"
     ) -> ShareComputeReceipt {
         ShareComputeReceipt(
@@ -355,16 +355,17 @@ struct ShareComputeRedesignTests {
 
     // MARK: - Restore
 
-    @Test("Model restore reports what actually happened to the previous model")
+    @Test("Model restore reports only what Rapid can confirm")
     func restoreOutcome() {
         // Nothing was serving before sharing started.
         #expect(ShareComputeManager.restoreOutcome(
             pendingAlias: nil, isShuttingDown: false, hasServer: true
         ) == .notNeeded)
-        // The normal path: the previous alias is reloaded.
+        // The normal path requests a restart; this does not prove readiness.
         #expect(ShareComputeManager.restoreOutcome(
             pendingAlias: "qwen3.5-4b-4bit", isShuttingDown: false, hasServer: true
-        ) == .complete)
+        ) == .requested)
+        #expect(ShareComputeRestoreStatus.requested.title == "Restart requested")
         // App shutdown abandons the restore — the receipt must not claim the
         // model came back.
         #expect(ShareComputeManager.restoreOutcome(
@@ -455,7 +456,7 @@ struct ShareComputeRedesignTests {
         #expect(loaded.map(\.id) == ["QS-NEW", "QS-OLD"])
         #expect(loaded[0].nodeID == "qs-node-a8c1")
         #expect(loaded[0].rewardStatus == .available)
-        #expect(loaded[0].restoreStatus == .complete)
+        #expect(loaded[0].restoreStatus == .requested)
         #expect(loaded[1].duration == 3_600)
     }
 
@@ -1092,6 +1093,11 @@ struct ShareComputeAPIAlignedSurfaceTests {
         #expect(unavailable == .unavailable)
         #expect(!unavailable.isEnabled)
         #expect(!unavailable.startsDownload)
+
+        // A missing summary cannot authorize a connect or a download.
+        let unreported = Self.rows(summary: nil).first!
+        #expect(ShareComputePoolAction.make(for: unreported) == .unavailable)
+        #expect(!ShareComputePoolAction.make(for: unreported).isEnabled)
 
         // …and the three actions are genuinely distinct, which is the whole
         // point of the picker being a control rather than a legend.
@@ -2056,12 +2062,49 @@ extension ShareComputeLedgerError {
 @MainActor
 struct ShareComputeLedgerSafetyTests {
 
+    private struct FailingKeychain: KeychainStoring {
+        let secret: String?
+
+        func read(account: String) -> String? { secret }
+        func write(account: String, secret: String) -> Bool { false }
+        func delete(account: String) -> Bool { false }
+    }
+
     // `nonisolated` so the closures the async tests hand to background work
     // can read them without hopping to the main actor.
     nonisolated static let keyA = try! ShareComputeReadKey
         .validate("qsprk-" + String(repeating: "a", count: 30)).get()
     nonisolated static let keyB = try! ShareComputeReadKey
         .validate("qsprk-" + String(repeating: "b", count: 30)).get()
+
+    @Test("A failed Keychain save keeps the draft and an actionable entry state")
+    func failedKeychainSave() {
+        let coordinator = ShareComputeLedgerCoordinator(
+            store: ShareComputeReadKeyStore(keychain: FailingKeychain(secret: nil)),
+            fixture: nil
+        )
+        #expect(coordinator.save(draft: Self.keyA.rawValue) == .keychainUnavailable)
+        #expect(coordinator.state == .unavailable(.keychainUnavailable))
+        #expect(coordinator.state.needsReadKey)
+        #expect(coordinator.savedKeyLabel == nil)
+    }
+
+    @Test("A failed Keychain removal does not claim the key is gone")
+    func failedKeychainRemoval() async {
+        let keychain = FailingKeychain(secret: Self.keyA.rawValue)
+        let coordinator = ShareComputeLedgerCoordinator(
+            store: ShareComputeReadKeyStore(keychain: keychain),
+            load: { _ in ShareComputeLedgerFixture.account },
+            fixture: nil
+        )
+        coordinator.appear()
+        await Self.settle()
+        coordinator.removeKey()
+        #expect(coordinator.state == .unavailable(.keychainRemovalFailed))
+        #expect(coordinator.state.needsReadKey)
+        #expect(coordinator.savedKeyLabel == Self.keyA.redactedLabel)
+        #expect(keychain.read(account: ShareComputeReadKeyStore.account) == Self.keyA.rawValue)
+    }
 
     /// A loader whose completion the test controls.
     final class Gate: @unchecked Sendable {

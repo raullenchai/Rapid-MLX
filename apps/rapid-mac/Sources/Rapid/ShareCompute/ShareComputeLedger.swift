@@ -360,6 +360,8 @@ enum ShareComputeLedgerError: Error, Equatable, Sendable {
     case serviceUnavailable
     case unreachable(String)
     case malformedBody
+    case keychainUnavailable
+    case keychainRemovalFailed
 
     var displayMessage: String {
         switch self {
@@ -377,6 +379,10 @@ enum ShareComputeLedgerError: Error, Equatable, Sendable {
             return String(localized: "Couldn’t reach QuickSilver.")
         case .malformedBody:
             return String(localized: "QuickSilver returned a ledger Rapid couldn’t read.")
+        case .keychainUnavailable:
+            return String(localized: "This Mac's Keychain is unavailable. Unlock it and try again.")
+        case .keychainRemovalFailed:
+            return String(localized: "Rapid couldn't fully remove the saved read key. Revoke it in QuickSilver and try removing it again.")
         }
     }
 
@@ -658,7 +664,11 @@ enum ShareComputeLedgerState: Equatable, Sendable {
 
     /// True only for the onboarding surface.
     var needsReadKey: Bool {
-        self == .noReadKey || self == .unauthorized
+        if self == .noReadKey || self == .unauthorized { return true }
+        if case .unavailable(let error) = self {
+            return error == .keychainUnavailable || error == .keychainRemovalFailed
+        }
+        return false
     }
 
     /// The error to SHOW as the whole surface. Absent when previous data is on

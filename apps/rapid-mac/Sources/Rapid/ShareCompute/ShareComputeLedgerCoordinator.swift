@@ -336,8 +336,8 @@ final class ShareComputeLedgerCoordinator {
         case .success(let key):
             invalidate()
             guard store.save(key) else {
-                state = .unavailable(.unreachable("keychain"))
-                return nil
+                state = .unavailable(.keychainUnavailable)
+                return .keychainUnavailable
             }
             savedKeyLabel = key.redactedLabel
             // NEITHER gate is cleared here. The key is safely in the Keychain
@@ -358,12 +358,15 @@ final class ShareComputeLedgerCoordinator {
     /// come back and re-render a ledger for a key the user just deleted.
     func removeKey() {
         invalidate()
-        _ = store.remove()
-        savedKeyLabel = nil
         // There is no key left to validate, so the owed validation and the
         // timer that would have run it both go.
         pendingKeyValidation = false
         wake.cancel()
+        guard store.remove() else {
+            state = .unavailable(.keychainRemovalFailed)
+            return
+        }
+        savedKeyLabel = nil
         // The 429 cooldown and the interval SURVIVE: both are properties of
         // this IP's recent request history, not of the credential.
         state = .noReadKey
@@ -474,8 +477,7 @@ final class ShareComputeLedgerCoordinator {
             state = .noReadKey
             return
         case .unavailable:
-            savedKeyLabel = nil
-            state = .unavailable(.unreachable("keychain"))
+            state = .unavailable(.keychainUnavailable)
             return
         case .found(let key):
             savedKeyLabel = key.redactedLabel
@@ -610,7 +612,10 @@ final class ShareComputeLedgerCoordinator {
             // and let the next refresh judge it on its own merits.
             return
         }
-        _ = store.remove()
+        guard store.remove() else {
+            state = .unavailable(.keychainRemovalFailed)
+            return
+        }
         savedKeyLabel = nil
         state = .unauthorized
     }

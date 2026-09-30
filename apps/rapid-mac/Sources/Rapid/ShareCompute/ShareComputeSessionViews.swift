@@ -727,7 +727,7 @@ struct ShareComputeSessionCompleteView: View {
             fact(String(localized: "Worker"), receipt.worker, isMonospaced: false)
             fact(
                 // Named explicitly rather than "Previous model": the user is
-                // being told the outcome of something Rapid did for them.
+                // being told what Rapid attempted for them.
                 String(localized: "Model restore"),
                 receipt.restoreStatus.title,
                 isMonospaced: false
