@@ -1213,7 +1213,10 @@ def raise_selected_window(
         raise ComputerUseError(
             "target_drift", "selected window changed during recovery"
         )
-    focus_attempts = 8 if focus_exact_window else 1
+    # Finder rebuilds its AX window/editor relationship asynchronously after
+    # activation. Keep the recovery bounded, but allow slow hosts up to the
+    # same three-second class as other local AX stabilization waits.
+    focus_attempts = 30 if focus_exact_window else 1
     for attempt in range(focus_attempts):
         current = _select_window(activated_info, window_id=expected["window_id"])
         if not _same_window(expected, current):
