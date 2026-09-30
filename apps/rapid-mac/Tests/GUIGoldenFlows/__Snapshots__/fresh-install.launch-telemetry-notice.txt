@@ -10,10 +10,10 @@ AXApplication title="Rapid-MLX"
         AXButton id="TelemetryNotice.Acknowledge" desc="Got it" enabled=true
       AXSplitGroup id="main, SidebarNavigationSplitView"
         AXGroup subrole=AXHostingView
-          AXButton id="Sidebar.NewChat" desc="New Chat" enabled=true
-          AXButton id="Sidebar.Images" desc="Images" enabled=true
-          AXButton id="Sidebar.Audio" desc="Audio" enabled=true
-          AXButton id="Sidebar.Launch" desc="Agent" enabled=true
+          AXButton id="Sidebar.NewChat" desc="New Chat" help="New Chat" enabled=true
+          AXButton id="Sidebar.Images" desc="Images" help="Images" enabled=true
+          AXButton id="Sidebar.Audio" desc="Audio" help="Audio" enabled=true
+          AXButton id="Sidebar.Launch" desc="Launch" help="Launch" enabled=true
         AXSplitter value=number enabled=false
         AXGroup subrole=AXHostingView
           AXStaticText value=text enabled=true
@@ -42,8 +42,7 @@ AXApplication title="Rapid-MLX"
       AXUnknown desc="Memory <pressure>: <size> used out of <size>" enabled=true
       AXButton id="Footer.DesktopVersionPill" desc="Rapid-MLX <version> <update-state>" help="Rapid-MLX <version> <update-state>" enabled=true
     AXToolbar
-      AXButton desc="Hide Sidebar" enabled=true
-      AXButton id="Toolbar.SearchChats" desc="Search chats" enabled=true
+      AXPopUpButton desc="more toolbar items" enabled=true
     AXButton subrole=AXCloseButton enabled=true
     AXButton subrole=AXFullScreenButton help="this button also has an action to zoom the window" enabled=true
     AXButton subrole=AXMinimizeButton enabled=true
