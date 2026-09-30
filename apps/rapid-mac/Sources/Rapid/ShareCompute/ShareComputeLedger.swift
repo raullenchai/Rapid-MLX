@@ -753,9 +753,9 @@ enum ShareComputeCreditFormatter {
         let formatter = NumberFormatter()
         formatter.numberStyle = .decimal
         formatter.minimumFractionDigits = 2
-        // Four places: the sample row credits $0.0123, and rounding it to two
-        // would display an earned amount as $0.01.
-        formatter.maximumFractionDigits = 4
+        // Real settled windows can credit only a few millionths of a dollar.
+        // Four places rendered a credited $0.000003 row as $0.00.
+        formatter.maximumFractionDigits = 9
         formatter.usesGroupingSeparator = true
         let number = NSDecimalNumber(decimal: value)
         return "$" + (formatter.string(from: number) ?? number.stringValue)

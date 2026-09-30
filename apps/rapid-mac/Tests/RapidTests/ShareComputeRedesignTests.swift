@@ -1928,6 +1928,10 @@ struct ShareComputeLedgerTests {
     @Test("Credit values format from Decimal without binary drift")
     func decimalFormatting() {
         #expect(ShareComputeCreditFormatter.credit(Decimal(string: "0.0123")!) == "$0.0123")
+        // A live two-request settlement credited $0.000003. Rounding it to
+        // $0.00 makes the contributor believe no credit was earned.
+        #expect(ShareComputeCreditFormatter.credit(Decimal(string: "0.000003")!) == "$0.000003")
+        #expect(ShareComputeCreditFormatter.credit(Decimal(string: "0.000000001")!) == "$0.000000001")
         #expect(ShareComputeCreditFormatter.credit(Decimal(0)) == "$0.00")
         #expect(ShareComputeCreditFormatter.credit(Decimal(string: "20")!) == "$20.00")
         // The classic float failure: 0.1 + 0.2 must not render $0.3000000001.
