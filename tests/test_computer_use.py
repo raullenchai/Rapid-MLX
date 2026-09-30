@@ -3886,7 +3886,7 @@ def test_finder_rename_path_state_rejects_missing_reference(monkeypatch):
     ("mutation", "message"),
     [
         ("window", "app or window"),
-        ("shape", "editor shape"),
+        ("shape", "selected row"),
         ("selection", "selected row"),
         ("reference", "approved item"),
     ],
@@ -4069,6 +4069,11 @@ def test_finder_rename_commit_rejects_changed_editor_and_unverified_dispatch(
             else original_get(element, attr)
         ),
     )
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_press_key",
+        lambda key: pytest.fail("wrong approved value must prevent Enter"),
+    )
     with pytest.raises(errors.ComputerUseError, match="approved basename"):
         backend.commit_finder_rename("pid:4", snapshot, 0, binding)
     monkeypatch.setattr(backend.ax_driver, "_get", original_get)
@@ -4084,6 +4089,71 @@ def test_finder_rename_commit_rejects_changed_editor_and_unverified_dispatch(
     result = backend.commit_finder_rename("pid:4", snapshot, 0, binding)
     assert result["verified"] is False
     assert result["executed"] is True
+
+
+@pytest.mark.parametrize("rebuilt_index", ["row", "missing"])
+def test_finder_commit_rebinds_exact_focused_editor_after_index_rebuild(
+    monkeypatch, rebuilt_index
+):
+    snapshot = _finder_rename_snapshot()
+    if rebuilt_index == "row":
+        snapshot["elements"][0].update(
+            {"role": "AXRow", "parent_role": "AXOutline", "label": "rebuilt"}
+        )
+    else:
+        snapshot["elements"] = []
+    live, reference = object(), object()
+    binding = {
+        "pid": 4,
+        "window_id": "cg:101",
+        "file_reference": reference,
+        "original_path": "/tmp/Before",
+        "requested_basename": "After",
+    }
+    committed = [False]
+    monkeypatch.setattr(
+        backend,
+        "_finder_rename_path_state",
+        lambda value: (
+            ("committed", "/tmp/After")
+            if committed[0]
+            else ("unchanged", "/tmp/Before")
+        ),
+    )
+    monkeypatch.setattr(
+        backend,
+        "_live_element",
+        lambda *a, **k: pytest.fail("rebuilt index must not be authoritative"),
+    )
+    monkeypatch.setattr(backend, "_focused_ax_element", lambda app: live)
+    monkeypatch.setattr(
+        backend,
+        "_finder_transaction_reference",
+        lambda element, value, **kwargs: reference if element is live else None,
+    )
+    monkeypatch.setattr(
+        backend, "_normalized_finder_editor_value", lambda element: "After"
+    )
+    monkeypatch.setattr(
+        backend, "raise_selected_window", lambda *a, **k: snapshot["window"]
+    )
+    monkeypatch.setattr(backend, "_prepare_synthetic_action", lambda *a, **k: snapshot)
+    monkeypatch.setattr(
+        backend,
+        "_is_selected_finder_row_under_focused_outline",
+        lambda *a: False,
+    )
+    pressed = []
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_press_key",
+        lambda key: (pressed.append(key), committed.__setitem__(0, True)),
+    )
+
+    result = backend.commit_finder_rename("pid:4", snapshot, 0, binding)
+
+    assert result["verified"] is True
+    assert pressed == [backend.KEY_ALIASES["enter"]]
 
 
 def test_finder_rename_commit_rejects_focus_drift_adjacent_to_enter(monkeypatch):

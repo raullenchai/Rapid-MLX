@@ -2006,12 +2006,16 @@ def _finder_transaction_editor(
         raise ComputerUseError(
             "target_drift", "Finder rename app or window changed after approval"
         )
-    entry = _element(snapshot, element_index)
-    if entry.get("role") != "AXTextField":
-        raise ComputerUseError(
-            "target_drift", "Finder rename editor shape changed after approval"
-        )
-    live = _live_element(snapshot, element_index, validate_point=False)
+    live = None
+    try:
+        entry = _element(snapshot, element_index)
+        if entry.get("role") == "AXTextField":
+            live = _live_element(snapshot, element_index, validate_point=False)
+    except ComputerUseError:
+        # Finder rebuilds the transient editor tree after focus changes. The
+        # serialized index is only a hint; the opaque file reference below is
+        # the authority for an exact focused-editor rebind.
+        pass
     reference = (
         _finder_transaction_reference(
             live, snapshot, detached_expected_value=expected_value

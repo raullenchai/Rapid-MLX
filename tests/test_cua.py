@@ -4678,7 +4678,7 @@ def test_finder_rename_approval_is_reused_and_focus_loss_is_verified(
         fake_backend,
         "commit_finder_rename",
         lambda *a, **k: (
-            commits.append(True)
+            commits.append(a[1])
             or {
                 "ok": True,
                 "executed": False,
@@ -4687,6 +4687,13 @@ def test_finder_rename_approval_is_reused_and_focus_loss_is_verified(
                 "verification_source": "finder_file_reference_basename",
                 "actual_basename": "After",
             }
+        ),
+    )
+    monkeypatch.setattr(
+        fake_backend,
+        "inspect_focused_element",
+        lambda *a, **k: pytest.fail(
+            "approved Finder commit must use its opaque binding, not generic focus"
         ),
     )
     approvals = []
@@ -4729,14 +4736,138 @@ def test_finder_rename_approval_is_reused_and_focus_loss_is_verified(
 
     assert asyncio.run(runner.step(planner, 1)) is None
     assert runner._last_commit_unverified is True
+    fresh = _finder_transaction_snapshot()
+    fresh["elements"][0].update(
+        {"label": "rebuilt row", "role": "AXRow", "parent_role": "AXOutline"}
+    )
+    observations = iter([snapshot, fresh])
+    monkeypatch.setattr(
+        fake_backend, "get_app_state", lambda *a, **k: next(observations, fresh)
+    )
+    runner.window_id = "cg:1"
     assert asyncio.run(runner.step(planner, 2)) is None
     assert len(approvals) == 1
-    assert commits == [True]
+    assert commits == [fresh]
     assert runner._last_finder_rename_verified is True
     assert asyncio.run(runner.step(planner, 3)) == {
         "status": "done",
         "summary": "Renamed.",
     }
+
+
+@pytest.mark.parametrize("key,has_binding", [("Space", True), ("Enter", False)])
+def test_finder_keyboard_without_approved_enter_keeps_generic_focus_gate(
+    fake_backend, tmp_path, monkeypatch, key, has_binding
+):
+    import asyncio
+
+    from rapid_mlx.computer_use.errors import ComputerUseError
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    snapshot = _finder_transaction_snapshot()
+    monkeypatch.setattr(fake_backend, "get_app_state", lambda *a, **k: snapshot)
+    inspected = []
+    monkeypatch.setattr(
+        fake_backend,
+        "inspect_focused_element",
+        lambda *a, **k: (
+            inspected.append(True)
+            or (_ for _ in ()).throw(ComputerUseError("target_drift", "focus changed"))
+        ),
+    )
+    commits = []
+    monkeypatch.setattr(
+        fake_backend,
+        "commit_finder_rename",
+        lambda *a, **k: commits.append(True) or {},
+    )
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path), "Finder", "rename item", tmp_path / f"strict-{key}"
+    )
+    if has_binding:
+        runner._approved_finder_rename = {
+            "original_path": "/tmp/Before",
+            "requested_basename": "After",
+        }
+    planner = _FakePlanner(
+        [
+            {
+                "action": "press",
+                "step_instruction": "keyboard action",
+                "element_index": 1,
+                "key": key,
+                "final_summary": "",
+            }
+        ]
+    )
+
+    result = asyncio.run(runner.step(planner, 1))
+
+    assert result == {
+        "status": "stopped",
+        "reason": "keyboard activation rejected: focus changed",
+        "error": "target_drift",
+    }
+    assert inspected == [True]
+    assert commits == []
+
+
+def test_approved_finder_commit_still_rejects_fresh_window_drift(
+    fake_backend, tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rapid_mlx.cua import loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "backend", fake_backend)
+    snapshot = _finder_transaction_snapshot()
+    drifted = _finder_transaction_snapshot()
+    drifted["window_id"] = "cg:2"
+    drifted["window"]["window_id"] = "cg:2"
+    observations = iter([snapshot, drifted])
+    monkeypatch.setattr(
+        fake_backend, "get_app_state", lambda *a, **k: next(observations, drifted)
+    )
+    monkeypatch.setattr(
+        fake_backend,
+        "inspect_focused_element",
+        lambda *a, **k: pytest.fail("approved Finder binding bypasses generic index"),
+    )
+    commits = []
+    monkeypatch.setattr(
+        fake_backend,
+        "commit_finder_rename",
+        lambda *a, **k: commits.append(True) or {},
+    )
+    runner = loop_mod.CUARun(
+        _make_config(tmp_path), "Finder", "rename item", tmp_path / "window-drift"
+    )
+    runner.window_id = "cg:1"
+    runner._approved_finder_rename = {
+        "original_path": "/tmp/Before",
+        "requested_basename": "After",
+    }
+    planner = _FakePlanner(
+        [
+            {
+                "action": "press",
+                "step_instruction": "commit rename",
+                "element_index": 1,
+                "key": "Enter",
+                "final_summary": "",
+            }
+        ]
+    )
+
+    result = asyncio.run(runner.step(planner, 1))
+
+    assert result == {
+        "status": "stopped",
+        "reason": "selected window moved or was replaced before action",
+        "error": "window_stale",
+    }
+    assert commits == []
 
 
 def test_unverified_browser_enter_can_complete_from_fresh_observation(

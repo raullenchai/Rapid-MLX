@@ -712,7 +712,14 @@ class CUARun:
             return None
         target = self._target(snapshot, plan.get("element_index", -1))
         target_label = str(target.get("label", ""))
-        if gates.is_keyboard_activation(plan):
+        approved_finder_commit = (
+            self._approved_finder_rename
+            if plan["action"] == "press"
+            and str(plan.get("key", "")).casefold() in {"enter", "return"}
+            and backend.is_finder_snapshot(snapshot)
+            else None
+        )
+        if gates.is_keyboard_activation(plan) and approved_finder_commit is None:
             try:
                 target = backend.inspect_focused_element(
                     snapshot,
@@ -763,12 +770,8 @@ class CUARun:
                 )
                 return {"status": "stopped", "reason": exc.message, "error": exc.code}
             target_label = Path(str(finder_rename["original_path"])).name
-        elif (
-            plan["action"] == "press"
-            and str(plan.get("key", "")).casefold() in {"enter", "return"}
-            and self._approved_finder_rename is not None
-        ):
-            finder_rename = self._approved_finder_rename
+        elif approved_finder_commit is not None:
+            finder_rename = approved_finder_commit
         elif plan["action"] not in {"done", "partial", "blocked"}:
             self._approved_finder_rename = None
         if plan["action"] == "save":
@@ -1075,16 +1078,23 @@ class CUARun:
                 reason = "selected window moved or was replaced before action"
                 self._record({"step": step_no, "plan": plan, "stop": reason})
                 return {"status": "stopped", "reason": reason, "error": "window_stale"}
-            original_target = self._target(snapshot, plan.get("element_index", -1))
-            fresh_target = self._target(fresh, plan.get("element_index", -1))
-            if self._target_identity(original_target) != self._target_identity(
-                fresh_target
-            ):
-                reason = "planned target changed before action"
-                self._record({"step": step_no, "plan": plan, "stop": reason})
-                return {"status": "stopped", "reason": reason, "error": "target_stale"}
-            snapshot = fresh
-            target = fresh_target
+            if approved_finder_commit is None:
+                original_target = self._target(snapshot, plan.get("element_index", -1))
+                fresh_target = self._target(fresh, plan.get("element_index", -1))
+                if self._target_identity(original_target) != self._target_identity(
+                    fresh_target
+                ):
+                    reason = "planned target changed before action"
+                    self._record({"step": step_no, "plan": plan, "stop": reason})
+                    return {
+                        "status": "stopped",
+                        "reason": reason,
+                        "error": "target_stale",
+                    }
+                snapshot = fresh
+                target = fresh_target
+            else:
+                snapshot = fresh
         pre_action_url = self._read_url(snapshot)
         pre_action_guard = self._check_domain(pre_action_url)
         if pre_action_guard:
