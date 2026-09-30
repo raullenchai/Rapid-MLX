@@ -377,6 +377,8 @@ def _focused_transient_window(
     the anchor, and is either new or already trusted by ID.
     """
     focused = _focused_ax_window(app_info)
+    if focused is None and app_info.get("bundleId") == "com.apple.finder":
+        focused = _focused_ax_element(app_info)
     frame = ax_driver._point_size(focused) if focused is not None else None
     if frame is None:
         return None
@@ -1841,17 +1843,19 @@ def _prepare_synthetic_action(
     *,
     allow_focused_editable_enter: bool = False,
     allow_finder_main_window: bool = False,
+    allow_finder_escape: bool = False,
 ) -> dict:
     snapshot = expected_snapshot or get_app_state(
         app, screenshot=False, use_cache=False, window_id=window_id
     )
+    is_finder_transient = False
     if element_index is not None:
         entry = _element(snapshot, element_index)
         if entry.get("source_window_id", snapshot.get("window_id")) != snapshot.get(
             "window_id"
         ):
             live = _live_element(snapshot, element_index, validate_point=False)
-            focused_element = _focused_ax_window(snapshot["app"])
+            focused_element = _focused_ax_element(snapshot["app"])
             if live is None or not (
                 ax_driver._get(live, "AXFocused") is True or live == focused_element
             ):
@@ -1873,6 +1877,7 @@ def _prepare_synthetic_action(
                     "target_drift", "transient companion changed or lost focus"
                 )
             expected_window = current
+            is_finder_transient = is_finder_snapshot(snapshot)
         else:
             entry_is_focused_editable = (
                 allow_focused_editable_enter
@@ -1913,6 +1918,22 @@ def _prepare_synthetic_action(
             snapshot, point=_window_center(snapshot)
         )
     if allow_finder_main_window:
+        _validate_focused_window(
+            snapshot,
+            snapshot["window"],
+            allow_exact_main_window=True,
+        )
+    elif allow_finder_escape:
+        if not is_finder_snapshot(snapshot):
+            raise ComputerUseError(
+                "target_drift", "Finder editor recovery requires a Finder snapshot"
+            )
+        _validate_focused_window(
+            snapshot,
+            snapshot["window"],
+            allow_exact_main_window=True,
+        )
+    elif is_finder_transient:
         _validate_focused_window(
             snapshot,
             snapshot["window"],
@@ -2719,7 +2740,10 @@ def press_key(
         is_transient = entry.get(
             "source_window_id", expected_snapshot.get("window_id")
         ) != expected_snapshot.get("window_id")
-        if is_transient and normalized != "enter":
+        finder_escape = normalized in {"escape", "esc"} and is_finder_snapshot(
+            expected_snapshot
+        )
+        if is_transient and normalized != "enter" and not finder_escape:
             raise ComputerUseError(
                 "unsupported_key",
                 "transient companion targets only allow Enter after exact focus validation",
@@ -2769,6 +2793,11 @@ def press_key(
             expected_snapshot,
             element_index,
             allow_focused_editable_enter=normalized == "enter",
+            allow_finder_escape=(
+                normalized in {"escape", "esc"}
+                and expected_snapshot is not None
+                and is_finder_snapshot(expected_snapshot)
+            ),
         )
         if (
             normalized in {"enter", "return", "space"}

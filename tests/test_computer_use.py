@@ -1132,6 +1132,58 @@ def test_get_app_state_merges_only_verified_transient_targets(monkeypatch):
     assert state["elements"][1]["label"] == "untitled folder"
 
 
+def test_get_app_state_discovers_detached_focused_finder_editor(monkeypatch):
+    application = object()
+    editor = object()
+    app_info = {"name": "Finder", "bundleId": "com.apple.finder", "pid": 716}
+    anchor = _window(window_id=1647, index=1, x=986, y=538, width=920, height=436)
+    popup = _window(window_id=1803, index=0, x=1288, y=926, width=88, height=21)
+    monkeypatch.setattr(backend, "_resolve_app", lambda app: (application, app_info))
+    monkeypatch.setattr(backend, "_select_window", lambda *a, **k: anchor)
+    monkeypatch.setattr(backend, "_window_records", lambda app: [popup, anchor])
+    monkeypatch.setattr(backend, "_focused_ax_window", lambda app: None)
+    monkeypatch.setattr(backend.ax_driver, "_app_element", lambda *a, **k: application)
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_get",
+        lambda element, attribute: (
+            editor
+            if element is application and attribute == "AXFocusedUIElement"
+            else None
+        ),
+    )
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_point_size",
+        lambda element: (1291, 929, 82, 15) if element is editor else None,
+    )
+
+    def collect(app, **kwargs):
+        transient = kwargs["window"] == popup
+        return [
+            {
+                "target_id": "t000",
+                "role": "AXTextField" if transient else "AXButton",
+                "text": "Before" if transient else "Action",
+                "actions": [],
+                "rect": [1291, 929, 82, 15],
+            }
+        ]
+
+    monkeypatch.setattr(backend, "_collect_with_timeout", collect)
+
+    state = backend.get_app_state(
+        "pid:716",
+        screenshot=False,
+        use_cache=False,
+        window_id="cg:1647",
+        transient_baseline_window_ids={"cg:1647"},
+    )
+
+    assert state["transient_window"] == popup
+    assert state["elements"][-1]["source_window_id"] == "cg:1803"
+
+
 def test_get_app_state_bounds_transient_and_total_target_counts(monkeypatch):
     app_info = {"name": "Finder", "bundleId": "com.apple.finder", "pid": 716}
     anchor = _window(window_id=1647, index=1)
@@ -2754,7 +2806,8 @@ def test_finder_inline_editor_is_admitted_as_new_contained_focused_companion(
         "height": 21,
     }
     focused = object()
-    monkeypatch.setattr(backend, "_focused_ax_window", lambda app: focused)
+    monkeypatch.setattr(backend, "_focused_ax_window", lambda app: None)
+    monkeypatch.setattr(backend, "_focused_ax_element", lambda app: focused)
     monkeypatch.setattr(
         backend.ax_driver, "_point_size", lambda element: (1291, 929, 82, 15)
     )
@@ -2762,7 +2815,7 @@ def test_finder_inline_editor_is_admitted_as_new_contained_focused_companion(
 
     assert (
         backend._focused_transient_window(
-            {"name": "Finder", "pid": 716},
+            {"name": "Finder", "bundleId": "com.apple.finder", "pid": 716},
             anchor,
             baseline_window_ids={"cg:1647"},
         )
@@ -2770,11 +2823,40 @@ def test_finder_inline_editor_is_admitted_as_new_contained_focused_companion(
     )
     assert (
         backend._focused_transient_window(
-            {"name": "Finder", "pid": 716},
+            {"name": "Finder", "bundleId": "com.apple.finder", "pid": 716},
             anchor,
             baseline_window_ids={"cg:1803", "cg:1647"},
         )
         is None
+    )
+
+
+def test_nonfinder_transient_uses_focused_dialog_window_not_its_child(monkeypatch):
+    anchor = _window(window_id=100, index=1, x=100, y=100, width=500, height=400)
+    dialog = _window(window_id=101, index=0, x=200, y=200, width=250, height=150)
+    focused_window = object()
+    monkeypatch.setattr(backend, "_focused_ax_window", lambda app: focused_window)
+    monkeypatch.setattr(
+        backend,
+        "_focused_ax_element",
+        lambda app: pytest.fail("non-Finder transient must stay window-bound"),
+    )
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_point_size",
+        lambda element: (
+            (200, 200, 250, 150) if element is focused_window else (220, 240, 80, 20)
+        ),
+    )
+    monkeypatch.setattr(backend, "_window_records", lambda app: [dialog, anchor])
+
+    assert (
+        backend._focused_transient_window(
+            {"name": "Editor", "bundleId": "com.example.Editor", "pid": 7},
+            anchor,
+            baseline_window_ids={"cg:100"},
+        )
+        == dialog
     )
 
 
@@ -4926,7 +5008,6 @@ def test_transient_enter_requires_same_focused_companion(monkeypatch):
     monkeypatch.setattr(backend, "_focused_transient_window", lambda *a, **k: transient)
     live = object()
     monkeypatch.setattr(backend, "_live_element", lambda *a, **k: live)
-    monkeypatch.setattr(backend, "_focused_ax_window", lambda *a, **k: live)
     monkeypatch.setattr(backend, "_focused_ax_element", lambda *a, **k: live)
     monkeypatch.setattr(backend.ax_driver, "_get", lambda *a, **k: False)
     monkeypatch.setattr(
@@ -4944,11 +5025,108 @@ def test_transient_enter_requires_same_focused_companion(monkeypatch):
     assert result["mode"] == "CGEvent-keycode"
     assert pressed == [backend.KEY_ALIASES["enter"]]
 
-    monkeypatch.setattr(backend, "_focused_ax_window", lambda *a, **k: object())
+    monkeypatch.setattr(backend, "_focused_ax_element", lambda *a, **k: object())
     with pytest.raises(errors.ComputerUseError) as excinfo:
         backend.press_key("pid:4", "Enter", expected_snapshot=snapshot, element_index=0)
     assert excinfo.value.code == "target_drift"
     assert pressed == [backend.KEY_ALIASES["enter"]]
+
+
+def test_finder_escape_allows_only_exact_main_window_detached_editor(monkeypatch):
+    snapshot = _stable_snapshot(
+        elements=[{"index": 0, "role": "AXRow", "label": "Before", "center": [50, 50]}]
+    )
+    snapshot["app"].update({"name": "Finder", "bundleId": "com.apple.finder"})
+    monkeypatch.setattr(
+        backend, "_validate_snapshot_window", lambda *a, **k: snapshot["window"]
+    )
+    validations = []
+    monkeypatch.setattr(
+        backend,
+        "_validate_focused_window",
+        lambda *args, **kwargs: validations.append((args, kwargs)),
+    )
+    pressed = []
+    monkeypatch.setattr(backend.ax_driver, "_press_key", pressed.append)
+
+    backend.press_key("pid:4", "escape", expected_snapshot=snapshot, element_index=0)
+
+    assert validations == [
+        (
+            (snapshot, snapshot["window"]),
+            {
+                "allow_exact_main_window": True,
+            },
+        )
+    ]
+    assert pressed == [backend.KEY_ALIASES["escape"]]
+
+
+def test_nonfinder_escape_keeps_strict_window_focus_validation(monkeypatch):
+    snapshot = _stable_snapshot(
+        elements=[{"index": 0, "role": "AXRow", "label": "Row", "center": [50, 50]}]
+    )
+    monkeypatch.setattr(
+        backend, "_validate_snapshot_window", lambda *a, **k: snapshot["window"]
+    )
+    validations = []
+    monkeypatch.setattr(
+        backend,
+        "_validate_focused_window",
+        lambda *args, **kwargs: validations.append((args, kwargs)),
+    )
+    monkeypatch.setattr(backend.ax_driver, "_press_key", lambda key: None)
+
+    backend.press_key("pid:4", "escape", expected_snapshot=snapshot, element_index=0)
+
+    assert validations == [((snapshot, snapshot["window"]), {})]
+
+    with pytest.raises(errors.ComputerUseError) as excinfo:
+        backend._prepare_synthetic_action(
+            "pid:4", None, snapshot, 0, allow_finder_escape=True
+        )
+    assert excinfo.value.code == "target_drift"
+
+
+def test_finder_transient_key_revalidates_exact_anchor_main_window(monkeypatch):
+    snapshot = _stable_snapshot(
+        elements=[
+            {
+                "index": 0,
+                "role": "AXTextField",
+                "label": "Before",
+                "center": [30, 30],
+                "source_window_id": "cg:1803",
+            }
+        ]
+    )
+    snapshot["app"].update({"name": "Finder", "bundleId": "com.apple.finder"})
+    transient = _window(window_id=1803, x=20, y=20, width=40, height=20)
+    snapshot["transient_window"] = transient
+    live = object()
+    monkeypatch.setattr(backend, "_live_element", lambda *a, **k: live)
+    monkeypatch.setattr(backend, "_focused_ax_element", lambda *a, **k: live)
+    monkeypatch.setattr(backend.ax_driver, "_get", lambda *a, **k: True)
+    monkeypatch.setattr(
+        backend, "_validate_snapshot_window", lambda *a, **k: snapshot["window"]
+    )
+    monkeypatch.setattr(backend, "_focused_transient_window", lambda *a, **k: transient)
+    validations = []
+    monkeypatch.setattr(
+        backend,
+        "_validate_focused_window",
+        lambda *args, **kwargs: validations.append((args, kwargs)),
+    )
+
+    assert backend._prepare_synthetic_action("pid:4", None, snapshot, 0) is snapshot
+    assert validations == [
+        (
+            (snapshot, snapshot["window"]),
+            {
+                "allow_exact_main_window": True,
+            },
+        )
+    ]
 
 
 @pytest.mark.parametrize("failure", ["missing_identity", "companion_drift"])
@@ -4969,7 +5147,7 @@ def test_synthetic_transient_dispatch_revalidates_window_identity(monkeypatch, f
         snapshot["transient_window"] = transient
     live = object()
     monkeypatch.setattr(backend, "_live_element", lambda *a, **k: live)
-    monkeypatch.setattr(backend, "_focused_ax_window", lambda *a: live)
+    monkeypatch.setattr(backend, "_focused_ax_element", lambda *a: live)
     monkeypatch.setattr(backend.ax_driver, "_get", lambda *a: True)
     monkeypatch.setattr(
         backend, "_validate_snapshot_window", lambda *a, **k: snapshot["window"]
