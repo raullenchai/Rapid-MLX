@@ -145,6 +145,7 @@ struct ShareComputeConnectionReview: View {
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel(String(localized: "Get a provider key from QuickSilver"))
+                        .accessibilityIdentifier("ShareCompute.ProviderKeyLink")
                     }
                     // Opted out of content-type inference: a QuickSilver
                     // provider key is not a website password, and nothing in

@@ -305,6 +305,7 @@ struct ShareComputePager: View {
         .buttonStyle(.plain)
         .disabled(!enabled)
         .accessibilityLabel(label)
+        .accessibilityIdentifier(systemImage == "chevron.left" ? "ShareCompute.Pager.Previous" : "ShareCompute.Pager.Next")
     }
 }
 
@@ -339,6 +340,7 @@ struct ShareComputePrimaryBandButton: View {
         .disabled(!isEnabled)
         .opacity(isEnabled ? 1 : RapidTheme.disabledOpacity)
         .accessibilityLabel(title)
+        .accessibilityIdentifier("ShareCompute.PrimaryAction")
     }
 }
 

@@ -752,6 +752,7 @@ struct SidebarView: View {
         .buttonStyle(.plain)
         .help(title)
         .accessibilityLabel(title)
+        .accessibilityIdentifier("Sidebar.Compact.\(systemImage)")
         .accessibilityAddTraits(isSelected ? [.isSelected, .isButton] : .isButton)
     }
 

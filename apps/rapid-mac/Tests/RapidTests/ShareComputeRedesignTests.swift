@@ -2867,8 +2867,18 @@ struct ShareComputeLedgerGatingTests {
         }
 
         clock = clock.addingTimeInterval(ShareComputeLedgerRefresh.minimumInterval + 1)
+        // `hasScheduledWake` records the Task before its injected sleeper has
+        // installed a continuation. Wait for that handoff before releasing it.
+        for _ in 0..<100 {
+            if gate.armedCount != 0 { break }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(gate.armedCount == 1)
         gate.fire()
-        await Self.settle()
+        for _ in 0..<100 {
+            if notified { break }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
 
         // The view was told, without a tab switch, a status-bar tick, or any
         // other page's state changing.

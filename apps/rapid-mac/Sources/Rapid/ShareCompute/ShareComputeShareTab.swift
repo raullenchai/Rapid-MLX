@@ -361,6 +361,7 @@ struct ShareComputeShareTab: View {
                 .accessibilityLabel(
                     String(localized: "Credits are QuickSilver API credits, not cash. Open the QuickSilver dashboard.")
                 )
+                .accessibilityIdentifier("ShareCompute.CreditsLink")
             }
         }
     }
