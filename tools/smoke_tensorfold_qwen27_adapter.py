@@ -14,7 +14,9 @@ import time
 
 adapter_path = os.environ.get("RAPID_TF_ADAPTER_PATH")
 if adapter_path:
-    spec = importlib.util.spec_from_file_location("rapid_tensorfold_qwen27_smoke", adapter_path)
+    spec = importlib.util.spec_from_file_location(
+        "rapid_tensorfold_qwen27_smoke", adapter_path
+    )
     if spec is None or spec.loader is None:
         raise RuntimeError(f"cannot load adapter from {adapter_path}")
     module = importlib.util.module_from_spec(spec)
@@ -64,7 +66,9 @@ async def cancel_once(backend, prompt: list[int]) -> dict:
     saw_delta = False
     terminal_error = None
     async for event in backend.stream(
-        "cancel", prompt, max_tokens=512,
+        "cancel",
+        prompt,
+        max_tokens=512,
         sampling={"temperature": 0.0, "seed": 1234, "draft": True},
     ):
         if event.delta is not None and not saw_delta:
@@ -72,35 +76,59 @@ async def cancel_once(backend, prompt: list[int]) -> dict:
             backend.cancel("cancel")
         if event.error is not None:
             terminal_error = type(event.error).__name__
-    return {"saw_delta": saw_delta, "terminal_error": terminal_error,
-            "active_after": sorted(backend._active)}
+    return {
+        "saw_delta": saw_delta,
+        "terminal_error": terminal_error,
+        "active_after": sorted(backend._active),
+    }
 
 
 async def main(args) -> int:
     backend = TensorFoldQwen27Backend.load(
-        args.target, args.drafter, served_name="qwen27-adapter-smoke",
-        context_window=2048, max_tokens=128,
+        args.target,
+        args.drafter,
+        served_name="qwen27-adapter-smoke",
+        context_window=2048,
+        max_tokens=128,
     )
     try:
         tokenizer = backend._app.tokenizer
         prompt = tokenizer.apply_chat_template(
-            [{"role": "user", "content": args.prompt}], tokenize=True,
-            add_generation_prompt=True, enable_thinking=False,
+            [{"role": "user", "content": args.prompt}],
+            tokenize=True,
+            add_generation_prompt=True,
+            enable_thinking=False,
         )
         serial = await one(backend, "serial", list(prompt), False)
         drafted = await one(backend, "drafted", list(prompt), True)
         cancelled = await cancel_once(backend, list(prompt))
     finally:
         await asyncio.get_running_loop().run_in_executor(None, backend.close)
-    exact = all(serial[key] == drafted[key] for key in (
-        "content_sha256", "finish_reason", "completion_tokens"
-    ))
-    passed = (exact and serial["finish_reason"] == "stop"
-              and (drafted["speculative"] or {}).get("drafted", 0) > 0
-              and cancelled["saw_delta"] and cancelled["terminal_error"]
-              and not cancelled["active_after"])
-    print(json.dumps({"passed": passed, "exact": exact, "serial": serial,
-                      "drafted": drafted, "cancelled": cancelled}, indent=2, sort_keys=True))
+    exact = all(
+        serial[key] == drafted[key]
+        for key in ("content_sha256", "finish_reason", "completion_tokens")
+    )
+    passed = (
+        exact
+        and serial["finish_reason"] == "stop"
+        and (drafted["speculative"] or {}).get("drafted", 0) > 0
+        and cancelled["saw_delta"]
+        and cancelled["terminal_error"]
+        and not cancelled["active_after"]
+    )
+    print(
+        json.dumps(
+            {
+                "passed": passed,
+                "exact": exact,
+                "serial": serial,
+                "drafted": drafted,
+                "cancelled": cancelled,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
     return 0 if passed else 2
 
 
@@ -108,5 +136,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--target", required=True)
     parser.add_argument("--drafter", required=True)
-    parser.add_argument("--prompt", default="Reply with exactly these three words: adapter smoke passed")
+    parser.add_argument(
+        "--prompt", default="Reply with exactly these three words: adapter smoke passed"
+    )
     raise SystemExit(asyncio.run(main(parser.parse_args())))

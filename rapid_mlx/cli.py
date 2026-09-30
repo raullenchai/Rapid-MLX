@@ -3052,6 +3052,19 @@ def _native_mtp_runtime_ready(model_name) -> bool:
         return False
 
 
+def _tensorfold_product_profile(model_name: str | None):
+    """Return the catalog profile only for the qualified product alias."""
+
+    if not model_name:
+        return None
+    from .model_aliases import resolve_profile
+
+    profile = resolve_profile(model_name)
+    if profile is None or getattr(profile, "dflash_backend", None) != "tensorfold":
+        return None
+    return profile
+
+
 def _normalize_speculative_config_or_exit(args):
     """Parse ``--speculative-config`` and map methods to runtime fields."""
     import json
@@ -3317,6 +3330,21 @@ def _normalize_speculative_config_or_exit(args):
         legacy_payload = _legacy_speculative_config_payload()
         if legacy_payload is not None:
             raw_config = json.dumps(legacy_payload, separators=(",", ":"))
+            args.speculative_config = raw_config
+        elif (
+            not getattr(args, "no_spec_decode", False)
+            and not getattr(args, "mllm", False)
+            and (profile := _tensorfold_product_profile(getattr(args, "model", None)))
+            is not None
+        ):
+            raw_config = json.dumps(
+                {
+                    "method": "dflash",
+                    "backend": "tensorfold",
+                    "model": profile.dflash_draft_model,
+                },
+                separators=(",", ":"),
+            )
             args.speculative_config = raw_config
         elif (
             not getattr(args, "no_spec_decode", False)
@@ -5473,6 +5501,33 @@ def serve_command(args):
             _check_disk_space(
                 args.model, force=getattr(args, "force_disk_check", False)
             )
+    elif (
+        getattr(args, "dflash_backend", None) == "tensorfold"
+        and (
+            _tf_profile := _tensorfold_product_profile(
+                getattr(args, "_original_alias", None) or args.model
+            )
+        )
+        is not None
+    ):
+        from rapid_mlx.telemetry.server_start import failure_stage
+
+        from .speculative.tensorfold_qwen27 import download_qualified_pair
+
+        with failure_stage("download"):
+            _check_disk_space(
+                _tf_profile.hf_path,
+                force=getattr(args, "force_disk_check", False),
+                revision_override=_tf_profile.dflash_target_revision,
+            )
+            _check_disk_space(
+                _tf_profile.dflash_draft_model,
+                force=getattr(args, "force_disk_check", False),
+                revision_override=_tf_profile.dflash_draft_revision,
+            )
+            _tf_artifacts = download_qualified_pair()
+        args.model = _tf_artifacts.target_path
+        args._dflash_drafter_repo = _tf_artifacts.drafter_path
     elif not _is_wan_video:
         if getattr(args, "force_disk_check", False):
             _ensure_model_downloaded(args.model, force_disk_check=True)
@@ -6227,9 +6282,12 @@ def serve_command(args):
             sys.exit(2)
 
         from .model_aliases import resolve_profile
+
         _dflash_backend = getattr(args, "dflash_backend", None)
         if _dflash_backend == "tensorfold":
-            from .speculative.tensorfold_qwen27_server import run_tensorfold_qwen27_server
+            from .speculative.tensorfold_qwen27_server import (
+                run_tensorfold_qwen27_server,
+            )
         else:
             from .speculative.dflash.server import run_dflash_server
 
@@ -6244,9 +6302,12 @@ def serve_command(args):
         _drafter_repo = getattr(args, "_dflash_drafter_repo", None) or (
             _resolve_dflash_drafter_repo(args, _profile)
         )
-        _target_revision, _drafter_revision = _resolve_dflash_revisions(
-            _profile, _drafter_repo
-        )
+        if _dflash_backend == "tensorfold":
+            _target_revision, _drafter_revision = None, None
+        else:
+            _target_revision, _drafter_revision = _resolve_dflash_revisions(
+                _profile, _drafter_repo
+            )
         _dflash_kwargs = dict(
             main_model_repo=_profile.hf_path if _profile else args.model,
             main_model_revision=_target_revision,

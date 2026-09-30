@@ -14,8 +14,10 @@ import json
 import platform
 import sys
 import threading
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Callable
+from pathlib import Path
+from typing import Any, cast
 
 SUPPORTED_VERSION = "0.5.0"
 SUPPORTED_MLX_VERSION = "0.32.3"
@@ -24,14 +26,37 @@ SUPPORTED_TARGET = "Vontra/Qwen3.8-27B-MLX-4bit"
 SUPPORTED_DRAFTER = "z-lab/Qwen3.8-27B-DFlash2"
 SUPPORTED_TARGET_REVISIONS = frozenset({"70ae7fac63274ff2eac54152031433374cb80f2f"})
 SUPPORTED_DRAFTER_REVISIONS = frozenset({"50307d4c4cde6860d4eee73e2547cd786fe8e8a4"})
+
+
+@dataclass(frozen=True)
+class QualifiedPairArtifacts:
+    target_path: str
+    drafter_path: str
+
+
+def download_qualified_pair() -> QualifiedPairArtifacts:
+    """Resolve the product pair into the default HF cache at immutable SHAs."""
+
+    from huggingface_hub import snapshot_download
+
+    target = snapshot_download(
+        SUPPORTED_TARGET, revision=next(iter(SUPPORTED_TARGET_REVISIONS))
+    )
+    drafter = snapshot_download(
+        SUPPORTED_DRAFTER, revision=next(iter(SUPPORTED_DRAFTER_REVISIONS))
+    )
+    validate_pair(Path(target), Path(drafter))
+    return QualifiedPairArtifacts(target_path=target, drafter_path=drafter)
+
+
 SAMPLING_FIELDS = frozenset({"temperature", "top_p", "top_k", "min_p", "seed", "draft"})
 
 
-class TensorFoldUnavailable(RuntimeError):
+class TensorFoldUnavailable(RuntimeError):  # noqa: N818 - public adapter API
     """The explicitly requested experimental backend cannot be started."""
 
 
-class UnsupportedRequest(ValueError):
+class UnsupportedRequest(ValueError):  # noqa: N818 - public adapter API
     """A request cannot enter the text-only proof backend."""
 
 
@@ -46,14 +71,26 @@ class BackendEvent:
         return self.reply is not None or self.error is not None
 
 
-def validate_request(*, images: Any = None, videos: Any = None,
-                     grammar: Any = None, response_format: Any = None,
-                     tools: Any = None, sampling: dict[str, Any] | None = None) -> None:
-    unsupported = [name for name, value in (
-        ("images", images), ("videos", videos), ("grammar", grammar),
-        ("response_format", response_format),
-        ("tools", tools),
-    ) if value not in (None, [], {})]
+def validate_request(
+    *,
+    images: Any = None,
+    videos: Any = None,
+    grammar: Any = None,
+    response_format: Any = None,
+    tools: Any = None,
+    sampling: dict[str, Any] | None = None,
+) -> None:
+    unsupported = [
+        name
+        for name, value in (
+            ("images", images),
+            ("videos", videos),
+            ("grammar", grammar),
+            ("response_format", response_format),
+            ("tools", tools),
+        )
+        if value not in (None, [], {})
+    ]
     if unsupported:
         raise UnsupportedRequest(
             "tensorfold-qwen27 proof supports text chat only; unsupported: "
@@ -61,16 +98,20 @@ def validate_request(*, images: Any = None, videos: Any = None,
         )
     unknown = set(sampling or ()) - SAMPLING_FIELDS
     if unknown:
-        raise UnsupportedRequest("unsupported sampling fields: " + ", ".join(sorted(unknown)))
+        raise UnsupportedRequest(
+            "unsupported sampling fields: " + ", ".join(sorted(unknown))
+        )
 
 
 def _snapshot_revision(path: Any) -> str:
     resolved = path.resolve()
     parts = resolved.parts
     try:
-        return parts[parts.index("snapshots") + 1]
+        return cast(str, parts[parts.index("snapshots") + 1])
     except (ValueError, IndexError) as exc:
-        raise TensorFoldUnavailable(f"checkpoint is not a pinned Hugging Face snapshot: {resolved}") from exc
+        raise TensorFoldUnavailable(
+            f"checkpoint is not a pinned Hugging Face snapshot: {resolved}"
+        ) from exc
 
 
 def validate_pair(target: Any, drafter: Any) -> None:
@@ -83,9 +124,15 @@ def validate_pair(target: Any, drafter: Any) -> None:
         target_config = json.loads((target / "config.json").read_text())
         draft_config = json.loads((drafter / "config.json").read_text())
     except (OSError, ValueError) as exc:
-        raise TensorFoldUnavailable("target and drafter require readable config.json files") from exc
+        raise TensorFoldUnavailable(
+            "target and drafter require readable config.json files"
+        ) from exc
     text = target_config.get("text_config") or {}
-    quant = target_config.get("quantization") or target_config.get("quantization_config") or {}
+    quant = (
+        target_config.get("quantization")
+        or target_config.get("quantization_config")
+        or {}
+    )
     target_shape = (
         target_config.get("model_type") == SUPPORTED_MODEL_TYPE
         and text.get("model_type") == "qwen3_5_text"
@@ -93,7 +140,8 @@ def validate_pair(target: Any, drafter: Any) -> None:
         and text.get("num_hidden_layers") == 64
         and text.get("vocab_size") == 248320
         and target_config.get("tie_word_embeddings") is False
-        and quant.get("bits") == 4 and quant.get("group_size") == 64
+        and quant.get("bits") == 4
+        and quant.get("group_size") == 64
         and quant.get("mode") == "affine"
     )
     draft_shape = (
@@ -105,9 +153,13 @@ def validate_pair(target: Any, drafter: Any) -> None:
         and not draft_config.get("quantization_config")
     )
     if not target_shape:
-        raise TensorFoldUnavailable("target is not the qualified Qwen3.8-27B 4-bit/group-64 layout")
+        raise TensorFoldUnavailable(
+            "target is not the qualified Qwen3.8-27B 4-bit/group-64 layout"
+        )
     if not draft_shape:
-        raise TensorFoldUnavailable("drafter is not the qualified Qwen3.8-27B DFlash2 layout")
+        raise TensorFoldUnavailable(
+            "drafter is not the qualified Qwen3.8-27B DFlash2 layout"
+        )
 
 
 def require_runtime(version: str | None = None) -> None:
@@ -123,11 +175,14 @@ def require_runtime(version: str | None = None) -> None:
         )
 
 
-def require_environment(*, mlx_version: str | None = None,
-                        machine: str | None = None) -> None:
+def require_environment(
+    *, mlx_version: str | None = None, machine: str | None = None
+) -> None:
     machine = machine or platform.machine()
     if sys.platform != "darwin" or machine != "arm64":
-        raise TensorFoldUnavailable("tensorfold-qwen27 proof requires Apple Silicon arm64/macOS")
+        raise TensorFoldUnavailable(
+            "tensorfold-qwen27 proof requires Apple Silicon arm64/macOS"
+        )
     try:
         found = mlx_version or importlib.metadata.version("mlx")
     except importlib.metadata.PackageNotFoundError as exc:
@@ -146,7 +201,9 @@ class TensorFoldQwen27Backend:
     centralized in :meth:`load` because TensorFold 0.5.0's builder is internal.
     """
 
-    def __init__(self, app: Any, *, executor: concurrent.futures.Executor | None = None):
+    def __init__(
+        self, app: Any, *, executor: concurrent.futures.Executor | None = None
+    ):
         self._app = app
         self._executor = executor or concurrent.futures.ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="tensorfold-qwen27"
@@ -157,12 +214,18 @@ class TensorFoldQwen27Backend:
         self._lock = threading.Lock()
 
     @classmethod
-    def load(cls, target_dir: str, drafter_dir: str, *, served_name: str,
-             context_window: int = 8192, max_tokens: int = 4096) -> "TensorFoldQwen27Backend":
+    def load(
+        cls,
+        target_dir: str,
+        drafter_dir: str,
+        *,
+        served_name: str,
+        context_window: int = 8192,
+        max_tokens: int = 4096,
+    ) -> TensorFoldQwen27Backend:
         """Load the exact 0.5.0 family/app boundary used by the proof."""
         require_runtime()
         require_environment()
-        from pathlib import Path
         from tensorfold.families import detect
         from tensorfold.server.app import ChatApp
 
@@ -172,20 +235,36 @@ class TensorFoldQwen27Backend:
         family = detect(target)
         package = family.package
         if getattr(package, "DRAFTER", None) != SUPPORTED_DRAFTER:
-            raise TensorFoldUnavailable("pinned Qwen3.8 DFlash2 family declaration is missing")
+            raise TensorFoldUnavailable(
+                "pinned Qwen3.8 DFlash2 family declaration is missing"
+            )
         # The measured checkpoint stores source drafter weights without a
         # quantization block. TensorFold performs the qualified 4-bit packing
         # here; passing any other width is outside this adapter's contract.
-        model, tokenizer = package.load(target, lane_kernels="auto", drafter=str(drafter), drafter_bits=4)
-        app = ChatApp(model, tokenizer, served_name=served_name, lanes=1,
-                      context_window=int(context_window), default_max_tokens=int(max_tokens),
-                      snapshot_dir=None)
+        model, tokenizer = package.load(
+            target, lane_kernels="auto", drafter=str(drafter), drafter_bits=4
+        )
+        app = ChatApp(
+            model,
+            tokenizer,
+            served_name=served_name,
+            lanes=1,
+            context_window=int(context_window),
+            default_max_tokens=int(max_tokens),
+            snapshot_dir=None,
+        )
         return cls(app)
 
-    async def stream(self, request_id: str, prompt_ids: list[int], *,
-                     max_tokens: int, sampling: dict[str, Any] | None = None,
-                     tools: list[dict[str, Any]] | None = None, **features: Any
-                     ) -> AsyncIterator[BackendEvent]:
+    async def stream(
+        self,
+        request_id: str,
+        prompt_ids: list[int],
+        *,
+        max_tokens: int,
+        sampling: dict[str, Any] | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        **features: Any,
+    ) -> AsyncIterator[BackendEvent]:
         if self._closed:
             raise RuntimeError("tensorfold-qwen27 backend is closed")
         validate_request(tools=tools, sampling=sampling, **features)
@@ -200,7 +279,9 @@ class TensorFoldQwen27Backend:
         queue: asyncio.Queue[BackendEvent] = asyncio.Queue(maxsize=64)
 
         def emit(delta: str | dict[str, Any]) -> None:
-            future = asyncio.run_coroutine_threadsafe(queue.put(BackendEvent(delta=delta)), loop)
+            future = asyncio.run_coroutine_threadsafe(
+                queue.put(BackendEvent(delta=delta)), loop
+            )
             while True:
                 try:
                     future.result(timeout=0.05)
@@ -208,7 +289,9 @@ class TensorFoldQwen27Backend:
                 except concurrent.futures.TimeoutError:
                     if cancellation.cancelled:
                         future.cancel()
-                        raise RuntimeError("request cancelled during stream backpressure")
+                        raise RuntimeError(
+                            "request cancelled during stream backpressure"
+                        )
 
         def terminal(event: BackendEvent) -> None:
             try:
@@ -219,19 +302,29 @@ class TensorFoldQwen27Backend:
         def run() -> None:
             final_event: BackendEvent
             try:
-                reply = self._app.chat([], prompt=list(prompt_ids), max_tokens=int(max_tokens),
-                                       temperature=float((sampling or {}).get("temperature", 0.0)),
-                                       sampling=dict(sampling or {}), tools=None,
-                                       cancellation=cancellation, on_delta=emit)
-                final_event = BackendEvent(reply={
-                    "content": reply.get("content", ""),
-                    "reasoning": reply.get("reasoning"),
-                    "finish_reason": reply.get("finish_reason") or "stop",
-                    "prompt_tokens": int(reply.get("prompt_tokens", len(prompt_ids))),
-                    "completion_tokens": int(reply.get("completion_tokens", 0)),
-                    "cached_tokens": int(reply.get("cached_tokens", 0)),
-                    "speculative": reply.get("speculative"),
-                })
+                reply = self._app.chat(
+                    [],
+                    prompt=list(prompt_ids),
+                    max_tokens=int(max_tokens),
+                    temperature=float((sampling or {}).get("temperature", 0.0)),
+                    sampling=dict(sampling or {}),
+                    tools=None,
+                    cancellation=cancellation,
+                    on_delta=emit,
+                )
+                final_event = BackendEvent(
+                    reply={
+                        "content": reply.get("content", ""),
+                        "reasoning": reply.get("reasoning"),
+                        "finish_reason": reply.get("finish_reason") or "stop",
+                        "prompt_tokens": int(
+                            reply.get("prompt_tokens", len(prompt_ids))
+                        ),
+                        "completion_tokens": int(reply.get("completion_tokens", 0)),
+                        "cached_tokens": int(reply.get("cached_tokens", 0)),
+                        "speculative": reply.get("speculative"),
+                    }
+                )
             except BaseException as exc:  # terminal error must reach Rapid's route
                 final_event = BackendEvent(error=exc)
             finally:

@@ -208,6 +208,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             "dflash_target_revision",
             "dflash_draft_revision",
             "dflash_algorithm",
+            "dflash_backend",
             "supports_ddtree",
             "ddtree_draft_model",
             "ddtree_speculative_tokens",
@@ -383,6 +384,15 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             f"got {type(dflash_draft_model).__name__}"
         )
     dflash_algorithm = value.get("dflash_algorithm")
+    dflash_backend = value.get("dflash_backend")
+    if dflash_backend not in (None, "tensorfold"):
+        raise ValueError(
+            f"alias {alias!r}: dflash_backend must be 'tensorfold' when set"
+        )
+    if dflash_backend and not dflash_draft_model:
+        raise ValueError(
+            f"alias {alias!r}: dflash_backend requires a pinned DFlash pair"
+        )
     if dflash_draft_model and not dflash_algorithm:
         raise ValueError(
             f"alias {alias!r}: dflash_draft_model requires dflash_algorithm to be set"
@@ -728,6 +738,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         dflash_target_revision=dflash_target_revision,
         dflash_draft_revision=dflash_draft_revision,
         dflash_algorithm=dflash_algorithm,
+        dflash_backend=dflash_backend,
         supports_ddtree=supports_ddtree,
         ddtree_draft_model=ddtree_draft_model,
         ddtree_speculative_tokens=ddtree_speculative_tokens,

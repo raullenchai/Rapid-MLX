@@ -17,6 +17,21 @@ from rapid_mlx.speculative.tensorfold_qwen27 import (
 )
 
 
+def test_product_alias_declares_exact_tensorfold_pair() -> None:
+    from rapid_mlx.model_aliases import resolve_profile
+
+    profile = resolve_profile("qwen3.8-27b-tensorfold")
+    assert profile is not None
+    assert profile.hf_path == "Vontra/Qwen3.8-27B-MLX-4bit"
+    assert profile.dflash_backend == "tensorfold"
+    assert profile.dflash_draft_model == "z-lab/Qwen3.8-27B-DFlash2"
+    assert profile.dflash_target_revision == "70ae7fac63274ff2eac54152031433374cb80f2f"
+    assert profile.dflash_draft_revision == "50307d4c4cde6860d4eee73e2547cd786fe8e8a4"
+    assert profile.min_memory_gb == 48
+    assert profile.enforce_min_memory is True
+    assert profile.experimental is True
+
+
 class FakeCancellation:
     def __init__(self):
         self.cancelled = False
@@ -62,8 +77,14 @@ class TensorFoldQwen27Tests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         cancellation = types.ModuleType("tensorfold.server.cancellation")
         cancellation.Cancellation = FakeCancellation
-        self.saved = {name: sys.modules.get(name) for name in (
-            "tensorfold", "tensorfold.server", "tensorfold.server.cancellation")}
+        self.saved = {
+            name: sys.modules.get(name)
+            for name in (
+                "tensorfold",
+                "tensorfold.server",
+                "tensorfold.server.cancellation",
+            )
+        }
         sys.modules["tensorfold"] = types.ModuleType("tensorfold")
         sys.modules["tensorfold.server"] = types.ModuleType("tensorfold.server")
         sys.modules["tensorfold.server.cancellation"] = cancellation
@@ -97,20 +118,45 @@ class TensorFoldQwen27Tests(unittest.IsolatedAsyncioTestCase):
 
     def test_pair_gate_checks_revision_and_both_layouts(self):
         with tempfile.TemporaryDirectory() as root:
-            target = Path(root) / "target" / "snapshots" / "70ae7fac63274ff2eac54152031433374cb80f2f"
-            draft = Path(root) / "draft" / "snapshots" / "50307d4c4cde6860d4eee73e2547cd786fe8e8a4"
+            target = (
+                Path(root)
+                / "target"
+                / "snapshots"
+                / "70ae7fac63274ff2eac54152031433374cb80f2f"
+            )
+            draft = (
+                Path(root)
+                / "draft"
+                / "snapshots"
+                / "50307d4c4cde6860d4eee73e2547cd786fe8e8a4"
+            )
             target.mkdir(parents=True)
             draft.mkdir(parents=True)
-            (target / "config.json").write_text(json.dumps({
-                "model_type": "qwen3_5", "tie_word_embeddings": False,
-                "quantization": {"bits": 4, "group_size": 64, "mode": "affine"},
-                "text_config": {"model_type": "qwen3_5_text", "hidden_size": 5120,
-                                "num_hidden_layers": 64, "vocab_size": 248320},
-            }))
-            (draft / "config.json").write_text(json.dumps({
-                "architectures": ["DFlash2DraftModel"], "hidden_size": 5120,
-                "num_hidden_layers": 5, "vocab_size": 248320,
-            }))
+            (target / "config.json").write_text(
+                json.dumps(
+                    {
+                        "model_type": "qwen3_5",
+                        "tie_word_embeddings": False,
+                        "quantization": {"bits": 4, "group_size": 64, "mode": "affine"},
+                        "text_config": {
+                            "model_type": "qwen3_5_text",
+                            "hidden_size": 5120,
+                            "num_hidden_layers": 64,
+                            "vocab_size": 248320,
+                        },
+                    }
+                )
+            )
+            (draft / "config.json").write_text(
+                json.dumps(
+                    {
+                        "architectures": ["DFlash2DraftModel"],
+                        "hidden_size": 5120,
+                        "num_hidden_layers": 5,
+                        "vocab_size": 248320,
+                    }
+                )
+            )
             validate_pair(target, draft)
             bad = json.loads((draft / "config.json").read_text())
             bad["hidden_size"] = 1
@@ -121,10 +167,15 @@ class TensorFoldQwen27Tests(unittest.IsolatedAsyncioTestCase):
     async def test_stream_preserves_order_and_one_terminal(self):
         app = FakeApp()
         backend = TensorFoldQwen27Backend(app)
-        events = [event async for event in backend.stream(
-            "r1", [1, 2], max_tokens=3, sampling={"temperature": 0.7, "seed": 4}
-        )]
-        self.assertEqual([e.delta for e in events[:-1]], ["a", {"reasoning_content": "b"}])
+        events = [
+            event
+            async for event in backend.stream(
+                "r1", [1, 2], max_tokens=3, sampling={"temperature": 0.7, "seed": 4}
+            )
+        ]
+        self.assertEqual(
+            [e.delta for e in events[:-1]], ["a", {"reasoning_content": "b"}]
+        )
         self.assertEqual(events[-1].reply["finish_reason"], "stop")
         self.assertEqual(app.seen[1]["prompt"], [1, 2])
         self.assertNotIn("r1", backend._active)

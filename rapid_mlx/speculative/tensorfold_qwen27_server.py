@@ -9,9 +9,10 @@ import os
 import queue
 import threading
 import uuid
+from collections.abc import Iterator
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Any, Iterator
+from typing import Any, cast
 
 from rapid_mlx.request import RequestOutput
 
@@ -42,7 +43,9 @@ class TensorFoldRequestProvider:
     text and gives qualification runs an exact token sequence to hash.
     """
 
-    def __init__(self, backend: TensorFoldQwen27Backend, *, audit_path: str | None = None) -> None:
+    def __init__(
+        self, backend: TensorFoldQwen27Backend, *, audit_path: str | None = None
+    ) -> None:
         self.backend = backend
         self._audit_path = audit_path
         self._audit_lock = threading.Lock()
@@ -103,8 +106,14 @@ class TensorFoldRequestProvider:
                         collected[:-1] if token in stops.eos_ids else collected
                     )
                     with app.tokenizer_lock:
-                        current = stops.visible(tokenizer.decode(visible_ids), partial=True)
-                    delta = current[len(decoded):] if current.startswith(decoded) else current
+                        current = stops.visible(
+                            tokenizer.decode(visible_ids), partial=True
+                        )
+                    delta = (
+                        current[len(decoded) :]
+                        if current.startswith(decoded)
+                        else current
+                    )
                     decoded = current
                     output = RequestOutput(
                         request_id=request_id,
@@ -142,10 +151,15 @@ class TensorFoldRequestProvider:
                     "token_ids": collected,
                     "token_sha256": hashlib.sha256(encoded).hexdigest(),
                 }
-                with self._audit_lock, open(self._audit_path, "a", encoding="utf-8") as handle:
+                with (
+                    self._audit_lock,
+                    open(self._audit_path, "a", encoding="utf-8") as handle,
+                ):
                     handle.write(json.dumps(record, separators=(",", ":")) + "\n")
 
-    def stream_generate(self, _model: Any, _processor: Any, prompt: str, **kwargs: Any) -> Iterator[ProviderChunk]:
+    def stream_generate(
+        self, _model: Any, _processor: Any, prompt: str, **kwargs: Any
+    ) -> Iterator[ProviderChunk]:
         for output in self._outputs(prompt, **kwargs):
             if output.finished:
                 continue
@@ -156,13 +170,17 @@ class TensorFoldRequestProvider:
                 prompt_tokens=output.prompt_tokens,
             )
 
-    def generate(self, _model: Any, _processor: Any, prompt: str, **kwargs: Any) -> ProviderResult:
+    def generate(
+        self, _model: Any, _processor: Any, prompt: str, **kwargs: Any
+    ) -> ProviderResult:
         text = ""
         prompt_tokens = 0
         for output in self._outputs(prompt, **kwargs):
             text = output.output_text
             prompt_tokens = output.prompt_tokens
-        return ProviderResult(text, list(self.last_token_ids), len(self.last_token_ids), prompt_tokens)
+        return ProviderResult(
+            text, list(self.last_token_ids), len(self.last_token_ids), prompt_tokens
+        )
 
 
 def validate_http_request(request: Any) -> None:
@@ -175,17 +193,29 @@ def validate_http_request(request: Any) -> None:
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    if any(not isinstance(getattr(message, "content", None), str) for message in request.messages):
+    if any(
+        not isinstance(getattr(message, "content", None), str)
+        for message in request.messages
+    ):
         raise HTTPException(
             status_code=400,
             detail="TensorFold Qwen3.8-27B supports text message content only",
         )
     unsupported = [
-        name for name in (
-            "repetition_penalty", "presence_penalty", "frequency_penalty",
-            "logit_bias", "top_logprobs", "video_fps", "video_max_frames",
-            "reasoning_max_tokens", "reasoning_effort", "chat_template_kwargs",
-            "parallel_tool_calls", "tool_choice",
+        name
+        for name in (
+            "repetition_penalty",
+            "presence_penalty",
+            "frequency_penalty",
+            "logit_bias",
+            "top_logprobs",
+            "video_fps",
+            "video_max_frames",
+            "reasoning_max_tokens",
+            "reasoning_effort",
+            "chat_template_kwargs",
+            "parallel_tool_calls",
+            "tool_choice",
         )
         if getattr(request, name, None) not in (None, {})
     ]
@@ -196,7 +226,9 @@ def validate_http_request(request: Any) -> None:
         )
 
 
-def generation_kwargs(*, max_tokens: int, temperature: float, top_p: float, request: Any) -> dict[str, Any]:
+def generation_kwargs(
+    *, max_tokens: int, temperature: float, top_p: float, request: Any
+) -> dict[str, Any]:
     return {
         "max_tokens": max_tokens,
         "temperature": temperature,
@@ -208,25 +240,46 @@ def generation_kwargs(*, max_tokens: int, temperature: float, top_p: float, requ
     }
 
 
-def render_prompt(processor: Any, _model: Any, request: Any, *, enable_thinking: bool, **_ignored: Any) -> str:
+def render_prompt(
+    processor: Any, _model: Any, request: Any, *, enable_thinking: bool, **_ignored: Any
+) -> str:
     messages = [message.model_dump(exclude_none=True) for message in request.messages]
-    return processor.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True,
-        enable_thinking=enable_thinking,
+    return cast(
+        str,
+        processor.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=enable_thinking,
+        ),
     )
 
 
 def run_tensorfold_qwen27_server(
-    *, main_model_repo: str, main_model_revision: str | None,
-    drafter_repo: str, drafter_revision: str | None, host: str, port: int,
-    port_explicit: bool | None, served_model_name: str, default_max_tokens: int,
-    cors_origins: list[str], uvicorn_log_level: str, no_thinking: bool = False,
-    api_key: str | None = None, rate_limit: int = 0,
+    *,
+    main_model_repo: str,
+    main_model_revision: str | None,
+    drafter_repo: str,
+    drafter_revision: str | None,
+    host: str,
+    port: int,
+    port_explicit: bool | None,
+    served_model_name: str,
+    default_max_tokens: int,
+    cors_origins: list[str],
+    uvicorn_log_level: str,
+    no_thinking: bool = False,
+    api_key: str | None = None,
+    rate_limit: int = 0,
     max_request_bytes: int = 8 * 1024 * 1024,
-    body_receive_timeout_seconds: float = 15.0, default_timeout: float = 1800.0,
-    max_concurrent_requests: int = 256, cors_policy: Any | None = None,
-    tool_call_parser: str | None = None, reasoning_parser_name: str | None = "qwen3",
-    default_reasoning_effort: str | None = None, **_ignored: Any,
+    body_receive_timeout_seconds: float = 15.0,
+    default_timeout: float = 1800.0,
+    max_concurrent_requests: int = 256,
+    cors_policy: Any | None = None,
+    tool_call_parser: str | None = None,
+    reasoning_parser_name: str | None = "qwen3",
+    default_reasoning_effort: str | None = None,
+    **_ignored: Any,
 ) -> None:
     """Load the pinned pair and serve the experimental serial text API."""
     if main_model_revision is not None or drafter_revision is not None:
@@ -234,7 +287,9 @@ def run_tensorfold_qwen27_server(
     if tool_call_parser is not None:
         raise RuntimeError("tensorfold backend does not support tool parsing")
     backend = TensorFoldQwen27Backend.load(
-        main_model_repo, drafter_repo, served_name=served_model_name,
+        main_model_repo,
+        drafter_repo,
+        served_name=served_model_name,
         max_tokens=default_max_tokens,
     )
     # Qualification-only token evidence. Unset by default so production
@@ -242,29 +297,93 @@ def run_tensorfold_qwen27_server(
     provider = TensorFoldRequestProvider(
         backend, audit_path=os.environ.get("RAPID_MLX_TENSORFOLD_AUDIT_PATH")
     )
+    from rapid_mlx.api.models import ModelInfo, SpeculativeDecodingInfo
     from rapid_mlx.speculative.dflash.server import _build_app
 
+    speculative_info = SpeculativeDecodingInfo(
+        configured=True,
+        method="dflash",
+        runtime_state="active",
+        backend="tensorfold",
+        unsupported_features=["tools", "media", "grammar"],
+    )
+    model_info = ModelInfo(
+        id=served_model_name,
+        capabilities=["text", "experimental"],
+        reasoning_parser=reasoning_parser_name,
+        speculative_decoding=speculative_info,
+        fallback_model="qwen3.8-27b-4bit",
+        min_memory_gb=48,
+    )
+
     app = _build_app(
-        model=None, processor=backend._app.tokenizer,
+        model=None,
+        processor=backend._app.tokenizer,
         runtime=SimpleNamespace(
-            algorithm="dflash2", drafter_repo=drafter_repo,
+            algorithm="dflash2",
+            drafter_repo=drafter_repo,
             target_revision="70ae7fac63274ff2eac54152031433374cb80f2f",
             drafter_revision="50307d4c4cde6860d4eee73e2547cd786fe8e8a4",
-        ), served_model_name=served_model_name,
-        default_max_tokens=default_max_tokens, cors_origins=cors_origins,
-        no_thinking=no_thinking, api_key=api_key, rate_limit=rate_limit,
+        ),
+        served_model_name=served_model_name,
+        default_max_tokens=default_max_tokens,
+        cors_origins=cors_origins,
+        no_thinking=no_thinking,
+        api_key=api_key,
+        rate_limit=rate_limit,
         max_request_bytes=max_request_bytes,
         body_receive_timeout_seconds=body_receive_timeout_seconds,
         default_timeout=default_timeout,
-        max_concurrent_requests=max_concurrent_requests, cors_policy=cors_policy,
-        tool_call_parser=None, reasoning_parser_name=reasoning_parser_name,
+        max_concurrent_requests=max_concurrent_requests,
+        cors_policy=cors_policy,
+        tool_call_parser=None,
+        reasoning_parser_name=reasoning_parser_name,
         default_reasoning_effort=default_reasoning_effort,
-        stream_generate_fn=provider.stream_generate, generate_fn=provider.generate,
+        stream_generate_fn=provider.stream_generate,
+        generate_fn=provider.generate,
         render_prompt_fn=render_prompt,
         generation_kwargs_fn=generation_kwargs,
         generation_kwargs_with_request=True,
         validate_request_fn=validate_http_request,
         backend_name="TensorFold Qwen3.8-27B",
+        speculative_info=speculative_info,
+        model_info=model_info,
+        runtime_status_extra={
+            "profile": {
+                "id": "qwen3.8-27b-tensorfold",
+                "mode": "accelerated",
+                "fallback_mode": "normal",
+                "compatibility": {
+                    "state": "ready",
+                    "reason": None,
+                    "action": None,
+                },
+                "runtime": {
+                    "extra": "tensorfold-qwen27",
+                    "installed": True,
+                },
+                "models": {
+                    "target": {
+                        "repository": "Vontra/Qwen3.8-27B-MLX-4bit",
+                        "revision": "70ae7fac63274ff2eac54152031433374cb80f2f",
+                        "ready": True,
+                    },
+                    "drafter": {
+                        "repository": "z-lab/Qwen3.8-27B-DFlash2",
+                        "revision": "50307d4c4cde6860d4eee73e2547cd786fe8e8a4",
+                        "ready": True,
+                    },
+                },
+                "capabilities": {
+                    "text_chat": True,
+                    "streaming": True,
+                    "tools": False,
+                    "media": False,
+                    "grammar": False,
+                    "max_concurrency": 1,
+                },
+            }
+        },
     )
 
     @app.on_event("shutdown")
@@ -272,5 +391,12 @@ def run_tensorfold_qwen27_server(
         backend.close()
 
     from rapid_mlx._uvicorn import run_uvicorn
-    run_uvicorn(app, host=host, port=port, log_level=uvicorn_log_level,
-                timeout_keep_alive=30, port_explicit=port_explicit)
+
+    run_uvicorn(
+        app,
+        host=host,
+        port=port,
+        log_level=uvicorn_log_level,
+        timeout_keep_alive=30,
+        port_explicit=port_explicit,
+    )

@@ -683,6 +683,7 @@ def _build_app(
     model_info: ModelInfo | None = None,
     strict_openai_streaming: bool = False,
     telemetry_model: str | None = None,
+    runtime_status_extra: dict[str, Any] | None = None,
 ) -> FastAPI:
     """Create the FastAPI application for DFlash mode.
 
@@ -865,6 +866,8 @@ def _build_app(
         if isinstance(block_size, int):
             result["num_speculative_tokens"] = block_size
         result.update(_companion_status_fields())
+        if runtime_status_extra:
+            result.update(runtime_status_extra)
         return result
 
     @app.get(
@@ -903,6 +906,8 @@ def _build_app(
             ),
         }
         result.update(_companion_status_fields())
+        if runtime_status_extra:
+            result.update(runtime_status_extra)
         return result
 
     @app.get(
@@ -1205,7 +1210,7 @@ def _build_app(
                     draft_kind=runtime.kind,
                 )
             else:
-                _generation_inputs = dict(
+                _generation_inputs: dict[str, Any] = dict(
                     max_tokens=max_tokens, temperature=temperature, top_p=top_p
                 )
                 if generation_kwargs_with_request:

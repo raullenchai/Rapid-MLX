@@ -6,7 +6,10 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-from rapid_mlx.spec_decode.config import SpeculativeConfigError, parse_speculative_config
+from rapid_mlx.spec_decode.config import (
+    SpeculativeConfigError,
+    parse_speculative_config,
+)
 from rapid_mlx.speculative.tensorfold_qwen27_server import (
     TensorFoldRequestProvider,
     generation_kwargs,
@@ -20,7 +23,9 @@ def test_dflash_tensorfold_config_is_explicit_and_method_scoped() -> None:
         '{"method":"dflash","backend":"tensorfold","model":"/pinned/drafter"}'
     )
     assert config is not None and config.backend == "tensorfold"
-    native = parse_speculative_config('{"method":"dflash","backend":"native","model":"x"}')
+    native = parse_speculative_config(
+        '{"method":"dflash","backend":"native","model":"x"}'
+    )
     assert native is not None and native.backend == "native"
     with pytest.raises(SpeculativeConfigError):
         parse_speculative_config('{"method":"mtp","backend":"tensorfold"}')
@@ -30,27 +35,42 @@ def test_http_gate_rejects_unqualified_features_and_maps_sampling() -> None:
     from fastapi import HTTPException
 
     request = SimpleNamespace(
-        tools=[{"type": "function"}], response_format=None,
+        tools=[{"type": "function"}],
+        response_format=None,
         messages=[SimpleNamespace(content="hi")],
-        repetition_penalty=None, presence_penalty=None,
-        frequency_penalty=None, logit_bias=None,
+        repetition_penalty=None,
+        presence_penalty=None,
+        frequency_penalty=None,
+        logit_bias=None,
     )
     with pytest.raises(HTTPException) as exc:
         validate_http_request(request)
     assert exc.value.status_code == 400
 
     request = SimpleNamespace(
-        top_k=20, min_p=0.05, seed=42, stop=["END"],
+        top_k=20,
+        min_p=0.05,
+        seed=42,
+        stop=["END"],
         messages=[SimpleNamespace(content="hi")],
-        tools=None, response_format=None, repetition_penalty=None,
-        presence_penalty=None, frequency_penalty=None, logit_bias=None,
+        tools=None,
+        response_format=None,
+        repetition_penalty=None,
+        presence_penalty=None,
+        frequency_penalty=None,
+        logit_bias=None,
     )
     validate_http_request(request)
     assert generation_kwargs(
         max_tokens=9, temperature=0.7, top_p=0.9, request=request
     ) == {
-        "max_tokens": 9, "temperature": 0.7, "top_p": 0.9,
-        "top_k": 20, "min_p": 0.05, "seed": 42, "stop": ["END"],
+        "max_tokens": 9,
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "top_k": 20,
+        "min_p": 0.05,
+        "seed": 42,
+        "stop": ["END"],
     }
 
     request.messages = [SimpleNamespace(content=[{"type": "image_url"}])]
@@ -65,7 +85,9 @@ def test_http_gate_rejects_unqualified_features_and_maps_sampling() -> None:
     assert "reasoning_max_tokens" in exc.value.detail
 
 
-def test_provider_preserves_exact_token_ids_and_request_outputs(monkeypatch, tmp_path) -> None:
+def test_provider_preserves_exact_token_ids_and_request_outputs(
+    monkeypatch, tmp_path
+) -> None:
     class Cancellation:
         def cancel(self):
             pass
@@ -77,6 +99,7 @@ def test_provider_preserves_exact_token_ids_and_request_outputs(monkeypatch, tmp
         def __init__(self, **kwargs):
             self.__dict__.update(kwargs)
             import queue
+
             self.chunks = queue.Queue()
             self.cached_tokens = 3
             self.error = None
@@ -120,12 +143,17 @@ def test_provider_preserves_exact_token_ids_and_request_outputs(monkeypatch, tmp
             job.chunks.put(None)
 
     app = SimpleNamespace(
-        tokenizer=Tokenizer(), tokenizer_lock=__import__("threading").Lock(),
-        stop_ids=frozenset({22}), min_match=3, scheduler=Scheduler(),
+        tokenizer=Tokenizer(),
+        tokenizer_lock=__import__("threading").Lock(),
+        stop_ids=frozenset({22}),
+        min_match=3,
+        scheduler=Scheduler(),
         _resolve_sampling=lambda fields, temperature, prompt: (fields, temperature),
     )
     audit = tmp_path / "tokens.ndjson"
-    provider = TensorFoldRequestProvider(SimpleNamespace(_app=app), audit_path=str(audit))
+    provider = TensorFoldRequestProvider(
+        SimpleNamespace(_app=app), audit_path=str(audit)
+    )
     chunks = list(provider.stream_generate(None, None, "prompt", max_tokens=8))
 
     assert [chunk.token for chunk in chunks] == [21, 22]
@@ -134,6 +162,7 @@ def test_provider_preserves_exact_token_ids_and_request_outputs(monkeypatch, tmp
     assert provider.last_outputs[-1].finished
     assert provider.last_outputs[-1].cached_tokens == 3
     import json
+
     record = json.loads(audit.read_text())
     assert record["token_ids"] == [21, 22]
     assert len(record["token_sha256"]) == 64
@@ -141,8 +170,12 @@ def test_provider_preserves_exact_token_ids_and_request_outputs(monkeypatch, tmp
 
 def test_http_stream_and_nonstream_use_provider_and_reject_tools() -> None:
     from fastapi.testclient import TestClient
+
     from rapid_mlx.speculative.dflash.server import _build_app
-    from rapid_mlx.speculative.tensorfold_qwen27_server import ProviderChunk, ProviderResult
+    from rapid_mlx.speculative.tensorfold_qwen27_server import (
+        ProviderChunk,
+        ProviderResult,
+    )
 
     class Processor:
         eos_token_id = 99
@@ -162,14 +195,21 @@ def test_http_stream_and_nonstream_use_provider_and_reject_tools() -> None:
         return ProviderResult("hello", [7], 1, 4)
 
     runtime = SimpleNamespace(
-        algorithm="dflash2", drafter_repo="pinned-drafter",
-        target_revision="a" * 40, drafter_revision="b" * 40,
+        algorithm="dflash2",
+        drafter_repo="pinned-drafter",
+        target_revision="a" * 40,
+        drafter_revision="b" * 40,
     )
     app = _build_app(
-        model=None, processor=Processor(), runtime=runtime,
-        served_model_name="qwen27-tf", default_max_tokens=8,
-        cors_origins=["*"], stream_generate_fn=stream_generate,
-        generate_fn=generate, generation_kwargs_fn=generation_kwargs,
+        model=None,
+        processor=Processor(),
+        runtime=runtime,
+        served_model_name="qwen27-tf",
+        default_max_tokens=8,
+        cors_origins=["*"],
+        stream_generate_fn=stream_generate,
+        generate_fn=generate,
+        generation_kwargs_fn=generation_kwargs,
         render_prompt_fn=render_prompt,
         generation_kwargs_with_request=True,
         validate_request_fn=validate_http_request,
@@ -181,9 +221,15 @@ def test_http_stream_and_nonstream_use_provider_and_reject_tools() -> None:
     assert response.status_code == 200
     assert response.json()["choices"][0]["message"]["content"] == "hello"
     usage = response.json()["usage"]
-    assert (usage["prompt_tokens"], usage["completion_tokens"], usage["total_tokens"]) == (4, 1, 5)
+    assert (
+        usage["prompt_tokens"],
+        usage["completion_tokens"],
+        usage["total_tokens"],
+    ) == (4, 1, 5)
 
-    with client.stream("POST", "/v1/chat/completions", json={**body, "stream": True}) as response:
+    with client.stream(
+        "POST", "/v1/chat/completions", json={**body, "stream": True}
+    ) as response:
         wire = "".join(response.iter_text())
     assert response.status_code == 200
     assert '"content": "hello"' in wire
