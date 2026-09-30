@@ -1,7 +1,10 @@
-# rapid_mlx.cua — Computer-Use Agent (productized)
+# rapid_mlx.cua — Computer-Use Agent (experimental)
 
-Native macOS Accessibility computer-use agent. Replaces the GUI-verifier POC
-loop (`tools/gui_verifier_cua_poc/`) with the product pipeline:
+Experimental native macOS Accessibility computer-use agent. It is opt-in and
+may stop early, misread an interface, or require the user to finish a task.
+Keep consequential work supervised and review every approval prompt.
+
+The current pipeline provides:
 
 - **Execution layer** (`rapid_mlx.computer_use`): model-agnostic AX snapshot +
   typed actions (click / set-value with read-back verification / press / hotkey
@@ -128,6 +131,9 @@ trace = await run(config, "Google Chrome", goal="...", planner=my_planner)
 | Qwen3.8-27B local | ✅ | ✅ | ⚠️ premature done |
 | Qwen3.5-9B local | ✅ | ✅ | ❌ fixation (mitigated by the loop's intervention gate, still weakest) |
 
-Known gaps: URL guard needs Automation TCC (AppleScript otherwise rejected
-with -1743); validator rejects hallucinated elements but not omitted files in
-planner-only flows; shopping pre-ranking is DOM-specific and not yet ported.
+Known gaps: browser URL verification needs Automation permission (AppleScript
+is otherwise rejected with -1743); local planners can stop prematurely or loop
+on longer tasks; changing or obscured windows can stop a run; and the validator
+can reject hallucinated elements but cannot prove that a planner reported every
+relevant item. Shopping workflows are unsupported. Credentials, payment
+details, and commerce actions remain hard blocked.
