@@ -153,6 +153,11 @@ here, and each is used under its own license:
     mlx-vlm      https://github.com/Blaizzy/mlx-vlm           MIT
     mlx-audio    https://github.com/Blaizzy/mlx-audio         MIT
     laya-mlx     https://github.com/mizorewww/laya-mlx        Apache-2.0
+    TensorFold   https://github.com/ashhart/TensorFold         MIT
+
+The optional TensorFold Qwen3.8-27B decoder uses the separately distributed
+z-lab/Qwen3.8-27B-DFlash2 weights. Its model card states Apache-2.0. Rapid-MLX
+does not distribute those weights.
 
 The macOS desktop application enumerates the components it ships in
 apps/rapid-mac/THIRD_PARTY.md, and reproduces their license texts inside the
