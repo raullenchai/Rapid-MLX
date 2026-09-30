@@ -2216,7 +2216,6 @@ def test_finder_exact_main_window_fallback_is_frame_and_membership_bound(
         )
     )
     monkeypatch.setattr(backend.ax_driver, "AS", services)
-    monkeypatch.setattr(backend, "_focused_ax_window", lambda app: None)
     monkeypatch.setattr(backend.ax_driver, "_app_element", lambda *a, **k: application)
 
     def get(element, attribute):
@@ -2263,8 +2262,11 @@ def test_finder_exact_main_window_fallback_accepts_live_detached_editor_shape(
             return {
                 "AXMainWindow": main,
                 "AXWindows": [detached_editor, main],
+                "AXFocusedWindow": None,
                 "AXFocusedUIElement": detached_editor,
             }.get(attribute)
+        if element is main and attribute == "AXRole":
+            return "AXWindow"
         if element is detached_editor:
             return {
                 "AXRole": "AXTextField",
@@ -2375,7 +2377,11 @@ def test_focused_window_and_post_action_state_contract(monkeypatch):
         backend.ax_driver,
         "_get",
         lambda element, attribute: (
-            ["focused"] if attribute == "AXWindows" else "focused"
+            ["focused"]
+            if attribute == "AXWindows"
+            else "AXWindow"
+            if attribute == "AXRole"
+            else "focused"
         ),
     )
     monkeypatch.setattr(
@@ -2772,25 +2778,26 @@ def test_finder_inline_editor_is_admitted_as_new_contained_focused_companion(
     )
 
 
-def test_focused_ax_window_accepts_exact_focused_ui_element_listed_as_window(
-    monkeypatch,
-):
+@pytest.mark.parametrize("source", ["focused_window", "focused_ui_element"])
+def test_focused_ax_window_rejects_listed_nonwindow_focus(monkeypatch, source):
     application = object()
     inline_editor = object()
     monkeypatch.setattr(backend.ax_driver, "_app_element", lambda *a, **k: application)
 
     def get(element, attribute):
         if attribute == "AXFocusedWindow":
-            return None
+            return inline_editor if source == "focused_window" else None
         if attribute == "AXFocusedUIElement":
             return inline_editor
         if attribute == "AXWindows":
             return [inline_editor, object()]
+        if element is inline_editor and attribute == "AXRole":
+            return "AXTextField"
         return None
 
     monkeypatch.setattr(backend.ax_driver, "_get", get)
 
-    assert backend._focused_ax_window({"name": "Finder", "pid": 716}) is inline_editor
+    assert backend._focused_ax_window({"name": "Finder", "pid": 716}) is None
 
 
 def test_focused_ax_window_walks_from_focused_control_to_listed_window(monkeypatch):

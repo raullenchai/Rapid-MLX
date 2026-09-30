@@ -310,7 +310,11 @@ def _focused_ax_window(app_info: dict) -> object | None:
     focused = ax_driver._get(app_element, "AXFocusedWindow")
     if focused is None:
         focused = ax_driver._get(app_element, "AXFocusedUIElement")
-        if focused is not None and any(focused == window for window in app_windows):
+        if (
+            focused is not None
+            and ax_driver._get(focused, "AXRole") == "AXWindow"
+            and any(focused == window for window in app_windows)
+        ):
             return focused
         seen: set[int] = set()
         for _ in range(12):
@@ -323,7 +327,11 @@ def _focused_ax_window(app_info: dict) -> object | None:
             focused = ax_driver._get(focused, "AXParent")
         else:
             focused = None
-    if focused is None or not any(focused == window for window in app_windows):
+    if (
+        focused is None
+        or ax_driver._get(focused, "AXRole") != "AXWindow"
+        or not any(focused == window for window in app_windows)
+    ):
         return None
     return focused
 
