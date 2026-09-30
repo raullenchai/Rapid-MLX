@@ -1,6 +1,6 @@
 # Vector: Qwen3.8-27B experimental TensorFold HTTP adapter
 
-Status: bounded Phase 2 proof complete; draft PR preparation in progress
+Status: product profile implemented on PR #3929; performance and independent review gates pending
 Owner: Vector
 Branch/worktree: vector/qwen27-tensorfold-api at /private/tmp/harbor-desk-qwen27-api
 Base: fc804cf7f35bcfc7102be5ecb7a593be0f2038a9
@@ -57,3 +57,28 @@ Verification: focused provider/unit tests; HTTP ASGI integration tests for strea
 The independent HTTP archive manifest was regenerated after clean shutdown so
 `SHA256SUMS` now records the final `server.log` digest
 `954790b2768471b42131c971058d23d918a261f9773f9f1876bb836bd14993ef`.
+
+## Productization update (2026-09-30)
+
+- Commit `8f3582696` adds the experimental `qwen3.8-27b-tensorfold` profile.
+  It resolves the exact target and DFlash2 snapshots at immutable revisions
+  through the default Hugging Face cache and auto-selects the TensorFold
+  backend. The measured product floor is 48 GB; the ordinary recovery alias is
+  `qwen3.8-27b-4bit`.
+- `/v1/models/{id}` publishes `speculative_decoding.backend=tensorfold`, active
+  runtime state, `unsupported_features=[tools,media,grammar]`, the recovery
+  alias, and the memory floor. `/v1/status` and `/healthz` publish the paired
+  identities and readiness/capability detail.
+- Packaging metadata now validates and a wheel builds successfully. Ruff is
+  clean; focused TensorFold HTTP/backend and DFlash eligibility tests pass
+  (49 tests). The prior exact-pair HTTP acceptance remains valid because no
+  generation/provider hot-path behavior changed.
+- Reference check: the dedicated serial-provider lifecycle remains consistent
+  with the primary serving precedents' explicit alternate-engine boundaries;
+  existing Rapid paired-artifact download and model-profile patterns were
+  reused. PR #3926 is complementary BatchedEngine dense-matmul work and has no
+  code overlap; do not copy or stack its kernels into this provider.
+- Remaining gates: independent performance owner must qualify the product
+  profile; spark2 Codex review cannot currently start because that host's Codex
+  refresh token returns HTTP 401. Re-run the scope-locked review loop after the
+  host is re-authenticated. Do not merge or release without Atlas/human approval.
