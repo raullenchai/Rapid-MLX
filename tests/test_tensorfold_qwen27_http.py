@@ -7,19 +7,100 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 from rapid_mlx.request import RequestOutput
-from rapid_mlx.spec_decode.config import (
-    SpeculativeConfigError,
-    parse_speculative_config,
-)
+from rapid_mlx.spec_decode.config import parse_speculative_config
 from rapid_mlx.speculative.tensorfold_qwen27_server import (
     TensorFoldRequestProvider,
+    _StableIncrementalText,
     generation_kwargs,
     render_prompt,
     validate_http_request,
 )
 
 
-def test_dflash_tensorfold_config_is_explicit_and_method_scoped() -> None:
+@pytest.fixture
+def fake_mlx_lm_detokenizer(monkeypatch):
+    """Keep provider tests hermetic in the Linux base-install matrix."""
+
+    class NaiveStreamingDetokenizer:
+        def __init__(self, tokenizer):
+            self.tokenizer = tokenizer
+            self.tokens = []
+            self.text = ""
+
+        def add_token(self, token):
+            self.tokens.append(token)
+            self.text = self.tokenizer.decode(self.tokens)
+
+        def finalize(self):
+            self.text = self.tokenizer.decode(self.tokens)
+
+    package = ModuleType("mlx_lm")
+    tokenizer_utils = ModuleType("mlx_lm.tokenizer_utils")
+    tokenizer_utils.NaiveStreamingDetokenizer = NaiveStreamingDetokenizer
+    package.tokenizer_utils = tokenizer_utils
+    monkeypatch.setitem(sys.modules, "mlx_lm", package)
+    monkeypatch.setitem(sys.modules, "mlx_lm.tokenizer_utils", tokenizer_utils)
+
+
+def test_contextual_stream_reconstructs_final_executable_code(
+    tmp_path, fake_mlx_lm_detokenizer
+) -> None:
+    """Regression for GLM whitespace corruption seen in real Rapid SSE output."""
+    import py_compile
+    import threading
+
+    final = (
+        "def merge_intervals(intervals):\n"
+        "    validated = []\n"
+        "    for item in intervals:\n"
+        "        validated.append(item)\n"
+        "    return validated\n"
+    )
+
+    class ContextSensitiveTokenizer:
+        clean_up_tokenization_spaces = True
+
+        def decode(self, ids):
+            # The middle token is an incomplete byte/tokenizer fragment. A
+            # fresh full-prefix decode revises the tail once token 2 arrives.
+            # Emitting that partial prefix caused the captured whitespace loss.
+            table = {
+                (): "",
+                (0,): "def merge_intervals(intervals):\n    validated =",
+                (1,): "\ufffd",
+                (2,): (
+                    " []\n    for item in intervals:\n"
+                    "        validated.append(item)\n"
+                    "    return validated\n"
+                ),
+                (0, 1): "def merge_intervals(intervals):\n    validated =\ufffd",
+                (0, 1, 2): final,
+            }
+            return table[tuple(ids)]
+
+    decoder = _StableIncrementalText(ContextSensitiveTokenizer(), threading.Lock())
+    # TensorFold validates and returns token chunks. Preserve that boundary:
+    # the second chunk completes the tokenizer fragment begun by token 1.
+    snapshots = [decoder.extend([0]), decoder.extend([1, 2])]
+    deltas = [
+        current[len(previous) :]
+        for previous, current in zip([""] + snapshots[:-1], snapshots)
+    ]
+    streamed = "".join(deltas)
+    assert streamed == final
+    source = tmp_path / "streamed.py"
+    source.write_text(streamed)
+    py_compile.compile(str(source), doraise=True)
+
+
+def test_stream_sanitizer_preserves_code_whitespace_without_wire_tokens() -> None:
+    from rapid_mlx.api.utils import sanitize_output
+
+    assert sanitize_output(" list of [start, end]") == " list of [start, end]"
+    assert sanitize_output("\n    validated = []\n") == "\n    validated = []\n"
+
+
+def test_tensorfold_config_is_explicit_and_method_scoped() -> None:
     config = parse_speculative_config(
         '{"method":"dflash","backend":"tensorfold","model":"/pinned/drafter"}'
     )
@@ -28,8 +109,9 @@ def test_dflash_tensorfold_config_is_explicit_and_method_scoped() -> None:
         '{"method":"dflash","backend":"native","model":"x"}'
     )
     assert native is not None and native.backend == "native"
-    with pytest.raises(SpeculativeConfigError):
-        parse_speculative_config('{"method":"mtp","backend":"tensorfold"}')
+    mtp = parse_speculative_config('{"method":"mtp","backend":"tensorfold"}')
+    assert mtp is not None
+    assert mtp.backend == "tensorfold"
 
 
 def test_http_gate_rejects_unqualified_features_and_maps_sampling() -> None:
@@ -87,7 +169,7 @@ def test_http_gate_rejects_unqualified_features_and_maps_sampling() -> None:
 
 
 def test_provider_preserves_exact_token_ids_and_request_outputs(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, fake_mlx_lm_detokenizer
 ) -> None:
     class Cancellation:
         def cancel(self):
@@ -136,32 +218,42 @@ def test_provider_preserves_exact_token_ids_and_request_outputs(
             return [10, 11]
 
         def decode(self, ids):
-            return "".join({21: "A", 22: "B"}[i] for i in ids)
+            return "".join({0: "", 21: "A", 22: "B"}[i] for i in ids)
 
     class Scheduler:
+        job = None
+
         def submit(self, job):
+            self.job = job
             job.chunks.put([21, 22])
             job.chunks.put(None)
 
+    scheduler = Scheduler()
     app = SimpleNamespace(
         tokenizer=Tokenizer(),
         tokenizer_lock=__import__("threading").Lock(),
         stop_ids=frozenset({22}),
         min_match=3,
-        scheduler=Scheduler(),
+        scheduler=scheduler,
         _resolve_sampling=lambda fields, temperature, prompt: (fields, temperature),
+        _think_close=lambda: ((99,), 99),
     )
     audit = tmp_path / "tokens.ndjson"
     provider = TensorFoldRequestProvider(
         SimpleNamespace(_app=app), audit_path=str(audit)
     )
-    chunks = list(provider.stream_generate(None, None, "prompt", max_tokens=8))
+    chunks = list(
+        provider.stream_generate(None, None, "prompt", max_tokens=8, thinking_budget=5)
+    )
 
     assert [chunk.token for chunk in chunks] == [21, 22]
     assert [chunk.text for chunk in chunks] == ["A", ""]
     assert provider.last_token_ids == [21, 22]
     assert provider.last_outputs[-1].finished
     assert provider.last_outputs[-1].cached_tokens == 3
+    assert scheduler.job.think_budget == 5
+    assert scheduler.job.think_close == (99,)
+    assert scheduler.job.think_end == 99
     import json
 
     record = json.loads(audit.read_text())
@@ -169,7 +261,9 @@ def test_provider_preserves_exact_token_ids_and_request_outputs(
     assert len(record["token_sha256"]) == 64
 
 
-def test_provider_closed_timeout_error_and_generate(monkeypatch) -> None:
+def test_provider_closed_timeout_error_and_generate(
+    monkeypatch, fake_mlx_lm_detokenizer
+) -> None:
     # Reuse the provider fixture above with a scheduler that first times out,
     # then reports a worker error. This covers the cancellation polling path.
     import queue
@@ -220,7 +314,11 @@ def test_provider_closed_timeout_error_and_generate(monkeypatch) -> None:
     provider = TensorFoldRequestProvider(backend)
     with pytest.raises(RuntimeError, match="closed"):
         list(provider._outputs("x"))
-    tokenizer = SimpleNamespace(encode=lambda _p: [1])
+    tokenizer = SimpleNamespace(
+        encode=lambda _p: [1],
+        decode=lambda ids: "".join(str(token) for token in ids if token),
+        clean_up_tokenization_spaces=False,
+    )
     app = SimpleNamespace(
         tokenizer=tokenizer,
         tokenizer_lock=__import__("threading").Lock(),
@@ -234,7 +332,9 @@ def test_provider_closed_timeout_error_and_generate(monkeypatch) -> None:
         list(provider.generate(None, None, "x", max_tokens=1))
 
 
-def test_provider_timeout_worker_error_and_generate_success(monkeypatch) -> None:
+def test_provider_timeout_worker_error_and_generate_success(
+    monkeypatch, fake_mlx_lm_detokenizer
+) -> None:
     import queue
     import threading
 
@@ -310,6 +410,100 @@ def test_provider_timeout_worker_error_and_generate_success(monkeypatch) -> None
     terminal = RequestOutput(request_id="r", finished=True)
     provider._outputs = lambda *_a, **_k: iter([terminal])
     assert list(provider.stream_generate(None, None, "x")) == []
+
+
+@pytest.mark.parametrize(
+    "mode,error,expected",
+    [
+        ("nonmonotonic", "non-monotonic prefix", None),
+        ("final-mismatch", "final tokenizer decode", None),
+        ("final-delta", None, "tail"),
+    ],
+)
+def test_provider_stream_decode_boundaries(monkeypatch, mode, error, expected) -> None:
+    import queue
+    import threading
+
+    from rapid_mlx.speculative import tensorfold_qwen27_server as server
+
+    class Cancellation:
+        def cancel(self):
+            pass
+
+        def check(self):
+            pass
+
+    class ChatJob:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+            self.chunks = queue.Queue()
+            self.error = None
+            self.stream = None
+            self.cached_tokens = 0
+
+    class StopPolicy:
+        def __init__(self, *_args):
+            self.ignore_eos = False
+            self.eos_ids = set()
+            self.strings = ()
+
+        def visible(self, text, partial=False):
+            return text
+
+    class Incremental:
+        calls = 0
+
+        def __init__(self, *_args):
+            pass
+
+        def extend(self, _tokens):
+            self.calls += 1
+            if mode == "nonmonotonic":
+                return "head" if self.calls == 1 else ""
+            return "head" if mode == "final-mismatch" else ""
+
+        def finalize(self):
+            pass
+
+    for name, attrs in {
+        "tensorfold.engine.lane_engine": {
+            "SuffixLookupProposer": lambda min_match: min_match
+        },
+        "tensorfold.server.cancellation": {"Cancellation": Cancellation},
+        "tensorfold.server.scheduler": {"ChatJob": ChatJob},
+        "tensorfold.server.stopping": {"StopPolicy": StopPolicy},
+    }.items():
+        module = ModuleType(name)
+        for key, value in attrs.items():
+            setattr(module, key, value)
+        monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setattr(server, "_StableIncrementalText", Incremental)
+
+    final = "other" if mode == "final-mismatch" else "tail"
+    tokenizer = SimpleNamespace(encode=lambda _p: [1], decode=lambda _ids: final)
+
+    class Scheduler:
+        def submit(self, job):
+            job.chunks.put([1])
+            if mode == "nonmonotonic":
+                job.chunks.put([2])
+            job.chunks.put(None)
+
+    app = SimpleNamespace(
+        tokenizer=tokenizer,
+        tokenizer_lock=threading.Lock(),
+        stop_ids=set(),
+        min_match=1,
+        scheduler=Scheduler(),
+        _resolve_sampling=lambda *_a: {},
+    )
+    provider = TensorFoldRequestProvider(SimpleNamespace(_app=app))
+    if error:
+        with pytest.raises(RuntimeError, match=error):
+            list(provider._outputs("prompt", max_tokens=2))
+    else:
+        outputs = list(provider._outputs("prompt", max_tokens=2))
+        assert outputs[-1].new_text == expected
 
 
 def test_render_prompt_and_server_bootstrap(monkeypatch) -> None:

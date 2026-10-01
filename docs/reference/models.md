@@ -102,6 +102,28 @@ python -m pip install "tensorfold @ git+https://github.com/ashhart/TensorFold.gi
 This dependency remains an explicit opt-in because it is not available as an
 indexed wheel. The normal `rapid-mlx` package and its extras do not install it.
 
+### Experimental GLM-5.3 accelerated profile
+
+`glm5.3-flash-tensorfold` is an experimental, text-only profile for Apple Silicon
+Macs with 256 GB of unified memory. It uses the checkpoint's embedded MTP head;
+there is no separate draft-model download. The ordinary
+`glm5.3-flash-4bit` alias and its defaults are unchanged.
+
+Install the exact qualified runtime, then select the dedicated alias:
+
+```bash
+python -m pip install "tensorfold @ git+https://github.com/ashhart/TensorFold.git@c4646171139ee8a3c38103eaa1699dad226ec12b"
+rapid-mlx serve glm5.3-flash-tensorfold
+```
+
+This experimental lane supports streaming and non-streaming text chat. Tools,
+images, grammar constraints, and general batching fail explicitly; restart with
+`glm5.3-flash-4bit` for the ordinary feature-complete mode. The profile pins
+the target and runtime revisions and refuses incompatible artifacts at startup.
+The dedicated alias enables its accelerated backend by default on compatible
+systems. Pass `--no-spec-decode` to opt out; Rapid then uses the normal GLM
+serving path and reports that mode rather than advertising TensorFold as active.
+
 ### Experimental Chat candidate: NeoHorse 1 9B
 
 `neohorse-9b-4bit` is an opt-in, text-only Chat model for Macs with at

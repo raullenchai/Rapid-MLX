@@ -88,6 +88,24 @@ def test_cli_wires_tensorfold_preflight_before_pair_download() -> None:
     )
 
 
+def test_qwen_runtime_provenance_read_failures_are_closed(monkeypatch) -> None:
+    from importlib.metadata import PackageNotFoundError
+
+    from rapid_mlx.speculative import tensorfold_qwen27 as adapter
+
+    for error in (
+        PackageNotFoundError(),
+        OSError("bad metadata"),
+        ValueError("bad json"),
+    ):
+        monkeypatch.setattr(
+            adapter.importlib.metadata,
+            "distribution",
+            lambda _name, error=error: (_ for _ in ()).throw(error),
+        )
+        assert adapter._runtime_direct_url() == {}
+
+
 def test_download_pair_uses_pinned_revisions(monkeypatch, tmp_path) -> None:
     from rapid_mlx.speculative import tensorfold_qwen27 as adapter
 
@@ -314,9 +332,66 @@ class TensorFoldQwen27Tests(unittest.IsolatedAsyncioTestCase):
                 sys.modules[name] = value
 
     def test_runtime_is_exactly_pinned(self):
-        require_runtime("0.5.0")
+        qualified = {
+            "url": "https://github.com/ashhart/TensorFold.git",
+            "vcs_info": {"vcs": "git", "commit_id": SUPPORTED_REVISION},
+        }
+        require_runtime("0.5.0", direct_url=qualified)
         with self.assertRaisesRegex(TensorFoldUnavailable, "found 0.5.1"):
-            require_runtime("0.5.1")
+            require_runtime("0.5.1", direct_url=qualified)
+        for provenance in (
+            {},
+            {
+                "url": "https://example.invalid/TensorFold.git",
+                "vcs_info": {"vcs": "git", "commit_id": SUPPORTED_REVISION},
+            },
+            {"vcs_info": {"vcs": "git", "commit_id": "0" * 40}},
+            {
+                "vcs_info": {"vcs": "git", "commit_id": SUPPORTED_REVISION},
+                "dir_info": {"editable": True},
+            },
+        ):
+            with self.assertRaisesRegex(TensorFoldUnavailable, "exact qualified"):
+                require_runtime("0.5.0", direct_url=provenance)
+
+    def test_installed_runtime_reads_exact_vcs_provenance(self):
+        qualified = {
+            "url": "https://github.com/ashhart/TensorFold.git",
+            "vcs_info": {"vcs": "git", "commit_id": SUPPORTED_REVISION},
+        }
+        distribution = types.SimpleNamespace(
+            read_text=lambda filename: (
+                json.dumps(qualified) if filename == "direct_url.json" else None
+            )
+        )
+        with (
+            patch(
+                "rapid_mlx.speculative.tensorfold_qwen27.importlib.metadata.version",
+                return_value="0.5.0",
+            ),
+            patch(
+                "rapid_mlx.speculative.tensorfold_qwen27.importlib.metadata.distribution",
+                return_value=distribution,
+            ),
+        ):
+            require_runtime()
+
+    def test_installed_runtime_rejects_non_object_provenance(self):
+        distribution = types.SimpleNamespace(
+            read_text=lambda filename: "[]" if filename == "direct_url.json" else None
+        )
+        with (
+            patch(
+                "rapid_mlx.speculative.tensorfold_qwen27.importlib.metadata.version",
+                return_value="0.5.0",
+            ),
+            patch(
+                "rapid_mlx.speculative.tensorfold_qwen27.importlib.metadata.distribution",
+                return_value=distribution,
+            ),
+            self.assertRaisesRegex(TensorFoldUnavailable, "exact qualified"),
+        ):
+            require_runtime()
 
     def test_environment_requires_arm64_and_exact_mlx(self):
         with patch("rapid_mlx.speculative.tensorfold_qwen27.sys.platform", "darwin"):
