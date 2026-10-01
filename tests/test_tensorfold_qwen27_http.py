@@ -389,12 +389,53 @@ def test_render_prompt_and_server_bootstrap(monkeypatch) -> None:
         default_max_tokens=1,
         cors_origins=[],
         uvicorn_log_level="info",
+        max_concurrent_requests=256,
     )
     assert closed == [True]
+    assert captured["max_concurrent_requests"] == 1
     assert (
         captured["runtime_status_extra"]["profile"]["compatibility"]["state"] == "ready"
     )
     assert captured["run"]["port"] == 1
+
+
+def test_tensorfold_rejects_second_in_flight_request_with_retry_after() -> None:
+    from fastapi.testclient import TestClient
+
+    from rapid_mlx.speculative.dflash.server import _build_app
+    from rapid_mlx.speculative.tensorfold_qwen27_server import (
+        _MAX_CONCURRENT_REQUESTS,
+    )
+
+    app = _build_app(
+        model=None,
+        processor=SimpleNamespace(),
+        runtime=SimpleNamespace(
+            algorithm="dflash2",
+            drafter_repo="pinned-drafter",
+            target_revision="a" * 40,
+            drafter_revision="b" * 40,
+        ),
+        served_model_name="qwen27-tf",
+        default_max_tokens=8,
+        cors_origins=[],
+        max_concurrent_requests=_MAX_CONCURRENT_REQUESTS,
+    )
+    first_request = app.state.dflash_admission.reserve()
+    try:
+        response = TestClient(app).post(
+            "/v1/chat/completions",
+            json={
+                "model": "qwen27-tf",
+                "messages": [{"role": "user", "content": "queued"}],
+            },
+        )
+    finally:
+        first_request.release()
+
+    assert response.status_code == 503
+    assert response.headers["Retry-After"] == "1"
+    assert response.json()["error"]["code"] == "at_capacity"
 
 
 def test_http_stream_and_nonstream_use_provider_and_reject_tools() -> None:
