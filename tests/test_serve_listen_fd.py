@@ -619,6 +619,62 @@ def test_dflash_memory_check_receives_original_alias(
     assert calls == [(ns.model, ns._original_alias)]
 
 
+def test_serve_command_preflights_tensorfold_mtp_before_dispatch(
+    stub_heavy_serve_deps, monkeypatch, scheduler_config_stub
+):
+    calls: list[object] = []
+    monkeypatch.setattr(
+        cli,
+        "_preflight_tensorfold_qwen27_or_exit",
+        lambda args=None: calls.append(args),
+    )
+    monkeypatch.setattr(
+        cli, "_serve_tensorfold_mtp_if_requested", lambda *_a, **_k: True
+    )
+    ns = _minimal_serve_ns()
+    ns.speculative_config = '{"method":"mtp","backend":"tensorfold"}'
+
+    cli.serve_command(ns)
+
+    assert calls == [ns]
+
+
+def test_serve_command_downloads_qualified_glm_tensorfold_target(
+    stub_heavy_serve_deps, monkeypatch, scheduler_config_stub
+):
+    from rapid_mlx.speculative import tensorfold_glm53
+
+    disk_checks: list[tuple[str, bool, str | None]] = []
+    monkeypatch.setattr(cli, "_preflight_tensorfold_qwen27_or_exit", lambda _args: None)
+    monkeypatch.setattr(
+        cli,
+        "_check_disk_space",
+        lambda repo, *, force=False, revision_override=None, **_kwargs: (
+            disk_checks.append((repo, force, revision_override))
+        ),
+    )
+    monkeypatch.setattr(
+        tensorfold_glm53,
+        "download_qualified_target",
+        lambda: "/pinned/glm-target",
+    )
+    monkeypatch.setattr(
+        cli, "_serve_tensorfold_mtp_if_requested", lambda *_a, **_k: True
+    )
+    ns = _minimal_serve_ns()
+    ns.model = "Vontra/GLM-5.3-Flash-MLX-4bit-MTP"
+    ns._original_alias = "glm5.3-flash-tensorfold"
+    ns.mtp_backend = "tensorfold"
+    ns.force_disk_check = True
+
+    cli.serve_command(ns)
+
+    profile = cli._tensorfold_mtp_profile(ns._original_alias)
+    assert profile is not None
+    assert disk_checks == [(profile.hf_path, True, profile.tensorfold_target_revision)]
+    assert ns.model == "/pinned/glm-target"
+
+
 def test_tensorfold_alias_preflights_downloads_pair_and_dispatches_server(
     stub_heavy_serve_deps, monkeypatch, scheduler_config_stub
 ):
