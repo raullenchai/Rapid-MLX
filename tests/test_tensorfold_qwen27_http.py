@@ -168,6 +168,153 @@ def test_provider_preserves_exact_token_ids_and_request_outputs(
     assert len(record["token_sha256"]) == 64
 
 
+def test_provider_closed_timeout_error_and_generate(monkeypatch) -> None:
+    # Reuse the provider fixture above with a scheduler that first times out,
+    # then reports a worker error. This covers the cancellation polling path.
+    import queue
+
+    class Cancellation:
+        def __init__(self):
+            self.checks = 0
+
+        def cancel(self):
+            pass
+
+        def check(self):
+            self.checks += 1
+            raise RuntimeError("worker stopped")
+
+    class ChatJob:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+            self.chunks = queue.Queue()
+            self.error = None
+            self.stream = None
+            self.cached_tokens = 0
+
+    class StopPolicy:
+        def __init__(self, *_args):
+            self.ignore_eos = False
+            self.eos_ids = set()
+            self.strings = ()
+
+    class Proposer:
+        def __init__(self, min_match):
+            self.min_match = min_match
+
+    for name, attrs in {
+        "tensorfold.engine.lane_engine": {"SuffixLookupProposer": Proposer},
+        "tensorfold.server.cancellation": {"Cancellation": Cancellation},
+        "tensorfold.server.scheduler": {"ChatJob": ChatJob},
+        "tensorfold.server.stopping": {"StopPolicy": StopPolicy},
+    }.items():
+        module = ModuleType(name)
+        for key, value in attrs.items():
+            setattr(module, key, value)
+        monkeypatch.setitem(sys.modules, name, module)
+    backend = SimpleNamespace(_app=None)
+    provider = TensorFoldRequestProvider(backend)
+    with pytest.raises(RuntimeError, match="closed"):
+        list(provider._outputs("x"))
+    tokenizer = SimpleNamespace(encode=lambda _p: [1])
+    app = SimpleNamespace(
+        tokenizer=tokenizer,
+        tokenizer_lock=__import__("threading").Lock(),
+        stop_ids=set(),
+        min_match=1,
+        scheduler=SimpleNamespace(submit=lambda _j: None),
+        _resolve_sampling=lambda *a: {},
+    )
+    provider = TensorFoldRequestProvider(SimpleNamespace(_app=app))
+    with pytest.raises(RuntimeError, match="worker stopped"):
+        list(provider.generate(None, None, "x", max_tokens=1))
+
+
+def test_render_prompt_and_server_bootstrap(monkeypatch) -> None:
+    from rapid_mlx.speculative import tensorfold_qwen27_server as server
+
+    request = SimpleNamespace(
+        messages=[
+            SimpleNamespace(model_dump=lambda **_k: {"role": "user", "content": "hi"})
+        ]
+    )
+    processor = SimpleNamespace(
+        apply_chat_template=lambda messages, **kwargs: (messages, kwargs)
+    )
+    rendered = render_prompt(processor, None, request, enable_thinking=False)
+    assert rendered[1]["add_generation_prompt"] is True
+
+    with pytest.raises(RuntimeError, match="pinned local"):
+        server.run_tensorfold_qwen27_server(
+            main_model_repo="a",
+            main_model_revision="x",
+            drafter_repo="b",
+            drafter_revision=None,
+            host="h",
+            port=1,
+            port_explicit=True,
+            served_model_name="m",
+            default_max_tokens=1,
+            cors_origins=[],
+            uvicorn_log_level="info",
+        )
+    with pytest.raises(RuntimeError, match="tool parsing"):
+        server.run_tensorfold_qwen27_server(
+            main_model_repo="a",
+            main_model_revision=None,
+            drafter_repo="b",
+            drafter_revision=None,
+            host="h",
+            port=1,
+            port_explicit=True,
+            served_model_name="m",
+            default_max_tokens=1,
+            cors_origins=[],
+            uvicorn_log_level="info",
+            tool_call_parser="qwen",
+        )
+
+    closed = []
+    captured = {}
+    fake_backend = SimpleNamespace(
+        _app=SimpleNamespace(tokenizer=object()), close=lambda: closed.append(True)
+    )
+    monkeypatch.setattr(
+        server.TensorFoldQwen27Backend, "load", lambda *a, **k: fake_backend
+    )
+
+    class App:
+        def on_event(self, _name):
+            return lambda fn: (fn(), fn)[1]
+
+    dflash_server = ModuleType("rapid_mlx.speculative.dflash.server")
+    dflash_server._build_app = lambda **kwargs: (captured.update(kwargs), App())[1]
+    monkeypatch.setitem(
+        sys.modules, "rapid_mlx.speculative.dflash.server", dflash_server
+    )
+    uvicorn = ModuleType("rapid_mlx._uvicorn")
+    uvicorn.run_uvicorn = lambda app, **kwargs: captured.update(run=kwargs)
+    monkeypatch.setitem(sys.modules, "rapid_mlx._uvicorn", uvicorn)
+    server.run_tensorfold_qwen27_server(
+        main_model_repo="a",
+        main_model_revision=None,
+        drafter_repo="b",
+        drafter_revision=None,
+        host="h",
+        port=1,
+        port_explicit=True,
+        served_model_name="m",
+        default_max_tokens=1,
+        cors_origins=[],
+        uvicorn_log_level="info",
+    )
+    assert closed == [True]
+    assert (
+        captured["runtime_status_extra"]["profile"]["compatibility"]["state"] == "ready"
+    )
+    assert captured["run"]["port"] == 1
+
+
 def test_http_stream_and_nonstream_use_provider_and_reject_tools() -> None:
     from fastapi.testclient import TestClient
 

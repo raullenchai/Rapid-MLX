@@ -85,6 +85,100 @@ def test_cli_wires_tensorfold_preflight_before_pair_download() -> None:
     )
 
 
+def test_download_pair_uses_pinned_revisions(monkeypatch, tmp_path) -> None:
+    from rapid_mlx.speculative import tensorfold_qwen27 as adapter
+
+    calls = []
+    target = tmp_path / "target"
+    drafter = tmp_path / "drafter"
+    paths = iter((target, drafter))
+
+    def download(repo, *, revision):
+        calls.append((repo, revision))
+        return str(next(paths))
+
+    monkeypatch.setattr("huggingface_hub.snapshot_download", download)
+    monkeypatch.setattr(adapter, "validate_pair", lambda a, b: calls.append((a, b)))
+    result = adapter.download_qualified_pair()
+    assert result.target_path == str(target)
+    assert result.drafter_path == str(drafter)
+    assert calls[:2] == [
+        (adapter.SUPPORTED_TARGET, next(iter(adapter.SUPPORTED_TARGET_REVISIONS))),
+        (adapter.SUPPORTED_DRAFTER, next(iter(adapter.SUPPORTED_DRAFTER_REVISIONS))),
+    ]
+
+
+def test_pair_and_runtime_failure_contracts(monkeypatch, tmp_path) -> None:
+    from importlib.metadata import PackageNotFoundError
+
+    from rapid_mlx.speculative import tensorfold_qwen27 as adapter
+
+    with pytest.raises(TensorFoldUnavailable, match="pinned Hugging Face"):
+        adapter._snapshot_revision(tmp_path)
+    target = tmp_path / "snapshots" / "bad"
+    draft = tmp_path / "snapshots" / next(iter(adapter.SUPPORTED_DRAFTER_REVISIONS))
+    target.mkdir(parents=True)
+    draft.mkdir(parents=True)
+    with pytest.raises(TensorFoldUnavailable, match="target revision"):
+        validate_pair(target, draft)
+    target = tmp_path / "snapshots" / next(iter(adapter.SUPPORTED_TARGET_REVISIONS))
+    target.mkdir()
+    bad_draft = tmp_path / "other" / "snapshots" / "bad"
+    bad_draft.mkdir(parents=True)
+    with pytest.raises(TensorFoldUnavailable, match="DFlash2 revision"):
+        validate_pair(target, bad_draft)
+    with pytest.raises(TensorFoldUnavailable, match="readable config"):
+        validate_pair(target, draft)
+
+    monkeypatch.setattr(
+        adapter.importlib.metadata,
+        "version",
+        lambda _name: (_ for _ in ()).throw(PackageNotFoundError()),
+    )
+    with pytest.raises(TensorFoldUnavailable, match="optional tensorfold"):
+        require_runtime()
+    with (
+        patch.object(adapter.sys, "platform", "darwin"),
+        patch.object(adapter.platform, "machine", return_value="arm64"),
+        pytest.raises(TensorFoldUnavailable, match="mlx=="),
+    ):
+        require_environment()
+
+
+def test_backend_closed_duplicate_submit_and_app_close(monkeypatch) -> None:
+    cancellation = types.ModuleType("tensorfold.server.cancellation")
+    cancellation.Cancellation = FakeCancellation
+    monkeypatch.setitem(sys.modules, "tensorfold", types.ModuleType("tensorfold"))
+    monkeypatch.setitem(
+        sys.modules, "tensorfold.server", types.ModuleType("tensorfold.server")
+    )
+    monkeypatch.setitem(sys.modules, "tensorfold.server.cancellation", cancellation)
+    backend = TensorFoldQwen27Backend(FakeApp())
+    backend._closed = True
+    with pytest.raises(RuntimeError, match="closed"):
+        asyncio.run(anext(backend.stream("closed", [1], max_tokens=1)))
+
+    backend._closed = False
+    backend._active["dup"] = FakeCancellation()
+    with pytest.raises(ValueError, match="duplicate"):
+        asyncio.run(anext(backend.stream("dup", [1], max_tokens=1)))
+    backend._active.clear()
+    assert backend.cancel("missing") is False
+
+    class ClosingApp(FakeApp):
+        def __init__(self):
+            super().__init__()
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    app = ClosingApp()
+    backend = TensorFoldQwen27Backend(app)
+    backend.close()
+    assert app.closed
+
+
 class FakeCancellation:
     def __init__(self):
         self.cancelled = False
