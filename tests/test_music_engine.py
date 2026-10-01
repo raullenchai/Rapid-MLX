@@ -228,7 +228,10 @@ def test_ensure_weights_fetches_missing_and_returns_cache_paths(tmp_path, monkey
 
     requested = []
 
-    def _dl(repo_id, filename):
+    def _dl(repo_id, filename, *, revision=None):
+        # The pin must reach the real hf_hub_download call — an unpinned
+        # download would let a future upstream rewrite swap weights silently.
+        assert revision == music._SA3_REVISION
         requested.append((repo_id, filename))
         src = tmp_path / "hf" / filename  # stand-in for the HF cache
         src.parent.mkdir(parents=True, exist_ok=True)
@@ -274,7 +277,8 @@ def test_ensure_weights_does_not_write_into_readonly_package_dir(tmp_path, monke
     mlx_dir.mkdir()
     monkeypatch.setattr(music, "_SA3_MLX_DIR", mlx_dir)
 
-    def _dl(repo_id, filename):
+    def _dl(repo_id, filename, *, revision=None):
+        assert revision == music._SA3_REVISION
         src = tmp_path / "hf" / filename
         src.parent.mkdir(parents=True, exist_ok=True)
         src.write_bytes(b"real")
