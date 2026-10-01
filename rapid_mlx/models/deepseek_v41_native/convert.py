@@ -32,7 +32,7 @@ import glob
 import json
 import os
 import re
-from typing import Any, cast
+from typing import Any
 
 import mlx.core as mx
 
@@ -322,14 +322,6 @@ def _stream_raw_copy(
                 t = sl[i : i + step]
                 out.write(t.view(__import__("torch").uint8).numpy().tobytes())
     os.replace(tmp, out_path)
-
-
-def _read_st_header(path: str) -> dict:
-    import struct
-
-    with open(path, "rb") as f:
-        n = struct.unpack("<Q", f.read(8))[0]
-        return cast(dict[Any, Any], json.loads(f.read(n)))
 
 
 def convert(
