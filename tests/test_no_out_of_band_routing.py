@@ -135,6 +135,9 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # Local-only archive location for reproducible benchmark records. It
         # changes storage placement, never model/task/parser selection.
         "RAPID_MLX_BENCHMARK_HOME",
+        # Qualification-only destination for generated token-ID evidence.
+        # It changes audit storage, never model, parser, or serving-lane choice.
+        "RAPID_MLX_TENSORFOLD_AUDIT_PATH",
         # Security policy knobs, none of which selects a model, parser, tier,
         # or engine route. TRUST_REMOTE_CODE only constrains whether an
         # already-selected checkpoint may import repository Python;
@@ -1547,6 +1550,9 @@ def test_alias_profile_str_fields_are_explicitly_listed():
             # Closed runtime identity receipt validated against
             # VALID_DFLASH_ALGORITHMS before the DFlash lane can start.
             "dflash_algorithm",
+            # Closed provider identity for a pinned DFlash pair. _coerce accepts
+            # only "tensorfold"; aliases without it retain the existing backend.
+            "dflash_backend",
             "ddtree_draft_model",  # HF path for the DDTree/DFlash drafter
             # HF org/repo path for the isolated serial native-MTP sidecar.
             # Open-ended artifact identity, not a lane enum; _coerce requires

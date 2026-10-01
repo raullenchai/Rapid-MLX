@@ -676,12 +676,14 @@ def _build_app(
     stream_generate_fn: Any | None = None,
     generate_fn: Any | None = None,
     generation_kwargs_fn: Any | None = None,
+    generation_kwargs_with_request: bool = False,
     validate_request_fn: Any | None = None,
     backend_name: str = "DFlash",
     speculative_info: SpeculativeDecodingInfo | None = None,
     model_info: ModelInfo | None = None,
     strict_openai_streaming: bool = False,
     telemetry_model: str | None = None,
+    runtime_status_extra: dict[str, Any] | None = None,
 ) -> FastAPI:
     """Create the FastAPI application for DFlash mode.
 
@@ -864,6 +866,8 @@ def _build_app(
         if isinstance(block_size, int):
             result["num_speculative_tokens"] = block_size
         result.update(_companion_status_fields())
+        if runtime_status_extra:
+            result.update(runtime_status_extra)
         return result
 
     @app.get(
@@ -902,6 +906,8 @@ def _build_app(
             ),
         }
         result.update(_companion_status_fields())
+        if runtime_status_extra:
+            result.update(runtime_status_extra)
         return result
 
     @app.get(
@@ -1204,11 +1210,12 @@ def _build_app(
                     draft_kind=runtime.kind,
                 )
             else:
-                gen_kwargs = generation_kwargs_fn(
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    top_p=top_p,
+                _generation_inputs: dict[str, Any] = dict(
+                    max_tokens=max_tokens, temperature=temperature, top_p=top_p
                 )
+                if generation_kwargs_with_request:
+                    _generation_inputs["request"] = request
+                gen_kwargs = generation_kwargs_fn(**_generation_inputs)
             # Media inputs are owned by the request-preparation callback. Keep
             # them additive so existing DFlash/native-MTP callers see the exact
             # same kwargs they did before this companion-VLM seam existed.

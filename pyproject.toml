@@ -188,6 +188,11 @@ vision = [
 dflash = [
     "mlx-vlm==0.7.2",
 ]
+# Experimental Qwen3.8-27B decoder proof. This remains an explicit install and
+# runtime selection; TensorFold owns a separate model/scheduler/cache domain.
+tensorfold-qwen27 = [
+    "tensorfold @ git+https://github.com/ashhart/TensorFold.git@9cd52ab4daba68ddd09be89be8f23ad43175e821 ; platform_system == 'Darwin' and python_version >= '3.11'",
+]
 # MTP (Multi-Token Prediction) speculative decoding — Gemma 4 external
 # assistant path via ``--speculative-config '{"method":"mtp","model":"<path>"}'``.
 # assistant-drafter loader in

@@ -2509,6 +2509,8 @@ class SpeculativeDecodingInfo(BaseModel):
     method: str | None = None
     runtime_state: Literal["pending", "active", "unavailable"]
     request_fallback_features: list[Literal["tools"]] = Field(default_factory=list)
+    backend: str | None = None
+    unsupported_features: list[str] = Field(default_factory=list)
 
 
 class CompanionSpeculativeDecodingInfo(SpeculativeDecodingInfo):
@@ -2661,6 +2663,10 @@ class ModelInfo(BaseModel):
     speculative_decoding: (
         CompanionSpeculativeDecodingInfo | SpeculativeDecodingInfo | None
     ) = None
+    # Catalog recovery target for a specialized profile whose feature surface
+    # is narrower than the ordinary model lane.
+    fallback_model: str | None = None
+    min_memory_gb: float | None = None
 
 
 class ModelsResponse(BaseModel):

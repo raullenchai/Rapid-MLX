@@ -87,6 +87,9 @@ ALLOWED_PROFILE_KEYS: frozenset[str] = frozenset(
         "dflash_target_revision",
         "dflash_draft_revision",
         "dflash_algorithm",
+        # Closed provider selection for the explicitly qualified DFlash pair.
+        # _coerce accepts only "tensorfold" and requires a pinned drafter.
+        "dflash_backend",
         "supports_ddtree",
         "ddtree_draft_model",
         "ddtree_speculative_tokens",

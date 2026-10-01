@@ -3052,6 +3052,19 @@ def _native_mtp_runtime_ready(model_name) -> bool:
         return False
 
 
+def _tensorfold_product_profile(model_name: str | None):
+    """Return the catalog profile only for the qualified product alias."""
+
+    if not model_name:
+        return None
+    from .model_aliases import resolve_profile
+
+    profile = resolve_profile(model_name)
+    if profile is None or getattr(profile, "dflash_backend", None) != "tensorfold":
+        return None
+    return profile
+
+
 def _normalize_speculative_config_or_exit(args):
     """Parse ``--speculative-config`` and map methods to runtime fields."""
     import json
@@ -3320,6 +3333,21 @@ def _normalize_speculative_config_or_exit(args):
             args.speculative_config = raw_config
         elif (
             not getattr(args, "no_spec_decode", False)
+            and not getattr(args, "mllm", False)
+            and (profile := _tensorfold_product_profile(getattr(args, "model", None)))
+            is not None
+        ):
+            raw_config = json.dumps(
+                {
+                    "method": "dflash",
+                    "backend": "tensorfold",
+                    "model": profile.dflash_draft_model,
+                },
+                separators=(",", ":"),
+            )
+            args.speculative_config = raw_config
+        elif (
+            not getattr(args, "no_spec_decode", False)
             # An explicit modality request outranks an alias-owned performance
             # default.  The MLLM lane cannot honour speculative decoding, so
             # injecting MTP here would silently undo ``--mllm`` later in the
@@ -3422,6 +3450,7 @@ def _normalize_speculative_config_or_exit(args):
         args.enable_ddtree = True
     elif config.method == "dflash":
         args.enable_dflash = True
+        args.dflash_backend = config.backend
         if config.model:
             args.dflash_drafter_path = config.model
     elif config.method == "dspark":
@@ -3833,6 +3862,28 @@ def _preflight_dflash_mutexes_or_exit(args) -> None:
             file=sys.stderr,
         )
         sys.exit(2)
+
+
+def _preflight_tensorfold_qwen27_or_exit() -> None:
+    """Reject an unusable TensorFold runtime before downloading the 27B pair."""
+
+    from .runtime.optional_runtime import optional_extra_install_hint
+    from .speculative.tensorfold_qwen27 import (
+        TensorFoldUnavailable,
+        require_environment,
+        require_runtime,
+    )
+
+    try:
+        require_runtime()
+        require_environment()
+    except TensorFoldUnavailable as exc:
+        print(
+            "\n  Error: the TensorFold Qwen 27B profile is unavailable: "
+            f"{exc}.\n\n  {optional_extra_install_hint('tensorfold-qwen27')}\n",
+            file=sys.stderr,
+        )
+        raise SystemExit(1) from exc
 
 
 def _preflight_ddtree_or_exit(args):
@@ -5274,7 +5325,15 @@ def serve_command(args):
     # as the other extras so the error lands FIRST. ``importlib.util.
     # find_spec("mlx_vlm")`` doesn't trigger a load — safe to run on the
     # hot CLI path.
-    _wants_dflash = getattr(args, "enable_dflash", False)
+    _spec_config = getattr(args, "_speculative_config", None)
+    _wants_tensorfold = (
+        _spec_config is not None
+        and _spec_config.method == "dflash"
+        and _spec_config.backend == "tensorfold"
+    )
+    if _wants_tensorfold:
+        _preflight_tensorfold_qwen27_or_exit()
+    _wants_dflash = getattr(args, "enable_dflash", False) and not _wants_tensorfold
     if _wants_dflash:
         from .speculative.dflash.eligibility import have_runtime
 
@@ -5466,6 +5525,33 @@ def serve_command(args):
             _check_disk_space(
                 args.model, force=getattr(args, "force_disk_check", False)
             )
+    elif (
+        getattr(args, "dflash_backend", None) == "tensorfold"
+        and (
+            _tf_profile := _tensorfold_product_profile(
+                getattr(args, "_original_alias", None) or args.model
+            )
+        )
+        is not None
+    ):
+        from rapid_mlx.telemetry.server_start import failure_stage
+
+        from .speculative.tensorfold_qwen27 import download_qualified_pair
+
+        with failure_stage("download"):
+            _check_disk_space(
+                _tf_profile.hf_path,
+                force=getattr(args, "force_disk_check", False),
+                revision_override=_tf_profile.dflash_target_revision,
+            )
+            _check_disk_space(
+                _tf_profile.dflash_draft_model,
+                force=getattr(args, "force_disk_check", False),
+                revision_override=_tf_profile.dflash_draft_revision,
+            )
+            _tf_artifacts = download_qualified_pair()
+        args.model = _tf_artifacts.target_path
+        args._dflash_drafter_repo = _tf_artifacts.drafter_path
     elif not _is_wan_video:
         if getattr(args, "force_disk_check", False):
             _ensure_model_downloaded(args.model, force_disk_check=True)
@@ -5992,7 +6078,7 @@ def serve_command(args):
     # so the user sees a clean error rather than an optimistic "DFlash
     # enabled" feature line followed by an exit. Cheap (just reads
     # aliases.json + checks the module spec); no model load yet.
-    if args.enable_dflash:
+    if args.enable_dflash and not _wants_tensorfold:
         from .model_aliases import resolve_profile
         from .model_profile import ModelProfile
         from .speculative.dflash import DFlashUnavailable, check
@@ -6220,7 +6306,14 @@ def serve_command(args):
             sys.exit(2)
 
         from .model_aliases import resolve_profile
-        from .speculative.dflash.server import run_dflash_server
+
+        _dflash_backend = getattr(args, "dflash_backend", None)
+        if _dflash_backend == "tensorfold":
+            from .speculative.tensorfold_qwen27_server import (
+                run_tensorfold_qwen27_server,
+            )
+        else:
+            from .speculative.dflash.server import run_dflash_server
 
         _alias_name = getattr(args, "_original_alias", None) or args.model
         _profile = getattr(args, "_dflash_profile", None) or resolve_profile(
@@ -6233,9 +6326,49 @@ def serve_command(args):
         _drafter_repo = getattr(args, "_dflash_drafter_repo", None) or (
             _resolve_dflash_drafter_repo(args, _profile)
         )
-        _target_revision, _drafter_revision = _resolve_dflash_revisions(
-            _profile, _drafter_repo
+        if _dflash_backend == "tensorfold":
+            _target_revision, _drafter_revision = None, None
+        else:
+            _target_revision, _drafter_revision = _resolve_dflash_revisions(
+                _profile, _drafter_repo
+            )
+        _dflash_kwargs = dict(
+            main_model_repo=(
+                args.model
+                if _dflash_backend == "tensorfold"
+                else (_profile.hf_path if _profile else args.model)
+            ),
+            main_model_revision=_target_revision,
+            drafter_repo=_drafter_repo,
+            drafter_revision=_drafter_revision,
+            host=args.host,
+            port=_resolved_serve_port(args),
+            port_explicit=port_explicit_for(args),
+            served_model_name=args.served_model_name or _alias_name,
+            default_max_tokens=effective_max_tokens,
+            cors_origins=cors_origins,
+            uvicorn_log_level=uvicorn_log_level,
+            no_thinking=args.no_thinking,
+            api_key=server._api_key,
+            rate_limit=args.rate_limit,
+            max_request_bytes=server._max_request_bytes,
+            body_receive_timeout_seconds=server._body_receive_timeout_seconds,
+            default_timeout=server._default_timeout,
+            max_concurrent_requests=args.max_concurrent_requests,
+            cors_policy=server.get_resolved_cors_policy(),
+            tool_call_parser=(
+                args.tool_call_parser if args.enable_auto_tool_choice else None
+            ),
+            reasoning_parser_name=args.reasoning_parser,
+            default_reasoning_effort=getattr(args, "default_reasoning_effort", None),
+            experimental_opt_in=getattr(args, "_dflash_experimental", False),
+            expected_algorithm=(
+                _resolve_dflash_expected_algorithm(_profile, _drafter_repo)
+            ),
         )
+        if _dflash_backend == "tensorfold":
+            run_tensorfold_qwen27_server(**_dflash_kwargs)
+            return
         run_dflash_server(
             main_model_repo=_profile.hf_path if _profile else args.model,
             main_model_revision=_target_revision,
