@@ -88,6 +88,7 @@ jobs:
           python -m pip install build twine
           python -m build
           twine check dist/*
+          python scripts/verify_dependency_metadata.py dist/
 
       - name: Verify the telemetry release stamp
         if: inputs.publish

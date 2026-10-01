@@ -82,7 +82,7 @@ REQUIRED_CI_MATRIX_PREFIXES = {
     "test-matrix (": 9,
     "l1-smoke (": 5,
 }
-MAX_GUI_MATRIX_JOBS = 2
+MAX_GUI_MATRIX_JOBS = 4
 
 
 class EvidenceError(RuntimeError):

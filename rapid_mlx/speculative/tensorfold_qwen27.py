@@ -20,7 +20,14 @@ from pathlib import Path
 from typing import Any, cast
 
 SUPPORTED_VERSION = "0.5.0"
+SUPPORTED_REVISION = "9cd52ab4daba68ddd09be89be8f23ad43175e821"
 SUPPORTED_MLX_VERSION = "0.32.3"
+INSTALL_HINT = (
+    "Install the qualified TensorFold runtime from its vetted revision with:\n"
+    '    python -m pip install "tensorfold @ '
+    "git+https://github.com/ashhart/TensorFold.git@"
+    f'{SUPPORTED_REVISION}"'
+)
 SUPPORTED_MODEL_TYPE = "qwen3_5"
 SUPPORTED_TARGET = "Vontra/Qwen3.8-27B-MLX-4bit"
 SUPPORTED_DRAFTER = "z-lab/Qwen3.8-27B-DFlash2"

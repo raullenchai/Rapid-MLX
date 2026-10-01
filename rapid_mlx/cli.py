@@ -3941,8 +3941,6 @@ def _preflight_dflash_mutexes_or_exit(args) -> None:
 def _preflight_tensorfold_qwen27_or_exit(args=None) -> None:
     """Reject an unusable qualified TensorFold runtime before downloads."""
 
-    from .runtime.optional_runtime import optional_extra_install_hint
-
     profile = _tensorfold_mtp_profile(
         (getattr(args, "_original_alias", None) or getattr(args, "model", None))
         if args is not None
@@ -3968,6 +3966,7 @@ def _preflight_tensorfold_qwen27_or_exit(args=None) -> None:
         environment_probe = require_glm_environment
     else:
         from .speculative.tensorfold_qwen27 import (
+            INSTALL_HINT,
             TensorFoldUnavailable,
         )
         from .speculative.tensorfold_qwen27 import (
@@ -3977,7 +3976,7 @@ def _preflight_tensorfold_qwen27_or_exit(args=None) -> None:
             require_runtime as require_qwen_runtime,
         )
 
-        install_hint = optional_extra_install_hint("tensorfold-qwen27")
+        install_hint = INSTALL_HINT
         label = "Qwen 27B"
         runtime_probe = require_qwen_runtime
         environment_probe = require_qwen_environment
