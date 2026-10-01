@@ -645,6 +645,7 @@ def test_serve_command_downloads_qualified_glm_tensorfold_target(
     from rapid_mlx.speculative import tensorfold_glm53
 
     disk_checks: list[tuple[str, bool, str | None]] = []
+    monkeypatch.setattr(cli, "_check_alias_min_memory", lambda *_a, **_k: None)
     monkeypatch.setattr(cli, "_preflight_tensorfold_qwen27_or_exit", lambda _args: None)
     monkeypatch.setattr(
         cli,
