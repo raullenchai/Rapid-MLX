@@ -954,6 +954,20 @@ enum ModelCatalog {
                         == "verified"
                         && (row["mtp_default_enabled"] as? Bool ?? true)
                 )
+            } else if row["supports_dflash"] as? Bool == true,
+                      let model = sanitizedHuggingFaceRepo(
+                          row["dflash_draft_model"] as? String
+                      ),
+                      row["dflash_algorithm"] as? String == "dflash2" {
+                let backend = row["dflash_backend"] as? String
+                guard backend == nil || backend == "tensorfold" else { continue }
+                speculative[alias] = SpeculativeDecodingPreset(
+                    method: .dflash,
+                    model: model,
+                    tokens: nil,
+                    backend: backend,
+                    defaultEnabled: false
+                )
             } else if row["supports_spec_decode"] as? Bool == true {
                 speculative[alias] = SpeculativeDecodingPreset(
                     method: .suffix, model: nil, tokens: nil

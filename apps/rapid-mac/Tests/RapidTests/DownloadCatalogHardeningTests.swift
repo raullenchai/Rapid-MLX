@@ -4,6 +4,48 @@ import Testing
 
 @Suite("Download/catalog hardening")
 struct DownloadCatalogHardeningTests {
+    private func atomicCatalog(withTextRows textRows: [[String: Any]]) throws -> String {
+        let alias = "qwen3.8-27b-tensorfold"
+        var snapshot: [String: Any] = [
+            "schema_version": 2,
+            "recommendation_policy_digests": [],
+            "models": [[
+                "schema_version": 1,
+                "registry_model_id": "legacy/hf/\(alias)",
+                "resolution_status": "unresolved",
+                "source": ["provider": "huggingface", "repo_id": "Vontra/Qwen3.8-27B-MLX-4bit"],
+            ]],
+            "aliases": [[
+                "schema_version": 2,
+                "alias": alias,
+                "origin": "builtin",
+                "target": [
+                    "registry_model_id": "legacy/hf/\(alias)",
+                    "resolution_status": "unresolved",
+                ],
+                "capabilities": [
+                    "task_types": ["text_generation"],
+                    "operation_modes": ["chat"],
+                    "runtime_adapter": "mlx_lm",
+                    "is_text_only": true,
+                ],
+                "availability": ["cli": true, "server": true, "desktop": true, "website": true],
+                "default_execution_preset_id": NSNull(),
+                "execution_presets": [],
+            ]],
+        ]
+        let digest = try #require(ModelCatalog.atomicCatalogDigest(snapshot))
+        snapshot["catalog_digest"] = digest
+        let root: [String: Any] = [
+            "text": textRows,
+            "atomic": [
+                "snapshot": snapshot,
+                "shadow_report": ["equivalent": true, "catalog_digest": digest],
+            ],
+        ]
+        return String(decoding: try JSONSerialization.data(withJSONObject: root), as: UTF8.self)
+    }
+
     @Test("Structured catalog carries authoritative Desktop launch metadata")
     func structuredCatalogCapabilityParsing() throws {
         let output = """
@@ -37,6 +79,23 @@ struct DownloadCatalogHardeningTests {
             #"{"method":"dflash","model":"z-lab/Qwen3.8-27B-DFlash2","backend":"tensorfold"}"#,
         ])
         #expect(parsed.excluded == ["whisper", "flux-dev"])
+    }
+
+    @Test("Atomic catalog preserves the qualified DFlash launch preset")
+    func atomicCatalogDFlashPreset() throws {
+        let output = try atomicCatalog(withTextRows: [[
+            "alias": "qwen3.8-27b-tensorfold",
+            "supports_dflash": true,
+            "dflash_draft_model": "z-lab/Qwen3.8-27B-DFlash2",
+            "dflash_algorithm": "dflash2",
+            "dflash_backend": "tensorfold",
+        ]])
+        let parsed = try #require(ModelCatalog.parseAvailableJSON(output))
+        let preset = try #require(parsed.speculative["qwen3.8-27b-tensorfold"])
+        #expect(preset.method == .dflash)
+        #expect(preset.model == "z-lab/Qwen3.8-27B-DFlash2")
+        #expect(preset.backend == "tensorfold")
+        #expect(!preset.isDefaultEnabled)
     }
 
     @Test("Speculative presets are parsed from the alias profile table")
