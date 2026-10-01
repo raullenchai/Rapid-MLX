@@ -91,6 +91,17 @@ Recommendations live in one catalog (`rapid_mlx/model_recommendations.json`) sha
 | 24–31 GB | `bonsai-27b-2bit` | 13.0 GB |
 | 32 GB+ | `qwen3.8-27b-4bit` | 20.0 GB |
 
+The experimental `qwen3.8-27b-tensorfold` profile requires a separately
+installed source runtime. Install the exact qualified revision before selecting
+the profile:
+
+```bash
+python -m pip install "tensorfold @ git+https://github.com/ashhart/TensorFold.git@9cd52ab4daba68ddd09be89be8f23ad43175e821"
+```
+
+This dependency remains an explicit opt-in because it is not available as an
+indexed wheel. The normal `rapid-mlx` package and its extras do not install it.
+
 ### Experimental Chat candidate: NeoHorse 1 9B
 
 `neohorse-9b-4bit` is an opt-in, text-only Chat model for Macs with at
