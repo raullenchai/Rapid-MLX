@@ -619,6 +619,68 @@ def test_dflash_memory_check_receives_original_alias(
     assert calls == [(ns.model, ns._original_alias)]
 
 
+def test_tensorfold_alias_preflights_downloads_pair_and_dispatches_server(
+    stub_heavy_serve_deps, monkeypatch, scheduler_config_stub
+):
+    """The qualified alias owns its pinned pair and dedicated server lane."""
+    from types import SimpleNamespace
+
+    from rapid_mlx.speculative import tensorfold_qwen27, tensorfold_qwen27_server
+
+    events: list[object] = []
+    disk_checks: list[tuple[str, str | None]] = []
+    artifacts = SimpleNamespace(
+        target_path="/qualified/target", drafter_path="/qualified/drafter"
+    )
+
+    monkeypatch.setattr(
+        cli,
+        "_preflight_tensorfold_qwen27_or_exit",
+        lambda: events.append("preflight"),
+    )
+    monkeypatch.setattr(cli, "_check_alias_min_memory", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli,
+        "_check_disk_space",
+        lambda model, **kwargs: disk_checks.append(
+            (model, kwargs.get("revision_override"))
+        ),
+    )
+    monkeypatch.setattr(
+        tensorfold_qwen27,
+        "download_qualified_pair",
+        lambda: events.append("download") or artifacts,
+    )
+    monkeypatch.setattr(
+        tensorfold_qwen27_server,
+        "run_tensorfold_qwen27_server",
+        lambda **kwargs: events.append(("server", kwargs)),
+    )
+
+    ns = _minimal_serve_ns()
+    ns.model = "Vontra/Qwen3.8-27B-MLX-4bit"
+    ns._original_alias = "qwen3.8-27b-tensorfold"
+    ns._dflash_experimental = True
+    ns.speculative_config = (
+        '{"method":"dflash","backend":"tensorfold","model":"z-lab/Qwen3.8-27B-DFlash2"}'
+    )
+
+    cli.serve_command(ns)
+
+    assert events[0:2] == ["preflight", "download"]
+    assert disk_checks[0][0] == "Vontra/Qwen3.8-27B-MLX-4bit"
+    assert disk_checks[0][1]
+    assert disk_checks[1][0] == "z-lab/Qwen3.8-27B-DFlash2"
+    assert disk_checks[1][1]
+    kind, kwargs = events[-1]
+    assert kind == "server"
+    assert kwargs["main_model_repo"] == artifacts.target_path
+    assert kwargs["drafter_repo"] == artifacts.drafter_path
+    assert kwargs["main_model_revision"] is None
+    assert kwargs["drafter_revision"] is None
+    assert kwargs["experimental_opt_in"] is True
+
+
 def test_serve_command_threads_auto_detected_hybrid_into_cache_admission(
     stub_heavy_serve_deps, monkeypatch, scheduler_config_stub
 ):

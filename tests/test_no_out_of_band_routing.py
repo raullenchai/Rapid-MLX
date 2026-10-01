@@ -135,6 +135,9 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # Local-only archive location for reproducible benchmark records. It
         # changes storage placement, never model/task/parser selection.
         "RAPID_MLX_BENCHMARK_HOME",
+        # Qualification-only destination for generated token-ID evidence.
+        # It changes audit storage, never model, parser, or serving-lane choice.
+        "RAPID_MLX_TENSORFOLD_AUDIT_PATH",
         # Security policy knobs, none of which selects a model, parser, tier,
         # or engine route. TRUST_REMOTE_CODE only constrains whether an
         # already-selected checkpoint may import repository Python;
@@ -198,6 +201,12 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # same scores; model, parser, serving lane, and emitted block set remain
         # unchanged. Unqualified shapes and machines retain the eager selector.
         "RAPID_MLX_QSA_STAGE1",
+        # Opt-in row-invariant lane matmul for an already-selected dense
+        # model's projections (multi-row verify and batched decode). It swaps
+        # only the arithmetic of covered linear layers after load; model,
+        # parser, tier, spec-decode mode and serving lane are unchanged, and
+        # MoE models and unsupported formats keep the stock kernels.
+        "RAPID_MLX_LANE_MATMUL",
         # Opt-out of exact CPU-side chat-render and tokenization reuse. This
         # changes only whether immutable host results are retained in a bounded
         # LRU after model selection; it cannot select a model, parser, tier, or
@@ -1541,6 +1550,9 @@ def test_alias_profile_str_fields_are_explicitly_listed():
             # Closed runtime identity receipt validated against
             # VALID_DFLASH_ALGORITHMS before the DFlash lane can start.
             "dflash_algorithm",
+            # Closed provider identity for a pinned DFlash pair. _coerce accepts
+            # only "tensorfold"; aliases without it retain the existing backend.
+            "dflash_backend",
             "ddtree_draft_model",  # HF path for the DDTree/DFlash drafter
             # HF org/repo path for the isolated serial native-MTP sidecar.
             # Open-ended artifact identity, not a lane enum; _coerce requires

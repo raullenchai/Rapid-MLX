@@ -79,6 +79,8 @@ def test_model_profile_reads_policy_from_matching_live_scheduler(monkeypatch):
         "method": "mtp",
         "runtime_state": "active",
         "request_fallback_features": [],
+        "backend": None,
+        "unsupported_features": [],
     }
 
 
