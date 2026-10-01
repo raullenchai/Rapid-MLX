@@ -38,10 +38,6 @@ DEFAULT_DECODER = "same-l"
 # the possibly read-only package dir). Repo layout puts every MLX file under
 # ``MLX/`` (mirrors the repo→local map in ``sa3/scripts/weights.py``).
 _SA3_REPO_ID = "stabilityai/stable-audio-3-optimized"
-# Pin the download to the reviewed upstream commit so a later upstream
-# rewrite (or repo compromise) cannot silently swap weights into the HF
-# cache of existing installs. Mirrors the pin in ``sa3/scripts/weights.py``.
-_SA3_REVISION = "da6edc54ddba10bfd79a077102ded687f80e882b"
 
 # Selected-component → weight filename (basename shared by the local vendored
 # path ``sa3/models/mlx/<name>`` and the repo path ``MLX/<name>``).
@@ -128,11 +124,7 @@ class MusicEngine:
                     "Run:  pip install huggingface_hub"
                 ) from e
             for name in to_fetch:
-                cached = hf_hub_download(
-                    repo_id=_SA3_REPO_ID,
-                    filename=f"MLX/{name}",
-                    revision=_SA3_REVISION,
-                )
+                cached = hf_hub_download(repo_id=_SA3_REPO_ID, filename=f"MLX/{name}")
                 resolved[name] = Path(cached)
 
         return resolved

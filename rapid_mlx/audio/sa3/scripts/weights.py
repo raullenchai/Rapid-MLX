@@ -16,9 +16,6 @@ from __future__ import annotations
 from pathlib import Path
 
 REPO_ID = "stabilityai/stable-audio-3-optimized"
-# Reviewed upstream commit; pinned so future upstream rewrites cannot
-# silently swap weights into existing installs' HF caches.
-REPO_REVISION = "da6edc54ddba10bfd79a077102ded687f80e882b"
 # weights.py lives in <project>/scripts/; SCRIPT_DIR points at the project
 # root so the local rel paths in the manifest ("models/mlx/foo.npz") resolve
 # against the actual project layout.
@@ -179,9 +176,7 @@ def ensure_local(local_rel_path: str, verbose: bool = True) -> Path:
 
     # Lands in the writable HF cache; load straight from there (no write into
     # the possibly read-only vendored package dir).
-    cached = hf_hub_download(
-        repo_id=REPO_ID, filename=hf_filename, revision=REPO_REVISION
-    )
+    cached = hf_hub_download(repo_id=REPO_ID, filename=hf_filename)
     return Path(cached)
 
 
