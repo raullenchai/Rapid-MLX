@@ -232,6 +232,23 @@ def test_glm_parser_sanitizes_tensorfold_implicit_reasoning(decode_path: str) ->
     assert content == "GLM_SMOKE_OK"
 
 
+def test_glm_stream_matches_nonstream_boundary_trimming() -> None:
+    from rapid_mlx.reasoning.glm5_parser import Glm5ReasoningParser
+
+    parser = Glm5ReasoningParser()
+    parser.configure_request(prompt_thinking_active=True)
+    first = parser.extract_reasoning_streaming(
+        "reasoning", "reasoning</think>\n\n```python\n", "</think>\n\n```python\n"
+    )
+    second = parser.extract_reasoning_streaming(
+        "reasoning</think>\n\n```python\n",
+        "reasoning</think>\n\n```python\n    return []\n",
+        "    return []\n",
+    )
+    assert first is not None and first.content == "```python\n"
+    assert second is not None and second.content == "    return []\n"
+
+
 @pytest.mark.parametrize("decode_path", ["drafted", "serial"])
 def test_non_stream_truncation_never_publishes_implicit_reasoning(
     monkeypatch, decode_path: str
