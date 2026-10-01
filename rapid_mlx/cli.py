@@ -3345,7 +3345,10 @@ def _normalize_speculative_config_or_exit(args):
         elif (
             not getattr(args, "no_spec_decode", False)
             and not getattr(args, "mllm", False)
-            and _tensorfold_mtp_profile(getattr(args, "model", None)) is not None
+            and _tensorfold_mtp_profile(
+                getattr(args, "_original_alias", None) or getattr(args, "model", None)
+            )
+            is not None
         ):
             raw_config = '{"method":"mtp","backend":"tensorfold"}'
             args.speculative_config = raw_config

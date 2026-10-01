@@ -22,6 +22,34 @@ from .tensorfold_qwen27 import TensorFoldQwen27Backend, validate_request
 _MAX_CONCURRENT_REQUESTS = 1
 
 
+class _StableIncrementalText:
+    """Decode with bounded left context so emitted text never needs revision.
+
+    Some tokenizers clean whitespace differently after the following token is
+    known. Decoding the entire prefix and slicing it therefore corrupts SSE
+    output when the newly decoded prefix is not string-prefix-stable. This is
+    the same contextual-window strategy used by the pinned runtime itself.
+    """
+
+    def __init__(self, tokenizer: Any, lock: Any) -> None:
+        self._tokenizer = tokenizer
+        self._lock = lock
+        self._tokens: list[int] = []
+        self._text = ""
+        self._prefix = 0
+        self._read = 0
+
+    def extend(self, tokens: list[int]) -> str:
+        self._tokens.extend(int(token) for token in tokens)
+        with self._lock:
+            before = self._tokenizer.decode(self._tokens[self._prefix : self._read])
+            after = self._tokenizer.decode(self._tokens[self._prefix :])
+        if len(after) > len(before) and not after.endswith("\ufffd"):
+            self._text += after[len(before) :]
+            self._prefix, self._read = self._read, len(self._tokens)
+        return self._text
+
+
 @dataclass(frozen=True)
 class ProviderChunk:
     text: str
@@ -95,6 +123,7 @@ class TensorFoldRequestProvider:
             job.think_budget = thinking_budget if job.think_end >= 0 else 0
         collected: list[int] = []
         decoded = ""
+        incremental = _StableIncrementalText(tokenizer, app.tokenizer_lock)
         outputs: list[RequestOutput] = []
         app.scheduler.submit(job)
         try:
@@ -109,18 +138,15 @@ class TensorFoldRequestProvider:
                 for token in chunk:
                     token = int(token)
                     collected.append(token)
-                    visible_ids = (
-                        collected[:-1] if token in stops.eos_ids else collected
+                    current = stops.visible(
+                        incremental.extend([] if token in stops.eos_ids else [token]),
+                        partial=True,
                     )
-                    with app.tokenizer_lock:
-                        current = stops.visible(
-                            tokenizer.decode(visible_ids), partial=True
+                    if not current.startswith(decoded):
+                        raise RuntimeError(
+                            "TensorFold streaming decoder produced a non-monotonic prefix"
                         )
-                    delta = (
-                        current[len(decoded) :]
-                        if current.startswith(decoded)
-                        else current
-                    )
+                    delta = current[len(decoded) :]
                     decoded = current
                     output = RequestOutput(
                         request_id=request_id,
@@ -135,6 +161,32 @@ class TensorFoldRequestProvider:
                     yield output
             if job.error is not None:
                 raise job.error
+            # Flush text held while it could still be a partial stop string and
+            # verify that the streamed surface exactly reconstructs the final
+            # batch decode. SSE cannot retract bytes, so fail closed if a future
+            # tokenizer violates the contextual decoder contract.
+            content_ids = list(collected)
+            while content_ids and content_ids[-1] in stops.eos_ids:
+                content_ids.pop()
+            with app.tokenizer_lock:
+                final_text = stops.visible(tokenizer.decode(content_ids))
+            if not final_text.startswith(decoded):
+                raise RuntimeError(
+                    "TensorFold streamed text does not match final tokenizer decode"
+                )
+            if final_delta := final_text[len(decoded) :]:
+                decoded = final_text
+                output = RequestOutput(
+                    request_id=request_id,
+                    new_token_ids=[],
+                    new_text=final_delta,
+                    output_token_ids=list(collected),
+                    output_text=decoded,
+                    prompt_tokens=len(prompt_ids),
+                    completion_tokens=len(collected),
+                )
+                outputs.append(output)
+                yield output
             finish = job.stream.finish_reason if job.stream is not None else "length"
             terminal = RequestOutput(
                 request_id=request_id,
@@ -172,7 +224,7 @@ class TensorFoldRequestProvider:
                 continue
             yield ProviderChunk(
                 text=output.new_text,
-                token=output.new_token_ids[0],
+                token=(output.new_token_ids[0] if output.new_token_ids else -1),
                 generation_tokens=output.completion_tokens,
                 prompt_tokens=output.prompt_tokens,
             )

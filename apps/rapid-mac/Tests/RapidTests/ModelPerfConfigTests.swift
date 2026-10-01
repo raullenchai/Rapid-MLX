@@ -354,26 +354,26 @@ struct ModelPerfConfigTests {
         ) == ["--no-spec-decode"])
     }
 
-    @Test("Target-only TensorFold MTP is off until the user enables it")
-    func targetOnlyTensorFoldMTPOptInContract() {
+    @Test("Target-only TensorFold MTP defaults on and keeps an explicit opt-out")
+    func targetOnlyTensorFoldMTPDefaultOnContract() {
         let preset = SpeculativeDecodingPreset(
             method: .mtp,
             model: nil,
             tokens: nil,
             backend: "tensorfold",
-            defaultEnabled: false
+            defaultEnabled: true
         )
         let defaults = ServerManager.desktopCapabilityFlags(
             forAlias: "glm5.3-flash-tensorfold",
             speculativePreset: preset,
             existing: []
         )
-        #expect(defaults == ["--no-spec-decode"])
+        #expect(defaults == preset.launchFlags + ["--text-only"])
         #expect(ServerManager.mergedPerformanceFlags(
             recommended: defaults,
             userOverrides: ModelPerfConfig(speculativePreset: preset)
                 .launchFlags(forAlias: "glm5.3-flash-tensorfold")
-        ) == preset.launchFlags)
+        ) == ["--text-only"] + preset.launchFlags)
         #expect(ServerManager.mergedPerformanceFlags(
             recommended: preset.launchFlags,
             userOverrides: ModelPerfConfig(speculativeDecodingDisabled: true)

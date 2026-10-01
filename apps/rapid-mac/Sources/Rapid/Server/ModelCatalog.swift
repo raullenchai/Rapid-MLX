@@ -867,7 +867,7 @@ enum ModelCatalog {
                     model: nil,
                     tokens: nil,
                     backend: "tensorfold",
-                    defaultEnabled: false
+                    defaultEnabled: row["mtp_default_enabled"] as? Bool ?? false
                 )
             } else if let model = sanitizedHuggingFaceRepo(row["mtp_draft_model"] as? String),
                let tokens = row["mtp_speculative_tokens"] as? Int, tokens > 0 {
@@ -891,7 +891,7 @@ enum ModelCatalog {
                     model: model,
                     tokens: nil,
                     backend: backend,
-                    defaultEnabled: false
+                    defaultEnabled: row["mtp_default_enabled"] as? Bool ?? false
                 )
             } else if row["supports_spec_decode"] as? Bool == true {
                 speculative[alias] = SpeculativeDecodingPreset(

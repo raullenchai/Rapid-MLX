@@ -25,6 +25,37 @@ def test_alias_selects_target_only_tensorfold_mtp() -> None:
     assert args._speculative_config.backend == "tensorfold"
 
 
+def test_resolved_alias_still_selects_target_only_tensorfold_mtp() -> None:
+    """main() resolves aliases before serve_command normalizes acceleration."""
+    from rapid_mlx import cli
+
+    args = SimpleNamespace(
+        model="Vontra/GLM-5.3-Flash-MLX-4bit-MTP",
+        _original_alias="glm5.3-flash-tensorfold",
+        speculative_config=None,
+        no_spec_decode=False,
+        mllm=False,
+    )
+    cli._normalize_speculative_config_or_exit(args)
+    assert args.speculative_config == '{"method":"mtp","backend":"tensorfold"}'
+    assert args._speculative_config.backend == "tensorfold"
+
+
+def test_resolved_alias_explicit_opt_out_keeps_normal_mode() -> None:
+    from rapid_mlx import cli
+
+    args = SimpleNamespace(
+        model="Vontra/GLM-5.3-Flash-MLX-4bit-MTP",
+        _original_alias="glm5.3-flash-tensorfold",
+        speculative_config=None,
+        no_spec_decode=True,
+        mllm=False,
+    )
+    cli._normalize_speculative_config_or_exit(args)
+    assert args.speculative_config is None
+    assert args._speculative_config is None
+
+
 def test_ordinary_glm_alias_keeps_existing_default() -> None:
     from rapid_mlx import cli
 

@@ -10,10 +10,56 @@ from rapid_mlx.request import RequestOutput
 from rapid_mlx.spec_decode.config import parse_speculative_config
 from rapid_mlx.speculative.tensorfold_qwen27_server import (
     TensorFoldRequestProvider,
+    _StableIncrementalText,
     generation_kwargs,
     render_prompt,
     validate_http_request,
 )
+
+
+def test_contextual_stream_reconstructs_final_executable_code(tmp_path) -> None:
+    """Regression for GLM whitespace corruption seen in real Rapid SSE output."""
+    import py_compile
+    import threading
+
+    final = (
+        "def merge_intervals(intervals):\n"
+        "    validated = []\n"
+        "    for item in intervals:\n"
+        "        validated.append(item)\n"
+        "    return validated\n"
+    )
+
+    class ContextSensitiveTokenizer:
+        def decode(self, ids):
+            # The middle token is an incomplete byte/tokenizer fragment. A
+            # fresh full-prefix decode revises the tail once token 2 arrives.
+            # Emitting that partial prefix caused the captured whitespace loss.
+            table = {
+                (): "",
+                (0,): "def merge_intervals(intervals):\n    validated =",
+                (1,): "\ufffd",
+                (2,): (
+                    " []\n    for item in intervals:\n"
+                    "        validated.append(item)\n"
+                    "    return validated\n"
+                ),
+                (0, 1): "def merge_intervals(intervals):\n    validated =\ufffd",
+                (0, 1, 2): final,
+            }
+            return table[tuple(ids)]
+
+    decoder = _StableIncrementalText(ContextSensitiveTokenizer(), threading.Lock())
+    snapshots = [decoder.extend([token]) for token in range(3)]
+    deltas = [
+        current[len(previous) :]
+        for previous, current in zip([""] + snapshots[:-1], snapshots)
+    ]
+    streamed = "".join(deltas)
+    assert streamed == final
+    source = tmp_path / "streamed.py"
+    source.write_text(streamed)
+    py_compile.compile(str(source), doraise=True)
 
 
 def test_tensorfold_config_is_explicit_and_method_scoped() -> None:
