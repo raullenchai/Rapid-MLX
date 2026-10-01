@@ -49,8 +49,8 @@ def _capture(monkeypatch):
     events: list[tuple[str, dict[str, object]]] = []
     monkeypatch.setattr("rapid_mlx.telemetry.track._upload_allowed", lambda: True)
     monkeypatch.setattr(
-        "rapid_mlx.telemetry.track.track",
-        lambda event, props: events.append((event, dict(props))) or True,
+        "rapid_mlx.telemetry.track._enqueue_accepted",
+        lambda accepted: events.append((accepted.event, dict(accepted.props))) or True,
     )
     return events
 
@@ -1140,7 +1140,9 @@ def test_terminal_track_failure_preserves_attempt_marker(
     marker = server_start._marker_path()
     assert marker.exists()
     assert [props["state"] for _, props in events] == ["attempted"]
-    monkeypatch.setattr("rapid_mlx.telemetry.track.track", lambda *_args: False)
+    monkeypatch.setattr(
+        "rapid_mlx.telemetry.track._enqueue_accepted", lambda _accepted: False
+    )
 
     terminal()
 
