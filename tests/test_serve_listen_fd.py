@@ -638,6 +638,7 @@ def test_tensorfold_alias_preflights_downloads_pair_and_dispatches_server(
         "_preflight_tensorfold_qwen27_or_exit",
         lambda: events.append("preflight"),
     )
+    monkeypatch.setattr(cli, "_check_alias_min_memory", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         cli,
         "_check_disk_space",
