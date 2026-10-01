@@ -17,7 +17,34 @@ from rapid_mlx.speculative.tensorfold_qwen27_server import (
 )
 
 
-def test_contextual_stream_reconstructs_final_executable_code(tmp_path) -> None:
+@pytest.fixture
+def fake_mlx_lm_detokenizer(monkeypatch):
+    """Keep provider tests hermetic in the Linux base-install matrix."""
+
+    class NaiveStreamingDetokenizer:
+        def __init__(self, tokenizer):
+            self.tokenizer = tokenizer
+            self.tokens = []
+            self.text = ""
+
+        def add_token(self, token):
+            self.tokens.append(token)
+            self.text = self.tokenizer.decode(self.tokens)
+
+        def finalize(self):
+            self.text = self.tokenizer.decode(self.tokens)
+
+    package = ModuleType("mlx_lm")
+    tokenizer_utils = ModuleType("mlx_lm.tokenizer_utils")
+    tokenizer_utils.NaiveStreamingDetokenizer = NaiveStreamingDetokenizer
+    package.tokenizer_utils = tokenizer_utils
+    monkeypatch.setitem(sys.modules, "mlx_lm", package)
+    monkeypatch.setitem(sys.modules, "mlx_lm.tokenizer_utils", tokenizer_utils)
+
+
+def test_contextual_stream_reconstructs_final_executable_code(
+    tmp_path, fake_mlx_lm_detokenizer
+) -> None:
     """Regression for GLM whitespace corruption seen in real Rapid SSE output."""
     import py_compile
     import threading
@@ -142,7 +169,7 @@ def test_http_gate_rejects_unqualified_features_and_maps_sampling() -> None:
 
 
 def test_provider_preserves_exact_token_ids_and_request_outputs(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, fake_mlx_lm_detokenizer
 ) -> None:
     class Cancellation:
         def cancel(self):
@@ -234,7 +261,9 @@ def test_provider_preserves_exact_token_ids_and_request_outputs(
     assert len(record["token_sha256"]) == 64
 
 
-def test_provider_closed_timeout_error_and_generate(monkeypatch) -> None:
+def test_provider_closed_timeout_error_and_generate(
+    monkeypatch, fake_mlx_lm_detokenizer
+) -> None:
     # Reuse the provider fixture above with a scheduler that first times out,
     # then reports a worker error. This covers the cancellation polling path.
     import queue
@@ -303,7 +332,9 @@ def test_provider_closed_timeout_error_and_generate(monkeypatch) -> None:
         list(provider.generate(None, None, "x", max_tokens=1))
 
 
-def test_provider_timeout_worker_error_and_generate_success(monkeypatch) -> None:
+def test_provider_timeout_worker_error_and_generate_success(
+    monkeypatch, fake_mlx_lm_detokenizer
+) -> None:
     import queue
     import threading
 

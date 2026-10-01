@@ -62,12 +62,14 @@ def test_ordinary_glm_alias_keeps_existing_default() -> None:
     assert cli._tensorfold_mtp_profile("glm5.3-flash-4bit") is None
 
 
-def test_glm_environment_fails_closed() -> None:
+def test_glm_environment_fails_closed(monkeypatch) -> None:
+    from rapid_mlx.speculative import tensorfold_glm53
     from rapid_mlx.speculative.tensorfold_glm53 import (
         TensorFoldUnavailable,
         require_environment,
     )
 
+    monkeypatch.setattr(tensorfold_glm53.sys, "platform", "darwin")
     with pytest.raises(TensorFoldUnavailable, match="256 GB"):
         require_environment(mlx_version="0.32.3", machine="arm64", memory_gb=192)
     with pytest.raises(TensorFoldUnavailable, match="mlx==0.32.3"):
