@@ -23,31 +23,32 @@ _MAX_CONCURRENT_REQUESTS = 1
 
 
 class _StableIncrementalText:
-    """Decode with bounded left context so emitted text never needs revision.
+    """Use MLX-LM's line-buffered decoder so emitted text needs no revision.
 
     Some tokenizers clean whitespace differently after the following token is
     known. Decoding the entire prefix and slicing it therefore corrupts SSE
     output when the newly decoded prefix is not string-prefix-stable. This is
-    the same contextual-window strategy used by the pinned runtime itself.
+    the same line-buffering contract used by Rapid's native scheduler.
     """
 
     def __init__(self, tokenizer: Any, lock: Any) -> None:
-        self._tokenizer = tokenizer
         self._lock = lock
-        self._tokens: list[int] = []
-        self._text = ""
-        self._prefix = 0
-        self._read = 0
+        from mlx_lm.tokenizer_utils import NaiveStreamingDetokenizer
+
+        if not hasattr(tokenizer, "clean_up_tokenization_spaces"):
+            tokenizer.clean_up_tokenization_spaces = False
+        self._decoder = NaiveStreamingDetokenizer(tokenizer)
 
     def extend(self, tokens: list[int]) -> str:
-        self._tokens.extend(int(token) for token in tokens)
         with self._lock:
-            before = self._tokenizer.decode(self._tokens[self._prefix : self._read])
-            after = self._tokenizer.decode(self._tokens[self._prefix :])
-        if len(after) > len(before) and not after.endswith("\ufffd"):
-            self._text += after[len(before) :]
-            self._prefix, self._read = self._read, len(self._tokens)
-        return self._text
+            for token in tokens:
+                self._decoder.add_token(int(token))
+            return self._decoder.text
+
+    def finalize(self) -> str:
+        with self._lock:
+            self._decoder.finalize()
+            return self._decoder.text
 
 
 @dataclass(frozen=True)
@@ -170,6 +171,7 @@ class TensorFoldRequestProvider:
             # verify that the streamed surface exactly reconstructs the final
             # batch decode. SSE cannot retract bytes, so fail closed if a future
             # tokenizer violates the contextual decoder contract.
+            incremental.finalize()
             content_ids = list(collected)
             while content_ids and content_ids[-1] in stops.eos_ids:
                 content_ids.pop()

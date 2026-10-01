@@ -31,6 +31,8 @@ def test_contextual_stream_reconstructs_final_executable_code(tmp_path) -> None:
     )
 
     class ContextSensitiveTokenizer:
+        clean_up_tokenization_spaces = True
+
         def decode(self, ids):
             # The middle token is an incomplete byte/tokenizer fragment. A
             # fresh full-prefix decode revises the tail once token 2 arrives.
@@ -182,7 +184,7 @@ def test_provider_preserves_exact_token_ids_and_request_outputs(
             return [10, 11]
 
         def decode(self, ids):
-            return "".join({21: "A", 22: "B"}[i] for i in ids)
+            return "".join({0: "", 21: "A", 22: "B"}[i] for i in ids)
 
     class Scheduler:
         job = None
@@ -276,7 +278,11 @@ def test_provider_closed_timeout_error_and_generate(monkeypatch) -> None:
     provider = TensorFoldRequestProvider(backend)
     with pytest.raises(RuntimeError, match="closed"):
         list(provider._outputs("x"))
-    tokenizer = SimpleNamespace(encode=lambda _p: [1])
+    tokenizer = SimpleNamespace(
+        encode=lambda _p: [1],
+        decode=lambda ids: "".join(str(token) for token in ids if token),
+        clean_up_tokenization_spaces=False,
+    )
     app = SimpleNamespace(
         tokenizer=tokenizer,
         tokenizer_lock=__import__("threading").Lock(),
