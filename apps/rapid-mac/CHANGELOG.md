@@ -17,6 +17,41 @@ can actually understand.
 
 ## [Unreleased]
 
+## [0.15.4] — 2026-10-01
+
+Rapid-MLX Desktop 0.15.4 adds Share Compute controls and an experimental,
+opt-in accelerated profile for Qwen3.8-27B on supported Macs.
+
+### Added
+- **Experimental Share Compute workspace.** After enabling Share Compute in
+  Settings → Experimental, new Share, Live Pool, and Credits views let users
+  contribute an eligible local model, inspect connection and session state,
+  and review credited activity. The setup flow stores read-only account keys
+  in the macOS login Keychain and links to a concise Desktop and CLI guide.
+- **Qwen3.8-27B accelerated profile.** Macs with at least 48 GB of unified
+  memory can select the qualified experimental text profile from the normal
+  model picker. Acceleration remains off by default, and the existing restart
+  flow applies a changed setting.
+
+### Changed
+- **Acceleration status follows the live engine.** Desktop reports the
+  accelerated mode only when the server confirms it is active. While active,
+  the composer explains that tools, media, and structured output require the
+  ordinary `qwen3.8-27b-4bit` profile.
+
+### Fixed
+- **Credits and Keychain behavior match the tested system contract.** New
+  account-key inserts cannot trigger an interactive prompt, the interface no
+  longer promises unsupported lock-screen protection, and small positive
+  credits no longer round down to `$0.00`.
+- **Accelerated capacity is explicit and enforced.** The Qwen3.8-27B
+  accelerated profile reports a one-request limit and rejects an overlapping
+  request before reading its body, keeping advertised and enforced capacity in
+  sync.
+- **Audio model downloads use a reviewed revision.** Local music and sound-
+  effect weights are requested from an exact reviewed source revision, so a
+  later upstream rewrite cannot silently change first-run inputs.
+
 ## [0.15.3] — 2026-09-29
 
 Rapid-MLX Desktop 0.15.3 adds supervised Computer Use for general Mac tasks.
@@ -4133,7 +4168,8 @@ Older versions: see the
 [GitHub Releases page](https://github.com/machinefi/rapid-desktop/releases)
 for auto-generated notes against earlier tags.
 
-[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.15.3...HEAD
+[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.15.4...HEAD
+[0.15.4]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.15.3...rapid-mac-v0.15.4
 [0.15.3]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.15.2...rapid-mac-v0.15.3
 [0.15.2]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.15.1...rapid-mac-v0.15.2
 [0.15.1]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.15.0...rapid-mac-v0.15.1
