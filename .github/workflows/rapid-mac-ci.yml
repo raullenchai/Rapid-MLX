@@ -525,7 +525,7 @@ jobs:
       # manifest groups. Every named step remains visible, but the harness
       # exits before launch for journeys owned by another lane. The harness
       # gives every selected journey its own HOME, defaults, ports, app
-      # processes, and result directory; separate hosted VMs isolate the two
+      # processes, and result directory; separate hosted VMs isolate the four
       # concurrent bundles from one another.
       GUI_FLOWS: ${{ matrix.gui_flows }}
     steps:

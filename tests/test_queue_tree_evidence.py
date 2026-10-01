@@ -198,6 +198,65 @@ def test_create_rejects_partial_gui_matrix(tmp_path: Path):
         evidence.create_evidence(client, "mac", 10, 30, TRUSTED, _manifest(tmp_path))
 
 
+def test_create_rejects_legacy_two_lane_full_gui_evidence(tmp_path: Path):
+    manifest = tmp_path / "journeys.yaml"
+    manifest.write_text(
+        "version: 1\njourneys:\n"
+        "  - name: first\n    group: chat\n"
+        "  - name: second\n    group: images\n"
+        "  - name: third\n    group: models\n"
+        "  - name: fourth\n    group: audio\n"
+        "  - name: fifth\n    group: app-lifecycle\n"
+        "  - name: sixth\n    group: onboarding-settings\n"
+    )
+    client = _configured_client()
+    client.job_records[10][-2:] = [
+        _job(
+            10,
+            200,
+            'gui-golden-flows (audio+images+onboarding-settings, ["second","fourth","sixth"], 3)',
+        ),
+        _job(
+            10,
+            201,
+            'gui-golden-flows (app-lifecycle+chat+models, ["first","third","fifth"], 3)',
+        ),
+    ]
+
+    with pytest.raises(evidence.EvidenceError, match="expected 4, found 2"):
+        evidence.create_evidence(client, "mac", 10, 30, TRUSTED, manifest)
+
+
+def test_create_accepts_four_lane_full_gui_evidence(tmp_path: Path):
+    manifest = tmp_path / "journeys.yaml"
+    manifest.write_text(
+        "version: 1\njourneys:\n"
+        "  - name: first\n    group: chat\n"
+        "  - name: second\n    group: images\n"
+        "  - name: third\n    group: models\n"
+        "  - name: fourth\n    group: audio\n"
+        "  - name: fifth\n    group: app-lifecycle\n"
+        "  - name: sixth\n    group: onboarding-settings\n"
+    )
+    client = _configured_client()
+    client.job_records[10][-2:] = [
+        _job(10, 200, 'gui-golden-flows (chat, ["first"], 1)'),
+        _job(10, 201, 'gui-golden-flows (onboarding-settings, ["sixth"], 1)'),
+        _job(10, 202, 'gui-golden-flows (images+models, ["second","third"], 2)'),
+        _job(
+            10,
+            203,
+            'gui-golden-flows (app-lifecycle+audio, ["fourth","fifth"], 2)',
+        ),
+    ]
+
+    payload = evidence.create_evidence(client, "mac", 10, 30, TRUSTED, manifest)
+
+    assert payload["candidate_sha"] == CANDIDATE
+    assert payload["candidate_tree"] == TREE
+    assert len(payload["source"]["jobs"]) == len(evidence.REQUIRED_MAC_JOBS) + 4
+
+
 def test_create_rejects_malformed_gui_bundle(tmp_path: Path):
     client = _configured_client()
     client.job_records[10][-1]["name"] = (
@@ -208,22 +267,26 @@ def test_create_rejects_malformed_gui_bundle(tmp_path: Path):
         evidence.create_evidence(client, "mac", 10, 30, TRUSTED, _manifest(tmp_path))
 
 
-def test_create_rejects_more_than_two_gui_lanes(tmp_path: Path):
+def test_create_rejects_more_than_four_gui_lanes(tmp_path: Path):
     manifest = tmp_path / "journeys.yaml"
     manifest.write_text(
         "version: 1\njourneys:\n"
         "  - name: first\n    group: chat\n"
         "  - name: second\n    group: images\n"
         "  - name: third\n    group: models\n"
+        "  - name: fourth\n    group: audio\n"
+        "  - name: fifth\n    group: app-lifecycle\n"
     )
     client = _configured_client()
     client.job_records[10][-2:] = [
         _job(10, 200, 'gui-golden-flows (chat, ["first"], 1)'),
         _job(10, 201, 'gui-golden-flows (images, ["second"], 1)'),
         _job(10, 202, 'gui-golden-flows (models, ["third"], 1)'),
+        _job(10, 203, 'gui-golden-flows (audio, ["fourth"], 1)'),
+        _job(10, 204, 'gui-golden-flows (app-lifecycle, ["fifth"], 1)'),
     ]
 
-    with pytest.raises(evidence.EvidenceError, match="expected 2, found 3"):
+    with pytest.raises(evidence.EvidenceError, match="expected 4, found 5"):
         evidence.create_evidence(client, "mac", 10, 30, TRUSTED, manifest)
 
 
