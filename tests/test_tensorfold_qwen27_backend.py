@@ -11,6 +11,8 @@ from unittest.mock import patch
 import pytest
 
 from rapid_mlx.speculative.tensorfold_qwen27 import (
+    INSTALL_HINT,
+    SUPPORTED_REVISION,
     TensorFoldQwen27Backend,
     TensorFoldUnavailable,
     UnsupportedRequest,
@@ -73,7 +75,8 @@ def test_cli_preflight_rejects_before_pair_download(
     assert calls == []
     error = capsys.readouterr().err
     assert message in error
-    assert "rapid-mlx[tensorfold-qwen27]" in error
+    assert INSTALL_HINT in error
+    assert SUPPORTED_REVISION in error
 
 
 def test_cli_wires_tensorfold_preflight_before_pair_download() -> None:
