@@ -30,6 +30,34 @@ enum TestSubprocessError: Error, CustomStringConvertible {
 /// and closes the capture descriptors so an escaped descendant cannot retain
 /// them indefinitely.
 enum TestSubprocess {
+    // Keep the timeout-path test ceiling derived from the same fixed budgets
+    // used below. These are test-infrastructure limits, not production waits.
+    static let sampleSymbolicationGraceSeconds = 1
+    static let samplerTerminationGraceMilliseconds = 250
+    static let processTerminationGraceSeconds: TimeInterval = 2
+    static let processReapGraceSeconds: TimeInterval = 1
+
+    static func timeoutPathUpperBound(
+        timeout: TimeInterval,
+        sampleOnTimeout: Bool,
+        sampleDuration: Int,
+        schedulerLeeway: TimeInterval
+    ) -> Duration {
+        precondition(timeout > 0)
+        precondition(sampleDuration > 0)
+        precondition(schedulerLeeway >= 0)
+        let samplingBudget = sampleOnTimeout
+            ? TimeInterval(sampleDuration + sampleSymbolicationGraceSeconds)
+                + TimeInterval(samplerTerminationGraceMilliseconds) / 1_000
+            : 0
+        let totalSeconds = timeout
+            + samplingBudget
+            + processTerminationGraceSeconds
+            + processReapGraceSeconds
+            + schedulerLeeway
+        return .milliseconds(Int64((totalSeconds * 1_000).rounded(.up)))
+    }
+
     static func run(
         executableURL: URL,
         arguments: [String] = [],
@@ -205,9 +233,13 @@ enum TestSubprocess {
             // Symbolication can outlive the requested sampling period. Give it
             // one fixed grace second, then stop the diagnostic so termination
             // never depends on an unbounded Process wait.
-            if finished.wait(timeout: .now() + .seconds(duration + 1)) == .timedOut {
+            if finished.wait(
+                timeout: .now() + .seconds(duration + sampleSymbolicationGraceSeconds)
+            ) == .timedOut {
                 sampler.terminate()
-                if finished.wait(timeout: .now() + .milliseconds(250)) == .timedOut {
+                if finished.wait(
+                    timeout: .now() + .milliseconds(samplerTerminationGraceMilliseconds)
+                ) == .timedOut {
                     _ = Darwin.kill(sampler.processIdentifier, SIGKILL)
                 }
             }
@@ -219,7 +251,7 @@ enum TestSubprocess {
 
     private static func terminate(pid: pid_t, state: TestProcessCompletionState) {
         signalProcessTree(pid: pid, signal: SIGTERM)
-        let deadline = Date(timeIntervalSinceNow: 2)
+        let deadline = Date(timeIntervalSinceNow: processTerminationGraceSeconds)
         while processTreeExists(pid: pid), Date() < deadline {
             Thread.sleep(forTimeInterval: 0.01)
         }
@@ -229,7 +261,7 @@ enum TestSubprocess {
         // waitpid normally publishes immediately after TERM/KILL. Keep one
         // final fixed grace window so the returned timeout represents a reaped
         // child, but never let a kernel-side wait stall the caller forever.
-        if !state.waitForProcessExit(seconds: 1) {
+        if !state.waitForProcessExit(seconds: processReapGraceSeconds) {
             state.forceProcessExitIfMissing(rawStatus: SIGKILL)
         }
     }
