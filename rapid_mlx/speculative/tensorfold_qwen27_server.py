@@ -18,6 +18,8 @@ from rapid_mlx.request import RequestOutput
 
 from .tensorfold_qwen27 import TensorFoldQwen27Backend, validate_request
 
+_MAX_CONCURRENT_REQUESTS = 1
+
 
 @dataclass(frozen=True)
 class ProviderChunk:
@@ -334,7 +336,9 @@ def run_tensorfold_qwen27_server(
         max_request_bytes=max_request_bytes,
         body_receive_timeout_seconds=body_receive_timeout_seconds,
         default_timeout=default_timeout,
-        max_concurrent_requests=max_concurrent_requests,
+        # TensorFold exposes one serial lane. Keep admission aligned with that
+        # runtime capacity even when the shared CLI default is much larger.
+        max_concurrent_requests=_MAX_CONCURRENT_REQUESTS,
         cors_policy=cors_policy,
         tool_call_parser=None,
         reasoning_parser_name=reasoning_parser_name,
@@ -380,7 +384,7 @@ def run_tensorfold_qwen27_server(
                     "tools": False,
                     "media": False,
                     "grammar": False,
-                    "max_concurrency": 1,
+                    "max_concurrency": _MAX_CONCURRENT_REQUESTS,
                 },
             }
         },
