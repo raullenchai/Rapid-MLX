@@ -50,7 +50,9 @@ def test_contextual_stream_reconstructs_final_executable_code(tmp_path) -> None:
             return table[tuple(ids)]
 
     decoder = _StableIncrementalText(ContextSensitiveTokenizer(), threading.Lock())
-    snapshots = [decoder.extend([token]) for token in range(3)]
+    # TensorFold validates and returns token chunks. Preserve that boundary:
+    # the second chunk completes the tokenizer fragment begun by token 1.
+    snapshots = [decoder.extend([0]), decoder.extend([1, 2])]
     deltas = [
         current[len(previous) :]
         for previous, current in zip([""] + snapshots[:-1], snapshots)

@@ -135,25 +135,30 @@ class TensorFoldRequestProvider:
                     continue
                 if chunk is None:
                     break
-                for token in chunk:
-                    token = int(token)
-                    collected.append(token)
-                    current = stops.visible(
-                        incremental.extend([] if token in stops.eos_ids else [token]),
-                        partial=True,
+                chunk_tokens = [int(token) for token in chunk]
+                fresh: list[int] = []
+                for token in chunk_tokens:
+                    if token in stops.eos_ids:
+                        break
+                    fresh.append(token)
+                current = stops.visible(incremental.extend(fresh), partial=True)
+                if not current.startswith(decoded):
+                    raise RuntimeError(
+                        "TensorFold streaming decoder produced a non-monotonic prefix"
                     )
-                    if not current.startswith(decoded):
-                        raise RuntimeError(
-                            "TensorFold streaming decoder produced a non-monotonic prefix"
-                        )
-                    delta = current[len(decoded) :]
-                    decoded = current
+                delta = current[len(decoded) :]
+                delta_index = len(fresh) - 1
+                for index, token in enumerate(chunk_tokens):
+                    collected.append(token)
+                    token_delta = delta if index == delta_index else ""
+                    if token_delta:
+                        decoded = current
                     output = RequestOutput(
                         request_id=request_id,
                         new_token_ids=[token],
-                        new_text=delta,
+                        new_text=token_delta,
                         output_token_ids=list(collected),
-                        output_text=current,
+                        output_text=decoded,
                         prompt_tokens=len(prompt_ids),
                         completion_tokens=len(collected),
                     )
