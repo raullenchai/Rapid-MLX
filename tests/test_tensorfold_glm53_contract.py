@@ -221,7 +221,12 @@ def test_non_stream_truncation_never_publishes_implicit_reasoning(
             served_model_name="glm5.3-flash-tensorfold",
             gen_kwargs={"max_tokens": 1},
             model=None,
-            processor=None,
+            processor=SimpleNamespace(
+                chat_template=(
+                    "{% if add_generation_prompt and enable_thinking %}"
+                    "<think>{% endif %}"
+                )
+            ),
             enable_thinking=True,
             generate_fn=lambda *_args, **_kwargs: SimpleNamespace(
                 text=private,
@@ -235,6 +240,43 @@ def test_non_stream_truncation_never_publishes_implicit_reasoning(
     message = response.choices[0].message
     assert message.content is None
     assert message.reasoning_content == private
+
+
+def test_non_stream_non_implicit_template_keeps_plain_answer_public(
+    monkeypatch,
+) -> None:
+    from rapid_mlx.speculative.dflash import server
+
+    monkeypatch.setattr(
+        server,
+        "get_config",
+        lambda: SimpleNamespace(reasoning_parser_name="qwen3"),
+    )
+
+    async def run():
+        return await server._non_stream_completion(
+            prompt="ordinary assistant prompt",
+            request=SimpleNamespace(tools=None),
+            served_model_name="qwen-like",
+            gen_kwargs={"max_tokens": 1},
+            model=None,
+            processor=SimpleNamespace(
+                chat_template=(
+                    "{% if add_generation_prompt %}<|im_start|>assistant\n{% endif %}"
+                )
+            ),
+            enable_thinking=True,
+            generate_fn=lambda *_args, **_kwargs: SimpleNamespace(
+                text="plain public answer",
+                generation_tokens=1,
+                prompt_tokens=4,
+            ),
+        )
+
+    response = asyncio.run(run())
+    message = response.choices[0].message
+    assert message.content == "plain public answer"
+    assert message.reasoning_content is None
 
 
 def test_cli_dispatches_qualified_glm_tensorfold_profile(monkeypatch) -> None:
