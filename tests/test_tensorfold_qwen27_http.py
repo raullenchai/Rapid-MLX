@@ -412,6 +412,100 @@ def test_provider_timeout_worker_error_and_generate_success(
     assert list(provider.stream_generate(None, None, "x")) == []
 
 
+@pytest.mark.parametrize(
+    "mode,error,expected",
+    [
+        ("nonmonotonic", "non-monotonic prefix", None),
+        ("final-mismatch", "final tokenizer decode", None),
+        ("final-delta", None, "tail"),
+    ],
+)
+def test_provider_stream_decode_boundaries(monkeypatch, mode, error, expected) -> None:
+    import queue
+    import threading
+
+    from rapid_mlx.speculative import tensorfold_qwen27_server as server
+
+    class Cancellation:
+        def cancel(self):
+            pass
+
+        def check(self):
+            pass
+
+    class ChatJob:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+            self.chunks = queue.Queue()
+            self.error = None
+            self.stream = None
+            self.cached_tokens = 0
+
+    class StopPolicy:
+        def __init__(self, *_args):
+            self.ignore_eos = False
+            self.eos_ids = set()
+            self.strings = ()
+
+        def visible(self, text, partial=False):
+            return text
+
+    class Incremental:
+        calls = 0
+
+        def __init__(self, *_args):
+            pass
+
+        def extend(self, _tokens):
+            self.calls += 1
+            if mode == "nonmonotonic":
+                return "head" if self.calls == 1 else ""
+            return "head" if mode == "final-mismatch" else ""
+
+        def finalize(self):
+            pass
+
+    for name, attrs in {
+        "tensorfold.engine.lane_engine": {
+            "SuffixLookupProposer": lambda min_match: min_match
+        },
+        "tensorfold.server.cancellation": {"Cancellation": Cancellation},
+        "tensorfold.server.scheduler": {"ChatJob": ChatJob},
+        "tensorfold.server.stopping": {"StopPolicy": StopPolicy},
+    }.items():
+        module = ModuleType(name)
+        for key, value in attrs.items():
+            setattr(module, key, value)
+        monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setattr(server, "_StableIncrementalText", Incremental)
+
+    final = "other" if mode == "final-mismatch" else "tail"
+    tokenizer = SimpleNamespace(encode=lambda _p: [1], decode=lambda _ids: final)
+
+    class Scheduler:
+        def submit(self, job):
+            job.chunks.put([1])
+            if mode == "nonmonotonic":
+                job.chunks.put([2])
+            job.chunks.put(None)
+
+    app = SimpleNamespace(
+        tokenizer=tokenizer,
+        tokenizer_lock=threading.Lock(),
+        stop_ids=set(),
+        min_match=1,
+        scheduler=Scheduler(),
+        _resolve_sampling=lambda *_a: {},
+    )
+    provider = TensorFoldRequestProvider(SimpleNamespace(_app=app))
+    if error:
+        with pytest.raises(RuntimeError, match=error):
+            list(provider._outputs("prompt", max_tokens=2))
+    else:
+        outputs = list(provider._outputs("prompt", max_tokens=2))
+        assert outputs[-1].new_text == expected
+
+
 def test_render_prompt_and_server_bootstrap(monkeypatch) -> None:
     from rapid_mlx.speculative import tensorfold_qwen27_server as server
 

@@ -88,6 +88,24 @@ def test_cli_wires_tensorfold_preflight_before_pair_download() -> None:
     )
 
 
+def test_qwen_runtime_provenance_read_failures_are_closed(monkeypatch) -> None:
+    from importlib.metadata import PackageNotFoundError
+
+    from rapid_mlx.speculative import tensorfold_qwen27 as adapter
+
+    for error in (
+        PackageNotFoundError(),
+        OSError("bad metadata"),
+        ValueError("bad json"),
+    ):
+        monkeypatch.setattr(
+            adapter.importlib.metadata,
+            "distribution",
+            lambda _name, error=error: (_ for _ in ()).throw(error),
+        )
+        assert adapter._runtime_direct_url() == {}
+
+
 def test_download_pair_uses_pinned_revisions(monkeypatch, tmp_path) -> None:
     from rapid_mlx.speculative import tensorfold_qwen27 as adapter
 

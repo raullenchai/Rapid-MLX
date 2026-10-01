@@ -86,6 +86,59 @@ def test_glm_target_requires_pinned_snapshot(tmp_path: Path) -> None:
         validate_target(tmp_path)
 
 
+def test_glm_target_rejects_wrong_snapshot_revision(tmp_path: Path) -> None:
+    from rapid_mlx.speculative import tensorfold_glm53 as adapter
+
+    target = tmp_path / "models--Vontra--GLM" / "snapshots" / ("0" * 40)
+    target.mkdir(parents=True)
+    with pytest.raises(adapter.TensorFoldUnavailable, match="unqualified"):
+        adapter.validate_target(target)
+
+
+def test_glm_runtime_provenance_read_failures_are_closed(monkeypatch) -> None:
+    from importlib.metadata import PackageNotFoundError
+
+    from rapid_mlx.speculative import tensorfold_glm53 as adapter
+
+    for error in (
+        PackageNotFoundError(),
+        OSError("bad metadata"),
+        ValueError("bad json"),
+    ):
+        monkeypatch.setattr(
+            adapter.importlib.metadata,
+            "distribution",
+            lambda _name, error=error: (_ for _ in ()).throw(error),
+        )
+        assert adapter._runtime_direct_url() == {}
+
+
+@pytest.mark.parametrize(
+    "profile,message",
+    [
+        ({"hf_path": "repo", "tensorfold_mtp": True}, "requires immutable"),
+        (
+            {"hf_path": "repo", "tensorfold_target_revision": "0" * 40},
+            "require tensorfold_mtp=true",
+        ),
+        (
+            {
+                "hf_path": "repo",
+                "tensorfold_mtp": True,
+                "tensorfold_target_revision": "BAD",
+                "tensorfold_runtime_revision": "0" * 40,
+            },
+            "full lowercase",
+        ),
+    ],
+)
+def test_tensorfold_alias_revision_contracts(profile, message) -> None:
+    from rapid_mlx.model_aliases import _coerce
+
+    with pytest.raises(ValueError, match=message):
+        _coerce("bad-tensorfold", profile)
+
+
 def test_glm_target_download_and_layout_gates(monkeypatch, tmp_path: Path) -> None:
     from rapid_mlx.speculative import tensorfold_glm53 as adapter
 
@@ -281,10 +334,13 @@ def test_non_stream_truncation_never_publishes_implicit_reasoning(
             gen_kwargs={"max_tokens": 1},
             model=None,
             processor=SimpleNamespace(
-                chat_template=(
-                    "{% if add_generation_prompt and enable_thinking %}"
-                    "<think>{% endif %}"
-                )
+                chat_template=None,
+                tokenizer=SimpleNamespace(
+                    chat_template=(
+                        "{% if add_generation_prompt and enable_thinking %}"
+                        "<think>{% endif %}"
+                    )
+                ),
             ),
             enable_thinking=True,
             generate_fn=lambda *_args, **_kwargs: SimpleNamespace(
