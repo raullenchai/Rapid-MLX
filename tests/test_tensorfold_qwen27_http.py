@@ -446,8 +446,8 @@ def test_http_stream_and_nonstream_use_provider_and_reject_tools() -> None:
         runtime_status_extra={"profile": {"mode": "accelerated"}},
     )
     client = TestClient(app)
-    assert client.get("/health").json()["profile"]["mode"] == "accelerated"
-    assert client.get("/v1/models").json()["profile"]["mode"] == "accelerated"
+    assert client.get("/healthz").json()["profile"]["mode"] == "accelerated"
+    assert client.get("/v1/status").json()["profile"]["mode"] == "accelerated"
     body = {"model": "qwen27-tf", "messages": [{"role": "user", "content": "hi"}]}
     response = client.post("/v1/chat/completions", json=body)
     assert response.status_code == 200
