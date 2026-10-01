@@ -116,6 +116,7 @@ struct DownloadCatalogHardeningTests {
             "alias": "glm5.3-flash-tensorfold",
             "tensorfold_mtp": true,
             "tensorfold_backend": "tensorfold",
+            "mtp_default_enabled": true,
         ]])
         let parsed = try #require(ModelCatalog.parseAvailableJSON(output))
         let preset = try #require(parsed.speculative["glm5.3-flash-tensorfold"])
@@ -123,7 +124,19 @@ struct DownloadCatalogHardeningTests {
         #expect(preset.model == nil)
         #expect(preset.tokens == nil)
         #expect(preset.backend == "tensorfold")
-        #expect(!preset.isDefaultEnabled)
+        #expect(preset.isDefaultEnabled)
+        let defaults = ServerManager.desktopCapabilityFlags(
+            forAlias: "glm5.3-flash-tensorfold",
+            speculativePreset: preset,
+            existing: []
+        )
+        #expect(defaults.contains("--speculative-config"))
+        #expect(!defaults.contains("--no-spec-decode"))
+        #expect(ServerManager.mergedPerformanceFlags(
+            recommended: defaults,
+            userOverrides: ModelPerfConfig(speculativeDecodingDisabled: true)
+                .launchFlags(forAlias: "glm5.3-flash-tensorfold")
+        ) == ["--text-only", "--no-spec-decode"])
     }
 
     @Test("Speculative presets are parsed from the alias profile table")
