@@ -43,12 +43,12 @@ class _StableIncrementalText:
         with self._lock:
             for token in tokens:
                 self._decoder.add_token(int(token))
-            return self._decoder.text
+            return str(self._decoder.text)
 
     def finalize(self) -> str:
         with self._lock:
             self._decoder.finalize()
-            return self._decoder.text
+            return str(self._decoder.text)
 
 
 @dataclass(frozen=True)

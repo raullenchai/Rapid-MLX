@@ -34,7 +34,7 @@ def download_qualified_target() -> str:
 
     target = snapshot_download(SUPPORTED_TARGET, revision=SUPPORTED_TARGET_REVISION)
     validate_target(Path(target))
-    return target
+    return str(target)
 
 
 def _snapshot_revision(path: Path) -> str:

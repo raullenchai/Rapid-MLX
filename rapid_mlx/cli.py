@@ -3948,29 +3948,43 @@ def _preflight_tensorfold_qwen27_or_exit(args=None) -> None:
         if args is not None
         else None
     )
+    runtime_probe: Callable[[], None]
+    environment_probe: Callable[[], None]
     if profile is not None:
         from .speculative.tensorfold_glm53 import (
             INSTALL_HINT,
             TensorFoldUnavailable,
-            require_environment,
-            require_runtime,
+        )
+        from .speculative.tensorfold_glm53 import (
+            require_environment as require_glm_environment,
+        )
+        from .speculative.tensorfold_glm53 import (
+            require_runtime as require_glm_runtime,
         )
 
         install_hint = INSTALL_HINT
         label = "GLM-5.3-Flash"
+        runtime_probe = require_glm_runtime
+        environment_probe = require_glm_environment
     else:
         from .speculative.tensorfold_qwen27 import (
             TensorFoldUnavailable,
-            require_environment,
-            require_runtime,
+        )
+        from .speculative.tensorfold_qwen27 import (
+            require_environment as require_qwen_environment,
+        )
+        from .speculative.tensorfold_qwen27 import (
+            require_runtime as require_qwen_runtime,
         )
 
         install_hint = optional_extra_install_hint("tensorfold-qwen27")
         label = "Qwen 27B"
+        runtime_probe = require_qwen_runtime
+        environment_probe = require_qwen_environment
 
     try:
-        require_runtime()
-        require_environment()
+        runtime_probe()
+        environment_probe()
     except TensorFoldUnavailable as exc:
         print(
             f"\n  Error: the TensorFold {label} profile is unavailable: "
