@@ -3867,8 +3867,8 @@ def _preflight_dflash_mutexes_or_exit(args) -> None:
 def _preflight_tensorfold_qwen27_or_exit() -> None:
     """Reject an unusable TensorFold runtime before downloading the 27B pair."""
 
-    from .runtime.optional_runtime import optional_extra_install_hint
     from .speculative.tensorfold_qwen27 import (
+        INSTALL_HINT,
         TensorFoldUnavailable,
         require_environment,
         require_runtime,
@@ -3880,7 +3880,7 @@ def _preflight_tensorfold_qwen27_or_exit() -> None:
     except TensorFoldUnavailable as exc:
         print(
             "\n  Error: the TensorFold Qwen 27B profile is unavailable: "
-            f"{exc}.\n\n  {optional_extra_install_hint('tensorfold-qwen27')}\n",
+            f"{exc}.\n\n  {INSTALL_HINT}\n",
             file=sys.stderr,
         )
         raise SystemExit(1) from exc
