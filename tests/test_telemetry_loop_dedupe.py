@@ -540,9 +540,7 @@ def test_app_opened_rejected_token_writes_nothing(loop_env, monkeypatch):
 
     track_module._emit_app_opened("cli")
 
-    assert not (
-        tmp_path / ".rapid-mlx" / "state" / "app-opened-recent.json"
-    ).exists()
+    assert not (tmp_path / ".rapid-mlx" / "state" / "app-opened-recent.json").exists()
 
 
 def test_app_opened_claim_failure_is_contained(loop_env, monkeypatch):
