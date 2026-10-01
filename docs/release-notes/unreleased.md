@@ -5,4 +5,4 @@
 
 ## Highlights
 
-<!-- Add only user-visible changes after v0.15.3. -->
+<!-- Add only user-visible changes after v0.15.4. -->
