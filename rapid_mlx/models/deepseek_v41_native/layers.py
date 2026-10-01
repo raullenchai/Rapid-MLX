@@ -104,11 +104,3 @@ def rope_tail(
     )
 
 
-def clamped_swiglu(gate: mx.array, up: mx.array, limit: float) -> mx.array:
-    """SwiGLU with the asymmetric clamp: ``up`` two-sided, ``gate`` upper-only. fp32."""
-    g = gate.astype(mx.float32)
-    u = up.astype(mx.float32)
-    if limit > 0:
-        u = mx.clip(u, -limit, limit)
-        g = mx.minimum(g, limit)
-    return (g * mx.sigmoid(g)) * u
