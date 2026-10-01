@@ -660,13 +660,10 @@ def test_tensorfold_alias_preflights_downloads_pair_and_dispatches_server(
     ns = _minimal_serve_ns()
     ns.model = "Vontra/Qwen3.8-27B-MLX-4bit"
     ns._original_alias = "qwen3.8-27b-tensorfold"
-    ns.enable_dflash = True
-    ns.dflash_backend = "tensorfold"
     ns._dflash_experimental = True
     ns.speculative_config = (
         '{"method":"dflash","backend":"tensorfold","model":"z-lab/Qwen3.8-27B-DFlash2"}'
     )
-    ns._speculative_config = SimpleNamespace(method="dflash", backend="tensorfold")
 
     cli.serve_command(ns)
 
