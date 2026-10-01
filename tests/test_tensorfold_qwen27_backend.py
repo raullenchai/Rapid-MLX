@@ -6,6 +6,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -154,11 +155,12 @@ class TensorFoldQwen27Tests(unittest.IsolatedAsyncioTestCase):
             require_runtime("0.5.1")
 
     def test_environment_requires_arm64_and_exact_mlx(self):
-        require_environment(mlx_version="0.32.3", machine="arm64")
-        with self.assertRaisesRegex(TensorFoldUnavailable, "arm64"):
-            require_environment(mlx_version="0.32.3", machine="x86_64")
-        with self.assertRaisesRegex(TensorFoldUnavailable, "found 0.32.2"):
-            require_environment(mlx_version="0.32.2", machine="arm64")
+        with patch("rapid_mlx.speculative.tensorfold_qwen27.sys.platform", "darwin"):
+            require_environment(mlx_version="0.32.3", machine="arm64")
+            with self.assertRaisesRegex(TensorFoldUnavailable, "arm64"):
+                require_environment(mlx_version="0.32.3", machine="x86_64")
+            with self.assertRaisesRegex(TensorFoldUnavailable, "found 0.32.2"):
+                require_environment(mlx_version="0.32.2", machine="arm64")
 
     def test_text_only_gate_runs_before_submission(self):
         with self.assertRaises(UnsupportedRequest):
