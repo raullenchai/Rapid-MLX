@@ -179,6 +179,73 @@ def test_backend_closed_duplicate_submit_and_app_close(monkeypatch) -> None:
     assert app.closed
 
 
+def test_backend_load_uses_qualified_family(monkeypatch, tmp_path) -> None:
+    from rapid_mlx.speculative import tensorfold_qwen27 as adapter
+
+    target = tmp_path / "target"
+    drafter = tmp_path / "drafter"
+    loaded = {}
+
+    class Package:
+        DRAFTER = adapter.SUPPORTED_DRAFTER
+
+        @staticmethod
+        def load(path, **kwargs):
+            loaded.update(path=path, **kwargs)
+            return object(), object()
+
+    class ChatApp:
+        def __init__(self, model, tokenizer, **kwargs):
+            loaded.update(model=model, tokenizer=tokenizer, app=kwargs)
+            self.scheduler = FakeScheduler()
+
+    families = types.ModuleType("tensorfold.families")
+    families.detect = lambda _path: types.SimpleNamespace(package=Package)
+    app_module = types.ModuleType("tensorfold.server.app")
+    app_module.ChatApp = ChatApp
+    monkeypatch.setitem(sys.modules, "tensorfold.families", families)
+    monkeypatch.setitem(sys.modules, "tensorfold.server.app", app_module)
+    monkeypatch.setattr(adapter, "require_runtime", lambda: None)
+    monkeypatch.setattr(adapter, "require_environment", lambda: None)
+    monkeypatch.setattr(adapter, "validate_pair", lambda *_args: None)
+
+    backend = TensorFoldQwen27Backend.load(
+        str(target),
+        str(drafter),
+        served_name="served",
+        context_window=1024,
+        max_tokens=7,
+    )
+    assert loaded["path"] == target
+    assert loaded["drafter"] == str(drafter)
+    assert loaded["drafter_bits"] == 4
+    assert loaded["app"]["served_name"] == "served"
+    backend.close()
+
+    Package.DRAFTER = "wrong"
+    with pytest.raises(TensorFoldUnavailable, match="family declaration"):
+        TensorFoldQwen27Backend.load(str(target), str(drafter), served_name="served")
+
+
+@pytest.mark.asyncio
+async def test_submit_failure_cleans_active_request(monkeypatch) -> None:
+    class FailingExecutor:
+        def submit(self, _fn):
+            raise RuntimeError("submit failed")
+
+    cancellation = types.ModuleType("tensorfold.server.cancellation")
+    cancellation.Cancellation = FakeCancellation
+    monkeypatch.setitem(sys.modules, "tensorfold", types.ModuleType("tensorfold"))
+    monkeypatch.setitem(
+        sys.modules, "tensorfold.server", types.ModuleType("tensorfold.server")
+    )
+    monkeypatch.setitem(sys.modules, "tensorfold.server.cancellation", cancellation)
+    backend = TensorFoldQwen27Backend(FakeApp(), executor=FailingExecutor())
+    with pytest.raises(RuntimeError, match="submit failed"):
+        await anext(backend.stream("submit", [1], max_tokens=1))
+    assert "submit" not in backend._active
+
+
 class FakeCancellation:
     def __init__(self):
         self.cancelled = False
@@ -306,6 +373,13 @@ class TensorFoldQwen27Tests(unittest.IsolatedAsyncioTestCase):
                 )
             )
             validate_pair(target, draft)
+            target_config = json.loads((target / "config.json").read_text())
+            target_config["text_config"]["hidden_size"] = 1
+            (target / "config.json").write_text(json.dumps(target_config))
+            with self.assertRaisesRegex(TensorFoldUnavailable, "target"):
+                validate_pair(target, draft)
+            target_config["text_config"]["hidden_size"] = 5120
+            (target / "config.json").write_text(json.dumps(target_config))
             bad = json.loads((draft / "config.json").read_text())
             bad["hidden_size"] = 1
             (draft / "config.json").write_text(json.dumps(bad))
@@ -383,6 +457,34 @@ class TensorFoldQwen27Tests(unittest.IsolatedAsyncioTestCase):
         loop = asyncio.get_running_loop()
         await asyncio.wait_for(loop.run_in_executor(None, backend.close), 1.0)
         self.assertTrue(app.scheduler.stopped)
+
+    async def test_terminal_delivery_after_loop_close_cancels_job(self):
+        import threading
+
+        from rapid_mlx.speculative import tensorfold_qwen27 as adapter
+
+        delivered = threading.Event()
+        original = adapter.asyncio.run_coroutine_threadsafe
+        calls = 0
+
+        def reject_terminal(coro, loop):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                coro.close()
+                delivered.set()
+                raise RuntimeError("loop closed")
+            return original(coro, loop)
+
+        app = FakeApp()
+        backend = TensorFoldQwen27Backend(app)
+        with patch.object(adapter.asyncio, "run_coroutine_threadsafe", reject_terminal):
+            stream = backend.stream("terminal-close", [1], max_tokens=1)
+            self.assertEqual((await stream.__anext__()).delta, "a")
+            await stream.aclose()
+            loop = asyncio.get_running_loop()
+            await asyncio.wait_for(loop.run_in_executor(None, delivered.wait, 1), 2)
+        backend.close()
 
 
 if __name__ == "__main__":

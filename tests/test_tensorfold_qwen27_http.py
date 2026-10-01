@@ -6,6 +6,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
+from rapid_mlx.request import RequestOutput
 from rapid_mlx.spec_decode.config import (
     SpeculativeConfigError,
     parse_speculative_config,
@@ -198,6 +199,9 @@ def test_provider_closed_timeout_error_and_generate(monkeypatch) -> None:
             self.eos_ids = set()
             self.strings = ()
 
+        def visible(self, text, partial=False):
+            return text
+
     class Proposer:
         def __init__(self, min_match):
             self.min_match = min_match
@@ -228,6 +232,84 @@ def test_provider_closed_timeout_error_and_generate(monkeypatch) -> None:
     provider = TensorFoldRequestProvider(SimpleNamespace(_app=app))
     with pytest.raises(RuntimeError, match="worker stopped"):
         list(provider.generate(None, None, "x", max_tokens=1))
+
+
+def test_provider_timeout_worker_error_and_generate_success(monkeypatch) -> None:
+    import queue
+    import threading
+
+    class Cancellation:
+        def cancel(self):
+            pass
+
+        def check(self):
+            pass
+
+    class ChatJob:
+        next_error = None
+
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+            self.chunks = queue.Queue()
+            self.error = self.next_error
+            self.stream = None
+            self.cached_tokens = 0
+
+    class StopPolicy:
+        def __init__(self, *_args):
+            self.ignore_eos = False
+            self.eos_ids = set()
+            self.strings = ()
+
+        def visible(self, text, partial=False):
+            return text
+
+    class Proposer:
+        def __init__(self, min_match):
+            self.min_match = min_match
+
+    for name, attrs in {
+        "tensorfold.engine.lane_engine": {"SuffixLookupProposer": Proposer},
+        "tensorfold.server.cancellation": {"Cancellation": Cancellation},
+        "tensorfold.server.scheduler": {"ChatJob": ChatJob},
+        "tensorfold.server.stopping": {"StopPolicy": StopPolicy},
+    }.items():
+        module = ModuleType(name)
+        for key, value in attrs.items():
+            setattr(module, key, value)
+        monkeypatch.setitem(sys.modules, name, module)
+
+    class Scheduler:
+        def submit(self, job):
+            def finish():
+                job.chunks.put([2])
+                job.chunks.put(None)
+
+            threading.Timer(0.06, finish).start()
+
+    tokenizer = SimpleNamespace(
+        encode=lambda _p: [1], decode=lambda ids: "x" * len(ids)
+    )
+    app = SimpleNamespace(
+        tokenizer=tokenizer,
+        tokenizer_lock=threading.Lock(),
+        stop_ids=set(),
+        min_match=1,
+        scheduler=Scheduler(),
+        _resolve_sampling=lambda *_a: {},
+    )
+    provider = TensorFoldRequestProvider(SimpleNamespace(_app=app))
+    result = provider.generate(None, None, "x", max_tokens=1)
+    assert result.text == "x"
+    assert result.generation_tokens == 1
+
+    ChatJob.next_error = RuntimeError("job failed")
+    with pytest.raises(RuntimeError, match="job failed"):
+        list(provider._outputs("x", max_tokens=1))
+
+    terminal = RequestOutput(request_id="r", finished=True)
+    provider._outputs = lambda *_a, **_k: iter([terminal])
+    assert list(provider.stream_generate(None, None, "x")) == []
 
 
 def test_render_prompt_and_server_bootstrap(monkeypatch) -> None:
@@ -361,8 +443,11 @@ def test_http_stream_and_nonstream_use_provider_and_reject_tools() -> None:
         generation_kwargs_with_request=True,
         validate_request_fn=validate_http_request,
         backend_name="TensorFold Qwen3.8-27B",
+        runtime_status_extra={"profile": {"mode": "accelerated"}},
     )
     client = TestClient(app)
+    assert client.get("/health").json()["profile"]["mode"] == "accelerated"
+    assert client.get("/v1/models").json()["profile"]["mode"] == "accelerated"
     body = {"model": "qwen27-tf", "messages": [{"role": "user", "content": "hi"}]}
     response = client.post("/v1/chat/completions", json=body)
     assert response.status_code == 200
