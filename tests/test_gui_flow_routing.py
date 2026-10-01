@@ -239,3 +239,27 @@ def test_workflow_passes_real_diff_to_router_and_consumes_its_outputs():
     assert "GUI_FLOWS: ${{ matrix.gui_flows }}" in workflow
     assert "EXPECTED_FLOW_COUNT: ${{ matrix.flow_count }}" in workflow
     assert "fail-fast: false" in workflow
+
+
+def test_protected_studio_qualification_runs_the_unchanged_full_mac_gate():
+    workflow = WORKFLOW.read_text()
+    selector = (
+        "github.event_name == 'push' && github.ref == "
+        "'refs/heads/harbor/studio-gui-fallback-qualification' && "
+        "'rapidmlx-studio' || "
+        "'manzanita-standard'"
+    )
+
+    assert "workflow_dispatch:" not in workflow
+    assert "branches: [main, harbor/studio-gui-fallback-qualification]" in workflow
+    # Build, the commit-bound app producer, and both matrix consumers must use
+    # one explicit pool. A partial fallback would mix unqualified artifacts or
+    # silently omit the AX/XCUITest evidence this canary exists to establish.
+    assert workflow.count(f"runs-on: ${{{{ {selector} }}}}") == 3
+    assert (
+        "max-parallel: ${{ github.event_name == 'push' && github.ref == "
+        "'refs/heads/harbor/studio-gui-fallback-qualification' && 1 || 256 }}"
+        in workflow
+    )
+    assert "needs.changes.outputs.full_gate == 'true'" in workflow
+    assert "matrix: ${{ fromJSON(needs.changes.outputs.gui_shards) }}" in workflow

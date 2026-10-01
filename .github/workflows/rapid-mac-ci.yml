@@ -26,13 +26,14 @@ name: rapid-mac CI
 
 on:
   push:
-    branches: [main]
+    # The exact protected qualification branch is a one-time bootstrap route for
+    # qualifying Studio before any persistent runner-routing change.
+    branches: [main, harbor/studio-gui-fallback-qualification]
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
     types: [checks_requested]
-
 permissions:
   contents: read
 
@@ -349,7 +350,7 @@ jobs:
       needs.queue-tree-evidence.outputs.reuse_mac != 'true'
     # Manzanita's pinned image provides macOS Sequoia, Xcode 16.4, and Swift
     # 6.1.2, matching Package.swift's Swift 6 toolchain requirement.
-    runs-on: manzanita-standard
+    runs-on: ${{ github.event_name == 'push' && github.ref == 'refs/heads/harbor/studio-gui-fallback-qualification' && 'rapidmlx-studio' || 'manzanita-standard' }}
     # A hung test would otherwise sit on the 6-hour default. The whole
     # job is ~2 min warm; 20 leaves room for a cold package resolve and
     # still fails fast. Learned the hard way: a headless-incompatible
@@ -436,7 +437,7 @@ jobs:
     # trusted Mac fleet. Main pushes use the same pinned Manzanita image as the
     # artifact consumers, removing a second provider queue without changing
     # the commit-bound build-once contract.
-    runs-on: manzanita-standard
+    runs-on: ${{ github.event_name == 'push' && github.ref == 'refs/heads/harbor/studio-gui-fallback-qualification' && 'rapidmlx-studio' || 'manzanita-standard' }}
     timeout-minutes: 20
     defaults:
       run:
@@ -505,12 +506,15 @@ jobs:
       needs.changes.outputs.full_gate == 'true' &&
       needs.queue-tree-evidence.outputs.reuse_mac != 'true'
     # Use the same pinned Swift 6 image as the build job.
-    runs-on: manzanita-standard
+    runs-on: ${{ github.event_name == 'push' && github.ref == 'refs/heads/harbor/studio-gui-fallback-qualification' && 'rapidmlx-studio' || 'manzanita-standard' }}
     strategy:
       # A failure in one product journey must not cancel independent evidence
       # from the other selected groups. The stable desktop-tests facade still
       # blocks unless every matrix child succeeds.
       fail-fast: false
+      # Keep the one-time Studio qualification on a single logged-in Aqua
+      # session even if another Studio runner is registered later.
+      max-parallel: ${{ github.event_name == 'push' && github.ref == 'refs/heads/harbor/studio-gui-fallback-qualification' && 1 || 256 }}
       matrix: ${{ fromJSON(needs.changes.outputs.gui_shards) }}
     # The shared app is already built. Individual flows are usually seconds
     # each (6-11 s on an M3 Ultra), while hosted-runner launch variance can be
