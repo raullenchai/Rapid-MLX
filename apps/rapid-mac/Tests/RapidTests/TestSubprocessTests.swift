@@ -31,6 +31,14 @@ struct TestSubprocessTests {
 
     @Test("a stalled child is sampled, killed, reaped, and reported within a bound")
     func stalledChildFailsWithinBound() async throws {
+        let timeout: TimeInterval = 0.2
+        let sampleDuration = 1
+        let upperBound = TestSubprocess.timeoutPathUpperBound(
+            timeout: timeout,
+            sampleOnTimeout: true,
+            sampleDuration: sampleDuration,
+            schedulerLeeway: 1
+        )
         let clock = ContinuousClock()
         let start = clock.now
         var childPID: pid_t?
@@ -39,9 +47,9 @@ struct TestSubprocessTests {
             let result = try await TestSubprocess.run(
                 executableURL: URL(fileURLWithPath: "/bin/sh"),
                 arguments: ["-c", "printf '%s\\n' $$; exec sleep 30"],
-                timeout: 0.2,
+                timeout: timeout,
                 sampleOnTimeout: true,
-                sampleDuration: 1
+                sampleDuration: sampleDuration
             )
             childPID = pid_t(String(decoding: result.standardOutput, as: UTF8.self)
                 .trimmingCharacters(in: .whitespacesAndNewlines))
@@ -52,11 +60,16 @@ struct TestSubprocessTests {
                 return
             }
             childPID = pid
-            #expect(seconds == 0.2)
+            #expect(seconds == timeout)
             #expect(error.description.contains("process sample was emitted above"))
         }
 
-        #expect(clock.now - start < .seconds(5))
+        // The implementation may spend the requested 0.2 s waiting, 2 s in
+        // sampling and symbolication, 0.25 s stopping the sampler, 2 s on
+        // TERM before KILL, and 1 s waiting for waitpid. Add one second for
+        // scheduler delay on a loaded CI host instead of asserting an
+        // impossible five-second ceiling over a 5.45-second cleanup budget.
+        #expect(clock.now - start < upperBound)
         let pid = try #require(childPID)
         #expect(Darwin.kill(pid, 0) == -1)
         #expect(errno == ESRCH)
