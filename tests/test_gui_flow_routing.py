@@ -171,7 +171,7 @@ def test_shards_partition_every_selected_flow_once_by_manifest_group():
         for shard in shards
     ]
     assert GUI_LANE_COUNT == MAX_GUI_MATRIX_JOBS
-    assert sorted(lane_weights) == [615, 700]
+    assert sorted(lane_weights) == [240, 295, 300, 480]
 
 
 def test_one_or_two_selected_groups_keep_whole_group_jobs():

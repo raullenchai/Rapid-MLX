@@ -43,10 +43,10 @@ FULL_SUITE_PREFIXES = (
 
 # Relative scheduling weights from the most recent complete candidate run.
 # They are hints, not timeouts or coverage policy: selected manifest groups
-# remain atomic and are packed across the provider's two available slots.
-# Keeping the slow chat group first avoids the 5–8 minute tail caused when it
-# waits behind several short groups. A new group must receive an explicit
-# weight so capacity planning cannot silently degrade.
+# remain atomic and are packed across four lanes. Four keeps the slowest lane
+# below the managed runner's observed infrastructure-failure window even when
+# native XCUITest pays its usual startup cost. A new group must receive an
+# explicit weight so capacity planning cannot silently degrade.
 GUI_GROUP_WEIGHTS = {
     "chat": 480,
     "onboarding-settings": 240,
@@ -55,7 +55,7 @@ GUI_GROUP_WEIGHTS = {
     "app-lifecycle": 120,
     "models": 100,
 }
-GUI_LANE_COUNT = 2
+GUI_LANE_COUNT = 4
 
 
 def _manifest() -> list[dict[str, object]]:
