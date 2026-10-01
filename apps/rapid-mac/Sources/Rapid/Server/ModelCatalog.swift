@@ -181,10 +181,13 @@ enum ModelSelectionPurpose: Sendable, Hashable {
 /// `nil` on ``ModelEntry`` means the alias explicitly has no usable preset
 /// (or an older sidecar did not advertise one), so Settings fails closed.
 struct SpeculativeDecodingPreset: Codable, Sendable, Hashable {
-    enum Method: String, Codable, Sendable, Hashable { case suffix, mtp }
+    enum Method: String, Codable, Sendable, Hashable { case suffix, mtp, dflash }
     let method: Method
     let model: String?
     let tokens: Int?
+    /// Optional implementation selected by an exact qualified alias pair.
+    /// Nil preserves the engine's ordinary implementation for that method.
+    let backend: String?
     /// Exact-artifact qualification from the engine alias registry. Optional
     /// keeps previously persisted explicit presets decodable across upgrades.
     let defaultEnabled: Bool?
@@ -193,16 +196,22 @@ struct SpeculativeDecodingPreset: Codable, Sendable, Hashable {
         method: Method,
         model: String?,
         tokens: Int?,
+        backend: String? = nil,
         defaultEnabled: Bool? = nil
     ) {
         self.method = method
         self.model = model
         self.tokens = tokens
+        self.backend = backend
         self.defaultEnabled = defaultEnabled
     }
 
     var displayName: String {
-        method == .mtp ? "MTP" : "Suffix decoding"
+        switch method {
+        case .mtp: return "MTP"
+        case .dflash: return "DFlash"
+        case .suffix: return "Suffix decoding"
+        }
     }
 
     var isDefaultEnabled: Bool { defaultEnabled == true }
@@ -215,6 +224,11 @@ struct SpeculativeDecodingPreset: Codable, Sendable, Hashable {
                 "--speculative-config",
                 #"{"method":"mtp","model":"\#(model)","num_speculative_tokens":\#(tokens)}"#,
             ]
+        case .dflash:
+            guard let model else { return [] }
+            var fields = [#""method":"dflash""#, #""model":"\#(model)""#]
+            if let backend { fields.append(#""backend":"\#(backend)""#) }
+            return ["--speculative-config", "{" + fields.joined(separator: ",") + "}"]
         case .suffix:
             return ["--speculative-config", #"{"method":"suffix"}"#]
         }
@@ -850,6 +864,20 @@ enum ModelCatalog {
                         == "verified"
                         && (row["mtp_default_enabled"] as? Bool ?? true)
                 )
+            } else if row["supports_dflash"] as? Bool == true,
+                      let model = sanitizedHuggingFaceRepo(
+                          row["dflash_draft_model"] as? String
+                      ),
+                      row["dflash_algorithm"] as? String == "dflash2" {
+                let backend = row["dflash_backend"] as? String
+                guard backend == nil || backend == "tensorfold" else { continue }
+                speculative[alias] = SpeculativeDecodingPreset(
+                    method: .dflash,
+                    model: model,
+                    tokens: nil,
+                    backend: backend,
+                    defaultEnabled: false
+                )
             } else if row["supports_spec_decode"] as? Bool == true {
                 speculative[alias] = SpeculativeDecodingPreset(
                     method: .suffix, model: nil, tokens: nil
@@ -925,6 +953,20 @@ enum ModelCatalog {
                     defaultEnabled: row["mtp_continuous_batching_tier"] as? String
                         == "verified"
                         && (row["mtp_default_enabled"] as? Bool ?? true)
+                )
+            } else if row["supports_dflash"] as? Bool == true,
+                      let model = sanitizedHuggingFaceRepo(
+                          row["dflash_draft_model"] as? String
+                      ),
+                      row["dflash_algorithm"] as? String == "dflash2" {
+                let backend = row["dflash_backend"] as? String
+                guard backend == nil || backend == "tensorfold" else { continue }
+                speculative[alias] = SpeculativeDecodingPreset(
+                    method: .dflash,
+                    model: model,
+                    tokens: nil,
+                    backend: backend,
+                    defaultEnabled: false
                 )
             } else if row["supports_spec_decode"] as? Bool == true {
                 speculative[alias] = SpeculativeDecodingPreset(
