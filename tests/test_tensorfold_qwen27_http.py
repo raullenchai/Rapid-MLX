@@ -66,6 +66,13 @@ def test_contextual_stream_reconstructs_final_executable_code(tmp_path) -> None:
     py_compile.compile(str(source), doraise=True)
 
 
+def test_stream_sanitizer_preserves_code_whitespace_without_wire_tokens() -> None:
+    from rapid_mlx.api.utils import sanitize_output
+
+    assert sanitize_output(" list of [start, end]") == " list of [start, end]"
+    assert sanitize_output("\n    validated = []\n") == "\n    validated = []\n"
+
+
 def test_tensorfold_config_is_explicit_and_method_scoped() -> None:
     config = parse_speculative_config(
         '{"method":"dflash","backend":"tensorfold","model":"/pinned/drafter"}'
