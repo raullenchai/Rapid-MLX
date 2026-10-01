@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Contracts for the opt-in GLM-5.3 TensorFold product profile."""
 
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -96,14 +97,49 @@ def test_glm_target_download_and_layout_gates(monkeypatch, tmp_path: Path) -> No
         adapter.validate_target(target)
 
 
+def _qualified_direct_url() -> dict:
+    from rapid_mlx.speculative.tensorfold_glm53 import SUPPORTED_RUNTIME_REVISION
+
+    return {
+        "url": "https://github.com/ashhart/TensorFold.git",
+        "vcs_info": {"vcs": "git", "commit_id": SUPPORTED_RUNTIME_REVISION},
+    }
+
+
 def test_glm_runtime_and_platform_gates(monkeypatch) -> None:
     from importlib.metadata import PackageNotFoundError
 
     from rapid_mlx.speculative import tensorfold_glm53 as adapter
 
-    adapter.require_runtime("0.6.0")
+    adapter.require_runtime("0.6.0", direct_url=_qualified_direct_url())
+    monkeypatch.setattr(adapter.importlib.metadata, "version", lambda _name: "0.6.0")
+    monkeypatch.setattr(
+        adapter.importlib.metadata,
+        "distribution",
+        lambda _name: SimpleNamespace(
+            read_text=lambda filename: (
+                json.dumps(_qualified_direct_url())
+                if filename == "direct_url.json"
+                else None
+            )
+        ),
+    )
+    adapter.require_runtime()
     with pytest.raises(adapter.TensorFoldUnavailable, match="found 0.5.0"):
-        adapter.require_runtime("0.5.0")
+        adapter.require_runtime("0.5.0", direct_url=_qualified_direct_url())
+    for provenance in (
+        {},
+        {"vcs_info": {"vcs": "git", "commit_id": "0" * 40}},
+        {
+            "vcs_info": {
+                "vcs": "git",
+                "commit_id": adapter.SUPPORTED_RUNTIME_REVISION,
+            },
+            "dir_info": {"editable": True},
+        },
+    ):
+        with pytest.raises(adapter.TensorFoldUnavailable, match="exact qualified"):
+            adapter.require_runtime("0.6.0", direct_url=provenance)
     monkeypatch.setattr(
         adapter.importlib.metadata,
         "version",
@@ -163,6 +199,42 @@ def test_glm_parser_sanitizes_tensorfold_implicit_reasoning(decode_path: str) ->
         == 'The user requested exactly "GLM_SMOKE_OK". I should comply exactly.'
     )
     assert content == "GLM_SMOKE_OK"
+
+
+@pytest.mark.parametrize("decode_path", ["drafted", "serial"])
+def test_non_stream_truncation_never_publishes_implicit_reasoning(
+    monkeypatch, decode_path: str
+) -> None:
+    from rapid_mlx.speculative.dflash import server
+
+    private = "private reasoning truncated before the closing marker"
+    monkeypatch.setattr(
+        server,
+        "get_config",
+        lambda: SimpleNamespace(reasoning_parser_name="glm5"),
+    )
+
+    async def run():
+        return await server._non_stream_completion(
+            prompt="prompt ends in an implicit <think> opener",
+            request=SimpleNamespace(tools=None),
+            served_model_name="glm5.3-flash-tensorfold",
+            gen_kwargs={"max_tokens": 1},
+            model=None,
+            processor=None,
+            enable_thinking=True,
+            generate_fn=lambda *_args, **_kwargs: SimpleNamespace(
+                text=private,
+                generation_tokens=1,
+                prompt_tokens=7,
+            ),
+            backend_name=f"TensorFold {decode_path}",
+        )
+
+    response = asyncio.run(run())
+    message = response.choices[0].message
+    assert message.content is None
+    assert message.reasoning_content == private
 
 
 def test_cli_dispatches_qualified_glm_tensorfold_profile(monkeypatch) -> None:

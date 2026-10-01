@@ -1,0 +1,14 @@
+{
+  "model": "glm53-tf-v06",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Implement `solution.py` using only the Python standard library. It must export:\n\n```python\nclass TTLCache:\n    def __init__(self, capacity: int, ttl: float, clock=time.monotonic): ...\n    def get_or_load(self, key, loader): ...\n```\n\n`clock` is a zero-argument callable returning a monotonic numeric timestamp. `loader` is a zero-argument callable. Keys may be any hashable value and cached values may be any Python object, including `None`.\n\nRequired behavior:\n\n1. The constructor raises `ValueError` if `capacity` is not a positive integer (booleans are not valid integers), or if `ttl <= 0`.\n2. `get_or_load(key, loader)` returns the unexpired cached value when present. A hit must not call `loader` or extend the entry's expiration time.\n3. On a miss, call `loader()` and cache its returned value. The TTL starts when the loader finishes successfully: the entry expires at `clock() + ttl`. At `clock() == expires_at` it is expired.\n4. Capacity uses least-recently-used eviction. Both successful cache hits and newly loaded values make a key most recently used. Expired entries behave as absent. Before evicting an unexpired entry for capacity, discard expired entries so they do not consume capacity.\n5. The class must be safe for concurrent calls from threads. Concurrent misses for the same key are single-flight: exactly one caller runs a loader, and all callers waiting for that flight receive its result. Their own `loader` arguments are not called.\n6. If the flight's loader raises, every caller waiting for that flight must raise that same exception object. The failure is not cached; a later call may start a new flight and retry.\n7. Do not hold a cache-wide lock while running a loader. Loads for different keys must be able to run concurrently, and cache hits for other keys must not wait for a loader.\n\nDo not add background threads. The implementation should be compact and production-readable; a typical solution is 100-180 lines.\n\nReturn the complete contents of solution.py only. Do not include explanations or Markdown fences."
+    }
+  ],
+  "temperature": 0,
+  "seed": 1234,
+  "max_tokens": 768,
+  "enable_thinking": true,
+  "thinking_budget": 256
+}

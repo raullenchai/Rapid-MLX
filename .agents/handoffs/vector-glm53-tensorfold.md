@@ -10,6 +10,13 @@ existing TensorFold HTTP provider. Unsupported tools, media, grammar, and
 general batching remain fail-closed. The ordinary GLM alias is the documented
 restart fallback.
 
+Independent review tightened the boundary before release: runtime admission
+now verifies pip's immutable VCS commit provenance as well as the version;
+non-stream truncation keeps prompt-primed GLM scratch text in the reasoning
+lane; and the JSON/Desktop catalogs carry a target-only, default-off preset
+with explicit opt-in and restart behavior. The tracked benchmark fixture and
+commands replace transient-host evidence.
+
 Reference check: vLLM and SGLang use explicit speculative backend selection and
 separate target/draft capability validation. MLX-native precedent keeps model
 family loading and cache ownership inside the owning runtime. TensorFold 0.6.0

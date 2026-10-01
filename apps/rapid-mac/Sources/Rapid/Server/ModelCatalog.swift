@@ -219,6 +219,12 @@ struct SpeculativeDecodingPreset: Codable, Sendable, Hashable {
     var launchFlags: [String] {
         switch method {
         case .mtp:
+            if backend == "tensorfold", model == nil, tokens == nil {
+                return [
+                    "--speculative-config",
+                    #"{"method":"mtp","backend":"tensorfold"}"#,
+                ]
+            }
             guard let model, let tokens else { return [] }
             return [
                 "--speculative-config",
@@ -854,7 +860,16 @@ enum ModelCatalog {
                     allowsLegacyRecommendationPolicy: isPreAtomicCatalog && isBuiltin
                 )
             }
-            if let model = sanitizedHuggingFaceRepo(row["mtp_draft_model"] as? String),
+            if row["tensorfold_mtp"] as? Bool == true,
+               row["tensorfold_backend"] as? String == "tensorfold" {
+                speculative[alias] = SpeculativeDecodingPreset(
+                    method: .mtp,
+                    model: nil,
+                    tokens: nil,
+                    backend: "tensorfold",
+                    defaultEnabled: false
+                )
+            } else if let model = sanitizedHuggingFaceRepo(row["mtp_draft_model"] as? String),
                let tokens = row["mtp_speculative_tokens"] as? Int, tokens > 0 {
                 speculative[alias] = SpeculativeDecodingPreset(
                     method: .mtp,
@@ -944,7 +959,16 @@ enum ModelCatalog {
         var speculative: [String: SpeculativeDecodingPreset] = [:]
         for row in root["text"] as? [[String: Any]] ?? [] {
             guard let alias = row["alias"] as? String, isSafeAlias(alias) else { continue }
-            if let model = sanitizedHuggingFaceRepo(row["mtp_draft_model"] as? String),
+            if row["tensorfold_mtp"] as? Bool == true,
+               row["tensorfold_backend"] as? String == "tensorfold" {
+                speculative[alias] = SpeculativeDecodingPreset(
+                    method: .mtp,
+                    model: nil,
+                    tokens: nil,
+                    backend: "tensorfold",
+                    defaultEnabled: false
+                )
+            } else if let model = sanitizedHuggingFaceRepo(row["mtp_draft_model"] as? String),
                let tokens = row["mtp_speculative_tokens"] as? Int, tokens > 0 {
                 speculative[alias] = SpeculativeDecodingPreset(
                     method: .mtp,

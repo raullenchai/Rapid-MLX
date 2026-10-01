@@ -9171,6 +9171,16 @@ def _available_models_json_payload() -> dict:
                 p, "mtp_continuous_batching_tier", "unknown"
             ),
             "mtp_default_enabled": bool(getattr(p, "mtp_default_enabled", True)),
+            "tensorfold_mtp": bool(getattr(p, "tensorfold_mtp", False)),
+            "tensorfold_target_revision": getattr(
+                p, "tensorfold_target_revision", None
+            ),
+            "tensorfold_runtime_revision": getattr(
+                p, "tensorfold_runtime_revision", None
+            ),
+            "tensorfold_backend": "tensorfold"
+            if getattr(p, "tensorfold_mtp", False)
+            else None,
             "modality": modality,
             "video_modes": list(p.video_modes or ()),
             "min_memory_gb": p.min_memory_gb,
