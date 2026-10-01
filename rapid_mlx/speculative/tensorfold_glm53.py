@@ -84,7 +84,8 @@ def _runtime_direct_url() -> dict[str, Any]:
     try:
         distribution = importlib.metadata.distribution("tensorfold")
         raw = distribution.read_text("direct_url.json")
-        return json.loads(raw) if raw else {}
+        parsed = json.loads(raw) if raw else {}
+        return parsed if isinstance(parsed, dict) else {}
     except (importlib.metadata.PackageNotFoundError, OSError, ValueError):
         return {}
 

@@ -21,6 +21,7 @@ from typing import Any, cast
 
 SUPPORTED_VERSION = "0.5.0"
 SUPPORTED_REVISION = "9cd52ab4daba68ddd09be89be8f23ad43175e821"
+SUPPORTED_RUNTIME_URL = "https://github.com/ashhart/TensorFold.git"
 SUPPORTED_MLX_VERSION = "0.32.3"
 INSTALL_HINT = (
     "Install the qualified TensorFold runtime from its vetted revision with:\n"
@@ -174,7 +175,8 @@ def _runtime_direct_url() -> dict[str, Any]:
     try:
         distribution = importlib.metadata.distribution("tensorfold")
         raw = distribution.read_text("direct_url.json")
-        return json.loads(raw) if raw else {}
+        parsed = json.loads(raw) if raw else {}
+        return parsed if isinstance(parsed, dict) else {}
     except (importlib.metadata.PackageNotFoundError, OSError, ValueError):
         return {}
 
@@ -195,7 +197,8 @@ def require_runtime(
     provenance = _runtime_direct_url() if direct_url is None else direct_url
     vcs = provenance.get("vcs_info") or {}
     if (
-        vcs.get("vcs") != "git"
+        provenance.get("url") != SUPPORTED_RUNTIME_URL
+        or vcs.get("vcs") != "git"
         or vcs.get("commit_id") != SUPPORTED_REVISION
         or (provenance.get("dir_info") or {}).get("editable") is True
     ):

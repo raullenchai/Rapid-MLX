@@ -323,6 +323,10 @@ class TensorFoldQwen27Tests(unittest.IsolatedAsyncioTestCase):
             require_runtime("0.5.1", direct_url=qualified)
         for provenance in (
             {},
+            {
+                "url": "https://example.invalid/TensorFold.git",
+                "vcs_info": {"vcs": "git", "commit_id": SUPPORTED_REVISION},
+            },
             {"vcs_info": {"vcs": "git", "commit_id": "0" * 40}},
             {
                 "vcs_info": {"vcs": "git", "commit_id": SUPPORTED_REVISION},
@@ -351,6 +355,23 @@ class TensorFoldQwen27Tests(unittest.IsolatedAsyncioTestCase):
                 "rapid_mlx.speculative.tensorfold_qwen27.importlib.metadata.distribution",
                 return_value=distribution,
             ),
+        ):
+            require_runtime()
+
+    def test_installed_runtime_rejects_non_object_provenance(self):
+        distribution = types.SimpleNamespace(
+            read_text=lambda filename: "[]" if filename == "direct_url.json" else None
+        )
+        with (
+            patch(
+                "rapid_mlx.speculative.tensorfold_qwen27.importlib.metadata.version",
+                return_value="0.5.0",
+            ),
+            patch(
+                "rapid_mlx.speculative.tensorfold_qwen27.importlib.metadata.distribution",
+                return_value=distribution,
+            ),
+            self.assertRaisesRegex(TensorFoldUnavailable, "exact qualified"),
         ):
             require_runtime()
 

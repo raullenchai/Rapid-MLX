@@ -156,6 +156,15 @@ def test_glm_runtime_and_platform_gates(monkeypatch) -> None:
         ),
     )
     adapter.require_runtime()
+    monkeypatch.setattr(
+        adapter.importlib.metadata,
+        "distribution",
+        lambda _name: SimpleNamespace(
+            read_text=lambda filename: "[]" if filename == "direct_url.json" else None
+        ),
+    )
+    with pytest.raises(adapter.TensorFoldUnavailable, match="exact qualified"):
+        adapter.require_runtime()
     with pytest.raises(adapter.TensorFoldUnavailable, match="found 0.5.0"):
         adapter.require_runtime("0.5.0", direct_url=_qualified_direct_url())
     for provenance in (
