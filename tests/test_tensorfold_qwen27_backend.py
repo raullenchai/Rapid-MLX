@@ -467,10 +467,21 @@ class TensorFoldQwen27Tests(unittest.IsolatedAsyncioTestCase):
         original = adapter.asyncio.run_coroutine_threadsafe
         calls = 0
 
+        class RecordingCancellation(FakeCancellation):
+            last = None
+
+            def __init__(self):
+                super().__init__()
+                RecordingCancellation.last = self
+
+        sys.modules[
+            "tensorfold.server.cancellation"
+        ].Cancellation = RecordingCancellation
+
         def reject_terminal(coro, loop):
             nonlocal calls
             calls += 1
-            if calls == 2:
+            if calls == 3:
                 coro.close()
                 delivered.set()
                 raise RuntimeError("loop closed")
@@ -484,6 +495,8 @@ class TensorFoldQwen27Tests(unittest.IsolatedAsyncioTestCase):
             await stream.aclose()
             loop = asyncio.get_running_loop()
             await asyncio.wait_for(loop.run_in_executor(None, delivered.wait, 1), 2)
+        self.assertIsNotNone(RecordingCancellation.last)
+        self.assertTrue(RecordingCancellation.last.cancelled)
         backend.close()
 
 
