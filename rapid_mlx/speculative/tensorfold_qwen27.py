@@ -168,7 +168,20 @@ def validate_pair(target: Any, drafter: Any) -> None:
         )
 
 
-def require_runtime(version: str | None = None) -> None:
+def _runtime_direct_url() -> dict[str, Any]:
+    """Return pip's immutable VCS provenance for the installed runtime."""
+
+    try:
+        distribution = importlib.metadata.distribution("tensorfold")
+        raw = distribution.read_text("direct_url.json")
+        return json.loads(raw) if raw else {}
+    except (importlib.metadata.PackageNotFoundError, OSError, ValueError):
+        return {}
+
+
+def require_runtime(
+    version: str | None = None, *, direct_url: dict[str, Any] | None = None
+) -> None:
     try:
         found = version or importlib.metadata.version("tensorfold")
     except importlib.metadata.PackageNotFoundError as exc:
@@ -178,6 +191,16 @@ def require_runtime(version: str | None = None) -> None:
     if found != SUPPORTED_VERSION:
         raise TensorFoldUnavailable(
             f"tensorfold-qwen27 requires tensorfold=={SUPPORTED_VERSION}; found {found}"
+        )
+    provenance = _runtime_direct_url() if direct_url is None else direct_url
+    vcs = provenance.get("vcs_info") or {}
+    if (
+        vcs.get("vcs") != "git"
+        or vcs.get("commit_id") != SUPPORTED_REVISION
+        or (provenance.get("dir_info") or {}).get("editable") is True
+    ):
+        raise TensorFoldUnavailable(
+            "tensorfold-qwen27 requires the exact qualified TensorFold git revision"
         )
 
 

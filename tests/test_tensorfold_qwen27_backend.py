@@ -314,9 +314,45 @@ class TensorFoldQwen27Tests(unittest.IsolatedAsyncioTestCase):
                 sys.modules[name] = value
 
     def test_runtime_is_exactly_pinned(self):
-        require_runtime("0.5.0")
+        qualified = {
+            "url": "https://github.com/ashhart/TensorFold.git",
+            "vcs_info": {"vcs": "git", "commit_id": SUPPORTED_REVISION},
+        }
+        require_runtime("0.5.0", direct_url=qualified)
         with self.assertRaisesRegex(TensorFoldUnavailable, "found 0.5.1"):
-            require_runtime("0.5.1")
+            require_runtime("0.5.1", direct_url=qualified)
+        for provenance in (
+            {},
+            {"vcs_info": {"vcs": "git", "commit_id": "0" * 40}},
+            {
+                "vcs_info": {"vcs": "git", "commit_id": SUPPORTED_REVISION},
+                "dir_info": {"editable": True},
+            },
+        ):
+            with self.assertRaisesRegex(TensorFoldUnavailable, "exact qualified"):
+                require_runtime("0.5.0", direct_url=provenance)
+
+    def test_installed_runtime_reads_exact_vcs_provenance(self):
+        qualified = {
+            "url": "https://github.com/ashhart/TensorFold.git",
+            "vcs_info": {"vcs": "git", "commit_id": SUPPORTED_REVISION},
+        }
+        distribution = types.SimpleNamespace(
+            read_text=lambda filename: (
+                json.dumps(qualified) if filename == "direct_url.json" else None
+            )
+        )
+        with (
+            patch(
+                "rapid_mlx.speculative.tensorfold_qwen27.importlib.metadata.version",
+                return_value="0.5.0",
+            ),
+            patch(
+                "rapid_mlx.speculative.tensorfold_qwen27.importlib.metadata.distribution",
+                return_value=distribution,
+            ),
+        ):
+            require_runtime()
 
     def test_environment_requires_arm64_and_exact_mlx(self):
         with patch("rapid_mlx.speculative.tensorfold_qwen27.sys.platform", "darwin"):
