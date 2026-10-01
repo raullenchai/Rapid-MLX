@@ -1,0 +1,63 @@
+The files in rapid_mlx/kernels/lane_matmul/ are licensed under the MIT License.
+
+Credit: the row-invariant "lane" matmul is the TensorFold team's idea and
+design (github.com/ashhart/TensorFold). These files adapt two of its kernel
+families: the M5 tensor-unit group formulation of
+kernels/qwen/dense/v1/lane_qmm.py (revision bb4b4a35), and the M1-M4 row-exact
+simd_qmm, simd_qmm_bits and affine_rows kernels with their dispatch and
+thread-limit probing (revision 9cd52ab; Metal sources unchanged).
+
+The implementation here is adapted from mlx2 (github.com/pierre427/mlx2 at 8ac9388,
+src/mlx2/runtime/lane/), which generalized the M5 kernel to 2/3/5/6/8-bit and
+bf16/fp16 weights, computes group sums in-kernel, stacks sibling projections
+and adds the installer, twin-check routing and numerical-law receipts.
+
+------------------------------------------------------------------------------
+mlx2 lane matmul
+
+MIT License
+
+Copyright (c) 2026 Pierre Lamy
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+------------------------------------------------------------------------------
+TensorFold
+
+MIT License
+
+Copyright (c) 2026 TensorFold contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

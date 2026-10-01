@@ -438,14 +438,26 @@ def _semantic_cache_identity(cfg, raw_model_name: str) -> str:
 
 
 def pin_prefix_cache_identity(
-    engine, *, raw_model_name: str, checkpoint_source: str, kv_dtype: str
+    engine,
+    *,
+    raw_model_name: str,
+    checkpoint_source: str,
+    kv_dtype: str,
+    numerical_law: str | None = None,
 ) -> str:
-    """Pin cache identity before a loaded engine becomes concurrently visible."""
+    """Pin cache identity before a loaded engine becomes concurrently visible.
+
+    ``numerical_law`` names a non-stock projection arithmetic installed on the
+    model (the lane matmul's law id): KV and recurrent state computed under it
+    must not be served to a process running stock kernels, or the reverse.
+    """
     revision = _cached_model_revision(checkpoint_source)
     identity = (
         f"{raw_model_name}\0prefix-cache-v{_PREFIX_CACHE_NAMESPACE_VERSION}"
         f"\0kv={kv_dtype}\0revision={revision}"
     )
+    if numerical_law:
+        identity += f"\0law={numerical_law}"
     engine._rapid_mlx_prefix_cache_identity = identity
     return identity
 

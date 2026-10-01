@@ -600,6 +600,9 @@ rapid_mlx = [
     "kernels/*.metal",
     # Adapted Qwen4 stage-one selector license must ship with the Python file.
     "kernels/LICENSE-QSA-STAGE1",
+    # Lane matmul adapts separately MIT-licensed kernels; the complete
+    # copyright, permission text, and provenance must accompany every wheel.
+    "kernels/lane_matmul/LICENSE-LANE-MATMUL",
     # Integration tests bundled inside the package so `rapid-mlx agents
     # <name> --test` works on pip/brew installs (the source layout keeps
     # them at tests/integrations/, mirrored here via symlinks). Without

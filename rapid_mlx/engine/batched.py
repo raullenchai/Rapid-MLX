@@ -2108,6 +2108,7 @@ class BatchedEngine(BaseEngine):
         # tests/test_mtp_cli_wiring.py::test_start_llm_calls_apply_mtp_dispatch),
         # bypassing __init__ entirely. Matches this file's existing
         # getattr(self._scheduler_config, ...) defensive style.
+        self._lane_matmul_receipt = None
         if getattr(self, "_enable_disk_stream", False):
             # --disk-stream: load lazily (routed-expert MoE weights never
             # materialized) and install the disk-streaming patch on this
@@ -2175,6 +2176,17 @@ class BatchedEngine(BaseEngine):
             # verification path (spec_decode/mtp/cache_patch.py) reads
             # the split in_proj_* attributes directly, which fusion
             # deletes.
+            # Row-invariant lane matmul for multi-row verify and batched
+            # decode (opt-in: RAPID_MLX_LANE_MATMUL=crossover|exact; see
+            # rapid_mlx/kernels/lane_matmul). Before the GDN in_proj fusion,
+            # which only fuses stock QuantizedLinear projections: the lane
+            # installer stacks those four into one launch itself.
+            from ..kernels.lane_matmul import install_lane_matmul
+
+            self._lane_matmul_receipt = self._model_load_executor.submit(  # type: ignore[attr-defined]
+                install_lane_matmul, self._model
+            ).result()
+
             _sc = self._scheduler_config
             if _sc is None or getattr(_sc, "spec_decode", "none") != "mtp":
                 from ..gdn_in_proj_fusion import fuse_gdn_in_proj
@@ -2201,11 +2213,13 @@ class BatchedEngine(BaseEngine):
         kv_dtype = str(
             getattr(self._scheduler_config, "kv_cache_dtype", None) or "bf16"
         )
+        lane = getattr(self, "_lane_matmul_receipt", None)
         pin_prefix_cache_identity(
             self,
             raw_model_name=self._model_name,
             checkpoint_source=checkpoint_source,
             kv_dtype=kv_dtype,
+            numerical_law=lane["law_id"] if lane else None,
         )
 
         # 0.9.13 PR-A: new-arch MTP inject dispatcher (Gemma 4 external

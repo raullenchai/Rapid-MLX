@@ -198,6 +198,12 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # same scores; model, parser, serving lane, and emitted block set remain
         # unchanged. Unqualified shapes and machines retain the eager selector.
         "RAPID_MLX_QSA_STAGE1",
+        # Opt-in row-invariant lane matmul for an already-selected dense
+        # model's projections (multi-row verify and batched decode). It swaps
+        # only the arithmetic of covered linear layers after load; model,
+        # parser, tier, spec-decode mode and serving lane are unchanged, and
+        # MoE models and unsupported formats keep the stock kernels.
+        "RAPID_MLX_LANE_MATMUL",
         # Opt-out of exact CPU-side chat-render and tokenization reuse. This
         # changes only whether immutable host results are retained in a bounded
         # LRU after model selection; it cannot select a model, parser, tier, or
