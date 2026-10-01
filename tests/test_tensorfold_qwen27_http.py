@@ -7,10 +7,7 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 from rapid_mlx.request import RequestOutput
-from rapid_mlx.spec_decode.config import (
-    SpeculativeConfigError,
-    parse_speculative_config,
-)
+from rapid_mlx.spec_decode.config import parse_speculative_config
 from rapid_mlx.speculative.tensorfold_qwen27_server import (
     TensorFoldRequestProvider,
     generation_kwargs,
@@ -19,7 +16,7 @@ from rapid_mlx.speculative.tensorfold_qwen27_server import (
 )
 
 
-def test_dflash_tensorfold_config_is_explicit_and_method_scoped() -> None:
+def test_tensorfold_config_is_explicit_and_method_scoped() -> None:
     config = parse_speculative_config(
         '{"method":"dflash","backend":"tensorfold","model":"/pinned/drafter"}'
     )
@@ -28,8 +25,9 @@ def test_dflash_tensorfold_config_is_explicit_and_method_scoped() -> None:
         '{"method":"dflash","backend":"native","model":"x"}'
     )
     assert native is not None and native.backend == "native"
-    with pytest.raises(SpeculativeConfigError):
-        parse_speculative_config('{"method":"mtp","backend":"tensorfold"}')
+    mtp = parse_speculative_config('{"method":"mtp","backend":"tensorfold"}')
+    assert mtp is not None
+    assert mtp.backend == "tensorfold"
 
 
 def test_http_gate_rejects_unqualified_features_and_maps_sampling() -> None:
@@ -139,29 +137,39 @@ def test_provider_preserves_exact_token_ids_and_request_outputs(
             return "".join({21: "A", 22: "B"}[i] for i in ids)
 
     class Scheduler:
+        job = None
+
         def submit(self, job):
+            self.job = job
             job.chunks.put([21, 22])
             job.chunks.put(None)
 
+    scheduler = Scheduler()
     app = SimpleNamespace(
         tokenizer=Tokenizer(),
         tokenizer_lock=__import__("threading").Lock(),
         stop_ids=frozenset({22}),
         min_match=3,
-        scheduler=Scheduler(),
+        scheduler=scheduler,
         _resolve_sampling=lambda fields, temperature, prompt: (fields, temperature),
+        _think_close=lambda: ((99,), 99),
     )
     audit = tmp_path / "tokens.ndjson"
     provider = TensorFoldRequestProvider(
         SimpleNamespace(_app=app), audit_path=str(audit)
     )
-    chunks = list(provider.stream_generate(None, None, "prompt", max_tokens=8))
+    chunks = list(
+        provider.stream_generate(None, None, "prompt", max_tokens=8, thinking_budget=5)
+    )
 
     assert [chunk.token for chunk in chunks] == [21, 22]
     assert [chunk.text for chunk in chunks] == ["A", ""]
     assert provider.last_token_ids == [21, 22]
     assert provider.last_outputs[-1].finished
     assert provider.last_outputs[-1].cached_tokens == 3
+    assert scheduler.job.think_budget == 5
+    assert scheduler.job.think_close == (99,)
+    assert scheduler.job.think_end == 99
     import json
 
     record = json.loads(audit.read_text())

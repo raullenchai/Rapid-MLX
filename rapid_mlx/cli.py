@@ -635,8 +635,8 @@ def _reject_unsupported_listen_fd_lane(
     lane = None
     if owns_v41_product_download:
         lane = "DSpark K4"
-    elif getattr(args, "mtp_backend", None) == "native":
-        lane = "Native MTP"
+    elif getattr(args, "mtp_backend", None) in {"native", "tensorfold"}:
+        lane = "TensorFold MTP" if args.mtp_backend == "tensorfold" else "Native MTP"
     elif getattr(args, "enable_dflash", False):
         lane = "DFlash"
     elif getattr(args, "enable_ddtree", False):
@@ -3065,6 +3065,17 @@ def _tensorfold_product_profile(model_name: str | None):
     return profile
 
 
+def _tensorfold_mtp_profile(model_name: str | None):
+    """Return a catalog-qualified target-only TensorFold MTP profile."""
+
+    if not model_name:
+        return None
+    from .model_aliases import resolve_profile
+
+    profile = resolve_profile(model_name)
+    return profile if profile and getattr(profile, "tensorfold_mtp", False) else None
+
+
 def _normalize_speculative_config_or_exit(args):
     """Parse ``--speculative-config`` and map methods to runtime fields."""
     import json
@@ -3330,6 +3341,13 @@ def _normalize_speculative_config_or_exit(args):
         legacy_payload = _legacy_speculative_config_payload()
         if legacy_payload is not None:
             raw_config = json.dumps(legacy_payload, separators=(",", ":"))
+            args.speculative_config = raw_config
+        elif (
+            not getattr(args, "no_spec_decode", False)
+            and not getattr(args, "mllm", False)
+            and _tensorfold_mtp_profile(getattr(args, "model", None)) is not None
+        ):
+            raw_config = '{"method":"mtp","backend":"tensorfold"}'
             args.speculative_config = raw_config
         elif (
             not getattr(args, "no_spec_decode", False)
@@ -3683,6 +3701,59 @@ def _serve_native_mtp_if_requested(
     return True
 
 
+def _serve_tensorfold_mtp_if_requested(
+    args,
+    *,
+    server_module,
+    effective_max_tokens: int,
+    cors_origins: list[str],
+    uvicorn_log_level: str,
+) -> bool:
+    """Run a catalog-qualified target-only TensorFold MTP profile."""
+
+    if getattr(args, "mtp_backend", None) != "tensorfold":
+        return False
+    alias_name = getattr(args, "_original_alias", None) or args.model
+    profile = _tensorfold_mtp_profile(alias_name)
+    if profile is None:
+        print(
+            "error: backend='tensorfold' for MTP requires a qualified catalog alias",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+    from .speculative.tensorfold_glm53 import run_tensorfold_glm53_server
+
+    _check_disk_space(args.model, force=getattr(args, "force_disk_check", False))
+    _check_memory_capacity(args.model, alias=alias_name)
+    server_module._sync_config()
+    run_tensorfold_glm53_server(
+        main_model_repo=args.model,
+        main_model_revision=None,
+        drafter_repo="",
+        drafter_revision=None,
+        host=args.host,
+        port=_resolved_serve_port(args),
+        port_explicit=port_explicit_for(args),
+        served_model_name=args.served_model_name or alias_name,
+        default_max_tokens=effective_max_tokens,
+        cors_origins=cors_origins,
+        uvicorn_log_level=uvicorn_log_level,
+        no_thinking=args.no_thinking,
+        api_key=server_module._api_key,
+        rate_limit=args.rate_limit,
+        max_request_bytes=server_module._max_request_bytes,
+        body_receive_timeout_seconds=server_module._body_receive_timeout_seconds,
+        default_timeout=server_module._default_timeout,
+        max_concurrent_requests=args.max_concurrent_requests,
+        cors_policy=server_module.get_resolved_cors_policy(),
+        tool_call_parser=None,
+        reasoning_parser_name=args.reasoning_parser,
+        default_reasoning_effort=getattr(args, "default_reasoning_effort", None),
+    )
+    return True
+
+
 def _preflight_companion_dspark_or_exit(args):
     """Resolve the exact companion pair before downloads or lane selection."""
 
@@ -3864,23 +3935,43 @@ def _preflight_dflash_mutexes_or_exit(args) -> None:
         sys.exit(2)
 
 
-def _preflight_tensorfold_qwen27_or_exit() -> None:
-    """Reject an unusable TensorFold runtime before downloading the 27B pair."""
+def _preflight_tensorfold_qwen27_or_exit(args=None) -> None:
+    """Reject an unusable qualified TensorFold runtime before downloads."""
 
     from .runtime.optional_runtime import optional_extra_install_hint
-    from .speculative.tensorfold_qwen27 import (
-        TensorFoldUnavailable,
-        require_environment,
-        require_runtime,
+
+    profile = _tensorfold_mtp_profile(
+        (getattr(args, "_original_alias", None) or getattr(args, "model", None))
+        if args is not None
+        else None
     )
+    if profile is not None:
+        from .speculative.tensorfold_glm53 import (
+            INSTALL_HINT,
+            TensorFoldUnavailable,
+            require_environment,
+            require_runtime,
+        )
+
+        install_hint = INSTALL_HINT
+        label = "GLM-5.3-Flash"
+    else:
+        from .speculative.tensorfold_qwen27 import (
+            TensorFoldUnavailable,
+            require_environment,
+            require_runtime,
+        )
+
+        install_hint = optional_extra_install_hint("tensorfold-qwen27")
+        label = "Qwen 27B"
 
     try:
         require_runtime()
         require_environment()
     except TensorFoldUnavailable as exc:
         print(
-            "\n  Error: the TensorFold Qwen 27B profile is unavailable: "
-            f"{exc}.\n\n  {optional_extra_install_hint('tensorfold-qwen27')}\n",
+            f"\n  Error: the TensorFold {label} profile is unavailable: "
+            f"{exc}.\n\n  {install_hint}\n",
             file=sys.stderr,
         )
         raise SystemExit(1) from exc
@@ -5327,12 +5418,13 @@ def serve_command(args):
     # hot CLI path.
     _spec_config = getattr(args, "_speculative_config", None)
     _wants_tensorfold = (
-        _spec_config is not None
-        and _spec_config.method == "dflash"
-        and _spec_config.backend == "tensorfold"
+        _spec_config is not None and _spec_config.backend == "tensorfold"
     )
     if _wants_tensorfold:
-        _preflight_tensorfold_qwen27_or_exit()
+        if _spec_config.method == "mtp":
+            _preflight_tensorfold_qwen27_or_exit(args)
+        else:
+            _preflight_tensorfold_qwen27_or_exit()
     _wants_dflash = getattr(args, "enable_dflash", False) and not _wants_tensorfold
     if _wants_dflash:
         from .speculative.dflash.eligibility import have_runtime
@@ -5552,6 +5644,26 @@ def serve_command(args):
             _tf_artifacts = download_qualified_pair()
         args.model = _tf_artifacts.target_path
         args._dflash_drafter_repo = _tf_artifacts.drafter_path
+    elif (
+        getattr(args, "mtp_backend", None) == "tensorfold"
+        and (
+            _tf_profile := _tensorfold_mtp_profile(
+                getattr(args, "_original_alias", None) or args.model
+            )
+        )
+        is not None
+    ):
+        from rapid_mlx.telemetry.server_start import failure_stage
+
+        from .speculative.tensorfold_glm53 import download_qualified_target
+
+        with failure_stage("download"):
+            _check_disk_space(
+                _tf_profile.hf_path,
+                force=getattr(args, "force_disk_check", False),
+                revision_override=_tf_profile.tensorfold_target_revision,
+            )
+            args.model = download_qualified_target()
     elif not _is_wan_video:
         if getattr(args, "force_disk_check", False):
             _ensure_model_downloaded(args.model, force_disk_check=True)
@@ -5712,7 +5824,7 @@ def serve_command(args):
     # exactly as an explicit ``--text-only`` run would be (#352 dogfood P1-②).
     if (
         not args.enable_dflash
-        and getattr(args, "mtp_backend", None) != "native"
+        and getattr(args, "mtp_backend", None) not in {"native", "tensorfold"}
         and _companion_dspark_pair is None
     ):
         _requested_spec_decode = getattr(args, "spec_decode", "none") or "none"
@@ -6292,6 +6404,15 @@ def serve_command(args):
         uvicorn_log_level=uvicorn_log_level,
     ):
         return  # pragma: no cover - exercised by the real-model HTTP dogfood
+
+    if _serve_tensorfold_mtp_if_requested(
+        args,
+        server_module=server,
+        effective_max_tokens=effective_max_tokens,
+        cors_origins=cors_origins,
+        uvicorn_log_level=uvicorn_log_level,
+    ):
+        return  # pragma: no cover - exercised by real-model HTTP qualification
 
     # DFlash owns a dedicated single-user runtime. Fork before constructing
     # BatchedEngine-only cache/TurboQuant/PFlash state so startup output and

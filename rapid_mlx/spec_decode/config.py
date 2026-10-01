@@ -206,10 +206,14 @@ def parse_speculative_config(value: str | None) -> SpeculativeConfig | None:
             "allow_dynamic_membership requires continuous_batching=true"
         )
     allowed_backends = (
-        (None, "native", "tensorfold") if method == "dflash" else (None, "native")
+        (None, "native", "tensorfold")
+        if method in {"dflash", "mtp"}
+        else (None, "native")
     )
     if config.backend not in allowed_backends:
-        expected = "'native' or 'tensorfold'" if method == "dflash" else "'native'"
+        expected = (
+            "'native' or 'tensorfold'" if method in {"dflash", "mtp"} else "'native'"
+        )
         raise SpeculativeConfigError(f"backend must be {expected} when specified")
     if config.backend == "native" and config.continuous_batching is True:
         raise SpeculativeConfigError(

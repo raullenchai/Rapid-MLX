@@ -235,6 +235,11 @@ class ModelProfile:
     # Alternate implementation for an exact qualified pair. ``None`` keeps
     # the normal DFlash runtime; ``tensorfold`` selects the serial provider.
     dflash_backend: str | None = None
+    # Qualified target-only TensorFold MTP lane. Unlike DFlash this uses the
+    # checkpoint's embedded MTP head and therefore has no drafter repository.
+    tensorfold_mtp: bool = False
+    tensorfold_target_revision: str | None = None
+    tensorfold_runtime_revision: str | None = None
     # Recommended sampling defaults — curated per-family overrides that
     # sit above HF ``generation_config.json`` in the resolve chain (see
     # ``service/helpers.py``). Tuple-of-pairs (not dict) because the

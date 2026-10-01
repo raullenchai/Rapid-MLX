@@ -102,6 +102,9 @@ ALLOWED_PROFILE_KEYS: frozenset[str] = frozenset(
         "pflash_tier",
         "pflash_keep_ratio",
         "turboquant_tier",
+        "tensorfold_mtp",
+        "tensorfold_target_revision",
+        "tensorfold_runtime_revision",
     }
 )
 

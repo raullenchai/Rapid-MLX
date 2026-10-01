@@ -93,8 +93,7 @@ def validate_request(
     ]
     if unsupported:
         raise UnsupportedRequest(
-            "tensorfold-qwen27 proof supports text chat only; unsupported: "
-            + ", ".join(unsupported)
+            "TensorFold text profiles do not support: " + ", ".join(unsupported)
         )
     unknown = set(sampling or ()) - SAMPLING_FIELDS
     if unknown:
@@ -266,7 +265,7 @@ class TensorFoldQwen27Backend:
         **features: Any,
     ) -> AsyncIterator[BackendEvent]:
         if self._closed:
-            raise RuntimeError("tensorfold-qwen27 backend is closed")
+            raise RuntimeError("TensorFold backend is closed")
         validate_request(tools=tools, sampling=sampling, **features)
         from tensorfold.server.cancellation import Cancellation
 

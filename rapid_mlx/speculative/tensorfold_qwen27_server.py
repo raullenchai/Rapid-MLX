@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import os
@@ -88,6 +89,10 @@ class TensorFoldRequestProvider:
             cancellation=cancellation,
             proposer=SuffixLookupProposer(min_match=app.min_match),
         )
+        thinking_budget = int(kwargs.get("thinking_budget") or 0)
+        if thinking_budget > 0:
+            job.think_close, job.think_end = app._think_close()
+            job.think_budget = thinking_budget if job.think_end >= 0 else 0
         collected: list[int] = []
         decoded = ""
         outputs: list[RequestOutput] = []
@@ -185,7 +190,9 @@ class TensorFoldRequestProvider:
         )
 
 
-def validate_http_request(request: Any) -> None:
+def validate_http_request(
+    request: Any, *, supports_reasoning_budget: bool = False
+) -> None:
     from fastapi import HTTPException
 
     try:
@@ -201,7 +208,7 @@ def validate_http_request(request: Any) -> None:
     ):
         raise HTTPException(
             status_code=400,
-            detail="TensorFold Qwen3.8-27B supports text message content only",
+            detail="TensorFold profiles support text message content only",
         )
     unsupported = [
         name
@@ -213,7 +220,6 @@ def validate_http_request(request: Any) -> None:
             "top_logprobs",
             "video_fps",
             "video_max_frames",
-            "reasoning_max_tokens",
             "reasoning_effort",
             "chat_template_kwargs",
             "parallel_tool_calls",
@@ -221,17 +227,22 @@ def validate_http_request(request: Any) -> None:
         )
         if getattr(request, name, None) not in (None, {})
     ]
+    if (
+        not supports_reasoning_budget
+        and getattr(request, "reasoning_max_tokens", None) is not None
+    ):
+        unsupported.append("reasoning_max_tokens")
     if unsupported:
         raise HTTPException(
             status_code=400,
-            detail="TensorFold Qwen3.8-27B does not support: " + ", ".join(unsupported),
+            detail="TensorFold profile does not support: " + ", ".join(unsupported),
         )
 
 
 def generation_kwargs(
     *, max_tokens: int, temperature: float, top_p: float, request: Any
 ) -> dict[str, Any]:
-    return {
+    kwargs = {
         "max_tokens": max_tokens,
         "temperature": temperature,
         "top_p": top_p,
@@ -240,6 +251,9 @@ def generation_kwargs(
         "seed": getattr(request, "seed", None),
         "stop": getattr(request, "stop", None),
     }
+    if (budget := getattr(request, "reasoning_max_tokens", None)) is not None:
+        kwargs["thinking_budget"] = budget
+    return kwargs
 
 
 def render_prompt(
@@ -281,6 +295,19 @@ def run_tensorfold_qwen27_server(
     tool_call_parser: str | None = None,
     reasoning_parser_name: str | None = "qwen3",
     default_reasoning_effort: str | None = None,
+    backend_class: Any = TensorFoldQwen27Backend,
+    profile_id: str = "qwen3.8-27b-tensorfold",
+    backend_label: str = "TensorFold Qwen3.8-27B",
+    method: str = "dflash",
+    algorithm: str = "dflash2",
+    fallback_model: str = "qwen3.8-27b-4bit",
+    min_memory_gb: int = 48,
+    runtime_extra: str = "tensorfold-qwen27",
+    target_repository: str = "Vontra/Qwen3.8-27B-MLX-4bit",
+    target_revision: str = "70ae7fac63274ff2eac54152031433374cb80f2f",
+    paired_repository: str | None = "z-lab/Qwen3.8-27B-DFlash2",
+    paired_revision: str | None = "50307d4c4cde6860d4eee73e2547cd786fe8e8a4",
+    supports_reasoning_budget: bool = False,
     **_ignored: Any,
 ) -> None:
     """Load the pinned pair and serve the experimental serial text API."""
@@ -288,7 +315,7 @@ def run_tensorfold_qwen27_server(
         raise RuntimeError("tensorfold backend requires pinned local snapshot paths")
     if tool_call_parser is not None:
         raise RuntimeError("tensorfold backend does not support tool parsing")
-    backend = TensorFoldQwen27Backend.load(
+    backend = backend_class.load(
         main_model_repo,
         drafter_repo,
         served_name=served_model_name,
@@ -304,7 +331,7 @@ def run_tensorfold_qwen27_server(
 
     speculative_info = SpeculativeDecodingInfo(
         configured=True,
-        method="dflash",
+        method=method,
         runtime_state="active",
         backend="tensorfold",
         unsupported_features=["tools", "media", "grammar"],
@@ -314,18 +341,18 @@ def run_tensorfold_qwen27_server(
         capabilities=["text", "experimental"],
         reasoning_parser=reasoning_parser_name,
         speculative_decoding=speculative_info,
-        fallback_model="qwen3.8-27b-4bit",
-        min_memory_gb=48,
+        fallback_model=fallback_model,
+        min_memory_gb=min_memory_gb,
     )
 
     app = _build_app(
         model=None,
         processor=backend._app.tokenizer,
         runtime=SimpleNamespace(
-            algorithm="dflash2",
-            drafter_repo=drafter_repo,
-            target_revision="70ae7fac63274ff2eac54152031433374cb80f2f",
-            drafter_revision="50307d4c4cde6860d4eee73e2547cd786fe8e8a4",
+            algorithm=algorithm,
+            drafter_repo=paired_repository,
+            target_revision=target_revision,
+            drafter_revision=paired_revision,
         ),
         served_model_name=served_model_name,
         default_max_tokens=default_max_tokens,
@@ -348,13 +375,16 @@ def run_tensorfold_qwen27_server(
         render_prompt_fn=render_prompt,
         generation_kwargs_fn=generation_kwargs,
         generation_kwargs_with_request=True,
-        validate_request_fn=validate_http_request,
-        backend_name="TensorFold Qwen3.8-27B",
+        validate_request_fn=functools.partial(
+            validate_http_request,
+            supports_reasoning_budget=supports_reasoning_budget,
+        ),
+        backend_name=backend_label,
         speculative_info=speculative_info,
         model_info=model_info,
         runtime_status_extra={
             "profile": {
-                "id": "qwen3.8-27b-tensorfold",
+                "id": profile_id,
                 "mode": "accelerated",
                 "fallback_mode": "normal",
                 "compatibility": {
@@ -363,20 +393,26 @@ def run_tensorfold_qwen27_server(
                     "action": None,
                 },
                 "runtime": {
-                    "extra": "tensorfold-qwen27",
+                    "extra": runtime_extra,
                     "installed": True,
                 },
                 "models": {
                     "target": {
-                        "repository": "Vontra/Qwen3.8-27B-MLX-4bit",
-                        "revision": "70ae7fac63274ff2eac54152031433374cb80f2f",
+                        "repository": target_repository,
+                        "revision": target_revision,
                         "ready": True,
                     },
-                    "drafter": {
-                        "repository": "z-lab/Qwen3.8-27B-DFlash2",
-                        "revision": "50307d4c4cde6860d4eee73e2547cd786fe8e8a4",
-                        "ready": True,
-                    },
+                    **(
+                        {
+                            "drafter": {
+                                "repository": paired_repository,
+                                "revision": paired_revision,
+                                "ready": True,
+                            }
+                        }
+                        if paired_repository is not None
+                        else {}
+                    ),
                 },
                 "capabilities": {
                     "text_chat": True,
