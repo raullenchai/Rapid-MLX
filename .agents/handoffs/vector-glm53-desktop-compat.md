@@ -23,6 +23,9 @@ The fix keeps semantics explicit:
   Desktop `1.1` maps to neutral `1.0` for the exact GLM TensorFold alias;
   explicitly selected `1.1`, other values, and ordinary aliases stay on the
   wire for normal server validation;
+- server-profile application uses that provenance as well as numeric defaults,
+  so hydration cannot erase an explicit persisted `1.1` before request
+  construction;
 - the Desktop wire boundary omits its independently populated tool registry and
   tool choice only for the exact built-in TensorFold alias; ordinary aliases
   retain both, and externally supplied TensorFold tools still fail closed at
@@ -51,7 +54,7 @@ TensorFold implements unsupported logits processors.
 - Swift URLProtocol coverage captures a production-shaped request with a
   non-empty tool registry and proves exact-alias omission, implicit-default
   normalization, explicit `1.1` preservation, and ordinary-alias behavior.
-- Verified locally: 60 focused Python tests; 92 focused Swift tests across
+- Verified locally: 60 focused Python tests; 93 focused Swift tests across
   request-body, sampling, profile, and deterministic-wire suites; Ruff,
   compileall, diff checks, and the package test build.
 - Independent exact-head review is required after the PR is opened. Do not

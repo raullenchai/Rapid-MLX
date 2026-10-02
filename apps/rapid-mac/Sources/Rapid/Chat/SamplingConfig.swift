@@ -418,7 +418,11 @@ final class SamplingConfig {
         // top_p / repetition_penalty. The snapshot keeps the
         // contract: "fresh install + curated profile applies both;
         // user override of any knob applies NEITHER".
-        let pristineAtCall = isAtDefaults
+        // Numeric equality alone is not pristine: a user can explicitly set
+        // repetition_penalty back to 1.1. Preserve that intent through profile
+        // hydration so an unsupported exact-lane value reaches the server's
+        // fail-closed validator instead of being silently replaced.
+        let pristineAtCall = isAtDefaults && repetitionPenaltyIsImplicitDefault
         // Cycle-3 fix — auto-scale ``maxTokens`` to the reasoning
         // chat floor (2,048) when a reasoning alias is observed
         // AND the user hasn't touched the slider. We deliberately

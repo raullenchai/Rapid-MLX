@@ -552,6 +552,49 @@ final class ServerModelProfileTests {
         #expect(s.temperature == 0.42, "user's value must survive the call")
     }
 
+    @Test("Explicit persisted repetition default survives GLM profile hydration to the request boundary")
+    func explicitRepetitionDefaultSurvivesProfileLifecycle() {
+        let profile = ServerModelProfile(
+            id: "glm5.3-flash-tensorfold",
+            recommendedSampling: [
+                "temperature": 0.0,
+                "top_p": 1.0,
+                "repetition_penalty": 1.0
+            ]
+        )
+
+        let explicitDefaults = freshDefaults()
+        explicitDefaults.set(
+            SamplingConfig.repetitionPenaltyDefault,
+            forKey: "rapid.sampling.v0.repetitionPenalty"
+        )
+        let explicit = SamplingConfig(defaults: explicitDefaults)
+        #expect(!explicit.repetitionPenaltyIsImplicitDefault)
+        #expect(!explicit.applyServerProfile(profile))
+
+        let explicitResolved = explicit.resolved(toolsEnabled: false)
+        let explicitRequest = ChatStreamClient.Request(
+            alias: profile.id,
+            messages: [],
+            repetitionPenalty: explicitResolved.repetitionPenalty,
+            repetitionPenaltyIsImplicitDefault:
+                explicitResolved.repetitionPenaltyIsImplicitDefault
+        )
+        #expect(explicitRequest.wireRepetitionPenalty == 1.1)
+
+        let untouched = SamplingConfig(defaults: freshDefaults())
+        #expect(untouched.applyServerProfile(profile))
+        let untouchedResolved = untouched.resolved(toolsEnabled: false)
+        let untouchedRequest = ChatStreamClient.Request(
+            alias: profile.id,
+            messages: [],
+            repetitionPenalty: untouchedResolved.repetitionPenalty,
+            repetitionPenaltyIsImplicitDefault:
+                untouchedResolved.repetitionPenaltyIsImplicitDefault
+        )
+        #expect(untouchedRequest.wireRepetitionPenalty == 1.0)
+    }
+
     @Test("Profile with no recommended_sampling block reports false + does not flip isAtDefaults")
     func skipsWhenNoSamplingBlock() {
         let s = SamplingConfig(defaults: freshDefaults())
