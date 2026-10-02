@@ -603,7 +603,7 @@ def test_real_video_dispatch_reports_unsupported_python_as_preflight_failure(
     )
     assert _contracted_failure_events(events) == [
         ("server_start_state", "failed", "preflight", None, None),
-        ("model_serve_failed", None, None, "missing_extra", "video"),
+        ("model_serve_failed", None, "preflight", "missing_extra", "video"),
     ]
 
 
@@ -641,7 +641,7 @@ def test_standalone_bonsai_dispatch_uses_same_handler_and_loopback_sink(
 
     expected_events = [
         ("server_start_state", "failed", "preflight", None, None),
-        ("model_serve_failed", None, None, "missing_extra", "vision"),
+        ("model_serve_failed", None, "preflight", "missing_extra", "vision"),
     ]
     standalone_contract = _contracted_failure_events(standalone_events)
     cli_contract = _contracted_failure_events(cli_events)
@@ -818,6 +818,7 @@ def test_bonsai_engine_preflight_is_missing_vision_failure(monkeypatch, capsys) 
     assert [props for name, props in events if name == "model_serve_failed"] == [
         {
             "error_class": "missing_extra",
+            "failure_stage": "preflight",
             "extra": "vision",
             "model": "bonsai2-27b-2bit",
             "model_type": "vlm",
@@ -1021,5 +1022,5 @@ def test_yes_install_preserves_failure_terminals_at_loopback_sink(tmp_path) -> N
     assert events, proc.stderr
     assert _contracted_failure_events(events) == [
         ("server_start_state", "failed", "preflight", None, None),
-        ("model_serve_failed", None, None, "missing_extra", "vision"),
+        ("model_serve_failed", None, "preflight", "missing_extra", "vision"),
     ]

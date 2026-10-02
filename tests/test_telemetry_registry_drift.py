@@ -302,7 +302,17 @@ def test_failed_twins_exist_and_mirror_their_success_event(registry):
         identifying = {
             k: v
             for k, v in twin_props.items()
-            if k not in {"error_class", "extra", "extra_recovery"}
+            if k
+            not in {
+                "error_class",
+                # Failure-only diagnostic context; never part of the success
+                # identity. ``extra``/``extra_recovery`` describe a missing
+                # optional runtime, ``failure_stage`` the startup boundary
+                # (model_serve_failed only).
+                "extra",
+                "extra_recovery",
+                "failure_stage",
+            }
         }
         assert set(identifying) == set(success_props), (
             f"{name} identifying props differ from {declared}"

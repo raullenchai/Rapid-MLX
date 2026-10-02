@@ -547,7 +547,10 @@
         "when a real allow-list exists; error_class already separates",
         "unsupported_architecture from the other failure modes. For",
         "missing_extra only, extra_recovery records the closed recovery",
-        "decision after prompting and before any installer runs."
+        "decision after prompting and before any installer runs.",
+        "failure_stage names the closed startup boundary the failure crossed",
+        "(same enum as server_start_state); it is emitted only when the caller",
+        "states it explicitly — telemetry never guesses a stage."
       ],
       "twin_of": "model_served",
       "props": {
@@ -556,6 +559,7 @@
         "auto_selected": {"kind": "bool", "required": false},
         "quant": {"kind": "enum", "enum": "quant", "required": false},
         "error_class": {"kind": "enum", "enum": "serve_error_class", "required": true},
+        "failure_stage": {"kind": "enum", "enum": "failure_stage", "required": false},
         "extra": {
           "kind": "enum",
           "enum": "optional_extra",

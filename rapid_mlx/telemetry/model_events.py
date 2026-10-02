@@ -37,6 +37,20 @@ _serve_failed_clock = time.time
 logger = logging.getLogger(__name__)
 
 
+def _closed_failure_stage(value: object) -> str | None:
+    """Return ``value`` when it is a registry-known failure stage, else ``None``.
+
+    The closed set lives with the server-start emitter (single source, same
+    enum as ``server_start_state``). Anything else is dropped rather than
+    guessed: an invalid stage must be omitted, not leak a free string.
+    """
+    if not isinstance(value, str) or not value:
+        return None
+    from rapid_mlx.telemetry.server_start import _FAILURE_STAGES
+
+    return value if value in _FAILURE_STAGES else None
+
+
 def _never_raise(func: Callable[_P, None]) -> Callable[_P, None]:
     """Keep observability from changing a host command's result or output."""
 
@@ -694,6 +708,7 @@ def emit_model_serve_failed(
     alias_or_path: object = None,
     auto_selected: bool = False,
     extra_recovery: object = None,
+    failure_stage: object = None,
 ) -> None:
     """Claim and emit at most one logical serve failure per process."""
     global _serve_failure_claimed
@@ -711,6 +726,9 @@ def emit_model_serve_failed(
         else serve_error_class(exc, model_ref=alias_or_path)
     )
     props: dict[str, object] = {"error_class": error_class}
+    stage = _closed_failure_stage(failure_stage)
+    if stage is not None:
+        props["failure_stage"] = stage
     if optional_runtime_missing is not None:
         props["extra"] = optional_runtime_missing.extra
         if extra_recovery is not None:

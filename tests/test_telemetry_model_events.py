@@ -1458,6 +1458,40 @@ def test_failure_prefers_engine_telemetry_identity(monkeypatch):
     assert calls == [{"error_class": "other", "model": "tmax-9b"}]
 
 
+@pytest.mark.parametrize(
+    ("failure_stage", "expected"),
+    [
+        ("resolve", "resolve"),
+        ("download", "download"),
+        ("preflight", "preflight"),
+        ("prepare", "prepare"),
+        ("engine_start", "engine_start"),
+        ("bind", "bind"),
+    ],
+)
+def test_failure_stage_is_emitted_when_declared(monkeypatch, failure_stage, expected):
+    calls = []
+    _capture_accepted_events(monkeypatch, lambda _event, props: calls.append(props))
+    model_events.emit_model_serve_failed(
+        RuntimeError("load"), alias_or_path="unknown", failure_stage=failure_stage
+    )
+    assert calls[0]["failure_stage"] == expected
+
+
+@pytest.mark.parametrize("failure_stage", [None, "", "load", "middle", 7])
+def test_failure_stage_outside_the_closed_enum_is_omitted(
+    monkeypatch, failure_stage
+):
+    calls = []
+    _capture_accepted_events(monkeypatch, lambda _event, props: calls.append(props))
+    model_events.emit_model_serve_failed(
+        RuntimeError("load"), alias_or_path="unknown", failure_stage=failure_stage
+    )
+    assert "failure_stage" not in calls[0]
+    # The rest of the event stays valid: a dropped stage never drops the event.
+    assert calls[0]["error_class"] == "other"
+
+
 def test_optional_runtime_failure_class_and_extra_are_structured(monkeypatch):
     from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
 

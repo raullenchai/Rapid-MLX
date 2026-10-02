@@ -2555,7 +2555,7 @@ def _fail_hub_resolution(exc: BaseException, model_id: str, rendered: str) -> No
     if marker_reason is not None:
         print(format_startup_failure_marker(marker_reason), file=sys.stderr)
     emit_model_pull_failed(exc, model_ref=model_id, source="hf")
-    emit_model_serve_failed(exc, alias_or_path=model_id)
+    emit_model_serve_failed(exc, alias_or_path=model_id, failure_stage="resolve")
     failed("resolve")
     raise SystemExit(1)
 
@@ -7229,6 +7229,7 @@ def serve_command(args):
             engine=getattr(server, "_engine", None),
             alias_or_path=getattr(args, "_original_alias", None) or args.model,
             auto_selected=bool(getattr(args, "_telemetry_auto_selected", False)),
+            failure_stage="prepare",
         )
         _print_model_load_error(args, e)
         sys.exit(1)
@@ -8063,6 +8064,7 @@ def bench_command(args):
                 e,
                 alias_or_path=getattr(args, "_original_alias", None) or args.model,
                 auto_selected=bool(getattr(args, "_telemetry_auto_selected", False)),
+                failure_stage="prepare",
             )
             _print_model_load_error(args, e)
             sys.exit(1)
@@ -16234,7 +16236,9 @@ def main():
             if getattr(args, "command", None) == "serve":
                 from rapid_mlx.telemetry.model_events import emit_model_serve_failed
 
-                emit_model_serve_failed(exc, alias_or_path=args.model)
+                emit_model_serve_failed(
+                    exc, alias_or_path=args.model, failure_stage="resolve"
+                )
             message = local_model_failure_message(
                 args.model, exc, include_supplied_path=True
             )
