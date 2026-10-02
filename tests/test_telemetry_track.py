@@ -1499,7 +1499,7 @@ def test_simultaneous_missing_extra_serve_failures_emit_once(
     for name in (*state.CI_ENV_VARS, state.ENV_VAR, state.DO_NOT_TRACK_ENV):
         env.pop(name, None)
     process_count = 8
-    deadline = time.monotonic() + 10
+    ready_deadline = time.monotonic() + 10
     procs = [
         subprocess.Popen(
             [str(console), "serve", "gemma-4-e4b-4bit", "--port", "0"],
@@ -1514,12 +1514,18 @@ def test_simultaneous_missing_extra_serve_failures_emit_once(
     outputs: list[tuple[str, str]] = []
     try:
         while len(list(barrier_dir.glob("ready-*"))) != process_count:
-            assert time.monotonic() < deadline, "serve processes missed barrier"
+            assert time.monotonic() < ready_deadline, "serve processes missed barrier"
             time.sleep(0.005)
         (barrier_dir / "go").write_text("go", encoding="utf-8")
+        # Process startup and barrier rendezvous must not consume the budget
+        # for the contended 5-second telemetry lock and sender flush after
+        # release. Keep that completion window bounded independently.
+        completion_deadline = time.monotonic() + 20
         for proc in procs:
             outputs.append(
-                proc.communicate(timeout=max(0.1, deadline - time.monotonic()))
+                proc.communicate(
+                    timeout=max(0.1, completion_deadline - time.monotonic())
+                )
             )
     finally:
         for proc in procs:
