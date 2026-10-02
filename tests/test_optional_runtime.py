@@ -607,6 +607,56 @@ def test_real_video_dispatch_reports_unsupported_python_as_preflight_failure(
     ]
 
 
+def test_real_video_dispatch_missing_extra_prints_exact_install_command(
+    tmp_path,
+) -> None:
+    """A first `serve wan2.2-ti2v-5b-q8` on a supported Python must print the
+    exact copy-pasteable `rapid-mlx[video]` install command once (PostHog
+    first-start sweep: video missing_extra landed as an opaque failure)."""
+    proc, events, child_executable = _run_real_missing_extra_dispatch(
+        tmp_path,
+        lane="video",
+        model="wan2.2-ti2v-5b-q8",
+        video_python_version=(3, 11),
+    )
+
+    assert proc.returncode == 2
+    assert "Traceback" not in proc.stderr
+    _assert_actionable_failure_contract(
+        proc.stderr,
+        extra="video",
+        marker_reason="runtime_extra_missing",
+        child_executable=child_executable,
+    )
+    assert _contracted_failure_events(events) == [
+        ("server_start_state", "failed", "preflight", None, None),
+        ("model_serve_failed", None, "preflight", "missing_extra", "video"),
+    ]
+
+
+def test_real_image_dispatch_missing_extra_prints_exact_install_command(
+    tmp_path,
+) -> None:
+    proc, events, child_executable = _run_real_missing_extra_dispatch(
+        tmp_path,
+        lane="image",
+        model="qwen-image-2.1",
+    )
+
+    assert proc.returncode == 2
+    assert "Traceback" not in proc.stderr
+    _assert_actionable_failure_contract(
+        proc.stderr,
+        extra="image",
+        marker_reason="runtime_extra_missing",
+        child_executable=child_executable,
+    )
+    assert _contracted_failure_events(events) == [
+        ("server_start_state", "failed", "preflight", None, None),
+        ("model_serve_failed", None, "preflight", "missing_extra", "image"),
+    ]
+
+
 def test_standalone_bonsai_dispatch_uses_same_handler_and_loopback_sink(
     tmp_path,
 ) -> None:

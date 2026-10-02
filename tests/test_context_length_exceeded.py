@@ -965,3 +965,65 @@ def test_structured_detail_passes_through_global_handler():
     assert body["error"]["code"] == "context_length_exceeded"
     assert body["error"]["param"] == "messages"
     assert body["error"]["message"] == "boom"
+
+
+def test_enforce_over_cap_names_the_remedy_for_a_native_window():
+    """The 400 body must tell the caller what to do, not only what failed."""
+    from fastapi import HTTPException
+
+    from rapid_mlx.service.helpers import enforce_context_length
+
+    eng = _StubEngine(model=_StubModel(args=_StubArgs(max_position_embeddings=2048)))
+    with pytest.raises(HTTPException) as excinfo:
+        enforce_context_length(eng, prompt_tokens=3000, max_tokens=0)
+
+    err = excinfo.value.detail["error"]
+    assert err["code"] == "context_length_exceeded"
+    assert "reduce the length of the messages" in err["message"]
+    assert "--context-length" not in err["message"]  # native window: no flag
+
+
+def test_enforce_over_cap_attributes_operator_window_to_the_flag():
+    """An operator-set --context-length is not the model's own window; the
+    body must say so, or users blame the model they downloaded."""
+    from fastapi import HTTPException
+
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.service.helpers import enforce_context_length
+
+    cfg = reset_config()
+    try:
+        cfg.context_length = 2048
+        eng = _StubEngine(
+            model=_StubModel(args=_StubArgs(max_position_embeddings=1_048_576))
+        )
+        with pytest.raises(HTTPException) as excinfo:
+            enforce_context_length(eng, prompt_tokens=3000, max_tokens=0)
+    finally:
+        reset_config()
+
+    err = excinfo.value.detail["error"]
+    assert err["code"] == "context_length_exceeded"
+    assert "--context-length" in err["message"]
+    assert "reduce the length of the messages" in err["message"]
+
+
+def test_operational_cap_body_names_the_max_prompt_tokens_flag():
+    """The operational cap is operator-set; the body must not let the user
+    think the model itself cannot fit their prompt."""
+    from fastapi import HTTPException
+
+    from rapid_mlx.config import get_config
+    from rapid_mlx.service.helpers import enforce_context_length
+
+    get_config().max_prompt_tokens = 16_384
+    eng = _StubEngine(
+        model=_StubModel(args=_StubArgs(max_position_embeddings=1_048_576))
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        enforce_context_length(eng, prompt_tokens=16_385, max_tokens=1)
+
+    message = excinfo.value.detail["error"]["message"]
+    assert "--max-prompt-tokens" in message
+    assert "not the model's context window" in message
+    assert "reduce the length of the prompt" in message
