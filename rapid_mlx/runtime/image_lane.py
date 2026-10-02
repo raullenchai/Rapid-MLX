@@ -47,9 +47,11 @@ def image_runtime_issue(model_name: str | None = None) -> str | None:
         else "mflux"
     )
     if importlib.util.find_spec(runtime_module) is None:
+        from .optional_runtime import optional_extra_install_hint
+
         return (
             "image generation requires the `rapid-mlx[image]` "
-            "Python extra (`pip install 'rapid-mlx[image]'`)."
+            "Python extra. " + optional_extra_install_hint("image")
         )
     return None
 
@@ -58,8 +60,25 @@ def require_image_runtime_or_exit(model_name: str | None = None) -> None:
     """Fail before model download when the optional image stack is absent."""
 
     if issue := image_runtime_issue(model_name):
-        print(f"\n  Error: {issue.rstrip()}\n", file=sys.stderr)
-        raise SystemExit(2)
+        from .optional_runtime import (
+            OptionalRuntimeMissing,
+            optional_extra_install_hint,
+        )
+
+        reason = (
+            "python_version_unsupported"
+            if "requires Python 3.11 or newer" in issue
+            else "runtime_extra_missing"
+        )
+        raise OptionalRuntimeMissing(
+            extra="image",
+            install_hint=optional_extra_install_hint("image"),
+            detail=f"\n  Error: {issue.rstrip()}\n",
+            status=(
+                "incompatible" if reason == "python_version_unsupported" else "absent"
+            ),
+            marker_reason=reason,
+        )
 
 
 class ImageEngine:
@@ -92,6 +111,12 @@ class ImageEngine:
         # loader when an older client omits the newly optional mode field.
         for_edit = None if mode is None else mode == "editing"
         self._engine._ensure_loaded(for_edit=for_edit)  # noqa: SLF001
+        self._emit_model_served()
+
+    def _emit_model_served(self) -> None:
+        from ..server import _emit_primary_model_served_once
+
+        _emit_primary_model_served_once(self)
 
     def get_stats(self) -> dict:
         """Route-facing engine surface (mirrors ``BaseEngine.get_stats``).
@@ -148,6 +173,10 @@ class ImageEngine:
         self, **kwargs
     ) -> tuple[bytes, dict[str, float | int | None]]:  # noqa: ANN003
         """Generate one image and atomically return its denoise timing."""
+        self._engine._ensure_loaded(  # noqa: SLF001
+            for_edit=bool(kwargs.get("image_paths"))
+        )
+        self._emit_model_served()
         return self._engine.generate_with_performance(**kwargs)
 
     def generate(
@@ -163,6 +192,8 @@ class ImageEngine:
         image_paths: list[str] | None = None,
     ) -> bytes:
         """Generate one image; returns PNG bytes. Raises ``ImageRuntimeError``."""
+        self._engine._ensure_loaded(for_edit=bool(image_paths))  # noqa: SLF001
+        self._emit_model_served()
         return self._engine.generate(
             prompt=prompt,
             width=width,

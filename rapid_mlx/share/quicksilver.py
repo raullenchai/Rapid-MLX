@@ -76,10 +76,29 @@ CATALOG_DEFAULT_ALIAS: dict[str, str] = {
     "nemotron-3.5-lightning": "nemotron-3.5-lightning-30b-4bit",
     "qwen3.8-27b": "qwen3.8-27b-4bit",
     "qwen3.6-35b": "qwen3.6-35b",
+    "glm-5.3-flash": "glm5.3-flash-4bit",
 }
 ALIAS_TO_CATALOG: dict[str, str] = {
     alias: catalog for catalog, alias in CATALOG_DEFAULT_ALIAS.items()
 }
+# Pool listings whose upstream contract has reasoning permanently ON (the
+# cloud origin 400s ``reasoning.enabled=false``). Pool mode normally injects
+# ``--no-thinking`` (plain-share parity); for these models a node that
+# suppressed reasoning would answer differently from the cloud path the
+# customer was promised, so the flag is withheld and an explicit
+# ``--no-thinking`` passthrough is rejected instead of silently obeyed.
+CATALOG_REASONING_REQUIRED: frozenset[str] = frozenset({"glm-5.3-flash"})
+# Server-wide ``--default-reasoning-effort`` injected per catalog listing
+# (#3714). GLM-5.3's template renders ``Reasoning Effort: Max`` for a request
+# that says nothing, so a trivial prompt burns ``max_tokens`` in thinking and
+# returns truncated content — the cloud origin answers such prompts in a few
+# tokens. ``low`` matches that shape; a client that sends its own
+# ``reasoning_effort`` (or any other reasoning knob) still wins per request,
+# and an explicit passthrough after ``--`` replaces the injected value.
+CATALOG_DEFAULT_REASONING_EFFORT: dict[str, str] = {"glm-5.3-flash": "low"}
+# Operational prompt ceilings measured against each pool listing's memory and
+# first-token budget. Listings absent from this table keep the server default.
+CATALOG_MAX_PROMPT_TOKENS: dict[str, int] = {"glm-5.3-flash": 16_384}
 
 # §3.1 error taxonomy: terminal codes surface + exit non-zero; the rest
 # (429 / 5xx / network) retry with capped exponential backoff.
@@ -655,11 +674,19 @@ def _error_detail(body: bytes) -> str:
     # Every branch redacts: a server-side echo (or an error body that
     # happens to embed our credential) must not reach the terminal.
     try:
-        err = json.loads(body)
-        if isinstance(err, dict):
-            err = err.get("error") or {}
-            if isinstance(err, dict):
-                return _redact(str(err.get("message") or err.get("code") or ""))[:200]
+        payload = json.loads(body)
+        if isinstance(payload, dict):
+            err = payload.get("error") or {}
+            if isinstance(err, dict) and (err.get("message") or err.get("code")):
+                return _redact(str(err.get("message") or err.get("code")))[:200]
+            # Schema-binding failures come back as FastAPI's {"detail": ...}
+            # (a string or a list of field errors) rather than the
+            # {"error": {...}} envelope — read that shape too.
+            detail = payload.get("detail")
+            if detail:
+                return _redact(
+                    detail if isinstance(detail, str) else json.dumps(detail)
+                )[:200]
     except (ValueError, UnicodeDecodeError):
         pass
     return _redact(body.decode("utf-8", "replace")[:200])
@@ -740,7 +767,7 @@ def _resolve_provider_key(args: argparse.Namespace) -> str:
         raise QuickSilverError(
             f"first run needs a QuickSilver provider key (qsppk-…): pass "
             f"--provider-key, or set ${PROVIDER_KEY_ENV_VAR} (generate one "
-            f"in the QuickSilver dashboard → Compute / Earn). For headless "
+            f"in the QuickSilver dashboard → Share Compute). For headless "
             f"setup, run `rapid-mlx share --quicksilver` once in a terminal "
             f"so the node cache exists."
         )
@@ -772,8 +799,68 @@ def _open(req: urllib.request.Request, timeout: float):
     return _URL_OPENER.open(req, timeout=timeout)
 
 
+_POOL_DEFAULT_MAX_CONCURRENCY = 2
+# Server clamp for the advertised slot count (reference client, --max-concurrency).
+_POOL_MAX_CONCURRENCY_CEILING = 64
+
+
+def _passthrough_option_value(passthrough: list[str], option: str) -> str | None:
+    """Value of the last ``<option> V`` / ``<option>=V`` in a serve
+    passthrough (argparse store semantics: last occurrence wins), or ``None``
+    when the option is absent. Exact flag match, like ``_pool_max_concurrency``."""
+    value: str | None = None
+    for i, token in enumerate(passthrough):
+        flag, sep, attached = token.partition("=")
+        if flag != option:
+            continue
+        if sep:
+            value = attached
+        elif i + 1 < len(passthrough):
+            value = passthrough[i + 1]
+    return value
+
+
+def _pool_max_concurrency(passthrough: list[str]) -> int:
+    """Slots to advertise at registration: the ``--max-num-seqs`` the child
+    serve will actually run with (§5.3 default 2, or the user's ``--``
+    override), so the pool never routes more concurrent requests than the
+    local server admits. The value is validated, not clamped — a clamp would
+    let the node advertise one capacity while the child serves another."""
+    # argparse "store" semantics: the LAST occurrence wins, so scan them all.
+    raw: str | None = None
+    for i, token in enumerate(passthrough):
+        key, sep, value = token.partition("=")
+        if key != "--max-num-seqs":
+            continue
+        if sep:
+            raw = value
+        else:
+            following = passthrough[i + 1] if i + 1 < len(passthrough) else ""
+            # ``--max-num-seqs --foo`` is a missing value to argparse, not "--foo".
+            raw = "" if following.startswith("-") else following
+        try:
+            result = int(raw)  # same spellings argparse's ``type=int`` accepts
+        except ValueError:
+            result = 0
+            break  # any malformed occurrence fails serve's parser: stop here
+    if raw is None:
+        return _POOL_DEFAULT_MAX_CONCURRENCY
+    if not 1 <= result <= _POOL_MAX_CONCURRENCY_CEILING:
+        raise QuickSilverError(
+            f"--max-num-seqs must be an integer between 1 and "
+            f"{_POOL_MAX_CONCURRENCY_CEILING} in pool mode (got {raw!r}) — the "
+            f"pool advertises exactly the slots the local serve admits"
+        )
+    return result
+
+
 def register_node(
-    api_base: str, provider_key: str, catalog_id: str, alias: str, worker: str
+    api_base: str,
+    provider_key: str,
+    catalog_id: str,
+    alias: str,
+    worker: str,
+    max_concurrency: int = _POOL_DEFAULT_MAX_CONCURRENCY,
 ) -> dict[str, Any]:
     """§3.1 self-serve registration with the §3.1 retry taxonomy.
     Returns the parsed 200 response body. Raises QuickSilverError on
@@ -784,6 +871,7 @@ def register_node(
             "model": catalog_id,
             "worker": worker,
             "alias": alias,
+            "max_concurrency": max_concurrency,
             "hardware": _hardware_info(),
         }
     ).encode("utf-8")
@@ -1252,6 +1340,38 @@ def _run_share(
         install_service(args, catalog_id=catalog_id, serve_alias=serve_alias)
         return
 
+    # Validate the serve passthrough BEFORE registering: a rejected invocation
+    # must not leave a remote node registration behind.
+    passthrough = list(getattr(args, "_passthrough", None) or [])
+    max_concurrency = _pool_max_concurrency(passthrough)
+    # ``share`` advertises thinking off by default. The child server defaults
+    # it on, so pool mode must forward the disabling flag just like plain share
+    # — except for listings whose pool contract has reasoning always on.
+    thinking_passthrough = [
+        t for t in passthrough if t.split("=", 1)[0] in ("--thinking", "--no-thinking")
+    ]
+    if catalog_id in CATALOG_REASONING_REQUIRED and (
+        any(t.split("=", 1)[0] == "--no-thinking" for t in thinking_passthrough)
+        or getattr(args, "thinking", None) is False
+    ):
+        raise QuickSilverError(
+            f"{catalog_id} serves with reasoning always on in the QuickSilver "
+            f"pool (the cloud origin rejects reasoning.enabled=false); "
+            f"`--no-thinking` would make this node answer differently from "
+            f"the contract customers were promised. Drop the flag."
+        )
+    if (
+        catalog_id in CATALOG_REASONING_REQUIRED
+        and _passthrough_option_value(passthrough, "--default-reasoning-effort")
+        == "none"
+    ):
+        raise QuickSilverError(
+            f"{catalog_id} serves with reasoning always on in the QuickSilver "
+            f"pool; `--default-reasoning-effort none` would switch thinking "
+            f"off for every request that does not ask for it. Use low/medium/"
+            f"high or drop the flag."
+        )
+
     api_base = _validate_api_base(
         args.quicksilver_api if args.quicksilver_api is not None else DEFAULT_PAY_API
     )
@@ -1269,7 +1389,14 @@ def _run_share(
         provider_key = _resolve_provider_key(args)
         _register_secret(provider_key)
         print("Registering node with QuickSilver…", file=sys.stderr)
-        cache = register_node(api_base, provider_key, catalog_id, serve_alias, worker)
+        cache = register_node(
+            api_base,
+            provider_key,
+            catalog_id,
+            serve_alias,
+            worker,
+            max_concurrency=max_concurrency,
+        )
         # Register the share-key for redaction BEFORE rendering any
         # server-controlled field — node_id / payout_account are the
         # response's to fill, and if either echoed the resident key,
@@ -1379,15 +1506,27 @@ def _run_share(
     # but an EXPLICIT ``--rate-limit`` is the user's own call and must
     # be honored, not silently dropped.
     extra: list[str] = []
-    passthrough = list(getattr(args, "_passthrough", None) or [])
-    if not any(t.split("=", 1)[0].startswith("--max-num-seqs") for t in passthrough):
+    # Exact flag match (not a prefix): the same test _pool_max_concurrency
+    # uses, so the injected default and the advertised slots can't disagree.
+    if not any(t.split("=", 1)[0] == "--max-num-seqs" for t in passthrough):
         extra += ["--max-num-seqs", "2"]
-    # ``share`` advertises thinking off by default. The child server defaults
-    # it on, so pool mode must forward the disabling flag just like plain share.
-    if not args.thinking and not any(
-        t.split("=", 1)[0] in ("--thinking", "--no-thinking") for t in passthrough
+    if catalog_id not in CATALOG_REASONING_REQUIRED and (
+        not args.thinking and not thinking_passthrough
     ):
         extra.append("--no-thinking")
+    default_effort = CATALOG_DEFAULT_REASONING_EFFORT.get(catalog_id)
+    if default_effort is not None and not any(
+        t.split("=", 1)[0] == "--default-reasoning-effort" for t in passthrough
+    ):
+        extra += ["--default-reasoning-effort", default_effort]
+    explicit_prompt_cap = _passthrough_option_value(passthrough, "--max-prompt-tokens")
+    prompt_cap: int | str | None = (
+        explicit_prompt_cap
+        if explicit_prompt_cap is not None
+        else CATALOG_MAX_PROMPT_TOKENS.get(catalog_id)
+    )
+    if prompt_cap is not None and explicit_prompt_cap is None:
+        extra += ["--max-prompt-tokens", str(prompt_cap)]
     # Pool requests (and the relay's readiness probe) address the node by its
     # CATALOG id, but the serve alias differs (§5.4, e.g. nemotron-3.5-lightning
     # vs nemotron-3.5-lightning-30b-4bit). Expose the loaded model UNDER the
@@ -1525,6 +1664,11 @@ def _run_share(
                             f"rapid-mlx: serving {display_model} to the "
                             f"QuickSilver pool — node {cache['node_id']}"
                             + (f", payout account {payout}" if payout else "")
+                            + (
+                                f", max prompt {prompt_cap} tokens"
+                                if prompt_cap is not None
+                                else ""
+                            )
                             + f", heartbeat every {interval:.0f}s. Ctrl-C to stop."
                         ),
                         flush=True,

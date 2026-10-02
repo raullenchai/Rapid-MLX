@@ -12,6 +12,14 @@ import logging
 import os
 from pathlib import Path
 
+from ..model_load_errors import (
+    IncompatibleWeights,
+    TokenizerLoadFailed,
+    load_mlx_lm_checked,
+    load_model_checked,
+    load_tokenizer_checked,
+    validate_model_config_file,
+)
 from .chat_templates import DEFAULT_CHATML_TEMPLATE, NEMOTRON_CHAT_TEMPLATE
 from .model_file_guard import validate_local_model_file
 
@@ -1371,6 +1379,8 @@ def load_model_with_fallback(
         if resolved_snapshot is not None:
             model_name = str(resolved_snapshot)
 
+    validate_model_config_file(model_name)
+
     # ``mlx_lm.load`` may import config.json::model_file. Validate ordinary
     # local checkpoints before any loader runs. Rapid-owned architectures
     # deliberately ignore repo-owned model code: their lower-level load path
@@ -1408,6 +1418,45 @@ def load_model_with_fallback(
                 "disabled; loading will continue with trust_remote_code=False.",
                 model_name,
             )
+
+    if ple_sidecar := os.environ.get("RAPID_MLX_QWEN4_PLE_NVME"):
+        # Explicit strict lane, before both native selection and permissive
+        # fallback. The helper binds PLE to this resolved checkpoint path.
+        from mlx_lm.utils import load_tokenizer
+
+        from ..models.qwen4_ple_nvme import load_file_backed_qwen4
+
+        cache_bytes = int(os.environ.get("RAPID_MLX_QWEN4_PLE_CACHE_BYTES", "0"))
+        model, config = load_file_backed_qwen4(
+            model_name,
+            ple_sidecar,
+            cache_bytes=cache_bytes,
+            lazy=lazy,
+        )
+        try:
+            tokenizer_config = _neutralize_unbundled_template_types(
+                model_name,
+                tokenizer_config or {},
+            )
+            tokenizer = load_tokenizer(
+                Path(model_name),
+                tokenizer_config,
+                eos_token_ids=config.get("eos_token_id"),
+            )
+            _try_inject_mtp_post_load(model, model_name)
+            if not getattr(tokenizer, "chat_template", None):
+                _apply_chat_template_sidecar(Path(model_name), tokenizer)
+            augment_eos_token_ids_from_generation_config(tokenizer, model_name)
+            repair_byte_level_decoder(tokenizer)
+            result = (model, tokenizer, config) if return_config else (model, tokenizer)
+            _resolve_loaded_template(result)
+            _post_load_ubc_evict(model_name)
+            return (*result, str(model_name)) if return_source else result
+        except BaseException:
+            from ..models.qwen4_ple_nvme import close_file_backed_ple
+
+            close_file_backed_ple(model)
+            raise
 
     if lazy:
         from mlx_lm import load as _mlx_lm_load
@@ -1795,7 +1844,9 @@ def _load_model_with_fallback_impl(
             return load_gemma4_text(model_name, tokenizer_config)
 
     try:
-        model, tokenizer = load(model_name, tokenizer_config=tokenizer_config)
+        model, tokenizer = load_mlx_lm_checked(
+            model_name, tokenizer_config=tokenizer_config
+        )
         # mlx_lm.load() succeeds but sanitize() may have silently
         # stripped mtp.* weights.  Check if the config declares MTP
         # layers and the model came back without a .mtp attribute;
@@ -1813,15 +1864,17 @@ def _load_model_with_fallback_impl(
         augment_eos_token_ids_from_generation_config(tokenizer, model_name)
         repair_byte_level_decoder(tokenizer)
         return model, tokenizer
-    except ValueError as e:
+    except (IncompatibleWeights, TokenizerLoadFailed, ValueError) as e:
+        original = e.__cause__ if e.__cause__ is not None else e
+        original_text = str(original)
         # Fallback for models with non-standard tokenizers, OR newer model_types
         # transformers' AutoConfig hasn't learned about yet (e.g. deepseek_v4
         # before transformers PR #45643 lands). The vendored arch can still load
         # the weights — we just need to bypass AutoTokenizer.
         if (
-            "TokenizersBackend" in str(e)
-            or "Tokenizer class" in str(e)
-            or "does not recognize this architecture" in str(e)
+            "TokenizersBackend" in original_text
+            or "Tokenizer class" in original_text
+            or "does not recognize this architecture" in original_text
         ):
             logger.warning(f"Standard tokenizer loading failed, using fallback: {e}")
             return _load_with_tokenizer_fallback(
@@ -1829,8 +1882,8 @@ def _load_model_with_fallback_impl(
             )
         # Fallback for models with extra/missing weights (e.g., vision tower, MTP layers).
         # Retry with strict=False to discard extra weights.
-        elif "parameters not in model" in str(e) or (
-            "Missing" in str(e) and "parameters" in str(e)
+        elif "parameters not in model" in original_text or (
+            "Missing" in original_text and "parameters" in original_text
         ):
             logger.warning(
                 f"Model has extra/missing parameters (likely VLM / MTP weights), "
@@ -1853,8 +1906,9 @@ def _load_strict_false(model_name: str, tokenizer_config: dict = None):
 
         model_path = Path(snapshot_download(model_name))
 
-    model, config = load_model(model_path, strict=False)
-    tokenizer = load_tokenizer(
+    model, config = load_model_checked(load_model, model_path, strict=False)
+    tokenizer = load_tokenizer_checked(
+        load_tokenizer,
         model_path,
         tokenizer_config or {},
         eos_token_ids=config.get("eos_token_id", None),
@@ -1975,7 +2029,7 @@ def _load_with_tokenizer_fallback(
         model = load_fp8_model_online(model_path)
     else:
         # Load model
-        model, _ = load_model(model_path, model_config=model_config)
+        model, _ = load_model_checked(load_model, model_path, model_config=model_config)
 
     # Try to load tokenizer from tokenizer.json directly
     tokenizer_json = model_path / "tokenizer.json"
@@ -1984,7 +2038,9 @@ def _load_with_tokenizer_fallback(
         from transformers import PreTrainedTokenizerFast
 
         logger.info("Loading tokenizer from tokenizer.json")
-        base_tokenizer = Tokenizer.from_file(str(tokenizer_json))
+        base_tokenizer = load_tokenizer_checked(
+            Tokenizer.from_file, str(tokenizer_json)
+        )
 
         # Read tokenizer_config.json for special tokens and chat template
         tokenizer_config_path = model_path / "tokenizer_config.json"
@@ -1995,15 +2051,25 @@ def _load_with_tokenizer_fallback(
         chat_template = None
 
         if tokenizer_config_path.exists():
-            with open(tokenizer_config_path) as f:
-                config = json.load(f)
-                bos_token = _special_token_text(config.get("bos_token"), bos_token)
-                eos_token = _special_token_text(config.get("eos_token"), eos_token)
-                unk_token = _special_token_text(config.get("unk_token"), unk_token)
-                pad_token = _special_token_text(config.get("pad_token"), pad_token)
-                chat_template = config.get("chat_template")
 
-        tokenizer = PreTrainedTokenizerFast(
+            def read_tokenizer_config(path: Path) -> dict:
+                with path.open(encoding="utf-8") as config_file:
+                    value = json.load(config_file)
+                if not isinstance(value, dict):
+                    raise ValueError("tokenizer_config.json must contain an object")
+                return value
+
+            config = load_tokenizer_checked(
+                read_tokenizer_config, tokenizer_config_path
+            )
+            bos_token = _special_token_text(config.get("bos_token"), bos_token)
+            eos_token = _special_token_text(config.get("eos_token"), eos_token)
+            unk_token = _special_token_text(config.get("unk_token"), unk_token)
+            pad_token = _special_token_text(config.get("pad_token"), pad_token)
+            chat_template = config.get("chat_template")
+
+        tokenizer = load_tokenizer_checked(
+            PreTrainedTokenizerFast,
             tokenizer_object=base_tokenizer,
             bos_token=bos_token,
             eos_token=eos_token,

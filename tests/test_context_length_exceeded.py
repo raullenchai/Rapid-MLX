@@ -125,8 +125,6 @@ def test_max_context_from_local_tokenizer_config_for_gpt_oss(tmp_path):
     the permissive DoS sentinel so over-context requests are rejected
     before their expensive prefill (issue #1084).
     """
-    from fastapi import HTTPException
-
     from rapid_mlx.service.helpers import (
         enforce_context_length,
         get_model_max_context,
@@ -149,14 +147,14 @@ def test_max_context_from_local_tokenizer_config_for_gpt_oss(tmp_path):
     eng = _StubEngine(model=_StubModel(args=_StubArgs()), tokenizer=tok)
 
     assert get_model_max_context(eng) == 131_072
-    with pytest.raises(HTTPException) as excinfo:
+    assert (
         enforce_context_length(
             eng,
             prompt_tokens=116_650,
             max_tokens=32_768,
         )
-    assert excinfo.value.status_code == 400
-    assert excinfo.value.detail["error"]["code"] == "context_length_exceeded"
+        == 14_422
+    )
 
 
 def test_max_context_ignores_malformed_local_tokenizer_config(tmp_path):
@@ -337,21 +335,11 @@ def test_enforce_over_cap_raises_400_context_length_exceeded():
 
 
 def test_enforce_includes_max_tokens_in_budget():
-    """Prompt fits alone but ``prompt + max_tokens`` exceeds the cap.
-    OpenAI's own ``context_length_exceeded`` fires in this case so we
-    mirror it — rejecting now avoids a mid-generation truncation."""
-    from fastapi import HTTPException
-
+    """A completion budget larger than remaining context is clamped."""
     from rapid_mlx.service.helpers import enforce_context_length
 
     eng = _StubEngine(model=_StubModel(args=_StubArgs(max_position_embeddings=4096)))
-    with pytest.raises(HTTPException) as excinfo:
-        enforce_context_length(eng, prompt_tokens=3500, max_tokens=1000)
-
-    err = excinfo.value.detail["error"]
-    assert err["code"] == "context_length_exceeded"
-    # Requested = 3500 + 1000 = 4500
-    assert "4500" in err["message"]
+    assert enforce_context_length(eng, prompt_tokens=3500, max_tokens=1000) == 596
 
 
 def test_enforce_tolerates_none_max_tokens():
@@ -360,7 +348,281 @@ def test_enforce_tolerates_none_max_tokens():
     from rapid_mlx.service.helpers import enforce_context_length
 
     eng = _StubEngine(model=_StubModel(args=_StubArgs(max_position_embeddings=2048)))
-    enforce_context_length(eng, prompt_tokens=2048, max_tokens=None)  # equal → ok
+    assert enforce_context_length(eng, prompt_tokens=2047, max_tokens=None) is None
+
+
+def test_enforce_rejects_prompt_that_leaves_no_completion_room():
+    from fastapi import HTTPException
+
+    from rapid_mlx.service.helpers import enforce_context_length
+
+    eng = _StubEngine(model=_StubModel(args=_StubArgs(max_position_embeddings=2048)))
+    with pytest.raises(HTTPException) as excinfo:
+        enforce_context_length(eng, prompt_tokens=2048, max_tokens=None)
+    assert excinfo.value.detail["error"]["code"] == "context_length_exceeded"
+
+
+def test_operational_prompt_cap_rejects_before_model_context_limit():
+    """An operator cap protects prefill even for a model with a huge window."""
+    from fastapi import HTTPException
+
+    from rapid_mlx.config import get_config
+    from rapid_mlx.service.helpers import enforce_context_length
+
+    get_config().max_prompt_tokens = 16_384
+    eng = _StubEngine(
+        model=_StubModel(args=_StubArgs(max_position_embeddings=1_048_576))
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        enforce_context_length(eng, prompt_tokens=16_385, max_tokens=1)
+
+    err = excinfo.value.detail["error"]
+    assert excinfo.value.status_code == 400
+    assert err["code"] == "context_length_exceeded"
+    assert "16384" in err["message"]
+    assert "16385" in err["message"]
+
+
+def test_operational_prompt_cap_does_not_include_completion_budget():
+    """The operational cap is prompt-only; model context still covers totals."""
+    from rapid_mlx.config import get_config
+    from rapid_mlx.service.helpers import enforce_context_length
+
+    get_config().max_prompt_tokens = 16_384
+    eng = _StubEngine(
+        model=_StubModel(args=_StubArgs(max_position_embeddings=1_048_576))
+    )
+    enforce_context_length(eng, prompt_tokens=16_384, max_tokens=32_768)
+
+
+def test_operational_prompt_cap_counts_mllm_text_without_prefill():
+    """GLM's MLLM lane must reject through CPU tokenization before Metal work."""
+    from fastapi import HTTPException
+
+    from rapid_mlx.config import get_config
+    from rapid_mlx.service.helpers import enforce_context_length_for_messages
+
+    class _Tokenizer:
+        def apply_chat_template(self, messages, **kwargs):  # noqa: ARG002
+            assert kwargs["tokenize"] is True
+            return list(range(16_385))
+
+    class _MLLMEngine:
+        is_mllm = True
+        tokenizer = _Tokenizer()
+
+    get_config().max_prompt_tokens = 16_384
+    with pytest.raises(HTTPException) as excinfo:
+        enforce_context_length_for_messages(
+            _MLLMEngine(), [{"role": "user", "content": "large prompt"}]
+        )
+    assert excinfo.value.detail["error"]["code"] == "context_length_exceeded"
+
+
+def test_operational_prompt_cap_counts_batched_mllm_tokenizer_output():
+    from fastapi import HTTPException
+
+    from rapid_mlx.config import get_config
+    from rapid_mlx.service.helpers import enforce_context_length_for_messages
+
+    class _Tokenizer:
+        def apply_chat_template(self, messages, **kwargs):  # noqa: ARG002
+            return {"input_ids": [[0] * 16_385]}
+
+    class _MLLMEngine:
+        is_mllm = True
+        tokenizer = _Tokenizer()
+
+    get_config().max_prompt_tokens = 16_384
+    with pytest.raises(HTTPException) as excinfo:
+        enforce_context_length_for_messages(
+            _MLLMEngine(), [{"role": "user", "content": "large prompt"}]
+        )
+    assert excinfo.value.detail["error"]["code"] == "context_length_exceeded"
+
+
+def test_tokenized_prompt_length_supports_tensor_and_generic_outputs():
+    from rapid_mlx.service.helpers import _tokenized_prompt_length
+
+    class _Tensor:
+        shape = (1, 7)
+
+    class _Sized:
+        def __len__(self):
+            return 5
+
+    assert _tokenized_prompt_length({}) == 0
+    assert _tokenized_prompt_length(_Tensor()) == 7
+    assert _tokenized_prompt_length(_Sized()) == 5
+    assert _tokenized_prompt_length(object()) == 0
+
+
+def test_operational_prompt_cap_allows_countable_mllm_prompt_under_cap():
+    from rapid_mlx.config import get_config
+    from rapid_mlx.service.helpers import enforce_context_length_for_messages
+
+    class _Tokenizer:
+        def apply_chat_template(self, messages, **kwargs):  # noqa: ARG002
+            assert kwargs["enable_thinking"] is False
+            return [0] * 32
+
+    class _MLLMEngine:
+        is_mllm = True
+        tokenizer = _Tokenizer()
+
+    get_config().max_prompt_tokens = 16_384
+    assert (
+        enforce_context_length_for_messages(
+            _MLLMEngine(),
+            [{"role": "user", "content": "small prompt"}],
+            enable_thinking=False,
+        )
+        == 32
+    )
+
+
+def test_mllm_prompt_admission_keeps_legacy_skip_without_operational_cap():
+    from rapid_mlx.service.helpers import enforce_context_length_for_messages
+
+    class _MLLMEngine:
+        is_mllm = True
+
+    assert (
+        enforce_context_length_for_messages(
+            _MLLMEngine(), [{"role": "user", "content": "prompt"}]
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("failure", ["missing", "raises", "empty"])
+def test_operational_prompt_cap_fails_closed_when_mllm_count_unavailable(failure):
+    """An enabled safety ceiling must never fall through to Metal uncounted."""
+    from fastapi import HTTPException
+
+    from rapid_mlx.config import get_config
+    from rapid_mlx.service.helpers import enforce_context_length_for_messages
+
+    class _Tokenizer:
+        def apply_chat_template(self, messages, **kwargs):  # noqa: ARG002
+            if failure == "raises":
+                raise RuntimeError("cannot render")
+            return []
+
+    class _MLLMEngine:
+        is_mllm = True
+        tokenizer = object() if failure == "missing" else _Tokenizer()
+
+    get_config().max_prompt_tokens = 16_384
+    with pytest.raises(HTTPException) as excinfo:
+        enforce_context_length_for_messages(
+            _MLLMEngine(), [{"role": "user", "content": "prompt"}]
+        )
+
+    assert excinfo.value.status_code == 400
+    err = excinfo.value.detail["error"]
+    assert err["code"] == "context_length_exceeded"
+    assert "rejected before prefill" in err["message"]
+
+
+def test_operational_prompt_cap_fails_closed_when_text_count_unavailable():
+    from fastapi import HTTPException
+
+    from rapid_mlx.config import get_config
+    from rapid_mlx.service.helpers import enforce_context_length_for_messages
+
+    class _Engine:
+        is_mllm = False
+        tokenizer = None
+
+        def build_prompt(self, messages, **kwargs):  # noqa: ARG002
+            return "rendered but uncountable"
+
+    get_config().max_prompt_tokens = 16_384
+    with pytest.raises(HTTPException) as excinfo:
+        enforce_context_length_for_messages(
+            _Engine(), [{"role": "user", "content": "prompt"}]
+        )
+    assert excinfo.value.detail["error"]["code"] == "context_length_exceeded"
+
+
+def test_operational_prompt_cap_fails_closed_without_text_prompt_builder():
+    from fastapi import HTTPException
+
+    from rapid_mlx.config import get_config
+    from rapid_mlx.service.helpers import enforce_context_length_for_messages
+
+    get_config().max_prompt_tokens = 16_384
+    with pytest.raises(HTTPException) as excinfo:
+        enforce_context_length_for_messages(
+            object(), [{"role": "user", "content": "prompt"}]
+        )
+    assert excinfo.value.detail["error"]["code"] == "context_length_exceeded"
+
+
+def test_operational_prompt_cap_fails_closed_when_text_rendering_fails():
+    from fastapi import HTTPException
+
+    from rapid_mlx.config import get_config
+    from rapid_mlx.service.helpers import enforce_context_length_for_messages
+
+    class _Engine:
+        is_mllm = False
+
+        def build_prompt(self, messages, **kwargs):  # noqa: ARG002
+            raise RuntimeError("engine is unloading")
+
+    get_config().max_prompt_tokens = 16_384
+    with pytest.raises(HTTPException) as excinfo:
+        enforce_context_length_for_messages(
+            _Engine(), [{"role": "user", "content": "prompt"}]
+        )
+    assert excinfo.value.detail["error"]["code"] == "context_length_exceeded"
+
+
+def test_operational_prompt_cap_fails_closed_when_raw_prompt_count_unavailable():
+    from fastapi import HTTPException
+
+    from rapid_mlx.config import get_config
+    from rapid_mlx.service.helpers import enforce_context_length_for_prompt
+
+    get_config().max_prompt_tokens = 16_384
+    with pytest.raises(HTTPException) as excinfo:
+        enforce_context_length_for_prompt(object(), "uncountable")
+    assert excinfo.value.detail["error"]["code"] == "context_length_exceeded"
+
+
+def test_max_prompt_tokens_cli_is_positive_and_shared_by_entrypoints():
+    from rapid_mlx import cli, server
+
+    assert (
+        cli.build_parser()
+        .parse_args(["serve", "model", "--max-prompt-tokens", "16384"])
+        .max_prompt_tokens
+        == 16_384
+    )
+    assert (
+        server._build_parser()
+        .parse_args(["--max-prompt-tokens", "8192"])
+        .max_prompt_tokens
+        == 8192
+    )
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(["serve", "model", "--max-prompt-tokens", "0"])
+
+
+def test_max_prompt_tokens_server_global_syncs_to_request_config():
+    import rapid_mlx.server as server
+    from rapid_mlx.config import get_config
+
+    original = server._max_prompt_tokens
+    try:
+        server._max_prompt_tokens = 1234
+        server._sync_config()
+        assert get_config().max_prompt_tokens == 1234
+    finally:
+        server._max_prompt_tokens = original
+        server._sync_config()
 
 
 # ─── enforce_context_length_for_messages: build_prompt failure paths ─
@@ -477,6 +739,45 @@ def test_enforce_for_messages_http_exception_passes_through():
         )
 
     assert excinfo.value.status_code == 503
+
+
+def test_context_wrappers_forward_telemetry_context(monkeypatch):
+    from rapid_mlx.service import helpers
+
+    class _PromptEngine(_StubEngine):
+        def build_prompt(self, messages, tools=None, enable_thinking=None):  # noqa: ARG002
+            return "rendered prompt"
+
+    engine = _PromptEngine(tokenizer=_StubTokenizer(chars_per_token=1))
+    calls = []
+    monkeypatch.setattr(
+        helpers,
+        "enforce_context_length",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+    context = {
+        "telemetry_model": "qwen3.5-4b-4bit",
+        "caller_agent": "cursor/1.0",
+        "caller_client": "rapid-desktop",
+    }
+
+    helpers.enforce_context_length_for_messages(
+        engine,
+        [{"role": "user", "content": "hello"}],
+        max_tokens=7,
+        **context,
+    )
+    helpers.enforce_context_length_for_prompt(
+        engine,
+        "plain prompt",
+        max_tokens=9,
+        **context,
+    )
+
+    assert calls == [
+        ((engine, 15), {"max_tokens": 7, **context}),
+        ((engine, 12), {"max_tokens": 9, **context}),
+    ]
 
 
 # ─── End-to-end shape: structured handler passes envelope through ───

@@ -477,24 +477,3 @@ class ToolExecutor:
                     return True
 
         return False
-
-
-async def execute_single_tool(
-    manager: MCPClientManager,
-    tool_name: str,
-    arguments: dict[str, Any],
-    timeout: float | None = None,
-) -> MCPToolResult:
-    """
-    Convenience function to execute a single tool.
-
-    Args:
-        manager: MCP client manager
-        tool_name: Full tool name (server__tool)
-        arguments: Tool arguments
-        timeout: Optional timeout
-
-    Returns:
-        MCPToolResult
-    """
-    return await manager.execute_tool(tool_name, arguments, timeout)

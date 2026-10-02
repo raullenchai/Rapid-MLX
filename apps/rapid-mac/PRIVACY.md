@@ -1,6 +1,6 @@
 # Rapid-MLX Desktop — Privacy Policy
 
-Last updated: 2026-08-27.
+Last updated: 2026-09-28.
 
 Rapid-MLX Desktop ("the App") is a local-first SwiftUI Mac client for the
 `rapid-mlx` inference server. We designed it so that your prompts,
@@ -37,12 +37,14 @@ You can turn telemetry off in Settings → Privacy, with
 `rapid-mlx telemetry off`, or with the `RAPID_MLX_TELEMETRY=0` or
 `DO_NOT_TRACK=1` kill switch. The desktop app and its embedded `rapid-mlx`
 engine use the same consent record and anonymous install ID, so one Mac is not
-counted as two installs. The 0.15.0 engine reports:
+counted as two installs. The current engine reports:
 
 * `app_opened` and `active_day`;
 * `model_pulled`, `model_pull_failed`, `model_served`, and
   `model_serve_failed`;
-* `capability_rejected` and `inference_bucket_reached`;
+* `capability_rejected` (closed `capability`, `model_type`, optional model and
+  caller, plus a closed `reject_reason` only for structured-output/context
+  rejections) and `inference_bucket_reached`;
 * `agent_configured` and `agent_configure_failed`; and
 * `telemetry_opted_in` and `telemetry_opted_out`.
 
@@ -82,8 +84,45 @@ service:
   * Public model aliases, subcommand and feature/flag names (never values).
   * Request endpoint, streaming/tool-use booleans, HTTP status, and coarse
     buckets for token counts, time to first token, and decode speed.
+  * A rejected capability can include the privacy-safe served model identity
+    and a normalized, closed-set caller label. It never includes the model
+    string supplied by the request.
   * Closed-set error categories and non-reversible stack fingerprints; no
     exception message or raw traceback.
+  * A failed model serve uses one closed error class: `unsupported_architecture`,
+    `insufficient_memory`, `corrupt_weights`, `download_failed`,
+    `local_path_missing`, `missing_extra`, `invalid_config`,
+    `tokenizer_load_failed`, `incompatible_weights`, `quantization_mismatch`,
+    or `other`. `local_path_missing` says only that a user-supplied local model
+    path or a required file was missing; the path and missing filenames are
+    never sent.
+  * Whether the preceding server start ended without reporting ready or failed.
+    The local marker's process ID, process creation time, system boot time, and
+    app version stay on the device; local crash-file contents and paths are
+    never sent.
+  * `~/.rapid-mlx/state/serve-failed-recent.json` keeps up to 64 recent,
+    privacy-reduced serve-failure keys and their timestamps on the device for
+    ten-minute duplicate suppression; the file itself is never sent.
+  * `~/.rapid-mlx/state/serve-start-recent.json` and
+    `~/.rapid-mlx/state/app-opened-recent.json` keep the same kind of
+    privacy-reduced keys and timestamps on the device so a restart loop
+    re-running `rapid-mlx serve` every few seconds cannot flood duplicate
+    `server_start_state` or `app_opened` events; both files are never sent.
+  * For a failed model serve caused by a missing optional runtime, the closed
+    extra name (`vision`, `video`, `audio`, or `image`) and a closed recovery
+    outcome (`accepted`, `declined`, `no_answer`, `interrupted`,
+    `non_interactive`, `assume_yes`, `no_installer`, `managed_runtime`, or
+    `broken_runtime`). `declined` means an explicit no; timeout, EOF, and read
+    failure use `no_answer`, while Ctrl-C uses `interrupted`. Commands, paths,
+    prompt text, and installer output are never sent.
+  * For a failed server bind, whether its port was explicitly selected. The
+    port number itself is not sent.
+  * For a failed inference counted in `inference_bucket_reached`, a closed
+    failure class (`error_class`: `insufficient_memory`, `engine_aborted`,
+    `template_error`, `media_input_invalid`, `prompt_too_large`,
+    `strict_schema_violation`, `model_replaced`, `output_contract_unmet`,
+    `stream_error`, or `other`).
+    The class is picked on the device; the error message itself is never sent.
 
 Anonymous telemetry does **not** collect:
 
@@ -106,15 +145,47 @@ reporting (`XX` when unavailable), strips client IPs, and writes events to R2;
 the IP address is never stored. Source is open at
 `github.com/raullenchai/rapidmlx.com` under `telemetry-worker/`.
 
+## Anonymous first-run funnel
+
+Official Desktop builds send a separate one-time milestone request to measure
+where first setup stops. Each milestone's first eligible occurrence is consumed
+whether or not sending is allowed then; a later occurrence is never substituted.
+When allowed, it is attempted at most once per install, and a failed request is
+not retried. The milestones are:
+`onboarding_shown`, `model_download_started`, `model_download_completed`,
+`model_download_failed`, `engine_ready`, `engine_start_failed`, and
+`first_chat_reply`.
+These counters are sent only by installs whose first-run setup started on this
+version or later; existing installs never send them, including when setup is
+shown again. The engine result is counted only for the first engine start
+directly initiated by that setup flow; a later manual start, restart, or model
+switch is not counted as an onboarding result. The first chat reply is counted
+even if it happens on a later launch.
+
+The request is `POST https://rapidmlx.com/api/desktop-funnel` with exactly
+`{"v":"<app version>","m":"<milestone>"}`. It contains no install ID, device,
+OS, chip, RAM, timestamp, model name, error text, query parameter, prompt, or
+response. The service keeps aggregate per-version counters only. It never
+stores the IP address and does not derive or store a country for this endpoint.
+This measures aggregate first-run step conversion, not retention or individual
+paths.
+
+The request is off after telemetry is declined in Settings → Privacy or with
+`rapid-mlx telemetry off`. It is also skipped when update checks are disabled,
+or when `RAPID_MLX_TELEMETRY=0`, `RAPIDMLX_NO_UPDATE_CHECK=1`, or
+`DO_NOT_TRACK=1` is set. Test, development, and dogfood builds never send it.
+
 ## Opt out
 
-Settings → Privacy → "Send anonymous usage data" → off. Takes effect
-immediately for both the desktop app and its embedded engine; no further
-events are sent. Already-sent events cannot be retroactively deleted because
-they are not associated with your identity, but the rolling 30-day raw-event
-storage window means they age out. `reset` deletes your stored preference and
-rotates the install id; the desktop clears its answer; the next run is treated
-as a new install. On 0.15.0 that next run shows the notice and uses the
+Settings → Privacy → "Send anonymous usage data" → off. The anonymous
+first-run funnel is blocked immediately in the running desktop process, before
+the shared preference is written. The app then writes the opt-out shared with
+the embedded engine; Settings reports if that write fails. A request already
+in transport may still complete. Already-sent events cannot be retroactively
+deleted because they are not associated with your identity, but the rolling
+30-day raw-event storage window means they age out. `reset` deletes your stored
+preference and rotates the install id; the desktop clears its answer; the next
+run is treated as a new install. On 0.15.0 that next run shows the notice and uses the
 default-on policy. `reset` emits no telemetry event. `reset-id` rotates only
 the install id and keeps the stored preference.
 

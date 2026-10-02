@@ -450,14 +450,9 @@ def test_per_alias_schema_allows_independent_overrides() -> None:
 
 # ---- Reverse-lookup behaviour with shared hf_paths -----------------------
 #
-# The original two tests in this section pinned the duplicate-hf_path
-# tie-break for ``(nemotron-30b, nemotron-nano)`` and
-# ``(deepseek-v4-flash, deepseek-v4-flash-8bit)``. After the explicit-quant
-# alias rename, those codename aliases are gone (see the PR description for
-# ``feat/explicit-alias-naming``) and aliases.json no longer has any pair
-# pointing at the same hf_path, so the tie-break is unreachable from the
-# current registry. The reverse-lookup *mechanism* is still exercised by
-# ``test_reverse_lookup_index_built_once_after_first_load`` below.
+# Shared hf_paths resolve to the first alias in aliases.json. The reverse
+# index is case-insensitive because Hugging Face repo ids are, while the
+# insertion-order tie-break remains deterministic.
 
 
 def test_reverse_lookup_index_built_once_after_first_load() -> None:
@@ -472,4 +467,4 @@ def test_reverse_lookup_index_built_once_after_first_load() -> None:
     assert len(ma._hf_to_alias) <= len(ma._aliases)  # dedup possible
     # Every hf_path in aliases must be reachable via reverse lookup
     for profile in ma._aliases.values():
-        assert profile.hf_path in ma._hf_to_alias
+        assert profile.hf_path.lower() in ma._hf_to_alias

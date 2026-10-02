@@ -121,6 +121,35 @@ struct ChatFileAttachmentTests {
         }
     }
 
+    @Test("Blank rendered PDF pages bypass Vision; nonblank pages still use it")
+    func blankPageSkipsVision() throws {
+        let blankView = NSView(frame: NSRect(x: 0, y: 0, width: 100, height: 100))
+        let blankDocument = try #require(PDFDocument(
+            data: blankView.dataWithPDF(inside: blankView.bounds)
+        ))
+        let blankPage = try #require(blankDocument.page(at: 0))
+        var requestCount = 0
+        let blankText = PDFTextRecognizer.recognize(page: blankPage) { _, _ in
+            requestCount += 1
+            return "unexpected Vision result"
+        }
+        #expect(blankText == "")
+        #expect(requestCount == 0)
+
+        let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 200, height: 100))
+        textView.string = "Visible ink"
+        let textDocument = try #require(PDFDocument(
+            data: textView.dataWithPDF(inside: textView.bounds)
+        ))
+        let textPage = try #require(textDocument.page(at: 0))
+        let recognizedText = PDFTextRecognizer.recognize(page: textPage) { _, _ in
+            requestCount += 1
+            return "vision path"
+        }
+        #expect(recognizedText == "vision path")
+        #expect(requestCount == 1)
+    }
+
     @Test("Blank front matter does not hide readable scanned pages", .timeLimit(.minutes(1)))
     func blankLeadingScanPagesAreProbed() throws {
         let url = try scannedPDFWithBlankFrontMatter()
@@ -131,11 +160,16 @@ struct ChatFileAttachmentTests {
 
         let attachment = try ChatFileAttachment(
             contentsOf: url,
-            cache: DocumentContentCache(diskDirectory: nil)
+            cache: DocumentContentCache(diskDirectory: nil),
+            visionRequest: { _, _, index in
+                index == 4 ? "READABLE PAGE FIVE REVENUE 2026" : "unexpected blank page"
+            }
         )
         #expect(attachment.pageCount == 5)
-        #expect(attachment.extractedText.localizedCaseInsensitiveContains("revenue"))
         #expect(attachment.extractedText.contains("[Page 5]"))
+        #expect(attachment.extractedText.contains("REVENUE 2026"))
+        #expect(!attachment.extractedText.contains("unexpected blank page"))
+        #expect(!attachment.extractedText.contains("[Page 1]"))
     }
 
     /// Page 1 carries a selectable text layer; page 2 is image-only.
@@ -177,12 +211,23 @@ struct ChatFileAttachmentTests {
         defer { try? FileManager.default.removeItem(at: url) }
         let cache = DocumentContentCache(diskDirectory: nil)
 
-        let attachment = try ChatFileAttachment(contentsOf: url, cache: cache)
+        let releaseBackgroundOCR = DispatchSemaphore(value: 0)
+        let attachment = try ChatFileAttachment(
+            contentsOf: url,
+            cache: cache,
+            visionRequest: { _, _, index in
+                guard index == 1 else { return "unexpected OCR page" }
+                _ = releaseBackgroundOCR.wait(timeout: .now() + 10)
+                return "IMAGE PAGE TWO REVENUE 2026"
+            }
+        )
+        defer { releaseBackgroundOCR.signal() }
         #expect(attachment.pageCount == 2)
         #expect(attachment.extractedText.contains("PAGE ONE"))
         // Pending marker: the full extract is still being recognized.
         #expect(attachment.totalCharacterCount == nil)
         #expect(cache.hasRegisteredExtraction(attachment.id))
+        releaseBackgroundOCR.signal()
 
         // The background pass OCRs page 2 and publishes the complete entry.
         var completed: DocumentContentCache.Entry?
@@ -197,6 +242,7 @@ struct ChatFileAttachmentTests {
         let entry = try #require(completed, "background extraction never published page 2")
         #expect(entry.isComplete)
         #expect(entry.text.contains("[Page 2]"))
+        #expect(!entry.text.contains("unexpected OCR page"))
     }
 
     /// `pages` image-only pages; only `readablePage` carries recognizable text.
@@ -240,10 +286,21 @@ struct ChatFileAttachmentTests {
         defer { try? FileManager.default.removeItem(at: url) }
         let cache = DocumentContentCache(diskDirectory: nil)
 
-        let attachment = try ChatFileAttachment(contentsOf: url, cache: cache)
+        let releaseTailOCR = DispatchSemaphore(value: 0)
+        let attachment = try ChatFileAttachment(
+            contentsOf: url,
+            cache: cache,
+            visionRequest: { _, _, index in
+                guard index == 9 else { return "unexpected blank page" }
+                _ = releaseTailOCR.wait(timeout: .now() + 10)
+                return "READABLE PAGE 10 REVENUE 2026"
+            }
+        )
+        defer { releaseTailOCR.signal() }
         #expect(attachment.pageCount == 10)
         #expect(attachment.extractedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         #expect(cache.hasRegisteredExtraction(attachment.id))
+        releaseTailOCR.signal()
 
         var completed: DocumentContentCache.Entry?
         for _ in 0..<240 {
@@ -257,6 +314,8 @@ struct ChatFileAttachmentTests {
         let entry = try #require(completed, "background extraction never found page 10")
         #expect(entry.isComplete)
         #expect(entry.text.contains("[Page 10]"))
+        #expect(!entry.text.contains("unexpected blank page"))
+        #expect(!entry.text.contains("[Page 1]"))
     }
 
     @Test(
@@ -306,9 +365,16 @@ struct ChatFileAttachmentTests {
         #expect(PDFTextRecognizer.recognize(page: serialized.page(at: 0)!) == nil)
 
         let cache = DocumentContentCache(diskDirectory: nil)
-        let attachment = try ChatFileAttachment(contentsOf: url, cache: cache)
+        let attachment = try ChatFileAttachment(
+            contentsOf: url,
+            cache: cache,
+            visionRequest: { _, _, index in
+                index == 1 ? "IMAGE PAGE TWO REVENUE 2026" : "unexpected broken page"
+            }
+        )
         #expect(attachment.pageCount == 2)
         #expect(attachment.extractedText.contains("PAGE TWO"))
+        #expect(!attachment.extractedText.contains("unexpected broken page"))
         // The lost page means the attachment can never claim completeness.
         #expect(attachment.totalCharacterCount == nil)
 

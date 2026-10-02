@@ -6,6 +6,11 @@ summary statistics, and limitations.
 
 ## Reports
 
+- [Row-invariant lane matmul for multi-row decode (opt-in)](2026-09-30-lane-matmul.md)
+- [Semantic action protocol browser CUA POC](2026-09-25-cua-semantic-action-protocol.md)
+- [Qwen3.5-9B + vision-verifier browser POC](2026-09-25-vision-verifier-cua-poc.md)
+- [System One CLM-8B server dogfood](2026-09-24-system-one-clm-dogfood.md)
+- [System One Laya server dogfood](2026-09-24-system-one-laya-dogfood.md)
 - [Gemma 4 26B-A4B assistant-sidecar MTP qualification](2026-09-20-gemma4-assistant-mtp.md)
 - [Qwen3.6-35B-A3B compiled decode replay qualification](2026-09-13-qwen36-compiled-decode.md)
 - [Qwen3.6-35B-A3B native text-cache qualification](2026-09-13-qwen36-mllm-native-text-cache.md)

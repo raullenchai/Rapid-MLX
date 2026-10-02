@@ -714,12 +714,23 @@ struct DocumentCacheLifecycleTests {
         #expect(cache.get(id) == nil)
     }
 
+    private func controlledVisionRequest(
+        releasingTailWith gate: DispatchSemaphore
+    ) -> PDFTextRecognizer.VisionRequest {
+        { _, _, index in
+            // Keep the background pass in flight until the test has exercised
+            // cancellation/removal. The eager four-page preview stays prompt.
+            if index >= 4 { _ = gate.wait(timeout: .now() + 10) }
+            return "Section \(index) heading text"
+        }
+    }
+
     @Test("A removal racing a real extraction never leaves the document behind", .timeLimit(.minutes(2)))
     func concurrentRemovalDuringRealExtraction() async throws {
         // The deterministic tests above prove the ordering property. This one
-        // exercises the same property through the REAL attach path, where the
-        // publish is a background OCR task rather than a direct call — the
-        // wiring is what is under test here, not the algorithm.
+        // exercises the same property through the real attach path with a
+        // controlled background OCR request. The task registration and
+        // cancellation wiring are under test, not Vision's model.
         let dir = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }
         let cache = diskCache(in: dir)
@@ -727,10 +738,17 @@ struct DocumentCacheLifecycleTests {
         let url = try makeScannedPDF(pages: 8)
         defer { try? FileManager.default.removeItem(at: url) }
 
-        let attachment = try ChatFileAttachment(contentsOf: url, cache: cache)
+        let releaseTail = DispatchSemaphore(value: 0)
+        let attachment = try ChatFileAttachment(
+            contentsOf: url,
+            cache: cache,
+            visionRequest: controlledVisionRequest(releasingTailWith: releaseTail)
+        )
+        defer { releaseTail.signal() }
         #expect(cache.hasRegisteredExtraction(attachment.id))
 
         cache.remove(attachment.id)
+        releaseTail.signal()
 
         // Well past the point the extraction would have published.
         try? await Task.sleep(for: .seconds(5))
@@ -778,12 +796,19 @@ struct DocumentCacheLifecycleTests {
         let url = try makeScannedPDF(pages: 8)
         defer { try? FileManager.default.removeItem(at: url) }
 
-        let attachment = try ChatFileAttachment(contentsOf: url, cache: cache)
+        let releaseTail = DispatchSemaphore(value: 0)
+        let attachment = try ChatFileAttachment(
+            contentsOf: url,
+            cache: cache,
+            visionRequest: controlledVisionRequest(releasingTailWith: releaseTail)
+        )
+        defer { releaseTail.signal() }
         // Past the eager OCR window, so a background pass is genuinely running.
         #expect(attachment.totalCharacterCount == nil)
         #expect(cache.hasRegisteredExtraction(attachment.id))
 
         cache.cancelExtraction(attachment.id)
+        releaseTail.signal()
         #expect(!cache.hasRegisteredExtraction(attachment.id))
 
         // Cancelling releases any waiter rather than leaving it to time out:
@@ -805,10 +830,17 @@ struct DocumentCacheLifecycleTests {
         let url = try makeScannedPDF(pages: 8)
         defer { try? FileManager.default.removeItem(at: url) }
 
-        let attachment = try ChatFileAttachment(contentsOf: url, cache: cache)
+        let releaseTail = DispatchSemaphore(value: 0)
+        let attachment = try ChatFileAttachment(
+            contentsOf: url,
+            cache: cache,
+            visionRequest: controlledVisionRequest(releasingTailWith: releaseTail)
+        )
+        defer { releaseTail.signal() }
         #expect(cache.hasRegisteredExtraction(attachment.id))
 
         cache.remove(attachment.id)
+        releaseTail.signal()
         #expect(cache.get(attachment.id) == nil)
 
         // Give the cancelled pass ample time to reach its publish point. If it

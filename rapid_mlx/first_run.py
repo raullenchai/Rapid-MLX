@@ -2,8 +2,8 @@
 
 Three CLI surfaces share this module (wired in ``rapid_mlx/cli.py``):
 
-  * ``rapid-mlx`` (bare command) → a *nameplate*: hardware line + cached-model
-    hint + a "get started" signpost. Non-blocking, prints and exits.
+  * ``rapid-mlx`` (bare command) → a short welcome with one recommended
+    model and one command that reaches the first reply. Non-blocking, exits.
   * ``rapid-mlx chat`` with no model → auto-select the known-good starter, so
     the user's only decision is typing ``chat`` (everything else is a default
     + override).
@@ -48,6 +48,10 @@ FIRST_RUN_MODEL_SIZE = "~3.1 GB"
 # ICP, so it leads. Others follow in a stable order.
 _AGENT_PREFERENCE = ("claude-code", "cline", "continue-dev")
 
+_IDENTITY = (
+    "Rapid-MLX — OpenAI- and Anthropic-compatible LLM server and Mac app for "
+    "Apple Silicon, built on MLX, focused on reliable tool calling for coding agents."
+)
 _DOCS_URL = "https://rapidmlx.com/docs/"
 
 
@@ -81,7 +85,7 @@ def cached_known_aliases() -> list[tuple[str, float]]:
     try:
         # Lazy import: cli.py imports this module, so importing it back at
         # module-load time would cycle. By call time cli is fully loaded.
-        from rapid_mlx.cli import _scan_hf_cache_models
+        from rapid_mlx.cli import _cache_entry_is_runnable, _scan_hf_cache_models
         from rapid_mlx.model_aliases import list_profiles
 
         hf_to_alias: dict[str, str] = {}
@@ -91,7 +95,7 @@ def cached_known_aliases() -> list[tuple[str, float]]:
         rows: list[tuple[str, float]] = []
         for repo, _size, mtime in _scan_hf_cache_models():
             alias = hf_to_alias.get(repo)
-            if alias is not None:
+            if alias is not None and _cache_entry_is_runnable(repo):
                 rows.append((alias, mtime))
         rows.sort(key=lambda r: -r[1])
         return rows
@@ -157,86 +161,64 @@ def preferred_agent() -> str | None:
 
 
 # --------------------------------------------------------------------------
-# Nameplate (P0-2)
+# Welcome (P0-2)
 # --------------------------------------------------------------------------
-def _hardware_line(version: str) -> str:
-    try:
-        from rapid_mlx.optimizations import detect_hardware
-
-        hw = detect_hardware()
-        chip = hw.chip_name if hw.chip_name and hw.chip_name != "Unknown" else None
-        mem = f"{hw.total_memory_gb:.0f}GB" if hw.total_memory_gb else None
-        if chip and mem:
-            return f"Rapid-MLX {version} · {chip} / {mem} detected"
-        if mem:
-            return f"Rapid-MLX {version} · {mem} detected"
-    except Exception:
-        pass
-    return f"Rapid-MLX {version}"
-
-
-def _render_get_started(rows: list[tuple[str, str]]) -> list[str]:
-    """Render ``(command, comment)`` pairs with the ``#`` comments aligned to a
-    common column."""
-    width = max((len(cmd) for cmd, _ in rows), default=0)
-    out = []
-    for cmd, comment in rows:
-        out.append(f"  {cmd.ljust(width)}   # {comment}" if comment else f"  {cmd}")
-    return out
-
-
 def build_nameplate(version: str) -> str:
-    """Build the bare-command nameplate text (no ANSI, no trailing newline).
+    """Build the bare-command welcome text (no ANSI, no trailing newline).
 
     Pure/deterministic given the machine state — the caller decides whether to
     print it (TTY only). Every probe inside is fail-silent, so a broken cache
-    or hardware-detect surface still yields a usable signpost.
+    still yields a usable next command.
     """
-    lines: list[str] = [_hardware_line(version), ""]
-
-    cached = cached_known_aliases()
-    if cached:
-        shown = ", ".join(alias for alias, _ in cached[:3])
-        lines.append(f"Found in your cache: {shown}")
-        lines.append("")
-
-    lines.append("Get started:")
-
-    # The bare-command chat suggestion always points at the known-good starter
-    # (FIRST_RUN_MODEL), never whichever alias happens to be cached: the
-    # starter is the one model we promise reliable chat + tool-calls, and
-    # auto-picking a cached alias would run something the user never named
-    # (e.g. a text-diffusion checkpoint, which chats but with very different
-    # REPL behavior). Cached models are still listed above so a returning user
-    # can name one explicitly.
-    starter_cached = any(alias == FIRST_RUN_MODEL for alias, _ in cached)
-    rows: list[tuple[str, str]] = [
-        ("rapid-mlx recipe", "pick Smart + Fast models for this Mac")
-    ]
-    if starter_cached:
-        rows.append(("rapid-mlx chat", f"{FIRST_RUN_MODEL} — already downloaded"))
-    else:
-        rows.append(
-            (
-                "rapid-mlx chat",
-                f"{FIRST_RUN_MODEL} ({FIRST_RUN_MODEL_SIZE} one-time download)",
-            )
-        )
-    if cached:
-        rows.append(("rapid-mlx chat <model>", "or name a cached model above"))
-    rows.append(
-        (f"rapid-mlx serve {FIRST_RUN_MODEL}", "OpenAI-compatible API on :8000")
+    del version  # kept in the API so the CLI does not need a compatibility shim
+    from rapid_mlx.recommendations import (
+        physical_ram_gb,
+        recommendation_payload,
+        select_starter_model,
     )
 
+    cached = {alias for alias, _mtime in cached_known_aliases()}
+    ram_gb = physical_ram_gb()
+    payload = recommendation_payload(ram_gb, validate_catalog=False)
+    model = select_starter_model(ram_gb, cached, validate_catalog=False)
+    cached_badge = " (already cached)" if model in cached else ""
+    ram_label = (
+        f"{payload['physical_ram_gb']:g} GB RAM detected"
+        if ram_gb > 0
+        else "RAM detection unavailable"
+    )
     agent = preferred_agent()
-    if agent is not None:
-        rows.append((f"rapid-mlx launch {agent}", "connect your agent (detected ✓)"))
-    else:
-        rows.append(("rapid-mlx launch --all", "detect & connect coding agents"))
+    launch_target = agent if agent is not None else "--all"
+    detected_badge = "  # detected ✓" if agent is not None else ""
 
-    lines += _render_get_started(rows)
-    lines.append("")
-    lines.append(f"Docs: {_DOCS_URL}")
+    lines = [
+        _IDENTITY,
+        "",
+        f"{ram_label} · Recommended model: {model}{cached_badge}",
+        "",
+        "Next — start chatting (the server starts automatically):",
+        f"  rapid-mlx chat {model}",
+        "",
+        "Use it from your coding agent (separate stable server on :8000):",
+        f"  rapid-mlx serve {model} --port 8000",
+        f"  rapid-mlx launch {launch_target} --model {model}{detected_badge}",
+        "serve exits if :8000 is busy; use another port in both commands:",
+        f"  rapid-mlx serve {model} --port 8001",
+        (
+            f"  rapid-mlx launch {launch_target} --model {model} "
+            "--server-url http://127.0.0.1:8001"
+        ),
+        "",
+        "Useful commands:",
+        "  rapid-mlx chat <model>",
+        "  rapid-mlx pull <model>",
+        "  rapid-mlx models",
+        "  rapid-mlx doctor",
+        "",
+        "rapid-mlx --help for everything",
+        "",
+        f"Docs: {_DOCS_URL}",
+    ]
     return "\n".join(lines)
 
 
@@ -307,10 +289,16 @@ def mark_first_session() -> bool:
 
 
 def chat_agent_tip_text() -> str:
-    """The one-line tip shown after a user's first successful chat. Names the
-    detected agent (claude-code preferred); falls back to the generic
-    ``launch --all`` when none is detected."""
+    """The one-line tip shown after a user's first successful chat.
+
+    It names the detected agent (claude-code preferred) but directs users to
+    the stable-server setup help instead of implying that ``launch`` can attach
+    to the ephemeral chat server, which has already stopped by this point.
+    """
     agent = preferred_agent()
     if agent is not None:
-        return f"Tip: connect {agent} to this engine → rapid-mlx launch {agent}"
-    return "Tip: connect your coding agent → rapid-mlx launch --all"
+        return (
+            f"Tip: set up a separate stable server for {agent} → "
+            "rapid-mlx launch --help"
+        )
+    return "Tip: set up a separate stable agent server → rapid-mlx launch --help"

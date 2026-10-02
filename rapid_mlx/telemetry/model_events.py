@@ -4,16 +4,37 @@
 from __future__ import annotations
 
 import errno
+import fcntl
 import functools
+import json
+import logging
+import math
+import os
 import re
+import socket
+import stat
 import threading
+import time
 import urllib.error
 from collections.abc import Callable
-from typing import ParamSpec
+from pathlib import Path
+from typing import ParamSpec, TypeAlias
+
+from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
 
 _serve_failure_lock = threading.Lock()
 _serve_failure_claimed = False
 _P = ParamSpec("_P")
+_LedgerKeyPart: TypeAlias = str | bool | None
+_EXCEPTION_CHAIN_LIMIT = 32
+SERVE_FAILED_DEDUPE_SECONDS = 600
+_SERVE_FAILED_MAX_KEYS = 64
+_SERVE_FAILED_MAX_BYTES = 64 * 1024
+_SERVE_FAILED_LOCK_WAIT_SECONDS = 0.25
+_SERVE_FAILED_LOCK_SLEEP_SECONDS = 0.01
+_serve_failed_clock = time.time
+
+logger = logging.getLogger(__name__)
 
 
 def _never_raise(func: Callable[_P, None]) -> Callable[_P, None]:
@@ -52,14 +73,23 @@ def size_bucket(size_bytes: int | None) -> str:
     return "64gb_plus"
 
 
+def _exception_text(exc: BaseException) -> str:
+    """Return exception text without allowing a hostile ``__str__`` to escape."""
+    try:
+        return str(exc)
+    except BaseException:
+        return ""
+
+
 def pull_error_class(exc: BaseException) -> str:
     """Classify a pull exception without putting its message on the wire.
 
-    An ``HfHubHTTPError``, including one for a 5xx response, is ``other``
-    because the server answered. ``network`` is reserved for failures to obtain
-    a response.
+    An ``HfHubHTTPError`` for a 401/403 response is ``gated``; other HTTP
+    responses, including 5xx, are ``other`` because the server answered.
+    ``network`` is reserved for failures to obtain a response.
     """
     import httpx
+    from huggingface_hub.errors import HfHubHTTPError, OfflineModeIsEnabled
     from huggingface_hub.utils import (
         GatedRepoError,
         LocalEntryNotFoundError,
@@ -67,15 +97,26 @@ def pull_error_class(exc: BaseException) -> str:
     )
     from requests import exceptions as requests_exceptions
 
-    pending: list[BaseException] = [exc]
+    current: BaseException | None = exc
     seen: set[int] = set()
-    while pending:
-        current = pending.pop()
+    for _ in range(_EXCEPTION_CHAIN_LIMIT):
+        if current is None:
+            break
         if id(current) in seen:
-            continue
+            break
         seen.add(id(current))
         if isinstance(current, GatedRepoError):
             return "gated"
+        if isinstance(current, HfHubHTTPError) and getattr(
+            current.response, "status_code", None
+        ) in (401, 403):
+            return "gated"
+        if isinstance(current, urllib.error.HTTPError):
+            if current.code in (401, 403):
+                return "gated"
+            if current.code == 404:
+                return "not_found"
+            return "other"
         if isinstance(current, RepositoryNotFoundError):
             return "not_found"
         if isinstance(current, OSError) and current.errno == errno.ENOSPC:
@@ -84,62 +125,138 @@ def pull_error_class(exc: BaseException) -> str:
             current,
             (
                 LocalEntryNotFoundError,
+                OfflineModeIsEnabled,
                 requests_exceptions.ConnectionError,
                 requests_exceptions.ConnectTimeout,
                 requests_exceptions.ReadTimeout,
-                httpx.ConnectError,
-                httpx.ConnectTimeout,
-                httpx.ReadTimeout,
+                httpx.NetworkError,
+                httpx.TimeoutException,
+                socket.gaierror,
                 urllib.error.URLError,
                 TimeoutError,
             ),
         ):
             return "network"
-        if current.__context__ is not None:
-            pending.append(current.__context__)
-        if current.__cause__ is not None:
-            pending.append(current.__cause__)
+        current = current.__cause__
     return "other"
 
 
-def serve_error_class(exc: BaseException) -> str:
+def find_optional_runtime_missing(
+    exc: BaseException,
+) -> OptionalRuntimeMissing | None:
+    """Find a typed optional-runtime failure on the explicit cause chain."""
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    for _ in range(_EXCEPTION_CHAIN_LIMIT):
+        if current is None or id(current) in seen:
+            break
+        seen.add(id(current))
+        if isinstance(current, OptionalRuntimeMissing):
+            return current
+        try:
+            current = current.__cause__
+        except BaseException:
+            break
+    return None
+
+
+def serve_error_class(exc: BaseException, *, model_ref: object = None) -> str:
     """Reduce loader failures to the registry's closed serve categories."""
-    from rapid_mlx.request import (
-        ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY,
-        classify_engine_abort,
-    )
+    try:
+        if find_optional_runtime_missing(exc) is not None:
+            return "missing_extra"
+        from huggingface_hub.errors import HfHubHTTPError
+        from huggingface_hub.utils import RepositoryNotFoundError
 
-    if classify_engine_abort(exc) == ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY:
-        return "insufficient_memory"
-    from huggingface_hub.errors import HfHubHTTPError
-    from huggingface_hub.utils import RepositoryNotFoundError
+        from rapid_mlx.model_load_errors import (
+            IncompatibleWeights,
+            InvalidModelConfig,
+            QuantizationMismatch,
+            TokenizerLoadFailed,
+        )
+        from rapid_mlx.request import (
+            ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY,
+            classify_engine_abort,
+        )
 
-    if isinstance(exc, (HfHubHTTPError, RepositoryNotFoundError)):
-        return "download_failed"
-    # A missing local/Hub shard is an availability failure, not evidence that
-    # bytes on disk are corrupt. ModuleNotFoundError is handled separately
-    # below because mlx-lm uses it for an unknown architecture module.
-    if isinstance(exc, FileNotFoundError) and not isinstance(exc, ModuleNotFoundError):
-        return "download_failed"
-    if isinstance(exc, ModuleNotFoundError):
-        missing = exc.name or ""
-        if missing.startswith("mlx_lm.models."):
-            return "unsupported_architecture"
-        text = str(exc)
-        if re.fullmatch(r"No module named ['\"]mlx_lm\.models\.[^'\"]+['\"]", text):
-            return "unsupported_architecture"
-    elif isinstance(exc, ValueError):
-        # mlx-lm/utils.py::_get_classes translates the module import failure to
-        # exactly ``ValueError: Model type <X> not supported.``.
-        if re.fullmatch(r"Model type .+ not supported\.?", str(exc)):
-            return "unsupported_architecture"
-    name = type(exc).__name__.lower()
-    text = str(exc).lower()
-    if "safetensor" in name or any(
-        marker in text
-        for marker in ("safetensor", "corrupt", "checksum", "size mismatch")
-    ):
-        return "corrupt_weights"
+        chain: list[BaseException] = []
+        current: BaseException | None = exc
+        seen: set[int] = set()
+        for _ in range(_EXCEPTION_CHAIN_LIMIT):
+            if current is None:
+                break
+            if id(current) in seen:
+                break
+            seen.add(id(current))
+            chain.append(current)
+            current = current.__cause__
+
+        # The four explicit load-boundary types are authoritative across the
+        # cause chain. A generic outer wrapper may mention memory or corruption
+        # while merely relaying one of these more precise failures.
+        for current in chain:
+            if isinstance(current, InvalidModelConfig):
+                return "invalid_config"
+            if isinstance(current, TokenizerLoadFailed):
+                return "tokenizer_load_failed"
+            if isinstance(current, IncompatibleWeights):
+                return "incompatible_weights"
+            if isinstance(current, QuantizationMismatch):
+                return "quantization_mismatch"
+
+        # Existing typed availability failures are authoritative too. Inspect
+        # the full explicit cause chain before consulting message text so an
+        # outer relay that happens to mention memory or corruption cannot
+        # overwrite the concrete Hub/file failure beneath it.
+        if any(
+            isinstance(current, (HfHubHTTPError, RepositoryNotFoundError))
+            for current in chain
+        ):
+            return "download_failed"
+        for current in chain:
+            # A missing Hub shard is an availability failure; a missing path or
+            # shard under a user-supplied local model is not a download failure.
+            # ModuleNotFoundError is handled separately below because mlx-lm
+            # uses it for an unknown architecture module.
+            if isinstance(current, FileNotFoundError) and not isinstance(
+                current, ModuleNotFoundError
+            ):
+                from rapid_mlx.local_model_path import is_local_model_ref
+
+                if is_local_model_ref(model_ref):
+                    return "local_path_missing"
+                return "download_failed"
+            if isinstance(current, ModuleNotFoundError):
+                missing = current.name or ""
+                if missing.startswith("mlx_lm.models."):
+                    return "unsupported_architecture"
+                text = _exception_text(current)
+                if re.fullmatch(
+                    r"No module named ['\"]mlx_lm\.models\.[^'\"]+['\"]", text
+                ):
+                    return "unsupported_architecture"
+
+        # Text markers are deliberately last: they are less precise than the
+        # typed load, Hub, and file boundaries above.
+        for current in chain:
+            if classify_engine_abort(current) == ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY:
+                return "insufficient_memory"
+            text = _exception_text(current)
+            if isinstance(current, ValueError):
+                # mlx-lm/utils.py::_get_classes translates the module import failure
+                # to exactly ``ValueError: Model type <X> not supported.``.
+                if re.fullmatch(r"Model type .+ not supported\.?", text):
+                    return "unsupported_architecture"
+                if "does not recognize this architecture" in text:
+                    return "unsupported_architecture"
+            name = type(current).__name__.lower()
+            if "safetensor" in name or any(
+                marker in text.lower()
+                for marker in ("safetensor", "corrupt", "checksum", "size mismatch")
+            ):
+                return "corrupt_weights"
+    except BaseException:
+        return "other"
     return "other"
 
 
@@ -249,19 +366,318 @@ def _serve_props(
     }
 
 
-@_never_raise
-def emit_model_served(
-    engine: object, alias_or_path: object, auto_selected: bool
+def _record_model_served(
+    engine: object,
+    alias_or_path: object,
+    auto_selected: bool,
+    on_complete: Callable[[bool], None] | None,
 ) -> None:
-    """Emit a successful load and make the sole served-model store note."""
-    from rapid_mlx.telemetry import store, track
+    """Perform the complete served-model capture on the telemetry daemon."""
+    accepted = False
+    try:
+        from rapid_mlx.telemetry import store, track
 
-    if not track._upload_allowed():
+        if track._upload_allowed():
+            props = _serve_props(engine, alias_or_path, auto_selected)
+            nth = store.note_model_served(str(props["model"]))
+            accepted = track.track("model_served", props, nth_model_served=nth or None)
+    except Exception:
+        pass
+    finally:
+        if on_complete is not None:
+            try:
+                on_complete(accepted)
+            except Exception:
+                pass
+
+
+def _submit_model_served(callback: Callable[[], None]) -> bool:
+    from rapid_mlx.telemetry.inference import _submit
+
+    return bool(_submit(callback))
+
+
+def emit_model_served(
+    engine: object,
+    alias_or_path: object,
+    auto_selected: bool,
+    *,
+    on_complete: Callable[[bool], None] | None = None,
+) -> bool:
+    """Enqueue a complete served-model capture without blocking the caller."""
+    try:
+        return _submit_model_served(
+            functools.partial(
+                _record_model_served,
+                engine,
+                alias_or_path,
+                auto_selected,
+                on_complete,
+            )
+        )
+    except Exception:
+        return False
+
+
+def _serve_failed_recent_path() -> Path:
+    from rapid_mlx.telemetry.state import _default_telemetry_dir
+
+    return _default_telemetry_dir() / "state" / "serve-failed-recent.json"
+
+
+def _read_serve_failed_recent(path: Path) -> dict[str, float]:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NONBLOCK", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+    except FileNotFoundError:
+        return {}
+    try:
+        file_stat = os.fstat(fd)
+        if (
+            not stat.S_ISREG(file_stat.st_mode)
+            or file_stat.st_size > _SERVE_FAILED_MAX_BYTES
+        ):
+            return {}
+        payload = bytearray()
+        while len(payload) <= _SERVE_FAILED_MAX_BYTES:
+            chunk = os.read(
+                fd,
+                min(4096, _SERVE_FAILED_MAX_BYTES + 1 - len(payload)),
+            )
+            if not chunk:
+                break
+            payload.extend(chunk)
+        if len(payload) > _SERVE_FAILED_MAX_BYTES:
+            return {}
+    finally:
+        os.close(fd)
+    try:
+        value = json.loads(payload.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(value, dict):
+        return {}
+    return {
+        key: float(timestamp)
+        for key, timestamp in value.items()
+        if isinstance(key, str)
+        and isinstance(timestamp, (int, float))
+        and not isinstance(timestamp, bool)
+        and math.isfinite(timestamp)
+    }
+
+
+def _acquire_serve_failed_lock(dir_fd: int) -> bool:
+    """Acquire the ledger lock within its bounded wait budget."""
+    deadline = time.monotonic() + _SERVE_FAILED_LOCK_WAIT_SECONDS
+    while True:
+        try:
+            fcntl.flock(dir_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(_SERVE_FAILED_LOCK_SLEEP_SECONDS, remaining))
+
+
+def _ledger_claim_is_fresh(
+    recent: dict[str, float],
+    encoded_key: str,
+    current: float,
+    window_seconds: float,
+) -> bool:
+    previous = recent.get(encoded_key)
+    return (
+        previous is not None
+        and current >= previous
+        and current - previous < window_seconds
+    )
+
+
+def _claim_ledger_key(
+    resolve_path: Callable[[], Path],
+    key: tuple[_LedgerKeyPart, ...],
+    *,
+    window_seconds: float,
+    now: float | None = None,
+    would_accept: Callable[[], bool] | None = None,
+    on_claim: Callable[[], object] | None = None,
+) -> bool:
+    """Accept then claim a cross-process dedupe key and enqueue after unlock.
+
+    This is the shared durable-claim machinery introduced for
+    ``model_serve_failed`` (mode-0600 ledger, atomic claim, bounded lock wait,
+    fail-open contention path). Other emitters reuse it with their own ledger
+    path and window; the ledger format and lock discipline stay identical.
+    ``resolve_path`` is evaluated inside the guarded body so an unavailable
+    state root fails open exactly like the other storage failures.
+    """
+    decision: bool | None = None
+
+    def accepted() -> bool:
+        nonlocal decision
+        if decision is None:
+            decision = would_accept is None or would_accept() is True
+        return decision
+
+    def enqueue_accepted() -> bool:
+        try:
+            is_accepted = accepted()
+        except BaseException:
+            logger.debug("telemetry acceptance check raised; event was dropped")
+            return False
+        if not is_accepted:
+            return False
+        if on_claim is not None:
+            try:
+                enqueue_result = on_claim()
+            except BaseException:
+                logger.debug(
+                    "telemetry enqueue raised; any durable dedupe claim was left intact"
+                )
+            else:
+                if enqueue_result is False:
+                    logger.debug(
+                        "telemetry enqueue was rejected; any durable dedupe claim "
+                        "was left intact"
+                    )
+        return True
+
+    try:
+        from rapid_mlx.telemetry.server_start import (
+            _atomic_write_marker,
+            _prepare_state_dir,
+        )
+
+        current = _serve_failed_clock() if now is None else now
+        if not math.isfinite(current):
+            return enqueue_accepted()
+        encoded_key = json.dumps(key, separators=(",", ":"))
+        path = resolve_path()
+        if not _prepare_state_dir(path.parent):
+            return enqueue_accepted()
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        flags |= getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        dir_fd = os.open(path.parent, flags)
+    except BaseException:
+        return enqueue_accepted()
+
+    should_enqueue = False
+    try:
+        try:
+            if not _acquire_serve_failed_lock(dir_fd):
+                # Ledger replacement is atomic, so an unlocked read is a
+                # consistent snapshot. The lock winner may already have
+                # published this key even though our bounded wait expired.
+                # The 250 ms bound ensures telemetry can never delay ``serve``
+                # startup longer than that for this local mode-0600 ledger.
+                # After the bound, fail open: a duplicate is preferable to a
+                # blocked startup. The worst case is N duplicates, and only if
+                # N processes simultaneously hit >250 ms contention on the
+                # local file; the unlocked re-read handles the common case.
+                recent = _read_serve_failed_recent(path)
+                if _ledger_claim_is_fresh(recent, encoded_key, current, window_seconds):
+                    return False
+                should_enqueue = True
+            else:
+                recent = _read_serve_failed_recent(path)
+                # A wall-clock rollback makes claims written by the previous
+                # clock appear to be in the future. They cannot provide a
+                # meaningful freshness bound and must not crowd a claim from
+                # the current clock out of the bounded ledger.
+                recent = {
+                    stored_key: timestamp
+                    for stored_key, timestamp in recent.items()
+                    if timestamp <= current
+                }
+                if _ledger_claim_is_fresh(recent, encoded_key, current, window_seconds):
+                    return False
+                if not accepted():
+                    return False
+                # Persisting the claim before enqueue is deliberate: it gives all
+                # processes exactly one event per key per window. The rejected
+                # enqueue-then-claim alternative lets lock-contention losers emit
+                # duplicates. A process death or defensive enqueue rejection can
+                # instead lose at most this <=10-minute window, matching the
+                # sender's batch-loss profile; do not roll the durable claim back.
+                recent[encoded_key] = current
+                if len(recent) > _SERVE_FAILED_MAX_KEYS:
+                    recent = dict(
+                        sorted(
+                            recent.items(),
+                            key=lambda item: item[1],
+                            reverse=True,
+                        )[:_SERVE_FAILED_MAX_KEYS]
+                    )
+                _atomic_write_marker(path, value=recent)
+                should_enqueue = True
+        except BaseException:
+            should_enqueue = True
+    finally:
+        try:
+            os.close(dir_fd)
+        except BaseException:
+            pass
+    return enqueue_accepted() if should_enqueue else False
+
+
+def _claim_serve_failure_key(
+    key: tuple[str, str, str, str],
+    *,
+    now: float | None = None,
+    would_accept: Callable[[], bool] | None = None,
+    on_claim: Callable[[], object] | None = None,
+) -> bool:
+    """Claim one ``model_serve_failed`` key in its shared ledger window."""
+    return _claim_ledger_key(
+        _serve_failed_recent_path,
+        key,
+        window_seconds=SERVE_FAILED_DEDUPE_SECONDS,
+        now=now,
+        would_accept=would_accept,
+        on_claim=on_claim,
+    )
+
+
+def _clear_ledger(path: Path) -> None:
+    """Best-effort locked clear of one dedupe ledger; never raises.
+
+    Used when a loop finally reaches ``ready``: the failure window ends with
+    the success, so a recurrence is new information again. Failing to take the
+    bounded lock keeps the existing claims (conservative suppression); any
+    other error is swallowed because telemetry must never affect the host.
+    """
+    try:
+        from rapid_mlx.telemetry.server_start import (
+            _atomic_write_marker,
+            _prepare_state_dir,
+        )
+
+        if not path.exists():
+            return
+        if not _prepare_state_dir(path.parent):
+            return
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        flags |= getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        dir_fd = os.open(path.parent, flags)
+    except BaseException:
         return
-
-    props = _serve_props(engine, alias_or_path, auto_selected)
-    nth = store.note_model_served(str(props["model"]))
-    track.track("model_served", props, nth_model_served=nth or None)
+    try:
+        if not _acquire_serve_failed_lock(dir_fd):
+            return
+        _atomic_write_marker(path, value={})
+    except BaseException:
+        return
+    finally:
+        try:
+            os.close(dir_fd)
+        except BaseException:
+            pass
 
 
 @_never_raise
@@ -271,6 +687,7 @@ def emit_model_serve_failed(
     engine: object = None,
     alias_or_path: object = None,
     auto_selected: bool = False,
+    extra_recovery: object = None,
 ) -> None:
     """Claim and emit at most one logical serve failure per process."""
     global _serve_failure_claimed
@@ -278,10 +695,20 @@ def emit_model_serve_failed(
         if _serve_failure_claimed:
             return
 
+    from rapid_mlx.telemetry import track as track_module
     from rapid_mlx.telemetry.model_id import engine_telemetry_id, telemetry_model_id
-    from rapid_mlx.telemetry.track import track
 
-    props: dict[str, object] = {"error_class": serve_error_class(exc)}
+    optional_runtime_missing = find_optional_runtime_missing(exc)
+    error_class = (
+        "missing_extra"
+        if optional_runtime_missing is not None
+        else serve_error_class(exc, model_ref=alias_or_path)
+    )
+    props: dict[str, object] = {"error_class": error_class}
+    if optional_runtime_missing is not None:
+        props["extra"] = optional_runtime_missing.extra
+        if extra_recovery is not None:
+            props["extra_recovery"] = extra_recovery
     if engine is not None:
         props["model"] = engine_telemetry_id(engine)
     elif alias_or_path is not None:
@@ -290,14 +717,31 @@ def emit_model_serve_failed(
         props["model_type"] = model_type(alias_or_path)
         props["auto_selected"] = bool(auto_selected)
         props["quant"] = _quant_for_ref(alias_or_path)
-    # Build every potentially-failing property before claiming the one-shot
-    # latch. A telemetry-only conversion bug must not suppress a later valid
-    # failure event from this process.
+    # Build and validate every potentially-failing property before claiming the
+    # one-shot latch. A rejected event must not suppress a later valid failure
+    # event from this process.
+    accepted = track_module.would_accept("model_serve_failed", props)
+    if accepted is None:
+        return
     with _serve_failure_lock:
         if _serve_failure_claimed:
             return
         _serve_failure_claimed = True
-    track("model_serve_failed", props)
+    model = props.get("model")
+    served_type = props.get("model_type")
+    extra = props.get("extra")
+    key = (
+        model if isinstance(model, str) else "",
+        served_type if isinstance(served_type, str) else "",
+        error_class,
+        extra if isinstance(extra, str) else "",
+    )
+    _claim_serve_failure_key(
+        key,
+        # Consent may change after this decision, just as it may while an
+        # already-queued event waits for the sender thread. Do not re-decide.
+        on_claim=lambda: track_module._enqueue_accepted(accepted),
+    )
 
 
 def _reset_for_tests() -> None:

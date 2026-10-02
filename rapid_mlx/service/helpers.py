@@ -19,9 +19,10 @@ import uuid
 from collections.abc import AsyncIterator
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import replace
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, NoReturn, cast
 
 from fastapi import HTTPException
 from starlette.requests import Request
@@ -2176,6 +2177,47 @@ def served_chat_template(engine):
     return getattr(tokenizer, "chat_template", None)
 
 
+def maybe_apply_default_reasoning_effort(
+    request, *, default_effort: str | None, extra_signals=None
+) -> bool:
+    """Fill ``request.reasoning_effort`` from the server-wide
+    ``serve --default-reasoning-effort`` when the client left every
+    reasoning knob untouched (#3714).
+
+    The default is the operator's answer to a template whose *own* default
+    is the most expensive level (GLM-5.3 renders ``Reasoning Effort: Max``
+    for a request that says nothing, so "say hello" burns ``max_tokens`` in
+    thinking and returns truncated content). It is applied exactly as if
+    the client had sent ``reasoning_effort=<default>`` — the same
+    translation, template mapping and precedence as
+    :func:`maybe_apply_reasoning_effort` — and only when the request
+    carries no reasoning signal of its own:
+
+      * no ``reasoning_effort`` / ``reasoning_max_tokens`` / Responses-native
+        ``reasoning.effort`` (``_client_signalled_reasoning_intent``, on the
+        request and every ``extra_signals`` source);
+      * no explicit thinking preference (``enable_thinking`` top-level or in
+        ``chat_template_kwargs``) — an explicit off/on is a stronger
+        statement about the same dimension than a graded default;
+      * no ``chat_template_kwargs.reasoning_effort`` passthrough (#2474).
+
+    Returns ``True`` iff the default was written onto the request. MUST run
+    immediately before :func:`maybe_apply_reasoning_effort` so the filled
+    value is translated in the same pass.
+    """
+    if not default_effort:
+        return False
+    if _client_signalled_reasoning_intent(request, extra_signals):
+        return False
+    if _extract_thinking_from_request(request) is not None:
+        return False
+    ctk = getattr(request, "chat_template_kwargs", None)
+    if isinstance(ctk, dict) and "reasoning_effort" in ctk:
+        return False
+    request.reasoning_effort = default_effort
+    return True
+
+
 def maybe_apply_reasoning_effort(request, *, chat_template=None) -> bool:
     """Translate the OpenAI ``reasoning_effort`` knob into rapid-mlx's
     native reasoning controls at the route layer (issue #448, #3043).
@@ -2628,6 +2670,71 @@ def build_extended_sampling_kwargs(request) -> dict:
     return kwargs
 
 
+def reasoning_stop_scope_kwargs(engine: Any, request: Any) -> dict:
+    """Scope user ``stop`` strings to the answer of a ``<think>`` model.
+
+    Returns ``{"reasoning_stop_scope": scope}`` for a chat-shaped request
+    that sets ``stop`` while a ``<think>``-tag reasoning parser is
+    configured, and ``{}`` otherwise. The schedulers then match stops only
+    after the reasoning close marker, so a stop string the model writes
+    while reasoning no longer ends the request with empty ``content``
+    (the ``<think>`` counterpart of the harmony final-channel scoping in
+    #1049).
+
+    Whether generation starts inside the reasoning block comes from
+    ``_should_start_in_thinking``, the predicate the routes already use to
+    classify streamed text as reasoning, so stop matching and the
+    reasoning/content split agree on where the answer begins.
+    """
+    if not getattr(request, "stop", None):
+        return {}
+    cfg = get_config()
+    reasoning_parser = getattr(cfg, "reasoning_parser", None)
+    registry = getattr(cfg, "model_registry", None)
+    if registry is not None:
+        try:
+            entry = registry.get_entry(getattr(request, "model", None))
+        except KeyError:
+            # Model validation normally rejects this before generation. If a
+            # registry changes between validation and this lookup, preserve
+            # raw stop semantics instead of borrowing the default parser.
+            return {}
+        if getattr(entry, "engine", None) is not engine:
+            # A replacement can be published after the route captured its
+            # engine. Never apply the replacement model's parser contract to
+            # an in-flight request on the retired engine.
+            return {}
+        parser_name = getattr(entry, "reasoning_parser", None)
+        if not parser_name:
+            return {}
+        from ..reasoning import get_parser
+
+        reasoning_parser = get_parser(parser_name)()
+    if reasoning_parser is None:
+        return {}
+    from ..reasoning.think_stop import build_reasoning_stop_scope
+
+    # Use the same tokenizer/processor template selection as prompt rendering.
+    # MLLM engines can render the processor's template while their tokenizer
+    # advertises a different one; classifying against the latter would make
+    # stop matching disagree with the actual assistant prefix.
+    chat_template = served_chat_template(engine) or ""
+    starts_in_reasoning = _should_start_in_thinking(
+        chat_template,
+        _resolve_enable_thinking(request),
+        unconditional=bool(
+            getattr(reasoning_parser, "implicit_reasoning_until_close", False)
+        ),
+        tools_requested=bool(getattr(request, "tools", None)),
+    )
+    scope = build_reasoning_stop_scope(
+        reasoning_parser, starts_in_reasoning=starts_in_reasoning
+    )
+    if scope is None:
+        return {}
+    return {"reasoning_stop_scope": scope}
+
+
 # ── Usage / logprobs ───────────────────────────────────────────────
 
 
@@ -2668,7 +2775,38 @@ def _merge_response_metrics(outputs: list[Any]) -> PerRequestMetrics | None:
     return None if merged is None else PerRequestMetrics(speculative_decoding=merged)
 
 
-def _build_usage(output: GenerationOutput, reasoning_text: str | None) -> Usage:
+def _aggregate_generation_attempts(
+    initial: GenerationOutput, delivered: GenerationOutput
+) -> GenerationOutput:
+    """Return the delivered output with all billable attempt counters summed.
+
+    Text, reasoning, tool calls, finish state, and other response semantics come
+    exclusively from ``delivered``.  Only counters that describe work performed
+    across both generations are aggregated.
+    """
+    metrics = _merge_response_metrics([initial, delivered])
+    return replace(
+        delivered,
+        prompt_tokens=initial.prompt_tokens + delivered.prompt_tokens,
+        completion_tokens=(initial.completion_tokens + delivered.completion_tokens),
+        cached_tokens=(
+            getattr(initial, "cached_tokens", 0)
+            + getattr(delivered, "cached_tokens", 0)
+        ),
+        spec_decode_metrics=(
+            metrics.speculative_decoding.model_dump()
+            if metrics is not None and metrics.speculative_decoding is not None
+            else None
+        ),
+    )
+
+
+def _build_usage(
+    output: GenerationOutput,
+    reasoning_text: str | None,
+    *,
+    detail_output: GenerationOutput | None = None,
+) -> Usage:
     """Build Usage with reasoning token breakdown when applicable.
 
     Per OpenAI spec, ``completion_tokens_details.reasoning_tokens`` is a
@@ -2685,6 +2823,11 @@ def _build_usage(output: GenerationOutput, reasoning_text: str | None) -> Usage:
     """
     cfg = get_config()
     total_completion = output.completion_tokens
+    detail_completion = (
+        detail_output.completion_tokens
+        if detail_output is not None
+        else total_completion
+    )
     # ``output`` is normally ``GenerationOutput``, but the streaming
     # path builds an ad-hoc ``_UsageOutput`` namespace and the dflash
     # speculative server passes its own result type. ``getattr`` keeps
@@ -2705,7 +2848,7 @@ def _build_usage(output: GenerationOutput, reasoning_text: str | None) -> Usage:
         content_chars = len(getattr(output, "text", "") or "")
         total_chars = reasoning_chars + content_chars
         if total_chars > 0:
-            reasoning_tokens = round(total_completion * reasoning_chars / total_chars)
+            reasoning_tokens = round(detail_completion * reasoning_chars / total_chars)
             # If reasoning is non-empty, attribute at least 1 token to it
             # so the field reflects that reasoning happened.
             if reasoning_chars > 0:
@@ -2716,9 +2859,9 @@ def _build_usage(output: GenerationOutput, reasoning_text: str | None) -> Usage:
             # completion_tokens - reasoning_tokens >= 0) reflects
             # what actually got generated.
             if content_chars > 0:
-                reasoning_tokens = min(reasoning_tokens, max(0, total_completion - 1))
+                reasoning_tokens = min(reasoning_tokens, max(0, detail_completion - 1))
             else:
-                reasoning_tokens = min(reasoning_tokens, total_completion)
+                reasoning_tokens = min(reasoning_tokens, detail_completion)
         else:
             reasoning_tokens = 0
         return Usage(
@@ -2884,7 +3027,8 @@ def get_engine(model_name: str | None = None) -> BaseEngine:
 async def ensure_engine_ready(engine: BaseEngine) -> BaseEngine:
     """Demand-load ``engine`` when it is the configured standby primary."""
 
-    lifecycle = get_config().primary_model_lifecycle
+    cfg = get_config()
+    lifecycle = cfg.primary_model_lifecycle
     if lifecycle is not None and engine is lifecycle.engine:
         lifecycle.acquire_request()
         try:
@@ -2903,7 +3047,9 @@ async def ensure_engine_ready(engine: BaseEngine) -> BaseEngine:
             # returned to the client.
             from ..request import model_load_error_payload
 
-            payload = model_load_error_payload(exc)
+            payload = model_load_error_payload(
+                exc, model_ref=getattr(cfg, "model_path", None)
+            )
             # A 503 means "temporarily unavailable", so keep the pre-existing
             # ``Retry-After`` uniformly: a load failure can be transient (a
             # backend-init race, a passing I/O fault) as readily as permanent,
@@ -4917,38 +5063,58 @@ def enforce_context_length(
     prompt_tokens: int,
     *,
     max_tokens: int | None = None,
-) -> None:
-    """Raise HTTP 400 ``context_length_exceeded`` if ``prompt_tokens`` is
-    over the model's max context window.
+    telemetry_model: str | None = None,
+    caller_agent: str | None = None,
+    caller_client: str | None = None,
+) -> int | None:
+    """Return the context-safe completion budget or reject an oversized prompt.
 
-    The check also includes ``max_tokens`` (the requested completion
-    budget) so a borderline prompt that would force the decoder past
-    the cap is rejected up-front rather than mid-generation. OpenAI's
-    own error is shaped the same way — ``context_length_exceeded``
-    fires when ``prompt + completion > model max``.
+    Local engines conventionally clamp a completion request to the remaining
+    context room.  Reserve at least one token for generation: a prompt that
+    consumes the entire window is therefore rejected, while a prompt that fits
+    gets ``max_tokens`` reduced to ``window - prompt_tokens`` when necessary.
     """
     max_context = get_model_max_context(engine)
     completion = int(max_tokens) if max_tokens else 0
-    requested_total = int(prompt_tokens) + max(0, completion)
-    if requested_total <= max_context:
-        return
+    operational_cap = get_config().max_prompt_tokens
+    prompt_over_operational_cap = (
+        operational_cap is not None and int(prompt_tokens) > operational_cap
+    )
+    prompt_over_window = int(prompt_tokens) >= max_context
+    if not prompt_over_operational_cap and not prompt_over_window:
+        if max_tokens is None:
+            return None
+        return min(max(0, completion), max_context - int(prompt_tokens))
 
     # Format the message in the OpenAI shape so SDKs can branch on the
     # ``code`` field. The exception handler in ``rapid_mlx/server.py``
     # wraps the ``detail`` payload back into the OpenAI envelope.
-    detail = (
-        f"This model's maximum context length is {max_context} tokens. "
-        f"However, you requested {requested_total} tokens "
-        f"({int(prompt_tokens)} prompt + {max(0, completion)} completion). "
-        "Please reduce the length of the messages or completion."
-    )
+    if prompt_over_operational_cap:
+        detail = (
+            f"This server's maximum admitted prompt length is "
+            f"{operational_cap} tokens. However, your prompt contains "
+            f"{int(prompt_tokens)} tokens. Please reduce the length of the prompt."
+        )
+        reject_reason = "operational_cap"
+    else:
+        detail = (
+            f"This model's maximum context length is {max_context} tokens. "
+            f"However, your prompt contains {int(prompt_tokens)} tokens, leaving "
+            "no room for generation. Please reduce the length of the messages."
+        )
+        reject_reason = "prompt_over_window"
     from rapid_mlx.telemetry.inference import (
         emit_capability_rejected,
         model_type_token,
     )
 
     emit_capability_rejected(
-        "context_length_exceeded", model_type=model_type_token(engine)
+        "context_length_exceeded",
+        reject_reason=reject_reason,
+        model_type=model_type_token(engine),
+        model=telemetry_model,
+        caller_agent=caller_agent,
+        caller_client=caller_client,
     )
     raise HTTPException(
         status_code=400,
@@ -4961,6 +5127,51 @@ def enforce_context_length(
             }
         },
     )
+
+
+def _raise_prompt_count_unavailable() -> NoReturn:
+    """Fail closed when an operational prompt ceiling cannot be enforced."""
+    cap = get_config().max_prompt_tokens
+    from rapid_mlx.telemetry.inference import emit_capability_rejected
+
+    emit_capability_rejected(
+        "context_length_exceeded",
+        reject_reason="operational_cap",
+    )
+    raise HTTPException(
+        status_code=400,
+        detail={
+            "error": {
+                "message": (
+                    "This server could not determine the prompt token count "
+                    f"required to enforce its {cap}-token admission limit. "
+                    "The request was rejected before prefill."
+                ),
+                "type": "invalid_request_error",
+                "code": "context_length_exceeded",
+                "param": "messages",
+            }
+        },
+    )
+
+
+def _tokenized_prompt_length(tokenized) -> int:
+    """Return sequence length from tokenizer list, batch, or tensor output."""
+    if isinstance(tokenized, dict):
+        tokenized = tokenized.get("input_ids")
+    if tokenized is None:
+        return 0
+    if isinstance(tokenized, list):
+        if tokenized and isinstance(tokenized[0], list):
+            return max((len(row) for row in tokenized), default=0)
+        return len(tokenized)
+    shape = getattr(tokenized, "shape", None)
+    if shape and len(shape) > 0:
+        return int(shape[-1])
+    try:
+        return len(tokenized)
+    except TypeError:
+        return 0
 
 
 def _build_prompt_with_thinking_compat(
@@ -5043,6 +5254,9 @@ def enforce_context_length_for_messages(
     max_tokens: int | None = None,
     enable_thinking: bool | None = None,
     chat_template_kwargs: dict | None = None,
+    telemetry_model: str | None = None,
+    caller_agent: str | None = None,
+    caller_client: str | None = None,
 ) -> int | None:
     """Run the context-length gate for a chat-style request and return
     the rendered prompt's token count (``None`` on permissive-skip paths).
@@ -5100,9 +5314,50 @@ def enforce_context_length_for_messages(
     applies regardless of which compatibility surface the client uses.
     """
     if getattr(engine, "is_mllm", False):
-        return None
+        if get_config().max_prompt_tokens is None:
+            return None
+        # MLLM engines deliberately reject ``build_prompt`` because media
+        # preparation belongs to their processor. The processor's tokenizer
+        # can still render and count the text/tool prompt without touching
+        # Metal, which is exactly what this admission gate needs.
+        try:
+            tokenizer = getattr(engine, "tokenizer", None) or getattr(
+                engine, "_tokenizer", None
+            )
+            apply_template = getattr(tokenizer, "apply_chat_template", None)
+            if not callable(apply_template):
+                _raise_prompt_count_unavailable()
+            template_kwargs = dict(chat_template_kwargs or {})
+            if enable_thinking is not None:
+                template_kwargs.setdefault("enable_thinking", enable_thinking)
+            prompt_ids = apply_template(
+                messages,
+                tools=tools,
+                tokenize=True,
+                add_generation_prompt=True,
+                **template_kwargs,
+            )
+            prompt_tokens = _tokenized_prompt_length(prompt_ids)
+        except HTTPException:
+            raise
+        except Exception:
+            logger.debug("MLLM prompt admission tokenization failed", exc_info=True)
+            _raise_prompt_count_unavailable()
+        if prompt_tokens <= 0:
+            _raise_prompt_count_unavailable()
+        enforce_context_length(
+            engine,
+            prompt_tokens,
+            max_tokens=max_tokens,
+            telemetry_model=telemetry_model,
+            caller_agent=caller_agent,
+            caller_client=caller_client,
+        )
+        return prompt_tokens
     build_prompt = getattr(engine, "build_prompt", None)
     if build_prompt is None:
+        if get_config().max_prompt_tokens is not None:
+            _raise_prompt_count_unavailable()
         return None
     try:
         prompt = _build_prompt_with_thinking_compat(
@@ -5134,13 +5389,24 @@ def enforce_context_length_for_messages(
                 status_code=400,
                 detail=f"Chat template error: {err_msg}",
             )
+        if get_config().max_prompt_tokens is not None:
+            _raise_prompt_count_unavailable()
         return None
     if not prompt:
         return None
     prompt_tokens = count_prompt_tokens(engine, prompt)
     if prompt_tokens <= 0:
+        if get_config().max_prompt_tokens is not None:
+            _raise_prompt_count_unavailable()
         return None
-    enforce_context_length(engine, prompt_tokens, max_tokens=max_tokens)
+    enforce_context_length(
+        engine,
+        prompt_tokens,
+        max_tokens=max_tokens,
+        telemetry_model=telemetry_model,
+        caller_agent=caller_agent,
+        caller_client=caller_client,
+    )
     return prompt_tokens
 
 
@@ -5175,11 +5441,9 @@ def repair_messages_fit_context(
     empty rendered prompt, tokenizer-returned-zero) this returns
     ``True`` to preserve the existing behavior — the initial-request
     gate also skips those paths so the repair gate should not be
-    stricter than the initial one. The strict-mode + tools combo is
-    already rejected upstream by ``strict_with_tools_unsupported``,
-    so for repair-prompt accounting the ``tools`` argument is
-    effectively always ``None``; we still thread it through for
-    contract symmetry with the initial gate.
+    stricter than the initial one. Strict-mode tool requests disable tools
+    for their constrained repair pass, so repair accounting receives
+    ``tools=None`` even though the initial turn advertised tools.
 
     ``enable_thinking`` mirrors the same parameter on
     :func:`enforce_context_length_for_messages` — forward the
@@ -5193,7 +5457,9 @@ def repair_messages_fit_context(
     legacy behaviour for unaudited call sites.
 
     Used by ``routes/chat.py`` and ``routes/responses.py`` so the
-    same gate logic is applied at both call sites and cannot drift.
+    same gate logic is applied at both call sites and cannot drift. Strict
+    tool requests pass ``tools=None`` here because their repair pass disables
+    tools before applying the schema grammar.
     """
     if getattr(engine, "is_mllm", False):
         return True
@@ -5230,7 +5496,10 @@ def enforce_context_length_for_prompt(
     prompt,
     *,
     max_tokens: int | None = None,
-) -> None:
+    telemetry_model: str | None = None,
+    caller_agent: str | None = None,
+    caller_client: str | None = None,
+) -> int | None:
     """Run the context-length gate for a raw-prompt completion request.
 
     Same shape as :func:`enforce_context_length_for_messages` but for
@@ -5240,11 +5509,20 @@ def enforce_context_length_for_prompt(
     handles both shapes; see its docstring for the codex round-2
     BLOCKING #3 rationale on non-string prompts.
     """
-    if getattr(engine, "is_mllm", False):
-        return
+    if getattr(engine, "is_mllm", False) and get_config().max_prompt_tokens is None:
+        return max_tokens
     if not prompt:
-        return
+        return max_tokens
     prompt_tokens = count_prompt_tokens(engine, prompt)
     if prompt_tokens <= 0:
-        return
-    enforce_context_length(engine, prompt_tokens, max_tokens=max_tokens)
+        if get_config().max_prompt_tokens is not None:
+            _raise_prompt_count_unavailable()
+        return max_tokens
+    return enforce_context_length(
+        engine,
+        prompt_tokens,
+        max_tokens=max_tokens,
+        telemetry_model=telemetry_model,
+        caller_agent=caller_agent,
+        caller_client=caller_client,
+    )

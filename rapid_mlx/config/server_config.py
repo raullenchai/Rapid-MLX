@@ -41,6 +41,10 @@ class ServerConfig:
     model_name: str | None = None
     model_alias: str | None = None
     model_path: str | None = None
+    # Immutable, provenance-carrying values used to construct the active
+    # engine. Exposed read-only by /v1/runtime/config for Desktop and operators.
+    effective_runtime_config: Any = None
+    effective_runtime_model: str | None = None
     # Runtime owner for additional engines loaded into this process. The
     # legacy ``engine`` fields remain the protected startup/default model;
     # request routes consult this manager for residency, eviction, and status.
@@ -66,19 +70,21 @@ class ServerConfig:
     # operator-visible request-loss class the R15 dogfood pass caught.
     draining: bool = False
 
-    # Bind address and port stashed by the CLI before uvicorn.run() so the
-    # lifespan hook can print the "Ready:" banner with the real URL only
-    # AFTER warmup completes (and the port is actually bound). Without this
-    # the banner prints before uvicorn binds the port, and a user who curls
-    # immediately gets a connection-refused.
+    # Bind address and port stashed before Uvicorn starts so the shared
+    # startup seam can print the "Ready:" banner only after warmup completes
+    # and the listener is actually created.
     #
     # In the ``--listen-fd`` socket-activation branch, the supervisor owns
     # the bound address; the CLI populates ``bind_listen_fd`` instead, and
-    # the lifespan banner prints the fd form. Mutually exclusive with the
+    # the post-bind startup seam prints the fd form. Mutually exclusive with the
     # host/port pair — see ``cli._run_uvicorn``.
     bind_host: str | None = None
     bind_port: int | None = None
     bind_listen_fd: int | None = None
+    # Permission prompts are enabled only by the CUA-only startup path when it
+    # owns an explicit loopback listener. Request metadata can be rewritten by
+    # proxy middleware, so routes must not infer this property from client.host.
+    cua_permission_requests_enabled: bool = False
 
     # --- Defaults ---
     default_max_tokens: int = 4096
@@ -102,6 +108,11 @@ class ServerConfig:
     default_presence_penalty: float | None = None
     default_frequency_penalty: float | None = None
 
+    # Optional operational ceiling for prompt admission, independent of the
+    # checkpoint's positional limit. Pool operators use this to bound prefill
+    # memory and first-token latency. ``None`` keeps model-derived behavior.
+    max_prompt_tokens: int | None = None
+
     # --- Sampling overlay (layers 3 & 4 of the resolve chain) ---
     # Resolve order for every sampling param:
     #   1. request body
@@ -123,6 +134,9 @@ class ServerConfig:
     # --- Reasoning ---
     reasoning_parser: Any = None
     reasoning_parser_name: str | None = None
+    # ``serve --default-reasoning-effort``: OpenAI ``reasoning_effort`` value
+    # applied to requests that carry no reasoning knob of their own (#3714).
+    default_reasoning_effort: str | None = None
 
     # --- MCP ---
     mcp_manager: Any = None

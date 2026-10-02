@@ -29,7 +29,7 @@ def test_vlm_extra_install_hint_is_pinned_and_conflict_free():
     # Primary path stays the extra.
     assert "rapid-mlx[vision]" in VLM_EXTRA_INSTALL_HINT
     # Bare fallback is pinned to the transformers-compatible version.
-    assert "mlx-vlm==0.7.1" in VLM_EXTRA_INSTALL_HINT
+    assert "rapid-mlx[vision]==" in VLM_EXTRA_INSTALL_HINT
     # And the unpinned form that produces the transformers conflict is gone.
     assert "mlx-vlm>=0.6.3" not in VLM_EXTRA_INSTALL_HINT
 
@@ -38,29 +38,26 @@ def test_boot_guard_absent_hint_names_pinned_install(monkeypatch, capsys):
     """The ABSENT-path boot guard stderr carries the pinned hint so a user
     copy-pasting from the terminal lands in a conflict-free environment."""
     from rapid_mlx.models.mllm import VisionRuntimeStatus, require_mlx_vlm_or_exit
+    from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
 
     monkeypatch.setattr(
         "rapid_mlx.models.mllm.vision_runtime_status",
         lambda: (VisionRuntimeStatus.ABSENT, "mlx_vlm"),
     )
 
-    try:
+    with pytest.raises(OptionalRuntimeMissing) as caught:
         require_mlx_vlm_or_exit("gemma-4-e4b-it-4bit")
-    except SystemExit as exc:
-        assert exc.code == 2
-    else:  # pragma: no cover - guard must exit
-        raise AssertionError("require_mlx_vlm_or_exit must sys.exit(2)")
 
-    err = capsys.readouterr().err
+    err = caught.value.format_user_message()
     assert "rapid-mlx[vision]" in err
-    assert "mlx-vlm==0.7.1" in err
+    assert "rapid-mlx[vision]==" in err
     assert "mlx-vlm>=0.6.3" not in err
 
 
 def test_gemma4_load_fallback_hint_is_pinned():
     """The Gemma-4-specific ``serve``/``chat`` load-fallback hint (printed
     when mlx-lm can't import the Gemma-4 architecture classes on a base
-    wheel) must pin the bare mlx-vlm text-only install to ``==0.7.1`` too.
+    wheel) must pin the bare mlx-vlm text-only install to ``==0.7.2`` too.
 
     Scan the CLI source so a future edit cannot silently regress this last
     user-facing hint to an unpinned or differently pinned runtime.
@@ -72,8 +69,8 @@ def test_gemma4_load_fallback_hint_is_pinned():
     source = pathlib.Path(cli_mod.__file__).read_text()
 
     # The text-only footprint fallback must be pinned...
-    assert "pip install --no-deps 'mlx-vlm==0.7.1'" in source, (
-        "Gemma-4 load-fallback hint must pin mlx-vlm==0.7.1 to match "
+    assert "pip install --no-deps 'mlx-vlm==0.7.2'" in source, (
+        "Gemma-4 load-fallback hint must pin mlx-vlm==0.7.2 to match "
         "VLM_EXTRA_INSTALL_HINT."
     )
     # ...and no CLI hint may use the conflict-producing unpinned lower bound.
@@ -103,7 +100,7 @@ def test_diffusion_lane_import_error_hint_is_pinned(monkeypatch):
     msg = str(exc_info.value)
     assert eng._load_error is not None
     assert "rapid-mlx[vision]" in msg
-    assert "mlx-vlm==0.7.1" in msg
+    assert "rapid-mlx[vision]==" in msg
     assert "mlx-vlm>=0.6.3" not in msg
     # The conflict-producing forced-upgrade flag is gone.
     assert "-U 'mlx-vlm" not in msg

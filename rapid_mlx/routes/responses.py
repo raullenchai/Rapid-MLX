@@ -23,6 +23,7 @@ import shlex
 import time
 import uuid
 from collections.abc import AsyncIterator, Mapping
+from typing import cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
@@ -81,11 +82,12 @@ from ..api.utils import (
     validate_content_blocks_for_capabilities,
 )
 from ..config import get_config
-from ..engine import BaseEngine
+from ..engine import BaseEngine, GenerationOutput
 from ..middleware.auth import check_rate_limit, verify_api_key
 from ..reasoning import finalize_streaming_compat
 from ..service.helpers import (
     SSE_RESPONSE_HEADERS,
+    _aggregate_generation_attempts,
     _apply_reasoning_cutoff_notice,
     _build_response_metrics,
     _build_usage,
@@ -115,6 +117,7 @@ from ..service.helpers import (
     ensure_engine_ready,
     get_engine,
     get_model_max_context,
+    maybe_apply_default_reasoning_effort,
     maybe_apply_reasoning_effort,
     maybe_auto_disable_thinking_for_casual_chat,
     maybe_auto_disable_thinking_for_tools,
@@ -883,6 +886,9 @@ async def create_response(request: Request):
     conversation history in ``input[]`` each turn, so the streaming
     path is the hot path.
     """
+    from rapid_mlx.telemetry import inference as _telemetry_inference
+
+    _caller_agent, _caller_client = _telemetry_inference.request_caller_headers(request)
     body = await request.json()
     # ``ResponsesRequest`` is constructed manually (not as a FastAPI body
     # parameter). The raw :class:`pydantic.ValidationError` it can raise
@@ -901,7 +907,11 @@ async def create_response(request: Request):
     if responses_request.previous_response_id:
         from rapid_mlx.telemetry.inference import emit_capability_rejected
 
-        emit_capability_rejected("stateless_api_only")
+        emit_capability_rejected(
+            "stateless_api_only",
+            caller_agent=_caller_agent,
+            caller_client=_caller_client,
+        )
         raise HTTPException(
             status_code=400,
             detail=(
@@ -959,7 +969,29 @@ async def create_response(request: Request):
             "DeepSeek Codex first-action priming: pinning exec_command for "
             "the initial repository locating turn"
         )
-    validate_responses_tool_types(responses_request.tools)
+    # Keep this gate ahead of tool-choice and model validation so requests
+    # with multiple invalid fields retain their established error ordering.
+    # Before model validation, only a single configured engine is authoritative.
+    # A registry selection depends on the request's model field, so omit the
+    # identity there until the validated engine has been resolved below.
+    from rapid_mlx.telemetry.model_id import engine_telemetry_id
+
+    _preflight_engine = (
+        getattr(cfg_for_priming, "engine", None)
+        if not getattr(cfg_for_priming, "model_registry", None)
+        else None
+    )
+    _preflight_telemetry_id = (
+        engine_telemetry_id(_preflight_engine)
+        if _preflight_engine is not None
+        else None
+    )
+    validate_responses_tool_types(
+        responses_request.tools,
+        telemetry_model=_preflight_telemetry_id,
+        caller_agent=_caller_agent,
+        caller_client=_caller_client,
+    )
     # Yuki F6 (0.8.5 dogfood): mirror the chat-completions tool_choice
     # gate so ``required`` / named-function tool_choice REJECTS shapes
     # that cannot be honoured (e.g. ``required`` with empty tools, named
@@ -977,8 +1009,6 @@ async def create_response(request: Request):
     if not (responses_request.model or "").startswith(("claude-", "gpt-")):
         _validate_model_name(responses_request.model)
     engine = get_engine(responses_request.model)
-    from rapid_mlx.telemetry.model_id import engine_telemetry_id
-
     _served_telemetry_id = engine_telemetry_id(engine)
     await ensure_engine_ready(engine)
 
@@ -1019,7 +1049,28 @@ async def create_response(request: Request):
                 preserve_developer_role=(
                     cfg_for_adapter.tool_call_parser == "deepseek_v4_0731"
                 ),
+                telemetry_model=_served_telemetry_id,
+                caller_agent=_caller_agent,
+                caller_client=_caller_client,
             )
+            # #3714: ``serve --default-reasoning-effort`` fills the knob
+            # before anything else reads the request, so it behaves exactly
+            # like a client value on this surface too (the strict-schema and
+            # tool gates below see it as reasoning intent, as they would a
+            # client's). The Responses-native ``reasoning.effort`` counts via
+            # ``extra_signals`` — the adapter collapses it onto
+            # ``openai_request`` but the original is the authoritative shape.
+            if maybe_apply_default_reasoning_effort(
+                openai_request,
+                default_effort=cfg_for_adapter.default_reasoning_effort,
+                extra_signals=responses_request,
+            ):
+                logger.info(
+                    "#3714 reasoning_effort defaulted to %s on /v1/responses "
+                    "(serve --default-reasoning-effort; client sent no "
+                    "reasoning knob)",
+                    openai_request.reasoning_effort,
+                )
             # Capture the client's preference before server defaults and the
             # automatic tool/schema heuristics may mutate the adapted request.
             _explicit_thinking = _extract_thinking_from_request(openai_request)
@@ -1098,86 +1149,13 @@ async def create_response(request: Request):
                         }
                     },
                 )
-            if openai_request.tools:
-                # Parity with the chat-route ``strict_with_tools_unsupported``
-                # gate: constrained-decoding grammar and tool-call grammar
-                # are mutually exclusive on this engine.
-                from rapid_mlx.telemetry.inference import (
-                    emit_capability_rejected,
-                    model_type_token,
-                )
-
-                emit_capability_rejected(
-                    "structured_output_unsupported",
-                    model_type=model_type_token(engine),
-                )
-                raise HTTPException(
-                    status_code=400,
-                    detail={
-                        "error": {
-                            "message": (
-                                "text.format strict=true cannot be combined "
-                                "with 'tools' — the constrained-decoding "
-                                "grammar is mutually exclusive with the "
-                                "tool-call grammar. Drop one or the other "
-                                "and retry."
-                            ),
-                            "type": "invalid_request_error",
-                            "code": "strict_with_tools_unsupported",
-                            "param": "text.format.strict",
-                        }
-                    },
-                )
-            # Codex r4 NIT #4: check the strict+stream gate BEFORE
-            # the missing-extra gate. Strict streaming on
-            # /v1/responses is structurally unsupported here
-            # regardless of whether [guided] is installed (the
-            # constrained-decoding path is buffered-only on this
-            # surface), so telling a strict+stream caller to
-            # ``pip install rapid-mlx[guided]`` would be
-            # misleading — installing the extra still wouldn't
-            # let them use strict+stream on /v1/responses. Naming
-            # the actual escape hatches first (drop stream=true,
-            # or switch to /v1/chat/completions) is more
-            # actionable.
-            if responses_request.stream:
-                from rapid_mlx.telemetry.inference import (
-                    emit_capability_rejected,
-                    model_type_token,
-                )
-
-                emit_capability_rejected(
-                    "structured_output_unsupported",
-                    model_type=model_type_token(engine),
-                )
-                raise HTTPException(
-                    status_code=400,
-                    detail={
-                        "error": {
-                            "message": (
-                                "text.format strict=true with stream=true "
-                                "is not supported on /v1/responses — "
-                                "constrained decoding on this surface is "
-                                "buffered-only. Either drop stream=true "
-                                "(non-stream strict response is honored) "
-                                "or use /v1/chat/completions which "
-                                "supports strict+streaming via the "
-                                "buffered-guided SSE helper."
-                            ),
-                            "type": "invalid_request_error",
-                            "code": "strict_stream_unsupported",
-                            "param": "text.format.strict",
-                        }
-                    },
-                )
             if not engine.supports_guided_generation:
                 # R12-4: pre-R12-4 this branch raised 400
                 # ``guided_extra_required``. The new path falls
                 # through to post-generate validation + repair retry
-                # below (mirrored from chat.py). The
-                # ``strict_stream_unsupported`` gate above already
-                # rejects streaming on this surface, so we know we
-                # are about to take the non-stream branch. The
+                # below (mirrored from chat.py). Strict streams also
+                # take this buffered path before their validated result
+                # is replayed through the normal SSE event ladder. The
                 # disable flag ``RAPID_MLX_STRICT_JSON_SCHEMA=off``
                 # restores the legacy silent-pass-through behavior.
                 if not strict_enforcement_enabled():
@@ -1288,10 +1266,9 @@ async def create_response(request: Request):
         # thinking preference. Same shape as R12-M2 above but the
         # trigger is "tools provided" instead of "strict json_schema",
         # so this branch lives OUTSIDE the ``if is_strict_json_schema``
-        # block (strict + tools is mutually exclusive on /v1/responses
-        # and returns 400 above, so the two branches never both fire —
-        # but the shared helper keeps the merge contract identical
-        # across both auto-disable triggers). Default-on thinking
+        # block. On strict + tools requests the two auto-disable triggers
+        # intentionally compose through the same idempotent merge helper.
+        # Default-on thinking
         # routinely exhausts the agent-SDK ``max_output_tokens=50..100``
         # budget inside ``<think>...</think>`` before emitting the
         # ``<tool_call>`` envelope, so the tool never fires
@@ -1348,12 +1325,16 @@ async def create_response(request: Request):
                 allow_image=getattr(engine, "is_mllm", False),
                 allow_video=getattr(engine, "is_mllm", False),
                 allow_audio=False,
+                telemetry_model=_served_telemetry_id,
+                caller_agent=_caller_agent,
+                caller_client=_caller_client,
             )
         except UnsupportedContentBlockError as e:
             raise HTTPException(
                 status_code=400,
                 detail=e.openai_detail(
-                    serving_lane_reason=getattr(engine, "serving_lane_reason", None)
+                    serving_lane_reason=getattr(engine, "serving_lane_reason", None),
+                    engine=engine,
                 ),
             ) from e
         except ValueError as e:
@@ -1397,22 +1378,12 @@ async def create_response(request: Request):
             max_tokens=None if _resp_implicit_max_tokens else _resp_resolved_max_tokens,
             enable_thinking=_resp_resolved_thinking,
             chat_template_kwargs=_resp_ctk,
+            telemetry_model=_served_telemetry_id,
+            caller_agent=_caller_agent,
+            caller_client=_caller_client,
         )
-        if _resp_implicit_max_tokens:
-            if _resp_ctx_prompt_tokens is None:
-                # If prompt accounting is unavailable, do not apply the
-                # context-room clamp: re-run the old strict admission check
-                # with the resolved default completion budget so this path
-                # cannot silently weaken the pre-existing DoS gate.
-                enforce_context_length_for_messages(
-                    engine,
-                    _ctx_messages,
-                    tools=openai_request.tools,
-                    max_tokens=_resp_resolved_max_tokens,
-                    enable_thinking=_resp_resolved_thinking,
-                    chat_template_kwargs=_resp_ctk,
-                )
-            else:
+        if _resp_ctx_prompt_tokens is not None:
+            if _resp_implicit_max_tokens:
                 _resp_resolved_max_tokens = (
                     _resolve_context_safe_implicit_responses_max_tokens(
                         engine,
@@ -1420,18 +1391,39 @@ async def create_response(request: Request):
                         _resp_resolved_max_tokens,
                     )
                 )
-                enforce_context_length(
-                    engine,
-                    _resp_ctx_prompt_tokens,
-                    max_tokens=_resp_resolved_max_tokens,
-                )
-                # Thread the clamped default through the downstream
-                # ``_resolve_max_tokens`` calls in ``_non_stream`` /
-                # ``_stream_responses`` so the scheduler sees the same
-                # context-safe budget the admission gate accepted.
-                openai_request.max_tokens = _resp_resolved_max_tokens
+            _resp_clamped_max_tokens = enforce_context_length(
+                engine,
+                _resp_ctx_prompt_tokens,
+                max_tokens=_resp_resolved_max_tokens,
+                telemetry_model=_served_telemetry_id,
+                caller_agent=_caller_agent,
+                caller_client=_caller_client,
+            )
+            if _resp_clamped_max_tokens is not None:
+                _resp_resolved_max_tokens = _resp_clamped_max_tokens
+            openai_request.max_tokens = _resp_resolved_max_tokens
+        if _resp_implicit_max_tokens and _resp_ctx_prompt_tokens is None:
+            # If prompt accounting is unavailable, do not apply the
+            # context-room clamp: re-run the old strict admission check
+            # with the resolved default completion budget so this path
+            # cannot silently weaken the pre-existing DoS gate.
+            enforce_context_length_for_messages(
+                engine,
+                _ctx_messages,
+                tools=openai_request.tools,
+                max_tokens=_resp_resolved_max_tokens,
+                enable_thinking=_resp_resolved_thinking,
+                chat_template_kwargs=_resp_ctk,
+                telemetry_model=_served_telemetry_id,
+                caller_agent=_caller_agent,
+                caller_client=_caller_client,
+            )
 
-        if responses_request.stream:
+        _buffer_strict_stream = bool(
+            responses_request.stream
+            and is_strict_json_schema(getattr(openai_request, "response_format", None))
+        )
+        if responses_request.stream and not _buffer_strict_stream:
             _admission_committed = True
             # C-01 force-abort: holder list the engine populates with
             # the admitted scheduler request id; the disconnect_guard
@@ -1468,7 +1460,7 @@ async def create_response(request: Request):
                 headers={**SSE_RESPONSE_HEADERS, "Connection": "keep-alive"},
             )
 
-        return await _non_stream(
+        _buffered_response = await _non_stream(
             engine,
             openai_request,
             responses_request,
@@ -1476,6 +1468,13 @@ async def create_response(request: Request):
             explicit_no_thinking=explicit_no_thinking,
             namespace_by_tool=namespace_by_tool,
         )
+        if _buffer_strict_stream and _buffered_response.status_code == 200:
+            return StreamingResponse(
+                _stream_buffered_responses_response(_buffered_response.body),
+                media_type="text/event-stream",
+                headers={**SSE_RESPONSE_HEADERS, "Connection": "keep-alive"},
+            )
+        return _buffered_response
     except asyncio.CancelledError as exc:
         _raise_lifecycle_cancel_or_reraise(engine, exc)
     finally:
@@ -1556,6 +1555,31 @@ def _message_to_engine_dict(msg) -> dict:
             if hasattr(msg, key)
         }
     return {k: v for k, v in raw.items() if v is not None}
+
+
+#: Responses-input conversion failures the non-stream handler answers as 400.
+_RESPONSES_INPUT_400_MARKERS = (
+    "content block",
+    "input_text.",
+    "output_text.",
+    "input_image.",
+)
+
+
+def _record_nonstream_failure(engine, request: Request, error_class: str) -> None:
+    """Count one failed non-streaming /v1/responses request under a class."""
+    from rapid_mlx.telemetry import inference as _telemetry_inference
+    from rapid_mlx.telemetry.model_id import engine_telemetry_id
+
+    caller_agent, caller_client = _telemetry_inference.request_caller_headers(request)
+    _telemetry_inference.emit_completed_request(
+        model=engine_telemetry_id(engine),
+        endpoint="/v1/responses",
+        caller_agent=caller_agent,
+        caller_client=caller_client,
+        result="failed",
+        error_class=error_class,
+    )
 
 
 async def _non_stream(
@@ -1695,7 +1719,11 @@ async def _non_stream(
     # test in test_response_format_json_schema_strict.py pins
     # this behavior so any future refactor that moves the call
     # outside the try is caught.
-    if _strict_schema and engine.supports_guided_generation:
+    if (
+        _strict_schema
+        and engine.supports_guided_generation
+        and not openai_request.tools
+    ):
         # Codex r5 BLOCKING: ``chat_kwargs`` is the merged
         # ``_resolved_sampling_kwargs`` + tools/thinking flags blob.
         # If any upstream resolver ever surfaces a ``raise_on_failure``
@@ -1732,6 +1760,7 @@ async def _non_stream(
                 guided_err,
             )
             incr_strict_violation()
+            _record_nonstream_failure(engine, request, "strict_schema_violation")
             raise HTTPException(
                 status_code=502,
                 detail={
@@ -1787,6 +1816,7 @@ async def _non_stream(
                 # Engine-owned cancellation is lifecycle control, never a
                 # strict-schema failure and never eligible for fallback.
                 if _consume_guided_lifecycle_cancel(engine, exc):
+                    _record_nonstream_failure(engine, request, "model_replaced")
                     raise HTTPException(
                         status_code=503,
                         detail="Request cancelled by model replacement",
@@ -1799,6 +1829,7 @@ async def _non_stream(
                     guided_err,
                 )
                 incr_strict_violation()
+                _record_nonstream_failure(engine, request, "strict_schema_violation")
                 raise HTTPException(
                     status_code=502,
                     detail={
@@ -1826,13 +1857,38 @@ async def _non_stream(
     except HTTPException:
         raise
     except Exception as e:  # noqa: BLE001 — match other routes' error shape
-        err_msg = str(e)
-        err_type = type(e).__name__
-        if (
-            "TemplateError" in err_type
-            or "template" in err_msg.lower()
-            or ("user" in err_msg.lower() and "found" in err_msg.lower())
+        from rapid_mlx.telemetry import inference as _telemetry_inference
+
+        from ..request import (
+            is_batch_cap_error,
+            is_chat_template_error,
+            is_media_input_error,
+        )
+
+        # Responses-input conversion failures this route answers as 400. The
+        # text is read defensively so an exception whose ``__str__`` raises is
+        # still counted before the (unchanged) ``str(e)`` below re-raises.
+        try:
+            responses_input_400 = any(
+                marker in str(e) for marker in _RESPONSES_INPUT_400_MARKERS
+            )
+        except Exception:
+            responses_input_400 = False
+        # Classify in THIS handler's order: the shared 400 predicates, then
+        # the responses-only input markers (a request-shape 400 is "other",
+        # never an engine abort), then the abort category.
+        error_class = _telemetry_inference.classify_inference_failure(
+            e, abort_first=False
+        )
+        if responses_input_400 and error_class not in (
+            "template_error",
+            "media_input_invalid",
+            "prompt_too_large",
         ):
+            error_class = "other"
+        _record_nonstream_failure(engine, request, error_class)
+        err_msg = str(e)
+        if is_chat_template_error(e):
             raise HTTPException(
                 status_code=400, detail=f"Chat template error: {err_msg}"
             )
@@ -1842,37 +1898,49 @@ async def _non_stream(
         # must map both to 400 or the /v1/responses surface returns a 500
         # for what is really an oversized-image / oversized-prompt user
         # error.
-        if (
-            "Failed to process image" in err_msg
-            or "Failed to process video" in err_msg
-            or "exceeds the per-batch cap" in err_msg
-            or "content block" in err_msg
-            or "input_text." in err_msg
-            or "output_text." in err_msg
-            or "input_image." in err_msg
-        ):
+        if is_media_input_error(e) or is_batch_cap_error(e) or responses_input_400:
             raise HTTPException(status_code=400, detail=err_msg)
         raise
 
     if output is None:
         return Response(status_code=499)
 
+    usage_detail_output = None
+
+    # A strict schema applies only to the assistant's final text. Tool-call
+    # turns retain the ordinary parser and wire representation unchanged.
+    _strict_tool_turn = False
+    if _strict_schema and openai_request.tools:
+        _engine_calls = getattr(output, "tool_calls", None)
+        _unused_text, _detected_calls = _parse_tool_calls_with_parser(
+            output.text,
+            openai_request,
+            structured_tool_calls=_engine_calls,
+        )
+        _strict_tool_turn = bool(_detected_calls)
+
     # R12-4: when the strict path took the unconstrained branch
     # (i.e. ``_strict_schema`` was set but ``supports_guided_generation``
     # was False — the route gate now lets us through instead of
     # raising ``guided_extra_required``), run the same post-generate
     # validation + single repair retry the chat route runs. On
-    # validation failure we surface 422 with the structured
+    # validation failure we surface the structured
     # ``json_schema_violation`` envelope so SDK consumers can read
     # ``error.details.failing_path`` programmatically.
     if (
         _strict_schema
-        and not engine.supports_guided_generation
+        and (not engine.supports_guided_generation or bool(openai_request.tools))
         and strict_enforcement_enabled()
+        and not _strict_tool_turn
     ):
         ok, failure_details = validate_and_envelope(output.text or "", _strict_schema)
         attempts = 1
-        if not ok and repair_retry_enabled():
+        repair_attempted = False
+        if (
+            not ok
+            and repair_retry_enabled()
+            and (not openai_request.tools or engine.supports_guided_generation)
+        ):
             repair_messages = build_repair_messages(
                 messages,
                 output.text or "",
@@ -1923,14 +1991,26 @@ async def _non_stream(
             else:
                 incr_strict_repair_attempt()
                 attempts = 2
+                repair_attempted = True
                 logger.info(
                     "R12-4 strict json_schema first attempt failed on "
                     "/v1/responses (%s); attempting repair retry.",
                     (failure_details or {}).get("reason", "?"),
                 )
                 try:
+                    if openai_request.tools:
+                        repair_coro = engine.generate_with_schema(
+                            messages=repair_messages,
+                            json_schema=_strict_schema,
+                            raise_on_failure=True,
+                            **repair_kwargs,
+                        )
+                    else:
+                        repair_coro = engine.chat(
+                            messages=repair_messages, **repair_kwargs
+                        )
                     repair_output = await _wait_with_disconnect(
-                        engine.chat(messages=repair_messages, **repair_kwargs),
+                        repair_coro,
                         request,
                         timeout=timeout,
                     )
@@ -1952,6 +2032,13 @@ async def _non_stream(
                         "NOT a schema-validation contract breach).",
                         type(repair_err).__name__,
                         repair_err,
+                    )
+                    from rapid_mlx.telemetry import inference as _telemetry_inference
+
+                    _record_nonstream_failure(
+                        engine,
+                        request,
+                        _telemetry_inference.classify_inference_failure(repair_err),
                     )
                     raise HTTPException(
                         status_code=502,
@@ -1987,19 +2074,8 @@ async def _non_stream(
                     # swapping ``output`` so the client-facing
                     # response reports the full prompt + completion
                     # cost the server billed.
-                    from dataclasses import replace as _dc_replace
-
-                    initial_prompt_tokens = output.prompt_tokens
-                    initial_completion_tokens = output.completion_tokens
-                    output = _dc_replace(
-                        repair_output,
-                        prompt_tokens=(
-                            initial_prompt_tokens + repair_output.prompt_tokens
-                        ),
-                        completion_tokens=(
-                            initial_completion_tokens + repair_output.completion_tokens
-                        ),
-                    )
+                    usage_detail_output = repair_output
+                    output = _aggregate_generation_attempts(output, repair_output)
                     ok = True
                     failure_details = None
                 else:
@@ -2011,13 +2087,19 @@ async def _non_stream(
                 param="text.format",
                 attempts=attempts,
             )
+            if openai_request.tools and repair_attempted:
+                envelope["error"]["code"] = "strict_schema_violation"
             logger.warning(
                 "R12-4 /v1/responses strict json_schema validation "
                 "failed after %d attempt(s): %s",
                 attempts,
                 (failure_details or {}).get("message"),
             )
-            raise HTTPException(status_code=422, detail=envelope)
+            _record_nonstream_failure(engine, request, "strict_schema_violation")
+            raise HTTPException(
+                status_code=(502 if openai_request.tools and repair_attempted else 422),
+                detail=envelope,
+            )
 
     # r6-A R6-C2: detect a degenerate engine output — no text, no
     # reasoning, no tool_calls, zero output_tokens, AND
@@ -2102,6 +2184,7 @@ async def _non_stream(
                 "the server logs for the underlying engine error."
             ),
         }
+        _record_nonstream_failure(engine, request, "output_contract_unmet")
         return Response(
             content=json.dumps(payload),
             media_type="application/json",
@@ -2134,7 +2217,12 @@ async def _non_stream(
     # only" and then the unconditional 502 at this site fired
     # regardless, breaking parity with /v1/chat/completions. Match
     # chat's gate exactly: only the guided path runs this validator.
-    if _strict_schema and engine.supports_guided_generation and output is not None:
+    if (
+        _strict_schema
+        and engine.supports_guided_generation
+        and not openai_request.tools
+        and output is not None
+    ):
         ok, err = validate_output_against_schema(output.text or "", _strict_schema)
         if not ok:
             incr_strict_violation()
@@ -2143,6 +2231,7 @@ async def _non_stream(
                 "on /v1/responses: %s",
                 err,
             )
+            _record_nonstream_failure(engine, request, "strict_schema_violation")
             raise HTTPException(
                 status_code=502,
                 detail={
@@ -2181,6 +2270,10 @@ async def _non_stream(
                 tool_calls, openai_request.tools, enforce_required=True
             )
     except HTTPException as tool_error:
+        # Every rejection out of the tool_choice / tool-argument contract
+        # check is an unmet output contract, whether it is answered as the
+        # failed envelope below or re-raised as the route's 4xx.
+        _record_nonstream_failure(engine, request, "output_contract_unmet")
         detail = tool_error.detail
         classified_code = getattr(tool_error, "rapid_mlx_error_code", None)
         if classified_code is None:
@@ -2311,6 +2404,7 @@ async def _non_stream(
                 "call. Retry the request."
             ),
         }
+        _record_nonstream_failure(engine, request, "output_contract_unmet")
         return Response(content=json.dumps(payload), media_type="application/json")
 
     openai_response = ChatCompletionResponse(
@@ -2325,7 +2419,11 @@ async def _non_stream(
                 finish_reason=finish_reason,
             )
         ],
-        usage=_build_usage(output, reasoning_text),
+        usage=_build_usage(
+            output,
+            reasoning_text,
+            detail_output=usage_detail_output,
+        ),
         metrics=_build_response_metrics(output),
     )
 
@@ -2366,6 +2464,135 @@ def _sse(event: str, data: dict) -> str:
     that sentinel is chat-completions-only.
     """
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+async def _stream_buffered_responses_response(
+    body: bytes | memoryview,
+) -> AsyncIterator[str]:
+    """Replay a validated result through the ordinary Responses state machine."""
+    response = json.loads(bytes(body))
+    response_output = response.get("output", [])
+    item_ids: dict[str, list[str]] = {}
+    outputs: list[GenerationOutput] = []
+
+    for item in response_output:
+        item_type = item.get("type")
+        item_id = item.get("id")
+        if isinstance(item_id, str):
+            item_ids.setdefault(item_type, []).append(item_id)
+        if item_type == "reasoning":
+            reasoning = "".join(
+                str(part.get("text") or "")
+                for part in item.get("summary", [])
+                if isinstance(part, dict) and part.get("type") == "summary_text"
+            )
+            if reasoning:
+                outputs.append(
+                    GenerationOutput(
+                        text=reasoning,
+                        new_text=reasoning,
+                        channel="reasoning",
+                        finished=False,
+                        finish_reason=None,
+                    )
+                )
+        elif item_type == "message":
+            text = "".join(
+                str(part.get("text") or "")
+                for part in item.get("content", [])
+                if isinstance(part, dict) and part.get("type") == "output_text"
+            )
+            if text:
+                outputs.append(
+                    GenerationOutput(
+                        text=text,
+                        new_text=text,
+                        channel="content",
+                        finished=False,
+                        finish_reason=None,
+                    )
+                )
+        elif item_type == "function_call":
+            outputs.append(
+                GenerationOutput(
+                    text=" ",
+                    new_text=" ",
+                    channel="tool_call",
+                    tool_calls=[
+                        {
+                            "id": item.get("call_id"),
+                            "name": item.get("name"),
+                            "arguments": item.get("arguments", ""),
+                        }
+                    ],
+                    finished=False,
+                    finish_reason=None,
+                )
+            )
+        elif item_type == "computer_call":
+            outputs.append(
+                GenerationOutput(
+                    text=" ",
+                    new_text=" ",
+                    channel="tool_call",
+                    tool_calls=[
+                        {
+                            "id": item.get("call_id"),
+                            "name": "computer",
+                            "arguments": json.dumps(
+                                item.get("action") or {}, separators=(",", ":")
+                            ),
+                        }
+                    ],
+                    finished=False,
+                    finish_reason=None,
+                )
+            )
+
+    if not outputs:
+        outputs.append(GenerationOutput(text="", new_text="", finished=False))
+    terminal = outputs[-1]
+    terminal.finished = True
+    terminal.finish_reason = (
+        "length" if response.get("status") == "incomplete" else "stop"
+    )
+    usage = response.get("usage") or {}
+    terminal.prompt_tokens = int(usage.get("input_tokens") or 0)
+    terminal.completion_tokens = int(usage.get("output_tokens") or 0)
+    input_details = usage.get("input_tokens_details") or {}
+    terminal.cached_tokens = int(input_details.get("cached_tokens") or 0)
+    metrics = (response.get("metrics") or {}).get("speculative_decoding")
+    if isinstance(metrics, dict):
+        terminal.spec_decode_metrics = metrics
+
+    class _ReplayEngine:
+        tokenizer = None
+
+        async def stream_chat(self, **_kwargs):
+            for replay_output in outputs:
+                yield replay_output
+
+    responses_request = ResponsesRequest.model_validate(
+        {
+            "model": response.get("model") or "model",
+            "input": "buffered replay",
+            "stream": True,
+            "parallel_tool_calls": response.get("parallel_tool_calls", True),
+            "tool_choice": response.get("tool_choice", "auto"),
+            "tools": response.get("tools", []),
+        }
+    )
+    openai_request = responses_to_openai(responses_request)
+    async for event in _stream_responses(
+        cast(BaseEngine, _ReplayEngine()),
+        openai_request,
+        responses_request,
+        response_id_override=response.get("id"),
+        created_at_override=response.get("created_at"),
+        replay_item_ids=item_ids,
+        emit_telemetry=False,
+    ):
+        yield event
 
 
 def _responses_keepalive_sse(state: dict[str, object]) -> str:
@@ -2565,6 +2792,9 @@ async def _stream_responses_with_nonprogress_retry(
         public_sequence,
     )
     attempt_heartbeat_state: dict[str, object] = {}
+    # The first attempt's route-level failure is only counted if we do NOT
+    # retry it (see _stream_responses ``deferred_failure``).
+    first_attempt_failure: list[str | None] = [None]
     buffered: list[str] = []
     buffered_bytes = 0
     committed = False
@@ -2584,6 +2814,7 @@ async def _stream_responses_with_nonprogress_retry(
         caller_agent=caller_agent,
         caller_client=caller_client,
         served_telemetry_id=served_telemetry_id,
+        deferred_failure=first_attempt_failure,
     ):
         if committed:
             if heartbeat_state is not None:
@@ -2621,6 +2852,17 @@ async def _stream_responses_with_nonprogress_retry(
         elif _responses_event_is_nonprogress_failure(event):
             retry_nonprogress = True
 
+    if (committed or not retry_nonprogress) and first_attempt_failure[0] is not None:
+        from rapid_mlx.telemetry import inference as _telemetry_inference
+
+        _telemetry_inference.emit_completed_request(
+            model=served_telemetry_id or "<custom>",
+            endpoint="/v1/responses",
+            caller_agent=caller_agent,
+            caller_client=caller_client,
+            result="failed",
+            error_class=first_attempt_failure[0],
+        )
     if committed:
         return
     if not retry_nonprogress:
@@ -2745,6 +2987,9 @@ async def _stream_responses(
     caller_agent: str | None = None,
     caller_client: str | None = None,
     served_telemetry_id: str | None = None,
+    deferred_failure: list[str | None] | None = None,
+    replay_item_ids: dict[str, list[str]] | None = None,
+    emit_telemetry: bool = True,
 ) -> AsyncIterator[str]:
     """Stream a Responses-API SSE event sequence Codex CLI can parse.
 
@@ -2795,10 +3040,18 @@ async def _stream_responses(
         _seq[0] += 1
         return _sse(event, data)
 
-    def _record_failed() -> None:
+    def _record_failed(error_class: str) -> None:
         if telemetry_failure_emitted[0]:
             return
         telemetry_failure_emitted[0] = True
+        if deferred_failure is not None:
+            # A buffered attempt the caller may still retry transparently:
+            # hand the class back instead of counting a failure the client
+            # may never see.
+            deferred_failure[:] = [error_class]
+            return
+        if not emit_telemetry:
+            return
         from rapid_mlx.telemetry import inference as _telemetry_inference
 
         _telemetry_inference.emit_completed_request(
@@ -2807,7 +3060,14 @@ async def _stream_responses(
             caller_agent=caller_agent,
             caller_client=caller_client,
             result="failed",
+            error_class=error_class,
         )
+
+    def _item_id(item_type: str, prefix: str) -> str:
+        ids = (replay_item_ids or {}).get(item_type)
+        if ids:
+            return ids.pop(0)
+        return f"{prefix}_{uuid.uuid4().hex[:24]}"
 
     # response.created — Codex needs this before any deltas.
     # R10-C3: include the same top-level fields the non-streaming response
@@ -3273,7 +3533,7 @@ async def _stream_responses(
             nonlocal reasoning_item_id, reasoning_output_index, reasoning_item_added
             events: list[str] = []
             if not reasoning_item_added:
-                reasoning_item_id = f"rs_{uuid.uuid4().hex[:24]}"
+                reasoning_item_id = _item_id("reasoning", "rs")
                 # Leading items occupy the lowest output indices. The
                 # message item (and any post-message tool_call items)
                 # take strictly later indices, computed in
@@ -3415,7 +3675,7 @@ async def _stream_responses(
             # Flush any leading items first — the ordering invariant.
             leading_events = _emit_pending_leading_items()
             leading_events.extend(_close_reasoning_before_message())
-            message_item_id = f"msg_{uuid.uuid4().hex[:24]}"
+            message_item_id = _item_id("message", "msg")
             # Leading-item count drives the message's output_index. Today
             # the only leading item is reasoning (index 0 when emitted), so
             # the message lands at index 1; pre-fix (and when no leading
@@ -4149,7 +4409,7 @@ async def _stream_responses(
                     "tool_choice_unfulfilled",
                 )
                 err_msg = str(err_detail)
-            _record_failed()
+            _record_failed("output_contract_unmet")
             yield _emit(
                 "response.failed",
                 {
@@ -4346,14 +4606,9 @@ async def _stream_responses(
             uses_reserved_slot = bool(reasoning_item_added)
             if reasoning_item_finalized:
                 return events, reasoning_item_payload_done, uses_reserved_slot
-            if reasoning_item_added:
-                if reasoning_output_index is None:
-                    reasoning_output_index = 0
-                if reasoning_item_id is None:
-                    reasoning_item_id = f"rs_{uuid.uuid4().hex[:24]}"
-            elif accumulated_reasoning_text:
+            if accumulated_reasoning_text:
                 reasoning_output_index = len(completed_output)
-                reasoning_item_id = f"rs_{uuid.uuid4().hex[:24]}"
+                reasoning_item_id = _item_id("reasoning", "rs")
                 reasoning_item_added = True
                 events.append(
                     _emit(
@@ -4568,7 +4823,7 @@ async def _stream_responses(
                 if isinstance(part, dict)
             )
         if reasoning_item_finalized and emitted_reasoning != accumulated_reasoning_text:
-            _record_failed()
+            _record_failed("output_contract_unmet")
             yield _emit(
                 "response.failed",
                 {
@@ -4613,7 +4868,7 @@ async def _stream_responses(
                 error_code,
                 completion_tokens,
             )
-            _record_failed()
+            _record_failed("output_contract_unmet")
             yield _emit(
                 "response.failed",
                 {
@@ -4679,7 +4934,7 @@ async def _stream_responses(
             )
             if rescue_text:
                 rescue_output_index = len(completed_output)
-                rescue_item_id = f"msg_{uuid.uuid4().hex[:24]}"
+                rescue_item_id = _item_id("message", "msg")
                 rescue_part = {
                     "type": "output_text",
                     "text": rescue_text,
@@ -4790,7 +5045,7 @@ async def _stream_responses(
                 # a circular import at module load time.
                 from ..api.responses_adapter import _parse_computer_action
 
-                cu_id = f"cu_{uuid.uuid4().hex[:24]}"
+                cu_id = _item_id("computer_call", "cu")
                 action = _parse_computer_action(tc.function.arguments or "")
                 yield _emit(
                     "response.output_item.added",
@@ -4825,7 +5080,7 @@ async def _stream_responses(
                 )
                 completed_output.append(cu_done_item)
             else:
-                fc_id = f"fc_{uuid.uuid4().hex[:24]}"
+                fc_id = _item_id("function_call", "fc")
                 # issue #2114: re-attach the originating MCP namespace so
                 # Codex routes the call to the right server. Absent for
                 # direct tools and ambiguous name collisions (the mapping
@@ -4884,13 +5139,9 @@ async def _stream_responses(
                 completed_output.append(fc_done_item)
             tool_output_index += 1
 
-        # H-06 (codex r2): the streaming /v1/responses path is
-        # unreachable for strict=true requests — the entry-point
-        # gate above 400s them as ``strict_stream_unsupported``
-        # because constrained decoding here is buffered-only. So no
-        # post-decode validation is needed in the stream loop;
-        # belt-and-braces validation runs in the non-stream path
-        # where the buffered output is available.
+        # Strict requests do not reach this live engine stream loop: they
+        # use the buffered validation/repair path, then replay its result
+        # through the normal Responses SSE event ladder.
 
         # r6-A R6-C2: streaming-path mirror of the non-stream
         # degenerate-output guard. When the stream emits no user-visible
@@ -4925,7 +5176,7 @@ async def _stream_responses(
                 "(accumulated_text empty, no tool_calls, completion_tokens=0); "
                 "surfacing as response.failed"
             )
-            _record_failed()
+            _record_failed("output_contract_unmet")
             yield _emit(
                 "response.failed",
                 {
@@ -4998,15 +5249,16 @@ async def _stream_responses(
                 "response": completed_response_payload,
             },
         )
-        from rapid_mlx.telemetry import inference as _telemetry_inference
+        if emit_telemetry:
+            from rapid_mlx.telemetry import inference as _telemetry_inference
 
-        _telemetry_inference.emit_completed_request(
-            model=served_telemetry_id or "<custom>",
-            endpoint="/v1/responses",
-            caller_agent=caller_agent,
-            caller_client=caller_client,
-            result="ok",
-        )
+            _telemetry_inference.emit_completed_request(
+                model=served_telemetry_id or "<custom>",
+                endpoint="/v1/responses",
+                caller_agent=caller_agent,
+                caller_client=caller_client,
+                result="ok",
+            )
 
         elapsed = time.perf_counter() - start_time
         tokens_per_sec = completion_tokens / elapsed if elapsed > 0 else 0
@@ -5021,7 +5273,9 @@ async def _stream_responses(
         # a half-stream-then-EOF; matches how the OpenAI cloud
         # Responses API closes errored streams.
         logger.exception("Responses stream failed: %s", e)
-        _record_failed()
+        from rapid_mlx.telemetry import inference as _telemetry_inference
+
+        _record_failed(_telemetry_inference.classify_inference_failure(e))
         yield _emit(
             "response.failed",
             {

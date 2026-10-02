@@ -1,5 +1,5 @@
 #!/bin/bash
-# Rapid-MLX installer — AI inference for Apple Silicon
+# Rapid-MLX — OpenAI- and Anthropic-compatible LLM server and Mac app for Apple Silicon, built on MLX, focused on reliable tool calling for coding agents.
 # Usage: curl -fsSL https://rapidmlx.com/install.sh | bash
 #        curl ... | bash -s -- 0.12.15     # specific version
 #        curl ... | bash -s latest         # latest from GitHub (pre-release)
@@ -154,9 +154,9 @@ dispatch_venv() {
 # reliable baseline, but reuse a known RAM-safe cached model when one is already
 # runnable. The baseline mirrors ``QuickstartCoordinator.baselineChoice``:
 # <16 GB uses the safe 1.2B starter (Desktop's ``lowMemoryChoice``), >=16 GB the
-# 4B starter. The candidate order is the curated RAM-tier order walked downward,
-# aliases above the current tier never enter the list; the sub-16 GB order is
-# just the 1.2B baseline, because Desktop auto-selects nothing else there.
+# 4B starter. Cached candidates include both curated picks from the current
+# RAM tier and every lower tier, walked downward; aliases above the current
+# tier never enter the list. The baseline is used only when none are cached.
 starter_baseline_for_ram() {
     if [ "$1" -ge 16 ]; then
         printf '%s\n' "qwen3.5-4b-4bit"
@@ -167,12 +167,13 @@ starter_baseline_for_ram() {
 
 starter_cached_order_for_ram() {
     local ram="$1"
-    if [ "$ram" -ge 48 ]; then printf '%s\n' qwen3.8-27b-4bit qwen3.6-35b-4bit qwen3.5-4b-4bit bonsai-27b-2bit qwen3.5-9b-4bit lfm2.5-2.6b-4bit
-    elif [ "$ram" -ge 32 ]; then printf '%s\n' qwen3.8-27b-4bit qwen3.5-4b-4bit bonsai-27b-2bit qwen3.5-9b-4bit lfm2.5-2.6b-4bit
-    elif [ "$ram" -ge 24 ]; then printf '%s\n' bonsai-27b-2bit qwen3.5-4b-4bit qwen3.5-9b-4bit lfm2.5-2.6b-4bit
-    elif [ "$ram" -ge 18 ]; then printf '%s\n' qwen3.5-9b-4bit qwen3.5-4b-4bit lfm2.5-2.6b-4bit
-    elif [ "$ram" -ge 16 ]; then printf '%s\n' qwen3.5-4b-4bit lfm2.5-2.6b-4bit
-    else printf '%s\n' lfm2.5-1b-4bit
+    if [ "$ram" -le 0 ]; then printf '%s\n' lfm2.5-1b-4bit
+    elif [ "$ram" -ge 48 ]; then printf '%s\n' qwen3.8-27b-4bit qwen3.6-35b-4bit qwen3.5-4b-4bit bonsai-27b-2bit qwen3.5-9b-4bit lfm2.5-1b-4bit lfm2.5-2.6b-4bit
+    elif [ "$ram" -ge 32 ]; then printf '%s\n' qwen3.8-27b-4bit qwen3.5-4b-4bit bonsai-27b-2bit qwen3.5-9b-4bit lfm2.5-1b-4bit lfm2.5-2.6b-4bit
+    elif [ "$ram" -ge 24 ]; then printf '%s\n' bonsai-27b-2bit qwen3.5-4b-4bit qwen3.5-9b-4bit lfm2.5-1b-4bit lfm2.5-2.6b-4bit
+    elif [ "$ram" -ge 18 ]; then printf '%s\n' qwen3.5-9b-4bit qwen3.5-4b-4bit lfm2.5-1b-4bit lfm2.5-2.6b-4bit
+    elif [ "$ram" -ge 16 ]; then printf '%s\n' qwen3.5-4b-4bit lfm2.5-1b-4bit lfm2.5-2.6b-4bit
+    else printf '%s\n' lfm2.5-2.6b-4bit lfm2.5-1b-4bit
     fi
 }
 
@@ -216,14 +217,25 @@ refresh_starter_from_installed_cache() {
 print_quick_start_commands() {
     info "Quick start:"
     echo ""
-    echo "    rapid-mlx serve ${RECOMMENDED_MODEL}${RECOMMENDED_FLAGS}"
+    echo "    rapid-mlx chat ${RECOMMENDED_MODEL}${RECOMMENDED_FLAGS}    # starts its own server"
     echo ""
-    dim "Then open a second terminal:"
+    dim "More useful commands:"
     echo ""
-    echo "    rapid-mlx chat ${RECOMMENDED_MODEL} --port 8000    # built-in chat (terminal)"
-    echo "    rapid-mlx-chat                                    # web chat UI (first: ${INSTALL_DIR}/bin/pip install 'rapid-mlx[chat]')"
-    echo "    ANTHROPIC_BASE_URL=http://localhost:8000 claude    # Claude Code (or: rapid-mlx launch claude-code)"
-    echo "    OPENAI_API_BASE=http://localhost:8000/v1 aider     # Aider"
+    echo "    rapid-mlx models"
+    echo "    rapid-mlx pull ${RECOMMENDED_MODEL}"
+    echo "    rapid-mlx doctor"
+    echo ""
+    dim "Use it from your coding agent (separate stable server on :8000):"
+    echo ""
+    echo "    rapid-mlx serve ${RECOMMENDED_MODEL}${RECOMMENDED_FLAGS} --port 8000"
+    echo "    rapid-mlx launch --all --model ${RECOMMENDED_MODEL}"
+    echo ""
+    dim "serve exits if :8000 is busy; use another port in both commands:"
+    echo ""
+    echo "    rapid-mlx serve ${RECOMMENDED_MODEL}${RECOMMENDED_FLAGS} --port 8001"
+    echo "    rapid-mlx launch --all --model ${RECOMMENDED_MODEL} --server-url http://127.0.0.1:8001"
+    echo ""
+    echo "    rapid-mlx-chat    # web UI (first: ${INSTALL_DIR}/bin/pip install 'rapid-mlx[chat]')"
 }
 
 # When sourced by the test harness we only want the definitions above, not the

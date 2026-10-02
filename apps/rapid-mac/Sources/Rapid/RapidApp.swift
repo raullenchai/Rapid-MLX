@@ -67,6 +67,9 @@ struct RapidApp: App {
     /// The single source of truth for the embedded rapid-mlx child. We
     /// build it once at app launch so all windows / scenes share state.
     @State private var server: ServerManager
+    /// Model-free, app-owned sidecar for native Computer Use. It remains
+    /// independent from chat model selection and replacement.
+    @State private var cuaServer: CUAServerManager
     /// Per-window-but-shared chat controller — single window for now, so
     /// keeping a process-wide instance is fine.
     @State private var chatViewModel: ChatViewModel
@@ -178,11 +181,14 @@ struct RapidApp: App {
         // #2878 changed the Desktop default from 8000 to 7659. Preserve the
         // old endpoint for upgrades before InstallTracker records this launch;
         // otherwise existing OpenAI-compatible clients silently disconnect.
-        PortAllocator.migrateLegacyDefaultIfNeeded(
-            hadPreviousLaunch: UserDefaults.standard.string(
-                forKey: InstallTracker.lastSeenVersionKey
-            ) != nil
-        )
+        // Capture before InstallTracker records this launch. This is also the
+        // durable first-run-funnel upgrade exclusion: even an older install
+        // that never completed or entered Quickstart must not become a new
+        // telemetry cohort merely because it upgraded into this feature.
+        let hadPreviousLaunch = UserDefaults.standard.string(
+            forKey: InstallTracker.lastSeenVersionKey
+        ) != nil
+        PortAllocator.migrateLegacyDefaultIfNeeded(hadPreviousLaunch: hadPreviousLaunch)
         // Sweep orphan rapid-mlx processes from previous sessions BEFORE
         // anything else looks at our serve port.
         //
@@ -209,6 +215,7 @@ struct RapidApp: App {
         // the same port. Still detached — launch never blocks on it.
         PortSweep.startLaunchSweep(port: PortAllocator.candidatePorts.first ?? 8000)
         let manager = ServerManager()
+        let cuaServerManager = CUAServerManager()
         let samplingConfig = SamplingConfig()
         let customInstructionsConfig = CustomInstructionsConfig()
         let memoryStore = MemoryStore()
@@ -367,7 +374,10 @@ struct RapidApp: App {
         _downloads = State(initialValue: downloadsInstance)
         _shareCompute = State(initialValue: shareComputeManager)
         _installTracker = State(initialValue: InstallTracker())
-        _quickstart = State(initialValue: QuickstartCoordinator())
+        _quickstart = State(initialValue: QuickstartCoordinator(
+            hasChatHistory: !chat.conversations.isEmpty,
+            hadPreviousLaunch: hadPreviousLaunch
+        ))
         let dockPrompt = DockVisibilityPromptStore()
         _dockPromptStore = State(initialValue: dockPrompt)
         AppDelegate.shared.dockPromptStore = dockPrompt
@@ -379,6 +389,7 @@ struct RapidApp: App {
         }
         _imageGen = State(initialValue: imageGenViewModel)
         _audio = State(initialValue: AudioViewModel(server: manager))
+        _cuaServer = State(initialValue: cuaServerManager)
         _video = State(initialValue: VideoGenViewModel(server: manager))
         _dictation = State(initialValue: dictationController)
         _updater = State(initialValue: updateChecker)
@@ -394,6 +405,7 @@ struct RapidApp: App {
         // and the AppKit menu-bar tray can reach them without rebuilding
         // the SwiftUI environment.
         AppDelegate.shared.server = manager
+        AppDelegate.shared.cuaServer = cuaServerManager
         AppDelegate.shared.downloads = downloadsInstance
         AppDelegate.shared.shareCompute = shareComputeManager
         AppDelegate.shared.updater = updateChecker
@@ -411,6 +423,7 @@ struct RapidApp: App {
                 // lane per the rapidmlx.com design system (rapid-desktop #632).
                 .tint(RapidTheme.brandAmber)
                 .environment(server)
+                .environment(cuaServer)
                 .environment(downloads)
                 .environment(shareCompute)
                 .environment(chatViewModel)
@@ -681,6 +694,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     static let shared = AppDelegate()
 
     weak var server: ServerManager?
+    weak var cuaServer: CUAServerManager?
     weak var downloads: DownloadManager?
     weak var shareCompute: ShareComputeManager?
     /// Hand from ``RapidApp.init`` so ``applicationWillTerminate`` can
@@ -1109,9 +1123,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         stopStream: () -> Void,
         signalShareCompute: () -> Void,
         signalServer: () -> Void,
+        signalCUAServer: () -> Void = {},
         signalDownloads: () -> Void,
         reapShareCompute: () -> Void,
         reapServer: () -> Void,
+        reapCUAServer: () -> Void = {},
         reapDownloads: () -> Void,
         flushConversations: () -> Void,
         flushFolders: () -> Void
@@ -1128,11 +1144,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // SIGTERM before anyone waits, so the graces overlap.
         signalShareCompute()
         signalServer()
+        signalCUAServer()
         signalDownloads()
         // Reap phase — blocking. Server first: its grace is the long
         // one, and by the time it returns the download children have
         // had that entire window to exit.
         reapServer()
+        reapCUAServer()
         reapShareCompute()
         reapDownloads()
         // Drain any queued conversation-history write so the last turn /
@@ -1165,9 +1183,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             stopStream: { AppDelegate.shared.chat?.stopAndPersist() },
             signalShareCompute: { AppDelegate.shared.shareCompute?.beginShutdown() },
             signalServer: { AppDelegate.shared.server?.beginShutdown() },
+            signalCUAServer: { AppDelegate.shared.cuaServer?.beginShutdown() },
             signalDownloads: { AppDelegate.shared.downloads?.beginShutdown() },
             reapShareCompute: { AppDelegate.shared.shareCompute?.finishShutdown() },
             reapServer: { AppDelegate.shared.server?.shutdownSync() },
+            reapCUAServer: { AppDelegate.shared.cuaServer?.shutdownSync() },
             reapDownloads: { AppDelegate.shared.downloads?.finishShutdown() },
             flushConversations: { ConversationStore.flush() },
             flushFolders: { ConversationFolderStore.flush() }

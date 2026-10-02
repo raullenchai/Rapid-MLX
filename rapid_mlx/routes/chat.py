@@ -75,6 +75,9 @@ from ..request import (
     ClientRequestError,
     InferenceAbortedError,
     inference_aborted_error_payload,
+    is_batch_cap_error,
+    is_chat_template_error,
+    is_media_input_error,
 )
 from ..response_cache import (
     UNCACHEABLE,
@@ -86,6 +89,7 @@ from ..service.helpers import (
     _TOOL_USE_REQUIRED_SUFFIX,
     _TOOL_USE_SYSTEM_SUFFIX,
     SSE_RESPONSE_HEADERS,
+    _aggregate_generation_attempts,
     _append_tool_use_suffix,
     _apply_reasoning_cutoff_notice,
     _build_prompt_with_thinking_compat,
@@ -120,18 +124,44 @@ from ..service.helpers import (
     _wait_with_disconnect,
     build_extended_sampling_kwargs,
     enable_thinking_warning_header,
+    enforce_context_length,
     enforce_context_length_for_messages,
     ensure_engine_ready,
     get_engine,
     get_model_max_context,
+    maybe_apply_default_reasoning_effort,
     maybe_apply_reasoning_effort,
     maybe_auto_disable_thinking_for_casual_chat,
     maybe_auto_disable_thinking_for_tools,
+    reasoning_stop_scope_kwargs,
     repair_messages_fit_context,
     served_chat_template,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _record_nonstream_failure(
+    raw_request, served_telemetry_id: str | None, error_class: str
+) -> None:
+    """Count one failed non-streaming chat completion under a fixed class.
+
+    For failures the route raises itself as an ``HTTPException`` (which the
+    generic handler re-raises uncounted), e.g. the strict-schema 502s.
+    """
+    from rapid_mlx.telemetry import inference as _telemetry_inference
+
+    caller_agent, caller_client = _telemetry_inference.request_caller_headers(
+        raw_request
+    )
+    _telemetry_inference.emit_completed_request(
+        model=served_telemetry_id or "<custom>",
+        endpoint="/v1/chat/completions",
+        caller_agent=caller_agent,
+        caller_client=caller_client,
+        result="failed",
+        error_class=error_class,
+    )
 
 
 def _new_stream_request_id() -> str:
@@ -4076,6 +4106,11 @@ async def _create_chat_completion_impl(
     Admission is reserved after cheap validation to avoid leaking a slot on
     validation ``HTTPException`` paths.
     """
+    from rapid_mlx.telemetry import inference as _telemetry_inference
+
+    _caller_agent, _caller_client = _telemetry_inference.request_caller_headers(
+        raw_request
+    )
     # Validate messages is non-empty
     if not request.messages:
         raise HTTPException(
@@ -4272,7 +4307,11 @@ async def _create_chat_completion_impl(
         )
 
         emit_capability_rejected(
-            "multi_sample_unsupported", model_type=model_type_token(engine)
+            "multi_sample_unsupported",
+            model_type=model_type_token(engine),
+            model=served_telemetry_id,
+            caller_agent=_caller_agent,
+            caller_client=_caller_client,
         )
         raise HTTPException(
             status_code=400,
@@ -4330,7 +4369,11 @@ async def _create_chat_completion_impl(
         )
 
         emit_capability_rejected(
-            "logit_bias_unsupported", model_type=model_type_token(engine)
+            "logit_bias_unsupported",
+            model_type=model_type_token(engine),
+            model=served_telemetry_id,
+            caller_agent=_caller_agent,
+            caller_client=_caller_client,
         )
         raise HTTPException(
             status_code=400,
@@ -4473,12 +4516,16 @@ async def _create_chat_completion_impl(
             allow_image=engine.is_mllm,
             allow_video=engine.is_mllm,
             allow_audio=False,
+            telemetry_model=served_telemetry_id,
+            caller_agent=_caller_agent,
+            caller_client=_caller_client,
         )
     except UnsupportedContentBlockError as e:
         raise HTTPException(
             status_code=400,
             detail=e.openai_detail(
-                serving_lane_reason=getattr(engine, "serving_lane_reason", None)
+                serving_lane_reason=getattr(engine, "serving_lane_reason", None),
+                engine=engine,
             ),
         ) from e
     except ValueError as e:
@@ -4506,6 +4553,9 @@ async def _create_chat_completion_impl(
         messages, images, videos = extract_multimodal_content(
             request.messages,
             preserve_native_format=engine.preserve_native_tool_format,
+            telemetry_model=served_telemetry_id,
+            caller_agent=_caller_agent,
+            caller_client=_caller_client,
         )
 
     has_media = bool(images or videos)
@@ -4644,6 +4694,18 @@ async def _create_chat_completion_impl(
     # ``reasoning_effort="none"`` request registers its enable_thinking
     # preference first (the tool auto-disable then no-ops on it) and a
     # graded value lands its ``reasoning_max_tokens`` cap from one source.
+    # #3714: ``serve --default-reasoning-effort`` fills the knob first when
+    # the client sent no reasoning signal at all, so a template whose own
+    # default is the most expensive level (GLM-5.3 → "Max") does not burn
+    # ``max_tokens`` in thinking on "say hello".
+    if maybe_apply_default_reasoning_effort(
+        request, default_effort=cfg.default_reasoning_effort
+    ):
+        logger.info(
+            "#3714 reasoning_effort defaulted to %s on /v1/chat/completions "
+            "(serve --default-reasoning-effort; client sent no reasoning knob)",
+            request.reasoning_effort,
+        )
     if maybe_apply_reasoning_effort(
         request, chat_template=served_chat_template(engine)
     ):
@@ -4726,6 +4788,7 @@ async def _create_chat_completion_impl(
     # alias → generation_config cascade. Only forwards values the
     # cascade actually produced.
     chat_kwargs.update(build_extended_sampling_kwargs(request))
+    chat_kwargs.update(reasoning_stop_scope_kwargs(engine, request))
 
     # Add multimodal content
     if has_media:
@@ -4904,7 +4967,21 @@ async def _create_chat_completion_impl(
         max_tokens=chat_kwargs.get("max_tokens"),
         enable_thinking=resolved_thinking,
         chat_template_kwargs=chat_kwargs.get("chat_template_kwargs"),
+        telemetry_model=served_telemetry_id,
+        caller_agent=_caller_agent,
+        caller_client=_caller_client,
     )
+    if _line1_prompt_tokens is not None and chat_kwargs.get("max_tokens") is not None:
+        _clamped_max_tokens = enforce_context_length(
+            engine,
+            _line1_prompt_tokens,
+            max_tokens=chat_kwargs["max_tokens"],
+            telemetry_model=served_telemetry_id,
+            caller_agent=_caller_agent,
+            caller_client=_caller_client,
+        )
+        if _clamped_max_tokens is not None:
+            chat_kwargs["max_tokens"] = _clamped_max_tokens
 
     # LINE① (#558, codex r4 #1) — HARD context-window allowance check. With
     # ``max_tokens=None`` the guard above only proved ``prompt_tokens <= window``
@@ -5296,37 +5373,14 @@ async def _create_chat_completion_impl(
                 },
             )
         if request.tools:
-            # Strict + tools is mutually exclusive on this engine:
-            # the constrained-decoding path is grammar-driven and
-            # cannot coexist with the tool-call grammar. OpenAI's
-            # cloud API treats this combination as 400 too. Surface
-            # the conflict explicitly so clients see the choice.
-            from rapid_mlx.telemetry.inference import (
-                emit_capability_rejected,
-                model_type_token,
-            )
-
-            emit_capability_rejected(
-                "structured_output_unsupported", model_type=model_type_token(engine)
-            )
+            # Deliberate local-engine policy: tools own the first decode so a
+            # tool-call turn stays byte-for-byte identical to ordinary tool
+            # calling.  Final-text turns are buffered and schema-validated;
+            # only an invalid final answer pays for one tools-disabled,
+            # grammar-constrained repair pass.
+            json_schema = _strict_schema_check
+            use_strict_postgen_validation = strict_enforcement_active
             incr_strict_request()
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "error": {
-                        "message": (
-                            "response_format.json_schema.strict=true "
-                            "cannot be combined with 'tools' — the "
-                            "constrained-decoding grammar is mutually "
-                            "exclusive with the tool-call grammar. "
-                            "Drop one or the other and retry."
-                        ),
-                        "type": "invalid_request_error",
-                        "code": "strict_with_tools_unsupported",
-                        "param": "response_format.json_schema.strict",
-                    }
-                },
-            )
 
     if response_format and not request.tools:
         json_schema = extract_json_schema_for_guided(response_format)
@@ -5445,7 +5499,8 @@ async def _create_chat_completion_impl(
                     type(engine).__name__,
                 )
 
-    if request.stream:
+    _buffer_strict_tool_stream = bool(request.stream and strict_mode and request.tools)
+    if request.stream and not _buffer_strict_tool_stream:
         # Validate chat template eagerly so template errors return 400
         if not engine.is_mllm:
             try:
@@ -5457,16 +5512,10 @@ async def _create_chat_completion_impl(
                     chat_template_kwargs=chat_kwargs.get("chat_template_kwargs"),
                 )
             except Exception as e:
-                err_msg = str(e)
-                err_type = type(e).__name__
-                if (
-                    "TemplateError" in err_type
-                    or "template" in err_msg.lower()
-                    or ("user" in err_msg.lower() and "found" in err_msg.lower())
-                ):
+                if is_chat_template_error(e):
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Chat template error: {err_msg}",
+                        detail=f"Chat template error: {e}",
                     )
                 raise
         # L-05: surface silent ``enable_thinking`` drop on non-Qwen
@@ -5753,6 +5802,9 @@ async def _create_chat_completion_impl(
                     # failure card (was a bare-string 503).
                     from ..request import lifecycle_cancel_error_payload
 
+                    _record_nonstream_failure(
+                        raw_request, served_telemetry_id, "model_replaced"
+                    )
                     raise HTTPException(
                         status_code=503,
                         detail={"error": lifecycle_cancel_error_payload()},
@@ -5784,6 +5836,9 @@ async def _create_chat_completion_impl(
                         "refusing to fall back to unconstrained because "
                         "strict=true: %s",
                         guided_err,
+                    )
+                    _record_nonstream_failure(
+                        raw_request, served_telemetry_id, "strict_schema_violation"
                     )
                     raise HTTPException(
                         status_code=502,
@@ -5840,9 +5895,9 @@ async def _create_chat_completion_impl(
             caller_agent=caller_agent,
             caller_client=caller_client,
             result="failed",
+            error_class=_telemetry_inference.classify_inference_failure(e),
         )
         err_msg = str(e)
-        err_type = type(e).__name__
         if isinstance(e, InferenceAbortedError):
             # Engine aborted the request (e.g. Metal runtime error caught
             # in the engine loop). Structured 503 carrying a stable
@@ -5850,11 +5905,7 @@ async def _create_chat_completion_impl(
             # (#3564) — the server is still up and a smaller request may
             # succeed (#353).
             raise _inference_aborted_http_exception(e) from e
-        if (
-            "TemplateError" in err_type
-            or "template" in err_msg.lower()
-            or ("user" in err_msg.lower() and "found" in err_msg.lower())
-        ):
+        if is_chat_template_error(e):
             raise HTTPException(
                 status_code=400, detail=f"Chat template error: {err_msg}"
             )
@@ -5872,11 +5923,7 @@ async def _create_chat_completion_impl(
         # 500. Surface as 400 so Desktop / curl clients see the actionable
         # message ("downscale image / raise --prefill-step-size") instead
         # of a generic server error.
-        if (
-            "Failed to process image" in err_msg
-            or "Failed to process video" in err_msg
-            or "exceeds the per-batch cap" in err_msg
-        ):
+        if is_media_input_error(e) or is_batch_cap_error(e):
             raise HTTPException(status_code=400, detail=err_msg)
         raise
     finally:
@@ -5892,6 +5939,19 @@ async def _create_chat_completion_impl(
     logger.info(
         f"Chat completion: {output.completion_tokens} tokens in {elapsed:.2f}s ({tokens_per_sec:.1f} tok/s)"
     )
+
+    # Strict structured output constrains final answers, not tool-call turns.
+    # Detect calls with the same parser used below and leave their wire payload
+    # untouched; only a genuine final-text turn enters schema validation.
+    _strict_tool_turn = False
+    if strict_mode and request.tools:
+        _engine_calls = getattr(output, "tool_calls", None)
+        _unused_text, _detected_calls = _parse_tool_calls_with_parser(
+            output.text,
+            request,
+            structured_tool_calls=_engine_calls,
+        )
+        _strict_tool_turn = bool(_detected_calls)
 
     # H-06: when the client asked for strict json_schema mode and we
     # routed through guided decoding, validate the buffered text
@@ -5910,6 +5970,7 @@ async def _create_chat_completion_impl(
     # then rejects with a confusing stack-trace far from the source.
     # The violations counter still ticks before we raise so the
     # operator sees both the rate AND the error response.
+    usage_detail_output = None
     if strict_mode and use_guided and json_schema and output is not None:
         ok, err = validate_output_against_schema(output.text or "", json_schema)
         if not ok:
@@ -5917,6 +5978,9 @@ async def _create_chat_completion_impl(
             logger.warning(
                 "Strict json_schema response failed post-decode validation: %s",
                 err,
+            )
+            _record_nonstream_failure(
+                raw_request, served_telemetry_id, "strict_schema_violation"
             )
             raise HTTPException(
                 status_code=502,
@@ -5940,16 +6004,25 @@ async def _create_chat_completion_impl(
     # UNCONSTRAINED above; now we validate the buffered output and
     # — if it doesn't validate — attempt ONE repair retry with a
     # system-prompt-injected hint naming the failing path. If the
-    # repair also fails we surface 422 with a structured envelope so
+    # repair also fails we surface a structured violation envelope so
     # SDK consumers (pydantic-ai) can read ``error.details.failing_path``
     # / ``expected`` / ``got`` instead of looping against an opaque
-    # error. Strict + tools is already rejected by the upstream
-    # ``strict_with_tools_unsupported`` gate, so we can assume no
-    # tool_calls path here.
-    if use_strict_postgen_validation and json_schema and output is not None:
+    # error. For strict + tools, tool-call turns bypass this block and
+    # invalid final-text turns use constrained generation for the repair.
+    if (
+        use_strict_postgen_validation
+        and json_schema
+        and output is not None
+        and not _strict_tool_turn
+    ):
         ok, failure_details = validate_and_envelope(output.text or "", json_schema)
         attempts = 1
-        if not ok and repair_retry_enabled():
+        repair_attempted = False
+        if (
+            not ok
+            and repair_retry_enabled()
+            and (not request.tools or engine.supports_guided_generation)
+        ):
             repair_messages = build_repair_messages(
                 messages,
                 output.text or "",
@@ -6035,14 +6108,26 @@ async def _create_chat_completion_impl(
             else:
                 incr_strict_repair_attempt()
                 attempts = 2
+                repair_attempted = True
                 logger.info(
                     "R12-4 strict json_schema first attempt failed "
                     "validation (%s); attempting single repair retry.",
                     failure_details.get("reason") if failure_details else "?",
                 )
                 try:
+                    if request.tools:
+                        repair_coro = engine.generate_with_schema(
+                            messages=repair_messages,
+                            json_schema=json_schema,
+                            raise_on_failure=True,
+                            **repair_kwargs,
+                        )
+                    else:
+                        repair_coro = engine.chat(
+                            messages=repair_messages, **repair_kwargs
+                        )
                     repair_output = await _wait_with_disconnect(
-                        engine.chat(messages=repair_messages, **repair_kwargs),
+                        repair_coro,
                         raw_request,
                         timeout=timeout,
                     )
@@ -6070,6 +6155,13 @@ async def _create_chat_completion_impl(
                         "NOT a schema-validation contract breach).",
                         type(repair_err).__name__,
                         repair_err,
+                    )
+                    from rapid_mlx.telemetry import inference as _telemetry_inference
+
+                    _record_nonstream_failure(
+                        raw_request,
+                        served_telemetry_id,
+                        _telemetry_inference.classify_inference_failure(repair_err),
                     )
                     raise HTTPException(
                         status_code=502,
@@ -6109,19 +6201,8 @@ async def _create_chat_completion_impl(
                     # taken from the SUCCESSFUL repair output since
                     # those describe what the client receives; only
                     # the numeric usage fields are summed.
-                    from dataclasses import replace as _dc_replace
-
-                    initial_prompt_tokens = output.prompt_tokens
-                    initial_completion_tokens = output.completion_tokens
-                    output = _dc_replace(
-                        repair_output,
-                        prompt_tokens=(
-                            initial_prompt_tokens + repair_output.prompt_tokens
-                        ),
-                        completion_tokens=(
-                            initial_completion_tokens + repair_output.completion_tokens
-                        ),
-                    )
+                    usage_detail_output = repair_output
+                    output = _aggregate_generation_attempts(output, repair_output)
                     ok = True
                     failure_details = None
                 else:
@@ -6136,12 +6217,20 @@ async def _create_chat_completion_impl(
                 failure_details or {"reason": "schema_violation"},
                 attempts=attempts,
             )
+            if request.tools and repair_attempted:
+                envelope["error"]["code"] = "strict_schema_violation"
             logger.warning(
                 "R12-4 strict json_schema validation failed after %d attempt(s): %s",
                 attempts,
                 (failure_details or {}).get("message"),
             )
-            raise HTTPException(status_code=422, detail=envelope)
+            _record_nonstream_failure(
+                raw_request, served_telemetry_id, "strict_schema_violation"
+            )
+            raise HTTPException(
+                status_code=502 if request.tools and repair_attempted else 422,
+                detail=envelope,
+            )
 
     # Parse tool calls from output using configured parser.
     # ``output.tool_calls`` is non-None when the engine's
@@ -6710,7 +6799,11 @@ async def _create_chat_completion_impl(
                 logprobs=choice_logprobs,
             )
         ],
-        usage=_build_usage(output, reasoning_text),
+        usage=_build_usage(
+            output,
+            reasoning_text,
+            detail_output=usage_detail_output,
+        ),
         metrics=_build_response_metrics(output),
     )
     # ── Response cache — STORE ───────────────────────────────────────
@@ -6739,11 +6832,19 @@ async def _create_chat_completion_impl(
     # error the client sees — not as a "successful inference" we already
     # counted. ``model_dump_json`` can raise; the activation emit below must be
     # reached only when the 2xx body is actually built.
-    response = Response(
-        content=chat_response.model_dump_json(exclude_none=True),
-        media_type="application/json",
-        headers=response_headers or None,
-    )
+    response: Response
+    if _buffer_strict_tool_stream:
+        response = StreamingResponse(
+            _stream_buffered_chat_response(chat_response, request),
+            media_type="text/event-stream",
+            headers={**SSE_RESPONSE_HEADERS, **response_headers},
+        )
+    else:
+        response = Response(
+            content=chat_response.model_dump_json(exclude_none=True),
+            media_type="application/json",
+            headers=response_headers or None,
+        )
 
     from rapid_mlx.telemetry import inference as _telemetry_inference
 
@@ -6761,6 +6862,87 @@ async def _create_chat_completion_impl(
     return response
 
 
+async def _stream_buffered_chat_response(
+    response: ChatCompletionResponse,
+    request: ChatCompletionRequest,
+) -> AsyncIterator[str]:
+    """Replay a buffered strict turn through the ordinary Chat state machine."""
+
+    choice = response.choices[0]
+    message = choice.message
+    outputs: list[GenerationOutput] = []
+
+    def append_output(
+        text: str,
+        channel: str,
+        *,
+        tool_calls: list[dict] | None = None,
+    ) -> None:
+        outputs.append(
+            GenerationOutput(
+                text=text,
+                new_text=text,
+                channel=channel,
+                tool_calls=tool_calls,
+                finished=False,
+                finish_reason=None,
+            )
+        )
+
+    if message.reasoning_content:
+        append_output(message.reasoning_content, "reasoning")
+    if message.content:
+        append_output(message.content, "content")
+    if message.tool_calls:
+        append_output(
+            " ",
+            "tool_call",
+            tool_calls=[
+                {
+                    "id": tool_call.id,
+                    "name": tool_call.function.name,
+                    "arguments": tool_call.function.arguments,
+                }
+                for tool_call in message.tool_calls
+            ],
+        )
+    if not outputs:
+        outputs.append(GenerationOutput(text="", new_text="", finished=False))
+
+    terminal = outputs[-1]
+    terminal.finished = True
+    terminal.finish_reason = choice.finish_reason
+    terminal.prompt_tokens = response.usage.prompt_tokens
+    terminal.completion_tokens = response.usage.completion_tokens
+    if response.usage.prompt_tokens_details is not None:
+        terminal.cached_tokens = response.usage.prompt_tokens_details.cached_tokens
+    if (
+        response.metrics is not None
+        and response.metrics.speculative_decoding is not None
+    ):
+        terminal.spec_decode_metrics = (
+            response.metrics.speculative_decoding.model_dump()
+        )
+
+    class _ReplayEngine:
+        tokenizer = None
+
+        async def stream_chat(self, **_kwargs):
+            for replay_output in outputs:
+                yield replay_output
+
+    replay_outcome = [False]
+    async for event in stream_chat_completion(
+        _ReplayEngine(),
+        [],
+        request,
+        response_id=response.id,
+        created=response.created,
+        _ok_outcome=replay_outcome,
+    ):
+        yield event
+
+
 async def stream_chat_completion(
     engine,
     messages: list,
@@ -6772,6 +6954,7 @@ async def stream_chat_completion(
     caller_client: str | None = None,
     served_telemetry_id: str | None = None,
     _client_disconnect_state: list[bool] | None = None,
+    _ok_outcome: list[bool] | None = None,
     **kwargs,
 ) -> AsyncIterator[str]:
     """Stream chat completion response.
@@ -6790,6 +6973,10 @@ async def stream_chat_completion(
         _client_disconnect_state: Private route/guard coordination latch.
             True means the consumer disappeared and post-stream recovery must
             not synthesize terminal frames for the dead connection.
+        _ok_outcome: Private telemetry hand-off for a wrapper that still has
+            to judge the stream (strict post-generation validation). When
+            given, a clean end sets ``_ok_outcome[0] = True`` INSTEAD of
+            counting ``ok``; the wrapper then counts exactly one outcome.
     """
     from ..service.postprocessor import StreamingPostProcessor
 
@@ -8057,15 +8244,18 @@ async def stream_chat_completion(
 
         yield "data: [DONE]\n\n"
 
-        from rapid_mlx.telemetry import inference as _telemetry_inference
+        if _ok_outcome is not None:
+            _ok_outcome[:] = [True]
+        else:
+            from rapid_mlx.telemetry import inference as _telemetry_inference
 
-        _telemetry_inference.emit_completed_request(
-            model=served_telemetry_id or "<custom>",
-            endpoint="/v1/chat/completions",
-            caller_agent=caller_agent,
-            caller_client=caller_client,
-            result="ok",
-        )
+            _telemetry_inference.emit_completed_request(
+                model=served_telemetry_id or "<custom>",
+                endpoint="/v1/chat/completions",
+                caller_agent=caller_agent,
+                caller_client=caller_client,
+                result="ok",
+            )
 
     finally:
         if admission_task is not None and not admission_task.done():
@@ -8180,6 +8370,7 @@ async def stream_chat_completion_guided(
                 caller_agent=caller_agent,
                 caller_client=caller_client,
                 result="failed",
+                error_class="model_replaced",
             )
 
         def _finish_guided_handoff() -> tuple[bool, object | None]:
@@ -8343,6 +8534,7 @@ async def stream_chat_completion_guided(
                     caller_agent=caller_agent,
                     caller_client=caller_client,
                     result="failed",
+                    error_class="strict_schema_violation",
                 )
                 yield f"data: {json.dumps(_err_envelope)}\n\n"
                 yield "data: [DONE]\n\n"
@@ -8448,6 +8640,7 @@ async def stream_chat_completion_guided(
                     caller_agent=caller_agent,
                     caller_client=caller_client,
                     result="failed",
+                    error_class="strict_schema_violation",
                 )
                 yield f"data: {json.dumps(_err_envelope)}\n\n"
                 yield "data: [DONE]\n\n"
@@ -8714,6 +8907,31 @@ async def stream_chat_completion_strict_postgen(
     # handle we explicitly close the generator on overflow so the
     # engine cleanup runs synchronously with the wrapper's
     # decision to bail.
+    # The upstream stream hands its clean-end ``ok`` to us: only after
+    # validation do we know whether this request succeeded.
+    upstream_ok: list[bool] = [False]
+
+    def _count_outcome(error_class: str | None) -> None:
+        from rapid_mlx.telemetry import inference as _telemetry_inference
+
+        if error_class is None:
+            _telemetry_inference.emit_completed_request(
+                model=served_telemetry_id or "<custom>",
+                endpoint="/v1/chat/completions",
+                caller_agent=caller_agent,
+                caller_client=caller_client,
+                result="ok",
+            )
+            return
+        _telemetry_inference.emit_completed_request(
+            model=served_telemetry_id or "<custom>",
+            endpoint="/v1/chat/completions",
+            caller_agent=caller_agent,
+            caller_client=caller_client,
+            result="failed",
+            error_class=error_class,
+        )
+
     upstream_agen = stream_chat_completion(
         engine,
         messages,
@@ -8723,6 +8941,7 @@ async def stream_chat_completion_strict_postgen(
         caller_agent=caller_agent,
         caller_client=caller_client,
         served_telemetry_id=served_telemetry_id,
+        _ok_outcome=upstream_ok,
         **kwargs,
     )
     try:
@@ -8757,11 +8976,9 @@ async def stream_chat_completion_strict_postgen(
                             # accumulate ``delta.reasoning_content``
                             # (a separate thinking-channel surface
                             # that is NOT included in the schema's
-                            # scope) or ``delta.tool_calls`` (which
-                            # is forbidden in strict mode by the
-                            # ``strict_with_tools_unsupported`` gate
-                            # in the chat route — line ~2310 — so it
-                            # cannot legally appear here). Any future
+                            # scope) or ``delta.tool_calls``. Strict tool
+                            # requests use the separate buffered path, so
+                            # tool deltas cannot reach this helper. Any future
                             # delta surface that carries user-visible
                             # text MUST be added here, OR the route
                             # gate must reject strict mode for that
@@ -8946,6 +9163,7 @@ async def stream_chat_completion_strict_postgen(
                 "R12-4 strict json_schema streaming buffer overflow at %d bytes",
                 _buffer_cap,
             )
+            _count_outcome("strict_schema_violation")
             validation_emitted = True
             return
 
@@ -8962,8 +9180,14 @@ async def stream_chat_completion_strict_postgen(
                 yield terminal
             if held_usage_chunk is not None:
                 yield held_usage_chunk
+            if upstream_ok[0]:
+                _count_outcome(None)
         else:
             incr_strict_violation()
+            if upstream_ok[0]:
+                # Only a stream that ran to its clean end is judged; one the
+                # client abandoned was never going to validate.
+                _count_outcome("strict_schema_violation")
             envelope = build_violation_envelope(
                 failure_details or {"reason": "schema_violation"},
                 attempts=1,

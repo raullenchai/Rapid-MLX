@@ -1,0 +1,39 @@
+name: Mirror drift check
+
+on:
+  schedule:
+    - cron: "23 13 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mirror-drift-check
+  cancel-in-progress: false
+
+jobs:
+  audit-used-models:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with: { python-version: "3.12" }
+      - name: Install audit dependencies
+        run: python -m pip install 'huggingface-hub>=1.1.0'
+      - name: Audit shipped aliases against Hugging Face and the mirror
+        shell: bash
+        run: |
+          set -o pipefail
+          python scripts/mirror_drift_check.py --only-used --workers 32 2>&1 | tee mirror-drift.txt
+      - name: Publish readable summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## Mirror drift audit'
+            echo '```text'
+            cat mirror-drift.txt 2>/dev/null || echo 'Audit did not produce output.'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

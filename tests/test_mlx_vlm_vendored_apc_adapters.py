@@ -148,15 +148,12 @@ def test_clone_single_row_batch_extracts_into_producer_namespace():
 def test_merge_rows_keeps_producer_namespace():
     upstream = _upstream_cache_ns()
     for ns in (vendored_cache, upstream):
-        a = ns.BatchKVCache(mx.array([0]))
+        a = ns.KVCache()
         a.update_and_fetch(mx.ones((1, 1, 2, 4)), mx.zeros((1, 1, 2, 4)))
-        b = ns.BatchKVCache(mx.array([0]))
+        b = ns.KVCache()
         b.update_and_fetch(mx.full((1, 1, 4, 4), 2.0), mx.zeros((1, 1, 4, 4)))
-        # Real merge_rows callers pass cloned rows, whose clone left
-        # ``offset`` as a plain int; mirror that shape here.
-        a.offset, b.offset = 2, 4
 
-        merged = apc_adapters.KVCacheCloneAdapter().merge_rows([a, b], [2, 4])
+        merged = merge_cache_entries([a, b], [2, 4])
 
         assert type(merged) is ns.BatchKVCache
         assert merged.batch_size == 2
@@ -173,14 +170,12 @@ def test_arrays_merge_rows_preserves_per_row_metadata():
         second.cache = [mx.zeros((1, 2))]
         second.lengths = mx.array([5])
 
-        merged = apc_adapters.ArraysCacheCloneAdapter().merge_rows(
-            [first, second], [3, 5]
-        )
+        merged = merge_cache_entries([first, second], [3, 5])
 
         assert type(merged) is ns.ArraysCache
         assert merged.cache[0].shape[0] == 2
-        assert merged.left_padding.tolist() == [2, 0]
-        assert merged.lengths.tolist() == [0, 5]
+        assert merged.left_padding is None
+        assert merged.lengths is None
 
 
 def test_explicit_snapshot_contract_recognizes_both_base_classes():
@@ -251,14 +246,10 @@ def test_apc_exact_eligible_covers_both_namespaces():
         assert not apc_adapters.apc_exact_eligible(object())
 
 
-def test_adapter_tables_are_namespace_complete():
-    """Both namespaces must appear in the capability and clone tables — the
-    silent-failure mode this whole slice guards against is one namespace's
-    types missing from an exact-type dispatch table."""
+def test_capability_tables_and_cache_owned_contracts_are_namespace_complete():
+    """0.7.2 moves clone/merge ownership from adapters onto cache classes."""
     upstream = _upstream_cache_ns()
     apc_adapters.register_default_capabilities()
-    rules = apc_adapters._clone_rules()
-    rule_types = {typ for typ, _ in rules}
     for ns in (vendored_cache, upstream):
         assert resolve_capability(ns.KVCache()) is Capability.PAGEABLE
         for cls in (
@@ -268,7 +259,14 @@ def test_adapter_tables_are_namespace_complete():
             ns.ArraysCache,
             ns.PoolingCache,
         ):
-            assert cls in rule_types
+            if cls in (ns.RotatingKVCache, ns.ChunkedKVCache):
+                cache = cls(8)
+            elif cls in (ns.ArraysCache, ns.PoolingCache):
+                cache = cls(1)
+            else:
+                cache = cls()
+            assert callable(getattr(cache, "prefix_cache_snapshot", None))
+            assert callable(getattr(cache, "prefix_cache_merge", None))
 
 
 @pytest.fixture
@@ -361,23 +359,6 @@ def test_type_table_build_publishes_only_complete_tables(monkeypatch):
     with pytest.raises(RuntimeError):
         apc_adapters._apc_type_tables()
     assert apc_adapters._APC_TYPE_TABLES is None
-
-
-def test_clone_rules_build_publishes_only_complete_rules(monkeypatch):
-    """Same partial-publication hazard for the clone-rule table."""
-
-    class _BrokenNamespace:
-        def __getattr__(self, name):
-            raise RuntimeError("namespace probe failed mid-build")
-
-    def _namespaces():
-        return [vendored_cache, _BrokenNamespace()]
-
-    monkeypatch.setattr(apc_adapters, "_cache_namespaces", _namespaces)
-    monkeypatch.setattr(apc_adapters, "_CLONE_RULES", None)
-    with pytest.raises(RuntimeError):
-        apc_adapters._clone_rules()
-    assert apc_adapters._CLONE_RULES is None
 
 
 def test_cache_specs_capabilities_and_plan_descriptions(monkeypatch):
@@ -496,6 +477,65 @@ def test_tree_checkpoint_and_capacity_helpers():
     assert reservable.count == 6 and len(targets) == 1
 
 
+def test_memory_profiles_fallback_composite_and_deduplicate():
+    class _Opaque:
+        state = {"buffer": mx.ones((2,), dtype=mx.float32)}
+        meta_state = None
+
+    fallback = apc_adapters.CheckpointAdapter().memory(_Opaque(), token_count=2)
+    assert fallback.fallback
+    assert fallback.source_bytes == 8
+    assert fallback.bytes_per_token == 4
+
+    class _Profiled:
+        def memory_profile(self, token_count):
+            assert token_count == 4
+            return vendored_cache.CacheMemory(
+                source_bytes=9,
+                fixed_bytes=3,
+                bytes_per_token=5,
+            )
+
+    shared = _Profiled()
+    composite = vendored_cache.CacheList(shared)
+    profiles = apc_adapters.cache_memory_components(
+        [None, composite, shared], token_count=4, batch_size=2
+    )
+    assert profiles == [
+        vendored_cache.CacheMemory(
+            source_bytes=5,
+            fixed_bytes=2,
+            bytes_per_token=2.5,
+        )
+    ]
+
+
+def test_reserve_checkpoint_capacity_recurses_composites():
+    class _Reservable:
+        def __init__(self):
+            self.count = None
+
+        def prefix_cache_reserve(self, count):
+            self.count = count
+            return mx.array([count])
+
+    tuple_children = (_Reservable(), _Reservable())
+    list_children = (_Reservable(), _Reservable())
+    targets = []
+    apc_adapters.reserve_checkpoint_capacity(
+        tuple_children, min_capacity_tokens=7, eval_targets=targets
+    )
+    apc_adapters.reserve_checkpoint_capacity(
+        vendored_cache.CacheList(*list_children),
+        min_capacity_tokens=9,
+        eval_targets=targets,
+    )
+
+    assert [child.count for child in tuple_children] == [7, 7]
+    assert [child.count for child in list_children] == [9, 9]
+    assert len(targets) == 4
+
+
 def test_namespace_resolution_and_optional_turboquant(monkeypatch):
     monkeypatch.setattr(apc_adapters, "_cache_namespaces", lambda: [])
     assert apc_adapters._cache_namespace_of(object()).__name__ == "mlx_vlm.models.cache"
@@ -515,84 +555,39 @@ def test_namespace_resolution_and_optional_turboquant(monkeypatch):
     apc_adapters.register_default_capabilities()
 
 
-def test_clone_adapter_remaining_shapes(monkeypatch):
-    # Chunked clone/merge.
+def test_clone_adapter_remaining_shapes():
+    # Chunked clone/merge through the cache-owned 0.7.2 contracts.
     chunked = vendored_cache.ChunkedKVCache(chunk_size=4)
     chunked.offset = 2
     chunked.start_position = 1
     chunked.keys = mx.ones((1, 1, 2, 3))
     chunked.values = mx.zeros((1, 1, 2, 3))
     targets = []
-    cloned = apc_adapters.ChunkedKVCacheCloneAdapter().clone(
-        chunked, min_capacity_tokens=0, eval_targets=targets
-    )
+    cloned = clone_cache_entry(chunked, min_capacity_tokens=0, eval_targets=targets)
     assert cloned.offset == 2 and cloned.start_position == 1 and len(targets) == 2
 
-    merged = apc_adapters.ChunkedKVCacheCloneAdapter().merge_rows(
-        [cloned, cloned], [2, 2]
-    )
+    merged = merge_cache_entries([cloned, cloned], [2, 2])
     assert type(merged) is vendored_cache.BatchKVCache
 
     rotating = vendored_cache.RotatingKVCache(8)
     rotating.update_and_fetch(mx.ones((1, 1, 2, 3)), mx.zeros((1, 1, 2, 3)))
-    fake_ns = type(
-        "NS",
-        (),
-        {
-            "BatchRotatingKVCache": type(
-                "BatchRotating",
-                (),
-                {"merge": staticmethod(lambda caches: ("rotating", len(caches)))},
-            )
-        },
-    )
-    original_namespace = apc_adapters._cache_namespace_of
-    monkeypatch.setattr(apc_adapters, "_cache_namespace_of", lambda _c: fake_ns)
-    assert apc_adapters.RotatingKVCacheCloneAdapter().merge_rows(
-        [rotating, rotating], [2, 2]
-    ) == ("rotating", 2)
-    monkeypatch.setattr(apc_adapters, "_cache_namespace_of", original_namespace)
+    merged_rotating = merge_cache_entries([rotating, rotating], [2, 2])
+    assert type(merged_rotating) is vendored_cache.BatchRotatingKVCache
 
     arrays = vendored_cache.ArraysCache(2)
     arrays.cache = [None, mx.ones((1, 2))]
     arrays.left_padding = mx.array([1])
     arrays.lengths = mx.array([2])
     targets = []
-    cloned_arrays = apc_adapters.ArraysCacheCloneAdapter().clone(
+    cloned_arrays = clone_cache_entry(
         arrays, min_capacity_tokens=0, eval_targets=targets
     )
     assert cloned_arrays.cache[0] is None and len(targets) == 3
 
     empty_arrays = vendored_cache.ArraysCache(2)
     empty_arrays.cache = [None, None]
-    merged_arrays = apc_adapters.ArraysCacheCloneAdapter().merge_rows(
-        [empty_arrays, empty_arrays], [0, 0]
-    )
+    merged_arrays = merge_cache_entries([empty_arrays, empty_arrays], [0, 0])
     assert merged_arrays.cache == [None, None]
-
-    class _Pooling:
-        ratio = 2
-        remainder = 1
-        buf_kv = mx.ones((1, 2))
-        buf_gate = None
-        pooled = mx.zeros((1, 2))
-
-        def __init__(self, ratio):
-            self.ratio = ratio
-
-        @classmethod
-        def merge(cls, caches):
-            return ("merged", len(caches))
-
-    targets = []
-    pooled = apc_adapters.PoolingCacheCloneAdapter().clone(
-        _Pooling(2), min_capacity_tokens=0, eval_targets=targets
-    )
-    assert pooled.ratio == 2 and pooled.remainder == 1 and len(targets) == 2
-    assert apc_adapters.PoolingCacheCloneAdapter().merge_rows([pooled], [1]) == (
-        "merged",
-        1,
-    )
 
 
 def test_clone_and_merge_fallback_contracts(monkeypatch):

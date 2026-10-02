@@ -197,6 +197,18 @@ def inject_qwen4_exp_mtp_support(
                     sorted(mismatched.items())[:8],
                 )
                 return False
+            from rapid_mlx.models.qwen4_exp import ZeroCenteredRMSNorm
+            from rapid_mlx.models.qwen4_norm_convention import (
+                apply_qwen4_norm_convention,
+            )
+
+            receipt = getattr(inner, "norm_convention_receipt", None) or {}
+            apply_qwen4_norm_convention(
+                mtp,
+                weights,
+                ZeroCenteredRMSNorm,
+                receipt.get("source_convention"),
+            )
             mtp.load_weights(list(weights.items()), strict=True)
         else:
             mx.eval(mtp.parameters())

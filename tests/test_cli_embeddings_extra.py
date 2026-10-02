@@ -72,7 +72,7 @@ def test_load_embedding_helper_exits_2_when_extra_missing(monkeypatch, capsys):
     # pip-install command so the user can copy-paste the fix.
     assert "--embedding-model" in err
     assert "[embeddings]" in err
-    assert "pip install 'rapid-mlx[embeddings]'" in err
+    assert "-m pip install 'rapid-mlx[embeddings]==" in err
 
 
 def test_load_embedding_helper_proceeds_when_extra_installed(monkeypatch):
@@ -117,10 +117,9 @@ def test_install_hint_string_is_canonical():
     bare would be parsed as a shell glob in zsh) is caught.
     """
     from rapid_mlx.embedding import EMBEDDINGS_EXTRA_INSTALL_HINT
+    from rapid_mlx.runtime.optional_runtime import optional_extra_install_hint
 
-    assert EMBEDDINGS_EXTRA_INSTALL_HINT == (
-        "Install with: pip install 'rapid-mlx[embeddings]'"
-    )
+    assert optional_extra_install_hint("embeddings") == EMBEDDINGS_EXTRA_INSTALL_HINT
 
 
 def test_pyproject_declares_embeddings_extra():

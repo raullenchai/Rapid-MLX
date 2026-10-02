@@ -437,7 +437,7 @@ struct DictationView: View {
                 hfPath: entry.hfRepo,
                 totalBytes: ModelCacheActions.parseSizeBytes(entry.sizeOnDisk)
             )
-        case .chooseModel, .start, .restart, .openModelManagement:
+        case .chooseModel, .start, .restart, .openStartupLog, .openModelManagement:
             break
         }
     }

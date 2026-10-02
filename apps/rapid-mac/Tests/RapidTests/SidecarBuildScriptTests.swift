@@ -61,7 +61,7 @@ struct SidecarBuildScriptTests {
         let script = try String(contentsOf: Self.scriptURL, encoding: .utf8)
         let constraints = try String(contentsOf: Self.constraintsURL, encoding: .utf8)
 
-        #expect(constraints.contains("mlx-vlm==0.7.1"))
+        #expect(constraints.contains("mlx-vlm==0.7.2"))
         #expect(constraints.contains("sentencepiece==0.2.2"),
                 "SD3.5's T5 tokenizer dependency must not float in signed builds.")
         #expect(!script.contains("'mlx-vlm>=0.6.3,!=0.6.4,<0.7'"),
@@ -160,8 +160,8 @@ struct SidecarBuildScriptTests {
                 "The bounded desktop audio dependency group must remain separately installable.")
         #expect(pyproject.contains(#""mlx-audio>=0.5.3,<0.6""#))
         #expect(pyproject.contains(#""soundfile>=0.12.0""#))
-        #expect(script.contains(#""${RAPID_MLX_INSTALL_TARGET}[audio-desktop]""#),
-                "The desktop sidecar must install the bounded desktop audio dependency set.")
+        #expect(script.contains(#""${RAPID_MLX_INSTALL_TARGET}[audio-desktop,computer-use]""#),
+                "The desktop sidecar must install the bounded audio and Computer Use dependency sets.")
         #expect(script.contains(#"RAPID_MLX_WHEEL="${RAPID_MLX_WHEEL:-}""#),
                 "Release builds must be able to promote the exact candidate wheel into the sidecar.")
         #expect(script.contains("from mlx_audio.stt.utils import load_model"),
@@ -182,8 +182,9 @@ struct SidecarBuildScriptTests {
                 "Qwen3 TTS and its mlx-audio 0.5.3 Chatterbox codec closure must survive trimming.")
         #expect(!script.contains(#"rm -rf "$STAGE/site-packages/mlx_audio/tts/models""#),
                 "The trim must never remove the complete TTS model directory.")
-        #expect(script.contains(#"MACHO_BASELINE_COUNT="${MACHO_BASELINE_COUNT:-173}""#),
-                "The signing baseline must include the bundled FFmpeg executable.")
+        // 173 pre-CUA Mach-O files plus 21 trimmed PyObjC extension modules.
+        #expect(script.contains(#"MACHO_BASELINE_COUNT="${MACHO_BASELINE_COUNT:-194}""#),
+                "The signing baseline must include FFmpeg and the measured PyObjC closure.")
     }
 
     @Test("Desktop video runtime is pinned, OpenCV-free, LGPL, and smoke-proven")

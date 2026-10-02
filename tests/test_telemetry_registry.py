@@ -68,11 +68,32 @@ def test_registry_loads_via_importlib_resources():
     assert parsed["events"]
 
 
+def test_registry_load_ignores_underscore_prefixed_event_metadata(
+    monkeypatch, tmp_path
+):
+    parsed = json.loads(reg.registry_path().read_text(encoding="utf-8"))
+    parsed["events"]["_comment"] = "registry metadata, not an event"
+    registry_file = tmp_path / "events.json"
+    registry_file.write_text(json.dumps(parsed), encoding="utf-8")
+
+    monkeypatch.setattr(reg, "registry_path", lambda: registry_file)
+    reg.load_registry.cache_clear()
+    try:
+        loaded = reg.load_registry()
+        assert loaded["events"]["_comment"] == "registry metadata, not an event"
+        assert loaded["events"]["server_start_state"]["props"]["failure_stage"][
+            "only_when"
+        ] == {"state": ["failed"]}
+    finally:
+        reg.load_registry.cache_clear()
+
+
 def test_release_one_event_set_is_present():
     assert reg.event_names() == frozenset(
         {
             "app_opened",
             "active_day",
+            "server_start_state",
             "model_pulled",
             "model_pull_failed",
             "model_served",
@@ -114,6 +135,196 @@ def test_optional_property_may_be_absent():
     assert reg.validate("model_serve_failed", {"error_class": "corrupt_weights"}) == {
         "error_class": "corrupt_weights"
     }
+
+
+@pytest.mark.parametrize(
+    "error_class",
+    [
+        "invalid_config",
+        "tokenizer_load_failed",
+        "incompatible_weights",
+        "quantization_mismatch",
+        "local_path_missing",
+    ],
+)
+def test_model_serve_failed_accepts_named_engine_start_errors(error_class):
+    assert reg.validate("model_serve_failed", {"error_class": error_class}) == {
+        "error_class": error_class
+    }
+
+
+def test_model_serve_failed_rejects_unknown_error_class():
+    assert (
+        reg.validate("model_serve_failed", {"error_class": "future_load_error"}) is None
+    )
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        "accepted",
+        "declined",
+        "no_answer",
+        "interrupted",
+        "non_interactive",
+        "assume_yes",
+        "no_installer",
+        "managed_runtime",
+        "broken_runtime",
+    ],
+)
+def test_model_serve_failed_accepts_closed_extra_recovery(outcome):
+    props = {
+        "error_class": "missing_extra",
+        "extra": "vision",
+        "extra_recovery": outcome,
+    }
+    assert reg.validate("model_serve_failed", props) == props
+
+
+def test_extra_recovery_is_rejected_outside_missing_extra():
+    assert (
+        reg.validate(
+            "model_serve_failed",
+            {"error_class": "other", "extra_recovery": "declined"},
+        )
+        is None
+    )
+
+
+def test_missing_extra_property_is_closed_and_conditional():
+    assert reg.validate(
+        "model_serve_failed",
+        {"error_class": "missing_extra", "extra": "vision"},
+    ) == {"error_class": "missing_extra", "extra": "vision"}
+    assert (
+        reg.validate(
+            "model_serve_failed",
+            {"error_class": "other", "extra": "vision"},
+        )
+        is None
+    )
+    assert (
+        reg.validate(
+            "model_serve_failed",
+            {"error_class": "missing_extra", "extra": "embeddings"},
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("state", ["attempted", "ready"])
+def test_conditional_property_rejects_event_when_condition_is_false(state):
+    assert (
+        reg.validate(
+            "server_start_state",
+            {"state": state, "failure_stage": "bind"},
+        )
+        is None
+    )
+
+
+def test_previous_run_unterminated_is_attempted_only():
+    assert reg.validate(
+        "server_start_state",
+        {"state": "attempted", "previous_run_unterminated": True},
+    ) == {"state": "attempted", "previous_run_unterminated": True}
+    assert (
+        reg.validate(
+            "server_start_state",
+            {"state": "ready", "previous_run_unterminated": True},
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("port_explicit", [False, True])
+def test_port_explicit_is_failed_only(port_explicit):
+    props = {
+        "state": "failed",
+        "failure_stage": "bind",
+        "port_explicit": port_explicit,
+    }
+    assert reg.validate("server_start_state", props) == props
+    for state in ("attempted", "ready"):
+        assert (
+            reg.validate(
+                "server_start_state",
+                {"state": state, "port_explicit": port_explicit},
+            )
+            is None
+        )
+    assert (
+        reg.validate(
+            "server_start_state",
+            {
+                "state": "failed",
+                "failure_stage": "prepare",
+                "port_explicit": port_explicit,
+            },
+        )
+        is None
+    )
+
+
+def test_capability_rejected_accepts_closed_model_and_caller_context():
+    props = {
+        "capability": "image_input_unsupported",
+        "model_type": "llm",
+        "model": "qwen3.5-4b-4bit",
+        "caller": "rapid-desktop",
+    }
+    assert reg.validate("capability_rejected", props) == props
+
+
+@pytest.mark.parametrize(
+    "capability", ["structured_output_unsupported", "context_length_exceeded"]
+)
+def test_capability_rejected_accepts_closed_reject_reason(capability):
+    props = {
+        "capability": capability,
+        "model_type": "llm",
+        "reject_reason": "other",
+    }
+    assert reg.validate("capability_rejected", props) == props
+
+
+def test_capability_rejected_reason_only_when_supported_capability():
+    props = {
+        "capability": "image_input_unsupported",
+        "model_type": "llm",
+        "reject_reason": "other",
+    }
+    assert reg.validate("capability_rejected", props) is None
+
+
+def test_capability_rejected_reason_is_closed_enum():
+    props = {
+        "capability": "context_length_exceeded",
+        "model_type": "llm",
+        "reject_reason": "some free-form reason",
+    }
+    assert reg.validate("capability_rejected", props) is None
+
+
+def test_malformed_conditional_property_fails_closed():
+    loaded = reg.load_registry()
+    assert (
+        reg._validate_props(
+            {"stage": "bind"},
+            {
+                "stage": {
+                    "kind": "enum",
+                    "enum": "failure_stage",
+                    "only_when": ["not-a-mapping"],
+                }
+            },
+            loaded,
+            "test",
+            "test",
+        )
+        is None
+    )
 
 
 def test_out_of_enum_value_is_dropped():

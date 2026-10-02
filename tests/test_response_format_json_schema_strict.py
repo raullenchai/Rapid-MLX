@@ -1724,6 +1724,54 @@ def _responses_payload(*, strict: bool, stream: bool = False) -> dict:
     }
 
 
+def _chat_tools_payload(*, stream: bool = False) -> dict:
+    return {
+        "model": "test-model",
+        "messages": [{"role": "user", "content": "hi"}],
+        "stream": stream,
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "noop",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "NumberOnly",
+                "schema": _VALID_SCHEMA,
+                "strict": True,
+            },
+        },
+    }
+
+
+def _responses_tools_payload(*, stream: bool = False) -> dict:
+    return {
+        "model": "test-model",
+        "input": "hi",
+        "stream": stream,
+        "tools": [
+            {
+                "type": "function",
+                "name": "noop",
+                "parameters": {"type": "object", "properties": {}},
+            }
+        ],
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "NumberOnly",
+                "schema": _VALID_SCHEMA,
+                "strict": True,
+            }
+        },
+    }
+
+
 def test_responses_strict_true_guided_unavailable_runs_postgen_validation(
     _rate_limiter_state,
 ):
@@ -1806,26 +1854,25 @@ def test_responses_strict_true_post_decode_violation_returns_502(_rate_limiter_s
     assert snap["strict_violations_total"] == 1
 
 
-def test_responses_strict_true_stream_rejected_with_400(_rate_limiter_state):
-    """Codex r2 BLOCKING #2 parity: /v1/responses + strict + stream
-    is rejected with a clear 400 because constrained decoding on
-    the Responses surface is buffered-only — there is no
-    guided-streaming SSE helper for the Responses event shape
-    today. The error message names both escape hatches (drop
-    stream=true, or use /v1/chat/completions)."""
+def test_responses_strict_true_stream_emits_valid_normal_sse(_rate_limiter_state):
     engine = _Engine(supports_guided=True, guided_text=_VALID_PAYLOAD)
     client = _make_responses_client(engine, _rate_limiter_state)
     resp = client.post(
         "/v1/responses",
         json=_responses_payload(strict=True, stream=True),
     )
-    assert resp.status_code == 400, resp.text
-    body = resp.json()
-    assert body["error"]["code"] == "strict_stream_unsupported"
-    assert "stream=true" in body["error"]["message"]
-    assert "/v1/chat/completions" in body["error"]["message"]
-    # The counter still ticks — clients asking for strict+stream
-    # are reflected in the strict-traffic series even though we 400.
+    assert resp.status_code == 200, resp.text
+    events = []
+    for block in resp.text.strip().split("\n\n"):
+        lines = block.splitlines()
+        events.append((lines[0].removeprefix("event: "), json.loads(lines[1][6:])))
+    assert events[0][0] == "response.created"
+    assert events[-1][0] == "response.completed"
+    text = "".join(
+        data["delta"] for name, data in events if name == "response.output_text.delta"
+    )
+    assert json.loads(text) == {"value": 42}
+    assert events[-1][1]["response"]["usage"]["total_tokens"] == 9
     snap = response_format_metrics.snapshot()
     assert snap["strict_requests_total"] == 1
 
@@ -1882,14 +1929,7 @@ def test_responses_guided_cancellation_is_lifecycle_not_schema_failure(
     assert response_format_metrics.snapshot()["strict_violations_total"] == 0
 
 
-def test_strict_true_with_tools_returns_400_chat():
-    """Codex r3 BLOCKING #2 hole — strict + tools: the existing
-    ``if response_format and not request.tools`` guard around the
-    guided dispatch silently dropped strict mode when tools were
-    set, so a strict request with tools fell through to
-    unconstrained generation. The new gate fails closed with
-    ``strict_with_tools_unsupported`` because constrained-decoding
-    grammar and tool-call grammar are mutually exclusive."""
+def test_strict_true_with_tools_returns_valid_final_text_chat():
     engine = _Engine(supports_guided=True)
     client = _make_client(engine)
     payload = {
@@ -1914,20 +1954,17 @@ def test_strict_true_with_tools_returns_400_chat():
         },
     }
     resp = client.post("/v1/chat/completions", json=payload)
-    assert resp.status_code == 400, resp.text
-    body = resp.json()
-    assert body["error"]["code"] == "strict_with_tools_unsupported"
-    # Strict counter ticks so operators see the malformed-strict rate.
+    assert resp.status_code == 200, resp.text
+    assert json.loads(resp.json()["choices"][0]["message"]["content"]) == {"value": 42}
     snap = response_format_metrics.snapshot()
     assert snap["strict_requests_total"] == 1
-    # Neither guided nor chat path was hit.
     assert engine.guided_calls == []
-    assert engine.chat_calls == []
+    assert len(engine.chat_calls) == 1
 
 
-def test_responses_strict_true_with_tools_returns_400(_rate_limiter_state):
-    """Codex r3 BLOCKING #3 parity: /v1/responses + strict + tools
-    must also 400 ``strict_with_tools_unsupported``."""
+def test_responses_strict_true_with_tools_returns_valid_final_text(
+    _rate_limiter_state,
+):
     engine = _Engine(supports_guided=True)
     client = _make_responses_client(engine, _rate_limiter_state)
     payload = {
@@ -1950,11 +1987,820 @@ def test_responses_strict_true_with_tools_returns_400(_rate_limiter_state):
         },
     }
     resp = client.post("/v1/responses", json=payload)
-    assert resp.status_code == 400, resp.text
-    body = resp.json()
-    assert body["error"]["code"] == "strict_with_tools_unsupported"
+    assert resp.status_code == 200, resp.text
+    assert json.loads(resp.json()["output"][0]["content"][0]["text"]) == {"value": 42}
     assert engine.guided_calls == []
-    assert engine.chat_calls == []
+    assert len(engine.chat_calls) == 1
+
+
+@pytest.mark.parametrize("surface", ["chat", "responses"])
+def test_strict_tools_tool_call_is_returned_without_schema_repair(
+    surface, _rate_limiter_state
+):
+    class _ToolCallEngine(_Engine):
+        async def chat(self, *, messages, **kwargs):
+            self.chat_calls.append({"messages": messages, "kwargs": kwargs})
+            return GenerationOutput(
+                text="",
+                prompt_tokens=4,
+                completion_tokens=3,
+                finish_reason="tool_calls",
+                tool_calls=[{"id": "call_exact", "name": "noop", "arguments": "{}"}],
+            )
+
+    engine = _ToolCallEngine(supports_guided=True)
+    if surface == "chat":
+        response = _make_client(engine).post(
+            "/v1/chat/completions", json=_chat_tools_payload()
+        )
+        call = response.json()["choices"][0]["message"]["tool_calls"][0]
+        assert call["id"] == "call_exact"
+        assert call["function"] == {"name": "noop", "arguments": "{}"}
+    else:
+        response = _make_responses_client(engine, _rate_limiter_state).post(
+            "/v1/responses", json=_responses_tools_payload()
+        )
+        call = response.json()["output"][0]
+        assert call["call_id"] == "call_exact"
+        assert call["name"] == "noop"
+        assert call["arguments"] == "{}"
+    assert response.status_code == 200, response.text
+    assert engine.guided_calls == []
+
+
+@pytest.mark.parametrize("surface", ["chat", "responses"])
+def test_strict_tools_tool_call_stream_uses_normal_protocol(
+    surface, _rate_limiter_state
+):
+    class _ToolCallEngine(_Engine):
+        async def chat(self, *, messages, **kwargs):
+            self.chat_calls.append({"messages": messages, "kwargs": kwargs})
+            return GenerationOutput(
+                text="",
+                prompt_tokens=4,
+                completion_tokens=3,
+                finish_reason="tool_calls",
+                tool_calls=[{"id": "call_exact", "name": "noop", "arguments": "{}"}],
+            )
+
+    engine = _ToolCallEngine(supports_guided=True)
+    if surface == "chat":
+        payload = _chat_tools_payload(stream=True)
+        payload["stream_options"] = {"include_usage": True}
+        response = _make_client(engine).post("/v1/chat/completions", json=payload)
+        payloads = [
+            json.loads(line[6:])
+            for line in response.text.splitlines()
+            if line.startswith("data: {")
+        ]
+        calls = [
+            call
+            for payload in payloads
+            for choice in payload.get("choices", [])
+            for call in choice["delta"].get("tool_calls", [])
+        ]
+        assert calls[0]["id"] == "call_exact"
+        assert calls[0]["function"] == {"name": "noop", "arguments": "{}"}
+        assert payloads[-2]["choices"][0]["finish_reason"] == "tool_calls"
+        assert payloads[-1]["choices"] == []
+        assert payloads[-1]["usage"]["total_tokens"] == 7
+        assert response.text.rstrip().endswith("data: [DONE]")
+    else:
+        response = _make_responses_client(engine, _rate_limiter_state).post(
+            "/v1/responses", json=_responses_tools_payload(stream=True)
+        )
+        events = [
+            (block.splitlines()[0][7:], json.loads(block.splitlines()[1][6:]))
+            for block in response.text.strip().split("\n\n")
+        ]
+        assert [name for name, _data in events] == [
+            "response.created",
+            "response.in_progress",
+            "response.output_item.added",
+            "response.function_call_arguments.delta",
+            "response.output_item.done",
+            "response.completed",
+        ]
+        added = events[2][1]["item"]
+        assert added["call_id"] == "call_exact"
+        assert added["name"] == "noop"
+        assert events[3][1]["delta"] == "{}"
+    assert response.status_code == 200, response.text
+    assert len(engine.chat_calls) == 1
+    assert engine.guided_calls == []
+
+
+@pytest.mark.asyncio
+async def test_buffered_chat_stream_matches_normal_state_machine_sdk_shape():
+    from rapid_mlx.api.models import (
+        AssistantMessage,
+        ChatCompletionChoice,
+        ChatCompletionRequest,
+        ChatCompletionResponse,
+        FunctionCall,
+        PerRequestMetrics,
+        PromptTokensDetails,
+        SpeculativeDecodingMetrics,
+        ToolCall,
+        Usage,
+    )
+    from rapid_mlx.routes.chat import (
+        _stream_buffered_chat_response,
+        stream_chat_completion,
+    )
+
+    request = ChatCompletionRequest(
+        model="test-model",
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "noop",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ],
+        stream=True,
+        stream_options={"include_usage": True},
+    )
+    scripted = [
+        GenerationOutput(
+            text="checked the schema",
+            new_text="checked the schema",
+            channel="reasoning",
+            finished=False,
+            finish_reason=None,
+        ),
+        GenerationOutput(
+            text=_VALID_PAYLOAD,
+            new_text=_VALID_PAYLOAD,
+            channel="content",
+            finished=False,
+            finish_reason=None,
+        ),
+        GenerationOutput(
+            text=" ",
+            new_text=" ",
+            channel="tool_call",
+            tool_calls=[{"id": "call_exact", "name": "noop", "arguments": "{}"}],
+            prompt_tokens=4,
+            completion_tokens=5,
+            cached_tokens=3,
+            spec_decode_metrics={"verify_calls": 2},
+            finished=True,
+            finish_reason="tool_calls",
+        ),
+    ]
+
+    class _ScriptedStreamEngine:
+        tokenizer = None
+
+        async def stream_chat(self, **_kwargs):
+            for output in scripted:
+                yield output
+
+    normal = [
+        event
+        async for event in stream_chat_completion(
+            _ScriptedStreamEngine(),
+            [],
+            request,
+            response_id="chatcmpl-parity",
+            created=1,
+            _ok_outcome=[False],
+        )
+    ]
+
+    response = ChatCompletionResponse(
+        id="chatcmpl-parity",
+        created=1,
+        model="test-model",
+        choices=[
+            ChatCompletionChoice(
+                message=AssistantMessage(
+                    content=_VALID_PAYLOAD,
+                    reasoning_content="checked the schema",
+                    tool_calls=[
+                        ToolCall(
+                            id="call_exact",
+                            function=FunctionCall(name="noop", arguments="{}"),
+                        )
+                    ],
+                ),
+                finish_reason="tool_calls",
+            )
+        ],
+        usage=Usage(
+            prompt_tokens=4,
+            completion_tokens=5,
+            total_tokens=9,
+            prompt_tokens_details=PromptTokensDetails(cached_tokens=3),
+        ),
+        metrics=PerRequestMetrics(
+            speculative_decoding=SpeculativeDecodingMetrics(verify_calls=2)
+        ),
+    )
+
+    replay = [
+        event async for event in _stream_buffered_chat_response(response, request)
+    ]
+    assert replay == normal
+
+    payloads = [
+        json.loads(event[6:]) for event in replay if event.startswith("data: {")
+    ]
+    deltas = [choice["delta"] for payload in payloads for choice in payload["choices"]]
+    reasoning_index = next(
+        i for i, delta in enumerate(deltas) if "reasoning_content" in delta
+    )
+    content_index = next(i for i, delta in enumerate(deltas) if "content" in delta)
+    assert reasoning_index < content_index
+    tool_delta = next(delta["tool_calls"] for delta in deltas if "tool_calls" in delta)
+    assert tool_delta == [
+        {
+            "index": 0,
+            "id": "call_exact",
+            "type": "function",
+            "function": {"name": "noop", "arguments": "{}"},
+        }
+    ]
+    assert isinstance(tool_delta[0]["index"], int)
+
+
+@pytest.mark.asyncio
+async def test_buffered_responses_stream_matches_normal_state_machine_sdk_shape():
+    from rapid_mlx.api.responses_adapter import responses_to_openai
+    from rapid_mlx.api.responses_models import ResponsesRequest
+    from rapid_mlx.routes.responses import (
+        _stream_buffered_responses_response,
+        _stream_responses,
+    )
+
+    request = ResponsesRequest.model_validate(_responses_tools_payload(stream=True))
+    openai_request = responses_to_openai(request)
+    scripted = [
+        GenerationOutput(
+            text="checked the schema",
+            new_text="checked the schema",
+            channel="reasoning",
+            finished=False,
+            finish_reason=None,
+        ),
+        GenerationOutput(
+            text=_VALID_PAYLOAD,
+            new_text=_VALID_PAYLOAD,
+            channel="content",
+            finished=False,
+            finish_reason=None,
+        ),
+        GenerationOutput(
+            text=" ",
+            new_text=" ",
+            channel="tool_call",
+            tool_calls=[{"id": "call_exact", "name": "noop", "arguments": "{}"}],
+            prompt_tokens=4,
+            completion_tokens=5,
+            cached_tokens=3,
+            spec_decode_metrics={"verify_calls": 2},
+            finished=True,
+            finish_reason="tool_calls",
+        ),
+    ]
+
+    class _ScriptedStreamEngine:
+        tokenizer = None
+
+        async def stream_chat(self, **_kwargs):
+            for output in scripted:
+                yield output
+
+    normal = [
+        event
+        async for event in _stream_responses(
+            _ScriptedStreamEngine(),
+            openai_request,
+            request,
+            response_id_override="resp_parity",
+            created_at_override=1,
+            emit_telemetry=False,
+        )
+    ]
+    parsed_normal = [json.loads(event.splitlines()[1][6:]) for event in normal]
+    completed = parsed_normal[-1]["response"]
+    replay = [
+        event
+        async for event in _stream_buffered_responses_response(
+            json.dumps(completed).encode()
+        )
+    ]
+    assert replay == normal
+
+    event_types = [payload["type"] for payload in parsed_normal]
+    added = [
+        payload
+        for payload in parsed_normal
+        if payload["type"] == "response.output_item.added"
+    ]
+    done = [
+        payload
+        for payload in parsed_normal
+        if payload["type"] == "response.output_item.done"
+    ]
+    assert [(event["output_index"], event["item"]["type"]) for event in added] == [
+        (0, "reasoning"),
+        (1, "message"),
+        (2, "function_call"),
+    ]
+    assert [(event["output_index"], event["item"]["type"]) for event in done] == [
+        (0, "reasoning"),
+        (1, "message"),
+        (2, "function_call"),
+    ]
+    assert event_types.index("response.output_item.added") < event_types.index(
+        "response.output_text.delta"
+    )
+    for event in added + done:
+        assert isinstance(event["output_index"], int)
+        assert isinstance(event["item"]["id"], str)
+    completed_ids = [item["id"] for item in completed["output"]]
+    assert completed_ids == [
+        event["item"]["id"]
+        for event in sorted(done, key=lambda event: event["output_index"])
+    ]
+
+
+@pytest.mark.asyncio
+async def test_buffered_responses_stream_replays_computer_call_to_completion():
+    from rapid_mlx.routes.responses import _stream_buffered_responses_response
+
+    completed = {
+        "id": "resp_computer_replay",
+        "object": "response",
+        "created_at": 1,
+        "status": "completed",
+        "model": "test-model",
+        "output": [
+            {
+                "type": "computer_call",
+                "id": "cu_exact",
+                "call_id": "call_computer",
+                "status": "completed",
+                "action": {"type": "click", "x": 128, "y": 128, "button": "left"},
+                "pending_safety_checks": [],
+            }
+        ],
+        "usage": {"input_tokens": 4, "output_tokens": 5},
+        "parallel_tool_calls": True,
+        "tool_choice": "auto",
+        "tools": [
+            {
+                "type": "computer_20251022",
+                "name": "computer",
+                "display_width": 1280,
+                "display_height": 800,
+                "environment": "linux",
+            }
+        ],
+    }
+
+    events = [
+        json.loads(event.splitlines()[1][6:])
+        async for event in _stream_buffered_responses_response(
+            json.dumps(completed).encode()
+        )
+    ]
+
+    assert not any(event["type"] == "response.failed" for event in events)
+    assert [
+        (event["type"], event.get("item", {}).get("type"))
+        for event in events
+        if event["type"] in {"response.output_item.added", "response.output_item.done"}
+    ] == [
+        ("response.output_item.added", "computer_call"),
+        ("response.output_item.done", "computer_call"),
+    ]
+    terminal = events[-1]
+    assert terminal["type"] == "response.completed"
+    assert terminal["response"]["status"] == "completed"
+    assert terminal["response"]["output"] == [completed["output"][0]]
+
+
+@pytest.mark.asyncio
+async def test_buffered_replay_covers_empty_and_failure_protocol_shapes():
+    from rapid_mlx.api.models import (
+        AssistantMessage,
+        ChatCompletionChoice,
+        ChatCompletionRequest,
+        ChatCompletionResponse,
+        Usage,
+    )
+    from rapid_mlx.api.responses_adapter import responses_to_openai
+    from rapid_mlx.api.responses_models import ResponsesRequest
+    from rapid_mlx.routes.chat import _stream_buffered_chat_response
+    from rapid_mlx.routes.responses import (
+        _stream_buffered_responses_response,
+        _stream_responses,
+    )
+
+    chat_request = ChatCompletionRequest(
+        model="test-model",
+        messages=[{"role": "user", "content": "hi"}],
+        stream=True,
+    )
+    chat_response = ChatCompletionResponse(
+        id="chatcmpl-empty",
+        created=1,
+        model="test-model",
+        choices=[
+            ChatCompletionChoice(
+                message=AssistantMessage(content=None), finish_reason="stop"
+            )
+        ],
+        usage=Usage(),
+    )
+    chat_events = [
+        event
+        async for event in _stream_buffered_chat_response(chat_response, chat_request)
+    ]
+    assert chat_events[-1] == "data: [DONE]\n\n"
+
+    empty_response = {
+        "id": "resp_empty",
+        "object": "response",
+        "created_at": 1,
+        "status": "completed",
+        "model": "test-model",
+        "output": [],
+        "usage": {"input_tokens": 0, "output_tokens": 0},
+    }
+    response_events = [
+        event
+        async for event in _stream_buffered_responses_response(
+            json.dumps(empty_response).encode()
+        )
+    ]
+    assert json.loads(response_events[-1].splitlines()[1][6:])["type"] == (
+        "response.completed"
+    )
+
+    responses_request = ResponsesRequest.model_validate(
+        {"model": "test-model", "input": "hi", "stream": True}
+    )
+    openai_request = responses_to_openai(responses_request)
+
+    class _LateReasoningEngine:
+        tokenizer = None
+
+        async def stream_chat(self, **_kwargs):
+            yield GenerationOutput(text="answer", new_text="answer", channel="content")
+            yield GenerationOutput(
+                text="too late",
+                new_text="too late",
+                channel="reasoning",
+                finished=True,
+                finish_reason="stop",
+            )
+
+    failed_events = [
+        event
+        async for event in _stream_responses(
+            _LateReasoningEngine(),
+            openai_request,
+            responses_request,
+            emit_telemetry=False,
+        )
+    ]
+    assert any("response.failed" in event for event in failed_events)
+
+
+@pytest.mark.asyncio
+async def test_responses_replay_id_builder_covers_rescue_and_computer_items(
+    monkeypatch,
+):
+    from rapid_mlx.api.responses_adapter import responses_to_openai
+    from rapid_mlx.api.responses_models import ResponsesRequest
+    from rapid_mlx.routes import responses as responses_route
+
+    monkeypatch.setattr(
+        responses_route,
+        "_apply_reasoning_cutoff_notice",
+        lambda *_args, **_kwargs: "generation stopped during reasoning",
+    )
+
+    async def collect(request_payload, outputs):
+        request = ResponsesRequest.model_validate(request_payload)
+
+        class _ScriptedEngine:
+            tokenizer = None
+
+            async def stream_chat(self, **_kwargs):
+                for output in outputs:
+                    yield output
+
+        return [
+            event
+            async for event in responses_route._stream_responses(
+                _ScriptedEngine(),
+                responses_to_openai(request),
+                request,
+                emit_telemetry=False,
+            )
+        ]
+
+    rescue_events = await collect(
+        {"model": "test-model", "input": "hi", "stream": True},
+        [
+            GenerationOutput(
+                text="unfinished reasoning",
+                new_text="unfinished reasoning",
+                channel="reasoning",
+                finished=True,
+                finish_reason="length",
+            )
+        ],
+    )
+    assert any('"type": "message"' in event for event in rescue_events)
+
+    computer_events = await collect(
+        {
+            "model": "test-model",
+            "input": "click",
+            "stream": True,
+            "tools": [
+                {
+                    "type": "computer_20251022",
+                    "name": "computer",
+                    "display_width": 1280,
+                    "display_height": 800,
+                    "environment": "linux",
+                }
+            ],
+        },
+        [
+            GenerationOutput(
+                text="",
+                new_text="",
+                channel="tool_call",
+                tool_calls=[
+                    {
+                        "id": "call_computer",
+                        "name": "computer",
+                        "arguments": '{"action":"click","start_box":[128,128]}',
+                    }
+                ],
+                finished=True,
+                finish_reason="tool_calls",
+            )
+        ],
+    )
+    assert any('"type": "computer_call"' in event for event in computer_events)
+
+
+@pytest.mark.parametrize("surface", ["chat", "responses"])
+def test_strict_tools_invalid_final_text_uses_one_constrained_repair(
+    surface, _rate_limiter_state
+):
+    engine = _Engine(
+        supports_guided=True,
+        chat_text=_INVALID_PAYLOAD_WRONG_KEY,
+        guided_text=_VALID_PAYLOAD,
+    )
+    if surface == "chat":
+        response = _make_client(engine).post(
+            "/v1/chat/completions", json=_chat_tools_payload()
+        )
+        text = response.json()["choices"][0]["message"]["content"]
+    else:
+        response = _make_responses_client(engine, _rate_limiter_state).post(
+            "/v1/responses", json=_responses_tools_payload()
+        )
+        text = response.json()["output"][0]["content"][0]["text"]
+    assert response.status_code == 200, response.text
+    assert json.loads(text) == {"value": 42}
+    assert len(engine.chat_calls) == 1
+    assert len(engine.guided_calls) == 1
+    assert "tools" not in engine.guided_calls[0]["kwargs"]
+
+
+@pytest.mark.parametrize("surface", ["chat", "responses"])
+def test_strict_tools_invalid_constrained_repair_returns_502(
+    surface, _rate_limiter_state
+):
+    engine = _Engine(
+        supports_guided=True,
+        chat_text=_INVALID_PAYLOAD_WRONG_KEY,
+        guided_text=_INVALID_PAYLOAD_OUT_OF_RANGE,
+    )
+    if surface == "chat":
+        response = _make_client(engine).post(
+            "/v1/chat/completions", json=_chat_tools_payload()
+        )
+    else:
+        response = _make_responses_client(engine, _rate_limiter_state).post(
+            "/v1/responses", json=_responses_tools_payload()
+        )
+    assert response.status_code == 502, response.text
+    assert response.json()["error"]["code"] == "strict_schema_violation"
+    assert len(engine.chat_calls) == 1
+    assert len(engine.guided_calls) == 1
+
+
+def test_chat_strict_tools_without_guided_generation_skips_repair():
+    engine = _Engine(
+        supports_guided=False,
+        chat_text=_INVALID_PAYLOAD_WRONG_KEY,
+    )
+
+    response = _make_client(engine).post(
+        "/v1/chat/completions", json=_chat_tools_payload()
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["error"]["code"] == "json_schema_violation"
+    assert response.json()["error"]["details"]["attempts"] == 1
+    assert len(engine.chat_calls) == 1
+    assert engine.guided_calls == []
+
+
+def test_responses_strict_tools_without_guided_generation_skips_repair(
+    _rate_limiter_state,
+):
+    engine = _Engine(
+        supports_guided=False,
+        chat_text=_INVALID_PAYLOAD_WRONG_KEY,
+    )
+
+    response = _make_responses_client(engine, _rate_limiter_state).post(
+        "/v1/responses", json=_responses_tools_payload()
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["error"]["code"] == "json_schema_violation"
+    assert response.json()["error"]["details"]["attempts"] == 1
+    assert len(engine.chat_calls) == 1
+    assert engine.guided_calls == []
+
+
+@pytest.mark.parametrize("surface", ["chat", "responses"])
+@pytest.mark.parametrize("skip_reason", ["disabled", "prompt_over_window"])
+def test_strict_tools_skipped_repair_keeps_one_attempt_422(
+    surface, skip_reason, monkeypatch, _rate_limiter_state
+):
+    if skip_reason == "disabled":
+        monkeypatch.setenv("RAPID_MLX_STRICT_JSON_SCHEMA_REPAIR", "off")
+    else:
+        if surface == "chat":
+            from rapid_mlx.routes import chat as route_module
+        else:
+            from rapid_mlx.routes import responses as route_module
+
+        monkeypatch.setattr(
+            route_module, "repair_messages_fit_context", lambda *_a, **_k: False
+        )
+
+    engine = _Engine(
+        supports_guided=True,
+        chat_text=_INVALID_PAYLOAD_WRONG_KEY,
+        guided_text=_VALID_PAYLOAD,
+    )
+    if surface == "chat":
+        response = _make_client(engine).post(
+            "/v1/chat/completions", json=_chat_tools_payload()
+        )
+    else:
+        response = _make_responses_client(engine, _rate_limiter_state).post(
+            "/v1/responses", json=_responses_tools_payload()
+        )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["error"]["code"] == "json_schema_violation"
+    assert response.json()["error"]["details"]["attempts"] == 1
+    assert len(engine.chat_calls) == 1
+    assert engine.guided_calls == []
+
+
+@pytest.mark.parametrize("surface", ["chat", "responses"])
+def test_strict_repair_aggregates_all_usage_but_attributes_delivered_body(
+    surface, _rate_limiter_state
+):
+    first_metrics = {
+        "verify_calls": 1,
+        "correction_tokens": 2,
+        "bonus_tokens": 3,
+        "accepted_by_depth": [4, 1],
+        "drafted_by_depth": [5, 2],
+    }
+    repair_metrics = {
+        "verify_calls": 2,
+        "correction_tokens": 3,
+        "bonus_tokens": 4,
+        "accepted_by_depth": [6],
+        "drafted_by_depth": [7],
+    }
+
+    class _UsageEngine(_Engine):
+        async def chat(self, *, messages, **kwargs):
+            self.chat_calls.append({"messages": messages, "kwargs": kwargs})
+            return GenerationOutput(
+                text=_INVALID_PAYLOAD_WRONG_KEY,
+                prompt_tokens=4,
+                completion_tokens=5,
+                cached_tokens=3,
+                spec_decode_metrics=first_metrics,
+            )
+
+        async def generate_with_schema(self, *, messages, json_schema, **kwargs):
+            self.guided_calls.append(
+                {"messages": messages, "json_schema": json_schema, "kwargs": kwargs}
+            )
+            return GenerationOutput(
+                text=_VALID_PAYLOAD,
+                raw_text=_VALID_PAYLOAD,
+                reasoning_text="abcd",
+                prompt_tokens=4,
+                completion_tokens=5,
+                cached_tokens=2,
+                spec_decode_metrics=repair_metrics,
+            )
+
+    engine = _UsageEngine(supports_guided=True)
+    if surface == "chat":
+        client = _make_client(engine)
+        from rapid_mlx.config import get_config
+
+        get_config().reasoning_parser_name = "qwen3"
+        response = client.post("/v1/chat/completions", json=_chat_tools_payload())
+        body = response.json()
+        usage = body["usage"]
+    else:
+        client = _make_responses_client(engine, _rate_limiter_state)
+        from rapid_mlx.config import get_config
+
+        get_config().reasoning_parser_name = "qwen3"
+        response = client.post("/v1/responses", json=_responses_tools_payload())
+        body = response.json()
+        usage = {
+            "prompt_tokens": body["usage"]["input_tokens"],
+            "completion_tokens": body["usage"]["output_tokens"],
+            "prompt_tokens_details": body["usage"]["input_tokens_details"],
+            "completion_tokens_details": body["usage"]["output_tokens_details"],
+        }
+
+    assert response.status_code == 200, response.text
+    assert usage["prompt_tokens"] == 8
+    assert usage["completion_tokens"] == 10
+    assert usage["prompt_tokens_details"]["cached_tokens"] == 5
+    assert usage["completion_tokens_details"]["reasoning_tokens"] == 1
+    assert body["metrics"]["speculative_decoding"] == {
+        "verify_calls": 3,
+        "correction_tokens": 5,
+        "bonus_tokens": 7,
+        "accepted_by_depth": [10, 1],
+        "drafted_by_depth": [12, 2],
+    }
+
+
+@pytest.mark.parametrize("surface", ["chat", "responses"])
+def test_strict_tools_valid_final_stream_is_buffered_then_normal_sse(
+    surface, _rate_limiter_state
+):
+    engine = _Engine(supports_guided=True, chat_text=_VALID_PAYLOAD)
+    if surface == "chat":
+        response = _make_client(engine).post(
+            "/v1/chat/completions", json=_chat_tools_payload(stream=True)
+        )
+        payloads = [
+            json.loads(line[6:])
+            for line in response.text.splitlines()
+            if line.startswith("data: {")
+        ]
+        text = "".join(
+            choice["delta"].get("content", "")
+            for payload in payloads
+            for choice in payload.get("choices", [])
+        )
+        assert response.text.rstrip().endswith("data: [DONE]")
+    else:
+        response = _make_responses_client(engine, _rate_limiter_state).post(
+            "/v1/responses", json=_responses_tools_payload(stream=True)
+        )
+        blocks = response.text.strip().split("\n\n")
+        events = [
+            (block.splitlines()[0][7:], json.loads(block.splitlines()[1][6:]))
+            for block in blocks
+        ]
+        text = "".join(
+            data["delta"]
+            for name, data in events
+            if name == "response.output_text.delta"
+        )
+        assert events[0][0] == "response.created"
+        assert events[-1][0] == "response.completed"
+    assert response.status_code == 200, response.text
+    assert json.loads(text) == {"value": 42}
+    assert len(engine.chat_calls) == 1
+    assert engine.guided_calls == []
 
 
 def test_responses_strict_true_guided_unavailable_disable_flag_skips_enforcement(
@@ -2028,13 +2874,8 @@ def test_responses_strict_true_guided_unavailable_default_on_invalid_returns_422
 def test_strict_helper_composition_extract_returns_none_for_empty_schema():
     """Unit-level pin on the ``strict_mode AND no schema`` shape.
 
-    Codex r4 BLOCKING #3 (rewording fix): this test never claimed
-    to exercise the route gate; it pins the helper composition that
-    the gate depends on. The route gate IS exercised by
-    ``test_strict_true_with_tools_returns_400_chat`` and
-    ``test_responses_strict_true_with_tools_returns_400`` — both
-    make real requests and assert the 400 envelope. The defense-
-    in-depth ``strict_schema_required`` 400 in the route is
+    This test pins the helper composition that the route's malformed-schema
+    gate depends on. The defense-in-depth ``strict_schema_required`` 400 is
     pre-empted in production by ``_validate_response_format`` at
     body-parse time, but this test still earns its keep by pinning
     the helper invariant the gate relies on (a refactor that lets
@@ -2140,8 +2981,7 @@ def test_strict_true_invalid_schema_returns_400_chat():
     assert body["error"]["code"] == "invalid_strict_schema"
     assert body["error"]["type"] == "invalid_request_error"
     assert body["error"]["param"] == "response_format.json_schema.schema"
-    # Strict counter still ticks so operators see the malformed-strict
-    # rate (parity with strict_schema_required + strict_with_tools_unsupported).
+    # Strict counter still ticks so operators see the malformed-strict rate.
     snap = response_format_metrics.snapshot()
     assert snap["strict_requests_total"] == 1
     # Generation must NOT have run — the gate fires before the
@@ -2594,3 +3434,225 @@ def test_strict_true_responses_sync_setup_failure_returns_502(_rate_limiter_stat
     assert engine.chat_calls == []
     snap = response_format_metrics.snapshot()
     assert snap["strict_violations_total"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Telemetry: every non-stream strict 502 is a counted strict_schema_violation
+# ---------------------------------------------------------------------------
+
+
+class _CallTimeFailureEngine(_Engine):
+    """``generate_with_schema`` raises when CALLED (plain ``def``), before any
+    coroutine exists -- the responses.py sync-setup arm, which
+    ``_SyncFailureEngine`` (an ``async def``) never actually reaches."""
+
+    def generate_with_schema(self, *, messages, json_schema, **kwargs):
+        raise RuntimeError("grammar setup failed at call time")
+
+
+def _capture_failed_emits(monkeypatch) -> list[dict]:
+    from rapid_mlx.telemetry import inference
+
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        inference, "emit_completed_request", lambda **kwargs: calls.append(kwargs)
+    )
+    return calls
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "engine_factory"),
+    [
+        # chat: guided raises -> 502 without fallback
+        (
+            "/v1/chat/completions",
+            lambda: _Engine(supports_guided=True, guided_raises=RuntimeError("x")),
+        ),
+        # chat: post-decode validation
+        (
+            "/v1/chat/completions",
+            lambda: _Engine(supports_guided=True, guided_text=_INVALID_PAYLOAD_PROSE),
+        ),
+        # responses: guided raises mid-await
+        (
+            "/v1/responses",
+            lambda: _Engine(supports_guided=True, guided_raises=RuntimeError("x")),
+        ),
+        # responses: guided raises at sync setup (call time)
+        ("/v1/responses", lambda: _CallTimeFailureEngine(supports_guided=True)),
+        # responses: post-decode validation
+        (
+            "/v1/responses",
+            lambda: _Engine(supports_guided=True, guided_text=_INVALID_PAYLOAD_PROSE),
+        ),
+    ],
+)
+def test_nonstream_strict_502_counts_one_strict_schema_violation(
+    monkeypatch, _rate_limiter_state, endpoint, engine_factory
+):
+    calls = _capture_failed_emits(monkeypatch)
+    engine = engine_factory()
+    if endpoint == "/v1/responses":
+        client = _make_responses_client(engine, _rate_limiter_state)
+        body = _responses_payload(strict=True)
+    else:
+        client = _make_client(engine)
+        body = _payload(strict=True)
+    resp = client.post(endpoint, json=body, headers={"User-Agent": "OpenAI/JS 5.23.0"})
+    assert resp.status_code == 502, resp.text
+    assert resp.json()["error"]["code"] == "strict_schema_violation"
+    assert [call["result"] for call in calls] == ["failed"]
+    assert calls[0]["error_class"] == "strict_schema_violation"
+    assert calls[0]["endpoint"] == endpoint
+    assert calls[0]["caller_agent"] == "OpenAI/JS 5.23.0"
+
+
+class _EngineThatBreaksOnRepair(_Engine):
+    """First (unconstrained) attempt misses the schema; the repair turn raises
+    an engine OOM abort."""
+
+    async def chat(self, *, messages, **kwargs):
+        from rapid_mlx.request import InferenceAbortedError
+
+        is_repair = len(self.chat_calls) > 0
+        self.chat_calls.append({"messages": messages, "kwargs": kwargs})
+        if is_repair:
+            raise InferenceAbortedError("Metal: out of memory at /Users/alice/x")
+        return GenerationOutput(
+            text=_INVALID_PAYLOAD_OUT_OF_RANGE,
+            new_text=_INVALID_PAYLOAD_OUT_OF_RANGE,
+            prompt_tokens=4,
+            completion_tokens=5,
+            finished=True,
+            finish_reason="stop",
+            channel=None,
+        )
+
+
+_LIFECYCLE_TASK = object()
+
+
+class _ReplacedDuringGuidedEngine(_Engine):
+    def consume_lifecycle_task_abort(self, task):
+        return task is _LIFECYCLE_TASK
+
+    async def generate_with_schema(self, *, messages, json_schema, **kwargs):
+        from rapid_mlx.api.errors import GuidedGenerationCancelledError
+
+        raise GuidedGenerationCancelledError(lifecycle_task=_LIFECYCLE_TASK)
+
+
+def _post_strict(endpoint, engine, rate_limiter_state):
+    if endpoint == "/v1/responses":
+        client = _make_responses_client(engine, rate_limiter_state)
+        body = _responses_payload(strict=True)
+    else:
+        client = _make_client(engine)
+        body = _payload(strict=True)
+    return client.post(endpoint, json=body)
+
+
+@pytest.mark.parametrize("endpoint", ["/v1/chat/completions", "/v1/responses"])
+def test_strict_repair_engine_failure_counts_the_classified_exception(
+    monkeypatch, _rate_limiter_state, endpoint
+):
+    calls = _capture_failed_emits(monkeypatch)
+    resp = _post_strict(
+        endpoint, _EngineThatBreaksOnRepair(supports_guided=False), _rate_limiter_state
+    )
+    assert resp.status_code == 502, resp.text
+    assert resp.json()["error"]["code"] == "strict_repair_engine_failure"
+    assert [(c["result"], c["error_class"]) for c in calls] == [
+        ("failed", "insufficient_memory")
+    ]
+    assert "alice" not in repr(calls)
+
+
+@pytest.mark.parametrize("endpoint", ["/v1/chat/completions", "/v1/responses"])
+def test_strict_422_after_repair_counts_strict_schema_violation(
+    monkeypatch, _rate_limiter_state, endpoint
+):
+    calls = _capture_failed_emits(monkeypatch)
+    resp = _post_strict(
+        endpoint,
+        _Engine(supports_guided=False, chat_text=_INVALID_PAYLOAD_OUT_OF_RANGE),
+        _rate_limiter_state,
+    )
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["error"]["code"] == "json_schema_violation"
+    assert [(c["result"], c["error_class"]) for c in calls] == [
+        ("failed", "strict_schema_violation")
+    ]
+
+
+@pytest.mark.parametrize("endpoint", ["/v1/chat/completions", "/v1/responses"])
+def test_nonstream_guided_model_replacement_counts_model_replaced(
+    monkeypatch, _rate_limiter_state, endpoint
+):
+    calls = _capture_failed_emits(monkeypatch)
+    resp = _post_strict(
+        endpoint, _ReplacedDuringGuidedEngine(supports_guided=True), _rate_limiter_state
+    )
+    assert resp.status_code == 503, resp.text
+    assert [(c["result"], c["error_class"]) for c in calls] == [
+        ("failed", "model_replaced")
+    ]
+
+
+@pytest.mark.parametrize(
+    ("chat_text", "expected"),
+    [
+        (_INVALID_PAYLOAD_OUT_OF_RANGE, [("failed", "strict_schema_violation")]),
+        (_VALID_PAYLOAD, [("ok", None)]),
+    ],
+)
+def test_strict_postgen_stream_counts_exactly_one_judged_outcome(
+    monkeypatch, _rate_limiter_state, chat_text, expected
+):
+    """The unconstrained strict stream is judged AFTER the upstream stream's
+    clean end: a violation is one strict_schema_violation (never also ok),
+    a valid body is one ok."""
+    calls = _capture_failed_emits(monkeypatch)
+    engine = _Engine(supports_guided=False, chat_text=chat_text)
+    client = _make_client(engine)
+    resp = client.post("/v1/chat/completions", json=_payload(strict=True, stream=True))
+    assert resp.status_code == 200, resp.text
+    assert ("json_schema_violation" in resp.text) == (expected[0][0] == "failed")
+    assert [(c["result"], c.get("error_class")) for c in calls] == expected
+
+
+def test_strict_postgen_stream_buffer_overflow_counts_strict_schema_violation(
+    monkeypatch, _rate_limiter_state
+):
+    monkeypatch.setenv("RAPID_MLX_STRICT_BUFFER_BYTES", "8")
+    calls = _capture_failed_emits(monkeypatch)
+    engine = _Engine(supports_guided=False, chat_text=_VALID_PAYLOAD * 50)
+    client = _make_client(engine)
+    resp = client.post("/v1/chat/completions", json=_payload(strict=True, stream=True))
+    assert "buffer_overflow" in resp.text, resp.text[-400:]
+    assert [(c["result"], c.get("error_class")) for c in calls] == [
+        ("failed", "strict_schema_violation")
+    ]
+
+
+def test_chat_nonstream_abort_is_classified_abort_first(
+    monkeypatch, _rate_limiter_state
+):
+    """The chat handler maps InferenceAbortedError to 503 BEFORE its template
+    400 check, so an abort whose text matches the template predicate is an
+    abort in telemetry too (the counterpart of the template-first routes)."""
+    from rapid_mlx.request import InferenceAbortedError
+
+    class _AbortingEngine(_Engine):
+        async def chat(self, *, messages, **kwargs):
+            raise InferenceAbortedError("chat template render aborted")
+
+    calls = _capture_failed_emits(monkeypatch)
+    client = _make_client(_AbortingEngine(supports_guided=False))
+    body = _payload(strict=False)
+    body.pop("response_format", None)
+    resp = client.post("/v1/chat/completions", json=body)
+    assert resp.status_code == 503, resp.text
+    assert [(c["result"], c["error_class"]) for c in calls] == [
+        ("failed", "engine_aborted")
+    ]

@@ -5,5 +5,4 @@
 
 ## Highlights
 
-**<Named thing>** — what changed, and why a user should care. Include the
-numbers if there are numbers, and the caveat if there is a caveat.
+<!-- Add only user-visible changes after v0.15.4. -->

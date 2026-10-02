@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// "Connect your agents" — the second post-install call-to-action.
+/// "Connect an agent" — the local connection home.
 ///
 /// Once the local server is running it speaks the OpenAI and Anthropic
 /// wire formats on `127.0.0.1`, so any coding tool that lets you point
@@ -66,8 +66,8 @@ struct ConnectToolsView: View {
     var readiness: ModelReadiness? = nil
     var onReadinessAction: (ModelReadiness.Action) -> Void = { _ in }
     @State private var integrationTargets: [IntegrationTarget] = []
-    @State private var showsConnectionDetails = false
     @State private var showsMoreIntegrations = false
+    @State private var showsServerSettings = false
 
     private var openAIBaseURL: String { "http://\(host):\(port)/v1" }
     private var anthropicBaseURL: String { "http://\(host):\(port)" }
@@ -102,7 +102,7 @@ struct ConnectToolsView: View {
     /// painted on screen — see ``snippetKeyMasked``.
     private var snippetKey: String { bearer.isEmpty ? "<starts with your server>" : bearer }
 
-    /// Masked key for the always-visible snippet (``ConnectTool.displaySnippet``).
+    /// Masked key for an expanded snippet (``ConnectTool.displaySnippet``).
     /// The API-key ``CopyableRow`` above masks the bearer behind an eye toggle,
     /// but the config snippets rendered right below it interpolated the raw key
     /// in cleartext — so a screenshot of this page (the Launch "connect your
@@ -193,7 +193,6 @@ struct ConnectToolsView: View {
     @ViewBuilder
     var cardContent: some View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.xl) {
-            DesktopServerPortField()
             // Honest about readiness rather than presenting a
             // half-filled template as a working config. The sheet is
             // always reachable (see ChatView's empty-state CTA), so
@@ -220,51 +219,55 @@ struct ConnectToolsView: View {
             // ``CopyableRow`` placeholder machinery.
             if let readiness, !readiness.isReady {
                 stoppedSetup(readiness: readiness)
-                endpointSection
-                toolsSection(tools)
             } else if !configReady {
                 // Either no readiness was supplied (dev snapshot), or the
                 // model is up but a value is still missing — a narrow
                 // case, but silence there would leave a half-filled
                 // config looking complete.
                 InlineNotice(message: readinessMessage, tone: .info)
-                endpointSection
-                toolsSection(tools)
-            } else {
-                toolsSection(Array(tools.prefix(3)), title: "Popular integrations")
+            }
+
+            // The connection contract is the page's primary information.
+            // Users arrive here to learn what another app should connect to;
+            // hiding these values behind "Advanced" made the page read as a
+            // collection of product-specific shell commands instead of a
+            // local server that works with any compatible client.
+            endpointSection
+
+            toolsSection(Array(tools.prefix(3)), title: "Popular integrations")
+            let remaining = Array(tools.dropFirst(3))
+            if !remaining.isEmpty {
                 Button {
-                    showsConnectionDetails.toggle()
+                    showsMoreIntegrations.toggle()
                 } label: {
                     disclosureLabel(
-                        "Advanced connection details",
-                        systemImage: "network",
-                        expanded: showsConnectionDetails
+                        "More integrations (\(remaining.count))",
+                        systemImage: "ellipsis.circle",
+                        expanded: showsMoreIntegrations
                     )
                 }
                 .buttonStyle(.plain)
-                .accessibilityIdentifier("ConnectTools.AdvancedDetails")
-                if showsConnectionDetails {
-                    endpointSection.padding(.top, RapidTheme.Space.sm)
+                .accessibilityIdentifier("ConnectTools.MoreIntegrations")
+                if showsMoreIntegrations {
+                    toolsSection(remaining, title: "More integrations")
+                        .padding(.top, RapidTheme.Space.sm)
                 }
+            }
 
-                let remaining = Array(tools.dropFirst(3))
-                if !remaining.isEmpty {
-                    Button {
-                        showsMoreIntegrations.toggle()
-                    } label: {
-                        disclosureLabel(
-                            "More integrations (\(remaining.count))",
-                            systemImage: "ellipsis.circle",
-                            expanded: showsMoreIntegrations
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("ConnectTools.MoreIntegrations")
-                    if showsMoreIntegrations {
-                        toolsSection(remaining, title: "More integrations")
-                            .padding(.top, RapidTheme.Space.sm)
-                    }
-                }
+            Button {
+                showsServerSettings.toggle()
+            } label: {
+                disclosureLabel(
+                    "Server settings",
+                    systemImage: "gearshape",
+                    expanded: showsServerSettings
+                )
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("ConnectTools.ServerSettings")
+            if showsServerSettings {
+                DesktopServerPortField()
+                    .padding(.top, RapidTheme.Space.sm)
             }
         }
         .frame(maxWidth: RapidTheme.Layout.pageMaxWidth, alignment: .leading)
@@ -328,8 +331,8 @@ struct ConnectToolsView: View {
         HStack(alignment: .top, spacing: RapidTheme.Space.md) {
             VStack(alignment: .leading, spacing: RapidTheme.Space.xs) {
                 SectionHeader(
-                    "Connect your agents",
-                    subtitle: "Connect any agent or editor that supports a local base URL. It's free and stays on your Mac.",
+                    "Connect an agent",
+                    subtitle: "Use the model running on this Mac from an agent, editor, or any compatible app.",
                     emphasis: .page
                 )
                 // The #1470 "start a chat to generate the key" hint used
@@ -360,17 +363,43 @@ struct ConnectToolsView: View {
     /// have to repeat the full base URL + key + model three times.
     private var endpointSection: some View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
-            SectionHeader("Endpoint")
+            SectionHeader(
+                "Connection details",
+                subtitle: "Paste these values into any app that supports a custom OpenAI or Anthropic provider."
+            )
             VStack(spacing: 0) {
+                HStack(spacing: RapidTheme.Space.sm) {
+                    Image(systemName: configReady ? "checkmark.circle.fill" : "clock.fill")
+                        .foregroundStyle(configReady ? RapidTheme.green : .secondary)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(configReady ? "Ready for local connections" : "Waiting for a running model")
+                            .font(RapidFont.secondary.weight(.semibold))
+                        Text(configReady
+                            ? "The endpoint, key, and model below are live now."
+                            : "Start a text model above; the API key and integration commands will activate automatically.")
+                            .font(RapidFont.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: RapidTheme.Space.sm)
+                    Text("LOCAL")
+                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                        .tracking(0.6)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(RapidTheme.Space.md)
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("ConnectTools.ConnectionStatus")
+                rowDivider
                 // Base URLs are real information at all times — the
                 // loopback address and port are known before anything
                 // starts — so they render at full reading contrast and
                 // stay copyable. Only values that genuinely don't exist
                 // yet (the key, the model) recede and disable their
                 // Copy control.
-                CopyableRow(label: "OpenAI base URL", value: openAIBaseURL)
+                CopyableRow(label: "OpenAI-compatible URL", value: openAIBaseURL)
                 rowDivider
-                CopyableRow(label: "Anthropic base URL", value: anthropicBaseURL)
+                CopyableRow(label: "Anthropic-compatible URL", value: anthropicBaseURL)
                 rowDivider
                 CopyableRow(
                     label: "API key",
@@ -724,9 +753,9 @@ private struct ConnectTool: Identifiable {
 ///      steel-blue block, repeated three times, which read as the most
 ///      important thing on the page) to a compact outlined secondary
 ///      with a steel-blue label — the utility action it actually is.
-///   3. The snippet sits on ``surfaceCode`` with tighter padding and a
-///      smaller mono size, so it reads as inset reference material
-///      rather than a second card.
+///   3. Commands stay collapsed until requested. The direct Copy action is
+///      still one click, while new users can scan the page without first
+///      parsing several screens of shell syntax.
 ///
 /// Every tool, value, and action is preserved exactly.
 private struct ConnectToolRow: View {
@@ -735,6 +764,7 @@ private struct ConnectToolRow: View {
     /// half-filled snippet is worse than not offering it.
     var isReady: Bool = true
     @State private var copied = false
+    @State private var showsCommand = false
 
     /// Fixed icon column. Everything textual in the row starts at
     /// ``iconColumn`` + ``iconGap`` so title, description, and snippet
@@ -765,22 +795,15 @@ private struct ConnectToolRow: View {
 
                 Spacer(minLength: RapidTheme.Space.md)
 
-                // Icon only, and the same ``QuietIconButton`` the endpoint
-                // rows above use. The labelled variant did not fit: pinned to
-                // 132pt it rendered "Copy comm…" — the fixed width was chosen
-                // to stop the row reflowing when the label flips to "Copied",
-                // and it truncated the resting label to buy that. It also put
-                // the button's hit area and its drawn pill at different sizes,
-                // since the frame sat outside the button style. An icon has
-                // one width in both states, so none of that arises.
-                QuietIconButton(
-                    symbol: copied ? "checkmark" : "doc.on.doc",
-                    label: copied ? "Copied \(tool.name) command" : "Copy \(tool.name) command",
-                    help: copyHelp,
-                    tint: copied ? RapidTheme.utilityActionSuccess : nil,
-                    action: copy
-                )
+                Button(action: copy) {
+                    Label(copied ? "Copied" : actionLabel, systemImage: copied ? "checkmark" : "doc.on.doc")
+                        .frame(minWidth: 108)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
                 .disabled(!isReady)
+                .help(copyHelp)
+                .accessibilityLabel(copied ? "Copied \(tool.name) setup" : accessibilityActionLabel)
                 .accessibilityIdentifier("Launch.Integration.Copy.\(tool.id)")
 
             }
@@ -796,22 +819,42 @@ private struct ConnectToolRow: View {
                     .frame(maxWidth: 420, alignment: .leading)
                     .padding(.top, RapidTheme.Space.sm)
 
-                // Masked form only — the real key never touches the screen, so
-                // a screenshot of this page can't leak the bearer. Copy still
-                // puts the real key (``tool.snippet``) on the clipboard.
-                Text(tool.displaySnippet)
-                    .font(RapidFont.code)
+                Button {
+                    withAnimation(.easeInOut(duration: 0.16)) {
+                        showsCommand.toggle()
+                    }
+                } label: {
+                    HStack(spacing: RapidTheme.Space.xs) {
+                        Image(systemName: showsCommand ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 10, weight: .semibold))
+                        Text(showsCommand ? "Hide command" : "Show command")
+                            .font(RapidFont.secondary)
+                    }
                     .foregroundStyle(.secondary)
-                    .lineSpacing(3)
-                    .textSelection(.enabled)
-                    .padding(.horizontal, RapidTheme.Space.md)
-                    .padding(.vertical, RapidTheme.Space.md - 2)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(
-                        RoundedRectangle(cornerRadius: RapidTheme.Radius.code, style: .continuous)
-                            .fill(RapidTheme.surfaceCode)
-                    )
-                    .padding(.top, RapidTheme.Space.md)
+                }
+                .buttonStyle(.plain)
+                .padding(.top, RapidTheme.Space.sm)
+                .accessibilityIdentifier("Launch.Integration.Command.\(tool.id)")
+
+                if showsCommand {
+                    // Masked form only — the real key never touches the screen,
+                    // so a screenshot of this page can't leak the bearer. Copy
+                    // still puts the real key (``tool.snippet``) on the clipboard.
+                    Text(tool.displaySnippet)
+                        .font(RapidFont.code)
+                        .foregroundStyle(.secondary)
+                        .lineSpacing(3)
+                        .textSelection(.enabled)
+                        .padding(.horizontal, RapidTheme.Space.md)
+                        .padding(.vertical, RapidTheme.Space.md - 2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(
+                            RoundedRectangle(cornerRadius: RapidTheme.Radius.code, style: .continuous)
+                                .fill(RapidTheme.surfaceCode)
+                        )
+                        .padding(.top, RapidTheme.Space.sm)
+                        .accessibilityIdentifier("Launch.Integration.Snippet.\(tool.id)")
+                }
             }
             .padding(.leading, Self.textInset)
         }
@@ -827,6 +870,22 @@ private struct ConnectToolRow: View {
         case .launch:        return "Copy this agent's one-session launch command"
         case .rewriteConfig: return "Copy the command that configures \(tool.name)"
         case .guide:         return "Copy the command that prints \(tool.name)'s setup guide"
+        }
+    }
+
+    private var actionLabel: String {
+        switch tool.action {
+        case .launch:        return "Copy command"
+        case .rewriteConfig: return "Copy setup"
+        case .guide:         return "Copy guide"
+        }
+    }
+
+    private var accessibilityActionLabel: String {
+        switch tool.action {
+        case .launch:        return "Copy \(tool.name) launch command"
+        case .rewriteConfig: return "Copy \(tool.name) setup command"
+        case .guide:         return "Copy \(tool.name) setup guide"
         }
     }
 

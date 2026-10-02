@@ -19,6 +19,8 @@ import importlib.util
 
 import pytest
 
+from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
+
 
 def test_is_audio_model_alias_recognises_common_aliases() -> None:
     """The substring classifier should catch every audio alias the
@@ -71,8 +73,8 @@ def test_is_audio_model_alias_ignores_non_audio() -> None:
         assert not is_audio_model_alias(name), name
 
 
-def test_require_audio_or_exit_exits_2_when_mlx_audio_missing(
-    monkeypatch, capsys
+def test_require_audio_or_exit_raises_typed_failure_when_mlx_audio_missing(
+    monkeypatch,
 ) -> None:
     """When ``find_spec("mlx_audio")`` returns None, the helper must
     print the install hint to stderr and ``sys.exit(2)``.
@@ -91,19 +93,14 @@ def test_require_audio_or_exit_exits_2_when_mlx_audio_missing(
 
     monkeypatch.setattr(importlib.util, "find_spec", _find_spec_missing)
 
-    with pytest.raises(SystemExit) as excinfo:
+    with pytest.raises(OptionalRuntimeMissing) as excinfo:
         probe.require_audio_or_exit("kokoro")
 
-    assert excinfo.value.code == 2, (
-        f"Boot guard must exit 2 (argparse usage-error code), got "
-        f"{excinfo.value.code!r}"
-    )
-    captured = capsys.readouterr()
-    err = captured.err
-    assert "kokoro" in err, err
-    assert "[audio]" in err, err
-    assert "pip install" in err, err
-    assert "rapid-mlx[audio]" in err, err
+    message = excinfo.value.format_user_message()
+    assert "kokoro" in message
+    assert "[audio]" in message
+    assert "pip install" in message
+    assert "rapid-mlx[audio]" in message
 
 
 def test_require_audio_or_exit_no_op_when_mlx_audio_present(monkeypatch) -> None:
@@ -173,6 +170,7 @@ def test_serve_command_triggers_audio_boot_guard(monkeypatch, capsys) -> None:
     assert "kokoro" in err
     assert "[audio]" in err
     assert "pip install" in err
+    assert err.count("RAPID-MLX-STARTUP-FAILURE:") == 1
 
 
 def test_serve_command_does_not_audio_guard_text_model(monkeypatch) -> None:

@@ -4,6 +4,48 @@ import Testing
 
 @Suite("Download/catalog hardening")
 struct DownloadCatalogHardeningTests {
+    private func atomicCatalog(withTextRows textRows: [[String: Any]]) throws -> String {
+        let alias = "qwen3.8-27b-tensorfold"
+        var snapshot: [String: Any] = [
+            "schema_version": 2,
+            "recommendation_policy_digests": [],
+            "models": [[
+                "schema_version": 1,
+                "registry_model_id": "legacy/hf/\(alias)",
+                "resolution_status": "unresolved",
+                "source": ["provider": "huggingface", "repo_id": "Vontra/Qwen3.8-27B-MLX-4bit"],
+            ]],
+            "aliases": [[
+                "schema_version": 2,
+                "alias": alias,
+                "origin": "builtin",
+                "target": [
+                    "registry_model_id": "legacy/hf/\(alias)",
+                    "resolution_status": "unresolved",
+                ],
+                "capabilities": [
+                    "task_types": ["text_generation"],
+                    "operation_modes": ["chat"],
+                    "runtime_adapter": "mlx_lm",
+                    "is_text_only": true,
+                ],
+                "availability": ["cli": true, "server": true, "desktop": true, "website": true],
+                "default_execution_preset_id": NSNull(),
+                "execution_presets": [],
+            ]],
+        ]
+        let digest = try #require(ModelCatalog.atomicCatalogDigest(snapshot))
+        snapshot["catalog_digest"] = digest
+        let root: [String: Any] = [
+            "text": textRows,
+            "atomic": [
+                "snapshot": snapshot,
+                "shadow_report": ["equivalent": true, "catalog_digest": digest],
+            ],
+        ]
+        return String(decoding: try JSONSerialization.data(withJSONObject: root), as: UTF8.self)
+    }
+
     @Test("Structured catalog carries authoritative Desktop launch metadata")
     func structuredCatalogCapabilityParsing() throws {
         let output = """
@@ -11,7 +53,9 @@ struct DownloadCatalogHardeningTests {
           "text": [
             {"alias":"qwen3.5-9b-4bit","hf_path":"mlx-community/Qwen3.5-9B-4bit","is_builtin":true,"is_text_only":false,"supports_spec_decode":false,"mtp_draft_model":"mlx-community/Qwen3.5-9B-MTP-4bit","mtp_speculative_tokens":2,"mtp_continuous_batching_tier":"verified"},
             {"alias":"qwen3.5-company-tuned","hf_path":"company/TextCheckpoint","is_builtin":false,"is_text_only":false,"supports_spec_decode":false},
-            {"alias":"qwen3.5-4b-4bit","hf_path":"mlx-community/Qwen3.5-4B-MLX-4bit","is_builtin":true,"is_text_only":true,"supports_spec_decode":false}
+            {"alias":"qwen3.5-4b-4bit","hf_path":"mlx-community/Qwen3.5-4B-MLX-4bit","is_builtin":true,"is_text_only":true,"supports_spec_decode":false},
+            {"alias":"qwen3.8-27b-tensorfold","hf_path":"Vontra/Qwen3.8-27B-MLX-4bit","is_builtin":true,"is_text_only":true,"supports_spec_decode":false,"supports_dflash":true,"dflash_draft_model":"z-lab/Qwen3.8-27B-DFlash2","dflash_algorithm":"dflash2","dflash_backend":"tensorfold"}
+            ,{"alias":"glm5.3-flash-tensorfold","hf_path":"Vontra/GLM-5.3-Flash-MLX-4bit-MTP","is_builtin":true,"is_text_only":true,"supports_spec_decode":false,"tensorfold_mtp":true,"tensorfold_backend":"tensorfold","tensorfold_target_revision":"76add2a341a1cd90ad0e86bb69839ea9c35827c6","tensorfold_runtime_revision":"c4646171139ee8a3c38103eaa1699dad226ec12b"}
           ],
           "audio": [{"alias":"whisper"}], "video": [], "image": [{"alias":"flux-dev"}]
         }
@@ -19,13 +63,80 @@ struct DownloadCatalogHardeningTests {
         let parsed = try #require(ModelCatalog.parseAvailableJSON(output))
         #expect(parsed.entries.map(\.0) == [
             "qwen3.5-9b-4bit", "qwen3.5-company-tuned", "qwen3.5-4b-4bit",
+            "qwen3.8-27b-tensorfold",
+            "glm5.3-flash-tensorfold",
         ])
         #expect(parsed.profiles["qwen3.5-9b-4bit"]?.isBuiltin == true)
         #expect(parsed.profiles["qwen3.5-4b-4bit"]?.isTextOnly == true)
         #expect(parsed.profiles["qwen3.5-company-tuned"]?.isBuiltin == false)
         #expect(parsed.speculative["qwen3.5-9b-4bit"]?.isDefaultEnabled == true)
         #expect(parsed.speculative["qwen3.5-company-tuned"] == nil)
+        let dflash = try #require(parsed.speculative["qwen3.8-27b-tensorfold"])
+        #expect(dflash.method == .dflash)
+        #expect(dflash.model == "z-lab/Qwen3.8-27B-DFlash2")
+        #expect(dflash.backend == "tensorfold")
+        #expect(!dflash.isDefaultEnabled)
+        #expect(dflash.launchFlags == [
+            "--speculative-config",
+            #"{"method":"dflash","model":"z-lab/Qwen3.8-27B-DFlash2","backend":"tensorfold"}"#,
+        ])
+        let glm = try #require(parsed.speculative["glm5.3-flash-tensorfold"])
+        #expect(glm.method == .mtp)
+        #expect(glm.model == nil)
+        #expect(glm.tokens == nil)
+        #expect(glm.backend == "tensorfold")
+        #expect(!glm.isDefaultEnabled)
+        #expect(glm.launchFlags == [
+            "--speculative-config",
+            #"{"method":"mtp","backend":"tensorfold"}"#,
+        ])
         #expect(parsed.excluded == ["whisper", "flux-dev"])
+    }
+
+    @Test("Atomic catalog preserves the qualified DFlash launch preset")
+    func atomicCatalogDFlashPreset() throws {
+        let output = try atomicCatalog(withTextRows: [[
+            "alias": "qwen3.8-27b-tensorfold",
+            "supports_dflash": true,
+            "dflash_draft_model": "z-lab/Qwen3.8-27B-DFlash2",
+            "dflash_algorithm": "dflash2",
+            "dflash_backend": "tensorfold",
+        ]])
+        let parsed = try #require(ModelCatalog.parseAvailableJSON(output))
+        let preset = try #require(parsed.speculative["qwen3.8-27b-tensorfold"])
+        #expect(preset.method == .dflash)
+        #expect(preset.model == "z-lab/Qwen3.8-27B-DFlash2")
+        #expect(preset.backend == "tensorfold")
+        #expect(!preset.isDefaultEnabled)
+    }
+
+    @Test("Atomic catalog preserves target-only TensorFold MTP")
+    func atomicCatalogTargetOnlyMTPPreset() throws {
+        let output = try atomicCatalog(withTextRows: [[
+            "alias": "glm5.3-flash-tensorfold",
+            "tensorfold_mtp": true,
+            "tensorfold_backend": "tensorfold",
+            "mtp_default_enabled": true,
+        ]])
+        let parsed = try #require(ModelCatalog.parseAvailableJSON(output))
+        let preset = try #require(parsed.speculative["glm5.3-flash-tensorfold"])
+        #expect(preset.method == .mtp)
+        #expect(preset.model == nil)
+        #expect(preset.tokens == nil)
+        #expect(preset.backend == "tensorfold")
+        #expect(preset.isDefaultEnabled)
+        let defaults = ServerManager.desktopCapabilityFlags(
+            forAlias: "glm5.3-flash-tensorfold",
+            speculativePreset: preset,
+            existing: []
+        )
+        #expect(defaults.contains("--speculative-config"))
+        #expect(!defaults.contains("--no-spec-decode"))
+        #expect(ServerManager.mergedPerformanceFlags(
+            recommended: defaults,
+            userOverrides: ModelPerfConfig(speculativeDecodingDisabled: true)
+                .launchFlags(forAlias: "glm5.3-flash-tensorfold")
+        ) == ["--text-only", "--no-spec-decode"])
     }
 
     @Test("Speculative presets are parsed from the alias profile table")

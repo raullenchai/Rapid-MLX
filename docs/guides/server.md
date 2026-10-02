@@ -46,9 +46,9 @@ flag visible in `rapid-mlx serve --help`, grouped by category — lives in the
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--port` | Server port | 8000 |
+| `--port` | Server port; when omitted, uses the first free port from 8000 through 8009; an explicit port never falls back | First free in 8000–8009 |
 | `--host` | Server host (loopback-only by default; pass `0.0.0.0` to expose on LAN) | 127.0.0.1 |
-| `--listen-fd` | Adopt a pre-bound listening socket (3-1023) from a supervisor instead of binding; `--host`/`--port` are then ignored (see the socket-activation section below) | None |
+| `--listen-fd` | Adopt a pre-bound listening socket (3-1023) from a supervisor instead of binding; `--host`/`--port` are then ignored. Native MTP, DSpark K4, DFlash, and DDTree reject this option with rc 2 (see the socket-activation section below) | None |
 | `--log-level` | Log level for Python logging and uvicorn (`DEBUG`, `INFO`, `WARNING`, `ERROR`) | INFO |
 | `--served-model-name` | Model name reported by the API; when unset the `model` argument is used | None |
 | `--api-key` | API key for authentication (falls back to `RAPID_MLX_API_KEY`) | None |
@@ -69,7 +69,7 @@ flag visible in `rapid-mlx serve --help`, grouped by category — lives in the
 | `--prefix-cache-index` | Prefix-cache lookup index: `radix` (token trie) or `hash` (legacy) | radix |
 | `--use-paged-cache` | Enable paged KV cache | False |
 | `--cache-memory-mb` | Cache memory limit in MB | Auto |
-| `--cache-memory-percent` | Fraction of RAM for cache | 0.20 |
+| `--cache-memory-percent` | Fraction of available RAM for cache. When the flag is not passed, the 0.20 default is raised to the agent-session floor (a third of the Metal headroom left after the weights, at most 4 GiB) when that is larger. An explicit value is always kept | 0.20 |
 | `--idle-cache-clear-seconds` | Clear reusable KV cache after idle time; model weights remain loaded | Disabled |
 | `--max-tokens` | Default max tokens | 32768 |
 | `--default-temperature` | Default temperature when not specified (companions: `--default-top-k`, `--default-min-p`, `--default-repetition-penalty`, `--default-presence-penalty`, `--default-frequency-penalty`) | None |
@@ -145,6 +145,181 @@ are marked; multimodal and MCP surfaces link to their own guides.
 | `/readyz` | GET | Alias for `/health/ready` |
 | `/livez` | GET | Process liveness only (does not check model readiness) |
 | `/metrics` | GET | Prometheus metrics |
+| `/v1/cua/capabilities` | GET | Authenticated computer-use protocol and host availability |
+| `/v1/cua/permissions` | GET | Authenticated macOS Accessibility and Screen Recording readiness |
+| `/v1/cua/permissions/request` | POST | Request one macOS CUA permission after an explicit user action |
+| `/v1/cua/apps` | GET | Authenticated running-app discovery for custom CUA clients |
+| `/v1/cua/apps/{app}/windows` | GET | Authenticated window discovery for an app |
+| `/v1/cua/observations` | POST | Fresh, authenticated observation of an exact app process and window |
+| `/v1/cua/runs` | GET/POST | List or create supervised high-level computer-use runs |
+| `/v1/cua/runs/by-request/{id}` | GET | Recover a run created with a client request ID |
+| `/v1/cua/runs/{id}` | GET | Poll typed events, terminal state, and any pending approval gate |
+| `/v1/cua/runs/{id}/approval` | POST | Resolve the current gate with `{"gate_id": "...", "approved": true|false}` |
+| `/v1/cua/runs/{id}/cancel` | POST | Cancel a run |
+
+### Custom computer-use clients
+
+To host only the authenticated Computer Use control plane, without resolving,
+downloading, or loading a chat model, start the server in CUA-only mode:
+
+```bash
+RAPID_MLX_API_KEY=replace-me rapid-mlx serve --cua-only \
+  --host 127.0.0.1 --port 8000 \
+  --cors-origins http://127.0.0.1 http://localhost
+```
+
+This mode mounts health and `/v1/cua/*` routes only. It does not expose chat,
+model, image, audio, or video inference routes, and it rejects model and
+residency flags. `GET /health/ready` reports `ready: true`, `model: null`, and
+`model_loaded: false` once the listener is ready. Clients should then verify an
+authenticated `GET /v1/cua/capabilities` before enabling Computer Use. An API
+key is mandatory, including for loopback listeners.
+
+`GET /v1/cua/permissions` is always read-only. A native client may request one
+grant in direct response to a permission button by posting
+`{"permission":"accessibility"}` or
+`{"permission":"screen_recording"}` to
+`/v1/cua/permissions/request`. The endpoint requires a loopback connection plus
+the same bearer and rate limit as every CUA route, accepts no prompt-control
+options, and serializes requests. Its response contains `permission`, `granted`, and a fresh full
+`permissions` snapshot. A user denial is a successful response with
+`granted:false`; clients must continue to block observation or input until the
+read-only status reports the required grant. Discovery and polling never open a
+system prompt. The server process must be the signed native Computer Use helper
+that owns the macOS privacy grants; a standalone child process does not inherit
+another application's grants.
+
+The Desktop sidecar includes the native macOS framework bindings. Standalone
+Python installs that use local macOS Computer Use should install the matching
+extra:
+
+```bash
+pip install 'rapid-mlx[computer-use]'
+```
+
+The extra is Darwin-only. Remote or Linux servers remain import-safe and report
+the local desktop capability as unavailable.
+
+A client can target one discovered window by taking its opaque `window_id` from
+`GET /v1/cua/apps/{app}/windows` and including it in the run request:
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/cua/runs \
+  -H "Authorization: Bearer $RAPID_MLX_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "app": "Safari",
+    "window_id": "cg:12345",
+    "client_request_id": "desktop-018f5d2a",
+    "goal": "Open the account settings",
+    "allowed_domain": "example.com"
+  }'
+```
+
+The server validates that the window belongs to the resolved app process before
+accepting the run, freezes the canonical ID, and returns `window_id` in create,
+list, run-view, and event-poll responses. Keep the ID opaque and rediscover
+windows before retrying a stopped run.
+
+A run may instead freeze two or three exact PID and window anchors. Each target
+has a client-chosen opaque `target_id`; browser targets require a reviewed
+`allowed_domain`. The top-level `app` must match the initial PID selector:
+
+```json
+{
+  "app": "pid:1234",
+  "goal": "Read the source, then add a note",
+  "client_request_id": "desktop-018f5d2b",
+  "initial_target_id": "source",
+  "targets": [
+    {
+      "target_id": "source",
+      "app": "pid:1234",
+      "pid": 1234,
+      "window_id": "cg:12345",
+      "allowed_domain": "example.com"
+    },
+    {
+      "target_id": "notes",
+      "app": "pid:5678",
+      "pid": 5678,
+      "window_id": "cg:67890",
+      "allowed_domain": ""
+    }
+  ]
+}
+```
+
+Multi-target requests cannot include top-level `window_id`, `allowed_domain`,
+or `open_url`. The create response and request-ID lookup echo the complete
+canonical target list and `active_target_id`; clients should compare both
+before accepting control authority. During the run, the planner may request a
+no-input `switch_target` to one frozen ID. The server observes only the active
+target, emits `target_switched` with the old and new IDs, and includes
+`target_id` on subsequent events and approval gates. A process restart, window
+replacement, unknown target, domain mismatch, or approval for an obsolete gate
+stops or rejects the operation without dispatching input. Target order and
+per-target domains are part of the idempotent request identity.
+
+Clients that must recover from a lost create response should send a unique,
+opaque `client_request_id` of at most 128 characters. It must be one URL path
+segment and cannot contain `/`. The `202` response echoes that ID. Repeating the
+same normalized request with the same ID returns the
+original `run_id` and does not start another task. Reusing the ID with a
+different request returns `409` with code `request_identity_conflict`.
+
+After a timeout, disconnect, or undecodable response, recover the accepted run
+before allowing another Start action:
+
+```bash
+curl http://127.0.0.1:8000/v1/cua/runs/by-request/desktop-018f5d2a \
+  -H "Authorization: Bearer $RAPID_MLX_API_KEY"
+```
+
+The lookup returns the create-response shape (`run_id`, current `status`,
+`window_id`, `client_request_id`, `targets`, and `active_target_id`). An unknown or expired ID returns typed
+`404` code `request_identity_not_found`. Request IDs and runs are held only in
+the server process, expire together under the 100-run retention limit, and do
+not survive a server restart. An ID no longer present in that registry has no
+continuing idempotency guarantee; generate a new ID only when starting a new
+task.
+
+Selected-window runs fail closed if the app identity changes or the window is
+closed, replaced, moved, or resized. They also stop if the planned control
+changes before input is dispatched. Domain-restricted browser runs stop when a
+trusted URL cannot be tied unambiguously to the selected browser process,
+including when multiple browser processes expose the same application bundle.
+`open_url` cannot be combined with `window_id`, because opening a URL can change
+which window is targeted.
+
+To render a selected window without starting a run, send the exact app identity,
+PID, and opaque window ID returned by discovery. Observations always bypass the
+snapshot cache and do not activate the app:
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/cua/observations \
+  -H "Authorization: Bearer $RAPID_MLX_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "app": "com.apple.Safari",
+    "pid": 1234,
+    "window_id": "cg:12345",
+    "screenshot": false
+  }'
+```
+
+The response contains `snapshot_id`, `observed_at`, canonical app identity,
+window identity and geometry, coordinate space, typed accessibility elements,
+element count, and truncation status. It deliberately omits the backend's raw
+tree text and redacts secure-text-field labels. `screenshot` defaults to
+`false` and the response image is `null`.
+
+Accessibility permission is required for every observation. PNG output also
+requires Screen Recording permission, request field `"screenshot": true`, and
+the server opt-in `RAPID_MLX_CUA_EXPOSE_SCREENSHOTS=1`. PNGs larger than 4 MiB
+are rejected before base64 encoding. Success and typed error responses use
+`Cache-Control: no-store` and `Pragma: no-cache`; clients should not persist
+observations that may contain private UI labels or pixels.
 
 For lazy or idle-unload deployments, `/metrics` always exposes primary-model
 residency and lifecycle series even while the engine is in standby:
@@ -914,7 +1089,9 @@ fd at any point is one with auth in place.
 
 `rapid-mlx serve <alias> --listen-fd N` adopts the inherited fd
 instead of binding fresh. `--host` and `--port` are ignored when
-`--listen-fd` is set.
+`--listen-fd` is set. Native MTP, DSpark K4, DFlash, and DDTree do not
+support inherited listeners and reject `--listen-fd` with rc 2 before
+model loading.
 
 Example (parent-process style, mirroring `LISTEN_FDS=1` conventions):
 

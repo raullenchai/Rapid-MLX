@@ -48,7 +48,7 @@ def install_glm5_next_forget_gate_quant_fix() -> bool:
 
         from mlx_vlm.models.glm5_next import language
 
-        # mlx-vlm 0.7.1's architecture-owned runtime removed the nested
+        # mlx-vlm 0.7.2's architecture-owned runtime removed the nested
         # ``forget_gate`` module: ``f_b_proj`` is direct again and the other
         # projections are fused into ``fbg_a_proj`` by its sanitizer. Applying
         # the older compatibility rename there creates keys for modules that

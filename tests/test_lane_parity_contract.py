@@ -30,6 +30,10 @@ from rapid_mlx.engine.batched import (
 from rapid_mlx.middleware.exception_handlers import (
     install_exception_handlers,
 )
+from rapid_mlx.reasoning.think_stop import ReasoningStopScope
+
+# Answer-scoped user stops for a ``<think>`` model reach both schedulers.
+_STOP_SCOPE = ReasoningStopScope("<think>", "</think>", starts_in_reasoning=True)
 
 # Explicit capability data: shared fields are asserted on both schedulers;
 # lane-specific fields remain visible here so adding parity is an intentional
@@ -314,6 +318,13 @@ def test_lane_selection_precedence_and_runtime_matrix(
     monkeypatch.setattr(api_utils, "mllm_backbone_cache_mode", lambda _name: cache_mode)
     monkeypatch.setattr(api_utils, "physical_ram_gb", lambda: memory_gb)
     monkeypatch.setattr(api_utils, "version", lambda _name: runtime_version)
+    from rapid_mlx.models import mllm as mllm_mod
+
+    monkeypatch.setattr(
+        mllm_mod,
+        "vision_runtime_status",
+        lambda: (mllm_mod.VisionRuntimeStatus.OK, None),
+    )
     monkeypatch.setattr(
         api_utils,
         "mllm_arch_unsupported_but_text_vendored",
@@ -506,6 +517,7 @@ def _request_semantics() -> tuple[dict[str, Any], tuple[object, object, object]]
         "repetition_penalty": 1.4,
         "presence_penalty": 0.3,
         "frequency_penalty": -0.2,
+        "reasoning_stop_scope": _STOP_SCOPE,
         "grammar_logits_processor": processors[0],
         "reasoning_budget_logits_processor": processors[1],
         "suppressed_tokens_logits_processor": processors[2],
@@ -525,6 +537,7 @@ def _assert_shared_semantics(
             "repetition_penalty": 1.4,
             "presence_penalty": 0.3,
             "frequency_penalty": -0.2,
+            "reasoning_stop_scope": _STOP_SCOPE,
         }
         assert {key: captured[key] for key in _TEXT_ONLY_SAMPLING_KEYS} == {
             "top_k": 17,
@@ -538,6 +551,7 @@ def _assert_shared_semantics(
         "repetition_penalty": 1.4,
         "presence_penalty": 0.3,
         "frequency_penalty": -0.2,
+        "reasoning_stop_scope": _STOP_SCOPE,
     }
     assert {key: getattr(params, key) for key in _TEXT_ONLY_SAMPLING_KEYS} == {
         "top_k": 17,

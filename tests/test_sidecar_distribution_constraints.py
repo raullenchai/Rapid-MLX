@@ -35,12 +35,17 @@ def test_emitted_constraints_are_stable_and_complete(constraints) -> None:
     assert emitted[1:] == [
         "mlx==0.32.2",
         "transformers==5.15.1",
-        "mlx-vlm==0.7.1",
+        "mlx-vlm==0.7.2",
         "mlx-audio==0.5.3",
         "mflux==0.20.0",
         "sentencepiece==0.2.2",
         "mlx-video-with-audio==0.1.36",
         "mlx-arsenal==0.12.1",
+        "pyobjc-core==12.2.2",
+        "pyobjc-framework-ApplicationServices==12.2.2",
+        "pyobjc-framework-Cocoa==12.2.2",
+        "pyobjc-framework-CoreText==12.2.2",
+        "pyobjc-framework-Quartz==12.2.2",
     ]
 
 
@@ -51,7 +56,7 @@ def test_emit_constraints_needs_only_the_python_standard_library() -> None:
         capture_output=True,
         text=True,
     )
-    assert "mlx-vlm==0.7.1" in result.stdout
+    assert "mlx-vlm==0.7.2" in result.stdout
     assert "mlx-audio==0.5.3" in result.stdout
     assert "mlx-video-with-audio==0.1.36" in result.stdout
 
@@ -73,7 +78,7 @@ def test_find_errors_accepts_coherent_distribution_metadata(
     _write_metadata(
         tmp_path,
         "mlx-vlm",
-        "0.7.1",
+        "0.7.2",
         ("transformers>=5.14.0; python_version >= '3'",),
     )
     assert constraints.find_errors(tmp_path) == []

@@ -96,6 +96,7 @@ jobs:
       - name: Validate distribution metadata and create release manifest
         run: |
           twine check dist/*
+          python scripts/verify_dependency_metadata.py dist/
           SOURCE_SHA="$(git rev-parse HEAD)"
           python scripts/release_manifest.py create \
             --dist-dir dist \

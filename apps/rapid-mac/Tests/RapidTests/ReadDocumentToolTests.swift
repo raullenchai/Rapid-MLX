@@ -710,21 +710,33 @@ struct ReadDocumentToolTests {
         let rawText = PDFDocument(url: url)?.page(at: 0)?.string ?? ""
         #expect(rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
-        let attachment = try ChatFileAttachment(contentsOf: url, cache: cache)
+        let attachment = try ChatFileAttachment(
+            contentsOf: url,
+            cache: cache,
+            visionRequest: { _, _, index in
+                index == 0 ? "Quarterly revenue summary" : "unexpected OCR page"
+            }
+        )
         #expect(attachment.kind == .pdf)
-        #expect(attachment.extractedText.localizedCaseInsensitiveContains("revenue"))
+        #expect(attachment.extractedText.contains("[Page 1]"))
+        #expect(attachment.extractedText.contains("Quarterly revenue summary"))
+        #expect(!attachment.extractedText.contains("unexpected OCR page"))
     }
 
     @Test("A multi-page scan previews eagerly and finishes in the background", .timeLimit(.minutes(2)))
     func scannedPDFDefersTheTail() async throws {
-        // Recognition costs ~0.69 s/page, so only a few pages can run while
-        // the user waits; the rest must land later without blocking attach.
+        // Only the first four pages belong in the synchronous preview;
+        // the last page must remain reachable through the background pass.
         let cache = freshCache()
         let pages = (0..<6).map { "Section \($0) heading text" }
         let url = try makeScannedPDF(pages: pages)
         defer { try? FileManager.default.removeItem(at: url) }
 
-        let attachment = try ChatFileAttachment(contentsOf: url, cache: cache)
+        let attachment = try ChatFileAttachment(
+            contentsOf: url,
+            cache: cache,
+            visionRequest: { _, _, index in "Section \(index) heading text" }
+        )
         #expect(attachment.pageCount == 6)
         // Beyond the eager OCR window, so the total is not yet known.
         #expect(attachment.totalCharacterCount == nil)

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Narrow GLM-5.3 compatibility seam for released mlx-vlm runtimes.
 
-mlx-vlm 0.7.1 contains the corrected GLM target, temporal cache transactions,
+mlx-vlm 0.7.2 contains the corrected GLM target, temporal cache transactions,
 and the MTP checkpoint loader.  Its GLM drafter still owns mutable generation
 state, however, while Rapid's transaction deliberately keeps all request state
 inside :class:`SpeculativeCache`.  This module replaces only that drafter call

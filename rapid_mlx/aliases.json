@@ -453,6 +453,22 @@
     "dflash_draft_revision": "50307d4c4cde6860d4eee73e2547cd786fe8e8a4",
     "dflash_algorithm": "dflash2"
   },
+  "qwen3.8-27b-tensorfold": {
+    "hf_path": "Vontra/Qwen3.8-27B-MLX-4bit",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": true,
+    "is_hybrid_explicit": true,
+    "supports_spec_decode": false,
+    "supports_dflash": true,
+    "dflash_draft_model": "z-lab/Qwen3.8-27B-DFlash2",
+    "dflash_target_revision": "70ae7fac63274ff2eac54152031433374cb80f2f",
+    "dflash_draft_revision": "50307d4c4cde6860d4eee73e2547cd786fe8e8a4",
+    "dflash_algorithm": "dflash2",
+    "dflash_backend": "tensorfold",
+    "min_memory_gb": 48,
+    "enforce_min_memory": true,
+    "experimental": true
+  },
   "qwen3.8-27b-4bit-fp16": {
     "supports_image_input": true,
     "hf_path": "rapid-mlx/Qwen3.8-27B-4bit-MTP-fp16-MLX",
@@ -1310,6 +1326,25 @@
       "repetition_penalty": 1.0
     }
   },
+  "glm5.3-flash-tensorfold": {
+    "hf_path": "Vontra/GLM-5.3-Flash-MLX-4bit-MTP",
+    "reasoning_parser": "glm5",
+    "is_hybrid": true,
+    "is_hybrid_explicit": true,
+    "is_moe": true,
+    "supports_spec_decode": false,
+    "tensorfold_mtp": true,
+    "tensorfold_target_revision": "76add2a341a1cd90ad0e86bb69839ea9c35827c6",
+    "tensorfold_runtime_revision": "c4646171139ee8a3c38103eaa1699dad226ec12b",
+    "min_memory_gb": 256,
+    "enforce_min_memory": true,
+    "experimental": true,
+    "recommended_sampling": {
+      "temperature": 0.0,
+      "top_p": 1.0,
+      "repetition_penalty": 1.0
+    }
+  },
   "mimo-v2.6-flash-4bit": {
     "hf_path": "Vontra/MiMo-V2.6-Flash-RL-MLX-4bit-MTP",
     "tool_call_parser": "qwen3_coder_xml",
@@ -1734,11 +1769,16 @@
   "bonsai2-27b-2bit": {
     "hf_path": "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit",
     "supports_image_input": true,
-    "tool_call_parser": "hermes",
+    "tool_call_parser": "qwen3_coder_xml",
     "reasoning_parser": "qwen3",
     "is_hybrid": true,
     "is_hybrid_explicit": true,
-    "supports_spec_decode": false
+    "supports_spec_decode": false,
+    "recommended_sampling": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 20
+    }
   },
   "smollm3-3b-4bit": {
     "hf_path": "mlx-community/SmolLM3-3B-4bit",
@@ -2183,6 +2223,18 @@
     "min_memory_gb": 64
   },
   "qwen-image-2.1": {
+    "hf_path": "mlx-community/Qwen-Image-2.1-mflux-q4",
+    "modality": "image-gen",
+    "tool_call_parser": null,
+    "reasoning_parser": null,
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": false,
+    "suffix_decoding_tier": "unknown",
+    "min_memory_gb": 8
+  },
+  "qwen-image-2.1-bf16": {
     "hf_path": "Qwen/Qwen-Image-2.1",
     "modality": "image-gen",
     "tool_call_parser": null,

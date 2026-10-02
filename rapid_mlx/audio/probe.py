@@ -43,6 +43,8 @@ import logging
 import threading
 from dataclasses import dataclass
 
+from rapid_mlx.runtime.optional_runtime import optional_extra_install_hint
+
 logger = logging.getLogger(__name__)
 
 
@@ -119,7 +121,7 @@ _LANE_SUBMODULES: dict[str, str] = {
 _KOKORO_EXTRA_DEP = "misaki"
 _KOKORO_EXTRA_HINT = (
     "Kokoro TTS requires the optional `misaki` G2P package, which is "
-    "not installed. Reinstall with `pip install 'rapid-mlx[audio]'` "
+    "not installed. " + optional_extra_install_hint("audio", include_paths=False) + " "
     "to pull every audio dep, or `pip install misaki` for a "
     "minimal Kokoro-only install."
 )
@@ -887,7 +889,9 @@ def _raise_503(verdict: _Verdict) -> None:
     detail = verdict.reason or "mlx-audio is not available"
     raise HTTPException(
         status_code=503,
-        detail=(f"{detail}. Install with: pip install 'rapid-mlx[audio]'"),
+        detail=(
+            f"{detail}. " + optional_extra_install_hint("audio", include_paths=False)
+        ),
     )
 
 
@@ -948,7 +952,7 @@ require_mlx_audio = require_mlx_audio_tts
 #: Canonical install-hint copy — shared with the route probes via
 #: :func:`_raise_503` so a torn install reports the same one-liner
 #: whether the operator hit it at boot or mid-request.
-AUDIO_EXTRA_INSTALL_HINT = "Install with: pip install 'rapid-mlx[audio]'"
+AUDIO_EXTRA_INSTALL_HINT = optional_extra_install_hint("audio")
 
 
 # Known audio alias surface — kept narrow on purpose. The list is
@@ -1037,14 +1041,18 @@ def require_audio_or_exit(model_name: str) -> None:
     embedding/vision one.
     """
     import importlib.util
-    import sys
 
     if importlib.util.find_spec("mlx_audio") is not None:
         return
-    print(
-        f"error: model {model_name!r} is an audio alias and requires the "
-        f"optional `mlx-audio` dependency (shipped with the [audio] "
-        f"extra).\n" + AUDIO_EXTRA_INSTALL_HINT,
-        file=sys.stderr,
+    from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
+
+    raise OptionalRuntimeMissing(
+        extra="audio",
+        install_hint=AUDIO_EXTRA_INSTALL_HINT,
+        status="absent",
+        detail=(
+            f"error: model {model_name!r} is an audio alias and requires the "
+            f"optional `mlx-audio` dependency (shipped with the [audio] "
+            f"extra).\n" + AUDIO_EXTRA_INSTALL_HINT
+        ),
     )
-    sys.exit(2)

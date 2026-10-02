@@ -87,6 +87,9 @@ ALLOWED_PROFILE_KEYS: frozenset[str] = frozenset(
         "dflash_target_revision",
         "dflash_draft_revision",
         "dflash_algorithm",
+        # Closed provider selection for the explicitly qualified DFlash pair.
+        # _coerce accepts only "tensorfold" and requires a pinned drafter.
+        "dflash_backend",
         "supports_ddtree",
         "ddtree_draft_model",
         "ddtree_speculative_tokens",
@@ -99,6 +102,9 @@ ALLOWED_PROFILE_KEYS: frozenset[str] = frozenset(
         "pflash_tier",
         "pflash_keep_ratio",
         "turboquant_tier",
+        "tensorfold_mtp",
+        "tensorfold_target_revision",
+        "tensorfold_runtime_revision",
     }
 )
 
@@ -203,6 +209,29 @@ def test_qwen38_27b_aliases_pin_the_native_named_xml_tool_contract() -> None:
         assert profile.tool_call_parser == "qwen3_coder_xml"
         assert detect_model_config(alias) == profile
         assert detect_model_config(profile.hf_path) == profile
+
+
+def test_bonsai2_27b_pins_the_published_multimodal_contract() -> None:
+    """Bonsai 2 uses named XML tools and its published sampling defaults."""
+
+    alias = "bonsai2-27b-2bit"
+    profile = list_profiles()[alias]
+
+    assert profile.hf_path == "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit"
+    assert profile.supports_image_input is True
+    assert profile.is_text_only is False
+    assert profile.tool_call_parser == "qwen3_coder_xml"
+    assert profile.reasoning_parser == "qwen3"
+    assert profile.is_hybrid is True
+    assert profile.is_hybrid_explicit is True
+    assert profile.supports_spec_decode is False
+    assert dict(profile.recommended_sampling or ()) == {
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "top_k": 20.0,
+    }
+    assert detect_model_config(alias) == profile
+    assert detect_model_config(profile.hf_path) == profile
 
 
 def test_qwen38_27b_abliterated_alias_is_scoped_and_conservative() -> None:
@@ -925,6 +954,17 @@ def test_qwen35_and_qwen36_vision_aliases_carry_the_same_memory_floor() -> None:
     assert gated_aliases
     for name, profile in gated_aliases.items():
         assert profile.get("vision_min_memory_gb") == 32, name
+
+
+@pytest.mark.parametrize(
+    "alias",
+    ["mistral-24b-4bit", "devstral-24b-4bit", "devstral-v2-24b-4bit"],
+)
+def test_text_capable_mistral_vision_routes_do_not_overload_memory_floor(alias) -> None:
+    profile = list_profiles()[alias]
+    assert profile.vision_min_memory_gb is None
+    assert profile.modality == "text"
+    assert profile.is_text_only is False
 
 
 def test_mtp_preset_requires_a_valid_drafter_and_positive_token_count() -> None:

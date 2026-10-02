@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Regression: the "Ready:" banner must print only AFTER warmup completes.
+"""Regression: the "Ready:" banner must print only AFTER the listener binds.
 
 Persona A's 16 GB Air onboarding (v0.6.51) found that the banner printed
 ~6 s before uvicorn actually bound the port, so a user who curled
 immediately got connection-refused while GatedDeltaNet kernels compiled.
-The CLI now prints a "Starting server …" line up-front, stashes bind
-host/port on ServerConfig, and defers the real "Ready:" banner to the
-lifespan hook — fires only after `get_config().ready = True`.
+The CLI prints a "Starting server …" line up-front, stashes bind host/port on
+ServerConfig, and the Uvicorn startup seam prints the real banner only after
+both lifespan readiness and listener creation complete.
 
 Since the banner is now rendered by the connect SSOT (:mod:`rapid_mlx.connect`),
 these tests drive the real lifespan path and assert against the SSOT's output
@@ -34,14 +34,22 @@ def _isolate_server_state():
         server._engine,
         cfg.bind_host,
         cfg.bind_port,
+        cfg.bind_listen_fd,
         cfg.ready,
     )
     server._engine = None
     cfg.bind_host = None
     cfg.bind_port = None
+    cfg.bind_listen_fd = None
     cfg.ready = False
     yield
-    server._engine, cfg.bind_host, cfg.bind_port, cfg.ready = saved
+    (
+        server._engine,
+        cfg.bind_host,
+        cfg.bind_port,
+        cfg.bind_listen_fd,
+        cfg.ready,
+    ) = saved
 
 
 async def _enter_then_exit_lifespan() -> str:
@@ -57,15 +65,29 @@ async def _enter_then_exit_lifespan() -> str:
     return buf.getvalue()
 
 
-async def test_ready_banner_emitted_when_bind_fields_set():
-    """With bind_host/bind_port stashed by CLI, the lifespan prints the full
-    Ready / OpenAI / Anthropic / Connect banner from the SSOT."""
+async def test_lifespan_does_not_emit_ready_banner_before_bind():
+    """Lifespan may mark routes ready, but it must not announce the socket."""
     cfg = get_config()
     cfg.bind_host = "localhost"
     cfg.bind_port = 8765
     cfg.model_alias = "qwen3.6-35b-4bit"
 
     out = await _enter_then_exit_lifespan()
+
+    assert "Ready:" not in out
+
+
+def test_ready_banner_emitted_by_post_bind_callback():
+    """The startup seam's callback renders the existing SSOT banner shape."""
+    cfg = get_config()
+    cfg.bind_host = "localhost"
+    cfg.bind_port = 8765
+    cfg.model_alias = "qwen3.6-35b-4bit"
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        server.print_ready_banner()
+    out = buf.getvalue()
 
     # Ready is the base URL (no /v1); OpenAI appends /v1, Anthropic does not.
     assert "Ready: http://localhost:8765" in out
@@ -83,12 +105,9 @@ async def test_ready_banner_emitted_when_bind_fields_set():
         "rapid-mlx agents continue --setup --base-url http://localhost:8765/v1" in out
     )
     assert "rapid-mlx connect openai-python" in out
-    # `ready` flag must be flipped before the banner so /health/ready and
-    # the banner agree on the moment of readiness.
-    assert cfg.ready is False  # reset on shutdown (second next())
 
 
-async def test_ready_banner_shows_served_model_name_when_overridden(monkeypatch):
+def test_ready_banner_shows_served_model_name_when_overridden(monkeypatch):
     """Issue #2353: when ``--served-model-name`` is in effect, the banner's
     ``Model:`` line must show the copyable served API name, not the catalog
     alias."""
@@ -99,7 +118,10 @@ async def test_ready_banner_shows_served_model_name_when_overridden(monkeypatch)
     cfg.model_name = "studio-assistant"  # --served-model-name override
     monkeypatch.setattr(server, "_served_model_name_set", True)
 
-    out = await _enter_then_exit_lifespan()
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        server.print_ready_banner()
+    out = buf.getvalue()
 
     assert "Model:     studio-assistant" in out, out
     # The alias is not what the API serves — it must not lead the Model line.
@@ -118,30 +140,23 @@ async def test_ready_banner_suppressed_when_no_bind_info():
     assert "OpenAI:" not in out
 
 
-async def test_ready_banner_uses_displayed_host_not_zero_bind():
+def test_ready_banner_uses_displayed_host_not_zero_bind():
     """CLI translates 0.0.0.0 → localhost before stashing, so the banner
     shows a URL a user can actually curl."""
     cfg = get_config()
     cfg.bind_host = "localhost"  # CLI maps 0.0.0.0 → localhost up-front
     cfg.bind_port = 9999
 
-    out = await _enter_then_exit_lifespan()
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        server.print_ready_banner()
+    out = buf.getvalue()
 
     assert "http://localhost:9999/v1" in out
     assert "0.0.0.0" not in out
 
 
-async def test_ready_banner_fires_after_ready_flag_flip():
-    """The banner must come AFTER `get_config().ready = True` in the
-    lifespan body — otherwise a client racing /health/ready could see
-    the banner before the readiness flag is honored. This is a source-level
-    invariant; verifying via execution order is impractical, so assert on
-    the source (the SSOT `render_banner` call site).
-    """
+def test_lifespan_sets_internal_readiness_without_rendering_banner():
     src = inspect.getsource(server.lifespan)
-    ready_flip_idx = src.index("_cfg.ready = True")
-    banner_idx = src.index("render_banner(_ep)")
-    assert ready_flip_idx < banner_idx, (
-        "Ready banner must print AFTER the readiness flag is set "
-        "so the banner and /health/ready agree on the moment of readiness."
-    )
+    assert "_cfg.ready = True" in src
+    assert "render_banner" not in src

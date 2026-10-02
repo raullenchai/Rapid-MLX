@@ -3,28 +3,50 @@
 
 from __future__ import annotations
 
+import ast
 import errno
 import http.client
 import json
+import os
+import stat
+import sys
 import threading
 import urllib.error
 import uuid
+from collections.abc import Callable
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import httpx
 import pytest
 import requests
 
 import rapid_mlx
+from rapid_mlx.model_load_errors import (
+    IncompatibleWeights,
+    InvalidModelConfig,
+    QuantizationMismatch,
+    TokenizerLoadFailed,
+    load_mlx_lm_checked,
+    load_model_checked,
+    load_tokenizer_checked,
+    load_weights_checked,
+    quantize_checked,
+    typed_quantization_boundary,
+    typed_weight_boundary,
+    validate_model_config_file,
+)
+from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
 from rapid_mlx.telemetry import (
     consent_runtime,
     envelope,
     model_events,
     model_id,
     posthog_sender,
+    registry,
     state,
     store,
 )
@@ -46,6 +68,18 @@ FACTS = PlatformFacts(
 )
 
 
+def _capture_accepted_events(
+    monkeypatch,
+    callback: Callable[[str, dict[str, object]], None],
+) -> None:
+    def enqueue(accepted) -> bool:
+        assert isinstance(accepted, track_module._AcceptedEvent)
+        callback(accepted.event, dict(accepted.props))
+        return True
+
+    monkeypatch.setattr(track_module, "_enqueue_accepted", enqueue)
+
+
 @pytest.fixture(autouse=True)
 def isolated_model_events(monkeypatch, tmp_path):
     for name in (state.ENV_VAR, state.DO_NOT_TRACK_ENV, *state.CI_ENV_VARS):
@@ -58,6 +92,11 @@ def isolated_model_events(monkeypatch, tmp_path):
     monkeypatch.setattr(track_module.build_gate, "official_build", lambda: STAMP)
     monkeypatch.setattr(posthog_sender.build_gate, "official_build", lambda: STAMP)
     monkeypatch.setattr(consent_runtime, "upload_allowed", lambda: True)
+    monkeypatch.setattr(
+        model_events,
+        "_submit_model_served",
+        lambda callback: (callback(), True)[1],
+    )
     monkeypatch.setattr(
         track_module.store, "days_since_first_run_bucket", lambda: "7-29"
     )
@@ -84,6 +123,15 @@ def isolated_model_events(monkeypatch, tmp_path):
 )
 def test_size_bucket_is_closed_and_half_open(size, expected):
     assert model_events.size_bucket(size) == expected
+
+
+def test_model_served_submission_failure_is_contained(monkeypatch):
+    monkeypatch.setattr(
+        model_events,
+        "_submit_model_served",
+        lambda _callback: (_ for _ in ()).throw(RuntimeError("submit failed")),
+    )
+    assert model_events.emit_model_served(None, "sdxl-base", False) is False
 
 
 def test_pull_error_classes_are_type_based():
@@ -127,11 +175,43 @@ def test_pull_error_classes_are_type_based():
     assert model_events.pull_error_class(wrapped) == "network"
     contextual = RuntimeError("outer private detail")
     contextual.__context__ = requests.ReadTimeout("inner private detail")
-    assert model_events.pull_error_class(contextual) == "network"
+    assert model_events.pull_error_class(contextual) == "other"
     cyclic = RuntimeError("cycle")
     cyclic.__cause__ = cyclic
     assert model_events.pull_error_class(cyclic) == "other"
     assert model_events.pull_error_class(ValueError("x")) == "other"
+
+
+@pytest.mark.parametrize(
+    ("status_code", "expected"),
+    [(401, "gated"), (404, "not_found"), (500, "other")],
+)
+def test_pull_error_class_classifies_urllib_http_errors(status_code, expected):
+    failure = urllib.error.HTTPError(
+        "https://huggingface.co/org/model", status_code, "private", {}, None
+    )
+
+    assert model_events.pull_error_class(failure) == expected
+
+
+def test_pull_error_class_treats_httpx_read_error_as_network():
+    assert model_events.pull_error_class(httpx.ReadError("private detail")) == "network"
+
+
+def test_pull_error_class_chain_regression():
+    from huggingface_hub.utils import GatedRepoError, RepositoryNotFoundError
+
+    response = httpx.Response(
+        404, request=httpx.Request("GET", "https://huggingface.co/org/model")
+    )
+    outer = RuntimeError("loader wrapper")
+    outer.__context__ = RepositoryNotFoundError("context", response=response)
+    middle = RuntimeError("explicit wrapper")
+    outer.__cause__ = middle
+    middle.__cause__ = GatedRepoError("cause", response=response)
+
+    # Only the explicit cause chain participates; the stale context is ignored.
+    assert model_events.pull_error_class(outer) == "gated"
 
 
 def test_pull_error_event_never_sends_exception_text(monkeypatch):
@@ -209,15 +289,145 @@ def test_model_type_fails_closed_on_bad_profile(monkeypatch):
     assert model_events.model_type("catalog-entry") == "other"
 
 
+def _serve_exception(error_class):
+    typed = {
+        "invalid_config": InvalidModelConfig,
+        "tokenizer_load_failed": TokenizerLoadFailed,
+        "incompatible_weights": IncompatibleWeights,
+        "quantization_mismatch": QuantizationMismatch,
+    }
+    if error_class in typed:
+        return typed[error_class]("typed loader failure")
+    if error_class == "insufficient_memory":
+        return MemoryError()
+    if error_class == "download_failed":
+        return FileNotFoundError("model-00001-of-00002.safetensors")
+    if error_class == "unsupported_architecture":
+        return ValueError("Model type future_arch not supported.")
+    if error_class == "corrupt_weights":
+        return RuntimeError("size mismatch for shard")
+    return RuntimeError("unclassified")
+
+
+def _chain_serve_exception(inner, shape):
+    if shape == "bare":
+        return inner
+    if shape == "cause":
+        outer = RuntimeError("loader wrapper")
+        outer.__cause__ = inner
+        return outer
+    outer = RuntimeError("loader wrapper")
+    middle = RuntimeError("second loader wrapper")
+    outer.__cause__ = middle
+    middle.__cause__ = inner
+    return outer
+
+
+@pytest.mark.parametrize(
+    "error_class",
+    [
+        "insufficient_memory",
+        "download_failed",
+        "unsupported_architecture",
+        "corrupt_weights",
+        "invalid_config",
+        "tokenizer_load_failed",
+        "incompatible_weights",
+        "quantization_mismatch",
+        "other",
+    ],
+)
+@pytest.mark.parametrize("shape", ["bare", "cause", "two_levels_deep"])
+def test_serve_error_classes_across_exception_chain(error_class, shape):
+    exc = _chain_serve_exception(_serve_exception(error_class), shape)
+
+    assert model_events.serve_error_class(exc) == error_class
+
+
+def test_serve_error_class_ignores_implicit_context():
+    try:
+        raise FileNotFoundError("optional tokenizer probe")
+    except FileNotFoundError:
+        try:
+            raise ValueError("malformed tokenizer config")
+        except ValueError as terminal:
+            exc = terminal
+
+    assert exc.__suppress_context__ is False
+    assert model_events.serve_error_class(exc) == "other"
+
+
+@pytest.mark.parametrize(
+    "error_class",
+    [
+        "insufficient_memory",
+        "download_failed",
+        "unsupported_architecture",
+        "corrupt_weights",
+        "invalid_config",
+        "tokenizer_load_failed",
+        "incompatible_weights",
+        "quantization_mismatch",
+        "other",
+    ],
+)
+def test_serve_error_class_terminates_on_cycles(error_class):
+    outer = RuntimeError("loader wrapper")
+    inner = _serve_exception(error_class)
+    outer.__cause__ = inner
+    inner.__cause__ = outer
+
+    assert model_events.serve_error_class(outer) == error_class
+
+
+@pytest.mark.parametrize(
+    ("outer_class", "inner_class", "expected"),
+    [
+        ("insufficient_memory", "corrupt_weights", "insufficient_memory"),
+        ("download_failed", "insufficient_memory", "download_failed"),
+        ("unsupported_architecture", "download_failed", "download_failed"),
+        ("corrupt_weights", "unsupported_architecture", "corrupt_weights"),
+    ],
+)
+def test_serve_error_class_typed_precedence_then_outermost(
+    outer_class, inner_class, expected
+):
+    outer = _serve_exception(outer_class)
+    middle = RuntimeError("second loader wrapper")
+    outer.__cause__ = middle
+    middle.__cause__ = _serve_exception(inner_class)
+
+    assert model_events.serve_error_class(outer) == expected
+
+
+@pytest.mark.parametrize("exc", [KeyboardInterrupt(), SystemExit(), GeneratorExit()])
+def test_serve_error_class_base_exceptions_are_other(exc):
+    assert model_events.serve_error_class(exc) == "other"
+
+
+def test_serve_error_class_handles_hostile_exception_text():
+    class HostileError(Exception):
+        def __str__(self):
+            raise KeyboardInterrupt
+
+    assert model_events.serve_error_class(HostileError()) == "other"
+
+
+def test_serve_error_class_stops_at_chain_bound():
+    outer = RuntimeError("loader wrapper 0")
+    current = outer
+    for index in range(40):
+        cause = RuntimeError(f"loader wrapper {index + 1}")
+        current.__cause__ = cause
+        current = cause
+    current.__cause__ = MemoryError()
+
+    assert model_events.serve_error_class(outer) == "other"
+
+
 @pytest.mark.parametrize(
     ("exc", "expected"),
     [
-        (MemoryError(), "insufficient_memory"),
-        (RuntimeError("corrupt safetensor header"), "corrupt_weights"),
-        (
-            ValueError("Model type future_arch not supported."),
-            "unsupported_architecture",
-        ),
         (
             ModuleNotFoundError(
                 "No module named 'mlx_lm.models.future_arch'",
@@ -229,12 +439,852 @@ def test_model_type_fails_closed_on_bad_profile(monkeypatch):
             ModuleNotFoundError("No module named 'mlx_lm.models.future_arch'"),
             "unsupported_architecture",
         ),
-        (FileNotFoundError("model-00001-of-00002.safetensors"), "download_failed"),
-        (RuntimeError("unclassified"), "other"),
+        (ModuleNotFoundError("No module named 'optional_accelerator'"), "other"),
+        (RuntimeError("corrupt safetensor header"), "corrupt_weights"),
     ],
 )
-def test_serve_error_classes(exc, expected):
+def test_serve_error_class_preserves_existing_variants(exc, expected):
     assert model_events.serve_error_class(exc) == expected
+
+
+@pytest.mark.parametrize(
+    ("exc", "expected"),
+    [
+        (
+            ValueError(
+                "The checkpoint you are trying to load has model type `future_arch` "
+                "but Transformers does not recognize this architecture."
+            ),
+            "unsupported_architecture",
+        ),
+        (
+            RuntimeError("scoped_pymalloc(): could not allocate 4096 bytes of memory!"),
+            "insufficient_memory",
+        ),
+    ],
+)
+def test_serve_error_class_recognizes_engine_start_wording(exc, expected):
+    assert model_events.serve_error_class(exc) == expected
+
+
+def test_typed_quantization_beats_memory_wording():
+    typed = QuantizationMismatch(
+        "[quantized_matmul] out of memory while checking uint32 weights"
+    )
+    outer = RuntimeError("scoped_pymalloc(): could not allocate 4096 bytes")
+    outer.__cause__ = typed
+
+    assert model_events.serve_error_class(outer) == "quantization_mismatch"
+
+
+@pytest.mark.parametrize(
+    "failure_type", [InvalidModelConfig, IncompatibleWeights, QuantizationMismatch]
+)
+def test_value_error_load_failures_remain_value_error_compatible(failure_type):
+    failure = failure_type("load failed")
+
+    with pytest.raises(ValueError) as raised:
+        raise failure
+
+    assert raised.value is failure
+
+
+def test_could_not_allocate_is_not_a_generic_oom_marker():
+    exc = RuntimeError("plugin could not allocate tokenizer ID 7")
+
+    assert model_events.serve_error_class(exc) == "other"
+
+
+def test_typed_download_failure_beats_memory_wording():
+    outer = RuntimeError("scoped_pymalloc(): could not allocate 4096 bytes")
+    outer.__cause__ = FileNotFoundError("missing shard")
+
+    assert model_events.serve_error_class(outer) == "download_failed"
+
+
+def test_typed_hub_failure_beats_memory_wording():
+    from huggingface_hub.errors import HfHubHTTPError
+
+    response = httpx.Response(
+        503, request=httpx.Request("GET", "https://huggingface.co/org/model")
+    )
+    outer = RuntimeError("scoped_pymalloc(): could not allocate 4096 bytes")
+    outer.__cause__ = HfHubHTTPError("unavailable", response=response)
+
+    assert model_events.serve_error_class(outer) == "download_failed"
+
+
+def test_invalid_config_boundary_is_classified(tmp_path, monkeypatch):
+    from rapid_mlx.utils import tokenizer
+
+    model_dir = tmp_path / "bad-config"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text('{"model_type":', encoding="utf-8")
+    monkeypatch.setattr(tokenizer, "_resolve_subfolder_checkpoint", lambda value: value)
+    monkeypatch.setattr(tokenizer, "_local_snapshot_if_cached", lambda value: value)
+    monkeypatch.setattr(tokenizer, "_resolve_model_path", lambda _value: None)
+
+    with pytest.raises(InvalidModelConfig) as raised:
+        tokenizer.load_model_with_fallback(str(model_dir))
+
+    assert isinstance(raised.value.__cause__, json.JSONDecodeError)
+    assert model_events.serve_error_class(raised.value) == "invalid_config"
+
+
+def test_config_boundary_handles_non_model_paths_and_invalid_shapes(tmp_path):
+    assert validate_model_config_file(tmp_path / "remote-repo-id") is None
+    empty_dir = tmp_path / "empty"
+    empty_dir.mkdir()
+    assert validate_model_config_file(empty_dir) is None
+
+    config_path = empty_dir / "config.json"
+    config_path.write_text("[]", encoding="utf-8")
+    with pytest.raises(InvalidModelConfig, match="top-level value"):
+        validate_model_config_file(empty_dir)
+
+    config_path.write_text(json.dumps({"model_type": ""}), encoding="utf-8")
+    with pytest.raises(InvalidModelConfig, match="non-empty string"):
+        validate_model_config_file(empty_dir)
+
+    config_path.write_text(json.dumps({"model_file": ""}), encoding="utf-8")
+    with pytest.raises(InvalidModelConfig, match="model_file must be"):
+        validate_model_config_file(empty_dir)
+
+
+def test_config_boundary_preserves_existing_typed_failure(tmp_path, monkeypatch):
+    model_dir = tmp_path / "typed-config"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text("{}", encoding="utf-8")
+    failure = InvalidModelConfig("already classified")
+    monkeypatch.setattr(json, "load", lambda _file: (_ for _ in ()).throw(failure))
+
+    with pytest.raises(InvalidModelConfig) as raised:
+        validate_model_config_file(model_dir)
+
+    assert raised.value is failure
+
+
+def test_tokenizer_load_boundary_is_classified():
+    def load_invalid_tokenizer():
+        raise ValueError("tokenizer.json has an invalid model section")
+
+    with pytest.raises(TokenizerLoadFailed) as raised:
+        load_tokenizer_checked(load_invalid_tokenizer)
+
+    assert isinstance(raised.value.__cause__, ValueError)
+    assert model_events.serve_error_class(raised.value) == "tokenizer_load_failed"
+
+
+def test_tokenizer_wrapper_classifies_local_file_failure():
+    missing = FileNotFoundError("tokenizer.json")
+
+    def load_missing_tokenizer():
+        raise missing
+
+    with pytest.raises(TokenizerLoadFailed) as raised:
+        load_tokenizer_checked(load_missing_tokenizer)
+
+    assert raised.value.__cause__ is missing
+    assert model_events.serve_error_class(raised.value) == "tokenizer_load_failed"
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        ModuleNotFoundError("missing runtime"),
+        OptionalRuntimeMissing(
+            extra="audio",
+            install_hint="pip install rapid-mlx[audio]",
+            detail="audio runtime is missing",
+            status="absent",
+        ),
+    ],
+)
+def test_tokenizer_wrapper_preserves_runtime_availability_failures(failure):
+    def fail():
+        raise failure
+
+    with pytest.raises(type(failure)) as raised:
+        load_tokenizer_checked(fail)
+
+    assert raised.value is failure
+
+
+def test_tokenizer_wrapper_preserves_remote_hub_failure():
+    from huggingface_hub.utils import RepositoryNotFoundError
+
+    response = httpx.Response(
+        404, request=httpx.Request("GET", "https://huggingface.co/org/missing")
+    )
+    failure = RepositoryNotFoundError("missing", response=response)
+
+    with pytest.raises(RepositoryNotFoundError) as raised:
+        load_tokenizer_checked(lambda: (_ for _ in ()).throw(failure))
+
+    assert raised.value is failure
+
+
+@pytest.mark.parametrize(
+    "boundary,failure",
+    [
+        (typed_weight_boundary, IncompatibleWeights("already typed")),
+        (typed_quantization_boundary, QuantizationMismatch("already typed")),
+    ],
+)
+def test_typed_model_boundaries_preserve_existing_failure(boundary, failure):
+    with pytest.raises(type(failure)) as raised, boundary():
+        raise failure
+
+    assert raised.value is failure
+
+
+@pytest.mark.parametrize(
+    "boundary", [typed_weight_boundary, typed_quantization_boundary]
+)
+def test_model_boundaries_do_not_swallow_optional_runtime(boundary):
+    failure = OptionalRuntimeMissing(
+        extra="vision",
+        install_hint="pip install 'rapid-mlx[vision]'",
+        detail="mlx-vlm unavailable",
+        status="absent",
+    )
+
+    with pytest.raises(OptionalRuntimeMissing) as raised, boundary():
+        raise failure
+
+    assert raised.value is failure
+
+
+def test_weight_load_boundary_is_classified():
+    class ShapeCheckingModel:
+        def load_weights(self, weights, *, strict):
+            assert strict is True
+            shape = dict(weights)["model.embed_tokens.weight"]["shape"]
+            if shape != (32, 16):
+                raise ValueError(f"expected shape (32, 16), got {shape}")
+
+    bad_weights = {"model.embed_tokens.weight": {"shape": (31, 16)}}
+    model = ShapeCheckingModel()
+
+    with pytest.raises(IncompatibleWeights) as raised:
+        load_weights_checked(model, bad_weights, strict=True)
+
+    assert isinstance(raised.value.__cause__, ValueError)
+    assert model_events.serve_error_class(raised.value) == "incompatible_weights"
+    load_weights_checked(
+        model,
+        {"model.embed_tokens.weight": {"shape": (32, 16)}},
+        strict=True,
+    )
+
+
+def test_quantization_boundary_is_classified():
+    def apply_quantization(config):
+        if (config["bits"], config["group_size"], config["dtype"]) != (
+            4,
+            64,
+            "uint32",
+        ):
+            raise ValueError("quantized weight metadata does not match the model")
+
+    with pytest.raises(QuantizationMismatch) as raised:
+        quantize_checked(
+            apply_quantization,
+            {"bits": 8, "group_size": 128, "dtype": "bfloat16"},
+        )
+
+    assert isinstance(raised.value.__cause__, ValueError)
+    assert model_events.serve_error_class(raised.value) == "quantization_mismatch"
+    assert (
+        quantize_checked(
+            lambda config: config["bits"],
+            {"bits": 4, "group_size": 64, "dtype": "uint32"},
+        )
+        == 4
+    )
+
+
+def _fp8_config(tmp_path):
+    model_path = tmp_path / "fp8"
+    model_path.mkdir()
+    (model_path / "config.json").write_text(
+        '{"model_type":"synthetic","quantization_config":'
+        '{"quant_method":"fp8","fmt":"e4m3","scale_fmt":"ue8m0",'
+        '"weight_block_size":[128,128]}}',
+        encoding="utf-8",
+    )
+    return model_path
+
+
+def _install_fp8_skeleton(monkeypatch, fp8_repack, model):
+    class ModelArgs:
+        @classmethod
+        def from_dict(cls, _config):
+            return cls()
+
+    monkeypatch.setattr(
+        fp8_repack.importlib,
+        "import_module",
+        lambda _name: SimpleNamespace(Model=model, ModelArgs=ModelArgs),
+    )
+    monkeypatch.setattr(fp8_repack, "_open_shards", lambda _path: ({}, {}))
+
+
+def test_fp8_direct_quantize_valueerror_is_typed(tmp_path, monkeypatch):
+    pytest.importorskip("mlx.core")
+    from rapid_mlx import fp8_repack
+
+    model_path = _fp8_config(tmp_path)
+
+    class Model:
+        def __init__(self, _args):
+            pass
+
+    _install_fp8_skeleton(monkeypatch, fp8_repack, Model)
+
+    def fail_quantize(*_args, **_kwargs):
+        raise ValueError("Invalid quantization mode 'mxfp8'")
+
+    monkeypatch.setattr(fp8_repack.nn, "quantize", fail_quantize)
+
+    with pytest.raises(QuantizationMismatch):
+        fp8_repack.load_fp8_model_online(model_path)
+
+
+def test_fp8_direct_load_weights_valueerror_is_typed(tmp_path, monkeypatch):
+    mx = pytest.importorskip("mlx.core")
+    nn = pytest.importorskip("mlx.nn")
+    from rapid_mlx import fp8_repack
+
+    model_path = _fp8_config(tmp_path)
+
+    class Model(nn.Module):
+        def __init__(self, _args):
+            super().__init__()
+            self.weight = mx.zeros((8, 8))
+
+    _install_fp8_skeleton(monkeypatch, fp8_repack, Model)
+    monkeypatch.setattr(fp8_repack.nn, "quantize", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(IncompatibleWeights):
+        fp8_repack.load_fp8_model_online(model_path)
+
+
+def test_fp8_lm_head_quantize_valueerror_is_typed(tmp_path, monkeypatch):
+    nn = pytest.importorskip("mlx.nn")
+    from rapid_mlx import fp8_repack
+
+    model_path = _fp8_config(tmp_path)
+
+    class Model:
+        def __init__(self, _args):
+            self.lm_head = nn.Linear(8, 8)
+
+        def load_weights(self, _weights, *, strict):
+            assert strict is True
+
+        def parameters(self):
+            return []
+
+        def eval(self):
+            return self
+
+    _install_fp8_skeleton(monkeypatch, fp8_repack, Model)
+    calls = 0
+
+    def quantize(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise ValueError("lm_head affine quantization is incompatible")
+
+    monkeypatch.setattr(fp8_repack.nn, "quantize", quantize)
+    monkeypatch.setenv("RAPID_MLX_FP8_LM_HEAD_AFFINE8", "1")
+
+    with pytest.raises(QuantizationMismatch):
+        fp8_repack.load_fp8_model_online(model_path)
+
+
+def test_qwen4_ple_direct_load_model_valueerror_is_typed(tmp_path, monkeypatch):
+    mx = pytest.importorskip("mlx.core")
+    nn = pytest.importorskip("mlx.nn")
+    from mlx_lm import utils as mlx_lm_utils
+
+    from rapid_mlx.models import qwen4_ple_nvme
+
+    model_path = tmp_path / "model"
+    sidecar_path = tmp_path / "sidecar"
+    model_path.mkdir()
+    sidecar_path.mkdir()
+    monkeypatch.setattr(qwen4_ple_nvme, "validate_artifact", lambda *_args: None)
+
+    @contextmanager
+    def bound(_path):
+        yield
+
+    monkeypatch.setattr(qwen4_ple_nvme, "_bound_load_source", bound)
+
+    def fail_load_model(*_args, **_kwargs):
+        class BrokenModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.weight = mx.zeros((8, 8))
+
+        BrokenModel().load_weights([], strict=True)
+
+    monkeypatch.setattr(mlx_lm_utils, "load_model", fail_load_model)
+
+    with pytest.raises(IncompatibleWeights):
+        qwen4_ple_nvme.load_file_backed_qwen4(model_path, sidecar_path)
+
+
+def test_prism_direct_load_weights_valueerror_is_typed(tmp_path, monkeypatch):
+    mx = pytest.importorskip("mlx.core")
+    nn = pytest.importorskip("mlx.nn")
+    from mlx_vlm import utils as mlx_vlm_utils
+    from mlx_vlm.models import qwen3_5
+
+    from rapid_mlx.models import prism_hadamard_qwen35 as prism
+
+    class ModelConfig:
+        @classmethod
+        def from_dict(cls, _config):
+            return cls()
+
+    class Model(nn.Module):
+        def __init__(self, _config):
+            super().__init__()
+            self.language_model = object()
+            self.weight = mx.zeros((8, 8))
+
+    monkeypatch.setattr(qwen3_5, "Model", Model)
+    monkeypatch.setattr(qwen3_5, "ModelConfig", ModelConfig)
+    monkeypatch.setattr(mlx_vlm_utils, "get_model_path", lambda _path: tmp_path)
+    monkeypatch.setattr(prism, "_install_packed", lambda *_args: None)
+    monkeypatch.setattr(prism.mx, "load", lambda _path: {})
+    config = {
+        "schema_version": 2,
+        "model_type": "prism_hadamard_qwen35",
+        "base_model_type": "qwen3_5",
+        "tensor_namespace": "mlx-vlm-qwen3_5",
+        "gdn_activation_layout": "grouped",
+        "components": {"text": True, "vision": True, "mtp": False},
+        "quantization": {"bits": 2, "group_size": 128, "mode": "affine"},
+    }
+
+    with pytest.raises(IncompatibleWeights):
+        prism.load(tmp_path, config)
+
+
+def test_direct_per_model_loaders_do_not_bypass_typed_boundaries():
+    package_root = Path(__file__).parents[1] / "rapid_mlx"
+    boundary_helper_module = "model_load_errors.py"
+    offenders = []
+
+    class LoadBoundaryVisitor(ast.NodeVisitor):
+        def __init__(self, relative_path):
+            self.relative_path = relative_path
+            self.functions = []
+            self.boundary_depth = 0
+
+        def visit_FunctionDef(self, node):
+            self.functions.append(node.name)
+            self.generic_visit(node)
+            self.functions.pop()
+
+        def visit_AsyncFunctionDef(self, node):  # noqa: N802 - ast API
+            self.visit_FunctionDef(node)
+
+        def visit_With(self, node):
+            guarded = any(
+                isinstance(item.context_expr, ast.Call)
+                and (
+                    (
+                        isinstance(item.context_expr.func, ast.Name)
+                        and item.context_expr.func.id == "typed_mlx_load_boundaries"
+                    )
+                    or (
+                        isinstance(item.context_expr.func, ast.Attribute)
+                        and item.context_expr.func.attr == "typed_mlx_load_boundaries"
+                    )
+                )
+                for item in node.items
+            )
+            self.boundary_depth += int(guarded)
+            self.generic_visit(node)
+            self.boundary_depth -= int(guarded)
+
+        def visit_AsyncWith(self, node):  # noqa: N802 - ast API
+            self.visit_With(node)
+
+        def visit_Call(self, node):
+            kind = None
+            if (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "load_weights"
+            ):
+                kind = "load_weights"
+            elif (isinstance(node.func, ast.Name) and node.func.id == "quantize") or (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "quantize"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "nn"
+            ):
+                kind = "quantize"
+            elif (isinstance(node.func, ast.Name) and node.func.id == "load_model") or (
+                isinstance(node.func, ast.Attribute) and node.func.attr == "load_model"
+            ):
+                kind = "load_model"
+
+            if kind and self.functions and not self.boundary_depth:
+                offenders.append(f"{self.relative_path}:{node.lineno} ({kind})")
+            self.generic_visit(node)
+
+    for source_path in package_root.rglob("*.py"):
+        relative_path = source_path.relative_to(package_root).as_posix()
+        model_relative_path = relative_path.removeprefix("models/")
+        is_direct_loader_module = relative_path == "fp8_repack.py" or (
+            relative_path.startswith("models/")
+            and (
+                "/" not in model_relative_path
+                or model_relative_path.endswith("/load.py")
+            )
+        )
+        if relative_path == boundary_helper_module or not is_direct_loader_module:
+            continue
+        tree = ast.parse(
+            source_path.read_text(encoding="utf-8"), filename=relative_path
+        )
+        LoadBoundaryVisitor(relative_path).visit(tree)
+
+    assert not offenders, (
+        "direct per-model loaders must use the shared typed MLX load boundary: "
+        + ", ".join(offenders)
+    )
+
+
+def test_generic_model_loader_types_quantization_boundary(tmp_path, monkeypatch):
+    model_dir = tmp_path / "bad-quantization"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text(
+        json.dumps({"model_type": "synthetic"}), encoding="utf-8"
+    )
+
+    nn = ModuleType("mlx.nn")
+
+    class Module:
+        def load_weights(self, *_args, **_kwargs):
+            return None
+
+    def quantize():
+        raise ValueError("group_size does not divide the weight shape")
+
+    nn.Module = Module
+    nn.quantize = quantize
+    mlx = ModuleType("mlx")
+    mlx.nn = nn
+    monkeypatch.setitem(sys.modules, "mlx", mlx)
+    monkeypatch.setitem(sys.modules, "mlx.nn", nn)
+
+    def loader(_model_path):
+        nn.quantize()
+
+    with pytest.raises(QuantizationMismatch) as raised:
+        load_model_checked(loader, model_dir)
+
+    assert model_events.serve_error_class(raised.value) == "quantization_mismatch"
+
+
+def test_generic_model_loader_preserves_unclassified_value_error(tmp_path):
+    model_dir = tmp_path / "unsupported-model"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text(
+        json.dumps({"model_type": "future_arch"}), encoding="utf-8"
+    )
+
+    def loader(_model_path):
+        raise ValueError("Model type future_arch not supported.")
+
+    with pytest.raises(ValueError, match="not supported") as raised:
+        load_model_checked(loader, model_dir)
+
+    assert model_events.serve_error_class(raised.value) == "unsupported_architecture"
+
+
+def test_traceback_name_does_not_relabel_unrelated_runtime(tmp_path):
+    model_dir = tmp_path / "remote-model-hook"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text(
+        json.dumps({"model_type": "synthetic"}), encoding="utf-8"
+    )
+
+    def loader(_model_path):
+        def load_weights():
+            raise RuntimeError("remote model hook crashed")
+
+        load_weights()
+
+    with pytest.raises(RuntimeError) as raised:
+        load_model_checked(loader, model_dir)
+
+    assert type(raised.value) is RuntimeError
+
+
+def test_generic_eager_loader_separates_tokenizer_boundary(tmp_path, monkeypatch):
+    model_dir = tmp_path / "generic-loader"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text(
+        json.dumps({"model_type": "synthetic"}), encoding="utf-8"
+    )
+    model = object()
+    tokenizer = object()
+    utils = ModuleType("mlx_lm.utils")
+    utils._download = lambda _name: (_ for _ in ()).throw(
+        AssertionError("local checkpoints must not be sent to the Hub downloader")
+    )
+    utils.load_model = lambda _path, **_kwargs: (model, {"eos_token_id": [1, 2]})
+
+    def load_tokenizer(_path, _config, *, eos_token_ids):
+        assert eos_token_ids == [1, 2]
+        return tokenizer
+
+    utils.load_tokenizer = load_tokenizer
+    mlx_lm = ModuleType("mlx_lm")
+    mlx_lm.utils = utils
+    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm)
+    monkeypatch.setitem(sys.modules, "mlx_lm.utils", utils)
+
+    assert load_mlx_lm_checked(str(model_dir), {"legacy": False}) == (
+        model,
+        tokenizer,
+    )
+
+
+def test_generic_eager_loader_normalizes_missing_tokenizer_config(
+    tmp_path, monkeypatch
+):
+    model_dir = tmp_path / "generic-loader"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text(
+        json.dumps({"model_type": "synthetic"}), encoding="utf-8"
+    )
+    model = object()
+    tokenizer = object()
+    utils = ModuleType("mlx_lm.utils")
+    utils._download = lambda _name: model_dir
+    utils.load_model = lambda _path, **_kwargs: (model, {})
+
+    def load_tokenizer(_path, config, *, eos_token_ids):
+        assert config == {}
+        assert eos_token_ids is None
+        return tokenizer
+
+    utils.load_tokenizer = load_tokenizer
+    mlx_lm = ModuleType("mlx_lm")
+    mlx_lm.utils = utils
+    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm)
+    monkeypatch.setitem(sys.modules, "mlx_lm.utils", utils)
+
+    assert load_mlx_lm_checked(str(model_dir)) == (model, tokenizer)
+
+
+def _prepare_generic_tokenizer_dispatch(monkeypatch):
+    from rapid_mlx.utils import tokenizer
+
+    mlx_lm = ModuleType("mlx_lm")
+    mlx_lm.load = lambda *_args, **_kwargs: None
+    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm)
+    gemma = ModuleType("rapid_mlx.models.gemma4_text")
+    gemma.gemma4_load_plan = lambda _name: (None, False)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.models.gemma4_text", gemma)
+    monkeypatch.setattr(tokenizer, "_register_vendored_archs", lambda: None)
+    monkeypatch.setattr(tokenizer, "_needs_tokenizer_fallback", lambda _name: False)
+    monkeypatch.setattr(tokenizer, "_is_vendored_arch_model", lambda _name: False)
+    monkeypatch.setattr(
+        tokenizer, "_neutralize_unbundled_template_types", lambda _name, cfg: cfg
+    )
+    return tokenizer
+
+
+def test_generic_tokenizer_dispatch_uses_typed_eager_loader(monkeypatch):
+    tokenizer = _prepare_generic_tokenizer_dispatch(monkeypatch)
+    model = object()
+    loaded_tokenizer = SimpleNamespace(chat_template="template")
+    monkeypatch.setattr(
+        tokenizer,
+        "load_mlx_lm_checked",
+        lambda *_args, **_kwargs: (model, loaded_tokenizer),
+    )
+    monkeypatch.setattr(tokenizer, "_try_inject_mtp_post_load", lambda *_args: None)
+    monkeypatch.setattr(
+        tokenizer, "augment_eos_token_ids_from_generation_config", lambda *_args: None
+    )
+    monkeypatch.setattr(tokenizer, "repair_byte_level_decoder", lambda *_args: None)
+
+    assert tokenizer._load_model_with_fallback_impl("org/model", {}) == (
+        model,
+        loaded_tokenizer,
+    )
+
+
+@pytest.mark.parametrize(
+    ("failure", "fallback_name"),
+    [
+        (
+            TokenizerLoadFailed("tokenizer failed"),
+            "tokenizer",
+        ),
+        (
+            IncompatibleWeights("weights failed"),
+            "weights",
+        ),
+    ],
+)
+def test_generic_tokenizer_dispatch_preserves_existing_fallbacks(
+    monkeypatch, failure, fallback_name
+):
+    tokenizer = _prepare_generic_tokenizer_dispatch(monkeypatch)
+    cause = ValueError(
+        "Tokenizer class is unavailable"
+        if fallback_name == "tokenizer"
+        else "Missing parameters in model"
+    )
+    failure.__cause__ = cause
+
+    def fail_load(*_args, **_kwargs):
+        raise failure
+
+    monkeypatch.setattr(tokenizer, "load_mlx_lm_checked", fail_load)
+    monkeypatch.setattr(
+        tokenizer,
+        "_load_with_tokenizer_fallback",
+        lambda *_args, **_kwargs: ("fallback-model", "fallback-tokenizer"),
+    )
+    monkeypatch.setattr(
+        tokenizer,
+        "_load_strict_false",
+        lambda *_args, **_kwargs: ("loose-model", "loose-tokenizer"),
+    )
+
+    expected = (
+        ("fallback-model", "fallback-tokenizer")
+        if fallback_name == "tokenizer"
+        else ("loose-model", "loose-tokenizer")
+    )
+    assert tokenizer._load_model_with_fallback_impl("org/model", {}) == expected
+
+
+def test_strict_false_loader_uses_typed_boundaries(tmp_path, monkeypatch):
+    from rapid_mlx.utils import tokenizer
+
+    (tmp_path / "config.json").write_text(
+        json.dumps({"model_type": "synthetic"}), encoding="utf-8"
+    )
+    model = object()
+    loaded_tokenizer = object()
+    utils = ModuleType("mlx_lm.utils")
+    utils.load_model = lambda _path, **_kwargs: (model, {"eos_token_id": 7})
+    utils.load_tokenizer = lambda *_args, **_kwargs: loaded_tokenizer
+    mlx_lm = ModuleType("mlx_lm")
+    mlx_lm.utils = utils
+    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm)
+    monkeypatch.setitem(sys.modules, "mlx_lm.utils", utils)
+    monkeypatch.setattr(tokenizer, "_try_inject_mtp", lambda *_args: None)
+    monkeypatch.setattr(tokenizer, "_apply_chat_template_sidecar", lambda *_args: None)
+    monkeypatch.setattr(
+        tokenizer, "augment_eos_token_ids_from_generation_config", lambda *_args: None
+    )
+    monkeypatch.setattr(tokenizer, "repair_byte_level_decoder", lambda *_args: None)
+
+    assert tokenizer._load_strict_false(str(tmp_path), {}) == (
+        model,
+        loaded_tokenizer,
+    )
+
+
+def test_raw_tokenizer_fallback_uses_typed_boundaries(tmp_path, monkeypatch):
+    from rapid_mlx.utils import tokenizer
+
+    (tmp_path / "config.json").write_text(
+        json.dumps({"model_type": "synthetic"}), encoding="utf-8"
+    )
+    (tmp_path / "tokenizer.json").write_text("{}", encoding="utf-8")
+    model = object()
+    loaded_tokenizer = SimpleNamespace(chat_template=None)
+    utils = ModuleType("mlx_lm.utils")
+    utils.load_model = lambda _path, **_kwargs: (model, {})
+    mlx_lm = ModuleType("mlx_lm")
+    mlx_lm.utils = utils
+    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm)
+    monkeypatch.setitem(sys.modules, "mlx_lm.utils", utils)
+    fp8 = ModuleType("rapid_mlx.fp8_repack")
+    fp8.is_fp8_block_checkpoint = lambda _path: False
+    fp8.load_fp8_model_online = lambda _path: None
+    monkeypatch.setitem(sys.modules, "rapid_mlx.fp8_repack", fp8)
+    tokenizers = ModuleType("tokenizers")
+    tokenizers.Tokenizer = SimpleNamespace(from_file=lambda _path: object())
+    monkeypatch.setitem(sys.modules, "tokenizers", tokenizers)
+    transformers = ModuleType("transformers")
+    tokenizer_kwargs = []
+
+    def build_tokenizer(**kwargs):
+        tokenizer_kwargs.append(kwargs)
+        return loaded_tokenizer
+
+    transformers.PreTrainedTokenizerFast = build_tokenizer
+    monkeypatch.setitem(sys.modules, "transformers", transformers)
+    monkeypatch.setattr(tokenizer, "_register_vendored_archs", lambda: None)
+    monkeypatch.setattr(
+        tokenizer,
+        "_deepseek_v4_quantization_override",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(tokenizer, "_uses_rapid_owned_runtime", lambda _path: False)
+    monkeypatch.setattr(tokenizer, "_apply_chat_template_sidecar", lambda *_args: False)
+    monkeypatch.setattr(tokenizer, "_needs_tokenizer_fallback", lambda _name: False)
+    monkeypatch.setattr(tokenizer, "repair_byte_level_decoder", lambda *_args: None)
+    monkeypatch.setattr(
+        tokenizer, "augment_eos_token_ids_from_generation_config", lambda *_args: None
+    )
+
+    assert tokenizer._load_with_tokenizer_fallback(str(tmp_path)) == (
+        model,
+        loaded_tokenizer,
+    )
+
+    (tmp_path / "tokenizer_config.json").write_text(
+        json.dumps(
+            {
+                "bos_token": "<bos>",
+                "eos_token": {"content": "<eos>"},
+                "unk_token": "<unknown>",
+                "pad_token": "<padding>",
+                "chat_template": "{{ messages }}",
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert tokenizer._load_with_tokenizer_fallback(str(tmp_path)) == (
+        model,
+        loaded_tokenizer,
+    )
+    assert tokenizer_kwargs[-1] == {
+        "tokenizer_object": tokenizer_kwargs[-1]["tokenizer_object"],
+        "bos_token": "<bos>",
+        "eos_token": "<eos>",
+        "unk_token": "<unknown>",
+        "pad_token": "<padding>",
+    }
+    assert loaded_tokenizer.chat_template == "{{ messages }}"
+
+    (tmp_path / "tokenizer_config.json").write_text("[]", encoding="utf-8")
+    with pytest.raises(TokenizerLoadFailed, match="must contain an object"):
+        tokenizer._load_with_tokenizer_fallback(str(tmp_path))
+
+    (tmp_path / "tokenizer_config.json").write_text("{broken", encoding="utf-8")
+    with pytest.raises(TokenizerLoadFailed) as raised:
+        tokenizer._load_with_tokenizer_fallback(str(tmp_path))
+    assert isinstance(raised.value.__cause__, json.JSONDecodeError)
 
 
 def test_serve_download_error_class():
@@ -382,9 +1432,7 @@ def test_auto_selected_is_not_hardcoded_on_success(monkeypatch, auto_selected):
 @pytest.mark.parametrize("auto_selected", [False, True])
 def test_auto_selected_is_not_hardcoded_on_failure(monkeypatch, auto_selected):
     calls = []
-    monkeypatch.setattr(
-        track_module, "track", lambda _event, props: calls.append(props)
-    )
+    _capture_accepted_events(monkeypatch, lambda _event, props: calls.append(props))
     model_events.emit_model_serve_failed(
         RuntimeError("load"), alias_or_path="unknown", auto_selected=auto_selected
     )
@@ -395,7 +1443,7 @@ def test_auto_selected_is_not_hardcoded_on_failure(monkeypatch, auto_selected):
 def test_failure_uses_only_privacy_reduced_model_on_wire(monkeypatch, tmp_path):
     hostile = str(tmp_path / "alice-secret" / "weights")
     calls = []
-    monkeypatch.setattr(track_module, "track", lambda event, props: calls.append(props))
+    _capture_accepted_events(monkeypatch, lambda _event, props: calls.append(props))
     model_events.emit_model_serve_failed(RuntimeError("load"), alias_or_path=hostile)
     assert calls[0]["model"] == "<local>"
     assert hostile not in repr(calls)
@@ -405,9 +1453,59 @@ def test_failure_prefers_engine_telemetry_identity(monkeypatch):
     calls = []
     engine = object()
     monkeypatch.setattr(model_id, "engine_telemetry_id", lambda value: "tmax-9b")
-    monkeypatch.setattr(track_module, "track", lambda event, props: calls.append(props))
+    _capture_accepted_events(monkeypatch, lambda _event, props: calls.append(props))
     model_events.emit_model_serve_failed(RuntimeError("load"), engine=engine)
     assert calls == [{"error_class": "other", "model": "tmax-9b"}]
+
+
+def test_optional_runtime_failure_class_and_extra_are_structured(monkeypatch):
+    from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
+
+    calls = []
+    failure = OptionalRuntimeMissing(
+        extra="vision",
+        install_hint="pip install 'rapid-mlx[vision]'",
+        detail="private diagnostic detail",
+        status="broken",
+    )
+    _capture_accepted_events(monkeypatch, lambda _event, props: calls.append(props))
+
+    model_events.emit_model_serve_failed(failure)
+
+    assert model_events.serve_error_class(failure) == "missing_extra"
+    assert calls == [{"error_class": "missing_extra", "extra": "vision"}]
+    assert "private diagnostic detail" not in repr(calls)
+
+
+def test_wrapped_optional_runtime_failure_preserves_class_and_extra(monkeypatch):
+    from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
+
+    calls = []
+    missing = OptionalRuntimeMissing(
+        extra="vision",
+        install_hint="pip install 'rapid-mlx[vision]'",
+        detail="private diagnostic detail",
+        status="absent",
+    )
+    wrapped = RuntimeError("outer")
+    wrapped.__cause__ = missing
+    _capture_accepted_events(monkeypatch, lambda _event, props: calls.append(props))
+
+    model_events.emit_model_serve_failed(wrapped)
+
+    assert model_events.serve_error_class(wrapped) == "missing_extra"
+    assert calls == [{"error_class": "missing_extra", "extra": "vision"}]
+    assert "private diagnostic detail" not in repr(calls)
+
+
+def test_optional_runtime_lookup_tolerates_hostile_cause_access():
+    class HostileCauseError(RuntimeError):
+        def __getattribute__(self, name):
+            if name == "__cause__":
+                raise KeyboardInterrupt
+            return super().__getattribute__(name)
+
+    assert model_events.find_optional_runtime_missing(HostileCauseError()) is None
 
 
 def test_failure_loses_race_after_payload_build_without_emitting(monkeypatch):
@@ -418,7 +1516,7 @@ def test_failure_loses_race_after_payload_build_without_emitting(monkeypatch):
         return "other"
 
     monkeypatch.setattr(model_events, "model_type", claim_during_build)
-    monkeypatch.setattr(track_module, "track", lambda event, props: calls.append(props))
+    _capture_accepted_events(monkeypatch, lambda _event, props: calls.append(props))
     model_events.emit_model_serve_failed(RuntimeError("load"), alias_or_path="unknown")
     assert calls == []
 
@@ -442,6 +1540,7 @@ def test_emitters_never_raise_and_failed_latch_is_not_burned(monkeypatch):
     monkeypatch.setattr(
         track_module, "track", lambda event, props, **kw: calls.append(event)
     )
+    _capture_accepted_events(monkeypatch, lambda event, _props: calls.append(event))
     monkeypatch.setattr(
         model_id,
         "telemetry_model_id",
@@ -475,12 +1574,529 @@ def test_serve_failure_latch_claims_before_building(monkeypatch):
     monkeypatch.setattr(
         model_events,
         "serve_error_class",
-        lambda _exc: calls.append("classify") or "other",
+        lambda _exc, *, model_ref=None: calls.append("classify") or "other",
     )
-    monkeypatch.setattr(track_module, "track", lambda event, props: calls.append(event))
+    _capture_accepted_events(monkeypatch, lambda event, _props: calls.append(event))
     model_events.emit_model_serve_failed(RuntimeError("first"))
     model_events.emit_model_serve_failed(RuntimeError("second"))
     assert calls == ["classify", "model_serve_failed"]
+
+
+def _emit_failure_from_fresh_process(
+    exc: BaseException,
+    *,
+    alias_or_path: object = None,
+) -> None:
+    model_events._reset_for_tests()
+    model_events.emit_model_serve_failed(exc, alias_or_path=alias_or_path)
+
+
+def test_identical_serve_failures_within_window_emit_once(monkeypatch):
+    calls: list[dict[str, object]] = []
+    now = iter((1000.0, 1599.0))
+    monkeypatch.setattr(model_events, "_serve_failed_clock", lambda: next(now))
+    _capture_accepted_events(monkeypatch, lambda _event, props: calls.append(props))
+
+    _emit_failure_from_fresh_process(RuntimeError("first"), alias_or_path="unknown")
+    _emit_failure_from_fresh_process(RuntimeError("second"), alias_or_path="unknown")
+
+    assert len(calls) == 1
+
+
+def test_identical_serve_failures_after_window_emit_twice(monkeypatch):
+    calls: list[dict[str, object]] = []
+    now = iter((1000.0, 1600.0))
+    monkeypatch.setattr(model_events, "_serve_failed_clock", lambda: next(now))
+    _capture_accepted_events(monkeypatch, lambda _event, props: calls.append(props))
+
+    _emit_failure_from_fresh_process(RuntimeError("first"), alias_or_path="unknown")
+    _emit_failure_from_fresh_process(RuntimeError("second"), alias_or_path="unknown")
+
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("enqueue_raises", [False, True], ids=["rejected", "raised"])
+def test_failed_enqueue_keeps_durable_serve_failure_claim(
+    monkeypatch, tmp_path, caplog, enqueue_raises
+):
+    calls: list[track_module._AcceptedEvent] = []
+
+    def fail_enqueue(accepted):
+        calls.append(accepted)
+        if enqueue_raises:
+            raise RuntimeError("defensive enqueue failure")
+        return False
+
+    monkeypatch.setattr(track_module, "_enqueue_accepted", fail_enqueue)
+    monkeypatch.setattr(model_events, "_serve_failed_clock", lambda: 1000.0)
+    caplog.set_level("DEBUG", logger=model_events.__name__)
+
+    _emit_failure_from_fresh_process(RuntimeError("first"), alias_or_path="unknown")
+    _emit_failure_from_fresh_process(RuntimeError("second"), alias_or_path="unknown")
+
+    path = tmp_path / ".rapid-mlx" / "state" / "serve-failed-recent.json"
+    assert len(json.loads(path.read_text(encoding="utf-8"))) == 1
+    assert len(calls) == 1
+    assert "any durable dedupe claim was left intact" in caplog.text
+
+
+def test_different_serve_failure_key_is_not_suppressed(monkeypatch):
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(model_events, "_serve_failed_clock", lambda: 1000.0)
+    _capture_accepted_events(monkeypatch, lambda _event, props: calls.append(props))
+
+    _emit_failure_from_fresh_process(RuntimeError("first"), alias_or_path="unknown")
+    _emit_failure_from_fresh_process(RuntimeError("second"), alias_or_path="sdxl-base")
+
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize(
+    ("failure_mode", "expected_emissions"),
+    [("unwritable", 2), ("corrupt", 1), ("clock-backwards", 2)],
+)
+def test_serve_failure_dedupe_storage_failures_and_backwards_clock_fail_open(
+    monkeypatch, tmp_path, failure_mode, expected_emissions
+):
+    calls: list[dict[str, object]] = []
+    state_dir = tmp_path / ".rapid-mlx" / "state"
+    if failure_mode == "unwritable":
+        state_dir.parent.mkdir(parents=True)
+        state_dir.write_text("not a directory", encoding="utf-8")
+        times = iter((1000.0, 1001.0))
+    elif failure_mode == "corrupt":
+        state_dir.mkdir(parents=True)
+        (state_dir / "serve-failed-recent.json").write_text(
+            "{not-json", encoding="utf-8"
+        )
+        times = iter((1000.0, 1001.0))
+    else:
+        times = iter((1000.0, 999.0))
+    monkeypatch.setattr(model_events, "_serve_failed_clock", lambda: next(times))
+    _capture_accepted_events(monkeypatch, lambda _event, props: calls.append(props))
+
+    _emit_failure_from_fresh_process(RuntimeError("first"), alias_or_path="unknown")
+    _emit_failure_from_fresh_process(RuntimeError("second"), alias_or_path="unknown")
+
+    assert len(calls) == expected_emissions
+
+
+def test_serve_failure_recent_file_is_private_and_evicts_oldest(monkeypatch, tmp_path):
+    monkeypatch.setattr(model_events, "_serve_failed_clock", lambda: 1000.0)
+
+    for index in range(65):
+        key = (f"model-{index}", "llm", "other", "")
+        assert model_events._claim_serve_failure_key(key, now=float(index)) is True
+
+    path = tmp_path / ".rapid-mlx" / "state" / "serve-failed-recent.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    assert len(record) == 64
+    assert (
+        json.dumps(["model-0", "llm", "other", ""], separators=(",", ":")) not in record
+    )
+    assert json.dumps(["model-64", "llm", "other", ""], separators=(",", ":")) in record
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_future_dated_claims_do_not_evict_current_claim(tmp_path):
+    path = tmp_path / ".rapid-mlx" / "state" / "serve-failed-recent.json"
+    path.parent.mkdir(parents=True)
+    future = {
+        json.dumps(
+            [f"future-{index}", "llm", "other", ""], separators=(",", ":")
+        ): 2000.0 + index
+        for index in range(64)
+    }
+    path.write_text(json.dumps(future), encoding="utf-8")
+    key = ("current", "llm", "other", "")
+    encoded_key = json.dumps(key, separators=(",", ":"))
+
+    assert model_events._claim_serve_failure_key(key, now=1000.0) is True
+
+    record = json.loads(path.read_text(encoding="utf-8"))
+    assert record == {encoded_key: 1000.0}
+    assert model_events._claim_serve_failure_key(key, now=1001.0) is False
+
+
+def test_serve_failure_recent_reader_rejects_oversize_and_non_mapping(
+    monkeypatch, tmp_path
+):
+    path = tmp_path / "serve-failed-recent.json"
+    path.write_text("[]", encoding="utf-8")
+    assert model_events._read_serve_failed_recent(path) == {}
+
+    monkeypatch.setattr(model_events, "_SERVE_FAILED_MAX_BYTES", 1)
+    assert model_events._read_serve_failed_recent(path) == {}
+
+
+def test_serve_failure_recent_reader_bounds_file_growth(monkeypatch, tmp_path):
+    path = tmp_path / "serve-failed-recent.json"
+    path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(model_events, "_SERVE_FAILED_MAX_BYTES", 1)
+    monkeypatch.setattr(
+        model_events.os,
+        "fstat",
+        lambda _fd: SimpleNamespace(st_mode=0o100600, st_size=0),
+    )
+
+    assert model_events._read_serve_failed_recent(path) == {}
+
+
+def test_serve_failure_claim_nonfinite_clock_and_lock_contention_fail_open(
+    monkeypatch,
+):
+    key = ("model", "llm", "other", "")
+    assert model_events._claim_serve_failure_key(key, now=float("nan")) is True
+    assert (
+        model_events._claim_serve_failure_key(
+            key,
+            now=float("nan"),
+            would_accept=lambda: False,
+            on_claim=lambda: pytest.fail("rejected event reached enqueue"),
+        )
+        is False
+    )
+    assert (
+        model_events._claim_serve_failure_key(
+            key,
+            now=1000.0,
+            would_accept=lambda: False,
+            on_claim=lambda: pytest.fail("rejected event reached enqueue"),
+        )
+        is False
+    )
+    monkeypatch.setattr(
+        model_events.fcntl,
+        "flock",
+        lambda *_args: (_ for _ in ()).throw(BlockingIOError()),
+    )
+    monkeypatch.setattr(model_events, "_SERVE_FAILED_LOCK_WAIT_SECONDS", 0)
+    assert model_events._claim_serve_failure_key(key, now=1000.0) is True
+    monkeypatch.setattr(
+        model_events.fcntl,
+        "flock",
+        lambda *_args: (_ for _ in ()).throw(PermissionError()),
+    )
+    assert model_events._claim_serve_failure_key(key, now=1000.0) is True
+    monkeypatch.setattr(
+        model_events,
+        "_serve_failed_recent_path",
+        lambda: (_ for _ in ()).throw(OSError("path unavailable")),
+    )
+    assert model_events._claim_serve_failure_key(key, now=1000.0) is True
+
+
+def test_serve_failure_lock_contention_retries_then_rereads(monkeypatch):
+    key = ("model", "llm", "other", "")
+    encoded_key = json.dumps(key, separators=(",", ":"))
+    attempts = iter((BlockingIOError(), None))
+    sleeps: list[float] = []
+
+    def flock(*_args):
+        outcome = next(attempts)
+        if outcome is not None:
+            raise outcome
+
+    monkeypatch.setattr(model_events.fcntl, "flock", flock)
+    monkeypatch.setattr(model_events.time, "monotonic", lambda: 0.0)
+    monkeypatch.setattr(model_events.time, "sleep", sleeps.append)
+    monkeypatch.setattr(
+        model_events,
+        "_read_serve_failed_recent",
+        lambda _path: {encoded_key: 999.0},
+    )
+
+    assert model_events._claim_serve_failure_key(key, now=1000.0) is False
+    assert sleeps == [model_events._SERVE_FAILED_LOCK_SLEEP_SECONDS]
+
+
+@pytest.mark.parametrize(
+    ("recent", "expected", "expected_calls"),
+    [
+        ({"matching": 999.0}, False, 0),
+        ({}, True, 1),
+    ],
+)
+def test_serve_failure_lock_timeout_rereads_before_failing_open(
+    monkeypatch, recent, expected, expected_calls
+):
+    key = ("model", "llm", "other", "")
+    encoded_key = json.dumps(key, separators=(",", ":"))
+    stored = {encoded_key: recent["matching"]} if "matching" in recent else {}
+    calls: list[None] = []
+    monkeypatch.setattr(
+        model_events.fcntl,
+        "flock",
+        lambda *_args: (_ for _ in ()).throw(BlockingIOError()),
+    )
+    monkeypatch.setattr(model_events, "_SERVE_FAILED_LOCK_WAIT_SECONDS", 0)
+    monkeypatch.setattr(model_events, "_read_serve_failed_recent", lambda _path: stored)
+
+    result = model_events._claim_serve_failure_key(
+        key,
+        now=1000.0,
+        on_claim=lambda: (calls.append(None), True)[1],
+    )
+
+    assert result is expected
+    assert len(calls) == expected_calls
+
+
+def test_slow_serve_failure_enqueue_does_not_hold_ledger_lock(monkeypatch):
+    key = ("model", "llm", "other", "")
+    barrier = threading.Barrier(8)
+    calls: list[None] = []
+    results: list[bool] = []
+
+    def claim() -> None:
+        barrier.wait()
+
+        def slow_track() -> bool:
+            calls.append(None)
+            threading.Event().wait(0.6)
+            return True
+
+        results.append(
+            model_events._claim_serve_failure_key(
+                key,
+                now=1000.0,
+                would_accept=lambda: True,
+                on_claim=slow_track,
+            )
+        )
+
+    threads = [threading.Thread(target=claim) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2.0)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert calls == [None]
+    assert results.count(True) == 1
+    assert results.count(False) == 7
+
+
+@pytest.mark.skipif(
+    not hasattr(os, "chflags") or not hasattr(stat, "UF_IMMUTABLE"),
+    reason="requires BSD immutable flags",
+)
+def test_immutable_ledger_after_claim_keeps_legitimate_claim(tmp_path):
+    key = ("model", "llm", "other", "")
+    path = tmp_path / ".rapid-mlx" / "state" / "serve-failed-recent.json"
+    emissions: list[float] = []
+
+    def emit_and_freeze() -> None:
+        emissions.append(1000.0)
+        os.chflags(path, stat.UF_IMMUTABLE)
+
+    try:
+        assert model_events._claim_serve_failure_key(
+            key,
+            now=1000.0,
+            would_accept=lambda: True,
+            on_claim=emit_and_freeze,
+        )
+        assert not model_events._claim_serve_failure_key(
+            key,
+            now=1001.0,
+            would_accept=lambda: True,
+            on_claim=lambda: emissions.append(1001.0),
+        )
+        assert model_events._claim_serve_failure_key(
+            key,
+            now=1600.0,
+            would_accept=lambda: True,
+            on_claim=lambda: emissions.append(1600.0),
+        )
+        assert emissions == [1000.0, 1600.0]
+    finally:
+        if path.exists():
+            os.chflags(path, 0)
+
+
+def test_invalid_optional_extra_writes_no_dedupe_file_or_event(monkeypatch, tmp_path):
+    calls: list[tuple[str, dict[str, object]]] = []
+    secret = "/Users/alice/private-extra"
+    failure = OptionalRuntimeMissing(
+        extra=secret,  # type: ignore[arg-type]
+        install_hint="private install hint",
+        detail="private detail",
+        status="broken",
+    )
+    props = {
+        "error_class": "missing_extra",
+        "extra": secret,
+        "model": "<custom>",
+        "model_type": "other",
+        "auto_selected": False,
+        "quant": "unknown",
+    }
+    assert registry.validate("model_serve_failed", props) is None
+    _capture_accepted_events(
+        monkeypatch, lambda event, values: calls.append((event, values))
+    )
+
+    model_events.emit_model_serve_failed(failure, alias_or_path="acme/private-model")
+
+    path = tmp_path / ".rapid-mlx" / "state" / "serve-failed-recent.json"
+    assert not path.exists()
+    assert calls == []
+
+
+@pytest.mark.parametrize("invalid_field", ["model", "model_type"])
+def test_invalid_serve_failure_props_write_no_file_or_event(
+    monkeypatch, tmp_path, invalid_field
+):
+    if invalid_field == "model":
+        monkeypatch.setattr(
+            model_id, "telemetry_model_id", lambda _value: "private/model/path"
+        )
+    else:
+        monkeypatch.setattr(model_events, "model_type", lambda _value: "invalid")
+    _capture_accepted_events(
+        monkeypatch,
+        lambda _event, _props: pytest.fail("invalid event reached enqueue"),
+    )
+
+    model_events.emit_model_serve_failed(
+        RuntimeError("private failure"), alias_or_path="unknown"
+    )
+
+    assert not (tmp_path / ".rapid-mlx" / "state" / "serve-failed-recent.json").exists()
+
+
+def test_rejected_first_serve_failure_does_not_consume_process_latch(
+    monkeypatch, tmp_path
+):
+    identities = iter(("private/model/path", "<custom>"))
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(model_id, "telemetry_model_id", lambda _value: next(identities))
+    _capture_accepted_events(monkeypatch, lambda _event, props: calls.append(props))
+
+    model_events.emit_model_serve_failed(
+        RuntimeError("first invalid"), alias_or_path="unknown"
+    )
+
+    path = tmp_path / ".rapid-mlx" / "state" / "serve-failed-recent.json"
+    assert calls == []
+    assert not path.exists()
+    assert model_events._serve_failure_claimed is False
+
+    model_events.emit_model_serve_failed(
+        RuntimeError("second valid"), alias_or_path="unknown"
+    )
+
+    assert calls == [
+        {
+            "error_class": "other",
+            "model": "<custom>",
+            "model_type": "other",
+            "auto_selected": False,
+            "quant": "unknown",
+        }
+    ]
+    assert path.exists()
+    assert model_events._serve_failure_claimed is True
+
+
+def test_valid_serve_failure_wins_race_with_rejected_failure(monkeypatch, tmp_path):
+    invalid_is_validating = threading.Event()
+    valid_is_validating = threading.Event()
+    calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        model_id,
+        "telemetry_model_id",
+        lambda value: "private/model/path" if value == "invalid" else "<custom>",
+    )
+
+    real_accepted_props = track_module._accepted_props
+
+    def decide(event, props):
+        if props["model"] == "private/model/path":
+            invalid_is_validating.set()
+            valid_is_validating.wait(timeout=1.0)
+        else:
+            valid_is_validating.set()
+        return real_accepted_props(event, props)
+
+    monkeypatch.setattr(track_module, "_accepted_props", decide)
+    _capture_accepted_events(monkeypatch, lambda _event, props: calls.append(props))
+
+    invalid = threading.Thread(
+        target=model_events.emit_model_serve_failed,
+        args=(RuntimeError("invalid"),),
+        kwargs={"alias_or_path": "invalid"},
+    )
+    valid = threading.Thread(
+        target=model_events.emit_model_serve_failed,
+        args=(RuntimeError("valid"),),
+        kwargs={"alias_or_path": "valid"},
+    )
+    invalid.start()
+    assert invalid_is_validating.wait(timeout=1.0)
+    valid.start()
+    invalid.join(timeout=2.0)
+    valid.join(timeout=2.0)
+
+    assert not invalid.is_alive()
+    assert not valid.is_alive()
+    assert [props["model"] for props in calls] == ["<custom>"]
+    path = tmp_path / ".rapid-mlx" / "state" / "serve-failed-recent.json"
+    assert len(json.loads(path.read_text(encoding="utf-8"))) == 1
+    assert model_events._serve_failure_claimed is True
+
+
+def test_opted_out_serve_failure_writes_no_dedupe_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(consent_runtime, "upload_allowed", lambda: False)
+    _capture_accepted_events(
+        monkeypatch,
+        lambda _event, _props: pytest.fail("opted-out event reached enqueue"),
+    )
+
+    model_events.emit_model_serve_failed(
+        RuntimeError("private failure"), alias_or_path="unknown"
+    )
+
+    assert not (tmp_path / ".rapid-mlx" / "state" / "serve-failed-recent.json").exists()
+
+
+def test_consent_revoked_after_decision_enqueues_and_keeps_claim(monkeypatch, tmp_path):
+    accepted: list[dict[str, object]] = []
+    allowed = True
+    real_would_accept = track_module.would_accept
+
+    def decide_then_revoke(event, props):
+        nonlocal allowed
+        decision = real_would_accept(event, props)
+        allowed = False
+        return decision
+
+    monkeypatch.setattr(track_module, "_upload_allowed", lambda: allowed)
+    monkeypatch.setattr(track_module, "would_accept", decide_then_revoke)
+    monkeypatch.setattr(
+        posthog_sender,
+        "get_sender",
+        lambda: SimpleNamespace(
+            capture=lambda item: (accepted.append(dict(item)), True)[1]
+        ),
+    )
+
+    model_events.emit_model_serve_failed(RuntimeError("first"), alias_or_path="unknown")
+
+    path = tmp_path / ".rapid-mlx" / "state" / "serve-failed-recent.json"
+    assert len(json.loads(path.read_text(encoding="utf-8"))) == 1
+    assert len(accepted) == 1
+
+    allowed = True
+    model_events._reset_for_tests()
+    model_events.emit_model_serve_failed(
+        RuntimeError("second"), alias_or_path="unknown"
+    )
+
+    assert len(accepted) == 1
+    assert len(json.loads(path.read_text(encoding="utf-8"))) == 1
 
 
 class _CaptureHandler(BaseHTTPRequestHandler):

@@ -306,6 +306,19 @@ enum RapidTheme {
     /// anything type-sized uses this deeper shade of the same hue.
     static let brandPrimaryDeep = amberDeep
 
+    /// Amber as READING TEXT on an app surface — a pending stage label, a
+    /// caption that has to stay in the brand hue.
+    ///
+    /// One step deeper than ``brandPrimaryDeep`` in Light. That token is
+    /// tuned for glyphs and hairlines, where 3:1 is the bar; #C9821F on white
+    /// measures 3.1:1 and is below the 4.5:1 a 13pt sentence needs. #775115
+    /// is 7.0:1 on white and still unmistakably amber. Dark mode keeps the
+    /// raw brand amber, which is 7.0:1 on ``surfaceRaised`` there.
+    static let brandPrimaryInk = Color(nsColor: .init(name: nil, dynamicProvider: { appearance in
+        appearance.isDark ? NSColor(deviceRed: 0xEF/255.0, green: 0xA2/255.0, blue: 0x3A/255.0, alpha: 1.0)
+                          : NSColor(deviceRed: 0x77/255.0, green: 0x51/255.0, blue: 0x15/255.0, alpha: 1.0)
+    }))
+
     /// The calm amber wash behind selected rows, working states, and
     /// brand-adjacent surfaces that must not become a saturated block.
     static let brandPrimaryTint = amberTint
@@ -417,6 +430,19 @@ enum RapidTheme {
                           : NSColor(deviceRed: 0x1B/255.0, green: 0x1D/255.0, blue: 0x21/255.0, alpha: 1.0)
     }))
 
+    /// Ground for a status header seated ON ``surfaceBand`` — the relay bar at
+    /// the top of the Share workbench.
+    ///
+    /// One step darker than the band in both appearances. Deliberately a token
+    /// rather than a hand-mixed `Color.black.opacity(…)`: an opacity wash
+    /// composites differently against Light's near-black band and Dark's
+    /// lighter graphite one, which is how a header ends up invisible in exactly
+    /// one appearance.
+    static let surfaceBandHeader = Color(nsColor: .init(name: nil, dynamicProvider: { appearance in
+        appearance.isDark ? NSColor(deviceRed: 0x1B/255.0, green: 0x1E/255.0, blue: 0x23/255.0, alpha: 1.0)
+                          : NSColor(deviceRed: 0x17/255.0, green: 0x19/255.0, blue: 0x1D/255.0, alpha: 1.0)
+    }))
+
     /// Primary ink on ``surfaceBand``. Appearance-independent, because the
     /// band's ground is graphite in both modes — flipping it would put
     /// dark ink on a dark plane in exactly one appearance.
@@ -433,6 +459,229 @@ enum RapidTheme {
     /// Unfilled progress track inside the band.
     static let bandTrack = Color(nsColor: .init(name: nil, dynamicProvider: { _ in
         NSColor(deviceRed: 0x33/255.0, green: 0x37/255.0, blue: 0x3D/255.0, alpha: 1.0)
+    }))
+
+    // MARK: Band content tokens (Phase UI-2 — Share Compute workbench)
+    //
+    // The Share Compute workbench is a band that holds a whole composition
+    // rather than a progress line: a selector row, a five-step rail, status
+    // text, a table. The three tokens above cover ink and a track; these cover
+    // the surfaces and semantic colours that composition needs.
+    //
+    // Every one is appearance-INDEPENDENT, for the same reason ``bandInk`` is:
+    // the band's ground is graphite in Light and only one step lighter in
+    // Dark, so a colour that flipped with appearance would land dark-on-dark
+    // in exactly one mode. The values are the DARK members of each semantic
+    // ramp (``green``'s #5FC7A0, ``brand``'s #6E96C8), because on a graphite
+    // plane the dark-mode variant is the legible one in both appearances —
+    // #2E7D55 on #1B1D21 measures 1.9:1 and is unreadable.
+
+    /// Ready / success on the band — step complete, READY ON THIS MAC, the
+    /// available reward tag. 6.9:1 on ``surfaceBand``.
+    static let bandReady = Color(nsColor: .init(name: nil, dynamicProvider: { _ in
+        NSColor(deviceRed: 0x5F/255.0, green: 0xC7/255.0, blue: 0xA0/255.0, alpha: 1.0)
+    }))
+
+    /// Tinted backing for a ready state on the band (the AVAILABLE tag fill).
+    static let bandReadyTint = Color(nsColor: .init(name: nil, dynamicProvider: { _ in
+        NSColor(deviceRed: 0x18/255.0, green: 0x2A/255.0, blue: 0x22/255.0, alpha: 1.0)
+    }))
+
+    /// Identity / technical detail on the band — node ids, and nothing else.
+    /// Steel blue stays as rare here as it is everywhere else in the app.
+    ///
+    /// Phase UI-2 lifted this from Paper's #6E96C8. That value measures
+    /// 4.9:1 on the Dark band ground — it clears AA on paper and then spends
+    /// the entire margin on a 9pt MONOSPACED string, which is the smallest,
+    /// thinnest type in the whole module. #8AB4E4 is the same steel a step
+    /// brighter: ~7:1 on both band grounds, still unmistakably a link rather
+    /// than body ink. Node ids are the one thing on this surface a user may
+    /// need to transcribe, so the margin is spent on them deliberately.
+    static let bandLink = Color(nsColor: .init(name: nil, dynamicProvider: { _ in
+        NSColor(deviceRed: 0x8A/255.0, green: 0xB4/255.0, blue: 0xE4/255.0, alpha: 1.0)
+    }))
+
+    /// Steel wash behind a link-toned marker ON the band — the numbered
+    /// circle of the first value step.
+    ///
+    /// Appearance-independent for the reason the whole band block is: the
+    /// general-purpose ``brandSecondaryTint`` is a near-WHITE #EEF2F7 in
+    /// Light, and painting it on a graphite plane produced a pale disc with a
+    /// pale-blue numeral on it — 2.7:1, and the single worst contrast pairing
+    /// the Share tab had. Paper draws #243447 here in both appearances.
+    static let bandLinkTint = Color(nsColor: .init(name: nil, dynamicProvider: { _ in
+        NSColor(deviceRed: 0x24/255.0, green: 0x34/255.0, blue: 0x47/255.0, alpha: 1.0)
+    }))
+
+    /// Amber wash behind a brand-toned marker ON the band — the numbered
+    /// circle of the reward step. Band-scoped twin of ``brandPrimaryTint``,
+    /// which flips to a cream in Light and fails on graphite there.
+    static let bandBrandTint = Color(nsColor: .init(name: nil, dynamicProvider: { _ in
+        NSColor(deviceRed: 0x3A/255.0, green: 0x2C/255.0, blue: 0x12/255.0, alpha: 1.0)
+    }))
+
+    /// Fill of an AMBER status tag on the band — `SELECTED`.
+    ///
+    /// The bug this token exists to make impossible: the tag used to read its
+    /// fill from ``brandPrimaryTint`` and its ink from ``onBrandPrimary``.
+    /// In Light that is a cream chip with near-black text; in Dark
+    /// ``brandPrimaryTint`` flips to #2A2113 and the pairing becomes
+    /// near-black on near-black — the word disappeared entirely. The band's
+    /// ground does NOT flip, so neither may anything painted on it. Paper
+    /// draws #FBF1E2 / #7A4B0B in both appearances.
+    static let bandTagAmberFill = Color(nsColor: .init(name: nil, dynamicProvider: { _ in
+        NSColor(deviceRed: 0xFB/255.0, green: 0xF1/255.0, blue: 0xE2/255.0, alpha: 1.0)
+    }))
+
+    /// Ink on ``bandTagAmberFill``. 8.0:1 — readable at the 9pt all-caps the
+    /// tag is set in, in both appearances.
+    static let onBandTagAmber = Color(nsColor: .init(name: nil, dynamicProvider: { _ in
+        NSColor(deviceRed: 0x7A/255.0, green: 0x4B/255.0, blue: 0x0B/255.0, alpha: 1.0)
+    }))
+
+    /// Ink of an OUTLINED status tag on the band — `PROCESSING`. Brighter
+    /// than ``bandInkSecondary`` because an outlined tag has no fill to
+    /// separate it from the plane behind it.
+    static let bandTagNeutralInk = Color(nsColor: .init(name: nil, dynamicProvider: { _ in
+        NSColor(deviceRed: 0xC7/255.0, green: 0xC9/255.0, blue: 0xCD/255.0, alpha: 1.0)
+    }))
+
+    /// Border of an outlined status tag on the band.
+    static let bandTagNeutralStroke = Color(nsColor: .init(name: nil, dynamicProvider: { _ in
+        NSColor(deviceRed: 0x55/255.0, green: 0x5A/255.0, blue: 0x63/255.0, alpha: 1.0)
+    }))
+
+    /// Fill of the two-character model badge on the band, unselected.
+    ///
+    /// Light in BOTH appearances — Paper draws the badges as pale chips on
+    /// the graphite plane, and the general-purpose ``brandSecondaryTint``
+    /// turned them into dark-on-dark squares in Dark mode.
+    static let bandBadgeSteelFill = Color(nsColor: .init(name: nil, dynamicProvider: { _ in
+        NSColor(deviceRed: 0xEE/255.0, green: 0xF2/255.0, blue: 0xF7/255.0, alpha: 1.0)
+    }))
+
+    /// Ink on ``bandBadgeSteelFill``.
+    static let onBandBadgeSteel = Color(nsColor: .init(name: nil, dynamicProvider: { _ in
+        NSColor(deviceRed: 0x3A/255.0, green: 0x5C/255.0, blue: 0x86/255.0, alpha: 1.0)
+    }))
+
+    /// Destructive action on the band — Stop Sharing. The Light-mode brick
+    /// (#C0392B) is what Paper draws here and it clears 4.5:1 on the band;
+    /// the Dark coral would read as a warmer, softer word than "stop".
+    static let bandDestructive = Color(nsColor: .init(name: nil, dynamicProvider: { _ in
+        NSColor(deviceRed: 0xE0/255.0, green: 0x5A/255.0, blue: 0x4C/255.0, alpha: 1.0)
+    }))
+
+    /// Quiet separator inside the band — the rule above a step rail, between
+    /// history rows.
+    static let bandHairline = Color(nsColor: .init(name: nil, dynamicProvider: { _ in
+        NSColor(deviceRed: 0x39/255.0, green: 0x3C/255.0, blue: 0x42/255.0, alpha: 1.0)
+    }))
+
+    /// A more present divider on the band — the edge of the whole workbench,
+    /// the rule under a column-header row.
+    static let bandHairlineStrong = Color(nsColor: .init(name: nil, dynamicProvider: { _ in
+        NSColor(deviceRed: 0x4A/255.0, green: 0x4D/255.0, blue: 0x53/255.0, alpha: 1.0)
+    }))
+
+    /// A control sitting ON the band — the model selector row, the picker
+    /// menu. Warm-shifted off the band ground so the control reads as a
+    /// distinct object rather than a rectangle drawn on the same plane.
+    static let bandControl = Color(nsColor: .init(name: nil, dynamicProvider: { _ in
+        NSColor(deviceRed: 0x23/255.0, green: 0x22/255.0, blue: 0x1F/255.0, alpha: 1.0)
+    }))
+
+    /// Border of a control on the band.
+    static let bandControlStroke = Color(nsColor: .init(name: nil, dynamicProvider: { _ in
+        NSColor(deviceRed: 0x5A/255.0, green: 0x57/255.0, blue: 0x4F/255.0, alpha: 1.0)
+    }))
+
+    /// Fill behind a SELECTED row on the band — a picker option, the selected
+    /// history receipt. Pairs with an amber leading bar or tick, never the
+    /// only selection signal.
+    static let bandSelectionFill = Color(nsColor: .init(name: nil, dynamicProvider: { _ in
+        NSColor(deviceRed: 0x3A/255.0, green: 0x32/255.0, blue: 0x1C/255.0, alpha: 1.0)
+    }))
+
+    /// Border of a selected row on the band.
+    static let bandSelectionStroke = Color(nsColor: .init(name: nil, dynamicProvider: { _ in
+        NSColor(deviceRed: 0x80/255.0, green: 0x63/255.0, blue: 0x29/255.0, alpha: 1.0)
+    }))
+
+    /// Ink on the band that is quieter than ``bandInkSecondary`` — a column
+    /// header, a disabled step label. 4.6:1, the floor for the 8–9pt labels
+    /// this is used on.
+    static let bandInkTertiary = Color(nsColor: .init(name: nil, dynamicProvider: { _ in
+        NSColor(deviceRed: 0x8F/255.0, green: 0x94/255.0, blue: 0x9D/255.0, alpha: 1.0)
+    }))
+
+    // MARK: Amber panel (the reward side of the workbench)
+    //
+    // Paper pairs the graphite band with a solid amber panel carrying the
+    // provider-owned half of every session surface. It is the one large amber
+    // area in the app, so its supporting inks live here rather than being
+    // hand-mixed per view.
+
+    /// Supporting ink on a ``brandPrimary``-filled panel — eyebrows, captions,
+    /// the "final amount" caveat. 4.8:1 on #EFA23A.
+    static let onBrandPrimarySecondary = Color(nsColor: .init(name: nil, dynamicProvider: { _ in
+        NSColor(deviceRed: 0x77/255.0, green: 0x51/255.0, blue: 0x15/255.0, alpha: 1.0)
+    }))
+
+    /// Identity / technical detail ON a ``brandPrimary`` panel — node ids.
+    ///
+    /// The amber-surface twin of ``bandLink``, and the reason the two are
+    /// separate tokens rather than one blue: a single hard-coded steel cannot
+    /// clear contrast on both a graphite plane and an amber one. The general
+    /// ``brandSecondary`` was being used here and is appearance-DEPENDENT —
+    /// in Dark it resolves to #6E96C8, which measures 1.4:1 on #EFA23A and
+    /// was effectively invisible. Paper's own #3A5C86 reaches only 3.2:1;
+    /// this is the same steel taken deeper until it clears 4.5:1 (4.8:1),
+    /// which is the floor an 11pt monospaced id has to meet.
+    ///
+    /// Appearance-INDEPENDENT, because the amber ground it sits on is.
+    static let onBrandPrimaryLink = Color(nsColor: .init(name: nil, dynamicProvider: { _ in
+        NSColor(deviceRed: 0x27/255.0, green: 0x42/255.0, blue: 0x6B/255.0, alpha: 1.0)
+    }))
+
+    /// A settled / positive state ON a ``brandPrimary`` panel — the
+    /// completion-receipt eyebrow.
+    ///
+    /// A deep forest green rather than the general ``statusReady``, which is
+    /// #2E7D55 in Light and a much lighter #5FC7A0 in Dark: on #EFA23A those
+    /// measure 2.4:1 and worse. Green carries real meaning on this panel
+    /// (the compute side finished), so the hue is kept and taken down until
+    /// it clears 4.5:1 (5.1:1) instead of being traded for amber-on-amber.
+    ///
+    /// Appearance-INDEPENDENT, like every other ink on this panel.
+    static let onBrandPrimaryReady = Color(nsColor: .init(name: nil, dynamicProvider: { _ in
+        NSColor(deviceRed: 0x17/255.0, green: 0x45/255.0, blue: 0x2E/255.0, alpha: 1.0)
+    }))
+
+    /// A raised card inside the amber panel — the payout-account callout, the
+    /// reward-status block.
+    static let brandPrimaryRaised = Color(nsColor: .init(name: nil, dynamicProvider: { _ in
+        NSColor(deviceRed: 0xF8/255.0, green: 0xD9/255.0, blue: 0x9C/255.0, alpha: 1.0)
+    }))
+
+    /// The palest surface inside the amber panel — a list ground that has to
+    /// sit UNDER ``brandPrimaryRaised`` without either reading as the panel
+    /// itself.
+    ///
+    /// Appearance-INDEPENDENT, like every other token on this panel, and that
+    /// is the whole reason it exists. The Live Pool model picker reached for
+    /// ``brandPrimaryTint`` instead, which is appearance-DEPENDENT and resolves
+    /// to a near-black amber in Dark — so the unselected rows rendered dark ink
+    /// on a dark fill sitting on a bright amber panel, and the picker was
+    /// unreadable in exactly one appearance. The amber panel's ground does not
+    /// flip, so nothing on it may.
+    static let brandPrimarySurface = Color(nsColor: .init(name: nil, dynamicProvider: { _ in
+        NSColor(deviceRed: 0xFF/255.0, green: 0xF7/255.0, blue: 0xE8/255.0, alpha: 1.0)
+    }))
+
+    /// Divider inside the amber panel.
+    static let brandPrimaryHairline = Color(nsColor: .init(name: nil, dynamicProvider: { _ in
+        NSColor(deviceRed: 0xC9/255.0, green: 0x82/255.0, blue: 0x1F/255.0, alpha: 1.0)
     }))
 
     // MARK: Status

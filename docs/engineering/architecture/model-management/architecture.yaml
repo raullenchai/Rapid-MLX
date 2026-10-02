@@ -1,5 +1,5 @@
 schema_version: 1
-architecture_version: "0.1"
+architecture_version: "0.4"
 title: Rapid-MLX model management and performance decision SSOT
 adr: ../../decisions/2026-08-22-model-management-performance-ssot.md
 status_values: [planned, in_progress, partial, implemented, migrating, blocked, deprecated]
@@ -228,35 +228,35 @@ components:
   runtime_config_override:
     name: RuntimeConfigOverride
     lane: runtime
-    status: partial
+    status: implemented
     phase: 1
     owner: atlas
     summary: Explicit advanced runtime knobs; user value wins within hard constraints.
-    files: [rapid_mlx/cli.py, rapid_mlx/server.py]
-    tests: [tests/test_recurrent_prefill_auto_default.py, tests/test_cli_config_fidelity.py]
-    missing: Typed override layer shared across CLI, Server, and Desktop.
+    files: [rapid_mlx/cli.py, rapid_mlx/server.py, rapid_mlx/runtime/effective_config.py, rapid_mlx/runtime/config_adapter.py]
+    tests: [tests/test_recurrent_prefill_auto_default.py, tests/test_cli_config_fidelity.py, tests/test_effective_runtime_config.py, tests/test_runtime_config_adapter.py, tests/test_runtime_config_legacy_parity.py]
+    missing: None for the initial shared runtime field set.
   runtime_resolver:
     name: RuntimeResolver
     lane: runtime
-    status: partial
+    status: implemented
     phase: 1
     owner: atlas
     summary: Sole authority for resolving how the selected variant runs.
-    files: [rapid_mlx/cli.py, rapid_mlx/server.py]
-    tests: [tests/test_recurrent_prefill_auto_default.py, tests/test_cli_config_fidelity.py]
+    files: [rapid_mlx/cli.py, rapid_mlx/server.py, rapid_mlx/runtime/effective_config.py, rapid_mlx/runtime/config_adapter.py]
+    tests: [tests/test_recurrent_prefill_auto_default.py, tests/test_cli_config_fidelity.py, tests/test_effective_runtime_config.py, tests/test_runtime_config_adapter.py, tests/test_runtime_config_legacy_parity.py]
     migrations: [migrations/002-effective-runtime-config.md]
-    missing: One API shared by every entry point and typed runtime overrides.
+    missing: None for the initial shared runtime field set.
   effective_runtime_config:
     name: EffectiveRuntimeConfig
     lane: runtime
-    status: planned
+    status: implemented
     phase: 1
     owner: atlas
     summary: Immutable final values with field-level source, reason, evidence, and fallback trace.
-    files: []
-    tests: []
+    files: [rapid_mlx/runtime/effective_config.py, rapid_mlx/runtime/config_adapter.py, rapid_mlx/routes/runtime_config.py, apps/rapid-mac/Sources/Rapid/Server/EffectiveRuntimeConfig.swift, apps/rapid-mac/Sources/Rapid/UI/SettingsPerformancePanel.swift]
+    tests: [tests/test_effective_runtime_config.py, tests/test_runtime_config_adapter.py, tests/test_runtime_config_legacy_parity.py, tests/test_runtime_config_route.py, apps/rapid-mac/Tests/RapidTests/EffectiveRuntimeConfigTests.swift]
     migrations: [migrations/002-effective-runtime-config.md]
-    missing: Schema, resolver output, read-only API, and provenance contract.
+    missing: None for the initial shared runtime field set.
   desktop_gui:
     name: Rapid Desktop GUI
     lane: runtime
@@ -264,10 +264,10 @@ components:
     phase: 1
     owner: pixel
     summary: Consumes the atomic catalog for model placement and effective config for runtime behavior.
-    files: [rapid_mlx/cli.py, apps/rapid-mac/Sources/Rapid/Server/ModelCatalog.swift, apps/rapid-mac/Sources/Rapid/Server/RAMBucketedDefault.swift, apps/rapid-mac/Sources/Rapid/UI/SettingsModelManagementPanel.swift]
-    tests: [tests/test_recurrent_prefill_auto_default.py, apps/rapid-mac/Tests/RapidTests/AtomicModelCatalogTests.swift, apps/rapid-mac/Tests/RapidTests/RAMBucketedDefaultTests.swift]
+    files: [rapid_mlx/cli.py, apps/rapid-mac/Sources/Rapid/Server/ModelCatalog.swift, apps/rapid-mac/Sources/Rapid/Server/RAMBucketedDefault.swift, apps/rapid-mac/Sources/Rapid/Server/EffectiveRuntimeConfig.swift, apps/rapid-mac/Sources/Rapid/UI/SettingsModelManagementPanel.swift, apps/rapid-mac/Sources/Rapid/UI/SettingsPerformancePanel.swift]
+    tests: [tests/test_recurrent_prefill_auto_default.py, apps/rapid-mac/Tests/RapidTests/AtomicModelCatalogTests.swift, apps/rapid-mac/Tests/RapidTests/RAMBucketedDefaultTests.swift, apps/rapid-mac/Tests/RapidTests/EffectiveRuntimeConfigTests.swift]
     evidence: [../../performance/2026-08-22-long-context-service-prefill.md]
-    missing: Resolved-config provenance/reason presentation.
+    missing: Complete the remaining model-management GUI migrations outside runtime config.
   rapid_server:
     name: Rapid Server / CLI
     lane: runtime

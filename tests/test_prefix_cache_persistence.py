@@ -1546,7 +1546,12 @@ def test_message_boundary_marker_roundtrips_and_legacy_defaults_false(tmp_path):
     assert next(iter(legacy_cache._entries.values())).message_boundary_sequence == 0
 
 
-def test_deadline_save_skips_oversized_prefix_and_tries_smaller(tmp_path):
+def test_deadline_save_skips_oversized_prefix_and_tries_smaller(tmp_path, monkeypatch):
+    # Pin the first-entry prediction to the 150 MB/s floor: this test is about
+    # the skip-and-try-smaller loop, not the disk-throughput probe.
+    monkeypatch.setattr(
+        "rapid_mlx.memory_cache._probe_write_bytes_per_sec", lambda _d: 0.0
+    )
     cache_dir = tmp_path / "snap"
     cache = fresh_cache()
     cache.store([1], make_kvcache(num_tokens=1))

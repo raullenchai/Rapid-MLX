@@ -264,6 +264,7 @@ async def test_guided_stream_shutdown_consumes_exact_lifecycle_owner(monkeypatch
             "caller_agent": None,
             "caller_client": None,
             "result": "failed",
+            "error_class": "model_replaced",
         }
     ]
 
@@ -330,6 +331,7 @@ async def test_shutdown_during_retained_handoff_keeps_replacement_semantics(
             "caller_agent": None,
             "caller_client": None,
             "result": "failed",
+            "error_class": "model_replaced",
         }
     ]
 
@@ -736,6 +738,7 @@ async def test_guided_strict_failures_emit_failed(monkeypatch, failure_kind):
             "caller_agent": "openai-python/1.2",
             "caller_client": "rapid-cli-chat",
             "result": "failed",
+            "error_class": "strict_schema_violation",
         }
     ]
 

@@ -101,6 +101,31 @@ struct ReonboardingResetTests {
         #expect(defaults.object(forKey: TelemetryConfig.enabledKey) != nil)
     }
 
+    @Test("Re-onboarding preserves prior-use history for funnel cohort exclusion")
+    func reonboardingDoesNotBecomeAFirstRun() throws {
+        let (conversations, telemetry) = try scratch()
+        defer { try? FileManager.default.removeItem(at: conversations.deletingLastPathComponent()) }
+        let suite = TestDefaultsScope.mintSuiteName(prefix: "reonboard")
+        defer { TestDefaultsScope.cleanup(suiteNames: [suite]) }
+        let defaults = UserDefaults(suiteName: suite)!
+        let quickstart = QuickstartCoordinator(defaults: defaults)
+        quickstart.markDone()
+
+        ReonboardingReset.eraseState(
+            scope: .onboarding,
+            quickstart: quickstart,
+            conversationsURL: conversations,
+            telemetryDirectory: telemetry,
+            defaults: defaults,
+            bundleIdentifier: suite
+        )
+
+        let relaunched = QuickstartCoordinator(defaults: defaults)
+        #expect(!relaunched.done, "guided setup must be eligible again")
+        #expect(relaunched.hasPriorUse, "re-shown setup must not enter the new-install cohort")
+        #expect(defaults.bool(forKey: QuickstartCoordinator.priorUseStorageKey))
+    }
+
     @Test("Each optional scope erases only its own destination")
     func scopesAreIndependent() throws {
         let (conversations, telemetry) = try scratch()

@@ -754,6 +754,12 @@ struct SettingsView: View {
                 // the store confirm it. Reading the preference back would
                 // reintroduce the same problem the moment a write is deferred
                 // or rejected.
+                if !enabled {
+                    // Fail closed in this process before the async shared-file
+                    // write can yield. The funnel checks this latch both before
+                    // request construction and immediately before transport.
+                    DesktopFunnelReporter.latchProcessOptOut()
+                }
                 telemetryEnabled = enabled
                 let previousWrite = telemetryConsentWrite
                 telemetryConsentWrite = Task {

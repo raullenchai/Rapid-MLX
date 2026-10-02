@@ -197,6 +197,7 @@ def test_pull_uses_exact_revision_and_data_allowlist(
 ) -> None:
     from rapid_mlx import cli
     from rapid_mlx.audio import registry
+    from rapid_mlx.runtime import image_lane
 
     calls = []
     monkeypatch.setattr(
@@ -206,6 +207,7 @@ def test_pull_uses_exact_revision_and_data_allowlist(
     )
     monkeypatch.setattr(registry, "runtime_assets_for", lambda _repo: ())
     monkeypatch.setattr(registry, "runtime_requirements_for", lambda _repo: ())
+    monkeypatch.setattr(image_lane, "image_runtime_issue", lambda _model: None)
 
     cli.pull_command(SimpleNamespace(model=requested))
 

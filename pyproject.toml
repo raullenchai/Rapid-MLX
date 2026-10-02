@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rapid-mlx"
-version = "0.15.0"
-description = "Rapid-MLX — AI inference for Apple Silicon. Drop-in OpenAI API, up to 3x Ollama's measured throughput."
+version = "0.15.4"
+description = "Rapid-MLX is an open-source (Apache 2.0) OpenAI- and Anthropic-compatible LLM inference server and Mac app for Apple Silicon, built on MLX, focused on reliable tool calling for coding agents."
 readme = "README.md"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.10"
@@ -158,6 +158,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Native macOS Computer Use. Keep these Darwin-only so installing the extra on
+# Linux remains safe for server deployments that expose no local desktop.
+computer-use = [
+    "pyobjc-framework-ApplicationServices==12.2.2; platform_system == 'Darwin'",
+    "pyobjc-framework-Quartz==12.2.2; platform_system == 'Darwin'",
+]
 # Vision/multimodal models (Gemma 4, Qwen-VL, etc.) — adds ~322 MB
 # Required for any model with vision input. Text-only models work without this.
 # 0.5.0+ also unlocks DFlash speculative decoding (see [dflash] extras).
@@ -166,7 +172,7 @@ vision = [
     # A floating 0.6.x range backtracks to 0.6.3 under older Transformers
     # constraints and can also advance CLI users beyond the Desktop's validated
     # lane. Updating this exact pin is a gated coherence event (#1248).
-    "mlx-vlm==0.7.1",
+    "mlx-vlm==0.7.2",
     "opencv-python>=4.8.0",
     "torch>=2.3.0",
     "torchvision>=0.18.0",
@@ -180,7 +186,7 @@ vision = [
 # the vision extras do. Only enable if you serve a DFlash-eligible alias
 # (e.g. qwen3.5-27b-8bit) with --speculative-config '{"method":"dflash"}'.
 dflash = [
-    "mlx-vlm==0.7.1",
+    "mlx-vlm==0.7.2",
 ]
 # MTP (Multi-Token Prediction) speculative decoding — Gemma 4 external
 # assistant path via ``--speculative-config '{"method":"mtp","model":"<path>"}'``.
@@ -200,12 +206,18 @@ dflash = [
 mtp = [
     # Required by the explicit native-MTP backend. Keep this exact pin aligned
     # with the signed Desktop sidecar and the vision/DFlash extras.
-    "mlx-vlm==0.7.1",
+    "mlx-vlm==0.7.2",
     "pillow>=10.0.0",
 ]
 # Embedding endpoint
 embeddings = [
     "mlx-embeddings>=0.1.0",
+]
+# Typed decision models served through the TypeSafe-compatible System One API.
+# laya-mlx is Python 3.11+; keep the extra installable on Rapid-MLX's Python
+# 3.10 floor so the native CLM backend and protocol remain available there.
+system-one = [
+    "laya-mlx>=0.2,<0.3; python_version >= '3.11'",
 ]
 # HF → Cloudflare R2 mirror tooling (scripts/mirror_to_r2.py).
 # Off the hot path — only maintainers who seed models.rapidmlx.com need
@@ -223,8 +235,11 @@ chat = [
 # Expanded directly to avoid a self-dependency that breaks
 # pip install .[all] and editable installs.
 all = [
+    # computer-use (Darwin only)
+    "pyobjc-framework-ApplicationServices==12.2.2; platform_system == 'Darwin'",
+    "pyobjc-framework-Quartz==12.2.2; platform_system == 'Darwin'",
     # vision
-    "mlx-vlm==0.7.1",
+    "mlx-vlm==0.7.2",
     "opencv-python>=4.8.0",
     "torch>=2.3.0",
     "torchvision>=0.18.0",
@@ -234,6 +249,8 @@ all = [
     "pytz>=2024.1",
     # embeddings
     "mlx-embeddings>=0.1.0",
+    # system-one (Laya; native CLM support is built in)
+    "laya-mlx>=0.2,<0.3; python_version >= '3.11'",
     # dflash (text-only path covered by mlx-vlm above; listed for clarity)
     # audio
     "mlx-audio>=0.5.3,<0.6",
@@ -296,7 +313,7 @@ test = [
     # ``pytest tests/`` without hand-installed local extras.
     "aiohttp>=3.9.0",
     "pillow>=10.0.0",
-    "mlx-vlm==0.7.1; platform_system == 'Darwin'",
+    "mlx-vlm==0.7.2; platform_system == 'Darwin'",
     "mlx-audio>=0.5.3,<0.6; platform_system == 'Darwin'",
     # Powers the property-based invariant suite in tests/property/ — encodes
     # numeric/validation invariants over the whole input space (e.g. the
@@ -395,7 +412,7 @@ dev = [
     'tomli>=2.0.1; python_version < "3.11"',
     "aiohttp>=3.9.0",
     "pillow>=10.0.0",
-    "mlx-vlm==0.7.1; platform_system == 'Darwin'",
+    "mlx-vlm==0.7.2; platform_system == 'Darwin'",
     "mlx-audio>=0.5.3,<0.6; platform_system == 'Darwin'",
     # Mirror of the [test] entry — keep `dev` a strict superset of `test`
     # (enforced by tests/test_pr_validate_test_env.py).
@@ -517,7 +534,7 @@ image = [
     "mflux>=0.20.0,<0.21; platform_system == 'Darwin' and python_version >= '3.11'",
     # HiDream-O1 reuses the exact Qwen3-VL runtime already validated and
     # bundled by Desktop. Keep this pin coherent with [vision]/the sidecar.
-    "mlx-vlm==0.7.1; platform_system == 'Darwin' and python_version >= '3.11'",
+    "mlx-vlm==0.7.2; platform_system == 'Darwin' and python_version >= '3.11'",
     # The vendored SDXL backend needs Pillow for PNG encoding. Keep this direct
     # because SDXL and SD3.5 also work on Rapid's Python 3.10 floor without
     # mflux. SD3.5's reviewed local T5 tokenizer additionally needs
@@ -527,9 +544,11 @@ image = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/raullenchai/Rapid-MLX"
-Documentation = "https://github.com/raullenchai/Rapid-MLX#readme"
-Repository = "https://github.com/raullenchai/Rapid-MLX"
+Homepage = "https://rapidmlx.com"
+Documentation = "https://rapidmlx.com/docs/"
+Source = "https://github.com/raullenchai/Rapid-MLX"
+Changelog = "https://rapidmlx.com/changelog/"
+Issues = "https://github.com/raullenchai/Rapid-MLX/issues"
 
 [project.scripts]
 rapid-mlx = "rapid_mlx.cli:cli_entrypoint"
@@ -537,6 +556,7 @@ rapid-mlx = "rapid_mlx.cli:cli_entrypoint"
 rmlx = "rapid_mlx.cli:cli_entrypoint"
 rapid-mlx-chat = "rapid_mlx.gradio_app:main"
 rapid-mlx-bench = "rapid_mlx.benchmark:main"
+rapid-mlx-convert-clm-head = "rapid_mlx.system_one.convert_clm:main"
 # Deprecated pre-rename aliases — kept so existing users' scripts/muscle
 # memory keep working. Prefer the rapid-mlx* commands above.
 vllm-mlx = "rapid_mlx.cli:main"
@@ -580,6 +600,9 @@ rapid_mlx = [
     "kernels/*.metal",
     # Adapted Qwen4 stage-one selector license must ship with the Python file.
     "kernels/LICENSE-QSA-STAGE1",
+    # Lane matmul adapts separately MIT-licensed kernels; the complete
+    # copyright, permission text, and provenance must accompany every wheel.
+    "kernels/lane_matmul/LICENSE-LANE-MATMUL",
     # Integration tests bundled inside the package so `rapid-mlx agents
     # <name> --test` works on pip/brew installs (the source layout keeps
     # them at tests/integrations/, mirrored here via symlinks). Without
@@ -689,7 +712,7 @@ ignore = [
 # lint quiet on the copy so upstream diffs stay clean. Sync policy
 # and rationale in rapid_mlx/models/gemma4_vendored/__init__.py.
 "rapid_mlx/models/gemma4_vendored/*.py" = ["UP", "B", "SIM", "N", "F", "I", "E"]
-# Vendored from Blaizzy/mlx-vlm 0.7.1 as staged dependency-retirement slices
+# Vendored from Blaizzy/mlx-vlm 0.7.2 as staged dependency-retirement slices
 # (cache types/seam first, then the APC engine and producer cutover).
 # Upstream-shaped with only the documented bug-fix deviations; keep lint
 # quiet on the copy so upstream diffs and the step-3 revert stay clean.

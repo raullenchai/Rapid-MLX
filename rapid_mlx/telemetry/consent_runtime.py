@@ -271,8 +271,7 @@ def detect_role() -> ProcessRole:
     4. Otherwise — headless CLI. ``DESKTOP`` is never produced by Python;
        it is the Swift app itself.
     """
-    role_raw = os.environ.get(_PROCESS_ROLE_ENV, "").strip()
-    if role_raw == _DESKTOP_SIDECAR_ROLE_VALUE:
+    if is_desktop_sidecar():
         return ProcessRole.SIDECAR
     ppid_raw = os.environ.get(_WATCHDOG_PPID_ENV, "").strip()
     if ppid_raw:
@@ -291,6 +290,11 @@ def detect_role() -> ProcessRole:
     if stdin_isatty and stderr_isatty:
         return ProcessRole.INTERACTIVE_CLI
     return ProcessRole.HEADLESS_CLI
+
+
+def is_desktop_sidecar() -> bool:
+    """Return whether the Desktop explicitly owns this Python sidecar."""
+    return os.environ.get(_PROCESS_ROLE_ENV, "").strip() == _DESKTOP_SIDECAR_ROLE_VALUE
 
 
 def kill_switch_active() -> bool:

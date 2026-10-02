@@ -35,6 +35,7 @@ struct TelemetryRegistryTests {
         #expect(registry.registryVersion == 1)
         for name in [
             "app_opened", "active_day", "model_pulled", "model_pull_failed",
+            "server_start_state",
             "model_served", "model_serve_failed", "capability_rejected",
             "inference_bucket_reached", "agent_configured",
             "agent_configure_failed", "telemetry_opted_out",
@@ -58,6 +59,45 @@ struct TelemetryRegistryTests {
         #expect(TelemetryRegistry.decode(data) != nil)
     }
 
+    private func registryData(onlyWhen: Any) throws -> Data {
+        let url = try #require(TelemetryRegistry.resourceURL())
+        let data = try Data(contentsOf: url)
+        var root = try #require(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        var events = try #require(root["events"] as? [String: Any])
+        var event = try #require(events["server_start_state"] as? [String: Any])
+        var props = try #require(event["props"] as? [String: Any])
+        var failureStage = try #require(props["failure_stage"] as? [String: Any])
+        failureStage["only_when"] = onlyWhen
+        props["failure_stage"] = failureStage
+        event["props"] = props
+        events["server_start_state"] = event
+        root["events"] = events
+        return try JSONSerialization.data(withJSONObject: root)
+    }
+
+    @Test("an empty only_when is rejected even when the conditional property is absent")
+    func rejectsEmptyOnlyWhenEagerly() throws {
+        #expect(TelemetryRegistry.decode(try registryData(
+            onlyWhen: [String: [String]]()
+        )) == nil)
+    }
+
+    @Test("an only_when controller must be a declared property of its event")
+    func rejectsUnknownOnlyWhenController() throws {
+        #expect(TelemetryRegistry.decode(try registryData(
+            onlyWhen: ["undeclared_controller": ["failed"]]
+        )) == nil)
+    }
+
+    @Test("every only_when value must belong to the controller enum")
+    func rejectsUnknownOnlyWhenValue() throws {
+        #expect(TelemetryRegistry.decode(try registryData(
+            onlyWhen: ["state": ["not-a-server-start-state"]]
+        )) == nil)
+    }
+
     // MARK: - Strictness
 
     @Test("a well-formed event passes through unchanged")
@@ -65,6 +105,56 @@ struct TelemetryRegistryTests {
         let out = try #require(registry.validate("model_served", validServe))
         #expect(out.count == 4)
         #expect(out["quant"] == .string("4bit"))
+    }
+
+    @Test("server start state accepts its closed contract and rejects an unknown state")
+    func validatesServerStartState() throws {
+        let out = try #require(registry.validate(
+            "server_start_state",
+            [
+                "state": .string("failed"),
+                "model_type": .string("llm"),
+                "load_policy": .string("eager"),
+                "failure_stage": .string("bind")
+            ]
+        ))
+        #expect(out["failure_stage"] == .string("bind"))
+        #expect(registry.validate(
+            "server_start_state",
+            ["state": .string("exploded")]
+        ) == nil)
+        #expect(registry.validate(
+            "server_start_state",
+            [
+                "state": .string("failed"),
+                "failure_stage": .string("prepare"),
+                "port_explicit": .bool(true)
+            ]
+        ) == nil)
+        for state in ["attempted", "ready"] {
+            #expect(registry.validate(
+                "server_start_state",
+                [
+                    "state": .string(state),
+                    "failure_stage": .string("bind")
+                ]
+            ) == nil)
+        }
+        let attempted = try #require(registry.validate(
+            "server_start_state",
+            [
+                "state": .string("attempted"),
+                "previous_run_unterminated": .bool(true)
+            ]
+        ))
+        #expect(attempted["previous_run_unterminated"] == .bool(true))
+        #expect(registry.validate(
+            "server_start_state",
+            [
+                "state": .string("ready"),
+                "previous_run_unterminated": .bool(true)
+            ]
+        ) == nil)
     }
 
     @Test("an unknown event name is dropped")
@@ -137,6 +227,25 @@ struct TelemetryRegistryTests {
     @Test("a _failed twin accepts error_class alone and rejects it missing")
     func failedTwinContract() {
         #expect(registry.validate("model_serve_failed", ["error_class": .string("insufficient_memory")]) != nil)
+        for errorClass in [
+            "invalid_config",
+            "tokenizer_load_failed",
+            "incompatible_weights",
+            "quantization_mismatch",
+            "local_path_missing"
+        ] {
+            #expect(registry.validate("model_serve_failed", ["error_class": .string(errorClass)]) != nil)
+        }
+        #expect(registry.validate("model_serve_failed", [
+            "error_class": .string("missing_extra"),
+            "extra": .string("vision"),
+            "extra_recovery": .string("declined"),
+        ]) != nil)
+        let rejectedExtra = registry.validate("model_serve_failed", [
+            "error_class": .string("other"),
+            "extra": .string("vision"),
+        ])
+        #expect(rejectedExtra == nil)
         #expect(registry.validate("model_serve_failed", ["model": .string("<custom>")]) == nil)
     }
 

@@ -260,6 +260,10 @@ def main():
     if gr is None:
         import sys
 
+        from rapid_mlx.runtime.optional_runtime import optional_extra_install_hint
+
+        install_hint = optional_extra_install_hint("chat")
+
         if len(sys.argv) == 1:
             # The installer's quick-start (and muscle memory) reach for
             # `rapid-mlx-chat` on a base install, where the [chat] extra is
@@ -270,7 +274,7 @@ def main():
             # (a share link, another server-url) — no silent substitute.
             print(
                 "rapid-mlx-chat is the web chat UI and needs the [chat] extra:\n"
-                "    pip install 'rapid-mlx[chat]'\n"
+                f"{install_hint}\n"
                 "Starting the terminal chat against http://localhost:8000 instead...\n",
                 file=sys.stderr,
             )
@@ -280,7 +284,7 @@ def main():
             sys.exit(cli.main())
         print(
             "Error: gradio is required for the chat UI.\n"
-            "Install it with: pip install 'rapid-mlx[chat]'\n"
+            f"{install_hint}\n"
             "\n"
             "The rapid-mlx-chat command requires the [chat] extra which\n"
             "includes gradio and pytz. It is not installed by default to\n"

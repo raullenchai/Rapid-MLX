@@ -195,7 +195,7 @@ enum CommandPalette {
             case .searchChats: return "Search chats"
             case .images: return "Open Images"
             case .audio: return "Open Audio"
-            case .launch: return "Open Launch"
+            case .launch: return "Open Agent"
             case .settings: return "Open Settings"
             case .modelManagement: return "Open Model Management"
             case .connectors: return "Open MCP Connectors"
@@ -211,7 +211,7 @@ enum CommandPalette {
             case .searchChats: return "magnifyingglass"
             case .images: return "photo"
             case .audio: return "waveform"
-            case .launch: return "paperplane"
+            case .launch: return "network"
             case .settings: return "gearshape"
             case .modelManagement: return "externaldrive.fill"
             case .connectors: return "powerplug.fill"
@@ -243,7 +243,7 @@ enum CommandPalette {
             case .searchChats: return String(localized: String.LocalizationValue("Search chats"))
             case .images: return String(localized: String.LocalizationValue("Open Images"))
             case .audio: return String(localized: String.LocalizationValue("Open Audio"))
-            case .launch: return String(localized: String.LocalizationValue("Open Launch"))
+            case .launch: return String(localized: String.LocalizationValue("Open Agent"))
             case .settings: return String(localized: String.LocalizationValue("Open Settings"))
             case .modelManagement: return String(localized: String.LocalizationValue("Open Model Management"))
             case .connectors: return String(localized: String.LocalizationValue("Open MCP Connectors"))

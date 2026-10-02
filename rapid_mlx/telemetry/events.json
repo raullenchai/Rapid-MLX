@@ -115,7 +115,8 @@
         "claude-code", "cursor", "aider", "cline", "continue",
         "openai-python", "openai-node", "anthropic-sdk", "litellm",
         "langchain", "llamaindex", "ollama",
-        "python-httpx", "python-requests", "node-fetch", "axios",
+        "python-httpx", "python-requests", "python-aiohttp", "node-fetch",
+        "axios",
         "curl", "okhttp", "go-http",
         "rapid-agents", "rapid-bench", "rapid-cli-chat", "rapid-desktop",
         "rapid-gradio",
@@ -134,6 +135,20 @@
       "values": [
         "llm", "vlm", "embedding", "image-gen", "video-gen",
         "text-diffusion", "audio", "other"
+      ]
+    },
+    "server_start_state": {
+      "_about": "The accepted serve invocation and its single startup outcome.",
+      "values": ["attempted", "ready", "failed"]
+    },
+    "load_policy": {
+      "_about": "Whether model weights are loaded before bind, on demand, or not at all.",
+      "values": ["eager", "lazy", "none"]
+    },
+    "failure_stage": {
+      "_about": "The closed startup boundary at which a serve invocation failed.",
+      "values": [
+        "resolve", "download", "preflight", "prepare", "engine_start", "bind"
       ]
     },
     "quant": {
@@ -190,10 +205,30 @@
       "values": ["network", "gated", "disk_full", "not_found", "other"]
     },
     "serve_error_class": {
-      "_about": "Design sec 1.3, model_serve_failed. Verbatim from the table.",
+      "_about": "Closed model_serve_failed categories. local_path_missing distinguishes a user-supplied local path or required local file from Hub/download availability; no path or filename is sent.",
       "values": [
         "unsupported_architecture", "insufficient_memory",
-        "corrupt_weights", "download_failed", "other"
+        "corrupt_weights", "download_failed", "local_path_missing", "missing_extra",
+        "invalid_config", "tokenizer_load_failed", "incompatible_weights",
+        "quantization_mismatch", "other"
+      ]
+    },
+    "optional_extra": {
+      "_about": "Optional serving runtime required by the selected model lane.",
+      "values": ["vision", "video", "audio", "image"]
+    },
+    "extra_recovery": {
+      "_about": [
+        "Closed outcome of the missing-extra recovery decision, recorded only",
+        "after the prompt result is known and before any installer or exec.",
+        "declined means an explicit no; no_answer covers timeout, EOF, or",
+        "read failure; interrupted preserves Ctrl-C after the event is emitted.",
+        "Contains no command, path, package version, or other free text."
+      ],
+      "values": [
+        "accepted", "declined", "no_answer", "interrupted",
+        "non_interactive", "assume_yes",
+        "no_installer", "managed_runtime", "broken_runtime"
       ]
     },
     "agent": {
@@ -241,12 +276,12 @@
         "multi_sample_unsupported       -> routes/chat.py:4275, routes/completions.py:104/113",
         "logprobs_unsupported           -> routes/completions.py:371 (HTTP 501), :149",
         "logit_bias_unsupported         -> routes/chat.py:4326",
-        "structured_output_unsupported  -> routes/completions.py:264, routes/chat.py:5295,",
-        "                                  routes/responses.py:1096/1127, api/anthropic_adapter.py:925",
+        "structured_output_unsupported  -> routes/completions.py:296,",
+        "                                  api/anthropic_adapter.py:937",
         "tool_type_unsupported          -> api/responses_adapter.py:105",
         "stateless_api_only             -> routes/responses.py:904 (previous_response_id)",
         "fim_suffix_unsupported         -> routes/completions.py:88",
-        "context_length_exceeded        -> service/helpers.py:4919",
+        "context_length_exceeded        -> service/helpers.py:5021/5092",
         "speculative_decoding_unsupported -> cli.py:2658/2767/2899, server.py:2261",
         "mcp_unsupported                -> cli.py:4873",
         "speech_capability_unsupported  -> routes/audio.py:554/605/1991/3029/3056/3114",
@@ -279,6 +314,78 @@
         "response_format_unsupported",
         "perf_overrides_unsupported",
         "other"
+      ]
+    },
+    "reject_reason": {
+      "_about": "Closed reason for structured-output and context-budget capability rejections.",
+      "values": [
+        "format_type_unsupported",
+        "prompt_over_window",
+        "operational_cap",
+        "other"
+      ]
+    },
+    "inference_error_class": {
+      "_about": [
+        "Why a counted inference failed (inference_bucket_reached, result=failed).",
+        "telemetry/inference.py classify_inference_failure() maps the exception",
+        "through the SAME predicates the routes use to pick the HTTP error",
+        "(rapid_mlx/request.py), in the calling handler's own order (chat:",
+        "abort category first; anthropic and non-stream /v1/responses: the",
+        "template/media/batch-cap 400 predicates first); it reads the exception",
+        "inside the process but only ever returns one of these values -- never",
+        "exception text.",
+        "insufficient_memory / engine_aborted -> InferenceAbortedError category",
+        "                          (request.inference_aborted_error_code)",
+        "model_replaced          -> InferenceAbortedError(error_kind=lifecycle), or",
+        "                          a guided request (chat stream, chat and",
+        "                          /v1/responses non-stream) cancelled by a model",
+        "                          replacement",
+        "template_error          -> request.is_chat_template_error (the 400 'Chat",
+        "                          template error' mapping) on an exception that",
+        "                          reaches a counted handler; the eager chat-stream",
+        "                          prompt-build 400 is rejected before inference",
+        "                          and is not counted",
+        "media_input_invalid     -> request.is_media_input_error ('Failed to",
+        "                          process image|video')",
+        "prompt_too_large        -> request.is_batch_cap_error ('exceeds the",
+        "                          per-batch cap')",
+        "strict_schema_violation -> strict json_schema contract failures that",
+        "                          answer 'strict_schema_violation': the chat",
+        "                          stream frames and 502s, and the non-stream",
+        "                          /v1/responses strict 502s (guided failure or",
+        "                          post-decode validation), and the unconstrained",
+        "                          strict path's 422 json_schema_violation after",
+        "                          the repair retry (chat and /v1/responses) and",
+        "                          its chat-stream twin (json_schema_violation /",
+        "                          buffer_overflow frames; that stream is counted",
+        "                          once, after validation, never also ok). An",
+        "                          engine exception during that repair retry is",
+        "                          classified like any other exception.",
+        "output_contract_unmet   -> the model finished but broke the agent/tool",
+        "                          contract the request asked for (/v1/responses",
+        "                          stream and non-stream): tool_choice / tool",
+        "                          argument rejection, no final answer, empty",
+        "                          output (engine_no_output), late reasoning after",
+        "                          content (stream)",
+        "stream_error            -> a stream failure with NO exception object and",
+        "                          no contract reason. No site emits it today; it",
+        "                          is reserved so such a site never has to reuse",
+        "                          another class.",
+        "other                   -> any exception none of the predicates above",
+        "                          match, a /v1/responses-only request-shape 400",
+        "                          (responses._RESPONSES_INPUT_400_MARKERS, even",
+        "                          when raised as an engine abort), and any value",
+        "                          outside this list at the emitter.",
+        "Rule: where an exception object exists it is classified (never",
+        "stream_error); the local failure counter is kept per class. A request",
+        "counts one outcome: the DeepSeek Codex transparent retry defers the",
+        "hidden first attempt's failure and counts it only if no retry follows."
+      ],
+      "values": [
+        "insufficient_memory", "engine_aborted", "template_error",
+        "media_input_invalid", "prompt_too_large", "strict_schema_violation",
+        "model_replaced", "output_contract_unmet", "stream_error", "other"
       ]
     },
     "opt_via": {
@@ -366,6 +473,30 @@
       "_about": "Launches. Common props carry everything that matters.",
       "props": {}
     },
+    "server_start_state": {
+      "_about": "Whether an accepted server invocation reached a listening socket.",
+      "props": {
+        "state": {"kind": "enum", "enum": "server_start_state", "required": true},
+        "model_type": {"kind": "enum", "enum": "model_type", "required": false},
+        "load_policy": {"kind": "enum", "enum": "load_policy", "required": false},
+        "previous_run_unterminated": {
+          "kind": "bool",
+          "required": false,
+          "only_when": {"state": ["attempted"]}
+        },
+        "port_explicit": {
+          "kind": "bool",
+          "required": false,
+          "only_when": {"state": ["failed"], "failure_stage": ["bind"]}
+        },
+        "failure_stage": {
+          "kind": "enum",
+          "enum": "failure_stage",
+          "required": false,
+          "only_when": {"state": ["failed"]}
+        }
+      }
+    },
     "active_day": {
       "_about": [
         "Once per install per UTC day, on the first successful inference — DAU",
@@ -414,7 +545,9 @@
         "allow-list to close it against, so shipping it would mean either a",
         "free-form string (forbidden by sec 1.5) or an invented enum. It lands",
         "when a real allow-list exists; error_class already separates",
-        "unsupported_architecture from the other failure modes."
+        "unsupported_architecture from the other failure modes. For",
+        "missing_extra only, extra_recovery records the closed recovery",
+        "decision after prompting and before any installer runs."
       ],
       "twin_of": "model_served",
       "props": {
@@ -422,14 +555,43 @@
         "model_type": {"kind": "enum", "enum": "model_type", "required": false},
         "auto_selected": {"kind": "bool", "required": false},
         "quant": {"kind": "enum", "enum": "quant", "required": false},
-        "error_class": {"kind": "enum", "enum": "serve_error_class", "required": true}
+        "error_class": {"kind": "enum", "enum": "serve_error_class", "required": true},
+        "extra": {
+          "kind": "enum",
+          "enum": "optional_extra",
+          "required": false,
+          "only_when": {"error_class": ["missing_extra"]}
+        },
+        "extra_recovery": {
+          "kind": "enum",
+          "enum": "extra_recovery",
+          "required": false,
+          "only_when": {"error_class": ["missing_extra"]}
+        }
       }
     },
     "capability_rejected": {
-      "_about": "Features people reach for that we do not have.",
+      "_about": [
+        "Features people reach for that we do not have.",
+        "reject_reason is present only for structured_output_unsupported and",
+        "context_length_exceeded, and contains no free-form text."
+      ],
       "props": {
         "capability": {"kind": "enum", "enum": "capability", "required": true},
-        "model_type": {"kind": "enum", "enum": "model_type", "required": true}
+        "model_type": {"kind": "enum", "enum": "model_type", "required": true},
+        "model": {"kind": "model_id", "required": false},
+        "caller": {"kind": "enum", "enum": "caller", "required": false},
+        "reject_reason": {
+          "kind": "enum",
+          "enum": "reject_reason",
+          "required": false,
+          "only_when": {
+            "capability": [
+              "structured_output_unsupported",
+              "context_length_exceeded"
+            ]
+          }
+        }
       }
     },
     "inference_bucket_reached": {
@@ -437,7 +599,10 @@
         "Which models / APIs / clients carry real load, and how many installs hit",
         "repeated failures. One event per local counter threshold crossing:",
         "O(log n) events, no timing trail, no sampling. Read it as unique",
-        "installs that reached bucket >= N — never as a sum."
+        "installs that reached bucket >= N — never as a sum.",
+        "A failure carries error_class (closed enum inference_error_class, never",
+        "error text); failure counters are kept per class, so a failed bucket",
+        "is 'installs that hit >= N failures of THIS class'."
       ],
       "props": {
         "model": {"kind": "model_id", "required": true},
@@ -445,7 +610,13 @@
         "caller": {"kind": "enum", "enum": "caller", "required": true},
         "result": {"kind": "enum", "enum": "result", "required": true},
         "count_bucket": {"kind": "enum", "enum": "count_bucket", "required": true},
-        "bucket_source": {"kind": "enum", "enum": "bucket_source", "required": true}
+        "bucket_source": {"kind": "enum", "enum": "bucket_source", "required": true},
+        "error_class": {
+          "kind": "enum",
+          "enum": "inference_error_class",
+          "required": false,
+          "only_when": {"result": ["failed"]}
+        }
       }
     },
     "agent_configured": {

@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 from rapid_mlx import cli, model_aliases, model_metadata
+from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
 
 
 def _profile(**overrides):
@@ -290,25 +291,24 @@ def _mask_vision_runtime(monkeypatch):
     )
 
 
-def test_text_diffusion_guard_message_drops_no_mllm_hint(monkeypatch, capsys):
+def test_text_diffusion_guard_message_drops_no_mllm_hint(monkeypatch):
     from rapid_mlx.models.mllm import require_mlx_vlm_or_exit
 
     _mask_vision_runtime(monkeypatch)
-    with pytest.raises(SystemExit) as exc_info:
+    with pytest.raises(OptionalRuntimeMissing) as exc_info:
         require_mlx_vlm_or_exit("diffusion-gemma-26b-4bit", text_diffusion=True)
-    assert exc_info.value.code == 2
-    err = capsys.readouterr().err
+    err = exc_info.value.format_user_message()
     assert "text-diffusion alias" in err
     assert "rapid-mlx[vision]" in err.replace("'", "")
     assert "--no-mllm" not in err
 
 
-def test_vision_guard_message_keeps_no_mllm_hint(monkeypatch, capsys):
+def test_vision_guard_message_keeps_no_mllm_hint(monkeypatch):
     from rapid_mlx.models.mllm import require_mlx_vlm_or_exit
 
     _mask_vision_runtime(monkeypatch)
-    with pytest.raises(SystemExit):
+    with pytest.raises(OptionalRuntimeMissing) as exc_info:
         require_mlx_vlm_or_exit("gemma-4-26b-4bit")
-    err = capsys.readouterr().err
+    err = exc_info.value.format_user_message()
     assert "vision/multimodal alias" in err
     assert "--no-mllm" in err

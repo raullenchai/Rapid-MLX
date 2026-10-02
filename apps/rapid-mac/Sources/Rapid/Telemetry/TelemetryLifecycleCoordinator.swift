@@ -53,6 +53,11 @@ final class TelemetryLifecycleCoordinator {
     }
 
     func productValueDelivered(_ kind: ProductValueKind) {
+        if kind == .chatReply {
+            // This is the cohort install's first reply, even when it arrives
+            // on a later launch after onboarding.
+            DesktopFunnelReporter.enqueue(.firstChatReply)
+        }
         Task { await reportProductValue(kind) }
     }
 

@@ -152,12 +152,12 @@
         }
       }
     },
-    "Open Launch" : {
+    "Open Agent" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "打开启动"
+            "value" : "打开智能体"
           }
         }
       }

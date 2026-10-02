@@ -442,7 +442,7 @@ class TestStreamChatBlockCollapse:
         # (a) not crash, (b) forward ``tools`` through build_prompt
         # to ``apply_chat_template`` so the model sees the function
         # declarations, and (c) emit no "dropped" warning (the
-        # v0.7.1 fallback that silently swallowed tools is gone).
+        # v0.7.2 fallback that silently swallowed tools is gone).
         # routes/chat.py recovers structured ``tool_calls`` via the
         # alias's ``tool_call_parser`` text parser; the engine just
         # has to surface the rendered prompt and the canvas tokens.
@@ -2378,7 +2378,7 @@ class TestMlxVlmImportContract:
         # The exact call shape diffusion_lane.py:1007 uses.
         sc.reset(42)
         # After scalar → list normalisation, the requested EOS is retained
-        # alongside tokenizer-defined additional stop tokens.  mlx-vlm 0.7.1
+        # alongside tokenizer-defined additional stop tokens.  mlx-vlm 0.7.2
         # deliberately preserves those additional markers across reset().
         assert sc.eos_token_ids == [42, 3], (
             f"mlx-vlm StoppingCriteria.reset(scalar) no longer "

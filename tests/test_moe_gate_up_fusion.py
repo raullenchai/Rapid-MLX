@@ -154,7 +154,7 @@ class TestRewriteSemantics:
         GLM-5.3-Flash is forced through ``MLXMultimodalLM``. Before this
         regression guard, only the text BatchedEngine called ``fuse_gate_up``
         after loading, so all 42 GLM sparse layers missed the optimization.
-        mlx-vlm 0.7.1 owns an equivalent exact gate/up fast path and expands
+        mlx-vlm 0.7.2 owns an equivalent exact gate/up fast path and expands
         the SwitchGLU call contract; Rapid must leave that class untouched.
         """
         import mlx_vlm

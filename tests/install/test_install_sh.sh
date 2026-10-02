@@ -206,6 +206,15 @@ check "eligible cached model is preferred" \
 check "cached model above the RAM tier is never selected" \
     "$(select_starter_model 16 $'qwen3.8-27b-4bit\nlfm2.5-2.6b-4bit')" \
     "lfm2.5-2.6b-4bit"
+check "8 GB cached smart pick is preferred over an uncached baseline" \
+    "$(select_starter_model 8 'lfm2.5-2.6b-4bit')" \
+    "lfm2.5-2.6b-4bit"
+check "unknown RAM ignores a cached larger model" \
+    "$(select_starter_model 0 'lfm2.5-2.6b-4bit')" \
+    "lfm2.5-1b-4bit"
+check "16 GB cached lower-tier fast pick is preferred over an uncached baseline" \
+    "$(select_starter_model 16 'lfm2.5-1b-4bit')" \
+    "lfm2.5-1b-4bit"
 check "cache matching is exact, not a substring" \
     "$(select_starter_model 32 'prefix-qwen3.8-27b-4bit-suffix')" \
     "qwen3.5-4b-4bit"
@@ -228,12 +237,27 @@ check "multiple structured cached aliases feed the selector independently" \
     "qwen3.8-27b-4bit"
 RAM_GB=32 RECOMMENDED_MODEL="qwen3.5-4b-4bit" RECOMMENDED_FLAGS=""
 refresh_starter_from_installed_cache
+dim() { printf '%s\n' "$*"; }
 BANNER="$(print_quick_start_commands)"
 case "$BANNER" in
-    *"rapid-mlx serve qwen3.8-27b-4bit"*"rapid-mlx chat qwen3.8-27b-4bit --port 8000"*)
-        ok "post-install structured cache choice reaches both quick-start commands" ;;
+    *"rapid-mlx chat qwen3.8-27b-4bit"*"rapid-mlx serve qwen3.8-27b-4bit --port 8000"*"rapid-mlx launch --all --model qwen3.8-27b-4bit"*)
+        ok "post-install structured cache choice reaches chat and stable agent workflow" ;;
     *)
-        bad "post-install structured cache choice reaches both quick-start commands"
+        bad "post-install structured cache choice reaches chat and stable agent workflow"
+        printf '        banner: %s\n' "$BANNER" ;;
+esac
+case "$BANNER" in
+    *"serve exits if :8000 is busy; use another port in both commands:"*)
+        ok "post-install banner explains the explicit-port fallback literally" ;;
+    *)
+        bad "post-install banner explains the explicit-port fallback literally"
+        printf '        banner: %s\n' "$BANNER" ;;
+esac
+case "$BANNER" in
+    *"rapid-mlx serve qwen3.8-27b-4bit --port 8001"*"--server-url http://127.0.0.1:8001"*)
+        ok "post-install banner gives a matching alternate-port workflow" ;;
+    *)
+        bad "post-install banner gives a matching alternate-port workflow"
         printf '        banner: %s\n' "$BANNER" ;;
 esac
 

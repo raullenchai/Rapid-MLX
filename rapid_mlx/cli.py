@@ -17,16 +17,28 @@ Usage:
 
 import argparse
 import atexit
+import functools
+import ipaddress
 import os
 import shlex
 import sys
 import threading
+import urllib.error
 from collections.abc import Callable
+from typing import NoReturn
 
 from rapid_mlx._completion import alias_completer
 from rapid_mlx.client_header import RAPID_CLIENT_CLI_CHAT
 from rapid_mlx.http_auth import rapid_mlx_client_headers
 from rapid_mlx.model_profile import ModelProfile
+from rapid_mlx.runtime.optional_runtime import (
+    OptionalRuntimeMissing,
+    optional_extra_install_hint,
+    optional_extra_repair_command,
+)
+from rapid_mlx.runtime.optional_runtime import (
+    handle_optional_runtime_missing as _handle_optional_runtime_missing,
+)
 
 # Project-default mirror for ``RAPID_MLX_MODEL_MIRROR`` (consumed by
 # ``_try_mirror_prefetch``). Public Cloudflare Worker → R2 bucket, with
@@ -34,9 +46,77 @@ from rapid_mlx.model_profile import ModelProfile
 # (set to an empty string to disable the mirror and force HF Hub).
 MIRROR_DEFAULT = "https://models.rapidmlx.com"
 
+DEFAULT_SERVE_PORT = 8000
+DEFAULT_SERVE_PORT_CANDIDATES = 10
+DEFAULT_SYSTEM_ONE_PORT = 8700
+# Darwin's TCP_CONNECTION_INFO returns ``struct tcp_connection_info``.
+# Request a full, future-tolerant buffer instead of the one byte that happens
+# to contain ``tcpi_state``; kernels may reject undersized option buffers.
+_DARWIN_TCP_CONNECTION_INFO_SIZE = 256
+
 _CONSENT_MUTATION_EVENT_LIMIT = 5
 _consent_mutation_event_count = 0
 _consent_mutation_event_lock = threading.Lock()
+_hub_guidance_rendered = False
+_hub_guidance_lock = threading.Lock()
+
+
+def _stamp_port_explicit(args: argparse.Namespace) -> argparse.Namespace:
+    """Stamp bind-port provenance from the parsed server namespace."""
+    if not hasattr(args, "port"):
+        return args
+    if getattr(args, "listen_fd", None) is not None:
+        args._port_explicit = None
+    else:
+        args._port_explicit = args.port is not None
+    return args
+
+
+def port_explicit_for(args: argparse.Namespace) -> bool | None:
+    """Return bind-port provenance for parsed or programmatic namespaces."""
+    if hasattr(args, "_port_explicit"):
+        stamped = args._port_explicit
+        if stamped is None or isinstance(stamped, bool):
+            return stamped
+    derived = (
+        None
+        if getattr(args, "listen_fd", None) is not None
+        else getattr(args, "port", None) is not None
+    )
+    args._port_explicit = derived
+    return derived
+
+
+class _PortContextArgumentParser(argparse.ArgumentParser):
+    """Argument parser that records the effective bind-port provenance."""
+
+    def parse_args(self, args=None, namespace=None):
+        if args is None and namespace is None:
+            parsed = super().parse_args()
+        elif namespace is None:
+            parsed = super().parse_args(args)
+        else:
+            parsed = super().parse_args(args, namespace)
+        return _stamp_port_explicit(parsed)
+
+
+def _run_optional_runtime_guard(
+    guard: Callable[..., None],
+    *args,
+    alias_or_path: str,
+    assume_yes: bool = False,
+    **kwargs,
+) -> None:
+    """Route serve-time optional-runtime failures through the sole handler."""
+    try:
+        guard(*args, **kwargs)
+    except OptionalRuntimeMissing as exc:
+        _handle_optional_runtime_missing(
+            exc,
+            alias_or_path=alias_or_path,
+            auto_selected=False,
+            assume_yes=assume_yes,
+        )
 
 
 def _claim_consent_mutation_event() -> bool:
@@ -334,7 +414,74 @@ def _is_ipv6_host(host: str) -> bool:
     return ":" in host
 
 
-def _port_preflight_or_die(host: str, port: int, *, model: str) -> None:
+def _port_collision_host(host: str, port: int) -> str | None:
+    """Return the first bind address that collides, or ``None`` if free.
+
+    Wildcard hosts use the same loopback-shadow check as the serve preflight.
+    The sockets are probes only: each is closed before this function returns.
+    """
+    import errno
+    import socket
+
+    if host in _wildcard_host_aliases():
+        hosts_to_probe: tuple[str, ...] = (host, "127.0.0.1")
+    else:
+        hosts_to_probe = (host,)
+
+    for probe_host in hosts_to_probe:
+        family = socket.AF_INET6 if _is_ipv6_host(probe_host) else socket.AF_INET
+        with socket.socket(family, socket.SOCK_STREAM) as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                probe.bind((probe_host, port))
+            except OSError as exc:
+                if exc.errno == errno.EADDRINUSE:
+                    return probe_host or "0.0.0.0"
+                raise
+    return None
+
+
+def _exit_for_port_collision(
+    port: int, collision_host: str, *, model: str, port_explicit: bool
+) -> NoReturn:
+    """Emit the established preflight failure and terminate with rc 1."""
+
+    from rapid_mlx.telemetry.server_start import failed
+
+    failed("bind", port_explicit=port_explicit)
+    print(f"\n  Error: Port {port} is already in use on {collision_host}.")
+    print(f"  Try a different port: rapid-mlx serve {model} --port {port + 1}")
+    sys.exit(1)
+
+
+def _exit_for_port_scan_exhaustion(scan_base: int, scan_count: int) -> NoReturn:
+    """Report that the bounded implicit-port scan found no free port."""
+
+    from rapid_mlx.telemetry.server_start import failed
+
+    failed("bind", port_explicit=False)
+    scan_end = scan_base + scan_count - 1
+    print(
+        f"Ports {scan_base}-{scan_end} are all in use; "
+        "pass --port with a free port outside that range."
+    )
+    sys.exit(1)
+
+
+def _exit_for_host_bind_error(host: str, exc: OSError) -> NoReturn:
+    """Turn an invalid/unavailable bind address into a CLI diagnostic."""
+
+    display_host = host or "0.0.0.0"
+    print(
+        f"Invalid --host {display_host!r}: could not bind that address ({exc}).",
+        file=sys.stderr,
+    )
+    raise SystemExit(2) from None
+
+
+def _port_preflight_or_die(
+    host: str, port: int, *, model: str, port_explicit: bool
+) -> None:
     """Probe ``(host, port)`` AND — when ``host`` is a wildcard alias —
     additionally probe ``("127.0.0.1", port)``. Print a friendly error
     and ``sys.exit(1)`` on the first collision.
@@ -362,8 +509,6 @@ def _port_preflight_or_die(host: str, port: int, *, model: str) -> None:
     MED #6 on PR #855 — pre-fix ``--host ::1`` raised ``OSError`` from
     the ``AF_INET`` socket and was misreported as "port already in use").
     """
-    import socket
-
     # Validate the port range up front. ``socket.bind()`` raises
     # ``OverflowError`` (NOT an ``OSError`` subclass) for a port outside
     # 0-65535, so the ``except OSError`` collision handler below would let
@@ -377,45 +522,198 @@ def _port_preflight_or_die(host: str, port: int, *, model: str) -> None:
         print(f"  Try a valid port: rapid-mlx serve {model} --port 8000")
         sys.exit(1)
 
-    wildcards = _wildcard_host_aliases()
-    if host in wildcards:
-        # Probe the requested wildcard FIRST (so a LAN-side port
-        # collision still surfaces the user-supplied host name in the
-        # error), then probe 127.0.0.1 to catch the loopback shadow.
-        hosts_to_probe: tuple[str, ...] = (host, "127.0.0.1")
-    else:
-        hosts_to_probe = (host,)
+    try:
+        collision_host = _port_collision_host(host, port)
+    except OSError as exc:
+        _exit_for_host_bind_error(host, exc)
+    if collision_host is not None:
+        _exit_for_port_collision(
+            port,
+            collision_host,
+            model=model,
+            port_explicit=port_explicit,
+        )
 
-    for probe_host in hosts_to_probe:
-        # Pick the address family that matches the host string. IPv6
-        # literals (``::``, ``::1``, etc.) need ``AF_INET6`` or the bind
-        # raises before we can detect a real collision (codex r1 MED #6
-        # on PR #855). Everything else — IPv4 literals, wildcards
-        # (``0.0.0.0``, ``""``), the loopback-shadow probe ``127.0.0.1``
-        # — stays on ``AF_INET``.
-        family = socket.AF_INET6 if _is_ipv6_host(probe_host) else socket.AF_INET
-        # ``with`` guarantees the preflight socket is closed on every
-        # exit path — including OSError during ``bind``. The previous
-        # form called ``_sock.close()`` only on the success branch,
-        # which leaked the fd whenever the bind raised (e.g. when
-        # running under a test harness that catches ``SystemExit``).
-        with socket.socket(family, socket.SOCK_STREAM) as _sock:
-            _sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            try:
-                _sock.bind((probe_host, port))
-            except OSError:
-                # Surface the host we actually collided on so the user
-                # can distinguish "LAN port busy" from "loopback port
-                # already claimed by another rapid-mlx / nc / proxy".
-                # Use the empty-string-friendly display name so
-                # ``--host ""`` shows up as ``0.0.0.0`` rather than a
-                # confusing bare quote.
-                display_host = probe_host or "0.0.0.0"
-                print(f"\n  Error: Port {port} is already in use on {display_host}.")
+
+def _listener_accepting(
+    sock,
+    *,
+    so_acceptconn: int | None,
+    platform_name: str,
+    enoprotoopt: int,
+    tcp_connection_info: int | None,
+    sol_socket: int,
+    ipproto_tcp: int,
+) -> bool:
+    """Return whether a socket is listening, including the Darwin fallback."""
+
+    if so_acceptconn is None:
+        # A stream socket can be bound without listening. When the platform
+        # exposes neither SO_ACCEPTCONN nor Darwin's TCP state, fail closed
+        # instead of handing Uvicorn an unverified descriptor.
+        if platform_name != "darwin" or tcp_connection_info is None:
+            return False
+        tcp_info = sock.getsockopt(
+            ipproto_tcp,
+            tcp_connection_info,
+            _DARWIN_TCP_CONNECTION_INFO_SIZE,
+        )
+        return bool(tcp_info and tcp_info[0] == 1)
+    try:
+        return bool(sock.getsockopt(sol_socket, so_acceptconn))
+    except OSError as exc:
+        # macOS 26 exposes SO_ACCEPTCONN but returns ENOPROTOOPT for it.
+        # TCP_CONNECTION_INFO reports the same kernel state; TCPS_LISTEN is 1
+        # in Darwin's tcp_fsm.h.
+        if (
+            platform_name != "darwin"
+            or exc.errno != enoprotoopt
+            or tcp_connection_info is None
+        ):
+            raise
+        tcp_info = sock.getsockopt(
+            ipproto_tcp,
+            tcp_connection_info,
+            _DARWIN_TCP_CONNECTION_INFO_SIZE,
+        )
+        return bool(tcp_info and tcp_info[0] == 1)
+
+
+def _listen_fd_port(listen_fd: int) -> int:
+    """Read the bound TCP port without taking ownership of ``listen_fd``."""
+
+    import errno
+    import socket
+
+    duplicated_fd = os.dup(listen_fd)
+    try:
+        inherited = socket.socket(fileno=duplicated_fd)
+    except BaseException:
+        os.close(duplicated_fd)
+        raise
+
+    with inherited:
+        if inherited.family not in (socket.AF_INET, socket.AF_INET6):
+            raise OSError(
+                f"--listen-fd {listen_fd} is not bound to a TCP socket "
+                "(expected IPv4 or IPv6)"
+            )
+        socket_type = inherited.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE)
+        if socket_type != socket.SOCK_STREAM:
+            raise OSError(
+                f"--listen-fd {listen_fd} is not bound to a TCP socket "
+                "(SO_TYPE is not SOCK_STREAM)"
+            )
+        accepting = _listener_accepting(
+            inherited,
+            so_acceptconn=getattr(socket, "SO_ACCEPTCONN", None),
+            platform_name=sys.platform,
+            enoprotoopt=errno.ENOPROTOOPT,
+            tcp_connection_info=getattr(socket, "TCP_CONNECTION_INFO", None),
+            sol_socket=socket.SOL_SOCKET,
+            ipproto_tcp=socket.IPPROTO_TCP,
+        )
+        if not accepting:
+            raise OSError(
+                f"--listen-fd {listen_fd} is not bound to a TCP socket "
+                "(SO_ACCEPTCONN is false)"
+            )
+        sockname = inherited.getsockname()
+    if not isinstance(sockname, tuple) or len(sockname) < 2:
+        raise OSError(f"--listen-fd {listen_fd} is not bound to a TCP listener")
+    return int(sockname[1])
+
+
+def _reject_unsupported_listen_fd_lane(
+    args, *, owns_v41_product_download: bool
+) -> None:
+    """Reject inherited listeners for lanes whose runners bind host/port."""
+
+    if getattr(args, "listen_fd", None) is None:
+        return
+
+    lane = None
+    if owns_v41_product_download:
+        lane = "DSpark K4"
+    elif getattr(args, "mtp_backend", None) in {"native", "tensorfold"}:
+        lane = "TensorFold MTP" if args.mtp_backend == "tensorfold" else "Native MTP"
+    elif getattr(args, "enable_dflash", False):
+        lane = "DFlash"
+    elif getattr(args, "enable_ddtree", False):
+        lane = "DDTree"
+
+    if lane is not None:
+        print(
+            f"--listen-fd is not supported with the {lane} lane; "
+            "omit --listen-fd or pass --host/--port.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+
+def _resolve_serve_port(
+    host: str,
+    port: int | None,
+    *,
+    model: str,
+    port_explicit: bool | None,
+    listen_fd: int | None = None,
+    scan_base: int = DEFAULT_SERVE_PORT,
+    scan_count: int = DEFAULT_SERVE_PORT_CANDIDATES,
+) -> int:
+    """Resolve the effective port once, before any serve-lane dispatch.
+
+    An explicit port retains the established hard-fail behavior. The scan is
+    deliberately preflight-only; the Uvicorn bind guard remains authoritative
+    if another process claims the resolved port before the real bind.
+    """
+
+    if listen_fd is not None:
+        try:
+            return _listen_fd_port(listen_fd)
+        except OSError as exc:
+            print(f"Invalid --listen-fd {listen_fd}: {exc}", file=sys.stderr)
+            raise SystemExit(2) from None
+
+    if port is not None:
+        if port_explicit is None:
+            raise ValueError("port_explicit must be provided when port is set")
+        _port_preflight_or_die(
+            host,
+            port,
+            model=model,
+            port_explicit=port_explicit,
+        )
+        return port
+
+    first_collision_host: str | None = None
+    for candidate in range(scan_base, scan_base + scan_count):
+        try:
+            collision_host = _port_collision_host(host, candidate)
+        except OSError as exc:
+            _exit_for_host_bind_error(host, exc)
+        if collision_host is None:
+            if candidate != scan_base:
                 print(
-                    f"  Try a different port: rapid-mlx serve {model} --port {port + 1}"
+                    f"Port {scan_base} is in use; using {candidate} instead "
+                    "(pass --port to choose).",
+                    file=sys.stderr,
                 )
-                sys.exit(1)
+            return candidate
+        if first_collision_host is None:
+            first_collision_host = collision_host
+
+    assert first_collision_host is not None
+    _exit_for_port_scan_exhaustion(scan_base, scan_count)
+
+
+def _resolved_serve_port(args) -> int:
+    """Return the shared-entrypoint port invariant used by serve lanes."""
+
+    port = getattr(args, "port", None)
+    if not isinstance(port, int):
+        raise AssertionError("serve lane received an unresolved port")
+    return port
 
 
 def _print_port_collision_and_exit(
@@ -450,8 +748,24 @@ def _print_port_collision_and_exit(
     sys.exit(1)
 
 
-def _run_uvicorn(app, args, log_level: str) -> None:
-    """Dispatch into ``uvicorn.run`` with the kwargs that match the
+_DEFAULT_CACHE_MEMORY_PERCENT = 0.20
+
+
+def _cache_memory_percent(args) -> float:
+    """``--cache-memory-percent`` or the 0.20 default when it was not passed."""
+    value = getattr(args, "cache_memory_percent", None)
+    return _DEFAULT_CACHE_MEMORY_PERCENT if value is None else value
+
+
+def _run_uvicorn(
+    app,
+    args,
+    log_level: str,
+    *,
+    on_server_accepting=None,
+    proxy_headers: bool = True,
+) -> None:
+    """Dispatch through Rapid-MLX's Uvicorn startup seam with the kwargs that match the
     current ``--listen-fd`` / ``--host``/``--port`` mode.
 
     Extracted so the call-site contract is unit-testable WITHOUT booting
@@ -487,7 +801,12 @@ def _run_uvicorn(app, args, log_level: str) -> None:
     """
     import errno
 
-    import uvicorn
+    from rapid_mlx._uvicorn import run_uvicorn
+
+    if on_server_accepting is None:
+        from rapid_mlx.server import print_ready_banner
+
+        on_server_accepting = print_ready_banner
 
     listen_fd = getattr(args, "listen_fd", None)
     try:
@@ -498,19 +817,26 @@ def _run_uvicorn(app, args, log_level: str) -> None:
             # bound + validated the auth secret BEFORE execve'ing, and the
             # FastAPI ``app`` (with route auth dependencies) is fully
             # constructed at module load before this call.
-            uvicorn.run(
+            run_uvicorn(
                 app,
                 fd=listen_fd,
                 log_level=log_level,
                 timeout_keep_alive=30,
+                proxy_headers=proxy_headers,
+                on_server_accepting=on_server_accepting,
+                port_explicit=port_explicit_for(args),
             )
         else:
-            uvicorn.run(
+            port = _resolved_serve_port(args)
+            run_uvicorn(
                 app,
                 host=args.host,
-                port=args.port,
+                port=port,
                 log_level=log_level,
                 timeout_keep_alive=30,
+                proxy_headers=proxy_headers,
+                on_server_accepting=on_server_accepting,
+                port_explicit=port_explicit_for(args),
             )
     except OSError as exc:
         # Direct EADDRINUSE — older uvicorn, ``--listen-fd`` mode bind
@@ -519,37 +845,27 @@ def _run_uvicorn(app, args, log_level: str) -> None:
         # propagate so the failure is debuggable.
         if exc.errno == errno.EADDRINUSE:
             _print_port_collision_and_exit(
-                args.host, args.port, in_listen_fd_mode=listen_fd is not None
+                args.host,
+                _resolved_serve_port(args),
+                in_listen_fd_mode=listen_fd is not None,
             )
         raise
     except SystemExit as exc:
-        # uvicorn>=0.34 catches the bind ``OSError`` in ``Server.startup``,
-        # ``logger.error(exc)``s it (raw ``[Errno 48]`` line — not the
-        # friendly hint a supervisor operator needs), and ``sys.exit(1)``s
-        # before our ``except OSError`` can fire. The exit code is
-        # already non-zero so the supervisor-failure-detection contract
-        # holds, but we re-emit the Sven-style message on top so the
-        # operator's grep for "already in use" still hits. Only override
-        # the message when a probe confirms the port really IS in use —
-        # other ``SystemExit(1)`` paths (TLS, lifespan, etc.) must keep
-        # uvicorn's own diagnostic so we don't paper over them.
-        #
-        # Outer guard: codex round-2 BLOCKING — if the probe itself
-        # raises (TypeError from a non-string host, gaierror, etc.) the
-        # caller's ``SystemExit`` MUST still propagate. Wrap the
-        # discriminator call so any probe-side exception is silently
-        # absorbed and the original ``raise`` below re-delivers
-        # uvicorn's exit. ``_port_is_busy`` ALSO defends internally,
-        # but a future refactor that drops that guard (or a monkeypatch
-        # in a test harness) must not corrupt the failure signal.
-        if exc.code in (1, "1") and listen_fd is None:
+        # Preserve Uvicorn's version-specific startup exit code. The shared
+        # server subclass normally prints the bind hint; this fallback covers
+        # older/mocked runners that raise before that subclass is reached.
+        if (
+            exc.code not in (None, 0, "0")
+            and listen_fd is None
+            and not getattr(exc, "rapid_mlx_bind_reported", False)
+        ):
             try:
-                busy = _port_is_busy(args.host, args.port)
+                busy = _port_is_busy(args.host, _resolved_serve_port(args))
             except BaseException:
                 busy = False
             if busy:
                 _print_port_collision_and_exit(
-                    args.host, args.port, in_listen_fd_mode=False
+                    args.host, _resolved_serve_port(args), in_listen_fd_mode=False
                 )
         raise
 
@@ -756,6 +1072,40 @@ def _print_unknown_model_help(name: str, *, full_path_example: str) -> None:
     print(f"  or pass a full path like: {full_path_example}")
 
 
+def _print_model_load_error(args: argparse.Namespace, exc: BaseException) -> None:
+    """Render local, Hub-not-found, and generic load failures consistently."""
+    from huggingface_hub.utils import RepositoryNotFoundError
+
+    from rapid_mlx.local_model_path import (
+        is_local_model_ref,
+        local_model_failure_message,
+    )
+
+    model_ref = getattr(args, "_original_alias", None) or args.model
+    local_message = local_model_failure_message(
+        model_ref, exc, include_supplied_path=True
+    )
+    if local_message is not None:
+        print(f"\n  Error: {local_message}", file=sys.stderr)
+        return
+    if isinstance(exc, RepositoryNotFoundError) and is_local_model_ref(model_ref):
+        # A Hub 404 while loading a local primary model belongs to an auxiliary
+        # repository. Keep that typed failure instead of blaming the checkpoint.
+        print(f"\n  Error loading model: {exc}")
+        return
+    if (
+        isinstance(exc, RepositoryNotFoundError)
+        or "404" in str(exc)
+        or "not found" in str(exc).lower()
+    ):
+        print(f"\n  Error: Model '{model_ref}' not found on HuggingFace.")
+        _print_unknown_model_help(
+            model_ref, full_path_example="mlx-community/Qwen3.5-9B-4bit"
+        )
+        return
+    print(f"\n  Error loading model: {exc}")
+
+
 def _embedding_not_found_exception_classes() -> tuple[type[BaseException], ...]:
     """Return the concrete exception classes the embedding loader raises
     for a missing model.
@@ -948,6 +1298,7 @@ def _serve_audio_mode(args, entry) -> None:
     # added ``--api-key`` to their ``rapid-mlx serve kokoro`` command.
     server._api_key = server._resolve_api_key(args.api_key)
     server._default_timeout = args.timeout
+    server._max_prompt_tokens = getattr(args, "max_prompt_tokens", None)
 
     _max_body_arg = getattr(args, "max_request_bytes", None)
     if _max_body_arg is not None:
@@ -1023,17 +1374,10 @@ def _serve_audio_mode(args, entry) -> None:
     if getattr(args, "embedding_model", None):
         _load_embedding_model_or_exit(args, server.load_embedding_model)
 
-    # Stamp the bind source-of-truth so the lifespan "Ready:" banner
+    # Stamp the bind source-of-truth so the post-bind "Ready:" banner
     # prints the right URL. Mirrors the text-path block.
     host_display = "localhost" if args.host == "0.0.0.0" else args.host
     listen_fd = getattr(args, "listen_fd", None)
-
-    # Port preflight — same friendly "port already in use" probe the
-    # text path runs. Skip in --listen-fd mode (the supervisor owns
-    # the socket; binding here would race). Mirrors the rationale on
-    # the text-path call site.
-    if listen_fd is None:
-        _port_preflight_or_die(args.host, args.port, model=args.model)
 
     if listen_fd is not None:
         print(
@@ -1670,13 +2014,32 @@ def _check_memory_capacity(model_name: str, *, alias: str | None = None) -> None
 
     display_alias = alias or model_name
     catalog_working_gb = recommendation_footprint_gb(display_alias)
+    catalog_profile = None
+    try:
+        from rapid_mlx.model_aliases import resolve_profile
+
+        catalog_profile = resolve_profile(display_alias)
+        if (
+            catalog_working_gb is None
+            and catalog_profile is not None
+            and catalog_profile.modality == "image-gen"
+        ):
+            from rapid_mlx.runtime.resident_models import estimate_model_bytes
+
+            catalog_working_gb = estimate_model_bytes(display_alias) / (1024**3)
+    except Exception:
+        # The preflight is best-effort. Unknown aliases retain the conservative
+        # disk-derived fallback below.
+        catalog_profile = None
 
     # Resolve model size in bytes — local path, then HF cache, then HF API.
     model_size_bytes = 0
     try:
         from rapid_mlx._download_gate import IMAGE_MODEL_DATA_FILES
 
-        if model_name in IMAGE_MODEL_DATA_FILES:
+        if model_name in IMAGE_MODEL_DATA_FILES or (
+            catalog_profile is not None and catalog_profile.modality == "image-gen"
+        ):
             # A vendored image backend downloads an audited allowlist, not the
             # whole Hub repository. SDXL's repository also carries fp32,
             # refiner, ONNX, and ancillary artifacts (~72 GB total) while the
@@ -1686,7 +2049,7 @@ def _check_memory_capacity(model_name: str, *, alias: str | None = None) -> None
             from rapid_mlx.model_sizes import size_bytes
             from rapid_mlx.runtime.resident_models import estimate_model_bytes
 
-            model_size_bytes = size_bytes(model_name) or 0
+            model_size_bytes = size_bytes(model_name) or size_bytes(display_alias) or 0
             if catalog_working_gb is None:
                 catalog_working_gb = estimate_model_bytes(model_name) / (1024**3)
         elif os.path.isdir(model_name):
@@ -1754,8 +2117,14 @@ def _check_memory_capacity(model_name: str, *, alias: str | None = None) -> None
     projected_use = used_ram_bytes + estimated_working
     ratio = projected_use / total_ram_bytes
     total_gb = total_ram_bytes / (1024**3)
-    host_pick = catalog_working_gb is not None and is_recommended_alias(
-        display_alias, total_gb
+    catalog_floor_gb = (
+        float(catalog_profile.min_memory_gb)
+        if catalog_profile is not None and catalog_profile.min_memory_gb is not None
+        else None
+    )
+    host_pick = catalog_working_gb is not None and (
+        is_recommended_alias(display_alias, total_gb)
+        or (catalog_floor_gb is not None and total_gb >= catalog_floor_gb)
     )
     # A measured tier pick follows the same live policy as Desktop: remain
     # silent below 95%, advise at 95–100%, and use the blocking-strength copy
@@ -1854,9 +2223,7 @@ class _StatusSpinner:
         self._enabled = bool(_isatty and _isatty()) and "NO_COLOR" not in os.environ
         self._done = False
         self._start = 0.0
-        self._thread = None
-        import threading
-
+        self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
         # Serializes the worker's frame writes against ``stop``'s clear so the
@@ -1890,7 +2257,6 @@ class _StatusSpinner:
 
     def __enter__(self) -> "_StatusSpinner":
         if self._enabled:
-            import threading
             import time
 
             self._start = time.monotonic()
@@ -1925,9 +2291,8 @@ class _StatusSpinner:
             finally:
                 self._draw_lock.release()
 
-    def __exit__(self, *exc: object) -> bool:
+    def __exit__(self, *exc: object) -> None:
         self.stop()
-        return False
 
 
 def _try_mirror_prefetch(
@@ -2044,9 +2409,151 @@ def _offline_uncached_error(model_name: str) -> str:
 
 
 def _refuse_offline_uncached(model_name: str) -> None:
-    """Print the offline + uncached refusal and exit(1)."""
-    print(_offline_uncached_error(model_name), file=sys.stderr)
-    sys.exit(1)
+    """Record the offline + uncached refusal and exit(1)."""
+    from huggingface_hub.errors import OfflineModeIsEnabled
+
+    _fail_hub_resolution(
+        OfflineModeIsEnabled("offline mode is enabled"),
+        model_name,
+        _offline_uncached_error(model_name).strip(),
+    )
+
+
+def _claim_hub_guidance_render() -> bool:
+    """Claim the process-wide right to print Hub network guidance."""
+    global _hub_guidance_rendered
+    with _hub_guidance_lock:
+        if _hub_guidance_rendered:
+            return False
+        _hub_guidance_rendered = True
+        return True
+
+
+def _safe_hub_model_id(model_id: str) -> str:
+    """Return a bounded, single-line model identifier for user-facing output."""
+    return "".join(char if char.isprintable() else " " for char in model_id).strip()[
+        :200
+    ]
+
+
+def render_hub_error(exc: BaseException, model_id: str) -> str | None:
+    """Render an actionable Hub failure found on an explicit cause chain.
+
+    Matching is type-based and deliberately ignores ``__context__`` and raw
+    exception text. The latter can contain request URLs, tokens, or upstream
+    response bodies and must never become part of telemetry or CLI copy.
+    """
+    import socket
+
+    import httpx
+    from huggingface_hub.errors import (
+        GatedRepoError,
+        HfHubHTTPError,
+        LocalEntryNotFoundError,
+        OfflineModeIsEnabled,
+        RepositoryNotFoundError,
+    )
+    from requests import exceptions as requests_exceptions
+
+    rendered_model_id = _safe_hub_model_id(model_id)
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    for _ in range(32):
+        if current is None or id(current) in seen:
+            break
+        seen.add(id(current))
+
+        if (
+            isinstance(current, RepositoryNotFoundError)
+            and getattr(current.response, "status_code", None) == 401
+        ):
+            return (
+                f"Hugging Face returned 401 for {rendered_model_id}: the model is "
+                "private, gated, or does not exist. If you have access, accept the "
+                f"licence at https://huggingface.co/{rendered_model_id} and sign in "
+                "(huggingface-cli login or HF_TOKEN); otherwise check the name "
+                "with rapid-mlx models."
+            )
+        if (
+            (
+                isinstance(current, HfHubHTTPError)
+                and getattr(current.response, "status_code", None) in (401, 403)
+            )
+            or isinstance(current, GatedRepoError)
+            or (
+                isinstance(current, urllib.error.HTTPError)
+                and current.code in (401, 403)
+            )
+        ):
+            return (
+                f"  Error: access to '{rendered_model_id}' is gated on Hugging Face.\n"
+                f"  Accept the licence or request access at "
+                f"https://huggingface.co/{rendered_model_id}\n"
+                "  Then run `huggingface-cli login` or set `HF_TOKEN`, "
+                "and try again."
+            )
+        if isinstance(current, RepositoryNotFoundError) or (
+            isinstance(current, urllib.error.HTTPError) and current.code == 404
+        ):
+            return (
+                f"  Error: model repository '{rendered_model_id}' was not found on "
+                "Hugging Face.\n"
+                "  Check available aliases with `rapid-mlx models`, or use a "
+                "full repository ID.\n"
+                "  Example: `rapid-mlx serve "
+                "mlx-community/Qwen3.5-9B-4bit`."
+            )
+        if isinstance(current, urllib.error.HTTPError):
+            return None
+        if isinstance(
+            current,
+            (
+                LocalEntryNotFoundError,
+                OfflineModeIsEnabled,
+                requests_exceptions.ConnectionError,
+                requests_exceptions.Timeout,
+                httpx.NetworkError,
+                httpx.TimeoutException,
+                socket.gaierror,
+                TimeoutError,
+                urllib.error.URLError,
+            ),
+        ):
+            return (
+                f"  Error: could not reach Hugging Face for '{rendered_model_id}'.\n"
+                "  Check your network connection and unset `HF_HUB_OFFLINE` "
+                "if offline mode is not intended.\n"
+                "  You can also serve an already-cached model."
+            )
+        try:
+            current = current.__cause__
+        except BaseException:
+            break
+    return None
+
+
+def _fail_hub_resolution(exc: BaseException, model_id: str, rendered: str) -> None:
+    """Record and terminate a Hub resolution failure that cannot be retried."""
+    from rapid_mlx.runtime.optional_runtime import format_startup_failure_marker
+    from rapid_mlx.telemetry.model_events import (
+        emit_model_pull_failed,
+        emit_model_serve_failed,
+        pull_error_class,
+    )
+    from rapid_mlx.telemetry.server_start import failed
+
+    print(f"\n{rendered}\n", file=sys.stderr)
+    marker_reason = {
+        "not_found": "model_not_found",
+        "gated": "model_gated",
+        "network": "hub_offline",
+    }.get(pull_error_class(exc))
+    if marker_reason is not None:
+        print(format_startup_failure_marker(marker_reason), file=sys.stderr)
+    emit_model_pull_failed(exc, model_ref=model_id, source="hf")
+    emit_model_serve_failed(exc, alias_or_path=model_id)
+    failed("resolve")
+    raise SystemExit(1)
 
 
 def _ensure_model_downloaded(
@@ -2224,7 +2731,7 @@ def _ensure_model_downloaded(
                 and (_prefix is None or s.rfilename.startswith(_prefix))
             )
             size_gb = size_bytes / (1024**3)
-        except TimeoutError:
+        except TimeoutError as exc:
             # The Hub did not answer within the deadline. Falling through to
             # ``snapshot_download`` would re-enter the unbounded lookup and
             # hang; the desktop would sit at "Starting" until its 30-minute
@@ -2234,23 +2741,21 @@ def _ensure_model_downloaded(
             # and lets the serve subprocess start, which would walk straight
             # back into the same hang. ``SystemExit`` is re-raised there, which
             # is the same escape hatch ``_check_disk_space`` already uses.
-            print(
-                f"\n  Error: could not reach HuggingFace to resolve "
-                f"{model_name} within {_HF_RESOLVE_TIMEOUT_SECONDS:.0f}s.\n"
-                "  The model is not fully downloaded yet, so it cannot be "
-                "started offline.\n"
-                "  Check your network or proxy settings and try again.\n",
-                file=sys.stderr,
-            )
-            from rapid_mlx.telemetry.model_events import emit_model_pull_failed
-
-            emit_model_pull_failed(TimeoutError(), model_ref=model_name, source="hf")
-            sys.exit(1)
-        except Exception:
+            rendered = render_hub_error(exc, model_name)
+            assert rendered is not None
+            _fail_hub_resolution(exc, model_name, rendered)
+        except Exception as exc:
             # Any other metadata failure stays best-effort: an outage, a gated
             # repo or a missing token costs us the size quote, and the download
             # proceeds to fail (or succeed) with its own clearer error.
-            pass
+            rendered = render_hub_error(exc, model_name)
+            if rendered is not None:
+                from rapid_mlx.telemetry.model_events import pull_error_class
+
+                if pull_error_class(exc) in {"gated", "not_found"}:
+                    _fail_hub_resolution(exc, model_name, rendered)
+                if _claim_hub_guidance_render():
+                    print(f"\n{rendered}\n", file=sys.stderr)
 
         is_tty = sys.stdout.isatty() and "NO_COLOR" not in os.environ
         BOLD = "\x1b[1m" if is_tty else ""
@@ -2269,14 +2774,15 @@ def _ensure_model_downloaded(
             )
 
         download_revision = pinned_image_revision or resolved_sha
-        download_kwargs = {"revision": download_revision} if download_revision else {}
         before = _model_pull_blob_identifier(model_name)
         if allow_patterns:
             snapshot_dir = snapshot_download(
-                model_name, allow_patterns=allow_patterns, **download_kwargs
+                model_name,
+                allow_patterns=allow_patterns,
+                revision=download_revision,
             )
         else:
-            snapshot_dir = snapshot_download(model_name, **download_kwargs)
+            snapshot_dir = snapshot_download(model_name, revision=download_revision)
         after = _model_pull_blob_identifier(model_name)
         if download_revision:
             pin_main_ref(model_name, download_revision)
@@ -2292,20 +2798,29 @@ def _ensure_model_downloaded(
         # _check_disk_space aborts via sys.exit(1) — let it through.
         raise
     except Exception as e:
-        # Definitive 404s are surfaced so callers (e.g. ``/model bogus``)
-        # can refuse fast instead of spawning a doomed serve subprocess
-        # that fails after ``--ready-timeout``. Other transient errors
-        # (network, auth) fall through silently — the spawned server's
-        # own loader will retry and surface a real error if needed.
-        from huggingface_hub.utils import RepositoryNotFoundError
+        # Typed permanent failures stop here; starting a loader cannot repair
+        # a missing repository or grant access to a gated one. Network and
+        # offline failures retain the best-effort loader retry.
+        from rapid_mlx.telemetry.model_events import (
+            emit_model_pull_failed,
+            pull_error_class,
+        )
 
-        from rapid_mlx.telemetry.model_events import emit_model_pull_failed
+        rendered = render_hub_error(e, model_name)
+        if rendered is not None and pull_error_class(e) in {"gated", "not_found"}:
+            _fail_hub_resolution(e, model_name, rendered)
 
         emit_model_pull_failed(e, model_ref=model_name, source="hf")
-
-        if isinstance(e, RepositoryNotFoundError) or "404" in str(e):
-            raise RuntimeError(f"Model {model_name!r} not found on HuggingFace") from e
-        print(f"\n  Pre-download skipped ({type(e).__name__}); server will retry.")
+        if rendered is not None:
+            if _claim_hub_guidance_render():
+                print(
+                    f"\n{rendered}\n  The server will retry during startup.",
+                    file=sys.stderr,
+                )
+            else:
+                print("  The server will retry during startup.", file=sys.stderr)
+        else:
+            print(f"\n  Pre-download skipped ({type(e).__name__}); server will retry.")
 
 
 def _add_pflash_args(parser) -> None:
@@ -2535,6 +3050,30 @@ def _native_mtp_runtime_ready(model_name) -> bool:
         return True
     except Exception:  # noqa: BLE001 - optional runtime must fail closed
         return False
+
+
+def _tensorfold_product_profile(model_name: str | None):
+    """Return the catalog profile only for the qualified product alias."""
+
+    if not model_name:
+        return None
+    from .model_aliases import resolve_profile
+
+    profile = resolve_profile(model_name)
+    if profile is None or getattr(profile, "dflash_backend", None) != "tensorfold":
+        return None
+    return profile
+
+
+def _tensorfold_mtp_profile(model_name: str | None):
+    """Return a catalog-qualified target-only TensorFold MTP profile."""
+
+    if not model_name:
+        return None
+    from .model_aliases import resolve_profile
+
+    profile = resolve_profile(model_name)
+    return profile if profile and getattr(profile, "tensorfold_mtp", False) else None
 
 
 def _normalize_speculative_config_or_exit(args):
@@ -2805,6 +3344,31 @@ def _normalize_speculative_config_or_exit(args):
             args.speculative_config = raw_config
         elif (
             not getattr(args, "no_spec_decode", False)
+            and not getattr(args, "mllm", False)
+            and _tensorfold_mtp_profile(
+                getattr(args, "_original_alias", None) or getattr(args, "model", None)
+            )
+            is not None
+        ):
+            raw_config = '{"method":"mtp","backend":"tensorfold"}'
+            args.speculative_config = raw_config
+        elif (
+            not getattr(args, "no_spec_decode", False)
+            and not getattr(args, "mllm", False)
+            and (profile := _tensorfold_product_profile(getattr(args, "model", None)))
+            is not None
+        ):
+            raw_config = json.dumps(
+                {
+                    "method": "dflash",
+                    "backend": "tensorfold",
+                    "model": profile.dflash_draft_model,
+                },
+                separators=(",", ":"),
+            )
+            args.speculative_config = raw_config
+        elif (
+            not getattr(args, "no_spec_decode", False)
             # An explicit modality request outranks an alias-owned performance
             # default.  The MLLM lane cannot honour speculative decoding, so
             # injecting MTP here would silently undo ``--mllm`` later in the
@@ -2846,7 +3410,33 @@ def _normalize_speculative_config_or_exit(args):
         except SpeculativeConfigError as exc:
             print(f"error: {exc}", file=sys.stderr)
             sys.exit(2)
-        if config is not None and getattr(args, "mllm", False):
+        if (
+            config is not None
+            and config.method == "dspark"
+            and config.model is None
+            and getattr(args, "model", None) == "LiquidAI/LFM2.5-VL-3B"
+        ):
+            # The exact BF16 target has one catalog-recommended companion.
+            # This target-identity branch is intentionally narrow: method-only
+            # DSpark on DeepSeek/local checkpoints retains embedded legacy
+            # semantics and never gains an external model implicitly.
+            from dataclasses import replace
+
+            from .spec_decode.dspark.eligibility import LFM25_VL_3B
+
+            config = replace(
+                config,
+                model=LFM25_VL_3B.drafter_repo,
+                num_speculative_tokens=(
+                    config.num_speculative_tokens
+                    if config.num_speculative_tokens is not None
+                    else LFM25_VL_3B.num_speculative_tokens
+                ),
+            )
+        companion_dspark = bool(
+            config is not None and config.method == "dspark" and config.model
+        )
+        if config is not None and getattr(args, "mllm", False) and not companion_dspark:
             from .telemetry.inference import emit_capability_rejected
 
             emit_capability_rejected(
@@ -2881,11 +3471,17 @@ def _normalize_speculative_config_or_exit(args):
         args.enable_ddtree = True
     elif config.method == "dflash":
         args.enable_dflash = True
+        args.dflash_backend = config.backend
         if config.model:
             args.dflash_drafter_path = config.model
     elif config.method == "dspark":
         args.spec_decode = "dspark"
-        args.dspark_num_speculative_tokens = config.num_speculative_tokens or 5
+        # External companion DSpark is a separate, qualified serial runtime.
+        # Seven public proposals map to mlx-vlm's width-eight block (which
+        # includes the anchor). The embedded DeepSeek path keeps K=5.
+        args.dspark_num_speculative_tokens = config.num_speculative_tokens or (
+            7 if config.model else 5
+        )
     elif config.method == "mtp":
         args.spec_decode = "mtp"
         args.mtp_backend = config.backend
@@ -3032,8 +3628,7 @@ def _preflight_native_mtp_or_exit(args):
         print(
             "\n  Error: native MTP requires the qualified "
             f"mlx-vlm {QUALIFIED_MLX_VLM_VERSION} runtime.\n\n"
-            "  Install it with:\n"
-            "    pip install 'rapid-mlx[mtp]'\n",
+            f"  {optional_extra_install_hint('mtp')}\n",
             file=sys.stderr,
         )
         raise SystemExit(1)
@@ -3085,7 +3680,8 @@ def _serve_native_mtp_if_requested(
     run_native_mtp_server(
         pair=pair,
         host=args.host,
-        port=args.port,
+        port=_resolved_serve_port(args),
+        port_explicit=port_explicit_for(args),
         served_model_name=args.served_model_name or alias_name,
         default_max_tokens=effective_max_tokens,
         cors_origins=cors_origins,
@@ -3103,6 +3699,158 @@ def _serve_native_mtp_if_requested(
         ),
         reasoning_parser_name=args.reasoning_parser,
         prefill_step_size=prefill_step_size,
+        default_reasoning_effort=getattr(args, "default_reasoning_effort", None),
+    )
+    return True
+
+
+def _serve_tensorfold_mtp_if_requested(
+    args,
+    *,
+    server_module,
+    effective_max_tokens: int,
+    cors_origins: list[str],
+    uvicorn_log_level: str,
+) -> bool:
+    """Run a catalog-qualified target-only TensorFold MTP profile."""
+
+    if getattr(args, "mtp_backend", None) != "tensorfold":
+        return False
+    alias_name = getattr(args, "_original_alias", None) or args.model
+    profile = _tensorfold_mtp_profile(alias_name)
+    if profile is None:
+        print(
+            "error: backend='tensorfold' for MTP requires a qualified catalog alias",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+    from .speculative.tensorfold_glm53 import run_tensorfold_glm53_server
+
+    _check_disk_space(args.model, force=getattr(args, "force_disk_check", False))
+    _check_memory_capacity(args.model, alias=alias_name)
+    server_module._sync_config()
+    run_tensorfold_glm53_server(
+        main_model_repo=args.model,
+        main_model_revision=None,
+        drafter_repo="",
+        drafter_revision=None,
+        host=args.host,
+        port=_resolved_serve_port(args),
+        port_explicit=port_explicit_for(args),
+        served_model_name=args.served_model_name or alias_name,
+        default_max_tokens=effective_max_tokens,
+        cors_origins=cors_origins,
+        uvicorn_log_level=uvicorn_log_level,
+        no_thinking=args.no_thinking,
+        api_key=server_module._api_key,
+        rate_limit=args.rate_limit,
+        max_request_bytes=server_module._max_request_bytes,
+        body_receive_timeout_seconds=server_module._body_receive_timeout_seconds,
+        default_timeout=server_module._default_timeout,
+        max_concurrent_requests=args.max_concurrent_requests,
+        cors_policy=server_module.get_resolved_cors_policy(),
+        tool_call_parser=None,
+        reasoning_parser_name=args.reasoning_parser,
+        default_reasoning_effort=getattr(args, "default_reasoning_effort", None),
+    )
+    return True
+
+
+def _preflight_companion_dspark_or_exit(args):
+    """Resolve the exact companion pair before downloads or lane selection."""
+
+    config = getattr(args, "_speculative_config", None)
+    if config is None or config.method != "dspark" or not config.model:
+        args._companion_dspark_pair = None
+        return None
+
+    from .spec_decode.dspark.eligibility import (
+        CompanionDSparkError,
+        resolve_companion_dspark_pair,
+    )
+    from .spec_decode.dspark.runtime import (
+        QUALIFIED_MLX_VLM_VERSION,
+        have_runtime,
+    )
+
+    try:
+        pair = resolve_companion_dspark_pair(
+            target_repo=args.model,
+            drafter_repo=config.model,
+            num_speculative_tokens=getattr(args, "dspark_num_speculative_tokens", 7),
+        )
+    except CompanionDSparkError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+
+    unsupported = []
+    if getattr(args, "no_mllm", False):
+        unsupported.append("--no-mllm")
+    if getattr(args, "mcp_config", None):
+        unsupported.append("--mcp-config")
+    if getattr(args, "embedding_model", None):
+        unsupported.append("--embedding-model")
+    if getattr(args, "enable_auto_tool_choice", False):
+        unsupported.append("--enable-auto-tool-choice")
+    if unsupported:
+        joined = ", ".join(unsupported)
+        print(
+            "error: the qualified companion DSpark serial server does not "
+            f"support {joined}.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    if not have_runtime():
+        print(
+            "error: LFM companion DSpark requires exactly mlx-vlm "
+            f"{QUALIFIED_MLX_VLM_VERSION}; install the qualified vision runtime.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
+    args._companion_dspark_pair = pair
+    return pair
+
+
+def _serve_companion_dspark_if_requested(
+    args,
+    *,
+    server_module,
+    effective_max_tokens: int,
+    cors_origins: list[str],
+    uvicorn_log_level: str,
+) -> bool:
+    """Run the qualified companion DSpark serial server when selected."""
+
+    pair = getattr(args, "_companion_dspark_pair", None)
+    if pair is None:
+        return False
+
+    from .spec_decode.dspark.server import run_companion_dspark_server
+
+    alias_name = getattr(args, "_original_alias", None) or args.model
+    _check_memory_capacity(args.model, alias=alias_name)
+    server_module._sync_config()
+    run_companion_dspark_server(
+        pair=pair,
+        artifacts=getattr(args, "_companion_dspark_artifacts", None),
+        host=args.host,
+        port=args.port,
+        port_explicit=port_explicit_for(args),
+        served_model_name=args.served_model_name or alias_name,
+        default_max_tokens=effective_max_tokens,
+        cors_origins=cors_origins,
+        uvicorn_log_level=uvicorn_log_level,
+        no_thinking=args.no_thinking,
+        api_key=server_module._api_key,
+        rate_limit=args.rate_limit,
+        max_request_bytes=server_module._max_request_bytes,
+        body_receive_timeout_seconds=server_module._body_receive_timeout_seconds,
+        default_timeout=server_module._default_timeout,
+        max_concurrent_requests=args.max_concurrent_requests,
+        cors_policy=server_module.get_resolved_cors_policy(),
+        reasoning_parser_name=args.reasoning_parser,
     )
     return True
 
@@ -3188,6 +3936,61 @@ def _preflight_dflash_mutexes_or_exit(args) -> None:
             file=sys.stderr,
         )
         sys.exit(2)
+
+
+def _preflight_tensorfold_qwen27_or_exit(args=None) -> None:
+    """Reject an unusable qualified TensorFold runtime before downloads."""
+
+    profile = _tensorfold_mtp_profile(
+        (getattr(args, "_original_alias", None) or getattr(args, "model", None))
+        if args is not None
+        else None
+    )
+    runtime_probe: Callable[[], None]
+    environment_probe: Callable[[], None]
+    if profile is not None:
+        from .speculative.tensorfold_glm53 import (
+            INSTALL_HINT,
+            TensorFoldUnavailable,
+        )
+        from .speculative.tensorfold_glm53 import (
+            require_environment as require_glm_environment,
+        )
+        from .speculative.tensorfold_glm53 import (
+            require_runtime as require_glm_runtime,
+        )
+
+        install_hint = INSTALL_HINT
+        label = "GLM-5.3-Flash"
+        runtime_probe = require_glm_runtime
+        environment_probe = require_glm_environment
+    else:
+        from .speculative.tensorfold_qwen27 import (
+            INSTALL_HINT,
+            TensorFoldUnavailable,
+        )
+        from .speculative.tensorfold_qwen27 import (
+            require_environment as require_qwen_environment,
+        )
+        from .speculative.tensorfold_qwen27 import (
+            require_runtime as require_qwen_runtime,
+        )
+
+        install_hint = INSTALL_HINT
+        label = "Qwen 27B"
+        runtime_probe = require_qwen_runtime
+        environment_probe = require_qwen_environment
+
+    try:
+        runtime_probe()
+        environment_probe()
+    except TensorFoldUnavailable as exc:
+        print(
+            f"\n  Error: the TensorFold {label} profile is unavailable: "
+            f"{exc}.\n\n  {install_hint}\n",
+            file=sys.stderr,
+        )
+        raise SystemExit(1) from exc
 
 
 def _preflight_ddtree_or_exit(args):
@@ -3529,6 +4332,155 @@ def _resolve_prefill_step_size(
     return resolved
 
 
+def _resolve_cli_effective_runtime_config(
+    *,
+    args,
+    prefill_step_size: int,
+    prefill_user_set_explicit: bool,
+    enable_prefix_cache: bool,
+    kv_cache_decision,
+    kv_quant_explicit: bool,
+    argv: tuple[str, ...] | list[str] | None = None,
+):
+    """Resolve the shared launch fields and retain their CLI provenance."""
+    from .runtime.config_adapter import (
+        DEFAULT_RUNTIME_LAUNCH_VALUES,
+        RuntimeLaunchValues,
+        resolve_with_legacy_parity,
+    )
+    from .runtime.effective_config import (
+        RuntimeConfigOverride,
+        RuntimeConstraint,
+        RuntimeField,
+        RuntimeProfileValue,
+        RuntimeReasonCode,
+        RuntimeValueSource,
+    )
+
+    profile_values = []
+    overrides = []
+    constraints = []
+    if prefill_user_set_explicit:
+        overrides.append(
+            RuntimeConfigOverride(
+                RuntimeField.PREFILL_STEP_SIZE,
+                prefill_step_size,
+                "cli:--prefill-step-size",
+            )
+        )
+    elif prefill_step_size != DEFAULT_RUNTIME_LAUNCH_VALUES.prefill_step_size:
+        profile_values.append(
+            RuntimeProfileValue(
+                RuntimeField.PREFILL_STEP_SIZE,
+                prefill_step_size,
+                f"model-profile:{getattr(args, '_original_alias', None) or args.model}",
+            )
+        )
+
+    launch_argv = sys.argv if argv is None else argv
+
+    def argv_has_runtime_option(option: str) -> bool:
+        return option in launch_argv or any(
+            value.startswith(f"{option}=") for value in launch_argv
+        )
+
+    for field, value, option, source_id in (
+        (
+            RuntimeField.MAX_NUM_SEQS,
+            args.max_num_seqs,
+            "--max-num-seqs",
+            "cli:--max-num-seqs",
+        ),
+        (
+            RuntimeField.GPU_MEMORY_UTILIZATION,
+            args.gpu_memory_utilization,
+            "--gpu-memory-utilization",
+            "cli:--gpu-memory-utilization",
+        ),
+    ):
+        if argv_has_runtime_option(option):
+            overrides.append(RuntimeConfigOverride(field, value, source_id))
+        elif value != DEFAULT_RUNTIME_LAUNCH_VALUES.value_for(field):
+            profile_values.append(
+                RuntimeProfileValue(field, value, "auto-config:hardware-profile")
+            )
+
+    prefix_explicit = argv_has_runtime_option(
+        "--enable-prefix-cache"
+    ) or argv_has_runtime_option("--disable-prefix-cache")
+    if prefix_explicit:
+        overrides.append(
+            RuntimeConfigOverride(
+                RuntimeField.ENABLE_PREFIX_CACHE,
+                enable_prefix_cache,
+                "cli:prefix-cache-flag",
+            )
+        )
+    elif enable_prefix_cache != DEFAULT_RUNTIME_LAUNCH_VALUES.enable_prefix_cache:
+        profile_values.append(
+            RuntimeProfileValue(
+                RuntimeField.ENABLE_PREFIX_CACHE,
+                enable_prefix_cache,
+                "auto-config:runtime-profile",
+            )
+        )
+
+    legacy_kv_dtype = (
+        kv_cache_decision.dtype if kv_cache_decision is not None else "bf16"
+    )
+    if kv_cache_decision is not None:
+        requested_kv_dtype = kv_cache_decision.requested
+        if kv_quant_explicit:
+            overrides.append(
+                RuntimeConfigOverride(
+                    RuntimeField.KV_CACHE_DTYPE,
+                    requested_kv_dtype,
+                    "cli:kv-cache-flag",
+                )
+            )
+        elif requested_kv_dtype != DEFAULT_RUNTIME_LAUNCH_VALUES.kv_cache_dtype:
+            profile_values.append(
+                RuntimeProfileValue(
+                    RuntimeField.KV_CACHE_DTYPE,
+                    requested_kv_dtype,
+                    "model-profile:kv-cache",
+                )
+            )
+        if legacy_kv_dtype != requested_kv_dtype:
+            safety_fallback = bool(args.reasoning)
+            constraints.append(
+                RuntimeConstraint(
+                    RuntimeField.KV_CACHE_DTYPE,
+                    legacy_kv_dtype,
+                    RuntimeValueSource.SAFETY
+                    if safety_fallback
+                    else RuntimeValueSource.COMPATIBILITY,
+                    "workload:reasoning-quality-floor"
+                    if safety_fallback
+                    else "model:kv-cache-compatibility",
+                    RuntimeReasonCode.SAFETY_FALLBACK
+                    if safety_fallback
+                    else RuntimeReasonCode.COMPATIBILITY_FALLBACK,
+                )
+            )
+
+    legacy_values = RuntimeLaunchValues(
+        prefill_step_size=prefill_step_size,
+        max_num_seqs=args.max_num_seqs,
+        gpu_memory_utilization=args.gpu_memory_utilization,
+        enable_prefix_cache=enable_prefix_cache,
+        kv_cache_dtype=legacy_kv_dtype,
+    )
+    return resolve_with_legacy_parity(
+        surface="cli",
+        legacy=legacy_values,
+        defaults=DEFAULT_RUNTIME_LAUNCH_VALUES.as_defaults("runtime-defaults:v1"),
+        profile_values=tuple(profile_values),
+        overrides=tuple(overrides),
+        constraints=tuple(constraints),
+    )
+
+
 def _resolve_vision_prefill_token_budget(
     *,
     configured: int | None,
@@ -3643,6 +4595,24 @@ def _serve_will_run_on_mllm_lane(args) -> bool:
     elif requested_spec_decode == "none" and getattr(args, "force_spec_decode", False):
         requested_spec_decode = "auto"
     force_text = getattr(args, "no_mllm", False)
+    from .model_aliases import resolve_profile
+    from .models.mllm import VisionRuntimeStatus, vision_runtime_status
+
+    profile = resolve_profile(args.model)
+    if (
+        profile is not None
+        and getattr(profile, "modality", "text") == "text"
+        and getattr(profile, "vision_min_memory_gb", None) is not None
+        and not getattr(profile, "is_text_only", False)
+        and not force_text
+        and requested_spec_decode in (None, "none")
+    ):
+        runtime_status, _ = vision_runtime_status()
+        if runtime_status in {
+            VisionRuntimeStatus.BROKEN,
+            VisionRuntimeStatus.INCOMPATIBLE,
+        }:
+            return True
     is_mllm_lane, auto_text_fallback = resolve_serving_lane(
         args.model,
         force_mllm=getattr(args, "mllm", False),
@@ -3675,6 +4645,61 @@ def _alias_modality(model_name: str) -> str | None:
 
     profile = resolve_profile(model_name)
     return None if profile is None else profile.modality
+
+
+def _alias_text_degrades_without_vision(profile, *, args=None) -> bool:
+    """Whether an absent vision extra leaves this catalog alias text-capable."""
+    if profile is None or profile.modality != "text" or profile.is_text_only:
+        return False
+    from .models.mllm import VisionRuntimeStatus, vision_runtime_status
+
+    if args is not None:
+        requested_spec_decode = getattr(args, "spec_decode", "none") or "none"
+        if (
+            getattr(args, "mllm", False)
+            or getattr(args, "no_mllm", False)
+            or requested_spec_decode not in (None, "none")
+            or getattr(args, "enable_mtp", False)
+            or getattr(args, "force_spec_decode", False)
+        ):
+            return False
+    if vision_runtime_status()[0] is not VisionRuntimeStatus.ABSENT:
+        return False
+    from .api.utils import resolve_serving_lane_decision
+
+    if args is not None:
+        # The serve guard owns the cold-cache metadata prefetch. Run that same
+        # resolver path first so the warning does not fall back to using a
+        # memory floor as a proxy for text-capable vision degradation.
+        _serve_will_run_on_mllm_lane(args)
+    model_name = profile.hf_path
+    decision = resolve_serving_lane_decision(
+        model_name,
+        force_mllm=bool(args is not None and getattr(args, "mllm", False)),
+        force_text=bool(args is not None and getattr(args, "no_mllm", False)),
+        vision_min_memory_gb=profile.vision_min_memory_gb,
+        requested_spec_decode=(
+            getattr(args, "spec_decode", "none") if args is not None else "none"
+        ),
+    )
+    return decision.auto_text_fallback
+
+
+def _warn_vision_text_only_degrade(profile, *, args=None) -> bool:
+    """Print the single recovery line for an absent-runtime text fallback."""
+    if not _alias_text_degrades_without_vision(profile, args=args):
+        return False
+    from .runtime.optional_runtime import _running_in_desktop_sidecar
+
+    if _running_in_desktop_sidecar():
+        return False
+    print(
+        "warning: vision runtime absent; serving this text-capable checkpoint "
+        "text-only. Enable image input with: "
+        + optional_extra_repair_command("vision"),
+        file=sys.stderr,
+    )
+    return True
 
 
 def _prefetch_config_for_lane_guard(hf_path: str) -> None:
@@ -3939,11 +4964,241 @@ def _validate_v41_product_spec_flags(args, *, owns_runtime: bool) -> None:
         raise SystemExit(2)
 
 
+def _resolve_system_one_backend(model: str, requested: str) -> str:
+    if requested != "auto":
+        return requested
+    model_key = model.lower()
+    if model_key in {"clm", "clm-8b", "clm-latest"} or model_key.startswith(
+        "contrastive-lm/"
+    ):
+        return "clm"
+    return "laya"
+
+
+def system_one_command(args) -> None:
+    """Start the dedicated typed-decision API without a generative model."""
+    import os
+
+    from rapid_mlx._uvicorn import run_uvicorn
+    from rapid_mlx.system_one.backends import CLMBackend, DecisionBackend, LayaBackend
+    from rapid_mlx.system_one.server import create_app
+
+    backend_name = _resolve_system_one_backend(args.model, args.backend)
+    if backend_name == "clm":
+        if not args.head:
+            raise SystemExit(
+                "error: CLM requires --head DIR containing converted "
+                "config.json and model.safetensors"
+            )
+    elif args.head:
+        raise SystemExit("error: --head is only valid with --backend clm")
+    # Fail before model download or initialization when the listener cannot
+    # start. Cheap argument validation above still wins for invalid commands.
+    port_explicit = port_explicit_for(args)
+    assert port_explicit is not None
+    args.port = DEFAULT_SYSTEM_ONE_PORT if args.port is None else args.port
+    _port_preflight_or_die(
+        args.host,
+        args.port,
+        model=args.model,
+        port_explicit=port_explicit,
+    )
+    backend: DecisionBackend
+    if backend_name == "clm":
+        backend = CLMBackend(
+            args.encoder,
+            args.head,
+            model_name=args.model,
+            device=args.device,
+            cache_entries=args.cache_entries,
+            max_tokens=args.max_tokens,
+            max_work_tokens=args.max_work_tokens,
+        )
+    else:
+        backend = LayaBackend(
+            args.model,
+            device=args.device,
+            dtype=args.dtype,
+            batch_size=args.batch_size,
+        )
+    api_key = args.api_key or os.environ.get("RAPID_MLX_API_KEY")
+    app = create_app(
+        backend,
+        api_key=api_key,
+        max_concurrent_requests=args.max_concurrent_requests,
+    )
+    print(
+        f"System One ready: http://{args.host}:{args.port}/v1/systemone "
+        f"({backend_name}, {backend.default_model})"
+    )
+    run_uvicorn(
+        app,
+        host=args.host,
+        port=args.port,
+        log_level=args.log_level.lower(),
+        timeout_keep_alive=30,
+        port_explicit=port_explicit,
+    )
+
+
+def _cua_only_incompatible_options(args) -> list[str]:
+    """Return model/lane options that cannot apply to a CUA-only server."""
+
+    checks = {
+        "model": getattr(args, "model", None),
+        "served-model-name": getattr(args, "served_model_name", None),
+        "embedding-model": getattr(args, "embedding_model", None),
+        "enable-audio": getattr(args, "enable_audio", False),
+        "mcp-config": getattr(args, "mcp_config", None),
+        "video-output-dir": getattr(args, "video_output_dir", None),
+        "image-weight-precision": getattr(args, "image_weight_precision", None),
+        "mllm": getattr(args, "mllm", False),
+        "no-mllm": getattr(args, "no_mllm", False),
+        "lazy-load": getattr(args, "lazy_load", False),
+        "idle-unload-seconds": getattr(args, "idle_unload_seconds", 0),
+        "disk-stream": getattr(args, "disk_stream", False),
+        "enable-dflash": getattr(args, "enable_dflash", False),
+        "enable-ddtree": getattr(args, "enable_ddtree", False),
+        "speculative-config": getattr(args, "speculative_config", None),
+        "mtp-sidecar": getattr(args, "mtp_sidecar", None),
+    }
+    return [f"--{name}" for name, value in checks.items() if value]
+
+
+def _serve_cua_only_mode(args) -> None:
+    """Start the authenticated CUA control plane without a model engine."""
+
+    import os
+    import sys
+
+    configured_api_key = args.api_key or os.environ.get("RAPID_MLX_API_KEY")
+    if not configured_api_key:
+        print(
+            "rapid-mlx serve --cua-only requires an API key via --api-key or "
+            "RAPID_MLX_API_KEY.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+    from .config import get_config
+    from .cua.server import app, configure_cua_server
+    from .middleware.auth import configure_rate_limiter
+
+    incompatible = _cua_only_incompatible_options(args)
+    if incompatible:
+        print(
+            "rapid-mlx serve --cua-only cannot be combined with "
+            + ", ".join(incompatible),
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+    args.port = _resolve_serve_port(
+        getattr(args, "host", "127.0.0.1"),
+        getattr(args, "port", None),
+        model="cua-only",
+        port_explicit=port_explicit_for(args),
+        listen_fd=getattr(args, "listen_fd", None),
+    )
+    uvicorn_log_level = args.log_level.lower()
+    cfg = get_config()
+    cfg.engine = None
+    cfg.model_name = None
+    cfg.model_alias = None
+    cfg.model_path = None
+    cfg.enable_audio_lane = False
+    cfg.api_key = configured_api_key
+    cfg.default_timeout = args.timeout
+
+    max_body = getattr(args, "max_request_bytes", None)
+    if max_body is not None:
+        cfg.max_request_bytes = max(0, int(max_body))
+    else:
+        raw_max_body = os.environ.get("RAPID_MLX_MAX_REQUEST_BYTES", "").strip()
+        if raw_max_body:
+            try:
+                cfg.max_request_bytes = max(0, int(raw_max_body))
+            except ValueError:
+                cfg.max_request_bytes = 8 * 1024 * 1024
+
+    raw_body_timeout = os.environ.get(
+        "RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS", ""
+    ).strip()
+    if raw_body_timeout:
+        try:
+            cfg.body_receive_timeout_seconds = max(0.0, float(raw_body_timeout))
+        except ValueError:
+            cfg.body_receive_timeout_seconds = 15.0
+
+    cors_origins = configure_cua_server(
+        cors_origins=args.cors_origins,
+        trusted_hosts=getattr(args, "trusted_hosts", None),
+    )
+    if args.rate_limit > 0:
+        configure_rate_limiter(args.rate_limit, enabled=True)
+
+    cfg.bind_host = None
+    cfg.bind_port = None
+    cfg.bind_listen_fd = None
+    cfg.cua_permission_requests_enabled = False
+    listen_fd = getattr(args, "listen_fd", None)
+    if listen_fd is None:
+        cfg.bind_host = "localhost" if args.host == "0.0.0.0" else args.host
+        cfg.bind_port = args.port
+        try:
+            cfg.cua_permission_requests_enabled = (
+                args.host == "localhost" or ipaddress.ip_address(args.host).is_loopback
+            )
+        except ValueError:
+            cfg.cua_permission_requests_enabled = False
+    else:
+        cfg.bind_listen_fd = listen_fd
+
+    print()
+    print("  🐆 Rapid-MLX CUA server")
+    print("  Model-free control plane; no model will be resolved or downloaded.")
+    features = ["cua-only", "auth: on"]
+    if args.rate_limit > 0:
+        features.append(f"rate-limit: {args.rate_limit}/min")
+    if cors_origins:
+        features.append(f"cors: {', '.join(cors_origins)}")
+    print(f"  Features: {', '.join(features)}")
+    if listen_fd is None:
+        print(f"  Starting server on http://{cfg.bind_host}:{args.port}")
+    else:
+        print(f"  Starting server on inherited fd {listen_fd}")
+    sys.stdout.flush()
+
+    _run_uvicorn(
+        app,
+        args,
+        uvicorn_log_level,
+        on_server_accepting=lambda: None,
+        # Permission prompting relies on request.client being the TCP peer.
+        # The helper has no proxy use case; never let X-Forwarded-For rewrite it.
+        proxy_headers=False,
+    )
+    _hard_exit_after_serve()
+
+
 def serve_command(args):
     """Start the OpenAI-compatible server."""
     import logging
     import os
     import sys
+
+    from rapid_mlx.runtime import optional_runtime
+
+    optional_runtime.set_assume_yes(getattr(args, "yes", False))
+
+    if getattr(args, "cua_only", False):
+        from ._parent_watchdog import install_parent_watchdog, resolve_expected_ppid
+
+        install_parent_watchdog(
+            resolve_expected_ppid(getattr(args, "watchdog_ppid", None))
+        )
+        _serve_cua_only_mode(args)
+        return
 
     _validate_primary_lifecycle_args(args)
 
@@ -4036,7 +5291,21 @@ def serve_command(args):
         # Used by the generic model-prefetch guard later in this function;
         # Wan owns its own revision-pinned download path.
         _is_wan_video = is_wan_model(args.model)
-        require_video_runtime_or_exit(args.model)
+        _run_optional_runtime_guard(
+            require_video_runtime_or_exit,
+            args.model,
+            alias_or_path=getattr(args, "_original_alias", None) or args.model,
+            assume_yes=bool(getattr(args, "yes", False)),
+        )
+    if _serve_profile is not None and _serve_profile.modality == "image-gen":
+        from .runtime.image_lane import require_image_runtime_or_exit
+
+        _run_optional_runtime_guard(
+            require_image_runtime_or_exit,
+            args.model,
+            alias_or_path=getattr(args, "_original_alias", None) or args.model,
+            assume_yes=bool(getattr(args, "yes", False)),
+        )
 
     # F-H08-INCOMPLETE: the ``[embeddings]`` extra-required guard MUST
     # fire first thing in ``serve_command`` — before
@@ -4063,7 +5332,11 @@ def serve_command(args):
     # rejecting an explicit MLLM/speculative conflict before optional-runtime
     # checks or model downloads can obscure the actionable error.
     _normalize_speculative_config_or_exit(args)
+    _reject_unsupported_listen_fd_lane(
+        args, owns_v41_product_download=_owns_v41_product_download
+    )
     _preflight_native_mtp_or_exit(args)
+    _companion_dspark_pair = _preflight_companion_dspark_or_exit(args)
 
     # R-10 (PyPI 0.8.6 dogfood): same boot-guard shape for vision /
     # multimodal aliases. ``mlx-vlm`` lives behind the ``[vision]``
@@ -4089,11 +5362,15 @@ def serve_command(args):
     # An uncached checkpoint (config not yet materialized) probes "not
     # hybrid" and keeps the SAFE ``[vision]``-required default; the guard's
     # message points at ``--no-mllm`` for a text-capable backbone.
+    _warn_vision_text_only_degrade(_serve_profile, args=args)
     if _serve_will_run_on_mllm_lane(args):
         from .models.mllm import require_mlx_vlm_or_exit
 
-        require_mlx_vlm_or_exit(
+        _run_optional_runtime_guard(
+            require_mlx_vlm_or_exit,
             args.model,
+            alias_or_path=getattr(args, "_original_alias", None) or args.model,
+            assume_yes=bool(getattr(args, "yes", False)),
             text_diffusion=_alias_modality(args.model) == "text-diffusion",
         )
 
@@ -4117,7 +5394,12 @@ def serve_command(args):
     from .audio.probe import is_audio_model_alias, require_audio_or_exit
 
     if is_audio_model_alias(getattr(args, "model", None)):
-        require_audio_or_exit(args.model)
+        _run_optional_runtime_guard(
+            require_audio_or_exit,
+            args.model,
+            alias_or_path=getattr(args, "_original_alias", None) or args.model,
+            assume_yes=bool(getattr(args, "yes", False)),
+        )
 
     _validate_v41_product_spec_flags(args, owns_runtime=_owns_v41_product_download)
     if _owns_v41_product_download and args.mcp_config:
@@ -4150,7 +5432,16 @@ def serve_command(args):
     # as the other extras so the error lands FIRST. ``importlib.util.
     # find_spec("mlx_vlm")`` doesn't trigger a load — safe to run on the
     # hot CLI path.
-    _wants_dflash = getattr(args, "enable_dflash", False)
+    _spec_config = getattr(args, "_speculative_config", None)
+    _wants_tensorfold = (
+        _spec_config is not None and _spec_config.backend == "tensorfold"
+    )
+    if _wants_tensorfold:
+        if _spec_config.method == "mtp":
+            _preflight_tensorfold_qwen27_or_exit(args)
+        else:
+            _preflight_tensorfold_qwen27_or_exit()
+    _wants_dflash = getattr(args, "enable_dflash", False) and not _wants_tensorfold
     if _wants_dflash:
         from .speculative.dflash.eligibility import have_runtime
 
@@ -4159,12 +5450,7 @@ def serve_command(args):
                 "\n  Error: DFlash speculative decoding "
                 '(--speculative-config \'{"method":"dflash"}\') requires '
                 "mlx-vlm 0.5.0+ for the DFlash drafter hooks.\n"
-                "\n  Install in a Python environment with:\n"
-                "    pip install 'rapid-mlx[dflash]'\n"
-                "\n  Homebrew installs the text-only package. Homebrew users "
-                "can switch to the isolated full install with:\n"
-                "    brew uninstall rapid-mlx\n"
-                "    uv tool install 'rapid-mlx[dflash]'\n"
+                f"\n  {optional_extra_install_hint('dflash')}\n"
             )
             sys.exit(1)
 
@@ -4209,6 +5495,16 @@ def serve_command(args):
             and _cache_runnability(audio_entry.hf_id) is False
         ):
             _refuse_offline_uncached(audio_entry.hf_id)
+    if audio_entry is not None:
+        # Audio loads on demand, so resolve its listener immediately before
+        # dispatch. Offline uncached aliases have already failed above.
+        args.port = _resolve_serve_port(
+            getattr(args, "host", "127.0.0.1"),
+            getattr(args, "port", None),
+            model=args.model,
+            port_explicit=port_explicit_for(args),
+            listen_fd=getattr(args, "listen_fd", None),
+        )
         _serve_audio_mode(args, audio_entry)
         return
 
@@ -4255,6 +5551,18 @@ def serve_command(args):
     except Exception:
         pass
 
+    # Resolve the listener after all cheap alias/runtime/offline checks but
+    # before any path can download model weights. A busy explicit port or an
+    # exhausted default range must fail in milliseconds, not after a multi-GB
+    # pull. Audio has already returned through its equivalent early gate.
+    args.port = _resolve_serve_port(
+        getattr(args, "host", "127.0.0.1"),
+        getattr(args, "port", None),
+        model=args.model,
+        port_explicit=port_explicit_for(args),
+        listen_fd=getattr(args, "listen_fd", None),
+    )
+
     # Pre-fetch the model via the R2 mirror (with HF fallback) BEFORE the
     # heavy server boot. Without this, ``serve`` falls into
     # ``mlx_lm.load`` → ``huggingface_hub.snapshot_download`` directly and
@@ -4270,6 +5578,8 @@ def serve_command(args):
     # generic prefetch resolves repository HEAD and downloads every file,
     # including unreviewed scripts and samples, before that guarded path runs.
     if _owns_v41_product_download:
+        from rapid_mlx.telemetry.server_start import failure_stage
+
         from .models.deepseek_v41_native.artifacts import (
             MTP_ALLOW_PATTERNS,
             MTP_REPO,
@@ -4279,19 +5589,39 @@ def serve_command(args):
             download_target_snapshot,
         )
 
-        _check_disk_space(
-            args.model,
-            force=getattr(args, "force_disk_check", False),
-            revision_override=TARGET_REVISION,
-        )
-        download_target_snapshot()
-        _check_disk_space(
-            MTP_REPO,
-            force=getattr(args, "force_disk_check", False),
-            revision_override=MTP_REVISION,
-            allow_patterns=list(MTP_ALLOW_PATTERNS),
-        )
-        download_mtp_snapshot()
+        with failure_stage("download"):
+            _check_disk_space(
+                args.model,
+                force=getattr(args, "force_disk_check", False),
+                revision_override=TARGET_REVISION,
+            )
+            download_target_snapshot()
+            _check_disk_space(
+                MTP_REPO,
+                force=getattr(args, "force_disk_check", False),
+                revision_override=MTP_REVISION,
+                allow_patterns=list(MTP_ALLOW_PATTERNS),
+            )
+            download_mtp_snapshot()
+    elif _companion_dspark_pair is not None:
+        from rapid_mlx.telemetry.server_start import failure_stage
+
+        from .spec_decode.dspark.artifacts import download_companion_artifacts
+
+        with failure_stage("download"):
+            _check_disk_space(
+                _companion_dspark_pair.target_repo,
+                force=getattr(args, "force_disk_check", False),
+                revision_override=_companion_dspark_pair.target_revision,
+            )
+            _check_disk_space(
+                _companion_dspark_pair.drafter_repo,
+                force=getattr(args, "force_disk_check", False),
+                revision_override=_companion_dspark_pair.drafter_revision,
+            )
+            args._companion_dspark_artifacts = download_companion_artifacts(
+                _companion_dspark_pair
+            )
     elif _owns_pinned_image_download:
         # Preserve the normal first-run disk guard even though the generic
         # downloader is intentionally bypassed. A complete pinned snapshot is
@@ -4303,6 +5633,53 @@ def serve_command(args):
             _check_disk_space(
                 args.model, force=getattr(args, "force_disk_check", False)
             )
+    elif (
+        getattr(args, "dflash_backend", None) == "tensorfold"
+        and (
+            _tf_profile := _tensorfold_product_profile(
+                getattr(args, "_original_alias", None) or args.model
+            )
+        )
+        is not None
+    ):
+        from rapid_mlx.telemetry.server_start import failure_stage
+
+        from .speculative.tensorfold_qwen27 import download_qualified_pair
+
+        with failure_stage("download"):
+            _check_disk_space(
+                _tf_profile.hf_path,
+                force=getattr(args, "force_disk_check", False),
+                revision_override=_tf_profile.dflash_target_revision,
+            )
+            _check_disk_space(
+                _tf_profile.dflash_draft_model,
+                force=getattr(args, "force_disk_check", False),
+                revision_override=_tf_profile.dflash_draft_revision,
+            )
+            _tf_artifacts = download_qualified_pair()
+        args.model = _tf_artifacts.target_path
+        args._dflash_drafter_repo = _tf_artifacts.drafter_path
+    elif (
+        getattr(args, "mtp_backend", None) == "tensorfold"
+        and (
+            _tf_profile := _tensorfold_mtp_profile(
+                getattr(args, "_original_alias", None) or args.model
+            )
+        )
+        is not None
+    ):
+        from rapid_mlx.telemetry.server_start import failure_stage
+
+        from .speculative.tensorfold_glm53 import download_qualified_target
+
+        with failure_stage("download"):
+            _check_disk_space(
+                _tf_profile.hf_path,
+                force=getattr(args, "force_disk_check", False),
+                revision_override=_tf_profile.tensorfold_target_revision,
+            )
+            args.model = download_qualified_target()
     elif not _is_wan_video:
         if getattr(args, "force_disk_check", False):
             _ensure_model_downloaded(args.model, force_disk_check=True)
@@ -4461,7 +5838,11 @@ def serve_command(args):
     # the effective lane, NOT the raw multimodal classification: a hybrid VLM
     # that auto-downgrades to the text-only lane is PFlash-capable there,
     # exactly as an explicit ``--text-only`` run would be (#352 dogfood P1-②).
-    if not args.enable_dflash and getattr(args, "mtp_backend", None) != "native":
+    if (
+        not args.enable_dflash
+        and getattr(args, "mtp_backend", None) not in {"native", "tensorfold"}
+        and _companion_dspark_pair is None
+    ):
         _requested_spec_decode = getattr(args, "spec_decode", "none") or "none"
         if _requested_spec_decode == "none" and getattr(
             args, "force_spec_decode", False
@@ -4643,6 +6024,7 @@ def serve_command(args):
     # a deprecation warning when argv is used) lands in one place.
     server._api_key = server._resolve_api_key(args.api_key)
     server._default_timeout = args.timeout
+    server._max_prompt_tokens = getattr(args, "max_prompt_tokens", None)
 
     # Per-request body-size cap. Resolution order:
     #   1. ``--max-request-bytes`` (explicit CLI flag, including 0 to disable)
@@ -4744,6 +6126,9 @@ def serve_command(args):
 
     # Configure --no-thinking: suppress chain-of-thought in chat template
     server._no_thinking = args.no_thinking
+    # #3714 --default-reasoning-effort: server-wide effort for requests
+    # that carry no reasoning knob (see maybe_apply_default_reasoning_effort)
+    server._default_reasoning_effort = getattr(args, "default_reasoning_effort", None)
 
     # Configure system prompt pinning
     server._pin_system_prompt = args.pin_system_prompt
@@ -4821,7 +6206,7 @@ def serve_command(args):
     # so the user sees a clean error rather than an optimistic "DFlash
     # enabled" feature line followed by an exit. Cheap (just reads
     # aliases.json + checks the module spec); no model load yet.
-    if args.enable_dflash:
+    if args.enable_dflash and not _wants_tensorfold:
         from .model_aliases import resolve_profile
         from .model_profile import ModelProfile
         from .speculative.dflash import DFlashUnavailable, check
@@ -4971,11 +6356,18 @@ def serve_command(args):
         features.append("ddtree: experimental single-user")
     if _owns_v41_product_download:
         features.append("dspark-k4: experimental single-user")
+    if _companion_dspark_pair is not None:
+        features.append("lfm-dspark-7-proposals: single-user")
     if features:
         print(f"  Features: {', '.join(features)}")
     print(f"  Model: {args.model}")
     # Store MCP config path for FastAPI startup
-    if args.mcp_config and not args.enable_dflash and not _owns_v41_product_download:
+    if (
+        args.mcp_config
+        and not args.enable_dflash
+        and not _owns_v41_product_download
+        and _companion_dspark_pair is None
+    ):
         print(f"MCP config: {args.mcp_config}")
         os.environ["RAPID_MLX_MCP_CONFIG"] = args.mcp_config
 
@@ -4985,7 +6377,8 @@ def serve_command(args):
         server._sync_config()
         run_v41_server(
             host=args.host,
-            port=args.port,
+            port=_resolved_serve_port(args),
+            port_explicit=port_explicit_for(args),
             served_model_name=(
                 args.served_model_name
                 or getattr(args, "_original_alias", None)
@@ -4995,6 +6388,7 @@ def serve_command(args):
             cors_origins=cors_origins,
             uvicorn_log_level=uvicorn_log_level,
             no_thinking=args.no_thinking,
+            default_reasoning_effort=getattr(args, "default_reasoning_effort", None),
             api_key=server._api_key,
             rate_limit=args.rate_limit,
             max_request_bytes=server._max_request_bytes,
@@ -5005,6 +6399,15 @@ def serve_command(args):
             reasoning_parser_name=args.reasoning_parser,
         )
         return
+
+    if _serve_companion_dspark_if_requested(
+        args,
+        server_module=server,
+        effective_max_tokens=effective_max_tokens,
+        cors_origins=cors_origins,
+        uvicorn_log_level=uvicorn_log_level,
+    ):
+        return  # pragma: no cover - exercised by real-model HTTP qualification
 
     # The qualified native-MTP path intentionally owns a serial,
     # thread-affine API boundary. It is explicit because that path does not
@@ -5017,6 +6420,15 @@ def serve_command(args):
         uvicorn_log_level=uvicorn_log_level,
     ):
         return  # pragma: no cover - exercised by the real-model HTTP dogfood
+
+    if _serve_tensorfold_mtp_if_requested(
+        args,
+        server_module=server,
+        effective_max_tokens=effective_max_tokens,
+        cors_origins=cors_origins,
+        uvicorn_log_level=uvicorn_log_level,
+    ):
+        return  # pragma: no cover - exercised by real-model HTTP qualification
 
     # DFlash owns a dedicated single-user runtime. Fork before constructing
     # BatchedEngine-only cache/TurboQuant/PFlash state so startup output and
@@ -5031,7 +6443,14 @@ def serve_command(args):
             sys.exit(2)
 
         from .model_aliases import resolve_profile
-        from .speculative.dflash.server import run_dflash_server
+
+        _dflash_backend = getattr(args, "dflash_backend", None)
+        if _dflash_backend == "tensorfold":
+            from .speculative.tensorfold_qwen27_server import (
+                run_tensorfold_qwen27_server,
+            )
+        else:
+            from .speculative.dflash.server import run_dflash_server
 
         _alias_name = getattr(args, "_original_alias", None) or args.model
         _profile = getattr(args, "_dflash_profile", None) or resolve_profile(
@@ -5044,16 +6463,24 @@ def serve_command(args):
         _drafter_repo = getattr(args, "_dflash_drafter_repo", None) or (
             _resolve_dflash_drafter_repo(args, _profile)
         )
-        _target_revision, _drafter_revision = _resolve_dflash_revisions(
-            _profile, _drafter_repo
-        )
-        run_dflash_server(
-            main_model_repo=_profile.hf_path if _profile else args.model,
+        if _dflash_backend == "tensorfold":
+            _target_revision, _drafter_revision = None, None
+        else:
+            _target_revision, _drafter_revision = _resolve_dflash_revisions(
+                _profile, _drafter_repo
+            )
+        _dflash_kwargs = dict(
+            main_model_repo=(
+                args.model
+                if _dflash_backend == "tensorfold"
+                else (_profile.hf_path if _profile else args.model)
+            ),
             main_model_revision=_target_revision,
             drafter_repo=_drafter_repo,
             drafter_revision=_drafter_revision,
             host=args.host,
-            port=args.port,
+            port=_resolved_serve_port(args),
+            port_explicit=port_explicit_for(args),
             served_model_name=args.served_model_name or _alias_name,
             default_max_tokens=effective_max_tokens,
             cors_origins=cors_origins,
@@ -5070,6 +6497,40 @@ def serve_command(args):
                 args.tool_call_parser if args.enable_auto_tool_choice else None
             ),
             reasoning_parser_name=args.reasoning_parser,
+            default_reasoning_effort=getattr(args, "default_reasoning_effort", None),
+            experimental_opt_in=getattr(args, "_dflash_experimental", False),
+            expected_algorithm=(
+                _resolve_dflash_expected_algorithm(_profile, _drafter_repo)
+            ),
+        )
+        if _dflash_backend == "tensorfold":
+            run_tensorfold_qwen27_server(**_dflash_kwargs)
+            return
+        run_dflash_server(
+            main_model_repo=_profile.hf_path if _profile else args.model,
+            main_model_revision=_target_revision,
+            drafter_repo=_drafter_repo,
+            drafter_revision=_drafter_revision,
+            host=args.host,
+            port=_resolved_serve_port(args),
+            port_explicit=port_explicit_for(args),
+            served_model_name=args.served_model_name or _alias_name,
+            default_max_tokens=effective_max_tokens,
+            cors_origins=cors_origins,
+            uvicorn_log_level=uvicorn_log_level,
+            no_thinking=args.no_thinking,
+            api_key=server._api_key,
+            rate_limit=args.rate_limit,
+            max_request_bytes=server._max_request_bytes,
+            body_receive_timeout_seconds=server._body_receive_timeout_seconds,
+            default_timeout=server._default_timeout,
+            max_concurrent_requests=args.max_concurrent_requests,
+            cors_policy=server.get_resolved_cors_policy(),
+            tool_call_parser=(
+                args.tool_call_parser if args.enable_auto_tool_choice else None
+            ),
+            reasoning_parser_name=args.reasoning_parser,
+            default_reasoning_effort=getattr(args, "default_reasoning_effort", None),
             experimental_opt_in=getattr(args, "_dflash_experimental", False),
             expected_algorithm=(
                 _resolve_dflash_expected_algorithm(_profile, _drafter_repo)
@@ -5290,6 +6751,23 @@ def serve_command(args):
         configured=args.prefill_step_size,
         user_set_explicit=_prefill_user_set_explicit,
     )
+
+    # Migration 002 production cutover. The existing policy code above still
+    # computes the comparison value during this release; the central resolver
+    # records where each value came from and proves exact parity before load.
+    _effective_runtime_config = _resolve_cli_effective_runtime_config(
+        args=args,
+        prefill_step_size=_prefill_step_size,
+        prefill_user_set_explicit=_prefill_user_set_explicit,
+        enable_prefix_cache=enable_prefix_cache,
+        kv_cache_decision=kv_cache_decision,
+        kv_quant_explicit=_kv_quant_explicit,
+    )
+    from .runtime.config_adapter import RuntimeLaunchValues
+
+    _effective_runtime_values = RuntimeLaunchValues.from_effective(
+        _effective_runtime_config
+    )
     _vision_prefill_token_budget = _resolve_vision_prefill_token_budget(
         configured=getattr(args, "vision_prefill_token_budget", None),
         prefill_step_size=_prefill_step_size,
@@ -5317,7 +6795,7 @@ def serve_command(args):
             _cli_mtp_model_type = None
 
     scheduler_config = SchedulerConfig(
-        max_num_seqs=args.max_num_seqs,
+        max_num_seqs=_effective_runtime_values.max_num_seqs,
         max_concurrent_requests=args.max_concurrent_requests,
         mllm_singleton_fastpath=args.mllm_singleton_fastpath,
         mllm_media_prefix_cache=args.mllm_media_prefix_cache,
@@ -5325,14 +6803,15 @@ def serve_command(args):
         completion_batch_size=args.completion_batch_size,
         scheduling_policy=args.scheduling_policy,
         scheduling_max_deferrals=args.scheduling_max_deferrals,
-        enable_prefix_cache=enable_prefix_cache,
+        enable_prefix_cache=_effective_runtime_values.enable_prefix_cache,
         prefix_cache_size=args.prefix_cache_size,
         # R15-P1 (task #303): radix-tree prefix-cache index.
         prefix_cache_index=getattr(args, "prefix_cache_index", "radix"),
         # Memory-aware cache options
         use_memory_aware_cache=not args.no_memory_aware_cache,
         cache_memory_mb=args.cache_memory_mb,
-        cache_memory_percent=args.cache_memory_percent,
+        cache_memory_percent=_cache_memory_percent(args),
+        cache_memory_percent_explicit=args.cache_memory_percent is not None,
         idle_cache_clear_seconds=getattr(args, "idle_cache_clear_seconds", None),
         # #1103/#1122: bounded trim-free hybrid (recurrent-state) prefix reuse.
         # Auto-defaulted to 8 for hybrid models when prefix cache is enabled.
@@ -5358,7 +6837,7 @@ def serve_command(args):
         # reads it off scheduler_config only; the legacy load_model kwarg was
         # accepted but never used. See #400 and the CLI ↔ Config fidelity
         # audit at scripts/audit_cli_config_fidelity.py.
-        prefill_step_size=_prefill_step_size,
+        prefill_step_size=_effective_runtime_values.prefill_step_size,
         vision_prefill_token_budget=_vision_prefill_token_budget,
         vision_min_pixels=getattr(args, "vision_min_pixels", 0),
         vision_max_pixels=getattr(args, "vision_max_pixels", 0),
@@ -5394,9 +6873,7 @@ def serve_command(args):
         # KV cache quantization (R15 #300: dtype string is the canonical
         # observability surface; ``_quantization`` / ``_bits`` are the
         # wire-level toggles that drive ``mlx_lm.QuantizedKVCache``).
-        kv_cache_dtype=(
-            kv_cache_decision.dtype if kv_cache_decision is not None else "bf16"
-        ),
+        kv_cache_dtype=_effective_runtime_values.kv_cache_dtype,
         kv_cache_quantization=args.kv_cache_quantization,
         kv_cache_quantization_bits=args.kv_cache_quantization_bits,
         kv_cache_quantization_group_size=args.kv_cache_quantization_group_size,
@@ -5434,7 +6911,9 @@ def serve_command(args):
         # per-model budget after load and engine_core's D-METAL-CAP
         # propagation fills the scheduler config with the RESOLVED
         # utilization, so both enforcement points share one cap.
-        gpu_memory_utilization=args.gpu_memory_utilization or 0.0,
+        gpu_memory_utilization=(
+            _effective_runtime_values.gpu_memory_utilization or 0.0
+        ),
     )
 
     print("Mode: Continuous batching (for multiple concurrent users)")
@@ -5568,7 +7047,7 @@ def serve_command(args):
         cache_info = (
             f"{args.cache_memory_mb}MB"
             if args.cache_memory_mb
-            else f"{args.cache_memory_percent * 100:.0f}% of RAM"
+            else f"{_cache_memory_percent(args) * 100:.0f}% of RAM"
         )
         index_choice = getattr(args, "prefix_cache_index", "radix")
         print(f"Memory-aware cache: {cache_info} (index={index_choice})")
@@ -5596,25 +7075,6 @@ def serve_command(args):
             )
     elif enable_prefix_cache:
         print(f"Prefix cache: max_entries={args.prefix_cache_size}")
-
-    # Check port availability before loading model (avoid wasting RAM on conflict).
-    # Set SO_REUSEADDR to match uvicorn's bind behavior — without it, this
-    # preflight fails on a port still in TCP TIME_WAIT (e.g. just after a
-    # previous rapid-mlx process exited), even though uvicorn would happily
-    # bind it. Caused spurious "port in use" errors for back-to-back server
-    # starts in the validation pipeline.
-    #
-    # Skip in --listen-fd mode: the supervisor has already bound the socket
-    # and handed us the fd. There is no host/port for us to check, and any
-    # bind we attempt here would race or collide with the inherited socket.
-    if getattr(args, "listen_fd", None) is None:
-        # Shared helper so the legacy ``python -m rapid_mlx.server``
-        # entrypoint (rapid_mlx/server.py) can call the same probe
-        # without duplicating the wildcard-alias / loopback-shadow
-        # logic. See ``_port_preflight_or_die`` for why we probe both
-        # the requested host AND 127.0.0.1 when the requested host is
-        # a wildcard alias.
-        _port_preflight_or_die(args.host, args.port, model=args.model)
 
     # Alias-level unified-memory floor (codex #1069 round 3 [NIT #3]).
     # Fires BEFORE _check_disk_space so the user sees the actionable
@@ -5651,7 +7111,8 @@ def serve_command(args):
             tree_budget=getattr(args, "_ddtree_tree_budget", None)
             or _profile.ddtree_tree_budget,
             host=args.host,
-            port=args.port,
+            port=_resolved_serve_port(args),
+            port_explicit=port_explicit_for(args),
             served_model_name=args.served_model_name or _alias_name,
             default_max_tokens=args.max_tokens,
             cors_origins=cors_origins,
@@ -5727,8 +7188,15 @@ def serve_command(args):
             ),
             enable_disk_stream=getattr(args, "disk_stream", False),
             disk_stream_cache_gb=getattr(args, "disk_stream_cache_gb", 1.0),
+            effective_runtime_config=_effective_runtime_config,
         )
+    except OptionalRuntimeMissing:
+        # All optional-runtime failures converge at the serve dispatch below.
+        raise
     except KVCacheQuantizationUnsupportedError as e:
+        from rapid_mlx.telemetry.server_start import failed
+
+        failed("prepare")
         # The scheduler/MLLM-lane backstop (#78) rejects an explicit
         # quantized-KV request that the CLI-time resolver could not see (a
         # freshly-downloaded model whose config wasn't readable yet surfaces
@@ -5738,6 +7206,9 @@ def serve_command(args):
         print(f"\n  Error: {e}\n")
         sys.exit(2)
     except Exception as e:
+        from rapid_mlx.telemetry.server_start import failed
+
+        failed("prepare")
         from rapid_mlx.telemetry.model_events import emit_model_serve_failed
 
         emit_model_serve_failed(
@@ -5746,23 +7217,7 @@ def serve_command(args):
             alias_or_path=getattr(args, "_original_alias", None) or args.model,
             auto_selected=bool(getattr(args, "_telemetry_auto_selected", False)),
         )
-        # Show clean error instead of raw traceback. Catch the typed
-        # HF exception class for the 404 case; fall back to substring
-        # match for legacy callers (older huggingface_hub) and for
-        # non-HF errors that still spell out "not found".
-        from huggingface_hub.utils import RepositoryNotFoundError
-
-        is_404 = isinstance(e, RepositoryNotFoundError) or (
-            "404" in str(e) or "not found" in str(e).lower()
-        )
-        if is_404:
-            shown = getattr(args, "_original_alias", args.model)
-            print(f"\n  Error: Model '{shown}' not found on HuggingFace.")
-            _print_unknown_model_help(
-                shown, full_path_example="mlx-community/Qwen3.5-9B-4bit"
-            )
-        else:
-            print(f"\n  Error loading model: {e}")
+        _print_model_load_error(args, e)
         sys.exit(1)
 
     # Task #292 / codex r1 BLOCKING defense-in-depth: ``load_model``
@@ -5777,8 +7232,8 @@ def serve_command(args):
 
     # Start server
     # Note: Metal shader warmup runs in the FastAPI lifespan hook (server.py).
-    # The "Ready:" banner is printed FROM that hook once warmup completes and
-    # the port is actually bound — printing it here would lie to users who
+    # The "Ready:" banner is printed by the Uvicorn startup seam after warmup
+    # and bind both complete — printing it here would lie to users who
     # curl immediately and get connection-refused while shaders compile.
     print()
     host_display = "localhost" if args.host == "0.0.0.0" else args.host
@@ -5791,7 +7246,7 @@ def serve_command(args):
     print_staleness_warning_if_any(allow_non_tty=True)
     print()
 
-    # Stash the source of truth for the lifespan "Ready:" banner —
+    # Stash the source of truth for the post-bind "Ready:" banner —
     # which shape depends on the bind mode:
     #
     #   * Default (host+port): stamp ``bind_host``/``bind_port`` so the
@@ -6253,7 +7708,7 @@ def _run_submit_flow(
                 )
                 print("  Install them and re-run:")
                 print()
-                print("    pip install 'rapid-mlx[vision]'")
+                print("   ", optional_extra_repair_command("vision"))
                 print()
                 print(
                     "  Or, if you only need text inference (smaller "
@@ -6261,7 +7716,7 @@ def _run_submit_flow(
                 )
                 # Match the validated runtime used by the vision extra and
                 # packaged app so every recovery path installs the same lane.
-                print("    pip install --no-deps 'mlx-vlm==0.7.1'")
+                print("    pip install --no-deps 'mlx-vlm==0.7.2'")
                 print()
             else:
                 print(f"  Error loading model: {e}")
@@ -6596,21 +8051,7 @@ def bench_command(args):
                 alias_or_path=getattr(args, "_original_alias", None) or args.model,
                 auto_selected=bool(getattr(args, "_telemetry_auto_selected", False)),
             )
-            # Mirror serve_command: clean message instead of a 30-line
-            # traceback when the user typed a missing repo / bad alias.
-            from huggingface_hub.utils import RepositoryNotFoundError
-
-            is_404 = isinstance(e, RepositoryNotFoundError) or (
-                "404" in str(e) or "not found" in str(e).lower()
-            )
-            if is_404:
-                shown = getattr(args, "_original_alias", args.model)
-                print(f"\n  Error: Model '{shown}' not found on HuggingFace.")
-                _print_unknown_model_help(
-                    shown, full_path_example="mlx-community/Qwen3.5-9B-4bit"
-                )
-            else:
-                print(f"\n  Error loading model: {e}")
+            _print_model_load_error(args, e)
             sys.exit(1)
 
         from rapid_mlx.telemetry.model_events import emit_model_served
@@ -6635,7 +8076,8 @@ def bench_command(args):
             # Memory-aware cache options
             use_memory_aware_cache=not args.no_memory_aware_cache,
             cache_memory_mb=args.cache_memory_mb,
-            cache_memory_percent=args.cache_memory_percent,
+            cache_memory_percent=_cache_memory_percent(args),
+            cache_memory_percent_explicit=args.cache_memory_percent is not None,
             # #1103: bounded trim-free hybrid (recurrent-state) prefix reuse.
             # Bench path mirrors serve so hybrid-reuse effects show up in
             # `rapid-mlx bench` numbers too.
@@ -7745,6 +9187,16 @@ def _available_models_json_payload() -> dict:
                 p, "mtp_continuous_batching_tier", "unknown"
             ),
             "mtp_default_enabled": bool(getattr(p, "mtp_default_enabled", True)),
+            "tensorfold_mtp": bool(getattr(p, "tensorfold_mtp", False)),
+            "tensorfold_target_revision": getattr(
+                p, "tensorfold_target_revision", None
+            ),
+            "tensorfold_runtime_revision": getattr(
+                p, "tensorfold_runtime_revision", None
+            ),
+            "tensorfold_backend": "tensorfold"
+            if getattr(p, "tensorfold_mtp", False)
+            else None,
             "modality": modality,
             "video_modes": list(p.video_modes or ()),
             "min_memory_gb": p.min_memory_gb,
@@ -8182,7 +9634,7 @@ def models_command(args):
                 "flux2" in folded_path
                 or "flux.2" in folded_path
                 or "klein" in folded_path
-                or folded_path == "qwen/qwen-image-2.1"
+                or "qwen-image-2.1" in folded_path
             ):
                 kind_tag = "[image:both]"
             elif "qwen-image-edit" in folded_path:
@@ -12088,8 +13540,12 @@ def build_parser() -> argparse.ArgumentParser:
     of scraping source or help text)."""
     _version = _resolve_cli_version()
 
-    parser = argparse.ArgumentParser(
-        description="Rapid-MLX: AI inference for Apple Silicon",
+    parser = _PortContextArgumentParser(
+        description=(
+            "Rapid-MLX — OpenAI- and Anthropic-compatible LLM server and Mac app "
+            "for Apple Silicon, built on MLX, focused on reliable tool calling "
+            "for coding agents."
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 Examples:
@@ -12119,12 +13575,93 @@ Examples:
     )
     subparsers = parser.add_subparsers(dest="command", help="Commands")
 
+    system_one_parser = subparsers.add_parser(
+        "system-one",
+        help="Serve a typed decision model",
+        description=(
+            "Start a TypeSafe-compatible decision server with POST "
+            "/v1/systemone and POST /v1/rank. This service is independent "
+            "from the OpenAI-compatible generative server."
+        ),
+        allow_abbrev=False,
+    )
+    system_one_parser.add_argument(
+        "model",
+        nargs="?",
+        default="convaiinnovations/laya",
+        help="Laya model id/path, or the public name for a CLM head",
+    )
+    system_one_parser.add_argument(
+        "--backend", choices=("auto", "laya", "clm"), default="auto"
+    )
+    system_one_parser.add_argument("--host", default="127.0.0.1")
+    system_one_parser.add_argument("--port", type=_port_arg, default=None)
+    system_one_parser.add_argument("--api-key", default=None)
+    system_one_parser.add_argument(
+        "--log-level",
+        type=_log_level_choice,
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        default="INFO",
+    )
+    system_one_parser.add_argument(
+        "--device",
+        choices=("gpu", "cpu"),
+        default="gpu",
+        help="MLX device for the selected System One backend",
+    )
+    system_one_parser.add_argument(
+        "--dtype",
+        choices=("float16", "float32", "bfloat16"),
+        default="float16",
+        help="Laya weight dtype",
+    )
+    system_one_parser.add_argument("--batch-size", type=positive_int, default=16)
+    system_one_parser.add_argument(
+        "--encoder",
+        default="Qwen/Qwen3-8B",
+        help="CLM backbone; use the BF16 Qwen3-8B reference for calibrated output",
+    )
+    system_one_parser.add_argument(
+        "--head",
+        help="Converted CLM head directory (config.json + model.safetensors)",
+    )
+    system_one_parser.add_argument(
+        "--cache-entries", type=non_negative_int, default=20_000
+    )
+    system_one_parser.add_argument("--max-tokens", type=positive_int, default=2048)
+    system_one_parser.add_argument(
+        "--max-work-tokens",
+        type=positive_int,
+        default=32_768,
+        help="Maximum aggregate CLM encoder tokens accepted in one request",
+    )
+    system_one_parser.add_argument(
+        "--max-concurrent-requests",
+        type=positive_int,
+        default=8,
+        help="Maximum outstanding System One backend requests",
+    )
+
     # Serve command. ``allow_abbrev=False`` blocks unique-prefix matches
     # like ``--no-thin`` resolving silently to ``--no-thinking``: with the
     # hidden ``--no-think`` cross-alias added in D4, both flags share the
     # ``--no-thi`` prefix and prefix matching becomes ambiguous (an
     # ambiguity which argparse does NOT report by default for hidden
     # aliases). Force users to type the flag in full.
+    cua_parser = subparsers.add_parser(
+        "cua",
+        help="Native-accessibility computer-use agent with configurable planner",
+        description=(
+            "Run the computer-use agent loop. Fast thinking (outcome routing, "
+            "fixation detection) is always local; slow thinking (planning) uses "
+            "the preset or URL you choose: `rapid-mlx cua run --planner local-9b`."
+        ),
+    )
+    cua_parser.add_argument(
+        "cua_args",
+        nargs=argparse.REMAINDER,
+        help="arguments passed to the cua subcommand (run/config/planners)",
+    )
     serve_parser = subparsers.add_parser(
         "serve",
         help="Start OpenAI-compatible server",
@@ -12133,7 +13670,7 @@ Examples:
             "\n"
             "  rapid-mlx serve qwen3.5-4b-4bit\n"
             "    <model>    pick yours: a short alias (rapid-mlx models) or HF repo\n"
-            "    --port     bind port (default 8000)\n"
+            "    --port     bind port (default: first free in 8000-8009)\n"
             "    --host     bind host (default 127.0.0.1, loopback-only)\n"
             "    --api-key  require a bearer token on every request\n"
             "\n"
@@ -12156,6 +13693,20 @@ Examples:
     serve_parser.add_argument(
         "model", nargs="?", type=str, help="Model to serve"
     ).completer = alias_completer
+    serve_parser.add_argument(
+        "--cua-only",
+        action="store_true",
+        help=(
+            "Start the authenticated Computer Use API without resolving, "
+            "downloading, or loading a model"
+        ),
+    )
+    serve_parser.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="assume yes for prompts such as installing a missing optional extra",
+    )
     serve_parser.add_argument(
         "--served-model-name",
         type=str,
@@ -12232,7 +13783,15 @@ Examples:
             "alias to keep that bypass closed."
         ),
     )
-    serve_parser.add_argument("--port", type=int, default=8000, help="Port to bind")
+    serve_parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help=(
+            "Port to bind (default when omitted: first free port in 8000-8009; "
+            "an explicit port never falls back)"
+        ),
+    )
     _add_video_job_args(serve_parser)
     # Socket activation — let an external supervisor (launchd, systemd,
     # parent process) bind the listening socket and execve into
@@ -12261,7 +13820,8 @@ Examples:
             "Used for socket activation (launchd/systemd/parent-process "
             "supervision) — supervisor binds the loopback socket, "
             "validates auth secret, then execve's into rapid-mlx. "
-            "When set, --host/--port are ignored for binding."
+            "When set, --host/--port are ignored for binding. Native MTP, "
+            "DSpark K4, DFlash, and DDTree reject --listen-fd with rc 2."
         ),
     )
     serve_parser.add_argument(
@@ -12348,8 +13908,11 @@ Examples:
     serve_parser.add_argument(
         "--cache-memory-percent",
         type=float,
-        default=0.20,
-        help="Fraction of available RAM for cache if auto-detecting (default: 0.20)",
+        default=None,
+        help=(
+            "Fraction of available RAM for cache if auto-detecting (default: "
+            "0.20, raised to the agent-session floor; an explicit value is kept)"
+        ),
     )
     serve_parser.add_argument(
         "--idle-cache-clear-seconds",
@@ -13016,6 +14579,17 @@ Examples:
         ),
     )
     serve_parser.add_argument(
+        "--max-prompt-tokens",
+        type=positive_int,
+        default=None,
+        metavar="TOKENS",
+        help=(
+            "Operational prompt-token admission ceiling. Requests above this "
+            "limit are rejected with HTTP 400 context_length_exceeded before "
+            "prefill, even when the model supports a larger context window."
+        ),
+    )
+    serve_parser.add_argument(
         "--timeout",
         type=float,
         default=1800.0,
@@ -13063,6 +14637,7 @@ Examples:
         "Only active when --tool-call-parser is also set. Currently supports minimax.",
     )
     # Reasoning parser options - choices loaded dynamically from registry
+    from .api.models import _VALID_REASONING_EFFORTS
     from .reasoning import list_parsers
 
     reasoning_choices = list_parsers()
@@ -13075,6 +14650,25 @@ Examples:
             "Enable reasoning content extraction with specified parser. "
             "Extracts <think>...</think> tags into reasoning_content field. "
             f"Options: {', '.join(reasoning_choices)}."
+        ),
+    )
+    serve_parser.add_argument(
+        "--default-reasoning-effort",
+        type=str,
+        default=None,
+        choices=list(_VALID_REASONING_EFFORTS),
+        metavar="EFFORT",
+        help=(
+            "OpenAI reasoning_effort applied to requests that send no "
+            "reasoning knob (reasoning_effort / reasoning_max_tokens / "
+            "enable_thinking / chat_template_kwargs.reasoning_effort). "
+            "Translated exactly like a client value: a template that "
+            "publishes its own effort levels (GLM-5.3, Qwen3.8) gets the "
+            "nearest native level in the prompt, any other template gets "
+            "the matching thinking-token cap. Use it for models whose "
+            "template default is the most expensive level (GLM-5.3 renders "
+            "'Reasoning Effort: Max' unless told otherwise). Options: "
+            "none, minimal, low, medium, high, xhigh."
         ),
     )
     serve_parser.add_argument(
@@ -13300,7 +14894,8 @@ Examples:
         help=(
             "Pre-load an embedding model at startup (e.g. "
             "mlx-community/embeddinggemma-300m-6bit). Requires the "
-            "[embeddings] extra: pip install 'rapid-mlx[embeddings]'."
+            "[embeddings] extra. "
+            + optional_extra_install_hint("embeddings", include_paths=False)
         ),
     )
     # Embedding input-length controls (issue #1381). Prevents silent
@@ -13431,8 +15026,11 @@ Examples:
     bench_parser.add_argument(
         "--cache-memory-percent",
         type=float,
-        default=0.20,
-        help="Fraction of available RAM for cache if auto-detecting (default: 0.20)",
+        default=None,
+        help=(
+            "Fraction of available RAM for cache if auto-detecting (default: "
+            "0.20, raised to the agent-session floor; an explicit value is kept)"
+        ),
     )
     bench_parser.add_argument(
         "--no-memory-aware-cache",
@@ -14319,12 +15917,12 @@ def _start_v2_lifecycle(command: str | None) -> None:
             return
 
         from rapid_mlx.telemetry import consent_runtime
+        from rapid_mlx.telemetry import track as telemetry_v2
         from rapid_mlx.telemetry.consent_decision import ProcessRole
 
-        if consent_runtime.detect_role() is ProcessRole.SIDECAR:
+        role = consent_runtime.detect_role()
+        if telemetry_v2.set_surface_for_role(role) or role is ProcessRole.SIDECAR:
             return
-
-        from rapid_mlx.telemetry import track as telemetry_v2
 
         telemetry_v2.start_lifecycle("server" if command == "serve" else "cli")
     except Exception:
@@ -14332,6 +15930,26 @@ def _start_v2_lifecycle(command: str | None) -> None:
         return
 
 
+def _capture_start_failures(func: Callable):
+    """Lazy exception guard so importing the CLI needs no telemetry deps."""
+
+    @functools.wraps(func)
+    def wrapped(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except BaseException:
+            try:
+                from rapid_mlx.telemetry.server_start import fail_current
+
+                fail_current()
+            except BaseException:
+                pass
+            raise
+
+    return wrapped
+
+
+@_capture_start_failures
 def main():
     parser = build_parser()
     _version = _resolve_cli_version()
@@ -14393,7 +16011,11 @@ def main():
     # Keep the positional optional at parse time so this first-run mistake gets
     # a short recovery path. Explicit ``serve --help`` still exits from
     # argparse above and retains the complete reference.
-    if getattr(args, "command", None) == "serve" and not args.model:
+    if (
+        getattr(args, "command", None) == "serve"
+        and not args.model
+        and not getattr(args, "cua_only", False)
+    ):
         print("rapid-mlx serve: a model is required.", file=sys.stderr)
         print("  Pick one for this Mac:  rapid-mlx recipe", file=sys.stderr)
         print(
@@ -14465,6 +16087,15 @@ def main():
 
         consent_runtime.startup(long_lived=getattr(args, "command", None) == "serve")
         _start_v2_lifecycle(getattr(args, "command", None))
+        if getattr(args, "command", None) == "serve":
+            from rapid_mlx.telemetry.server_start import attempted, load_policy
+
+            selected_model = getattr(args, "model", None)
+            policy = load_policy(
+                selected_model,
+                lazy_load=bool(getattr(args, "lazy_load", False)),
+            )
+            attempted(selected_model, load_policy=policy)
 
     # First-run auto-select: ``chat`` / ``run`` invoked with no model arg.
     # Resolve the starter alias HERE — before the alias→path resolution below —
@@ -14530,16 +16161,34 @@ def main():
     # model string verbatim into the plist and runs its own (dry-run safe,
     # unit-testable) validation — it must not hard-fail here on an unknown
     # alias nor swallow the user's spelling under a resolved HF path.
+    # ``system-one`` also owns its model namespace: names such as
+    # ``clm-latest`` identify a converted decision head, not a generative
+    # Hugging Face model or Rapid-MLX alias.
     if (
         hasattr(args, "model")
         and args.model
-        and getattr(args, "command", None) not in ("doctor", "service")
+        and getattr(args, "command", None) not in ("doctor", "service", "system-one")
     ):
+        from rapid_mlx.local_model_path import (
+            local_model_failure_message,
+            raise_if_missing_local_model,
+        )
         from rapid_mlx.model_aliases import RetiredModelAliasError, resolve_model
         from rapid_mlx.user_aliases import UserAliasError
 
         try:
+            raise_if_missing_local_model(args.model)
             resolved = resolve_model(args.model)
+        except FileNotFoundError as exc:
+            if getattr(args, "command", None) == "serve":
+                from rapid_mlx.telemetry.model_events import emit_model_serve_failed
+
+                emit_model_serve_failed(exc, alias_or_path=args.model)
+            message = local_model_failure_message(
+                args.model, exc, include_supplied_path=True
+            )
+            print(f"\n  Error: {message}", file=sys.stderr)
+            raise SystemExit(1) from None
         except (RetiredModelAliasError, UserAliasError) as exc:
             print(f"\n  Error: {exc}", file=sys.stderr)
             raise SystemExit(1) from None
@@ -14723,8 +16372,29 @@ def main():
                 confirm_or_abort(args.model, _size)
     # --- END B2 --------------------------------------------------------
 
+    if args.command == "system-one":
+        system_one_command(args)
+        return
+    if args.command == "cua":
+        from rapid_mlx.cua.cli import main as cua_main
+
+        return cua_main(args.cua_args)
     if args.command == "serve":
-        serve_command(args)
+        from rapid_mlx.telemetry.server_start import set_failure_stage
+
+        set_failure_stage("preflight")
+        try:
+            serve_command(args)
+        except OptionalRuntimeMissing as exc:
+            from rapid_mlx import server
+
+            _handle_optional_runtime_missing(
+                exc,
+                engine=getattr(server, "_engine", None),
+                alias_or_path=getattr(args, "_original_alias", None) or args.model,
+                auto_selected=bool(getattr(args, "_telemetry_auto_selected", False)),
+                assume_yes=bool(getattr(args, "yes", False)),
+            )
     elif args.command == "bench":
         bench_command(args)
     elif args.command == "benchmark":

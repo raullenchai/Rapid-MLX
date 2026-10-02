@@ -36,19 +36,21 @@ The server provides:
 
 import argparse
 import asyncio
+import functools
 import gc
 import logging
 import os
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 if TYPE_CHECKING:
     from .runtime.audio_worker import AudioWorkerHandoff, ModelWorker
+    from .runtime.effective_config import EffectiveRuntimeConfig
 
 # Single source of truth for the OpenAI-shaped 400 / 422 / 500 envelopes
 # (F-161 / F-162 / F-163 / F-094-class). Defined in ``middleware`` so
@@ -60,6 +62,17 @@ from .middleware.exception_handlers import (  # noqa: E402
 )
 from .middleware.exception_handlers import (
     _http_error_response as _http_exception_handler_impl,  # noqa: F401
+)
+from .runtime.optional_runtime import (
+    OptionalRuntimeMissing,
+    handle_optional_runtime_missing,
+    optional_extra_install_hint,
+)
+from .runtime.optional_runtime import (
+    assume_yes as optional_runtime_assume_yes,
+)
+from .runtime.optional_runtime import (
+    set_assume_yes as set_optional_runtime_assume_yes,
 )
 
 
@@ -220,8 +233,16 @@ _engine: BaseEngine | None = None
 _prefix_cache_load_task = None  # asyncio.Task | None
 _model_name: str | None = None
 _model_alias: str | None = None  # Short alias used to start the model (if any)
+_standalone_start_model: str | None = None
 _telemetry_auto_selected: bool = False
-_telemetry_model_served_emitted: bool = False
+_telemetry_model_served_state = "idle"
+_telemetry_audio_model_served_state = "idle"
+_telemetry_embedding_model_served_state = "idle"
+_telemetry_model_served_locks = {
+    "_telemetry_model_served_state": threading.Lock(),
+    "_telemetry_audio_model_served_state": threading.Lock(),
+    "_telemetry_embedding_model_served_state": threading.Lock(),
+}
 # Task #292 (Bo R13/R14): operator opt-in for ``/v1/audio/*`` routes on a
 # text-only server. Set to True by ``--enable-audio`` (text mode) or by
 # :func:`rapid_mlx.cli._serve_audio_mode` (audio mode). The audio-mode
@@ -250,6 +271,7 @@ _default_min_p: float | None = None  # Set via --default-min-p
 _default_repetition_penalty: float | None = None  # Set via --default-repetition-penalty
 _default_presence_penalty: float | None = None  # Set via --default-presence-penalty
 _default_frequency_penalty: float | None = None  # Set via --default-frequency-penalty
+_max_prompt_tokens: int | None = None
 
 
 def _bind_audio_worker_for_engine(engine: object | None) -> bool:
@@ -355,6 +377,9 @@ _body_receive_timeout_seconds: float = 15.0
 # Reasoning parser (for models like Qwen3, DeepSeek-R1, MiniMax)
 _reasoning_parser = None  # ReasoningParser instance when enabled
 _reasoning_parser_name: str | None = None  # Parser name (e.g., "minimax")
+# ``serve --default-reasoning-effort``: fills ``reasoning_effort`` on requests
+# that carry no reasoning knob (#3714). ``None`` keeps the template default.
+_default_reasoning_effort: str | None = None
 
 # Tool calling configuration
 _enable_auto_tool_choice: bool = False
@@ -687,21 +712,63 @@ def _mirror_primary_lifecycle_state(engine: object, state: str) -> None:
         _residency_manager.set_primary_lifecycle_state(engine, state)
 
 
-def _emit_primary_model_served_once(engine: object) -> None:
-    global _telemetry_model_served_emitted
-    if _telemetry_model_served_emitted:
-        return
+def _finish_model_served(state_name: str, accepted: bool) -> None:
+    with _telemetry_model_served_locks[state_name]:
+        if globals()[state_name] == "pending":
+            globals()[state_name] = "emitted" if accepted else "idle"
+
+
+def _enqueue_model_served_once(
+    state_name: str,
+    engine: object | None,
+    model_name: object,
+    auto_selected: bool,
+) -> None:
+    # Reserve this lane before handing work to the telemetry executor.  The
+    # executor is normally asynchronous, but it is deliberately abstracted and
+    # may run (or reject) a callback immediately.  Publishing the reservation
+    # after submission lets an early completion observe ``idle`` and then leaves
+    # this lane stuck at ``pending`` forever.
+    with _telemetry_model_served_locks[state_name]:
+        if globals()[state_name] != "idle":
+            return
+        globals()[state_name] = "pending"
     try:
         from rapid_mlx.telemetry.model_events import emit_model_served
 
-        emit_model_served(
+        queued = emit_model_served(
             engine,
-            _model_alias or _model_path,
-            _telemetry_auto_selected,
+            model_name,
+            auto_selected,
+            on_complete=lambda accepted: _finish_model_served(state_name, accepted),
         )
     except Exception:
-        pass
-    _telemetry_model_served_emitted = True
+        queued = False
+    if not queued:
+        _finish_model_served(state_name, False)
+
+
+def _emit_primary_model_served_once(engine: object) -> None:
+    _enqueue_model_served_once(
+        "_telemetry_model_served_state",
+        engine,
+        _model_alias or _model_path,
+        _telemetry_auto_selected,
+    )
+
+
+def _emit_audio_model_served_once(engine: object, model_name: str) -> None:
+    del engine
+    _enqueue_model_served_once(
+        "_telemetry_audio_model_served_state", None, model_name, False
+    )
+
+
+def _emit_embedding_model_served_once(engine: object, model_name: str) -> None:
+    del engine
+    _enqueue_model_served_once(
+        "_telemetry_embedding_model_served_state", None, model_name, False
+    )
 
 
 async def _finish_primary_demand_load_and_emit(engine: object) -> None:
@@ -734,9 +801,6 @@ def _flush_v2_telemetry() -> None:
 async def lifespan(app: FastAPI):
     """FastAPI lifespan for startup/shutdown events."""
     global _engine, _mcp_manager, _primary_model_lifecycle
-    global _telemetry_model_served_emitted
-
-    _telemetry_model_served_emitted = False
 
     from .routes.agents import start_agent_service_lifecycle
 
@@ -816,7 +880,20 @@ async def lifespan(app: FastAPI):
             else:
                 await _engine.start()
             _emit_primary_model_served_once(_engine)
+        except OptionalRuntimeMissing as _start_exc:
+            from rapid_mlx.cli import _handle_optional_runtime_missing
+
+            _handle_optional_runtime_missing(
+                _start_exc,
+                engine=_engine,
+                alias_or_path=_model_alias or _model_path,
+                auto_selected=_telemetry_auto_selected,
+                assume_yes=optional_runtime_assume_yes(),
+            )
         except Exception as _start_exc:
+            from rapid_mlx.telemetry.server_start import failed
+
+            failed("engine_start")
             from rapid_mlx.telemetry.model_events import emit_model_serve_failed
 
             emit_model_serve_failed(
@@ -826,6 +903,9 @@ async def lifespan(app: FastAPI):
                 auto_selected=_telemetry_auto_selected,
             )
             raise
+
+    if _engine is not None and getattr(_engine, "is_text_diffusion", False):
+        _emit_primary_model_served_once(_engine)
 
     # Warmup: generate one token to trigger Metal shader compilation.
     # Runs here (not in CLI) so all engine types are fully started first.
@@ -975,34 +1055,10 @@ async def lifespan(app: FastAPI):
         global _prefix_cache_load_task
         _prefix_cache_load_task = asyncio.create_task(_deferred_load_prefix_cache())
 
-    # Render the real "Ready:" / "Connect:" banner now — only here is the
-    # port truly accepting connections AND the engine warmed up. The CLI's
-    # earlier "Starting server …" line is replaced by this. Output is produced
-    # by the connect SSOT (:mod:`rapid_mlx.connect`) so the served banner and
-    # ``rapid-mlx connect`` can never disagree about an endpoint. If neither
-    # the host/port nor inherited-fd source of truth was stashed (e.g.
-    # embedded usage where uvicorn is owned elsewhere), fall back silently.
-    from rapid_mlx.connect import endpoints_from_bind, render_banner
-
-    # The banner's "Model:" line is the copyable API identity the user
-    # pastes into an SDK request. Prefer the explicit ``--served-model-name``
-    # when one was supplied; otherwise keep the catalog alias. Tracking the
-    # option explicitly (not inferring from ``model_name``/``model_path``
-    # differences) keeps the banner correct even when a served name happens
-    # to equal the resolved path (issue #2353).
-    _banner_model = (
-        _cfg.model_name
-        if _served_model_name_set
-        else (_cfg.model_alias or _cfg.model_name)
-    )
-    _ep = endpoints_from_bind(
-        _cfg.bind_host,
-        _cfg.bind_port,
-        model=_banner_model,
-        listen_fd=_cfg.bind_listen_fd,
-    )
-    if _ep.listen_fd is not None or (_cfg.bind_host and _cfg.bind_port):
-        print(render_banner(_ep), end="")
+    # The user-facing banner is intentionally not printed here. Uvicorn runs
+    # lifespan startup before it creates its listener, so announcing readiness
+    # at this point lies when the subsequent bind fails. The shared Uvicorn
+    # startup seam calls ``print_ready_banner`` after listener creation.
 
     yield
 
@@ -1031,6 +1087,9 @@ async def lifespan(app: FastAPI):
         from .routes.video import shutdown_video_jobs
 
         await close_agent_service()
+        from .cua.service import close_cua_service
+
+        await close_cua_service()
         await shutdown_video_jobs()
 
         if _primary_model_lifecycle is not None:
@@ -1062,6 +1121,42 @@ async def lifespan(app: FastAPI):
         raise
 
     _flush_v2_telemetry()
+
+
+def print_ready_banner() -> None:
+    """Print the connection banner after the Uvicorn listener exists."""
+
+    _cfg = get_config()
+    from rapid_mlx.connect import endpoints_from_bind, render_banner
+
+    _banner_model = (
+        _cfg.model_name
+        if _served_model_name_set
+        else (_cfg.model_alias or _cfg.model_name)
+    )
+    _ep = endpoints_from_bind(
+        _cfg.bind_host,
+        _cfg.bind_port,
+        model=_banner_model,
+        listen_fd=_cfg.bind_listen_fd,
+    )
+    if _ep.listen_fd is not None or (_cfg.bind_host and _cfg.bind_port):
+        print(render_banner(_ep, image_note=_text_lane_image_note(_cfg)), end="")
+
+
+def _text_lane_image_note(cfg) -> str | None:
+    """Ready-banner line for a vision-capable model auto-routed to text-only."""
+    from .api.utils import BANNER_TEXT_LANE_REASONS, image_rejection_guidance
+
+    engine = _engine
+    if engine is None or getattr(engine, "is_mllm", True) is not False:
+        return None
+    reason = getattr(engine, "serving_lane_reason", None)
+    if reason not in BANNER_TEXT_LANE_REASONS:
+        return None
+    # The operator's own terminal: keep the exact interpreter path in the
+    # install hint (a bare ``python`` can repair the wrong environment).
+    return image_rejection_guidance(reason, engine=engine, include_paths=True)
 
 
 app = FastAPI(
@@ -1730,6 +1825,7 @@ def load_embedding_model(
         overflow_policy=_embedding_overflow_policy,
     )
     _embedding_engine.load()
+    _emit_embedding_model_served_once(_embedding_engine, model_name)
 
     # Sync into config for route modules
     cfg = get_config()
@@ -2170,6 +2266,7 @@ def load_model(
     no_openai_harmony_streaming: bool = False,
     enable_disk_stream: bool = False,
     disk_stream_cache_gb: float = 1.0,
+    effective_runtime_config: "EffectiveRuntimeConfig | None" = None,
 ):
     """
     Load a model (auto-detects MLLM vs LLM).
@@ -2218,6 +2315,10 @@ def load_model(
             ``rapid_mlx.disk_stream_patch`` in ``_start_llm`` before the
             model reaches ``AsyncEngineCore``. Default False keeps every
             existing caller's behavior unchanged.
+        effective_runtime_config: Optional authoritative result produced by
+            the CLI resolver. The Server verifies it against the legacy
+            launch values before applying it. Direct Python callers are
+            resolved at this boundary with conservative provenance.
     """
     if force_mllm and force_text:
         raise ValueError(
@@ -2253,7 +2354,9 @@ def load_model(
         if existing_spec_decode not in ("none", "mtp"):
             from .telemetry.inference import emit_capability_rejected
 
-            emit_capability_rejected("speculative_decoding_unsupported")
+            emit_capability_rejected(
+                "speculative_decoding_unsupported", model=model_name
+            )
             raise ValueError(
                 "load_model(mtp=True) conflicts with "
                 f"scheduler_config.spec_decode={existing_spec_decode!r}; "
@@ -2264,7 +2367,9 @@ def load_model(
         ):
             from .telemetry.inference import emit_capability_rejected
 
-            emit_capability_rejected("speculative_decoding_unsupported")
+            emit_capability_rejected(
+                "speculative_decoding_unsupported", model=model_name
+            )
             raise ValueError(
                 "load_model(mtp=True) conflicts with "
                 "scheduler_config.enable_suffix_decoding=True; pass only one "
@@ -2276,7 +2381,9 @@ def load_model(
         ):
             from .telemetry.inference import emit_capability_rejected
 
-            emit_capability_rejected("speculative_decoding_unsupported")
+            emit_capability_rejected(
+                "speculative_decoding_unsupported", model=model_name
+            )
             raise ValueError(
                 "load_model(mtp=True) conflicts with "
                 "scheduler_config.dflash_drafter_path; pass only one "
@@ -2337,6 +2444,65 @@ def load_model(
         else:
             scheduler_config.prefill_step_size = prefill_step_size
 
+    # Migration 002: every engine construction now crosses one immutable,
+    # provenance-carrying boundary.  Keep the legacy values beside it until
+    # parity is proven, then consume the central result.  A mismatch fails
+    # before any model I/O, providing the rollback guard required by #3768.
+    from .runtime.config_adapter import (
+        DEFAULT_RUNTIME_LAUNCH_VALUES,
+        RuntimeLaunchValues,
+        assert_runtime_config_parity,
+        resolve_programmatic_runtime_config,
+    )
+
+    _legacy_runtime_values = RuntimeLaunchValues(
+        prefill_step_size=getattr(
+            scheduler_config,
+            "prefill_step_size",
+            DEFAULT_RUNTIME_LAUNCH_VALUES.prefill_step_size,
+        ),
+        max_num_seqs=getattr(
+            scheduler_config,
+            "max_num_seqs",
+            DEFAULT_RUNTIME_LAUNCH_VALUES.max_num_seqs,
+        ),
+        gpu_memory_utilization=gpu_memory_utilization,
+        enable_prefix_cache=getattr(
+            scheduler_config,
+            "enable_prefix_cache",
+            DEFAULT_RUNTIME_LAUNCH_VALUES.enable_prefix_cache,
+        ),
+        kv_cache_dtype=getattr(
+            scheduler_config,
+            "kv_cache_dtype",
+            DEFAULT_RUNTIME_LAUNCH_VALUES.kv_cache_dtype,
+        ),
+    )
+    if effective_runtime_config is None:
+        effective_runtime_config = resolve_programmatic_runtime_config(
+            surface="server.load_model", legacy=_legacy_runtime_values
+        )
+    else:
+        assert_runtime_config_parity(
+            surface="cli-to-server",
+            legacy=_legacy_runtime_values,
+            config=effective_runtime_config,
+        )
+    _effective_runtime_values = RuntimeLaunchValues.from_effective(
+        effective_runtime_config
+    )
+    if scheduler_config is not None:
+        scheduler_config.prefill_step_size = _effective_runtime_values.prefill_step_size
+        scheduler_config.max_num_seqs = _effective_runtime_values.max_num_seqs
+        scheduler_config.enable_prefix_cache = (
+            _effective_runtime_values.enable_prefix_cache
+        )
+        scheduler_config.kv_cache_dtype = _effective_runtime_values.kv_cache_dtype
+        scheduler_config.gpu_memory_utilization = (
+            _effective_runtime_values.gpu_memory_utilization or 0.0
+        )
+    gpu_memory_utilization = _effective_runtime_values.gpu_memory_utilization
+
     global \
         _engine, \
         _model_alias, \
@@ -2355,9 +2521,11 @@ def load_model(
     # config materialization, lane selection, and the loader consume it. This
     # keeps those three decisions on the same checkpoint source instead of
     # probing the alias spelling as though it were a Hub repository.
+    from .local_model_path import raise_if_missing_local_model
     from .model_aliases import resolve_model, resolve_profile
 
     requested_model_name = model_name
+    raise_if_missing_local_model(requested_model_name)
     model_name = resolve_model(model_name)
 
     # A direct alias in this request is authoritative. CLI startup reaches
@@ -2536,6 +2704,7 @@ def load_model(
             "vision_memory_insufficient": (
                 "its measured vision footprint exceeds this Mac's physical memory"
             ),
+            "vision_runtime_absent": ("the optional vision runtime is not installed"),
         }.get(
             _serving_lane_reason,
             "its vision cache contract is not supported",
@@ -2683,6 +2852,12 @@ def load_model(
             ),
             model_name,
         )
+
+    # Publish the DTO only after engine construction succeeds, so a failed
+    # residency replacement cannot overwrite the running model's truth.
+    _runtime_config_owner = effective_model_alias or requested_model_name
+    get_config().effective_runtime_config = effective_runtime_config
+    get_config().effective_runtime_model = _runtime_config_owner
 
     # Sync globals into ServerConfig BEFORE _detect_native_tool_support reads
     # them via get_config(). Detection short-circuits when cfg.tool_call_parser
@@ -2995,12 +3170,16 @@ def configure_primary_model_lifecycle(
     global _primary_lazy_load
     global _primary_idle_unload_seconds
     global _primary_model_lifecycle
-    global _telemetry_model_served_emitted
+    global _telemetry_audio_model_served_state
+    global _telemetry_embedding_model_served_state
+    global _telemetry_model_served_state
 
     _primary_lazy_load = bool(lazy_load)
     _primary_idle_unload_seconds = max(0.0, float(idle_unload_seconds))
     _primary_model_lifecycle = None
-    _telemetry_model_served_emitted = False
+    _telemetry_model_served_state = "idle"
+    _telemetry_audio_model_served_state = "idle"
+    _telemetry_embedding_model_served_state = "idle"
     get_config().primary_model_lifecycle = None
 
 
@@ -3144,6 +3323,7 @@ def _sync_config() -> None:
     cfg.default_repetition_penalty = _default_repetition_penalty
     cfg.default_presence_penalty = _default_presence_penalty
     cfg.default_frequency_penalty = _default_frequency_penalty
+    cfg.max_prompt_tokens = _max_prompt_tokens
     cfg.alias_recommended_sampling = _alias_recommended_sampling
     cfg.generation_config_sampling = _generation_config_sampling
     cfg.enable_auto_tool_choice = _enable_auto_tool_choice
@@ -3152,6 +3332,7 @@ def _sync_config() -> None:
     cfg.enable_tool_logits_bias = _enable_tool_logits_bias
     cfg.reasoning_parser = _reasoning_parser
     cfg.reasoning_parser_name = _reasoning_parser_name
+    cfg.default_reasoning_effort = _default_reasoning_effort
     cfg.mcp_manager = _mcp_manager
     cfg.embedding_engine = _embedding_engine
     cfg.embedding_model_locked = _embedding_model_locked
@@ -3342,6 +3523,7 @@ from .routes.anthropic import router as _anthropic_router
 from .routes.cache import router as _cache_router
 from .routes.chat import router as _chat_router
 from .routes.completions import router as _completions_router
+from .routes.cua import router as _cua_router
 from .routes.embeddings import router as _embeddings_router
 from .routes.health import admin_router as _health_admin_router
 from .routes.health import probe_router as _probe_router
@@ -3353,6 +3535,7 @@ from .routes.metrics import router as _metrics_router
 from .routes.models import router as _models_router
 from .routes.residency import router as _residency_router
 from .routes.responses import router as _responses_router
+from .routes.runtime_config import router as _runtime_config_router
 from .routes.video import router as _video_router
 
 app.include_router(_probe_router)
@@ -3364,10 +3547,13 @@ app.include_router(_metrics_router)
 # Keep literal residency paths ahead of ``/v1/models/{model_id:path}`` so the
 # latter cannot consume ``residency`` as an ordinary model id.
 app.include_router(_residency_router)
+app.include_router(_runtime_config_router)
 app.include_router(_models_router)
 app.include_router(_agents_router)
 app.include_router(_chat_router)
 app.include_router(_completions_router)
+# CUA runs drive the local computer (AX/CGEvent); single active run enforced by the service.
+app.include_router(_cua_router)
 app.include_router(_anthropic_router)
 app.include_router(_responses_router)
 app.include_router(_video_router)
@@ -3422,13 +3608,39 @@ def register_audio_routes_if_enabled() -> bool:
 # =============================================================================
 
 
-def main():
-    """Run the server."""
-    if os.environ.get("RAPID_PYSAMPLE"):
-        from ._pysample import install as _pysample_install
+def _capture_start_failures(func):
+    """Lazy exception guard that cannot change standalone-server failures."""
 
-        _pysample_install()
-    parser = argparse.ArgumentParser(
+    @functools.wraps(func)
+    def wrapped(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except OptionalRuntimeMissing as exc:
+            handle_optional_runtime_missing(
+                exc,
+                engine=_engine,
+                alias_or_path=_standalone_start_model,
+                auto_selected=False,
+                assume_yes=optional_runtime_assume_yes(),
+            )
+        except BaseException:
+            try:
+                from rapid_mlx.telemetry.server_start import fail_current
+
+                fail_current()
+            except BaseException:
+                pass
+            raise
+
+    return wrapped
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    """Build the parser for the standalone ``python -m rapid_mlx.server`` CLI."""
+
+    from .cli import _PortContextArgumentParser, positive_int
+
+    parser = _PortContextArgumentParser(
         description="Rapid-MLX OpenAI-compatible server for LLM and MLLM inference",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
@@ -3447,6 +3659,12 @@ Examples:
         help="Model to load (HuggingFace model name or local path)",
     )
     parser.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="assume yes for prompts such as installing a missing optional extra",
+    )
+    parser.add_argument(
         "--host",
         type=str,
         default="127.0.0.1",
@@ -3459,8 +3677,11 @@ Examples:
     parser.add_argument(
         "--port",
         type=int,
-        default=8000,
-        help="Port to bind to",
+        default=None,
+        help=(
+            "Port to bind to (default when omitted: first free port in "
+            "8000-8009; an explicit port never falls back)"
+        ),
     )
     from .cli import _add_video_job_args as _add_video_job_args_to_server_parser
 
@@ -3586,6 +3807,16 @@ Examples:
         default=None,
         help="Default max tokens for generation (caps when client sends None)",
     )
+    parser.add_argument(
+        "--max-prompt-tokens",
+        type=positive_int,
+        default=None,
+        metavar="TOKENS",
+        help=(
+            "Operational prompt-token admission ceiling. Requests above this "
+            "limit are rejected before prefill."
+        ),
+    )
     # ``--api-key`` accepts an inline value OR falls back to the
     # ``RAPID_MLX_API_KEY`` env var. The env-var form keeps the bearer
     # key out of ``argv`` (visible to ``ps -ef`` for any local user) —
@@ -3663,7 +3894,8 @@ Examples:
         help=(
             "Pre-load an embedding model at startup (e.g. "
             "mlx-community/all-MiniLM-L6-v2-4bit). Requires the "
-            "[embeddings] extra: pip install 'rapid-mlx[embeddings]'."
+            "[embeddings] extra. "
+            + optional_extra_install_hint("embeddings", include_paths=False)
         ),
     )
     parser.add_argument(
@@ -3741,7 +3973,23 @@ Examples:
         ),
     )
 
+    return parser
+
+
+@_capture_start_failures
+def main():
+    """Run the server."""
+    global _standalone_start_model
+    if os.environ.get("RAPID_PYSAMPLE"):
+        from ._pysample import install as _pysample_install
+
+        _pysample_install()
+
+    set_optional_runtime_assume_yes(False)
+    parser = _build_parser()
     args = parser.parse_args()
+    _standalone_start_model = args.model
+    set_optional_runtime_assume_yes(args.yes)
 
     # Telemetry v2 default-on wiring (T11): resolve the consent decision,
     # deliver the disclosure notice to stderr, then apply the locked,
@@ -3753,8 +4001,22 @@ Examples:
 
     consent_runtime.startup(long_lived=True)
     from .telemetry import track as telemetry_v2
+    from .telemetry.consent_decision import ProcessRole
 
-    telemetry_v2.start_lifecycle("server")
+    role = consent_runtime.detect_role()
+    if not (telemetry_v2.set_surface_for_role(role) or role is ProcessRole.SIDECAR):
+        telemetry_v2.start_lifecycle("server")
+
+    from .telemetry.server_start import attempted, load_policy, set_failure_stage
+
+    attempted(
+        args.model,
+        load_policy=load_policy(
+            args.model,
+            lazy_load=bool(getattr(args, "lazy_load", False)),
+        ),
+    )
+    set_failure_stage("preflight")
 
     from .routes.video import configure_video_jobs
 
@@ -3770,9 +4032,15 @@ Examples:
     # AND ``127.0.0.1`` when ``args.host`` is a wildcard alias
     # (``0.0.0.0`` or ``""``) so a co-resident loopback-only listener
     # is caught before we sink time into model load.
-    from .cli import _port_preflight_or_die
+    from .cli import _resolve_serve_port, port_explicit_for
 
-    _port_preflight_or_die(args.host, args.port, model=args.model)
+    args.port = _resolve_serve_port(
+        args.host,
+        args.port,
+        model=args.model,
+        port_explicit=port_explicit_for(args),
+    )
+    assert isinstance(args.port, int)
 
     # F-H08-INCOMPLETE: the ``[embeddings]`` extra-required guard MUST
     # fire BEFORE logging configuration and the security/banner side
@@ -3790,7 +4058,7 @@ Examples:
     uvicorn_log_level = configure_logging(args.log_level)
 
     # Set global configuration
-    global _api_key, _default_timeout, _rate_limiter
+    global _api_key, _default_timeout, _rate_limiter, _max_prompt_tokens
     global _default_temperature, _default_top_p, _default_top_k
     global _enable_audio_lane
     # Task #292: forward ``--enable-audio`` to the gate that decides
@@ -3807,6 +4075,7 @@ Examples:
     # docstring for the dogfood-v0.8.2 finding #3 context.
     _api_key = _resolve_api_key(args.api_key)
     _default_timeout = args.timeout
+    _max_prompt_tokens = args.max_prompt_tokens
     if args.default_temperature is not None:
         _default_temperature = args.default_temperature
     if args.default_top_p is not None:
@@ -4151,25 +4420,45 @@ Examples:
             "--force-openai-harmony-streaming and "
             "--no-openai-harmony-streaming are mutually exclusive"
         )
-    load_model(
-        args.model,
-        scheduler_config=scheduler_config,
-        max_tokens=args.max_tokens,
-        max_tokens_is_explicit=_max_tokens_is_explicit,
-        force_mllm=args.mllm,
-        force_text=args.no_mllm,
-        force_hybrid=getattr(args, "force_hybrid", False),
-        no_hybrid=getattr(args, "no_hybrid", False),
-        force_spec_decode=getattr(args, "force_spec_decode", False),
-        no_spec_decode=getattr(args, "no_spec_decode", False),
-        force_openai_harmony_streaming=getattr(
-            args, "force_openai_harmony_streaming", False
-        ),
-        no_openai_harmony_streaming=getattr(args, "no_openai_harmony_streaming", False),
-    )
+    from .telemetry.server_start import failure_stage
 
-    # Start server
-    uvicorn.run(app, host=args.host, port=args.port, log_level=uvicorn_log_level)
+    with failure_stage("prepare"):
+        load_model(
+            args.model,
+            scheduler_config=scheduler_config,
+            max_tokens=args.max_tokens,
+            max_tokens_is_explicit=_max_tokens_is_explicit,
+            force_mllm=args.mllm,
+            force_text=args.no_mllm,
+            force_hybrid=getattr(args, "force_hybrid", False),
+            no_hybrid=getattr(args, "no_hybrid", False),
+            force_spec_decode=getattr(args, "force_spec_decode", False),
+            no_spec_decode=getattr(args, "no_spec_decode", False),
+            force_openai_harmony_streaming=getattr(
+                args, "force_openai_harmony_streaming", False
+            ),
+            no_openai_harmony_streaming=getattr(
+                args, "no_openai_harmony_streaming", False
+            ),
+        )
+
+    # Stash the endpoint for the post-bind banner, matching the primary CLI.
+    _cfg = get_config()
+    _cfg.bind_host = "localhost" if args.host == "0.0.0.0" else args.host
+    _cfg.bind_port = args.port
+    _cfg.bind_listen_fd = None
+
+    # Start through the shared seam so the banner cannot precede the bind.
+    from ._uvicorn import run_uvicorn
+
+    run_uvicorn(
+        app,
+        host=args.host,
+        port=args.port,
+        log_level=uvicorn_log_level,
+        on_server_accepting=print_ready_banner,
+        port_explicit=port_explicit_for(args),
+    )
 
     # Issue #3495: same contract as the CLI serve entrypoints — after a
     # graceful shutdown, skip interpreter finalization (the native-thread

@@ -518,6 +518,7 @@ def run_ddtree_server(
     tree_budget: int,
     host: str,
     port: int,
+    port_explicit: bool | None = None,
     served_model_name: str,
     default_max_tokens: int,
     cors_origins: list[str],
@@ -539,8 +540,6 @@ def run_ddtree_server(
         raise DDTreeUnavailable(
             "DDTree requires positive speculative_tokens and tree_budget values."
         )
-
-    import uvicorn
 
     def _load_all():
         return load_runtime(
@@ -572,10 +571,13 @@ def run_ddtree_server(
     print(f"  Docs:  http://{host_display}:{port}/docs")
     print()
 
-    uvicorn.run(
+    from rapid_mlx._uvicorn import run_uvicorn
+
+    run_uvicorn(
         app,
         host=host,
         port=port,
         log_level=uvicorn_log_level,
         timeout_keep_alive=30,
+        port_explicit=port_explicit,
     )

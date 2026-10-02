@@ -82,21 +82,19 @@ def test_mlx_vlm_available_returns_false_when_missing(monkeypatch):
     assert mlx_vlm_available() is False
 
 
-def test_require_mlx_vlm_or_exit_prints_hint_and_exits(monkeypatch, capsys):
+def test_require_mlx_vlm_or_exit_raises_typed_actionable_failure(monkeypatch):
     """R-10 fix: boot guard must emit the actionable install hint to
     stderr and ``sys.exit(2)`` — same shape as
     :func:`require_mlx_embeddings_or_exit`."""
     from rapid_mlx.models.mllm import require_mlx_vlm_or_exit
+    from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
 
     _mask_mlx_vlm(monkeypatch)
 
-    with pytest.raises(SystemExit) as exc_info:
+    with pytest.raises(OptionalRuntimeMissing) as exc_info:
         require_mlx_vlm_or_exit("ui-tars-1.5-7b-4bit")
 
-    assert exc_info.value.code == 2
-
-    captured = capsys.readouterr()
-    err = captured.err
+    err = exc_info.value.format_user_message()
     # User-facing hint must include the canonical install command,
     # the offending model name, and a "vision" marker so the message
     # is searchable in support threads.
@@ -126,7 +124,7 @@ def test_require_mlx_vlm_or_exit_is_noop_when_installed(monkeypatch):
     require_mlx_vlm_or_exit("ui-tars-1.5-7b-4bit")
 
 
-def test_engine_side_require_mlx_vlm_still_raises_importerror(
+def test_engine_side_require_mlx_vlm_raises_typed_failure(
     monkeypatch,
 ):
     """The pre-existing engine-side guard (:func:`_require_mlx_vlm`)
@@ -135,10 +133,11 @@ def test_engine_side_require_mlx_vlm_still_raises_importerror(
     use) still need an actionable message rather than a raw
     ``ModuleNotFoundError`` from deep inside the load path."""
     from rapid_mlx.models.mllm import _require_mlx_vlm
+    from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
 
     _mask_mlx_vlm(monkeypatch)
 
-    with pytest.raises(ImportError) as exc_info:
+    with pytest.raises(OptionalRuntimeMissing) as exc_info:
         _require_mlx_vlm()
 
     # Same actionable hint surface as the CLI guard.

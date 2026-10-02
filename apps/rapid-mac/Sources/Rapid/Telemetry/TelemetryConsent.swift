@@ -324,6 +324,17 @@ enum TelemetryConsent {
         return sharedConsent(from: mapping)
     }
 
+    /// The anonymous first-run funnel is allowed before the telemetry notice,
+    /// but an explicit refusal in either shared scope always wins. An
+    /// unreadable consent record fails closed because it cannot prove the user
+    /// has not opted out; an absent file decodes as an undecided empty mapping.
+    static func hasExplicitlyDeclined(telemetryDirectory: URL) -> Bool {
+        guard let shared = readSharedConsent(at: consentURL(in: telemetryDirectory)) else {
+            return true
+        }
+        return shared.engine == false || shared.desktop == false
+    }
+
     private static func sharedConsent(from mapping: [String: Any]) -> SharedConsent {
         SharedConsent(
             engine: boolValue(mapping["consent"]),

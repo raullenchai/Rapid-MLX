@@ -1236,6 +1236,7 @@ class TestResponsesStreamFailureEnvelope:
         )
         assert len(emit_calls) == 1
         assert emit_calls[0]["result"] == "failed"
+        assert emit_calls[0]["error_class"] == "output_contract_unmet"
 
     def test_stream_engine_exception_after_partial_output_emits_one_failed_count(
         self, raising_stream_client, monkeypatch
@@ -1261,6 +1262,7 @@ class TestResponsesStreamFailureEnvelope:
         assert failed == ["response.failed"]
         assert len(emit_calls) == 1
         assert emit_calls[0]["result"] == "failed"
+        assert emit_calls[0]["error_class"] == "other"
 
     def test_stream_emits_response_failed_on_engine_no_output(
         self, failing_client, monkeypatch
@@ -1296,6 +1298,7 @@ class TestResponsesStreamFailureEnvelope:
         assert len(emit_calls) == 1
         assert emit_calls[0]["endpoint"] == "/v1/responses"
         assert emit_calls[0]["result"] == "failed"
+        assert emit_calls[0]["error_class"] == "output_contract_unmet"
 
     def test_stream_failed_event_carries_error_block(self, failing_client):
         """``response.failed`` payload must echo the same ``{code,
@@ -1442,6 +1445,7 @@ class TestResponsesStreamFailureEnvelope:
         assert len(emit_calls) == 1
         assert emit_calls[0]["endpoint"] == "/v1/responses"
         assert emit_calls[0]["result"] == "failed"
+        assert emit_calls[0]["error_class"] == "output_contract_unmet"
 
     def test_reasoning_then_whitespace_stop_stream_emits_response_failed(
         self, reasoning_then_whitespace_stop_client
@@ -1512,8 +1516,7 @@ class TestResponsesStreamFailureEnvelope:
             if name == "response.output_item.added"
             and data.get("item", {}).get("type") == "function_call"
         )
-        assert reasoning_done < message_added
-        assert message_added < function_call_added
+        assert reasoning_done < message_added < function_call_added
         assert "response.function_call_arguments.delta" in names
         text = "".join(
             str(data.get("delta") or "")
@@ -1897,3 +1900,394 @@ class TestResponsesStreamFailureEnvelope:
         assert envelope["status"] == "completed"
         assert envelope["output"] == []
         assert envelope["usage"]["output_tokens"] == 1
+
+
+# =============================================================================
+# Telemetry: failure class per Responses failure site
+# =============================================================================
+
+
+class _RaisingChatEngine(_HealthyEngine):
+    error: Exception = RuntimeError("chat exploded at /Users/alice/private")
+
+    async def chat(self, messages, **kwargs):
+        raise type(self).error
+
+
+class _MediaFailureChatEngine(_RaisingChatEngine):
+    error = ValueError("Failed to process image: http://private.example/x.png")
+
+
+_SHELL_TOOL = [{"type": "function", "name": "shell", "parameters": {"type": "object"}}]
+
+
+def _capture_emits(monkeypatch) -> list[dict]:
+    from rapid_mlx.telemetry import inference
+
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        inference, "emit_completed_request", lambda **kwargs: calls.append(kwargs)
+    )
+    return calls
+
+
+@pytest.mark.parametrize(
+    ("engine_factory", "extra", "expected_status", "expected_class"),
+    [
+        # engine_no_output envelope
+        (_FailingEngine, {}, 200, "output_contract_unmet"),
+        # model_no_final_answer envelope (tools, immediate stop)
+        (_ImmediateStopEngine, {"tools": _SHELL_TOOL}, 200, "output_contract_unmet"),
+        # generic engine exception -> classifier
+        # (None: the TestClient re-raises the unhandled engine exception)
+        (_RaisingChatEngine, {}, None, "other"),
+        (_MediaFailureChatEngine, {}, 400, "media_input_invalid"),
+    ],
+)
+def test_nonstream_failure_sites_count_their_class(
+    monkeypatch, engine_factory, extra, expected_status, expected_class
+):
+    holder = _build_client(monkeypatch, engine_factory)
+    try:
+        calls = _capture_emits(monkeypatch)
+        if expected_status is None:
+            with pytest.raises(RuntimeError, match="chat exploded"):
+                holder.client.post(
+                    "/v1/responses", json={**PAYLOAD, **extra}, headers=HEADERS
+                )
+        else:
+            resp = holder.client.post(
+                "/v1/responses", json={**PAYLOAD, **extra}, headers=HEADERS
+            )
+            assert resp.status_code == expected_status, resp.text
+    finally:
+        holder.cleanup()
+    assert [(c["result"], c["error_class"]) for c in calls] == [
+        ("failed", expected_class)
+    ]
+    assert "alice" not in repr(calls)
+
+
+_TWO_TOOLS = [
+    {"type": "function", "name": "shell", "parameters": {"type": "object"}},
+    {"type": "function", "name": "grep", "parameters": {"type": "object"}},
+]
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_real_tool_choice_rejection_counts_output_contract_unmet(monkeypatch, stream):
+    """Drives the REAL ``_enforce_responses_tool_choice``: two tools,
+    tool_choice="required", the model answers text only. Non-stream answers
+    the route's 422; stream answers response.failed. Both count once."""
+    holder = _build_client(monkeypatch, _HealthyEngine)
+    try:
+        calls = _capture_emits(monkeypatch)
+        body = {
+            **PAYLOAD,
+            "tools": _TWO_TOOLS,
+            "tool_choice": "required",
+            "stream": stream,
+        }
+        resp = holder.client.post("/v1/responses", json=body, headers=HEADERS)
+        if stream:
+            names = [name for name, _ in _parse_sse(resp.text)]
+            assert "response.failed" in names, names
+            assert "response.completed" not in names, names
+        else:
+            assert resp.status_code == 422, resp.text
+    finally:
+        holder.cleanup()
+    assert [(c["result"], c["error_class"]) for c in calls] == [
+        ("failed", "output_contract_unmet")
+    ]
+
+
+def test_invalid_tool_arguments_envelope_counts_output_contract_unmet(monkeypatch):
+    """The classified (``rapid_mlx_error_code``) arm answers a failed
+    envelope instead of re-raising; it must still count exactly once."""
+    holder = _build_client(monkeypatch, _HealthyEngine)
+    try:
+        from fastapi import HTTPException
+
+        import rapid_mlx.routes.responses as responses_route
+
+        def _raise_classified(*_args, **_kwargs):
+            exc = HTTPException(status_code=400, detail="bad tool arguments")
+            exc.rapid_mlx_error_code = "invalid_tool_arguments"
+            raise exc
+
+        monkeypatch.setattr(
+            responses_route, "_enforce_responses_tool_choice", _raise_classified
+        )
+        calls = _capture_emits(monkeypatch)
+        resp = holder.client.post(
+            "/v1/responses",
+            json={**PAYLOAD, "tools": _SHELL_TOOL},
+            headers=HEADERS,
+        )
+    finally:
+        holder.cleanup()
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["error"]["code"] == "invalid_tool_arguments"
+    assert [(c["result"], c["error_class"]) for c in calls] == [
+        ("failed", "output_contract_unmet")
+    ]
+
+
+class _DeepSeekStopThenOutcomeEngine:
+    """DeepSeek Codex surface. Attempt 1 stops reasoning-only (the transparent
+    non-progress retry fires); attempt 2 answers, or stops again."""
+
+    preserve_native_tool_format = False
+
+    def __init__(self, second_answers: bool = True):
+        self.tokenizer = _Tokenizer()
+        self.calls = 0
+        self.second_answers = second_answers
+
+    async def chat(self, messages, **kwargs):
+        return _GenerationOutput(
+            text="ok", prompt_tokens=3, completion_tokens=1, finish_reason="stop"
+        )
+
+    async def stream_chat(self, messages, **kwargs):
+        self.calls += 1
+        if self.calls == 1 or not self.second_answers:
+            chunks = ["thinking ", "more"]
+            for index, chunk in enumerate(chunks):
+                yield _GenerationOutput(
+                    text="".join(chunks[: index + 1]),
+                    new_text=chunk,
+                    prompt_tokens=7 if index == 0 else 0,
+                    completion_tokens=index + 1,
+                    finish_reason="stop" if index == 1 else None,
+                    finished=index == 1,
+                    channel="reasoning",
+                )
+            return
+        yield _GenerationOutput(
+            text="done",
+            new_text="done",
+            prompt_tokens=3,
+            completion_tokens=1,
+            finish_reason="stop",
+            channel="content",
+        )
+
+
+_DEEPSEEK_CODEX_INPUT = [
+    {"type": "message", "role": "user", "content": "list files"},
+    {
+        "type": "function_call",
+        "call_id": "c1",
+        "name": "exec_command",
+        "arguments": "{}",
+    },
+    {"type": "function_call_output", "call_id": "c1", "output": "a.txt"},
+]
+_DEEPSEEK_CODEX_TOOLS = [
+    {
+        "type": "function",
+        "name": "exec_command",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "type": "function",
+        "name": "write_stdin",
+        "parameters": {"type": "object", "properties": {}},
+    },
+]
+
+
+@pytest.mark.parametrize(
+    ("second_answers", "expected_events", "expected_counts"),
+    [
+        # The hidden first failure is retried away: the client sees success,
+        # so exactly one ok is counted and no failure.
+        (True, "response.completed", [("ok", None)]),
+        # Both attempts fail: only the failure the client actually sees
+        # (the retry's) is counted, once.
+        (False, "response.failed", [("failed", "output_contract_unmet")]),
+    ],
+)
+def test_deepseek_transparent_retry_counts_only_the_visible_outcome(
+    monkeypatch, second_answers, expected_events, expected_counts
+):
+    holder = _build_client(
+        monkeypatch, lambda: _DeepSeekStopThenOutcomeEngine(second_answers)
+    )
+    try:
+        from rapid_mlx.config import get_config
+
+        get_config().tool_call_parser = "deepseek_v4_0731"
+        calls = _capture_emits(monkeypatch)
+        with holder.client.stream(
+            "POST",
+            "/v1/responses",
+            json={
+                **PAYLOAD,
+                "stream": True,
+                "tools": _DEEPSEEK_CODEX_TOOLS,
+                "input": _DEEPSEEK_CODEX_INPUT,
+            },
+            headers=HEADERS,
+        ) as resp:
+            names = [name for name, _ in _parse_sse("".join(resp.iter_text()))]
+        engine_calls = holder.engine.calls
+    finally:
+        holder.cleanup()
+    assert engine_calls == 2
+    assert expected_events in names, names
+    assert [(c["result"], c.get("error_class")) for c in calls] == expected_counts
+
+
+def test_deepseek_first_attempt_failure_is_counted_when_not_retried(monkeypatch):
+    """A first-attempt failure that is NOT a retryable non-progress stop
+    (here: an engine exception) reaches the client and is counted once."""
+
+    class _ExplodingDeepSeekEngine(_DeepSeekStopThenOutcomeEngine):
+        async def stream_chat(self, messages, **kwargs):
+            self.calls += 1
+            yield _GenerationOutput(
+                text="",
+                new_text="",
+                prompt_tokens=3,
+                completion_tokens=0,
+                finish_reason=None,
+                finished=False,
+                channel="reasoning",
+            )
+            raise RuntimeError("engine exploded")
+
+    holder = _build_client(monkeypatch, _ExplodingDeepSeekEngine)
+    try:
+        from rapid_mlx.config import get_config
+
+        get_config().tool_call_parser = "deepseek_v4_0731"
+        calls = _capture_emits(monkeypatch)
+        with holder.client.stream(
+            "POST",
+            "/v1/responses",
+            json={
+                **PAYLOAD,
+                "stream": True,
+                "tools": _DEEPSEEK_CODEX_TOOLS,
+                "input": _DEEPSEEK_CODEX_INPUT,
+            },
+            headers=HEADERS,
+        ) as resp:
+            names = [name for name, _ in _parse_sse("".join(resp.iter_text()))]
+        engine_calls = holder.engine.calls
+    finally:
+        holder.cleanup()
+    assert engine_calls == 1
+    assert "response.failed" in names, names
+    assert [(c["result"], c.get("error_class")) for c in calls] == [("failed", "other")]
+
+
+def test_deepseek_deferred_route_failure_is_counted_when_not_retried(monkeypatch):
+    """A route-level first-attempt failure the wrapper does not retry
+    (engine_no_output: zero tokens, finish=length) is released from the
+    deferral and counted exactly once."""
+
+    class _EmptyDeepSeekEngine(_DeepSeekStopThenOutcomeEngine):
+        async def stream_chat(self, messages, **kwargs):
+            self.calls += 1
+            yield _GenerationOutput(
+                text="",
+                new_text="",
+                prompt_tokens=42,
+                completion_tokens=0,
+                finish_reason="length",
+                finished=True,
+            )
+
+    holder = _build_client(monkeypatch, _EmptyDeepSeekEngine)
+    try:
+        from rapid_mlx.config import get_config
+
+        get_config().tool_call_parser = "deepseek_v4_0731"
+        calls = _capture_emits(monkeypatch)
+        with holder.client.stream(
+            "POST",
+            "/v1/responses",
+            json={
+                **PAYLOAD,
+                "stream": True,
+                "tools": _DEEPSEEK_CODEX_TOOLS,
+                "input": _DEEPSEEK_CODEX_INPUT,
+            },
+            headers=HEADERS,
+        ) as resp:
+            names = [name for name, _ in _parse_sse("".join(resp.iter_text()))]
+        engine_calls = holder.engine.calls
+    finally:
+        holder.cleanup()
+    assert engine_calls == 1
+    assert "response.failed" in names, names
+    assert [(c["result"], c.get("error_class")) for c in calls] == [
+        ("failed", "output_contract_unmet")
+    ]
+
+
+@pytest.mark.parametrize(
+    ("message", "expected_status", "expected_class"),
+    [
+        # template predicate first -> template 400
+        ("chat template render aborted", 400, "template_error"),
+        # responses-only input marker -> request-shape 400, never an abort
+        ("Metal fault in content block 3", 400, "other"),
+        ("bad input_text.value", 400, "other"),
+        ("bad output_text.value", 400, "other"),
+        ("bad input_image.url", 400, "other"),
+        # overlap: the earlier shared predicate keeps its class
+        ("chat template error in content block 2", 400, "template_error"),
+        ("Failed to process image in content block 1", 400, "media_input_invalid"),
+        # no 400 predicate matches -> the abort category is still recorded
+        ("Metal: out of memory", None, "insufficient_memory"),
+    ],
+)
+def test_nonstream_failure_class_follows_the_responses_route_order(
+    monkeypatch, message, expected_status, expected_class
+):
+    """/v1/responses tests its 400 predicates before anything else; the
+    telemetry class must follow that route order, not the chat order."""
+    from rapid_mlx.request import InferenceAbortedError
+
+    class _Engine(_HealthyEngine):
+        async def chat(self, messages, **kwargs):
+            raise InferenceAbortedError(message)
+
+    holder = _build_client(monkeypatch, _Engine)
+    try:
+        calls = _capture_emits(monkeypatch)
+        if expected_status is None:
+            with pytest.raises(InferenceAbortedError):
+                holder.client.post("/v1/responses", json=PAYLOAD, headers=HEADERS)
+        else:
+            resp = holder.client.post("/v1/responses", json=PAYLOAD, headers=HEADERS)
+            assert resp.status_code == expected_status, resp.text
+    finally:
+        holder.cleanup()
+    assert [(c["result"], c["error_class"]) for c in calls] == [
+        ("failed", expected_class)
+    ]
+
+
+def test_nonstream_failure_with_unprintable_exception_is_still_counted(monkeypatch):
+    class _UnprintableError(Exception):
+        def __str__(self) -> str:
+            raise RuntimeError("str() explodes")
+
+    class _Engine(_HealthyEngine):
+        async def chat(self, messages, **kwargs):
+            raise _UnprintableError()
+
+    holder = _build_client(monkeypatch, _Engine)
+    try:
+        calls = _capture_emits(monkeypatch)
+        with pytest.raises(RuntimeError, match="str\\(\\) explodes"):
+            holder.client.post("/v1/responses", json=PAYLOAD, headers=HEADERS)
+    finally:
+        holder.cleanup()
+    assert [(c["result"], c["error_class"]) for c in calls] == [("failed", "other")]

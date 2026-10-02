@@ -126,11 +126,18 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # Loopback-only test override for the telemetry endpoint. A non-loopback
         # value is ignored, so it cannot route telemetry to a third party.
         "RAPID_MLX_POSTHOG_URL",
+        # Process-internal readiness handoff: carries an inherited fd number for
+        # the one-shot readiness token. It is set only by the parent for its own
+        # child and is not user-facing.
+        "RAPID_MLX_LTX25_READY_FD",
         "RAPID_MLX_DISABLE_VERSION_CHECK",  # opt-out of version check
         "RAPID_MLX_PROFILE_VERBOSE",  # debug verbosity for profile logs
         # Local-only archive location for reproducible benchmark records. It
         # changes storage placement, never model/task/parser selection.
         "RAPID_MLX_BENCHMARK_HOME",
+        # Qualification-only destination for generated token-ID evidence.
+        # It changes audit storage, never model, parser, or serving-lane choice.
+        "RAPID_MLX_TENSORFOLD_AUDIT_PATH",
         # Security policy knobs, none of which selects a model, parser, tier,
         # or engine route. TRUST_REMOTE_CODE only constrains whether an
         # already-selected checkpoint may import repository Python;
@@ -140,6 +147,9 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         "RAPID_MLX_TRUST_REMOTE_CODE",
         "RAPID_MLX_TRUSTED_HOSTS",
         "RAPID_MLX_ALLOW_UNSAFE_SA3_PICKLE",
+        # Explicit opt-in for returning CUA screenshots to an authenticated
+        # client. This is a privacy boundary, not model or parser routing.
+        "RAPID_MLX_CUA_EXPOSE_SCREENSHOTS",
         # MLLM media policy controls. These constrain which already-selected
         # request media sources may be read; they do not select a model,
         # parser, tier, or engine route.
@@ -191,6 +201,12 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # same scores; model, parser, serving lane, and emitted block set remain
         # unchanged. Unqualified shapes and machines retain the eager selector.
         "RAPID_MLX_QSA_STAGE1",
+        # Opt-in row-invariant lane matmul for an already-selected dense
+        # model's projections (multi-row verify and batched decode). It swaps
+        # only the arithmetic of covered linear layers after load; model,
+        # parser, tier, spec-decode mode and serving lane are unchanged, and
+        # MoE models and unsupported formats keep the stock kernels.
+        "RAPID_MLX_LANE_MATMUL",
         # Opt-out of exact CPU-side chat-render and tokenization reuse. This
         # changes only whether immutable host results are retained in a bounded
         # LRU after model selection; it cannot select a model, parser, tier, or
@@ -227,6 +243,12 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # changes only the normalization implementation after model selection;
         # prefill and other model families retain their existing path.
         "RAPID_MLX_QWEN4_FAST_RMSNORM",
+        # Opt-in file-backed storage and bounded row-cache size for the PLE
+        # table of an already-selected Qwen4 checkpoint. The sidecar is bound
+        # to that checkpoint's exact index, geometry, and sampled contents; it
+        # cannot select a model, parser, tier, or serving lane.
+        "RAPID_MLX_QWEN4_PLE_NVME",
+        "RAPID_MLX_QWEN4_PLE_CACHE_BYTES",
         # Opt-in re-quantization of the lm_head when serving fp8-block
         # checkpoints through the load-time mxfp8 repack
         # (rapid_mlx/fp8_repack.py). A precision/speed knob on an
@@ -1525,9 +1547,14 @@ def test_alias_profile_str_fields_are_explicitly_listed():
             # cannot select an engine lane; _coerce requires full 40-char pins.
             "dflash_target_revision",
             "dflash_draft_revision",
+            "tensorfold_target_revision",  # immutable target artifact SHA
+            "tensorfold_runtime_revision",  # immutable runtime source SHA
             # Closed runtime identity receipt validated against
             # VALID_DFLASH_ALGORITHMS before the DFlash lane can start.
             "dflash_algorithm",
+            # Closed provider identity for a pinned DFlash pair. _coerce accepts
+            # only "tensorfold"; aliases without it retain the existing backend.
+            "dflash_backend",
             "ddtree_draft_model",  # HF path for the DDTree/DFlash drafter
             # HF org/repo path for the isolated serial native-MTP sidecar.
             # Open-ended artifact identity, not a lane enum; _coerce requires

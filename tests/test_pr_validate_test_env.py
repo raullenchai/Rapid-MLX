@@ -757,7 +757,7 @@ class TestRequiredPackages:
             "pytest-asyncio": "1.3.0",
             "aiohttp": "3.13.0",
             "pillow": "12.0.0",
-            "mlx-vlm": "0.7.1",
+            "mlx-vlm": "0.7.2",
             "mlx-audio": "0.5.3",
         }
 

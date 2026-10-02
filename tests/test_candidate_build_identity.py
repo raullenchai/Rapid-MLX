@@ -58,9 +58,17 @@ def test_build_script_validates_and_embeds_separate_candidate_key() -> None:
 
     assert "^candidate-[0-9a-f]{8}$" in text
     assert "plutil -insert RapidCandidateIdentity" in text
+    lines = text.splitlines()
     for version_key in ("CFBundleVersion", "CFBundleShortVersionString"):
-        assert f"plutil -insert {version_key}" not in text
-        assert f"plutil -replace {version_key}" not in text
+        writes = [
+            line + (lines[index + 1] if line.rstrip().endswith("\\") else "")
+            for index, line in enumerate(lines)
+            if f"plutil -insert {version_key}" in line
+            or f"plutil -replace {version_key}" in line
+        ]
+        # The embedded Computer Use helper copies the app version into its own
+        # Info.plist. Candidate identity must not rewrite the app version.
+        assert all('"$CUA_HELPER/Contents/Info.plist"' in write for write in writes)
 
 
 def test_signed_release_overlaps_sidecar_with_swift_and_joins_before_staging() -> None:

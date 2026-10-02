@@ -259,6 +259,7 @@ def _build_embed_app(patch_cfg, monkeypatch, embed_return):
 
     embedding_stub = ModuleType("rapid_mlx.embedding")
     embedding_stub.EMBEDDINGS_EXTRA_INSTALL_HINT = ""
+    embedding_stub.EMBEDDINGS_EXTRA_HTTP_INSTALL_HINT = ""
     embedding_stub.EmbeddingInputTooLongError = type(
         "EmbeddingInputTooLongError", (ValueError,), {}
     )

@@ -19,9 +19,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.15.0</string>
+	<string>0.15.4</string>
 	<key>CFBundleVersion</key>
-	<string>175</string>
+	<string>179</string>
 	<key>LSMultipleInstancesProhibited</key>
 	<true/>
 	<key>LSMinimumSystemVersion</key>
@@ -31,7 +31,7 @@
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSScreenCaptureUsageDescription</key>
-	<string>Rapid captures only the window you select while a local Computer Use task is running. Screenshots stay on this Mac.</string>
+	<string>Rapid captures screen images of apps used for a Computer Use task. Screenshots may be sent to the Model you choose, including an external service.</string>
 	<!--
 	Dictation records from the microphone only while the user is holding a
 	recording session open (hotkey pressed once to start, once to stop). Audio
@@ -39,6 +39,8 @@
 	-->
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Rapid transcribes what you say into the app you're typing in. Recording happens only while the dictation indicator is visible, and audio is transcribed on this Mac.</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Rapid reads the current website from a browser used for a Computer Use task to enforce the website access you approve.</string>
 	<key>NSNetworkVolumesUsageDescription</key>
 	<string>Rapid needs access when you choose a network drive for model storage or approve a file tool there. Click Allow to continue.</string>
 	<key>NSRemovableVolumesUsageDescription</key>

@@ -86,17 +86,35 @@ def build_batch_item(
     """
 
     try:
-        event_props: dict[str, object] | None = registry.validate(
-            event_name, dict(props)
+        event_props = registry.validate(event_name, dict(props))
+        if event_props is None:
+            return None
+        return _build_batch_item_from_validated(
+            event_name, event_props, common, occurred_at=occurred_at
         )
-        common_props: dict[str, object] | None = registry.validate_common(dict(common))
-        if event_props is None or common_props is None:
+    except Exception:
+        # Garbage in, None out — telemetry must never take serve down.
+        return None
+
+
+def _build_batch_item_from_validated(
+    event_name: str,
+    event_props: Mapping[str, object],
+    common: Mapping[str, object],
+    *,
+    occurred_at: datetime | None = None,
+) -> dict[str, object] | None:
+    """Shape event props that the registry has already accepted."""
+    try:
+        accepted_props = dict(event_props)
+        common_props = registry.validate_common(dict(common))
+        if common_props is None:
             return None
 
         # Registry kinds keep the two vocabularies disjoint today, but a
         # future registry edit could overlap them; a shared key would let
         # one side shadow the other, so fail closed instead of merging.
-        if event_props.keys() & common_props.keys():
+        if accepted_props.keys() & common_props.keys():
             return None
 
         if occurred_at is None:
@@ -107,7 +125,7 @@ def build_batch_item(
             return None
 
         properties: dict[str, object] = dict(common_props)
-        properties.update(event_props)
+        properties.update(accepted_props)
         # Stamped last: nothing validated above can displace these.
         properties[_GEOIP_DISABLE_KEY] = True
         properties[_PROCESS_PERSON_PROFILE_KEY] = False

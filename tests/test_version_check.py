@@ -14,6 +14,7 @@ import json
 import os
 import urllib.parse
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -620,6 +621,7 @@ def test_detect_install_method_brew(monkeypatch):
         "os.path.realpath",
         lambda p: fake_realpath if p == fake_binary else p,
     )
+    monkeypatch.setattr(vc, "_launcher_belongs_to_running_install", lambda _p: True)
 
     info = vc.detect_install_method()
     assert info.method == "brew"
@@ -638,9 +640,88 @@ def test_detect_install_method_brew_linux(monkeypatch):
         "os.path.realpath",
         lambda p: fake_realpath if p == fake_binary else p,
     )
+    monkeypatch.setattr(vc, "_launcher_belongs_to_running_install", lambda _p: True)
 
     info = vc.detect_install_method()
     assert info.method == "brew"
+
+
+def test_unrelated_path_launcher_cannot_override_running_interpreter(monkeypatch):
+    """Module entrypoints must ignore another installation's PATH launcher."""
+    fake_binary = "/opt/homebrew/bin/rapid-mlx"
+    fake_realpath = "/opt/homebrew/Cellar/rapid-mlx/0.15.2/bin/rapid-mlx"
+    monkeypatch.setattr(vc.sys, "executable", "/tmp/active-venv/bin/python")
+    monkeypatch.setattr("shutil.which", lambda _name: fake_binary)
+    monkeypatch.setattr(
+        "os.path.realpath",
+        lambda p: fake_realpath if str(p) == fake_binary else str(p),
+    )
+    monkeypatch.setattr("sysconfig.get_path", lambda _name: "/tmp/active-venv/bin")
+
+    info = vc.detect_install_method()
+
+    assert info.method == "pip"
+    assert info.binary_path is None
+    assert info.upgrade_argv[:3] == ["/tmp/active-venv/bin/python", "-m", "pip"]
+
+
+def test_launcher_ownership_requires_distribution_and_active_interpreter(
+    tmp_path, monkeypatch
+):
+    launcher = tmp_path / "foreign" / "rapid-mlx"
+    launcher.parent.mkdir()
+    monkeypatch.setattr(vc, "distribution", lambda _name: MagicMock(entry_points=[]))
+    assert vc._launcher_belongs_to_running_install(str(launcher)) is False
+
+    monkeypatch.setattr(
+        vc,
+        "distribution",
+        lambda _name: MagicMock(entry_points=[SimpleNamespace(name="rapid-mlx")]),
+    )
+    monkeypatch.setattr("sysconfig.get_path", lambda _name: str(tmp_path / "scripts"))
+
+    launcher.write_text(f"#!{vc.sys.executable}\n")
+    assert vc._launcher_belongs_to_running_install(str(launcher)) is True
+
+    launcher.write_text("not a script\n")
+    assert vc._launcher_belongs_to_running_install(str(launcher)) is False
+
+    launcher.write_text("#!/different/python\n")
+    assert vc._launcher_belongs_to_running_install(str(launcher)) is False
+
+    monkeypatch.setattr("sysconfig.get_path", lambda _name: str(launcher.parent))
+    assert vc._launcher_belongs_to_running_install(str(launcher)) is False
+
+
+def test_active_scripts_symlink_must_target_active_interpreter(tmp_path, monkeypatch):
+    scripts = tmp_path / "active" / "bin"
+    scripts.mkdir(parents=True)
+    foreign = tmp_path / "pipx" / "bin" / "rapid-mlx"
+    foreign.parent.mkdir(parents=True)
+    foreign.write_text("#!/foreign/python\n")
+    launcher = scripts / "rapid-mlx"
+    launcher.symlink_to(foreign)
+    monkeypatch.setattr(
+        vc,
+        "distribution",
+        lambda _name: MagicMock(entry_points=[SimpleNamespace(name="rapid-mlx")]),
+    )
+    monkeypatch.setattr("sysconfig.get_path", lambda _name: str(scripts))
+
+    assert vc._launcher_belongs_to_running_install(str(launcher)) is False
+
+    foreign.write_text(f"#!{vc.sys.executable}\n")
+    assert vc._launcher_belongs_to_running_install(str(launcher)) is True
+
+
+def test_launcher_ownership_fails_closed_without_distribution(monkeypatch) -> None:
+    monkeypatch.setattr(
+        vc,
+        "distribution",
+        lambda _name: (_ for _ in ()).throw(vc.PackageNotFoundError()),
+    )
+
+    assert vc._launcher_belongs_to_running_install("/tmp/rapid-mlx") is False
 
 
 def test_local_bin_launcher_alone_does_not_imply_install_sh(tmp_path, monkeypatch):
@@ -683,6 +764,7 @@ def test_detect_install_method_install_sh_via_symlink(tmp_path, monkeypatch):
         "os.path.realpath",
         lambda p: fake_realpath if p == fake_binary else p,
     )
+    monkeypatch.setattr(vc, "_launcher_belongs_to_running_install", lambda _p: True)
 
     info = vc.detect_install_method()
     assert info.method == "install_sh"
@@ -734,6 +816,7 @@ def test_detects_tool_manager_from_resolved_launcher(
     monkeypatch.delenv("UV_TOOL_DIR", raising=False)
     monkeypatch.delenv("PIPX_HOME", raising=False)
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    monkeypatch.setattr(vc, "_launcher_belongs_to_running_install", lambda _p: True)
 
     info = vc.detect_install_method()
 
@@ -779,6 +862,7 @@ def test_detects_configured_tool_manager_root(
     monkeypatch.delenv("UV_TOOL_DIR", raising=False)
     monkeypatch.delenv("PIPX_HOME", raising=False)
     monkeypatch.setenv(env_name, str(manager_root))
+    monkeypatch.setattr(vc, "_launcher_belongs_to_running_install", lambda _p: True)
 
     info = vc.detect_install_method()
 
@@ -800,6 +884,7 @@ def test_global_pipx_requires_manual_privileged_upgrade(tmp_path, monkeypatch):
         lambda p: str(resolved) if Path(p) in {Path(binary), resolved} else str(p),
     )
     monkeypatch.setenv("PIPX_GLOBAL_HOME", str(pipx_home))
+    monkeypatch.setattr(vc, "_launcher_belongs_to_running_install", lambda _p: True)
 
     info = vc.detect_install_method()
 
@@ -849,6 +934,7 @@ def test_manager_root_symlink_is_normalized_before_comparison(tmp_path, monkeypa
 
     monkeypatch.setattr("os.path.realpath", fake_realpath)
     monkeypatch.setenv("UV_TOOL_DIR", str(configured_root))
+    monkeypatch.setattr(vc, "_launcher_belongs_to_running_install", lambda _p: True)
 
     info = vc.detect_install_method()
 
@@ -874,6 +960,7 @@ def test_install_sh_root_symlink_is_normalized_before_comparison(tmp_path, monke
         return str(path)
 
     monkeypatch.setattr("os.path.realpath", fake_realpath)
+    monkeypatch.setattr(vc, "_launcher_belongs_to_running_install", lambda _p: True)
 
     info = vc.detect_install_method()
 
@@ -905,6 +992,7 @@ def _run_install_sh_upgrade(
     monkeypatch.setattr(
         "os.path.realpath", lambda p: fake_realpath if p == fake_binary else p
     )
+    monkeypatch.setattr(vc, "_launcher_belongs_to_running_install", lambda _p: True)
     argv = vc.detect_install_method().upgrade_argv
 
     sentinel = tmp_path / "ran.txt"

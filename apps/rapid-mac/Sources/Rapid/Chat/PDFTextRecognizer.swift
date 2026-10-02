@@ -7,6 +7,8 @@ import Vision
 enum PDFTextRecognizer {
     static let renderScale: CGFloat = 1.5
     static let languages = ["zh-Hans", "zh-Hant", "en-US"]
+    /// Receives the rendered image, remaining character budget, and zero-based page index.
+    typealias VisionRequest = @Sendable (CGImage, Int, Int) -> String?
 
     static func needsRecognition(_ page: PDFPage) -> Bool {
         (page.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").isEmpty
@@ -35,6 +37,7 @@ enum PDFTextRecognizer {
         range: Range<Int>,
         characterBudget: Int = .max,
         recognizeScans: Bool = true,
+        visionRequest: VisionRequest? = nil,
         onPageComplete: (() -> Void)? = nil
     ) -> Extraction {
         var pages: [String] = []
@@ -71,7 +74,16 @@ enum PDFTextRecognizer {
                     // nil means recognition itself failed (render or Vision
                     // error) — distinct from a page that is genuinely blank.
                     // The pass must not report completion over a lost page.
-                    if let recognized = recognize(page: page, characterBudget: remaining) {
+                    if let recognized = recognize(
+                        page: page,
+                        characterBudget: remaining,
+                        using: { image, budget in
+                            if let visionRequest {
+                                return visionRequest(image, budget, index)
+                            }
+                            return recognizeImage(image, characterBudget: budget)
+                        }
+                    ) {
                         text = recognized
                     } else {
                         recognitionFailed = true
@@ -107,12 +119,28 @@ enum PDFTextRecognizer {
         return (String(text.prefix(limit)), true)
     }
 
-    /// OCRs one page. Returns nil when rendering or the Vision request itself
-    /// failed — distinct from an empty string, which means the page is
-    /// genuinely blank or contains no recognizable text.
+    /// OCRs one page. Returns nil when rendering or Vision fails; a white
+    /// bitmap is a legible blank page and never enters Vision.
     static func recognize(page: PDFPage, characterBudget: Int = .max) -> String? {
-        guard let image = render(page) else { return nil }
+        recognize(page: page, characterBudget: characterBudget, using: recognizeImage)
+    }
 
+    /// The injectable request is used by tests to prove blank pages bypass Vision.
+    static func recognize(
+        page: PDFPage,
+        characterBudget: Int = .max,
+        using visionRequest: (CGImage, Int) -> String?
+    ) -> String? {
+        guard let rendered = render(page) else { return nil }
+        switch rendered {
+        case .blank:
+            return ""
+        case .image(let image):
+            return visionRequest(image, characterBudget)
+        }
+    }
+
+    private static func recognizeImage(_ image: CGImage, characterBudget: Int) -> String? {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         request.recognitionLanguages = languages
@@ -139,7 +167,12 @@ enum PDFTextRecognizer {
         return lines.joined(separator: "\n")
     }
 
-    private static func render(_ page: PDFPage) -> CGImage? {
+    private enum RenderedPage {
+        case blank
+        case image(CGImage)
+    }
+
+    private static func render(_ page: PDFPage) -> RenderedPage? {
         let bounds = page.bounds(for: .mediaBox)
         let scaledWidth = bounds.width * renderScale
         let scaledHeight = bounds.height * renderScale
@@ -167,6 +200,7 @@ enum PDFTextRecognizer {
             bytesPerRow: 0,
             space: CGColorSpaceCreateDeviceRGB(),
             bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+                | CGBitmapInfo.byteOrder32Big.rawValue
         ) else { return nil }
 
         context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
@@ -174,6 +208,35 @@ enum PDFTextRecognizer {
         context.scaleBy(x: renderScale, y: renderScale)
         context.translateBy(x: -bounds.minX, y: -bounds.minY)
         page.draw(with: .mediaBox, to: context)
-        return context.makeImage()
+        // The context is explicitly RGBX, so the first three bytes of every
+        // pixel are color channels. Exact white is safe to skip; even faint
+        // nonwhite scan content still goes through Vision.
+        if isWhiteBitmap(context, width: width, height: height) {
+            return .blank
+        }
+        guard let image = context.makeImage() else { return nil }
+        return .image(image)
+    }
+
+    private static func isWhiteBitmap(
+        _ context: CGContext,
+        width: Int,
+        height: Int
+    ) -> Bool {
+        guard let data = context.data else { return false }
+        let pixels = data.assumingMemoryBound(to: UInt8.self)
+        let stride = context.bytesPerRow
+        for row in 0..<height {
+            let rowStart = row * stride
+            for column in 0..<width {
+                let offset = rowStart + column * 4
+                if pixels[offset] != 255
+                    || pixels[offset + 1] != 255
+                    || pixels[offset + 2] != 255 {
+                    return false
+                }
+            }
+        }
+        return true
     }
 }

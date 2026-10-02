@@ -1855,7 +1855,14 @@ def test_chat_completions_rejects_response_format() -> None:
     assert "response_format" in r.json()["error"]["message"].lower()
 
 
-def _capture_enable_thinking(monkeypatch, *, no_thinking: bool, request_body: dict):
+def _capture_enable_thinking(
+    monkeypatch,
+    *,
+    no_thinking: bool,
+    request_body: dict,
+    default_reasoning_effort: str | None = None,
+    chat_template: str | None = None,
+):
     """Drive a chat request through ``_build_app`` and capture the
     ``enable_thinking`` kwarg the route passed to ``apply_chat_template``.
 
@@ -1895,15 +1902,20 @@ def _capture_enable_thinking(monkeypatch, *, no_thinking: bool, request_body: di
         kind="dflash",
         drafter_repo="z-lab/Qwen3.5-27B-DFlash",
     )
+    processor = MagicMock()
+    # A MagicMock attribute is not a template; pin the real value (or None)
+    # so the reasoning-effort detector sees what a served model would carry.
+    processor.chat_template = chat_template
     app = _build_app(
         model=MagicMock(),
-        processor=MagicMock(),
+        processor=processor,
         runtime=runtime,
         served_model_name="qwen3.5-27b-8bit",
         default_max_tokens=64,
         cors_origins=["*"],
         no_thinking=no_thinking,
         reasoning_parser_name="qwen3",
+        default_reasoning_effort=default_reasoning_effort,
     )
     client = TestClient(app)
     # Stream=True so the request reaches _render_prompt then exits via
@@ -1911,6 +1923,110 @@ def _capture_enable_thinking(monkeypatch, *, no_thinking: bool, request_body: di
     with client.stream("POST", "/v1/chat/completions", json=request_body) as resp:
         b"".join(resp.iter_bytes())
     return captured
+
+
+# GLM-5.3 effort clause (#3714): coerces ``reasoning_effort`` to its
+# ``['low', 'high']`` list, defaulting to ``max``.
+_GLM53_EFFORT_CLAUSE = (
+    "{%- set effective_reasoning_effort = reasoning_effort if reasoning_effort "
+    "is defined and reasoning_effort in ['low', 'high'] else 'max' -%}"
+    "{{- 'Reasoning Effort: ' + effective_reasoning_effort }}"
+)
+
+
+def _bare_glm_request(**extra) -> dict:
+    body = {
+        "model": "qwen3.5-27b-8bit",
+        "messages": [{"role": "user", "content": "Say hello in five words."}],
+        "stream": True,
+    }
+    body.update(extra)
+    return body
+
+
+@_skip_without_mlx_vlm
+def test_serial_lane_applies_server_default_reasoning_effort(monkeypatch) -> None:
+    """#3714: the native-MTP / DFlash application is the lane GLM-5.3 serves
+    on by default (``mtp_default_enabled``); ``--default-reasoning-effort
+    low`` must reach its chat template as the native level, not be parsed
+    and dropped."""
+    captured = _capture_enable_thinking(
+        monkeypatch,
+        no_thinking=False,
+        request_body=_bare_glm_request(),
+        default_reasoning_effort="low",
+        chat_template=_GLM53_EFFORT_CLAUSE,
+    )
+    assert captured.get("reasoning_effort") == "low"
+    # Native level, no cap: thinking resolution is untouched by the default.
+    assert captured.get("enable_thinking") is False
+    assert "thinking_budget" not in captured["generation_kwargs"]
+
+
+@_skip_without_mlx_vlm
+def test_serial_lane_client_reasoning_effort_beats_server_default(monkeypatch):
+    captured = _capture_enable_thinking(
+        monkeypatch,
+        no_thinking=False,
+        request_body=_bare_glm_request(reasoning_effort="high"),
+        default_reasoning_effort="low",
+        chat_template=_GLM53_EFFORT_CLAUSE,
+    )
+    assert captured.get("reasoning_effort") == "high"
+
+
+@_skip_without_mlx_vlm
+def test_serial_lane_forwards_client_chat_template_kwargs(monkeypatch) -> None:
+    """Client ``chat_template_kwargs`` reach the serial renderer (#2474
+    parity with the unified route); server-resolved keys are not
+    overridable."""
+    captured = _capture_enable_thinking(
+        monkeypatch,
+        no_thinking=False,
+        request_body=_bare_glm_request(
+            chat_template_kwargs={
+                "reasoning_effort": "high",
+                "custom_flag": True,
+                "enable_thinking": True,
+                "num_images": 7,
+            }
+        ),
+        chat_template=_GLM53_EFFORT_CLAUSE,
+    )
+    assert captured.get("reasoning_effort") == "high"
+    assert captured.get("custom_flag") is True
+    # ``enable_thinking`` still goes through the serial resolver (client
+    # True is honoured there, not by the raw dict) and multimodal counts
+    # stay server-owned.
+    assert captured.get("enable_thinking") is True
+    assert captured.get("num_images") == 0
+
+
+@_skip_without_mlx_vlm
+def test_serial_lane_without_default_leaves_template_default(monkeypatch) -> None:
+    captured = _capture_enable_thinking(
+        monkeypatch,
+        no_thinking=False,
+        request_body=_bare_glm_request(),
+        chat_template=_GLM53_EFFORT_CLAUSE,
+    )
+    assert "reasoning_effort" not in captured
+
+
+@_skip_without_mlx_vlm
+def test_serial_lane_default_effort_on_cap_template_sets_the_budget(monkeypatch):
+    """A template without a native vocabulary gets the token-cap tier, which
+    the serial lane already treats as bounded-thinking opt-in."""
+    captured = _capture_enable_thinking(
+        monkeypatch,
+        no_thinking=False,
+        request_body=_bare_glm_request(),
+        default_reasoning_effort="low",
+        chat_template="{{ messages[0].content }}",
+    )
+    assert "reasoning_effort" not in captured
+    assert captured.get("enable_thinking") is True
+    assert captured["generation_kwargs"]["thinking_budget"] == 512
 
 
 @pytest.mark.parametrize(

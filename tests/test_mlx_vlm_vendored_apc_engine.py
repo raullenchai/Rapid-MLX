@@ -6,7 +6,7 @@ The dual-namespace helpers keep the engine's exact-type tables, snapshot/
 restore constructors, and checkpoint-class resolver namespace-complete
 during the mlx-vlm transition (see the vendor-mllm-primitives design note).
 Each ``upstream-bugfix`` test reproduces a defect against the pinned
-upstream 0.7.1 source.
+upstream 0.7.2 source.
 """
 
 import threading

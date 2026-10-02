@@ -19,12 +19,14 @@ struct TelemetryLifecycleWiringTests {
     func appOwnsTheSignalFanIn() throws {
         let app = try Self.source("Sources/Rapid/RapidApp.swift")
         let content = try Self.source("Sources/Rapid/UI/ContentView.swift")
+        let lifecycle = try Self.source("Sources/Rapid/Telemetry/TelemetryLifecycleCoordinator.swift")
 
         #expect(app.contains("let telemetryLifecycle = TelemetryLifecycleCoordinator()"))
         #expect(content.contains("await telemetryLifecycle.start()"))
         #expect(app.contains("let starPromptCoordinator = GitHubStarPromptCoordinator()"))
         #expect(app.components(separatedBy: "telemetryLifecycle?.productValueDelivered(kind)").count - 1 == 3)
         #expect(app.components(separatedBy: "starPromptCoordinator?.productValueDelivered(kind)").count - 1 == 3)
+        #expect(lifecycle.contains("DesktopFunnelReporter.enqueue(.firstChatReply)"))
     }
 
     @Test("Chat signals only a nonempty completed final turn")

@@ -23,10 +23,12 @@ The invariant tested here:
      array ordering.
 """
 
+import asyncio
 import json
 import sys
 import types
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -128,6 +130,49 @@ class _EngineWithReasoning:
             prompt_tokens=0,
             completion_tokens=2,
             channel="content",
+            finish_reason="stop",
+        )
+
+
+class _EngineWithToolCall:
+    """Engine that emits one structured function call and no message."""
+
+    preserve_native_tool_format = False
+
+    def __init__(self):
+        self.tokenizer = _Tokenizer()
+
+    async def stream_chat(self, messages, **kwargs):
+        yield _GenerationOutput(
+            text="",
+            new_text="",
+            prompt_tokens=3,
+            completion_tokens=1,
+            channel="tool_call",
+            tool_calls=[
+                {
+                    "id": "call_golden",
+                    "name": "noop",
+                    "arguments": '{"value":1}',
+                }
+            ],
+            finish_reason="tool_calls",
+        )
+
+
+class _EngineWithReasoningOnly:
+    preserve_native_tool_format = False
+
+    def __init__(self):
+        self.tokenizer = _Tokenizer()
+
+    async def stream_chat(self, messages, **kwargs):
+        yield _GenerationOutput(
+            text="",
+            new_text="thinking without a final answer",
+            prompt_tokens=3,
+            completion_tokens=1,
+            channel="reasoning",
             finish_reason="stop",
         )
 
@@ -253,6 +298,73 @@ def _stream_payload(**overrides):
     return base
 
 
+_GOLDEN_PATH = Path(__file__).with_name("fixtures") / "responses_stream_main.json"
+
+
+def _golden_projection(events):
+    """Keep the origin/main wire fields that define event state and identity."""
+    projected = []
+    for name, data in events:
+        event = {
+            "type": name,
+            "sequence_number": data["sequence_number"],
+        }
+        for key in ("output_index", "content_index", "summary_index", "item_id"):
+            if key in data:
+                event[key] = data[key]
+        item = data.get("item")
+        if isinstance(item, dict):
+            event["item"] = {
+                key: item[key] for key in ("type", "id", "call_id") if key in item
+            }
+        response = data.get("response")
+        if isinstance(response, dict):
+            event["response_id"] = response.get("id")
+            if "output" in response:
+                event["output"] = [
+                    {key: item[key] for key in ("type", "id", "call_id") if key in item}
+                    for item in response["output"]
+                ]
+        projected.append(event)
+    return projected
+
+
+def _set_deterministic_response_ids(monkeypatch, responses_route, *, start=1):
+    counter = iter(range(start, start + 20))
+    monkeypatch.setattr(
+        responses_route,
+        "uuid",
+        SimpleNamespace(uuid4=lambda: SimpleNamespace(hex=f"{next(counter):x}" * 32)),
+    )
+
+
+def _golden_scenarios():
+    tools = [
+        {
+            "type": "function",
+            "name": "noop",
+            "description": "No operation",
+            "parameters": {
+                "type": "object",
+                "properties": {"value": {"type": "integer"}},
+            },
+        }
+    ]
+    return {
+        "reasoning_then_content": (_EngineWithReasoning(), _stream_payload()),
+        "content_only": (_EngineEmptyReasoning(), _stream_payload()),
+        "tool_calls": (
+            _EngineWithToolCall(),
+            _stream_payload(tools=tools, tool_choice="auto"),
+        ),
+    }
+
+
+@pytest.fixture(scope="module")
+def origin_main_stream_goldens():
+    return json.loads(_GOLDEN_PATH.read_text())
+
+
 def _stream_and_parse(client, payload):
     with client.stream(
         "POST",
@@ -263,6 +375,92 @@ def _stream_and_parse(client, payload):
         assert resp.status_code == 200
         body = "".join(resp.iter_text())
     return _parse_sse(body)
+
+
+def _run_shared_responses_builder(responses_route, engine, payload):
+    from rapid_mlx.api.responses_adapter import responses_to_openai
+    from rapid_mlx.api.responses_models import ResponsesRequest
+
+    request = ResponsesRequest.model_validate(payload)
+
+    async def collect():
+        return [
+            event
+            async for event in responses_route._stream_responses(
+                engine,
+                responses_to_openai(request),
+                request,
+            )
+        ]
+
+    return _parse_sse("".join(asyncio.run(collect())))
+
+
+@pytest.mark.parametrize("scenario", list(_golden_scenarios()))
+def test_origin_main_golden_ordinary_stream(
+    scenario, make_client, monkeypatch, origin_main_stream_goldens
+):
+    """Ordinary Responses streaming stays byte-state compatible with main."""
+    engine, payload = _golden_scenarios()[scenario]
+    make_client.set(engine)
+    from rapid_mlx.routes import responses as responses_route
+
+    _set_deterministic_response_ids(monkeypatch, responses_route)
+    events = _run_shared_responses_builder(responses_route, engine, payload)
+    assert _golden_projection(events) == origin_main_stream_goldens[scenario]
+
+
+@pytest.mark.parametrize("scenario", list(_golden_scenarios()))
+def test_buffered_strict_replay_matches_origin_main_golden(
+    scenario, make_client, monkeypatch, origin_main_stream_goldens
+):
+    """Buffered strict results replay through the origin/main event ladder."""
+    engine, payload = _golden_scenarios()[scenario]
+    make_client.set(engine)
+    from rapid_mlx.routes import responses as responses_route
+
+    _set_deterministic_response_ids(monkeypatch, responses_route)
+    ordinary = _run_shared_responses_builder(responses_route, engine, payload)
+    completed = next(
+        data["response"] for name, data in ordinary if name == "response.completed"
+    )
+    if scenario == "content_only":
+        completed["output"] = [
+            item for item in completed["output"] if item["type"] != "reasoning"
+        ]
+        _set_deterministic_response_ids(monkeypatch, responses_route, start=2)
+
+    async def collect_replay():
+        return [
+            event
+            async for event in responses_route._stream_buffered_responses_response(
+                json.dumps(completed).encode()
+            )
+        ]
+
+    replay = _parse_sse("".join(asyncio.run(collect_replay())))
+    assert _golden_projection(replay) == origin_main_stream_goldens[scenario]
+
+
+def test_reasoning_only_finalization_keeps_opened_item_identity(
+    make_client,
+):
+    engine = _EngineWithReasoningOnly()
+    make_client.set(engine)
+    from rapid_mlx.routes import responses as responses_route
+
+    events = _run_shared_responses_builder(responses_route, engine, _stream_payload())
+    added = next(
+        data["item"]
+        for name, data in events
+        if name == "response.output_item.added" and data["item"]["type"] == "reasoning"
+    )
+    done = next(
+        data["item"]
+        for name, data in events
+        if name == "response.output_item.done" and data["item"]["type"] == "reasoning"
+    )
+    assert done["id"] == added["id"]
 
 
 def _assert_leading_items_before_message(events):
@@ -301,7 +499,7 @@ class TestLeadingItemOrdering:
         """Codex keeps a single active Responses output item.
 
         A reasoning summary event emitted after the message item has opened is
-        rejected as ``ReasoningSummaryPartAdded without active item``.  Keep
+        rejected as ``ReasoningSummaryPartAdded without active item``. Keep
         each output item's event ladder contiguous: reasoning added/summary/
         done, then message added/content/done.
         """

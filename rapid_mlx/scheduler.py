@@ -19,7 +19,7 @@ import threading
 import time
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import Any, cast
 
 import mlx.core as mx
 
@@ -50,6 +50,7 @@ from ._sampler_fast_path import (  # noqa: E402
 from ._seeded_sampler import make_seeded_sampler  # noqa: E402
 from .errors import BackpressureError, PagedCacheUnsupportedLayoutError  # noqa: E402
 from .kv_estimation import (  # noqa: E402
+    KVFootprintEstimate,
     _cfg_get,
     _valid_layer_types,
     estimate_kv_footprint,
@@ -137,7 +138,13 @@ from .hybrid_state_checkpoints import (  # noqa: E402
 from .hybrid_state_checkpoints import (  # noqa: E402
     record_checkpoints as _record_state_checkpoints,
 )
-from .memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig  # noqa: E402
+from .memory_cache import (  # noqa: E402
+    MemoryAwarePrefixCache,
+    MemoryCacheConfig,
+    _cache_has_non_trimmable,
+    estimate_kv_cache_memory,
+    session_floor_bytes,
+)
 from .paged_cache import PagedCacheManager
 from .pflash import PFlashConfig, compress_request_tokens
 from .prefix_cache import (
@@ -264,6 +271,19 @@ def _assemble_stop_tokens(
 # Rows per tile in MLX's quantized matmuls; see
 # ``Scheduler._prefill_tile_rows`` for the measurements behind it.
 _PREFILL_TILE_ROWS = 32
+# Agent-session prefix policy (docs/engineering/decisions/
+# 2026-09-27-agent-session-prefix-cache.md).
+#
+# A non-trimmable (hybrid recurrent-state) N-token prompt entry can only save
+# the tokens between the stored message boundary and N over the boundary entry
+# (an exact repeat cannot trim-one into it). When that gap is this small the
+# second ~full-size entry is not worth its memory.
+_BOUNDARY_SUPERSEDES_PROMPT_MAX_GAP = 64
+# Transient memory of a long prefill beyond its own KV (attention scores,
+# chunk activations, recurrent scratch), as a multiple of the prompt's KV.
+# Measured on Qwen3.5-9B-4bit, 23k-token cold prefill, 2048-token chunks:
+# peak - weights = 3.2 GB for 0.75 GB of prompt KV (3.3x the KV beyond it).
+_COLD_PREFILL_TRANSIENT_KV_MULTIPLE = 3.5
 
 
 @dataclass
@@ -606,6 +626,13 @@ class SchedulerConfig:
     # verification; ``"off"`` disables both store and lookup so the lane
     # stays exactly on the cold image path. Appended for positional callers.
     mllm_media_prefix_cache: str = "auto"
+
+    # True when the operator passed ``--cache-memory-percent`` explicitly.
+    # The agent-session budget floor then never raises their value (a
+    # warning names the floor instead); it applies only to the default
+    # percent. ``cache_memory_mb`` is always explicit and is never raised.
+    # Appended for positional callers.
+    cache_memory_percent_explicit: bool = False
 
     def __post_init__(self) -> None:
         if self.mllm_singleton_fastpath not in ("auto", "off"):
@@ -4030,6 +4057,26 @@ class Scheduler:
         # #1197: resolve the shared KV-quant group size + per-cache enable flags.
         self._init_kv_quantization(model)
 
+        # D-METAL-CAP / D-METAL-PFX: cached hard cap in bytes for fast
+        # admission checks. Computed lazily on first use so unit tests
+        # that build a Scheduler against a fake model with no Metal
+        # device pay zero cost. ``0`` means "no cap" (see
+        # ``gpu_memory_utilization`` doc on SchedulerConfig).
+        self._metal_cap_bytes: int = 0
+        # The device working-set budget the cap was derived from — kept so
+        # the #2858 preflight error can report "X% of Y GB" faithfully.
+        self._metal_cap_base_bytes: int = 0
+        self._metal_cap_bytes_resolved: bool = False
+        # Generation of the process-wide utilization ratchet this cap was
+        # resolved against; a mismatch re-resolves (see
+        # ``memory_budget.process_utilization_floor``).
+        self._metal_cap_floor_generation: int = -1
+        # The utilization the cap actually enforces after the ratchet —
+        # what error messages must report, which can exceed the config's.
+        self._metal_cap_effective_utilization: float = 0.0
+        # (Initialised before the prefix cache: its agent-session floor is
+        # derived from this cap — see ``_prefix_cache_session_floor_bytes``.)
+
         # Prefix cache for KV state reuse
         self.prefix_cache: PrefixCacheManager | None = None
         self.memory_aware_cache: MemoryAwarePrefixCache | None = None
@@ -4089,6 +4136,18 @@ class Scheduler:
                 )
             elif self.config.use_memory_aware_cache:
                 # Use memory-aware cache (recommended for large models)
+                session_floor = self._prefix_cache_session_floor_bytes()
+                if getattr(self.config, "cache_memory_percent_explicit", False):
+                    if session_floor > 0:
+                        logger.warning(
+                            "Prefix-cache budget: keeping the explicit "
+                            "--cache-memory-percent %.2f; it can be below "
+                            "the agent-session floor of %.1f MB, which may "
+                            "make long agent sessions re-prefill every turn.",
+                            self.config.cache_memory_percent,
+                            session_floor / (1024 * 1024),
+                        )
+                    session_floor = 0
                 cache_config = MemoryCacheConfig(
                     max_memory_mb=self.config.cache_memory_mb,
                     max_memory_percent=self.config.cache_memory_percent,
@@ -4108,6 +4167,7 @@ class Scheduler:
                     kv_turboquant_mode=self.config.kv_cache_turboquant_mode,
                     # #1103: bounded trim-free hybrid reuse (0 = #1075 policy).
                     hybrid_reuse_max_entries=self.config.hybrid_cache_entries,
+                    min_memory_bytes=session_floor,
                 )
                 # R15-P1 (task #303): radix-tree prefix-cache index.
                 # Constructed when ``prefix_cache_index == "radix"`` and
@@ -4132,7 +4192,8 @@ class Scheduler:
                 )
                 logger.info(
                     f"Memory-aware cache enabled: "
-                    f"limit={self.memory_aware_cache.memory_limit_mb:.1f}MB, "
+                    f"limit={self.memory_aware_cache.memory_limit_mb:.1f}MB "
+                    f"(agent-session floor {session_floor / (1024 * 1024):.1f}MB), "
                     f"index={'radix' if radix_idx is not None else 'hash'}"
                 )
             else:
@@ -4264,23 +4325,6 @@ class Scheduler:
         self._last_adaptive_prefill_size = self.config.prefill_step_size
         self._adaptive_prefill_protected_chunks = 0
         self._adaptive_prefill_reduced_chunks = 0
-        # D-METAL-CAP / D-METAL-PFX: cached hard cap in bytes for fast
-        # admission checks. Computed lazily on first use so unit tests
-        # that build a Scheduler against a fake model with no Metal
-        # device pay zero cost. ``0`` means "no cap" (see
-        # ``gpu_memory_utilization`` doc on SchedulerConfig).
-        self._metal_cap_bytes: int = 0
-        # The device working-set budget the cap was derived from — kept so
-        # the #2858 preflight error can report "X% of Y GB" faithfully.
-        self._metal_cap_base_bytes: int = 0
-        self._metal_cap_bytes_resolved: bool = False
-        # Generation of the process-wide utilization ratchet this cap was
-        # resolved against; a mismatch re-resolves (see
-        # ``memory_budget.process_utilization_floor``).
-        self._metal_cap_floor_generation: int = -1
-        # The utilization the cap actually enforces after the ratchet —
-        # what error messages must report, which can exceed the config's.
-        self._metal_cap_effective_utilization: float = 0.0
         # D-METAL-CAP: cached per-token KV-cache size for the
         # projection-based admission gate. Auto-derived from the
         # model config on first use (operator override via
@@ -5046,6 +5090,17 @@ class Scheduler:
                 and getattr(request, "_cache_snapshot_stored", False)
             ):
                 return
+            # Same reasoning for a MESSAGE-boundary snapshot on a
+            # non-trimmable (hybrid recurrent-state) cache that sits just
+            # before the generation prompt: the N-token entry could only save
+            # those few tokens over the boundary entry, yet doubles the
+            # per-turn footprint (~1 GB each at 23k tokens on Qwen3.5-9B) and,
+            # on a small-Mac budget, LRU-evicts the boundary entry the next
+            # turn needs.
+            if self._boundary_snapshot_supersedes(
+                request, extracted_cache, len(request.prompt_token_ids)
+            ):
+                return
 
             prompt_tokens = list(request.prompt_token_ids)
             _t0 = _time.monotonic()
@@ -5064,6 +5119,180 @@ class Scheduler:
                 )
 
         return _prompt_cache_save
+
+    def _boundary_snapshot_supersedes(
+        self, request: Any, cache: list[Any], entry_len: int
+    ) -> bool:
+        """True when this request's stored message-boundary snapshot makes a
+        second non-trimmable entry of ``entry_len`` tokens not worth storing.
+
+        Only for non-trimmable caches (an exact hit cannot trim-one, so the
+        longer entry is useful only as an extension base) and only when it
+        would add at most ``_BOUNDARY_SUPERSEDES_PROMPT_MAX_GAP`` tokens of
+        reuse beyond the boundary. Internal N-1 snapshots keep their own rule.
+        """
+        if not getattr(request, "_cache_snapshot_stored", False) or getattr(
+            request, "_cache_snapshot_is_internal", False
+        ):
+            return False
+        boundary = int(
+            getattr(
+                request,
+                "_cache_snapshot_boundary",
+                getattr(request, "prefix_boundary", 0),
+            )
+            or 0
+        )
+        if boundary <= 0 or entry_len - boundary > _BOUNDARY_SUPERSEDES_PROMPT_MAX_GAP:
+            return False
+        return _cache_has_non_trimmable(cache)
+
+    def _protect_boundary_behind_completion(
+        self, request: Any, cache: list[Any]
+    ) -> bool:
+        """Keep a hybrid request's boundary entry ahead of its completion entry.
+
+        The completion (prompt + output) entry of a non-trimmable cache is
+        reusable only if the next turn re-renders the output verbatim (thinking
+        templates never do); the message-boundary entry is what the next turn
+        extends. Returns False — skip the completion store — when both would
+        not fit the budget, so storing it can never LRU-evict the boundary.
+        Otherwise the caller stores it and :meth:`_touch_boundary_entry` moves
+        the boundary back to most-recently-used.
+        """
+        if not getattr(request, "_cache_snapshot_stored", False) or getattr(
+            request, "_cache_snapshot_is_internal", False
+        ):
+            return True
+        if not _cache_has_non_trimmable(cache):
+            return True
+        # Only reached from the memory-aware store paths.
+        mac = cast(MemoryAwarePrefixCache, self.memory_aware_cache)
+        with mac._lock:  # noqa: SLF001 — budget read coordinated with store
+            used = mac._current_memory  # noqa: SLF001
+        # Both the byte budget and the hybrid entry-count bound must leave
+        # room for the boundary entry next to this one.
+        fits = (
+            used + estimate_kv_cache_memory(cache) <= mac._max_memory  # noqa: SLF001
+            and mac._config.hybrid_reuse_max_entries >= 2  # noqa: SLF001
+        )
+        if not fits:
+            logger.debug(
+                "[cache_store] request=%s skipped hybrid completion entry: it "
+                "would evict the message-boundary entry the next turn extends",
+                str(getattr(request, "request_id", ""))[:12],
+            )
+        return fits
+
+    def _touch_boundary_entry(self, request: Any) -> None:
+        """Mark this request's stored boundary entry most-recently-used."""
+        if not getattr(request, "_cache_snapshot_stored", False) or getattr(
+            request, "_cache_snapshot_is_internal", False
+        ):
+            return
+        boundary = int(
+            getattr(
+                request,
+                "_cache_snapshot_boundary",
+                getattr(request, "prefix_boundary", 0),
+            )
+            or 0
+        )
+        key = tuple(request.prompt_token_ids[:boundary])
+        # Only reached from the memory-aware store paths.
+        mac = cast(MemoryAwarePrefixCache, self.memory_aware_cache)
+        with mac._lock:  # noqa: SLF001
+            if key in mac._entries:  # noqa: SLF001
+                mac._entries.move_to_end(key)  # noqa: SLF001
+
+    def _reclaim_prefix_cache_for_prefill(self, request: Any) -> int:
+        """Let the prefix cache yield to a long hybrid prefill's transient peak.
+
+        The admission gate projects KV only. On the hybrid (recurrent-state)
+        layout this was measured on — Qwen3.5-9B, whose head_dim-256 attention
+        builds each chunk's full score matrix — a cold 23k-token prefill also
+        needs ~3.3x its KV in transients. With the agent-session budget floor
+        a resident entry plus that peak can exceed a 16 GB-class Metal cap,
+        and the engine-loop pressure tick (every 16 steps) may not fire inside
+        a 12-chunk prefill. So before such a request starts, evict cache
+        entries (LRU) until the projected peak fits under the pressure
+        threshold. Dense models (no recurrent baseline) are left to the
+        admission gate's KV projection, where KV dominates the peak. The loop
+        stops as soon as an eviction frees no Metal memory (a lazily loaded
+        entry, or buffers the request itself still shares), so it never
+        empties the cache for nothing. Returns the number evicted.
+        """
+        cap = self._resolve_metal_cap_bytes()
+        mac = self.memory_aware_cache
+        if cap <= 0 or mac is None or not mac._entries:  # noqa: SLF001
+            return 0
+        footprint = self._prefill_reclaim_footprint()
+        if footprint is None:
+            return 0
+        per_tok, fixed_baseline = footprint
+        prefill_tokens = len(getattr(request, "remaining_tokens", None) or [])
+        # The prefill's own peak: the recurrent state, the remaining prompt's
+        # KV and its transients. Decode growth (max_tokens) is not part of
+        # the prefill spike; the pressure tick covers it as it accrues.
+        need = (
+            fixed_baseline
+            + int(per_tok * prefill_tokens * (1 + _COLD_PREFILL_TRANSIENT_KV_MULTIPLE))
+            + self._sum_in_flight_kv_bytes()
+        )
+        # Aim below the pressure threshold, not the cap itself, so the
+        # prefill stays out of the evictor's soft zone.
+        threshold = int(cap * self._resolve_pressure_evict_fraction())
+        evicted = 0
+        active = self._current_metal_active_bytes()
+        while active + need >= threshold:
+            if not self._evict_one_prefix_cache_entry():
+                break
+            evicted += 1
+            self.num_prefix_cache_pressure_evictions += 1
+            # Removing the CacheEntry only drops its Python references. MLX
+            # keeps the released Metal slabs in its allocator cache until it
+            # is explicitly flushed, so measuring active memory before this
+            # call can make a useful eviction look futile and leave the cold
+            # prefill headed into the same OOM this guard is meant to avoid.
+            # Keep this after the counter update: the entry is already gone
+            # if clear_cache raises, matching the pressure-eviction path's
+            # cache-state/metric invariant and exception policy.
+            mx.clear_cache()
+            after = self._current_metal_active_bytes()
+            if after >= active:
+                break
+            active = after
+        if evicted:
+            logger.info(
+                "[prefix-prefill-reclaim] request=%s evicted %d prefix-cache "
+                "entr%s ahead of a %d-token prefill (cap %.1f GB)",
+                str(getattr(request, "request_id", ""))[:12],
+                evicted,
+                "y" if evicted == 1 else "ies",
+                prefill_tokens,
+                cap / 1e9,
+            )
+        return evicted
+
+    def _prefill_reclaim_footprint(self) -> tuple[int, int] | None:
+        """``(per_token_growth, fixed_baseline)`` for a hybrid model, else None.
+
+        Prefers the scheduler's resolved terms and falls back to the model's
+        own dims (``.args`` on mlx-lm models, where the resolver reads 0).
+        ``None`` for dense models (no recurrent baseline) and when nothing
+        can be resolved.
+        """
+        per_tok = self._resolve_kv_bytes_per_token()
+        fixed = self._resolve_kv_fixed_baseline_bytes()
+        if per_tok <= 0 and fixed <= 0:
+            estimate = self._footprint_from_model_dims()
+            if estimate is None:
+                return None
+            per_tok = estimate.per_token_growth_bytes
+            fixed = estimate.fixed_baseline_bytes
+        if fixed <= 0:
+            return None
+        return per_tok, fixed
 
     def _hybrid_checkpoints_enabled(self) -> bool:
         """Checkpoints are only worth recording when hybrid entries are kept."""
@@ -5325,6 +5554,30 @@ class Scheduler:
             reconstructed = self._reconstruct_cache_from_states(states)
             if not reconstructed:
                 continue
+            # A real message boundary is an exact recurrent-state checkpoint,
+            # not merely a place to store the KV entry.  On the first cold
+            # turn, discard earlier stride samples and make this stable
+            # system+tools/user prefix the protected session anchor.  Later
+            # turns inherit that anchor and add their boundary within the
+            # same fixed checkpoint count.
+            if self._hybrid_checkpoints_enabled() and not getattr(
+                request, "_cache_snapshot_is_internal", False
+            ):
+                holders = self._hybrid_checkpoints.get(uid)
+                if not int(request.cached_tokens or 0):
+                    holders = [None] * len(reconstructed)
+                elif holders is None:
+                    holders = _collect_state_checkpoints(reconstructed)
+                if len(holders) == len(reconstructed) and _record_state_checkpoints(
+                    reconstructed,
+                    holders,
+                    prefix_boundary,
+                    force=True,
+                    anchor=not any(
+                        h is not None and h.anchor_position is not None for h in holders
+                    ),
+                ):
+                    self._hybrid_checkpoints[uid] = holders
             self._attach_hybrid_checkpoints(uid, reconstructed, length=prefix_boundary)
 
             prefix_tokens = list(request.prompt_token_ids[:prefix_boundary])
@@ -5915,6 +6168,18 @@ class Scheduler:
         self._metal_cap_bytes_resolved = True
         return cap
 
+    def _prefix_cache_session_floor_bytes(self) -> int:
+        """Agent-session floor for the memory-aware prefix-cache budget.
+
+        One third of the Metal headroom left after the resident weights
+        (capped at 4 GiB, see ``memory_cache.session_floor_bytes``). ``0``
+        when no Metal cap is configured, so hosts without a cap keep the
+        percent-of-available budget unchanged.
+        """
+        return session_floor_bytes(
+            self._resolve_metal_cap_bytes(), self._current_metal_active_bytes()
+        )
+
     def _current_metal_active_bytes(self) -> int:
         """Best-effort snapshot of MLX-reported Metal active memory.
 
@@ -6403,6 +6668,32 @@ class Scheduler:
         self._kv_bytes_per_token_resolved = True
         return per_tok
 
+    def _footprint_from_model_dims(self) -> KVFootprintEstimate | None:
+        """Hybrid-aware KV footprint read off the model itself, or ``None``.
+
+        mlx-lm models expose their dims on ``.args``, not ``.config``, so the
+        config-only ``_resolve_kv_bytes_per_token`` reads 0 for them. This
+        runs the same estimator on ``_read_kv_dims`` (``.config`` or
+        ``.args``, text tower preferred) for callers that need real numbers
+        without switching on the admission gate's projection.
+        """
+        dims = _read_kv_dims(self.model)
+        if dims is None:
+            return None
+        num_layers, kv_heads, head_dim, struct_cfg = dims
+        dtype_bytes = self._infer_kv_dtype_bytes(struct_cfg)
+        # ``_read_kv_dims`` only returns positive dims and dtype bytes are
+        # >= 1, so the uniform figure is always positive here.
+        uniform_per_token = 2 * num_layers * kv_heads * head_dim * dtype_bytes
+        return estimate_kv_footprint(
+            struct_cfg,
+            dtype_bytes=dtype_bytes,
+            uniform_per_token_bytes=uniform_per_token,
+            base_num_layers=num_layers,
+            base_kv_heads=kv_heads,
+            base_head_dim=head_dim,
+        )
+
     def _resolve_kv_fixed_baseline_bytes(self) -> int:
         """Per-sequence FIXED KV baseline (bytes) for hybrid architectures.
 
@@ -6474,22 +6765,9 @@ class Scheduler:
                 # dims off the model and running the SAME hybrid-aware
                 # estimator, preferring the text tower over any decoy outer
                 # config (``_read_kv_dims``).
-                dims = _read_kv_dims(self.model)
-                if dims is None:
+                estimate = self._footprint_from_model_dims()
+                if estimate is None:
                     return None
-                num_layers, kv_heads, head_dim, struct_cfg = dims
-                dtype_bytes = self._infer_kv_dtype_bytes(struct_cfg)
-                uniform_per_token = 2 * num_layers * kv_heads * head_dim * dtype_bytes
-                if uniform_per_token <= 0:
-                    return None
-                estimate = estimate_kv_footprint(
-                    struct_cfg,
-                    dtype_bytes=dtype_bytes,
-                    uniform_per_token_bytes=uniform_per_token,
-                    base_num_layers=num_layers,
-                    base_kv_heads=kv_heads,
-                    base_head_dim=head_dim,
-                )
                 per_tok = estimate.per_token_growth_bytes
                 fixed_baseline = estimate.fixed_baseline_bytes
                 sliding_slot_bytes = estimate.sliding_slot_bytes
@@ -6851,6 +7129,28 @@ class Scheduler:
         if active < cap and (active + reserved_kv + projected_kv) < cap:
             return
 
+        # The memory-aware prefix cache holds finished requests' KV in Metal
+        # memory. It is reclaimable by definition, so it must yield to a live
+        # request instead of turning a warm cache into a 503 — this is what
+        # makes the agent-session budget floor safe on 16 GB Macs. LRU order
+        # evicts the least recently used entries first (this runs before the
+        # fetch, so the entry this request would hit is not refreshed yet).
+        if self.memory_aware_cache is not None:
+            for dropped in range(1, 65):
+                if not self._evict_one_prefix_cache_entry():
+                    break
+                self.num_prefix_cache_pressure_evictions += 1
+                active = self._current_metal_active_bytes()
+                reserved_kv = self._sum_in_flight_kv_bytes()
+                if active < cap and (active + reserved_kv + projected_kv) < cap:
+                    logger.info(
+                        "[D-METAL-CAP-force-evict] evicted %d prefix-cache "
+                        "entr%s; admitted request after pressure drop",
+                        dropped,
+                        "y" if dropped == 1 else "ies",
+                    )
+                    return
+
         # ── Hermes patch: force-evict paged KV before rejecting ──
         # D-METAL-CAP wedge root cause: the paged cache keeps KV
         # tensor memory resident on FREE blocks for reuse, so once
@@ -7074,10 +7374,12 @@ class Scheduler:
         triggered_cache_self = False
         for _ in range(max(0, int(max_evict))):
             should_evict = False
+            at_metal_cap = False
             if metal_threshold > 0:
                 active = self._current_metal_active_bytes()
                 if active >= metal_threshold:
                     should_evict = True
+                    at_metal_cap = active >= metal_cap
                     triggered_metal = True
             if not should_evict and cache_self_threshold > 0:
                 current_cache = self._cache_self_pressure_current_bytes()
@@ -7086,7 +7388,20 @@ class Scheduler:
                     triggered_cache_self = True
             if not should_evict:
                 break
-            if not self._evict_one_prefix_cache_entry():
+            # The most-recently-used entry is what the next agent turn
+            # extends. Below the Metal cap it is kept:
+            # * cache-self pressure is a ledger trim, not a memory emergency —
+            #   the cache's own admission already bounded it by
+            #   ``_max_memory``, and one ~23k-token session entry routinely
+            #   sits above 90% of a small-Mac budget;
+            # * the soft Metal zone (fraction x cap .. cap) is mostly the
+            #   finishing request's transient state (live KV + the snapshot
+            #   copy), released when it completes — measured at 9.3 of a
+            #   9.6 GB 16 GB-class cap, which evicted the entry on every hit
+            #   turn and made every other turn a full re-prefill.
+            # At or over the cap itself every entry may go; the admission
+            # gate also reclaims the cache before admitting new work.
+            if not self._evict_one_prefix_cache_entry(keep_mru=not at_metal_cap):
                 break
             # The entry has been removed from the cache trie — count
             # this as a successful eviction REGARDLESS of whether the
@@ -7141,10 +7456,12 @@ class Scheduler:
             )
         return evicted
 
-    def _evict_one_prefix_cache_entry(self) -> bool:
+    def _evict_one_prefix_cache_entry(self, keep_mru: bool = False) -> bool:
         """Evict a single LRU prefix-cache entry across all cache variants.
 
-        Returns True if an entry was actually removed. Encapsulates the
+        Returns True if an entry was actually removed. ``keep_mru`` refuses to
+        evict the memory-aware cache's last remaining (most-recently-used)
+        entry — used by the cache-self pressure trigger. Encapsulates the
         cache-variant dispatch so ``evict_prefix_cache_under_pressure``
         stays variant-agnostic.
 
@@ -7171,7 +7488,8 @@ class Scheduler:
         """
         if self.memory_aware_cache is not None:
             with self.memory_aware_cache._lock:  # noqa: SLF001 — coordinated eviction
-                if not self.memory_aware_cache._entries:  # noqa: SLF001
+                remaining = len(self.memory_aware_cache._entries)  # noqa: SLF001
+                if remaining == 0 or (keep_mru and remaining == 1):
                     return False
                 self.memory_aware_cache._evict_lru()  # noqa: SLF001
             return True
@@ -7571,6 +7889,7 @@ class Scheduler:
                     f"prompt_tokens={len(request.prompt_token_ids)} "
                     f"time={_fetch_dt:.3f}s entries={len(self.memory_aware_cache._entries)}"
                 )
+            self._reclaim_prefix_cache_for_prefill(request)
         elif self.prefix_cache is not None:
             # Use legacy prefix cache
             cache, remaining = self.prefix_cache.fetch_cache(request.prompt_token_ids)
@@ -9052,7 +9371,18 @@ class Scheduler:
                         request.num_output_tokens,
                     )
             stop_params = request.sampling_params.stop or []
-            if finish_reason is None and stop_params:
+            reasoning_stop_scope = getattr(
+                request.sampling_params, "reasoning_stop_scope", None
+            )
+            # A model-opened ``<think>`` prefix can be ambiguous for its
+            # first few characters. Scoped matching defers those bytes until
+            # the opener is complete or disproved; on a terminal engine step
+            # it must get one final search so a response ending at ``<thi``
+            # still honors a user stop contained in that plain answer.
+            terminal_scoped_check = (
+                reasoning_stop_scope is not None and response.finish_reason is not None
+            )
+            if stop_params and (finish_reason is None or terminal_scoped_check):
                 decoder = getattr(request, "_decoder", None)
                 if decoder is not None:
                     decoded_so_far = decoder.get_full_text()
@@ -9072,11 +9402,25 @@ class Scheduler:
                 # that appears anywhere in ``decoded_so_far`` wins) so
                 # this change is a strict superset for harmony models
                 # and a no-op for everyone else.
+                # ``<think>``-style reasoning models have the same
+                # problem: the route attaches a ``reasoning_stop_scope``
+                # when a ``<think>`` reasoning parser is configured, and
+                # stops then match only the answer after the reasoning
+                # close. Requests without a scope keep the raw match.
                 stop_match: tuple[str, int] | None = None
                 if self._is_harmony_family:
                     from .reasoning.harmony_stop import find_stop_in_final_channel
 
                     stop_match = find_stop_in_final_channel(decoded_so_far, stop_params)
+                elif reasoning_stop_scope is not None:
+                    from .reasoning.think_stop import find_stop_in_answer
+
+                    stop_match = find_stop_in_answer(
+                        decoded_so_far,
+                        stop_params,
+                        reasoning_stop_scope,
+                        terminal=terminal_scoped_check,
+                    )
                 else:
                     for stop_str in stop_params:
                         if stop_str and stop_str in decoded_so_far:
@@ -9506,6 +9850,9 @@ class Scheduler:
                     if (
                         hasattr(request, "_extracted_cache")
                         and request._extracted_cache is not None
+                        and self._protect_boundary_behind_completion(
+                            request, request._extracted_cache
+                        )
                     ):
                         try:
                             full_token_sequence = list(request.prompt_token_ids) + list(
@@ -9519,6 +9866,7 @@ class Scheduler:
                                 request._extracted_cache,
                                 evict_prefixes=False,
                             )
+                            self._touch_boundary_entry(request)
                             _store_dt = _time.monotonic() - _store_t0
                             # NOTE: We intentionally do NOT store a prompt-only
                             # cache entry.  Hybrid Mamba+Transformer models

@@ -1,9 +1,9 @@
-<img width="2400" height="1000" alt="Rapid-MLX — the fastest local AI engine for Apple Silicon" src="docs/assets/readme-banner.png" />
+<img width="2400" height="1000" alt="Rapid-MLX — OpenAI- and Anthropic-compatible LLM inference server and Mac app for Apple Silicon" src="docs/assets/readme-banner.png" />
 
 <p align="center">
-  <strong>The fastest local AI engine for Apple Silicon.</strong>
+  <strong>Rapid-MLX is an open-source (Apache 2.0) OpenAI- and Anthropic-compatible LLM inference server and Mac app for Apple Silicon, built on MLX, focused on reliable tool calling for coding agents.</strong>
   <br>
-  <em>Drop-in OpenAI / Anthropic API · up to 3× Ollama's throughput (<a href="https://rapidmlx.com/blog/rapid-mlx-vs-ollama-benchmark">measured</a>) · Runs on any M-series Mac.</em>
+  <em>Measured: 3.0× Ollama's aggregate decode throughput at 8 concurrent streams on Qwen3.6-35B-A3B (M2 Pro) — <a href="https://rapidmlx.com/blog/rapid-mlx-vs-ollama-benchmark">method, raw data, and where it is slower</a>.</em>
 </p>
 
 <p align="center">
@@ -32,6 +32,39 @@
     <a href="https://discord.gg/nZcXkUjY5R">Discord</a>
   </sub>
 </p>
+
+---
+
+## How it compares
+
+Feature facts only, taken mostly from each project's own documentation as of
+2026-09-26 (sources below). For measured speed, see the benchmark linked
+above.
+
+| | Rapid-MLX | [oMLX](https://github.com/jundot/omlx) | [Ollama](https://github.com/ollama/ollama) | [LM Studio](https://lmstudio.ai) | [mlx-lm](https://github.com/ml-explore/mlx-lm) (`mlx_lm.server`) |
+|---|---|---|---|---|---|
+| **License** | Apache-2.0 | Apache-2.0 | MIT | Closed-source app; its MLX engine and `lms` CLI are MIT | MIT |
+| **Inference engine on a Mac** | MLX | MLX | GGML/GGUF engine, plus an MLX engine for safetensors models | llama.cpp (GGUF) and MLX engines | MLX |
+| **Local API** | OpenAI (`/v1/chat/completions`, `/v1/responses`) and Anthropic Messages (`/v1/messages`) | OpenAI and Anthropic Messages | Ollama API, OpenAI-compatible, Anthropic-compatible (subset) | OpenAI-compatible, Anthropic-compatible, LM Studio REST API | OpenAI-style chat API |
+| **GUI** | Rapid-MLX Desktop (macOS app) | macOS menu-bar app and web admin panel | Desktop app (macOS, Windows) | Desktop app | None (CLI / Python) |
+| **Concurrent requests** | Continuous batching | Continuous batching (mlx-lm `BatchGenerator`) | Parallel requests per model (`OLLAMA_NUM_PARALLEL`, default 1) | Continuous batching (llama.cpp engine; MLX engine since 0.4.2) | Continuous batching (`BatchGenerator`); one request at a time with a quantized KV cache |
+| **Prompt / KV cache** | Radix prefix cache in memory (with state snapshots for hybrid models), saved to disk on shutdown and restored at startup; quantized KV cache | Tiered KV cache: in-memory hot tier plus SSD cold tier, reused across restarts | Reuses the previous request's prompt KV cache; KV cache quantization (`OLLAMA_KV_CACHE_TYPE`) | — | In-memory prompt cache; quantized KV cache (`--kv-bits`) |
+| **Tool-call parsing** | 27 parser modules, including an auto-detect fallback ([`rapid_mlx/tool_parsers`](https://github.com/raullenchai/Rapid-MLX/tree/main/rapid_mlx/tool_parsers)) | mlx-lm formats plus the auto-detected families listed in its README | [Tool calling](https://docs.ollama.com/capabilities/tool-calling) | [Tool use](https://lmstudio.ai/docs/developer/openai-compat/tools) via the OpenAI-compatible API | Tool calls for models whose tokenizer declares tool-calling support |
+
+<sub>Sources: [oMLX README](https://github.com/jundot/omlx#readme) ·
+Ollama [OpenAI](https://docs.ollama.com/api/openai-compatibility) and [Anthropic](https://docs.ollama.com/api/anthropic-compatibility) compatibility, [FAQ](https://docs.ollama.com/faq), [MLX engine](https://github.com/ollama/ollama/blob/main/docs/development.md#mlx-engine-optional) ·
+LM Studio [Anthropic compatibility](https://lmstudio.ai/docs/developer/anthropic-compat), [parallel requests](https://lmstudio.ai/docs/app/advanced/parallel-requests), [0.4.2 changelog](https://lmstudio.ai/changelog/lmstudio-v0.4.2), [app terms](https://lmstudio.ai/app-terms), [mlx-engine](https://github.com/lmstudio-ai/mlx-engine) ·
+[mlx-lm server docs](https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/SERVER.md) and [`server.py`](https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/server.py).
+Ollama prompt-cache reuse is from our [benchmark notes](https://rapidmlx.com/blog/assets/engine-bench-2026-08/results.json).
+— = not verified for this table. Spot an error? Please [open an issue](https://github.com/raullenchai/Rapid-MLX/issues).</sub>
+
+**Measured speed:** the 3.0× above is 82.9 vs 27.2 tok/s aggregate decode
+(32 GB M2 Pro Mac mini, Rapid-MLX 0.12.11 vs Ollama 0.32.7). Including
+prefill, whole-batch throughput was 1.6×; single-stream decode was about 1.5×;
+a dense 12B model was no faster; and llama.cpp-family engines prefilled cold
+prompts faster ([method and raw data](https://rapidmlx.com/blog/rapid-mlx-vs-ollama-benchmark)).
+
+**Head-to-head with oMLX and Ollama** on the same Macs (18 GB and 48 GB) — decode, agent sessions, restart, concurrency, and where Rapid-MLX is slower, with raw data: [rapidmlx.com/compare](https://rapidmlx.com/compare).
 
 ---
 
@@ -76,6 +109,7 @@ and image generation from one app.
 - [Download Rapid-MLX Desktop](https://rapidmlx.com/desktop)
 - [Browse signed Desktop releases](https://github.com/raullenchai/Rapid-MLX/releases?q=rapid-mac-v)
 - Requires an M-series Mac; Windows and Linux desktop builds are not available yet
+- [Share Compute setup and credit ledger](docs/guides/share-compute.md)
 
 ### CLI and server — macOS (Apple Silicon)
 
@@ -132,7 +166,7 @@ Defaults to `qwen3.5-4b-4bit`. First run downloads the weights (~3 GB) with a pr
 rapid-mlx serve qwen3.5-4b-4bit
 ```
 
-Starts an OpenAI-compatible HTTP server bound to `http://localhost:8000`. Point any client that supports a local custom endpoint (Aider, LangChain, OpenCode, PydanticAI, your own scripts) at **`http://localhost:8000/v1`**; Claude Code / Anthropic SDK uses **`http://localhost:8000`** (the Anthropic messages route lives at `/v1/messages` under the same host).
+Starts an OpenAI-compatible HTTP server on the first free port in `8000`–`8009` when `--port` is omitted. An explicit `--port` never falls back. The examples below assume port `8000` was selected. Point any client that supports a local custom endpoint (Aider, LangChain, OpenCode, PydanticAI, your own scripts) at **`http://localhost:8000/v1`**; Claude Code / Anthropic SDK uses **`http://localhost:8000`** (the Anthropic messages route lives at `/v1/messages` under the same host).
 
 ```bash
 curl http://localhost:8000/v1/chat/completions \
@@ -216,15 +250,17 @@ family default shown below.
 | `hidream-o1-dev` | Complex compositions | Generate | 16.4 GiB | 32 GB | 28 |
 | `sd35-large-4bit` | Stable Diffusion 3.5 | Generate | 15.3 GiB | 32 GB | 28 |
 | `qwen-image` | Text inside images | Generate | 28.9 GiB | 64 GB | 20 |
-| `qwen-image-2.1` | Text-rich images and img2img | Generate + edit | 30.9 GiB | 32 GB | 40 |
+| `qwen-image-2.1` | Text-rich images on low-memory Macs | Generate + edit | 8.9 GiB | 8 GB | 40 |
+| `qwen-image-2.1-bf16` | Higher-precision Qwen Image 2.1 path | Generate + edit | 30.9 GiB | 32 GB | 40 |
 | `qwen-image-edit` | Precise instruction edits and text changes | Edit | 34.9 GiB | 96 GB | 20 |
 <!-- image-model-matrix:end -->
 
-`qwen-image-2.1` uses mflux 0.20 with an 8-bit transformer and bf16 text
-encoder. Its edit endpoint performs single-image img2img conditioning; the
-separate instruction-edit variant is not yet available upstream. See the
-[family guide](docs/models/families/qwen-image-2.1.md) for request and memory
-behavior.
+`qwen-image-2.1` uses mflux 0.20 with a native MLX q4 transformer and q4 text
+encoder. `qwen-image-2.1-bf16` preserves the previous 8-bit-on-load transformer
+and bf16 encoder path. Their edit endpoint performs single-image img2img
+conditioning; the separate instruction-edit variant is not yet available
+upstream. See the [family guide](docs/models/families/qwen-image-2.1.md) for
+request and memory behavior.
 
 At 1024×1024 with the four-step Klein default, measured warm generation was
 about **9.2 seconds per image on an M3 Ultra**. On a 32 GB M2 Pro, the q4 path
@@ -332,6 +368,24 @@ Also: word-level timestamps on transcription, and local text-to-music at
 `/v1/audio/music`.
 
 → [All 44 aliases across 13 families](https://rapidmlx.com/docs/models/families/audio.html)
+
+---
+
+## Typed decisions with System One
+
+Serve fast `noul`, `choice`, and `score` decisions through a
+TypeSafe-compatible `/v1/systemone` API. Laya-MLX is the compact default;
+CLM-8B uses a native MLX Qwen3-8B encoder and cached state/action projections.
+
+```bash
+pip install 'rapid-mlx[system-one]'
+rapid-mlx system-one convaiinnovations/laya
+```
+
+CLM uses a converted copy of its upstream projection head and does not require
+PyTorch or vLLM while serving.
+
+→ [Laya and CLM setup, API examples, and compatibility limits](docs/guides/system-one.md)
 
 ---
 
@@ -532,7 +586,7 @@ multiplication. The regular `qwen3.8-27b-4bit` alias remains unchanged for M3
 and newer Macs; Rapid does not silently swap checkpoint precision.
 
 → [Full RAM tier map + serve flags per tier](https://rapidmlx.com/docs/hardware-tiers.html)
-→ [Every alias, quant, and family (196 text + 11 image + 10 video + 44 audio aliases, 261 total)](https://rapidmlx.com/docs/aliases.html) · interactive at [models.rapidmlx.com](https://models.rapidmlx.com/)
+→ [Every alias, quant, and family (198 text + 12 image + 10 video + 44 audio aliases, 264 total)](https://rapidmlx.com/docs/aliases.html) · interactive at [models.rapidmlx.com](https://models.rapidmlx.com/)
 
 ---
 
@@ -573,7 +627,7 @@ If `pip install rapid-mlx` says "no matching distribution", your Python is too o
 
 For image-input / VLM models (Qwen-VL, true multimodal), install the vision extra: `pip install 'rapid-mlx[vision]'` — see [Optional extras](https://rapidmlx.com/docs/extras.html).
 
-For the complete feature set — vision, chat, embeddings, and audio — install the `[all]` extra: `pip install 'rapid-mlx[all]'`. Audio alone is `pip install 'rapid-mlx[audio]'`; see [Optional extras](https://rapidmlx.com/docs/extras.html).
+For the complete feature set — vision, chat, embeddings, audio, and System One — install the `[all]` extra: `pip install 'rapid-mlx[all]'`. Audio alone is `pip install 'rapid-mlx[audio]'`; see [Optional extras](https://rapidmlx.com/docs/extras.html).
 
 </details>
 
@@ -586,7 +640,7 @@ rapid-mlx --help                    # top-level command list
 rapid-mlx <subcommand> --help       # per-subcommand flags
 ```
 
-Covers chat, serve, share, agents (setup / test), bench, recipe, models, ls, pull, rm, alias, ps, info, connect, doctor, upgrade, telemetry, and launch.
+Covers chat, serve, system-one, share, agents (setup / test), bench, recipe, models, ls, pull, rm, alias, ps, info, connect, doctor, upgrade, telemetry, and launch.
 
 → [Full CLI reference with every flag](https://rapidmlx.com/docs/cli.html)
 
@@ -661,8 +715,10 @@ Every avatar here shipped something in rapid-mlx — model support, tool-call pa
 Rapid-MLX began as **[vLLM-MLX](https://github.com/waybarrios/vllm-mlx)** by
 [Wayner Barrios](https://github.com/waybarrios), which is where this repository's
 history starts and where the engine's paged KV cache, prefix cache, and
-continuous batching were first built. It was renamed to Rapid-MLX in March 2026
-and has been heavily modified since. Thank you.
+continuous batching were first built. It was renamed to Rapid-MLX on 2026-03-13,
+now ships as the `rapid-mlx` package (import name `rapid_mlx`), and has been
+extensively modified and in large part rewritten since (see [NOTICE](https://github.com/raullenchai/Rapid-MLX/blob/main/NOTICE)).
+Thank you.
 
 It stands on Apple's MLX stack and the runtimes built around it:
 

@@ -40,6 +40,22 @@ Successful emits remain after response
 serialization or the streaming terminal marker; generation errors use the
 separate `failed` counter and client disconnects emit nothing.
 
+## Surface and audio-model attribution
+
+The Python emitter attributes every event from a process declared as
+`RAPID_MLX_PROCESS_ROLE=desktop-sidecar` to `surface=desktop`. Sidecars do not
+emit `app_opened`; that lifecycle event remains owned by the Desktop app.
+Standalone `serve` processes report `server`, and other CLI commands report
+`cli`. Role detection is also the fallback when a sidecar emitter is reached
+without passing through either Python entry point.
+
+The Desktop dictation client sends its selected audio catalog alias (normally
+`whisper-small`) to `/v1/audio/transcriptions`. The route resolves that alias to
+the checkpoint repo before applying the privacy-safe telemetry model-id rule.
+Resolved repos from the shipped audio catalog now map back to a catalog alias,
+just like text/image catalog repos; non-catalog, local, private, and unproven
+repos retain the existing redaction rules.
+
 Reproduce the worker measurement by timing this body with
 `time.perf_counter_ns()` under an explicit temporary `HOME` and the injected
 official-build/consent/context fixtures described above:
@@ -56,10 +72,18 @@ inference._record_completed_request(
 
 ## Counter cardinality
 
-The closed registry currently has 8 endpoint values (including `other`), 26
-caller values, and 2 result values: 416 worst-case counter keys per model.
-`store.MAX_KEYS = 12_000` therefore holds every combination for 28 complete
-models (`28 × 416 = 11,648`); the 29th model is where a fully saturated
-worst-case installation begins exhausting new keys. The cap was raised from
-2,000 because that allowed only 5 complete models. Even 12,000 rows remain a
-small local SQLite database, and existing keys continue counting at the cap.
+The closed registry currently has 8 endpoint values (including `other`), 27
+caller values, and one `ok` key plus one `failed` key per
+`inference_error_class` value (10): 8 × 27 × 11 = 2,376 worst-case counter keys
+per model. `store.MAX_KEYS = 67_000` therefore holds every combination for 28
+complete models (`28 × 2,376 = 66,528`); the 29th model is where a fully
+saturated worst-case installation begins exhausting new keys. The cap was
+raised from 2,000 to 12,000 when that allowed only 5 complete models, and from
+12,000 to 67,000 when failures started being counted per class (which would
+otherwise have left 5). Even 67,000 short rows remain a small local SQLite
+database, and existing keys continue counting at the cap. The longest key
+the registry permits (its 128-character `model_id` cap on a failed request) is
+204 characters, under `store.MAX_KEY_LENGTH = 256`; `telemetry_model_id()`
+itself caps ids at 96 characters, so real keys stay at or under 172. `tests/test_telemetry_inference.py`
+derives both numbers from the registry, and `tests/test_telemetry_store.py`
+fills a real database to the unpatched cap.

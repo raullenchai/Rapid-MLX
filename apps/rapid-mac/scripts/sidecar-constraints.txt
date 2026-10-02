@@ -1,9 +1,14 @@
 # Release-tested versions shared by candidate-wheel and Desktop sidecar builds.
 mlx==0.32.2
 transformers==5.15.1
-mlx-vlm==0.7.1
+mlx-vlm==0.7.2
 mlx-audio==0.5.3
 mflux==0.20.0
 sentencepiece==0.2.2
 mlx-video-with-audio==0.1.36
 mlx-arsenal==0.12.1
+pyobjc-core==12.2.2
+pyobjc-framework-ApplicationServices==12.2.2
+pyobjc-framework-Cocoa==12.2.2
+pyobjc-framework-CoreText==12.2.2
+pyobjc-framework-Quartz==12.2.2

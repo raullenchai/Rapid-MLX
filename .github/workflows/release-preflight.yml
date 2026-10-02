@@ -253,6 +253,7 @@ jobs:
           python -m pip install build twine
           python -m build
           twine check dist/*
+          python scripts/verify_dependency_metadata.py dist/
           python scripts/release_smoke.py --dist-dir dist
 
   g10-upstream-mlx-scan:

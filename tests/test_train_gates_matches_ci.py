@@ -175,7 +175,7 @@ def test_apple_parser_extracts_m_and_k_filters() -> None:
     assert parsed["m"] in run_text
     assert parsed["k"] in run_text
     assert parsed["m"] == "not slow"  # current hosted value, guarded verbatim
-    assert parsed["k"] == "not Integration"  # current hosted value
+    assert parsed["k"] == "not Integration or serial_lane"  # current hosted value
 
 
 # ---------------------------------------------------------------------------

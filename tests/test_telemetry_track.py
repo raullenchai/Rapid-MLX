@@ -4,12 +4,16 @@
 from __future__ import annotations
 
 import ast
+import copy
 import json
 import os
+import shutil
+import signal
 import socket
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from collections.abc import Iterator, Mapping
 from datetime import date, datetime, timezone
@@ -37,6 +41,7 @@ from rapid_mlx.telemetry.consent_decision import (
     StoredConsent,
     WriteBack,
 )
+from rapid_mlx.telemetry.consent_runtime import NOTICE_LINE
 
 REAL_UPLOAD_ALLOWED = consent_runtime.upload_allowed
 REAL_READ_PLATFORM_FACTS = common_props.read_platform_facts
@@ -84,10 +89,28 @@ class ExplodingMapping(Mapping[str, object]):
         return 1
 
 
+class ChangingMapping(Mapping[str, object]):
+    def __init__(self) -> None:
+        self.reads = 0
+
+    def __getitem__(self, key: str) -> object:
+        assert key == "error_class"
+        self.reads += 1
+        return "other" if self.reads == 1 else "future_load_error"
+
+    def __iter__(self) -> Iterator[str]:
+        yield "error_class"
+
+    def __len__(self) -> int:
+        return 1
+
+
 @pytest.fixture(autouse=True)
 def isolated_emit(monkeypatch, tmp_path):
     for name in (state.ENV_VAR, state.DO_NOT_TRACK_ENV, *state.CI_ENV_VARS):
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("RAPID_MLX_PROCESS_ROLE", raising=False)
+    monkeypatch.delenv("RAPID_MLX_WATCHDOG_PPID", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(rapid_mlx, "__version__", "0.15.1")
     monkeypatch.setattr(track_module.common_props, "read_platform_facts", lambda: FACTS)
@@ -239,10 +262,215 @@ def test_registry_is_the_only_event_gate(monkeypatch):
     assert sender.items == []
 
 
+def test_would_accept_is_track_acceptance_authority(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    decisions: list[tuple[str, dict[str, object]]] = []
+
+    def reject(event, props, **_kwargs):
+        decisions.append((event, dict(props)))
+        return False
+
+    monkeypatch.setattr(track_module, "would_accept", reject)
+
+    assert track_module.track("app_opened", {}) is False
+    assert decisions == [("app_opened", {})]
+    assert sender.items == []
+
+
+def test_track_contains_acceptance_decision_failure(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    monkeypatch.setattr(
+        track_module,
+        "would_accept",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("failed")),
+    )
+
+    assert track_module.track("app_opened", {}) is False
+    assert sender.items == []
+
+
+def test_accepted_event_constructor_rejects_forged_authority():
+    with pytest.raises(TypeError, match="only be created by would_accept"):
+        track_module._AcceptedEvent(
+            event="app_opened",
+            props={},
+            nth_model_served=None,
+            _authority=object(),
+        )
+
+
+def test_accepted_event_authority_is_not_exported():
+    assert "__ACCEPTED_EVENT_AUTHORITY" not in track_module.__all__
+    assert not hasattr(track_module, "_ACCEPTED_EVENT_AUTHORITY")
+
+
+@pytest.mark.parametrize(
+    "hand_built",
+    [
+        {"event": "app_opened", "props": {}, "nth_model_served": None},
+        SimpleNamespace(event="app_opened", props={}, nth_model_served=None),
+    ],
+)
+def test_enqueue_rejects_hand_built_acceptance_token(monkeypatch, hand_built):
+    sender = inject_sender(monkeypatch)
+
+    assert track_module._enqueue_accepted(hand_built) is False
+    assert sender.items == []
+
+
+def test_copy_of_accepted_token_cannot_mutate_snapshot(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    accepted = track_module.would_accept("app_opened", {})
+    assert accepted is not None
+
+    copied = copy.copy(accepted)
+    assert copied is accepted
+    with pytest.raises(TypeError):
+        copied.props["free_text"] = "copy"  # type: ignore[index]
+
+    assert track_module._enqueue_accepted(copied) is True
+    assert "free_text" not in sender.items[-1]["properties"]
+
+
+def test_enqueue_rejects_token_with_mutated_authority(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    accepted = track_module.would_accept("app_opened", {})
+    assert accepted is not None
+    object.__setattr__(accepted, "_authority", object())
+
+    assert track_module._enqueue_accepted(accepted) is False
+    assert sender.items == []
+
+
+def test_enqueue_rejects_accepted_event_subclass(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    accepted = track_module.would_accept("app_opened", {})
+    assert accepted is not None
+
+    class Forged(track_module._AcceptedEvent):
+        pass
+
+    forged = Forged("app_opened", {"free_text": "subclass"}, None, accepted._authority)
+    assert track_module._enqueue_accepted(forged) is False
+    assert sender.items == []
+
+
+def test_object_new_forgery_cannot_enqueue_invalid_props(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    accepted = track_module.would_accept("app_opened", {})
+    assert accepted is not None
+    forged = object.__new__(track_module._AcceptedEvent)
+    object.__setattr__(forged, "event", "app_opened")
+    object.__setattr__(forged, "props", {"free_text": "object-new"})
+    object.__setattr__(forged, "nth_model_served", None)
+    object.__setattr__(forged, "_authority", accepted._authority)
+
+    assert track_module._enqueue_accepted(forged) is False
+    assert sender.items == []
+
+
+def test_enqueue_revalidation_binds_event_to_validated_snapshot(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    accepted = track_module.would_accept("app_opened", {})
+    assert accepted is not None
+    forged = object.__new__(track_module._AcceptedEvent)
+
+    class SwitchEventMapping(Mapping[str, object]):
+        def __getitem__(self, key: str) -> object:
+            assert key == "error_class"
+            object.__setattr__(forged, "event", "app_opened")
+            return "other"
+
+        def __iter__(self) -> Iterator[str]:
+            yield "error_class"
+
+        def __len__(self) -> int:
+            return 1
+
+    object.__setattr__(forged, "event", "model_serve_failed")
+    object.__setattr__(forged, "props", SwitchEventMapping())
+    object.__setattr__(forged, "nth_model_served", None)
+    object.__setattr__(forged, "_authority", accepted._authority)
+
+    assert track_module._enqueue_accepted(forged) is True
+    [item] = sender.items
+    assert item["event"] == "model_serve_failed"
+    assert item["properties"]["error_class"] == "other"
+
+
+def test_direct_constructor_cannot_enqueue_invalid_props_when_consent_denied(
+    monkeypatch,
+):
+    sender = inject_sender(monkeypatch)
+    accepted = track_module.would_accept("app_opened", {})
+    assert accepted is not None
+    monkeypatch.setattr(consent_runtime, "upload_allowed", lambda: False)
+    forged = track_module._AcceptedEvent(
+        "app_opened",
+        {"free_text": "direct-constructor-no-consent"},
+        None,
+        accepted._authority,
+    )
+
+    assert track_module._enqueue_accepted(forged) is False
+    assert sender.items == []
+
+
+def test_duck_typed_token_with_real_authority_is_rejected(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    accepted = track_module.would_accept("app_opened", {})
+    assert accepted is not None
+    duck = SimpleNamespace(
+        event="app_opened",
+        props={"free_text": "duck"},
+        nth_model_served=None,
+        _authority=accepted._authority,
+    )
+
+    assert track_module._enqueue_accepted(duck) is False
+    assert sender.items == []
+
+
+def test_track_uses_one_validated_mapping_snapshot(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    props = ChangingMapping()
+    validated: list[dict[str, object]] = []
+    real_validate = track_module.registry.validate
+    real_build = track_module.envelope._build_batch_item_from_validated
+
+    def validate(event, snapshot):
+        accepted = real_validate(event, snapshot)
+        assert accepted is not None
+        validated.append(accepted)
+        return accepted
+
+    def build(event, accepted_props, common):
+        assert isinstance(accepted_props, dict)
+        assert accepted_props is not validated[0]
+        assert accepted_props is not validated[1]
+        assert accepted_props == validated[1]
+        return real_build(event, accepted_props, common)
+
+    monkeypatch.setattr(track_module.registry, "validate", validate)
+    monkeypatch.setattr(
+        track_module.envelope,
+        "_build_batch_item_from_validated",
+        build,
+    )
+
+    assert track_module.track("model_serve_failed", props) is True
+    assert props.reads == 1
+    assert len(validated) == 2
+    [item] = sender.items
+    properties = item["properties"]
+    assert isinstance(properties, dict)
+    assert properties["error_class"] == "other"
+
+
 def test_zero_nth_model_served_is_omitted(monkeypatch):
     sender = inject_sender(monkeypatch)
     result = track_module.track("app_opened", {}, nth_model_served=0)
-    assert result is None
+    assert result is True
     [item] = sender.items
     properties = item["properties"]
     assert isinstance(properties, dict)
@@ -251,9 +479,12 @@ def test_zero_nth_model_served_is_omitted(monkeypatch):
 
 def test_app_opened_attempted_once_and_surface_selected(monkeypatch):
     calls: list[tuple[str, dict[str, object]]] = []
-    monkeypatch.setattr(
-        track_module, "track", lambda event, props: calls.append((event, props))
-    )
+
+    def enqueue(accepted) -> bool:
+        calls.append((accepted.event, dict(accepted.props)))
+        return True
+
+    monkeypatch.setattr(track_module, "_enqueue_accepted", enqueue)
     track_module._emit_app_opened("server")
     track_module._emit_app_opened("server")
     assert calls == [("app_opened", {})]
@@ -302,17 +533,51 @@ def test_cli_lifecycle_exclusions(monkeypatch, command):
     assert calls == []
 
 
-def test_cli_lifecycle_skips_sidecar(monkeypatch):
-    calls: list[str] = []
-    monkeypatch.setattr(
-        posthog_sender, "install_atexit", lambda: calls.append("atexit")
-    )
-    monkeypatch.setattr(
-        track_module, "_emit_app_opened", lambda surface: calls.append(surface)
-    )
-    monkeypatch.setattr(consent_runtime, "detect_role", lambda: ProcessRole.SIDECAR)
+def test_cli_sidecar_sets_desktop_surface_without_app_opened(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    monkeypatch.setenv("RAPID_MLX_PROCESS_ROLE", "desktop-sidecar")
     cli._start_v2_lifecycle("serve")
-    assert calls == []
+    track_module.track("active_day", {})
+    track_module.track(
+        "model_served",
+        {
+            "model": "whisper-small",
+            "model_type": "audio",
+            "auto_selected": False,
+            "quant": "unknown",
+        },
+    )
+    assert [item["event"] for item in sender.items] == ["active_day", "model_served"]
+    assert {item["properties"]["surface"] for item in sender.items} == {"desktop"}
+
+
+def test_process_context_falls_back_to_desktop_for_sidecar(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    monkeypatch.setenv("RAPID_MLX_PROCESS_ROLE", "desktop-sidecar")
+    track_module.track("active_day", {})
+    [item] = sender.items
+    assert item["properties"]["surface"] == "desktop"
+
+
+def test_process_context_defaults_to_cli_when_role_detection_fails(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    monkeypatch.setattr(
+        consent_runtime,
+        "detect_role",
+        lambda: (_ for _ in ()).throw(RuntimeError("role unavailable")),
+    )
+    track_module.track("active_day", {})
+    [item] = sender.items
+    assert item["properties"]["surface"] == "cli"
+
+
+def test_watchdog_sidecar_keeps_cli_surface_without_app_opened(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    monkeypatch.setenv("RAPID_MLX_WATCHDOG_PPID", "4242")
+    cli._start_v2_lifecycle("serve")
+    track_module.track("active_day", {})
+    [item] = sender.items
+    assert item["properties"]["surface"] == "cli"
 
 
 @pytest.mark.parametrize(
@@ -365,12 +630,39 @@ def test_cli_main_starts_lifecycle_after_consent(monkeypatch, capsys):
     assert calls == ["consent", "cli"]
 
 
+def test_shared_lifecycle_accepts_desktop_surface_without_app_opened(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(
+        posthog_sender, "install_atexit", lambda: calls.append("atexit")
+    )
+    monkeypatch.setattr(consent_runtime, "detect_role", lambda: ProcessRole.DESKTOP)
+    track_module.start_lifecycle("server")
+    assert track_module._surface == "desktop"
+    assert calls == []
+
+
+def test_desktop_lifecycle_stays_suppressed_after_context_resolution(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    monkeypatch.setenv("RAPID_MLX_PROCESS_ROLE", "desktop-sidecar")
+    track_module.track("active_day", {})
+    calls: list[str] = []
+    monkeypatch.setattr(
+        posthog_sender, "install_atexit", lambda: calls.append("atexit")
+    )
+    monkeypatch.setattr(
+        track_module, "_emit_app_opened", lambda surface: calls.append(surface)
+    )
+    track_module.start_lifecycle("server")
+    assert [item["event"] for item in sender.items] == ["active_day"]
+    assert calls == []
+
+
 def test_shared_lifecycle_rejects_invalid_surface_and_denial(monkeypatch):
     calls: list[str] = []
     monkeypatch.setattr(
         posthog_sender, "install_atexit", lambda: calls.append("atexit")
     )
-    track_module.start_lifecycle("desktop")
+    track_module.start_lifecycle("mobile")
     monkeypatch.setattr(track_module, "_upload_allowed", lambda: False)
     track_module.start_lifecycle("cli")
     assert calls == []
@@ -675,6 +967,671 @@ def test_allowed_official_cli_posts_one_app_opened_to_loopback(tmp_path):
     assert items[0]["properties"]["surface"] == "cli"
 
 
+@pytest.fixture(scope="module")
+def official_entrypoint_layout(tmp_path_factory):
+    root = tmp_path_factory.mktemp("telemetry-official-entrypoints")
+    site_dir = root / "site-packages"
+    package_dir = site_dir / "rapid_mlx"
+    shutil.copytree(
+        REPO_ROOT / "rapid_mlx",
+        package_dir,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
+    (package_dir / "telemetry" / "_release_stamp.json").write_text(
+        json.dumps({"channel": "rc", "posthog_key": "phc_" + "a" * 32}),
+        encoding="utf-8",
+    )
+    metadata_dir = site_dir / "rapid_mlx-0.15.1.dist-info"
+    metadata_dir.mkdir()
+    (metadata_dir / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: rapid-mlx\nVersion: 0.15.1\n",
+        encoding="utf-8",
+    )
+
+    hooks_dir = root / "hooks"
+    hooks_dir.mkdir()
+    (hooks_dir / "sitecustomize.py").write_text(
+        """
+import os
+import signal
+import sys
+
+from rapid_mlx import cli
+
+if os.environ.get("RAPID_MLX_TEST_PREFLIGHT_EXIT") == "1":
+    from types import SimpleNamespace
+    from rapid_mlx.runtime import video_lane
+
+    class _PinnedVersion(tuple):
+        major = 3
+        minor = 11
+
+    video_lane.sys = SimpleNamespace(
+        version_info=_PinnedVersion((3, 11)), stderr=sys.stderr
+    )
+    video_lane._default_video_runtime_requirements = lambda _model: [
+        "the `rapid-mlx[video]` Python extra"
+    ]
+    video_lane._resolve_ffmpeg = lambda: "/usr/bin/ffmpeg"
+
+def _capture_later_event_and_stop(*_args, **_kwargs):
+    from rapid_mlx.telemetry import posthog_sender, track
+
+    if os.environ.get("RAPID_MLX_TEST_READY") == "1":
+        import asyncio
+
+        import uvicorn
+
+        from rapid_mlx._uvicorn import AcceptingConnectionsServer
+
+        async def app(scope, receive, send):
+            if scope["type"] != "lifespan":
+                return
+            while True:
+                message = await receive()
+                if message["type"] == "lifespan.startup":
+                    await send({"type": "lifespan.startup.complete"})
+                elif message["type"] == "lifespan.shutdown":
+                    await send({"type": "lifespan.shutdown.complete"})
+                    return
+
+        async def start_once():
+            instance = None
+
+            def stop_after_bind():
+                instance.should_exit = True
+
+            instance = AcceptingConnectionsServer(
+                uvicorn.Config(app, host="127.0.0.1", port=0, log_level="error"),
+                on_server_accepting=stop_after_bind,
+            )
+            await instance.serve()
+
+        asyncio.run(start_once())
+        posthog_sender.get_sender().flush(5.0)
+        raise SystemExit(0)
+    if os.environ.get("RAPID_MLX_TEST_SIGKILL") == "1":
+        posthog_sender.get_sender().flush(2.0)
+        os.kill(os.getpid(), signal.SIGKILL)
+    track.track("active_day", {})
+    posthog_sender.get_sender().flush(5.0)
+    raise SystemExit(0)
+
+if os.environ.get("RAPID_MLX_TEST_PREFLIGHT_EXIT") != "1":
+    cli._port_preflight_or_die = _capture_later_event_and_stop
+    cli._validate_primary_lifecycle_args = _capture_later_event_and_stop
+    cli.models_command = _capture_later_event_and_stop
+
+if sys.argv[1:3] == ["serve", "owner/gated-model"]:
+    import huggingface_hub
+    import requests
+    from huggingface_hub.errors import HfHubHTTPError
+    from types import SimpleNamespace
+
+    response = requests.Response()
+    response.status_code = 403
+    response.url = "https://huggingface.co/owner/gated-model"
+    response.request = requests.Request("GET", response.url).prepare()
+    cli._validate_primary_lifecycle_args = lambda _args: None
+    # The product now validates an explicit port before any model download.
+    # This scenario owns the gated-Hub failure, so keep the unrelated listener
+    # probe inert instead of letting the fixture's generic early-exit hook win.
+    cli._port_preflight_or_die = lambda *_args, **_kwargs: None
+    cli._cache_runnability = lambda _model: False
+    cli._offline_hub_mode_active = lambda: False
+    cli._check_disk_space = lambda *_args, **_kwargs: None
+    cli._try_mirror_prefetch = lambda *_args, **_kwargs: False
+    huggingface_hub.model_info = lambda *_args, **_kwargs: SimpleNamespace(
+        sha="abc123", siblings=[]
+    )
+    huggingface_hub.snapshot_download = lambda *_args, **_kwargs: (
+        (_ for _ in ()).throw(
+            HfHubHTTPError("token=wire-secret", response=response)
+        )
+    )
+
+if sys.argv[1:3] == ["serve", "gemma-4-e4b-4bit"]:
+    import pathlib
+    import time
+
+    from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
+
+    def _missing_vision_runtime(_args):
+        barrier_dir = os.environ.get("TEL_DEDUPE_BARRIER_DIR")
+        if barrier_dir is not None:
+            from rapid_mlx.telemetry import model_events
+
+            # Exercise ledger serialization without the production latency
+            # escape hatch; unit tests separately cover timeout fail-open.
+            model_events._SERVE_FAILED_LOCK_WAIT_SECONDS = 5.0
+            barrier = pathlib.Path(barrier_dir)
+            (barrier / f"ready-{os.getpid()}").write_text("ready")
+            deadline = time.monotonic() + 5
+            while not (barrier / "go").exists():
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("telemetry dedupe barrier timed out")
+                time.sleep(0.001)
+        raise OptionalRuntimeMissing(
+            extra="vision",
+            install_hint="pip install 'rapid-mlx[vision]'",
+            detail="deterministic missing vision runtime",
+            status="broken",
+        )
+
+    cli.serve_command = _missing_vision_runtime
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    bin_dir = root / "bin"
+    bin_dir.mkdir()
+    console = bin_dir / "rapid-mlx"
+    console.write_text(
+        f"#!{sys.executable}\n"
+        "from rapid_mlx.cli import cli_entrypoint\n"
+        "cli_entrypoint()\n",
+        encoding="utf-8",
+    )
+    console.chmod(0o755)
+    return root, hooks_dir, site_dir, console
+
+
+@pytest.mark.parametrize(
+    ("entrypoint", "role_env", "expected_events", "expected_surface"),
+    [
+        (
+            "module-server",
+            "watchdog",
+            ["server_start_state", "active_day", "server_start_state"],
+            "cli",
+        ),
+        (
+            "cli-serve",
+            "watchdog",
+            ["server_start_state", "active_day", "server_start_state"],
+            "cli",
+        ),
+        (
+            "module-server",
+            "desktop",
+            ["server_start_state", "active_day", "server_start_state"],
+            "desktop",
+        ),
+        (
+            "cli-serve",
+            "desktop",
+            ["server_start_state", "active_day", "server_start_state"],
+            "desktop",
+        ),
+        (
+            "module-server",
+            "standalone",
+            [
+                "app_opened",
+                "server_start_state",
+                "active_day",
+                "server_start_state",
+            ],
+            "server",
+        ),
+        (
+            "cli-serve",
+            "standalone",
+            [
+                "app_opened",
+                "server_start_state",
+                "active_day",
+                "server_start_state",
+            ],
+            "server",
+        ),
+        ("other-cli", "standalone", ["app_opened", "active_day"], "cli"),
+    ],
+)
+def test_entrypoint_role_surface_matrix(
+    tmp_path,
+    official_entrypoint_layout,
+    entrypoint,
+    role_env,
+    expected_events,
+    expected_surface,
+):
+    root, hooks_dir, site_dir, console = official_entrypoint_layout
+    home = tmp_path / "home"
+    telemetry_dir = home / ".rapid-mlx"
+    telemetry_dir.mkdir(parents=True)
+    (telemetry_dir / "telemetry-consent.yaml").write_text(
+        "consent: true\nprompted_version: 0.15.1\nnotice_revision_seen: 1\n",
+        encoding="utf-8",
+    )
+    fake_model = home / "fake-model"
+    fake_model.mkdir()
+
+    sink = HTTPServer(("127.0.0.1", 0), _CaptureHandler)
+    sink.bodies = []  # type: ignore[attr-defined]
+    thread = threading.Thread(target=sink.serve_forever, daemon=True)
+    thread.start()
+    env = dict(
+        os.environ,
+        HOME=str(home),
+        USER="rc",
+        PATH=f"{root / 'bin'}{os.pathsep}{os.environ.get('PATH', '')}",
+        PYTHONPATH=os.pathsep.join(
+            (
+                str(hooks_dir),
+                str(site_dir),
+                *(path for path in sys.path if path.endswith("site-packages")),
+            )
+        ),
+        RAPID_MLX_POSTHOG_URL=f"http://127.0.0.1:{sink.server_port}/batch/",
+        RAPID_MLX_DISABLE_VERSION_CHECK="1",
+        HF_HUB_OFFLINE="1",
+        TRANSFORMERS_OFFLINE="1",
+    )
+    for name in (*state.CI_ENV_VARS, state.ENV_VAR, state.DO_NOT_TRACK_ENV):
+        env.pop(name, None)
+    env.pop("RAPID_MLX_PROCESS_ROLE", None)
+    env.pop("RAPID_MLX_WATCHDOG_PPID", None)
+    if role_env == "watchdog":
+        env["RAPID_MLX_WATCHDOG_PPID"] = str(os.getpid())
+    elif role_env == "desktop":
+        env["RAPID_MLX_PROCESS_ROLE"] = "desktop-sidecar"
+
+    if entrypoint == "module-server":
+        command = [sys.executable, "-m", "rapid_mlx.server", "--port", "0"]
+    elif entrypoint == "cli-serve":
+        command = [str(console), "serve", str(fake_model), "--port", "0"]
+    else:
+        command = [str(console), "models", "--json"]
+    try:
+        proc = subprocess.run(
+            command,
+            cwd=home,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    finally:
+        sink.shutdown()
+        thread.join(timeout=2.0)
+        sink.server_close()
+
+    assert proc.returncode == 0
+    assert "Traceback" not in proc.stderr
+    items = [
+        item
+        for body in sink.bodies  # type: ignore[attr-defined]
+        for item in json.loads(body)["batch"]
+    ]
+    assert [item["event"] for item in items] == expected_events
+    assert sum(item["event"] == "app_opened" for item in items) == (
+        expected_events.count("app_opened")
+    )
+    assert {item["properties"]["surface"] for item in items} == {expected_surface}
+    if entrypoint != "other-cli":
+        start_items = [item for item in items if item["event"] == "server_start_state"]
+        assert [item["properties"]["state"] for item in start_items] == [
+            "attempted",
+            "failed",
+        ]
+        assert start_items[-1]["properties"]["failure_stage"] == "preflight"
+        assert len({item["properties"]["session_id"] for item in start_items}) == 1
+
+
+@pytest.mark.parametrize(
+    (
+        "mode_env",
+        "model_arg",
+        "returncode",
+        "expected_states",
+        "video_error_expected",
+    ),
+    [
+        (
+            "RAPID_MLX_TEST_PREFLIGHT_EXIT",
+            "ltx-2.3-mlx-q4",
+            2,
+            ["attempted", "failed"],
+            True,
+        ),
+        (
+            "RAPID_MLX_TEST_SIGKILL",
+            None,
+            -signal.SIGKILL,
+            ["attempted"],
+            False,
+        ),
+    ],
+)
+def test_server_start_exit_delivery_and_crash_gap(
+    tmp_path,
+    official_entrypoint_layout,
+    mode_env,
+    model_arg,
+    returncode,
+    expected_states,
+    video_error_expected,
+):
+    root, hooks_dir, site_dir, console = official_entrypoint_layout
+    home = tmp_path / "home"
+    telemetry_dir = home / ".rapid-mlx"
+    telemetry_dir.mkdir(parents=True)
+    (telemetry_dir / "telemetry-consent.yaml").write_text(
+        "consent: true\nprompted_version: 0.15.1\nnotice_revision_seen: 1\n",
+        encoding="utf-8",
+    )
+    fake_model = home / "fake-model"
+    fake_model.mkdir()
+    sink = HTTPServer(("127.0.0.1", 0), _CaptureHandler)
+    sink.bodies = []  # type: ignore[attr-defined]
+    thread = threading.Thread(target=sink.serve_forever, daemon=True)
+    thread.start()
+    env = dict(
+        os.environ,
+        HOME=str(home),
+        USER="rc",
+        PATH=f"{root / 'bin'}{os.pathsep}{os.environ.get('PATH', '')}",
+        PYTHONPATH=os.pathsep.join(
+            (
+                str(hooks_dir),
+                str(site_dir),
+                *(path for path in sys.path if path.endswith("site-packages")),
+            )
+        ),
+        RAPID_MLX_POSTHOG_URL=f"http://127.0.0.1:{sink.server_port}/batch/",
+        RAPID_MLX_DISABLE_VERSION_CHECK="1",
+        HF_HUB_OFFLINE="1",
+        TRANSFORMERS_OFFLINE="1",
+        **{mode_env: "1"},
+    )
+    for name in (*state.CI_ENV_VARS, state.ENV_VAR, state.DO_NOT_TRACK_ENV):
+        env.pop(name, None)
+    try:
+        selected_model = model_arg or str(fake_model)
+        proc = subprocess.run(
+            [str(console), "serve", selected_model, "--port", "0"],
+            cwd=home,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    finally:
+        sink.shutdown()
+        thread.join(timeout=2.0)
+        sink.server_close()
+
+    assert proc.returncode == returncode
+    # This test owns consent-before-capture and terminal delivery. Alias and
+    # dependency diagnostics belong to other modules, so pin only their stable
+    # public seams instead of byte-comparing their complete output.
+    assert NOTICE_LINE in proc.stderr.splitlines()
+    video_error_prefix = "  Error: video generation requires"
+    assert (
+        any(line.startswith(video_error_prefix) for line in proc.stderr.splitlines())
+        is video_error_expected
+    )
+    items = [
+        item
+        for body in sink.bodies  # type: ignore[attr-defined]
+        for item in json.loads(body)["batch"]
+        if item["event"] == "server_start_state"
+    ]
+    assert [item["properties"]["state"] for item in items] == expected_states
+    if expected_states[-1] == "failed":
+        assert items[-1]["properties"]["failure_stage"] == "preflight"
+
+
+def test_gated_serve_posts_one_resolve_and_serve_failure_to_loopback(
+    tmp_path, official_entrypoint_layout
+):
+    root, hooks_dir, site_dir, console = official_entrypoint_layout
+    home = tmp_path / "home"
+    telemetry_dir = home / ".rapid-mlx"
+    telemetry_dir.mkdir(parents=True)
+    (telemetry_dir / "telemetry-consent.yaml").write_text(
+        "consent: true\nprompted_version: 0.15.1\nnotice_revision_seen: 1\n",
+        encoding="utf-8",
+    )
+    sink = HTTPServer(("127.0.0.1", 0), _CaptureHandler)
+    sink.bodies = []  # type: ignore[attr-defined]
+    thread = threading.Thread(target=sink.serve_forever, daemon=True)
+    thread.start()
+    env = dict(
+        os.environ,
+        HOME=str(home),
+        USER="rc",
+        PATH=f"{root / 'bin'}{os.pathsep}{os.environ.get('PATH', '')}",
+        PYTHONPATH=os.pathsep.join(
+            (
+                str(hooks_dir),
+                str(site_dir),
+                *(path for path in sys.path if path.endswith("site-packages")),
+            )
+        ),
+        RAPID_MLX_POSTHOG_URL=f"http://127.0.0.1:{sink.server_port}/batch/",
+        RAPID_MLX_DISABLE_VERSION_CHECK="1",
+    )
+    for name in (
+        *state.CI_ENV_VARS,
+        state.ENV_VAR,
+        state.DO_NOT_TRACK_ENV,
+        "HF_HUB_OFFLINE",
+        "TRANSFORMERS_OFFLINE",
+    ):
+        env.pop(name, None)
+    try:
+        proc = subprocess.run(
+            [str(console), "serve", "owner/gated-model", "--port", "0"],
+            cwd=home,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    finally:
+        sink.shutdown()
+        thread.join(timeout=2.0)
+        sink.server_close()
+
+    assert proc.returncode == 1
+    assert "huggingface-cli login" in proc.stderr
+    payload = b"\n".join(sink.bodies).decode()  # type: ignore[attr-defined]
+    assert "wire-secret" not in payload
+    items = [
+        item
+        for body in sink.bodies  # type: ignore[attr-defined]
+        for item in json.loads(body)["batch"]
+    ]
+    resolve_failures = [
+        item
+        for item in items
+        if item["event"] == "server_start_state"
+        and item["properties"]["state"] == "failed"
+        and item["properties"]["failure_stage"] == "resolve"
+    ]
+    serve_failures = [item for item in items if item["event"] == "model_serve_failed"]
+    pull_failures = [item for item in items if item["event"] == "model_pull_failed"]
+    assert len(resolve_failures) == 1
+    assert len(serve_failures) == 1
+    assert serve_failures[0]["properties"]["error_class"] == "download_failed"
+    assert len(pull_failures) == 1
+    assert pull_failures[0]["properties"]["error_class"] == "gated"
+
+
+def test_simultaneous_missing_extra_serve_failures_emit_once(
+    tmp_path, official_entrypoint_layout
+):
+    root, hooks_dir, site_dir, console = official_entrypoint_layout
+    home = tmp_path / "home"
+    telemetry_dir = home / ".rapid-mlx"
+    telemetry_dir.mkdir(parents=True)
+    (telemetry_dir / "telemetry-consent.yaml").write_text(
+        "consent: true\nprompted_version: 0.15.1\nnotice_revision_seen: 1\n",
+        encoding="utf-8",
+    )
+    sink = HTTPServer(("127.0.0.1", 0), _CaptureHandler)
+    sink.bodies = []  # type: ignore[attr-defined]
+    thread = threading.Thread(target=sink.serve_forever, daemon=True)
+    thread.start()
+    barrier_dir = tmp_path / "barrier"
+    barrier_dir.mkdir()
+    env = dict(
+        os.environ,
+        HOME=str(home),
+        USER="rc",
+        PATH=f"{root / 'bin'}{os.pathsep}{os.environ.get('PATH', '')}",
+        PYTHONPATH=os.pathsep.join(
+            (
+                str(hooks_dir),
+                str(site_dir),
+                *(path for path in sys.path if path.endswith("site-packages")),
+            )
+        ),
+        RAPID_MLX_POSTHOG_URL=f"http://127.0.0.1:{sink.server_port}/batch/",
+        RAPID_MLX_DISABLE_VERSION_CHECK="1",
+        TEL_DEDUPE_BARRIER_DIR=str(barrier_dir),
+    )
+    for name in (*state.CI_ENV_VARS, state.ENV_VAR, state.DO_NOT_TRACK_ENV):
+        env.pop(name, None)
+    process_count = 8
+    deadline = time.monotonic() + 10
+    procs = [
+        subprocess.Popen(
+            [str(console), "serve", "gemma-4-e4b-4bit", "--port", "0"],
+            cwd=home,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for _ in range(process_count)
+    ]
+    outputs: list[tuple[str, str]] = []
+    try:
+        while len(list(barrier_dir.glob("ready-*"))) != process_count:
+            assert time.monotonic() < deadline, "serve processes missed barrier"
+            time.sleep(0.005)
+        (barrier_dir / "go").write_text("go", encoding="utf-8")
+        for proc in procs:
+            outputs.append(
+                proc.communicate(timeout=max(0.1, deadline - time.monotonic()))
+            )
+    finally:
+        for proc in procs:
+            if proc.poll() is None:
+                proc.terminate()
+        for proc in procs:
+            if proc.poll() is None:
+                proc.wait(timeout=1)
+        sink.shutdown()
+        thread.join(timeout=2.0)
+        sink.server_close()
+
+    assert [proc.returncode for proc in procs] == [2] * process_count, [
+        stderr[-300:] for _, stderr in outputs
+    ]
+    items = [
+        item
+        for body in sink.bodies  # type: ignore[attr-defined]
+        for item in json.loads(body)["batch"]
+    ]
+    serve_failures = [item for item in items if item["event"] == "model_serve_failed"]
+    start_states = [item for item in items if item["event"] == "server_start_state"]
+    assert len(serve_failures) == 1
+    assert serve_failures[0]["properties"]["error_class"] == "missing_extra"
+    assert serve_failures[0]["properties"]["extra"] == "vision"
+    record_path = telemetry_dir / "state" / "serve-failed-recent.json"
+    assert len(json.loads(record_path.read_text(encoding="utf-8"))) == 1
+    assert record_path.stat().st_mode & 0o777 == 0o600
+    assert (
+        sorted(item["properties"]["state"] for item in start_states)
+        == ["attempted"] * process_count + ["failed"] * process_count
+    )
+
+
+@pytest.mark.parametrize(
+    ("extra_args", "expected_policy", "disabled"),
+    [([], "eager", False), (["--lazy-load"], "lazy", False), ([], None, True)],
+)
+def test_server_start_ready_wire_order_and_opt_out(
+    tmp_path,
+    official_entrypoint_layout,
+    extra_args,
+    expected_policy,
+    disabled,
+):
+    root, hooks_dir, site_dir, console = official_entrypoint_layout
+    home = tmp_path / "home"
+    telemetry_dir = home / ".rapid-mlx"
+    telemetry_dir.mkdir(parents=True)
+    (telemetry_dir / "telemetry-consent.yaml").write_text(
+        "consent: true\nprompted_version: 0.15.1\nnotice_revision_seen: 1\n",
+        encoding="utf-8",
+    )
+    sink = HTTPServer(("127.0.0.1", 0), _CaptureHandler)
+    sink.bodies = []  # type: ignore[attr-defined]
+    thread = threading.Thread(target=sink.serve_forever, daemon=True)
+    thread.start()
+    env = dict(
+        os.environ,
+        HOME=str(home),
+        USER="rc",
+        PATH=f"{root / 'bin'}{os.pathsep}{os.environ.get('PATH', '')}",
+        PYTHONPATH=os.pathsep.join(
+            (
+                str(hooks_dir),
+                str(site_dir),
+                *(path for path in sys.path if path.endswith("site-packages")),
+            )
+        ),
+        RAPID_MLX_POSTHOG_URL=f"http://127.0.0.1:{sink.server_port}/batch/",
+        RAPID_MLX_DISABLE_VERSION_CHECK="1",
+        RAPID_MLX_TEST_READY="1",
+        HF_HUB_OFFLINE="1",
+        TRANSFORMERS_OFFLINE="1",
+    )
+    for name in (*state.CI_ENV_VARS, state.ENV_VAR, state.DO_NOT_TRACK_ENV):
+        env.pop(name, None)
+    if disabled:
+        env[state.ENV_VAR] = "0"
+        env[state.DO_NOT_TRACK_ENV] = "1"
+    try:
+        proc = subprocess.run(
+            [str(console), "serve", "qwen3.5-4b-4bit", "--port", "0", *extra_args],
+            cwd=home,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    finally:
+        sink.shutdown()
+        thread.join(timeout=2.0)
+        sink.server_close()
+
+    assert proc.returncode == 0
+    items = [
+        item
+        for body in sink.bodies  # type: ignore[attr-defined]
+        for item in json.loads(body)["batch"]
+        if item["event"] == "server_start_state"
+    ]
+    if disabled:
+        assert items == []
+        return
+    assert [item["properties"]["state"] for item in items] == ["attempted", "ready"]
+    assert {item["properties"]["model_type"] for item in items} == {"llm"}
+    assert {item["properties"]["load_policy"] for item in items} == {expected_policy}
+    assert len({item["properties"]["session_id"] for item in items}) == 1
+    assert all("failure_stage" not in item["properties"] for item in items)
+
+
 def test_platform_and_cohort_stamp_cached_within_utc_day(monkeypatch):
     sender = inject_sender(monkeypatch)
     facts_calls = 0
@@ -714,6 +1671,22 @@ def test_cohort_stamp_retries_after_transient_store_failure(monkeypatch):
     assert sender.items[1]["properties"]["days_since_first_run_bucket"] == "7-29"
 
 
+@pytest.mark.parametrize("bucket", ["0", "1", "2-6", "7-29", "30+", "not-a-bucket"])
+def test_only_declared_cohort_bucket_values_reach_wire(monkeypatch, bucket):
+    sender = inject_sender(monkeypatch)
+    monkeypatch.setattr(
+        track_module.store, "days_since_first_run_bucket", lambda: bucket
+    )
+
+    track_module.track("app_opened", {})
+
+    if bucket in track_module.store.DAY_BUCKETS:
+        [item] = sender.items
+        assert item["properties"]["days_since_first_run_bucket"] == bucket
+    else:
+        assert sender.items == []
+
+
 def test_utc_day_uses_utc_clock_near_local_midnight(monkeypatch):
     class FakeDatetime:
         @classmethod
@@ -744,10 +1717,12 @@ def test_cohort_stamp_reread_after_utc_day_rollover(monkeypatch):
 def test_surface_rejects_invalid_and_cannot_change_after_context(monkeypatch):
     inject_sender(monkeypatch)
     track_module._set_surface("desktop")
-    assert track_module._surface is None
+    assert track_module._surface == "desktop"
+    track_module._set_surface("mobile")
+    assert track_module._surface == "desktop"
     track_module.track("app_opened", {})
     track_module._set_surface("server")
-    assert track_module._surface is None
+    assert track_module._surface == "desktop"
 
 
 def test_none_common_props_drops_event(monkeypatch):
@@ -850,15 +1825,26 @@ def test_server_entrypoint_lifecycle_source_contract():
         and isinstance(node.value, ast.Call)
         and ast.unparse(node.value.func) == "consent_runtime.startup"
     )
-    lifecycle_index = next(
-        index
-        for index, node in enumerate(main.body)
-        if isinstance(node, ast.Expr)
-        and isinstance(node.value, ast.Call)
-        and ast.unparse(node.value.func) == "telemetry_v2.start_lifecycle"
+    role_assignment = next(
+        node
+        for node in main.body
+        if isinstance(node, ast.Assign)
+        and ast.unparse(node.value) == "consent_runtime.detect_role()"
     )
-    lifecycle_call = main.body[lifecycle_index]
-    assert lifecycle_index == startup_index + 2
+    guard = next(
+        node
+        for node in main.body
+        if isinstance(node, ast.If)
+        and ast.unparse(node.test)
+        == "not (telemetry_v2.set_surface_for_role(role) or role is ProcessRole.SIDECAR)"
+    )
+    assert len(guard.body) == 1
+    lifecycle_call = guard.body[0]
+    assert isinstance(lifecycle_call, ast.Expr)
+    assert isinstance(lifecycle_call.value, ast.Call)
+    assert ast.unparse(lifecycle_call.value.func) == "telemetry_v2.start_lifecycle"
+    assert role_assignment.lineno > main.body[startup_index].lineno
+    assert guard.lineno > role_assignment.lineno
     assert len(lifecycle_call.value.args) == 1
     assert isinstance(lifecycle_call.value.args[0], ast.Constant)
     assert lifecycle_call.value.args[0].value == "server"
@@ -872,6 +1858,7 @@ def test_server_module_entrypoint_starts_shared_v2_lifecycle(monkeypatch):
         pass
 
     calls: list[str] = []
+    sender = inject_sender(monkeypatch)
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
@@ -888,6 +1875,10 @@ def test_server_module_entrypoint_starts_shared_v2_lifecycle(monkeypatch):
     with pytest.raises(StopAfterLifecycleError):
         server_module.main()
     assert calls == ["server"]
+    assert [item["properties"]["state"] for item in sender.items] == [
+        "attempted",
+        "failed",
+    ]
 
 
 def test_session_transport_guard_assertion_rejects_recorded_post(

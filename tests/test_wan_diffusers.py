@@ -675,6 +675,66 @@ def test_generate_runtime_preserves_preconverted_fallback(tmp_path: Path) -> Non
     assert calls == [{"model_dir": "converted"}]
 
 
+@pytest.mark.parametrize("fail", [False, True], ids=["success", "failure"])
+def test_preconverted_runtime_notifies_only_after_materialization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fail: bool
+) -> None:
+    mlx = ModuleType("mlx")
+    mlx_core = ModuleType("mlx.core")
+    mlx.core = mlx_core
+    monkeypatch.setitem(sys.modules, "mlx", mlx)
+    monkeypatch.setitem(sys.modules, "mlx.core", mlx_core)
+
+    events = []
+    calls = []
+
+    def load_wan_model(*_args, **_kwargs):
+        events.append("materialized")
+        return object()
+
+    def generate_template(**kwargs):
+        calls.append(kwargs)
+        events.append("generate_entered")
+        if fail:
+            raise RuntimeError("generation failed")
+        globals()["load_wan_model"](object(), SimpleNamespace(dual_model=False))
+        events.append("generate_complete")
+
+    generator = SimpleNamespace(
+        generate_video=FunctionType(
+            generate_template.__code__,
+            {**generate_template.__globals__, "load_wan_model": load_wan_model},
+            "generate_video",
+            generate_template.__defaults__,
+            generate_template.__closure__,
+        )
+    )
+
+    def on_loaded() -> None:
+        events.append("on_loaded")
+
+    generation_kwargs = {"model_dir": "converted", "prompt": "test"}
+    if fail:
+        with pytest.raises(RuntimeError, match="generation failed"):
+            generate_with_runtime(
+                tmp_path, generator, generation_kwargs, on_loaded=on_loaded
+            )
+        assert events == ["generate_entered"]
+    else:
+        generate_with_runtime(
+            tmp_path, generator, generation_kwargs, on_loaded=on_loaded
+        )
+        assert events == [
+            "generate_entered",
+            "materialized",
+            "on_loaded",
+            "generate_complete",
+        ]
+
+    assert calls == [generation_kwargs]
+    assert events.count("on_loaded") == (0 if fail else 1)
+
+
 def test_generate_runtime_preserves_preconverted_wan22_fallback(
     tmp_path: Path,
 ) -> None:

@@ -27,11 +27,13 @@ def run_server(
     *,
     host: str,
     port: int,
+    port_explicit: bool | None = None,
     served_model_name: str,
     default_max_tokens: int,
     cors_origins: list[str],
     uvicorn_log_level: str,
     no_thinking: bool = False,
+    default_reasoning_effort: str | None = None,
     api_key: str | None = None,
     rate_limit: int = 0,
     max_request_bytes: int = 8 * 1024 * 1024,
@@ -45,9 +47,12 @@ def run_server(
 
     from rapid_mlx.speculative.dflash.server import _build_app, _dflash_executor
 
+    from rapid_mlx.telemetry.server_start import failure_stage
+
     require_product_memory()
-    target_path = download_target_snapshot()
-    mtp_path = download_mtp_snapshot()
+    with failure_stage("download"):
+        target_path = download_target_snapshot()
+        mtp_path = download_mtp_snapshot()
 
     def _load_all():
         return load_product_runtime(
@@ -58,7 +63,9 @@ def run_server(
             mtp_identity=MTP_REPO,
         )
 
-    model, tokenizer, runtime = _dflash_executor.submit(_load_all).result()
+    # Product runtime construction materializes both downloaded checkpoints.
+    with failure_stage("prepare"):
+        model, tokenizer, runtime = _dflash_executor.submit(_load_all).result()
     app = _build_app(
         model=model,
         processor=tokenizer,
@@ -67,6 +74,7 @@ def run_server(
         default_max_tokens=default_max_tokens,
         cors_origins=cors_origins,
         no_thinking=no_thinking,
+        default_reasoning_effort=default_reasoning_effort,
         api_key=api_key,
         rate_limit=rate_limit,
         max_request_bytes=max_request_bytes,
@@ -85,13 +93,20 @@ def run_server(
     )
     print()
     host_display = "localhost" if host == "0.0.0.0" else host
-    print(f"  Ready: http://{host_display}:{port}/v1  (DSpark K4 serial mode)")
-    print(f"  Docs:  http://{host_display}:{port}/docs")
-    print()
-    uvicorn.run(
+
+    def _print_ready() -> None:
+        print(f"  Ready: http://{host_display}:{port}/v1  (DSpark K4 serial mode)")
+        print(f"  Docs:  http://{host_display}:{port}/docs")
+        print()
+
+    from rapid_mlx._uvicorn import run_uvicorn
+
+    run_uvicorn(
         app,
         host=host,
         port=port,
         log_level=uvicorn_log_level,
         timeout_keep_alive=30,
+        on_server_accepting=_print_ready,
+        port_explicit=port_explicit,
     )

@@ -901,10 +901,13 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     # and ``--no-thinking`` from a single declaration. The previous
     # ``store_true`` + ``default=True`` was unreachable — there's no
     # ``--no-no-thinking`` and the flag silently couldn't be disabled.
+    # ``default=None`` keeps "not supplied" distinguishable from an explicit
+    # ``--no-thinking``: plain share treats both as off, pool mode must reject
+    # the explicit form for listings whose contract has reasoning always on.
     p.add_argument(
         "--thinking",
         action=argparse.BooleanOptionalAction,
-        default=False,
+        default=None,
         help=(
             "Forward thinking-mode behavior to serve. Default off "
             "(``--no-thinking``) so chat UIs see content immediately "

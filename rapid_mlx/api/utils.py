@@ -7,6 +7,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, version
 
 from packaging.version import InvalidVersion, Version
@@ -246,7 +247,13 @@ def _sanitize_with(text: str, pattern: re.Pattern[str]) -> str:
         return text
     for ch in text:
         if ch in _SPECIAL_TOKEN_CHARS:
-            cleaned = pattern.sub("", text).strip()
+            cleaned = pattern.sub("", text)
+            # Ordinary code and prose frequently contain marker characters
+            # such as ``[`` and ``<``. Preserve their exact stream whitespace
+            # when no structural token was actually removed.
+            if cleaned == text:
+                return text
+            cleaned = cleaned.strip()
             return cleaned or None  # collapse empty to None
     return text
 
@@ -1365,11 +1372,12 @@ def mllm_backbone_is_hybrid(model_name: str) -> bool:
 
 # Single source of truth for the machine-readable ``serving_lane_reason``
 # strings the engine emits. Every emitting site — ``resolve_serving_lane_decision``
-# below, the startup seed in ``server.py``, and the post-load rewrite in
-# ``engine/batched.py`` — must emit a value that lives in this set. Keeping it
-# here (next to the decision function) instead of inlining literals at each site
-# is what lets ``ServingLaneDecision`` fail fast on a stray or renamed reason
-# and lets the Desktop copy contract test enumerate the values authoritatively.
+# below, the startup seed in ``server.py``, the post-load rewrite in
+# ``engine/batched.py``, and qualified companion servers — must emit a value
+# that lives in this set. Keeping it here (next to the decision function)
+# instead of inlining literals at each site is what lets ``ServingLaneDecision``
+# fail fast on a stray or renamed reason and lets the Desktop copy contract test
+# enumerate the values authoritatively.
 SERVING_LANE_REASONS = frozenset(
     {
         # resolve_serving_lane_decision — text lane
@@ -1382,8 +1390,11 @@ SERVING_LANE_REASONS = frozenset(
         "vision_hybrid_cache_unsupported",
         "vision_hybrid_runtime_supported",
         "vision_hybrid_runtime_unsupported",
+        "vision_runtime_absent",
         "vision_memory_insufficient",
         "vision_supported",
+        # spec_decode/dspark/server.py — exact qualified companion pair
+        "qualified_companion_dspark",
         # engine/batched.py — post-load rewrite after a failed vision load
         "vision_weights_unavailable",
         # server.py — startup seed for modalities with no vision lane
@@ -1403,6 +1414,7 @@ AUTO_TEXT_FALLBACK_REASONS = frozenset(
         "vision_architecture_unavailable",
         "vision_hybrid_cache_unsupported",
         "vision_hybrid_runtime_unsupported",
+        "vision_runtime_absent",
         "vision_memory_insufficient",
     }
 )
@@ -1417,6 +1429,7 @@ VISION_SERVING_LANE_REASONS = frozenset(
         "vision_lane_forced",
         "vision_hybrid_runtime_supported",
         "vision_supported",
+        "qualified_companion_dspark",
     }
 )
 
@@ -1549,6 +1562,19 @@ def resolve_serving_lane_decision(
             False, "vision_hybrid_cache_unsupported", auto_text_fallback=True
         )
     if cache_mode == "arrays":
+        if vision_min_memory_gb is not None:
+            from ..models.mllm import VisionRuntimeStatus, vision_runtime_status
+
+            runtime_status, _ = vision_runtime_status()
+            if runtime_status is VisionRuntimeStatus.ABSENT:
+                return ServingLaneDecision(
+                    False, "vision_runtime_absent", auto_text_fallback=True
+                )
+            if runtime_status is not VisionRuntimeStatus.OK:
+                # Only a genuinely absent optional runtime may degrade. A broken or
+                # incompatible install must reach the vision guard and report its
+                # repair instead of silently hiding the damaged environment.
+                return ServingLaneDecision(True, "vision_supported")
         if mllm_hybrid_runtime_supported():
             return ServingLaneDecision(True, "vision_hybrid_runtime_supported")
         return ServingLaneDecision(
@@ -1602,6 +1628,437 @@ def resolve_serving_lane(
         requested_spec_decode=requested_spec_decode,
     )
     return decision.is_mllm, decision.auto_text_fallback
+
+
+# A catalog vision alias is suggested only when its estimated working set stays
+# inside the conservative "no memory warning" band ``serve`` applies to models
+# without a measured footprint (projected use below 65% of physical RAM) and
+# every memory floor the alias declares is met. Unmeasured aliases use the same
+# download-size x1.5 working-set estimate as that warning; an alias with no
+# size evidence is never suggested.
+_VISION_SUGGESTION_RAM_FRACTION = 0.65
+_UNMEASURED_WORKING_SET_FACTOR = 1.5
+
+# Text-lane reasons whose only remedy is serving a different, vision-capable
+# model. Each value names the cause in one sentence.
+_SUGGEST_VISION_ALIAS_CAUSES = {
+    "text_checkpoint": "This checkpoint has no vision tower.",
+    "vision_weights_unavailable": (
+        "This checkpoint's vision weights are missing, so it started text-only."
+    ),
+    "vision_hybrid_cache_unsupported": (
+        "The vision lane does not support this model's cache layout, so it "
+        "started text-only."
+    ),
+}
+
+# Reasons shown in the serve ready banner: a vision-capable checkpoint that was
+# routed to the text lane automatically rather than by an operator flag.
+BANNER_TEXT_LANE_REASONS = AUTO_TEXT_FALLBACK_REASONS | {"vision_weights_unavailable"}
+
+
+def vision_alias_memory_need_gb(alias: str, profile) -> float | None:
+    """Estimated serve working set (GiB) for a catalog alias, or ``None``."""
+    from ..model_sizes import size_bytes
+    from ..recommendations import recommendation_footprint_gb
+
+    measured = recommendation_footprint_gb(alias)
+    if measured is not None:
+        return measured
+    raw = size_bytes(profile.hf_path)
+    if raw is None:
+        return None
+    return raw * _UNMEASURED_WORKING_SET_FACTOR / float(1 << 30)
+
+
+# Aliases Rapid Desktop hides from its model picker as broken for text chat
+# (apps/rapid-mac/Sources/Rapid/Server/ModelPickerVisibility.swift:66,
+# ``knownBrokenForTextChat``; evidence in #1367: the gemma-4-e2b family scores
+# 0/6 golden on both lanes). Never suggest one; a test pins this set to the
+# Swift source so the two cannot drift.
+DESKTOP_HIDDEN_BROKEN_ALIASES = frozenset(
+    {
+        "gemma-4-e2b-4bit",
+        "gemma-4-e2b-6bit",
+        "gemma-4-e2b-8bit",
+        "gemma-4-e2b-assistant",
+        "ministral-3b-4bit",
+    }
+)
+
+
+def _is_sidecar_drafter(profile) -> bool:
+    """Gemma 4 ``*-assistant`` checkpoints are speculative-decoding drafters
+    (``gemma4_assistant``, a few hundred MB), not standalone chat models."""
+    name = profile.hf_path.rsplit("/", 1)[-1].lower()
+    return name.startswith("gemma-4") and "-assistant" in name
+
+
+def _starts_on_speculative_text_lane(profile) -> bool:
+    """Whether a plain ``serve <alias>`` turns MTP on and so serves text-only.
+
+    Mirrors the catalog half of ``cli._normalize_speculative_config_or_exit``:
+    an alias that ships MTP default-on (native backend or a verified
+    continuous tier) gets a speculative decoder injected unless the user
+    passes ``--no-spec-decode``, which routes it to the text lane
+    (``text_lane_speculative_decode``). Suggesting it would not enable images.
+    """
+    return bool(
+        profile.mtp_default_enabled
+        and (
+            profile.supports_native_mtp
+            or profile.mtp_continuous_batching_tier == "verified"
+        )
+    )
+
+
+def _profile_has_hybrid_backbone(profile) -> bool:
+    """Catalog evidence of a hybrid backbone.
+
+    ``vision_min_memory_gb`` is only consulted for hybrid (``arrays``-cache)
+    backbones, so declaring it is catalog evidence of one, as is ``is_hybrid``.
+    """
+    return bool(profile.is_hybrid or profile.vision_min_memory_gb is not None)
+
+
+def fitting_vision_alias(
+    ram_gb: float,
+    *,
+    hybrid_runtime_ok: bool,
+    exclude_hf_path: str | None = None,
+) -> str | None:
+    """Pick the catalog vision alias that best fits ``ram_gb`` of memory.
+
+    Deterministic: among non-experimental ``text``-modality aliases that accept
+    image input, are not sidecar drafters or hidden by Desktop as broken, whose vision/model memory floors are at most ``ram_gb`` and
+    whose estimated working set stays within the suggestion band, return the
+    one with the largest working set (alias name breaks ties). Hybrid-backbone
+    aliases are skipped when the installed vision runtime cannot serve them,
+    since they would start text-only too. ``None`` when nothing fits.
+    """
+    from ..model_aliases import list_builtin_aliases
+
+    if ram_gb <= 0:
+        return None
+    budget = ram_gb * _VISION_SUGGESTION_RAM_FRACTION
+    best: tuple[float, str] | None = None
+    for alias in sorted(list_builtin_aliases()):
+        profile = resolve_profile(alias)
+        if (
+            alias in DESKTOP_HIDDEN_BROKEN_ALIASES
+            or profile is None
+            or not profile.supports_image_input
+            or profile.is_text_only
+            or profile.experimental
+            or profile.modality != "text"
+            or _is_sidecar_drafter(profile)
+            or _starts_on_speculative_text_lane(profile)
+            or (exclude_hf_path is not None and profile.hf_path == exclude_hf_path)
+            or (not hybrid_runtime_ok and _profile_has_hybrid_backbone(profile))
+        ):
+            continue
+        floors = (profile.vision_min_memory_gb, profile.min_memory_gb)
+        if any(floor is not None and floor > ram_gb for floor in floors):
+            continue
+        need = vision_alias_memory_need_gb(alias, profile)
+        if need is None or need > budget:
+            continue
+        if best is None or need > best[0]:
+            best = (need, alias)
+    return None if best is None else best[1]
+
+
+def public_model_label(model_name: object) -> str:
+    """Model name safe to echo to clients: never a local filesystem path.
+
+    Absolute, home, dot-relative and Windows-style spellings, and relative
+    spellings with more than one ``/`` (a Hub id is exactly ``org/repo``),
+    are reduced to their last component. Purely lexical: the filesystem is
+    never probed, so the label cannot reveal which paths exist. A relative
+    two-segment path is indistinguishable from a Hub id and is kept.
+    """
+    import os
+
+    if not isinstance(model_name, str):
+        return str(model_name)
+    local = (
+        "\\" in model_name
+        or re.match(r"^[A-Za-z]:", model_name) is not None
+        or os.path.isabs(model_name)
+        or model_name.startswith(("~", "."))
+        or model_name.strip("/").count("/") > 1
+    )
+    if not local:
+        return model_name
+    last = re.split(r"[\\/]+", model_name.rstrip("/\\"))[-1]
+    return last or "model"
+
+
+# Host facts the guidance depends on. None of them changes while the server
+# runs, so each is probed once per process: an image rejection must never fork
+# ``sysctl`` or re-import the vision runtime on the request path.
+@lru_cache(maxsize=1)
+def _host_ram_gb() -> float:
+    return physical_ram_gb()
+
+
+@lru_cache(maxsize=1)
+def _host_hybrid_runtime_ok() -> bool:
+    return mllm_hybrid_runtime_supported()
+
+
+@lru_cache(maxsize=1)
+def _host_vision_runtime_ok() -> bool:
+    """Cheap, import-free: mlx-vlm installed at the validated version."""
+    from ..models.mllm import VALIDATED_MLX_VLM_VERSION, _mlx_vlm_installed
+
+    if not _mlx_vlm_installed():
+        return False
+    try:
+        return version("mlx-vlm") == VALIDATED_MLX_VLM_VERSION
+    except PackageNotFoundError:
+        return False
+
+
+@lru_cache(maxsize=1)
+def _host_is_desktop() -> bool:
+    """Whether this engine runs inside Rapid Desktop (app or its sidecar).
+
+    Same role detection telemetry uses for ``surface=desktop``; there, only
+    remedies the user can carry out from the app may be offered.
+    """
+    from ..telemetry.track import _surface_from_role
+
+    return _surface_from_role() == "desktop"
+
+
+def _catalog_profile(model_name: object):
+    """Built-in catalog profile for an alias or HF path, else ``None``.
+
+    Built-in only: user aliases live in a file that can be edited (or broken)
+    while the server runs, and are not needed to explain a lane decision.
+    """
+    from ..model_aliases import catalog_alias_for
+
+    alias = catalog_alias_for(model_name) if isinstance(model_name, str) else None
+    return resolve_profile(alias) if alias is not None else None
+
+
+def text_lane_image_guidance(
+    model_name: object,
+    reason: object,
+    *,
+    ram_gb: float | None = None,
+    hybrid_runtime_ok: bool | None = None,
+    vision_runtime_ok: bool | None = None,
+    desktop: bool | None = None,
+    include_paths: bool = False,
+) -> str | None:
+    """Explain why a model serves text-only and what to do, or ``None``.
+
+    ``model_name`` identifies the model that served the request (catalog alias
+    or HF path); ``reason`` is its engine's ``serving_lane_reason``. With
+    ``include_paths=False`` (every HTTP response) the text never contains a
+    filesystem path. Inside Rapid Desktop only app-actionable remedies are
+    given: no CLI flags or ``serve`` commands.
+    """
+    if not isinstance(reason, str):
+        return None
+    profile = _catalog_profile(model_name)
+    if ram_gb is None:
+        ram_gb = _host_ram_gb()
+    if hybrid_runtime_ok is None:
+        hybrid_runtime_ok = _host_hybrid_runtime_ok()
+    if vision_runtime_ok is None:
+        vision_runtime_ok = _host_vision_runtime_ok()
+    if desktop is None:
+        desktop = _host_is_desktop()
+
+    def _install_hint() -> str:
+        from ..models.mllm import _vision_install_hint
+
+        return " ".join(_vision_install_hint(include_paths=include_paths).split())
+
+    def _suggest() -> str:
+        # No alias can start without a usable vision runtime: lead with the
+        # install hint, and only then name a model to serve.
+        if not vision_runtime_ok:
+            pick = _pick_model()
+            then = f" Then {pick[0].lower()}{pick[1:]}" if pick else ""
+            return (
+                "Image input needs the vision runtime (mlx-vlm), which is not "
+                f"usable here. {_install_hint().rstrip('.')}.{then}"
+            )
+        return _pick_model()
+
+    def _pick_model() -> str:
+        if ram_gb <= 0:
+            # RAM unknown: no fit can be judged, so name nothing.
+            if desktop:
+                return "Choose a vision model in the model picker."
+            return "Serve a vision-capable model for image input."
+        alias = fitting_vision_alias(
+            ram_gb,
+            hybrid_runtime_ok=hybrid_runtime_ok,
+            exclude_hf_path=profile.hf_path if profile is not None else None,
+        )
+        if alias is None:
+            return "No catalog vision model fits this Mac's memory."
+        if desktop:
+            return (
+                f"Choose a vision model in the model picker, such as '{alias}', "
+                "which fits this Mac."
+            )
+        return f"For image input, serve '{alias}', a vision model that fits this Mac."
+
+    if reason == "vision_memory_insufficient":
+        floor = profile.vision_min_memory_gb if profile is not None else None
+        if floor is not None:
+            need = f"at least {floor:g} GB of RAM"
+            if ram_gb > 0:
+                need += f"; this Mac has {ram_gb:.0f} GB"
+        elif ram_gb > 0:
+            need = f"more RAM than this Mac's {ram_gb:.0f} GB"
+        else:
+            need = "more RAM"
+        return (
+            f"Vision for this model needs {need}, so it started text-only. {_suggest()}"
+        )
+    if reason == "vision_hybrid_runtime_unsupported":
+        return (
+            "The installed vision runtime (mlx-vlm) is missing or too old for "
+            "this model's hybrid backbone, so it started text-only. "
+            f"{_install_hint()}"
+        )
+    if reason == "vision_architecture_unavailable":
+        if not vision_runtime_ok:
+            return (
+                "The vision runtime (mlx-vlm) is missing or not usable, so this "
+                f"model started text-only. {_install_hint()}"
+            )
+        return (
+            "The installed vision runtime (mlx-vlm) does not support this "
+            "model's vision architecture, so it started text-only. "
+            f"{_suggest()}"
+        )
+
+    def _unflagged_outcome(flag_remedy: str, *, would_not_help: str) -> str:
+        """``flag_remedy`` only if dropping the flag really enables images.
+
+        A forced or speculative text lane is decided before the vision
+        runtime and memory floor are checked, so it can hide either one.
+        Name the blocker instead of a restart that would stay text-only.
+        """
+        # Same order as the engine: the RAM floor first (no install lifts it),
+        # then the runtime; ``_suggest`` still leads with an install hint.
+        floor = profile.vision_min_memory_gb if profile is not None else None
+        if floor is not None and 0 < ram_gb < floor:
+            return (
+                f"{would_not_help}: vision for this model needs at "
+                f"least {floor:g} GB of RAM; this Mac has {ram_gb:.0f} GB. "
+                f"{_suggest()}"
+            )
+        hybrid = profile is not None and _profile_has_hybrid_backbone(profile)
+        if not vision_runtime_ok or (hybrid and not hybrid_runtime_ok):
+            return (
+                "Image input also needs a working vision runtime (mlx-vlm). "
+                f"{_install_hint().rstrip('.')}. Then {flag_remedy}"
+            )
+        return flag_remedy[0].upper() + flag_remedy[1:]
+
+    if reason == "text_lane_forced":
+        if profile is not None and profile.is_text_only:
+            return f"Its catalog entry pins it to text-only serving. {_suggest()}"
+        if desktop:
+            return f"This model was started text-only. {_suggest()}"
+        return (
+            "This server was started on the text-only lane (e.g. with "
+            "--no-mllm / --text-only). "
+            + _unflagged_outcome(
+                "restart without --no-mllm / --text-only for image input.",
+                would_not_help="Dropping it would not help",
+            )
+        )
+    if reason == "text_lane_speculative_decode":
+        # Usually the catalog's MTP default, not a flag the user passed, so
+        # name the switch that turns it off rather than flags to remove.
+        if desktop:
+            return (
+                "Speculative decoding is on, and only the text lane runs it. "
+                + _unflagged_outcome(
+                    "turn it off in Settings → Performance to add photos.",
+                    would_not_help="Turning it off would not help",
+                )
+            )
+        return (
+            "Speculative decoding (MTP) is on, and only the text lane runs it. "
+            + _unflagged_outcome(
+                "restart with --no-spec-decode (and without any "
+                "--speculative-config / --spec-decode / --force-spec-decode "
+                "flag) for image input.",
+                would_not_help="Dropping it would not help",
+            )
+        )
+    checkpoint_cause = _SUGGEST_VISION_ALIAS_CAUSES.get(reason)
+    if checkpoint_cause is None:
+        return None
+    return f"{checkpoint_cause} {_suggest()}"
+
+
+def served_model_catalog_name(engine: object) -> str | None:
+    """The catalog identity of the model ``engine`` serves.
+
+    ``cfg.model_name`` is the ``--served-model-name`` when one was given and,
+    with a model registry, always the primary; neither identifies the model
+    that answered a request. A registry entry owning ``engine`` wins (its
+    aliases, then name, then path); the primary falls back to its resolved
+    alias and path. The first candidate the catalog knows is returned, else
+    the first non-empty one.
+    """
+    from ..config import get_config
+    from ..model_aliases import catalog_alias_for
+
+    cfg = get_config()
+    candidates: list[object] = []
+    registry = getattr(cfg, "model_registry", None)
+    if registry:
+        for entry in registry.list_entries():
+            if entry.engine is engine:
+                candidates += [*sorted(entry.aliases), entry.model_name]
+                candidates.append(entry.model_path)
+        if not candidates and engine is not cfg.engine:
+            # Evicted or swapped mid-request: unknown, never the primary.
+            return None
+    if engine is cfg.engine or not candidates:
+        candidates = [cfg.model_alias, cfg.model_path, cfg.model_name, *candidates]
+    names = [c for c in candidates if isinstance(c, str) and c]
+    for name in names:
+        alias = catalog_alias_for(name)
+        if alias is not None:
+            return alias
+    return names[0] if names else None
+
+
+def image_rejection_guidance(
+    reason: object,
+    *,
+    engine: object = None,
+    model_name: object = None,
+    include_paths: bool = False,
+) -> str | None:
+    """Never-raise wrapper: guidance for ``engine``'s model, or ``None``.
+
+    Guidance is advisory. Any failure while building it (a broken catalog or
+    config, an unexpected engine) must leave the original 400 and the ready
+    banner exactly as they were, so it is logged and dropped.
+    """
+    try:
+        if engine is not None:
+            model_name = served_model_catalog_name(engine)
+        return text_lane_image_guidance(model_name, reason, include_paths=include_paths)
+    except Exception:  # noqa: BLE001 — advisory text must never fail a request
+        logger.debug("text-lane image guidance unavailable", exc_info=True)
+        return None
 
 
 def decode_inline_tool_call_arguments(messages: list[dict]) -> None:
@@ -1742,14 +2199,40 @@ def _validate_content_part_payload(item: dict) -> None:
 class UnsupportedContentBlockError(ValueError):
     """Typed request-boundary error for unsupported media content."""
 
-    def __init__(self, message: str, *, code: str, param: str):
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str,
+        param: str,
+        model_name: str | None = None,
+    ):
         super().__init__(message)
         self.code = code
         self.param = param
+        self.model_name = model_name
 
-    def openai_detail(self, *, serving_lane_reason: str | None = None) -> dict:
+    def client_message(
+        self, serving_lane_reason: object = None, *, engine: object = None
+    ) -> str:
+        """The message plus, for a text-lane image rejection, why and what next.
+
+        ``engine`` is the engine that rejected the request; its model (not the
+        primary's or the ``--served-model-name``) is the one explained.
+        """
+        message = str(self)
+        if self.code != "image_input_unsupported" or self.model_name is None:
+            return message
+        guidance = image_rejection_guidance(
+            serving_lane_reason, engine=engine, model_name=self.model_name
+        )
+        return message if guidance is None else f"{message} {guidance}"
+
+    def openai_detail(
+        self, *, serving_lane_reason: str | None = None, engine: object = None
+    ) -> dict:
         error = {
-            "message": str(self),
+            "message": self.client_message(serving_lane_reason, engine=engine),
             "type": "invalid_request_error",
             "code": self.code,
             "param": self.param,
@@ -1766,6 +2249,9 @@ def validate_content_blocks_for_capabilities(
     allow_image: bool,
     allow_video: bool,
     allow_audio: bool = False,
+    telemetry_model: str | None = None,
+    caller_agent: str | None = None,
+    caller_client: str | None = None,
 ) -> None:
     """Reject content blocks the active model/path cannot preserve."""
     for msg in messages:
@@ -1803,12 +2289,19 @@ def validate_content_blocks_for_capabilities(
             if item_type in IMAGE_CONTENT_TYPES and not allow_image:
                 from rapid_mlx.telemetry.inference import emit_capability_rejected
 
-                emit_capability_rejected("image_input_unsupported", model_type="llm")
+                emit_capability_rejected(
+                    "image_input_unsupported",
+                    model_type="llm",
+                    model=telemetry_model,
+                    caller_agent=caller_agent,
+                    caller_client=caller_client,
+                )
                 raise UnsupportedContentBlockError(
-                    f"Model '{model_name}' is serving text-only; image input "
-                    "is unsupported.",
+                    f"Model '{public_model_label(model_name)}' is serving "
+                    "text-only; image input is unsupported.",
                     code="image_input_unsupported",
                     param="messages.content",
+                    model_name=model_name,
                 )
             if item_type in VIDEO_CONTENT_TYPES:
                 from rapid_mlx.telemetry.inference import emit_capability_rejected
@@ -1816,6 +2309,9 @@ def validate_content_blocks_for_capabilities(
                 emit_capability_rejected(
                     "video_input_unsupported",
                     model_type="vlm" if allow_image else "llm",
+                    model=telemetry_model,
+                    caller_agent=caller_agent,
+                    caller_client=caller_client,
                 )
             elif item_type in AUDIO_CONTENT_TYPES:
                 from rapid_mlx.telemetry.inference import emit_capability_rejected
@@ -1823,11 +2319,20 @@ def validate_content_blocks_for_capabilities(
                 emit_capability_rejected(
                     "audio_input_unsupported",
                     model_type="vlm" if allow_image or allow_video else "llm",
+                    model=telemetry_model,
+                    caller_agent=caller_agent,
+                    caller_client=caller_client,
                 )
             raise ValueError(f"Model '{model_name}' does not support {detail}.")
 
 
-def normalize_responses_content_part(item) -> dict:
+def normalize_responses_content_part(
+    item,
+    *,
+    telemetry_model: str | None = None,
+    caller_agent: str | None = None,
+    caller_client: str | None = None,
+) -> dict:
     """Convert a Responses input content item into Chat content-part shape."""
     data = item.model_dump(exclude_none=True) if hasattr(item, "model_dump") else item
     if not isinstance(data, dict):
@@ -1864,7 +2369,12 @@ def normalize_responses_content_part(item) -> dict:
     if item_type == "input_audio":
         from rapid_mlx.telemetry.inference import emit_capability_rejected
 
-        emit_capability_rejected("audio_input_unsupported")
+        emit_capability_rejected(
+            "audio_input_unsupported",
+            model=telemetry_model,
+            caller_agent=caller_agent,
+            caller_client=caller_client,
+        )
         raise ValueError("Responses input_audio content blocks are not supported")
     raise ValueError(f"Unsupported Responses content block type: {item_type!r}")
 
@@ -1897,6 +2407,10 @@ def _content_to_text(content) -> str:
 def extract_multimodal_content(
     messages: list[Message],
     preserve_native_format: bool = False,
+    *,
+    telemetry_model: str | None = None,
+    caller_agent: str | None = None,
+    caller_client: str | None = None,
 ) -> tuple[list[dict], list[str], list[str]]:
     """
     Extract text content, images, and videos from OpenAI-format messages.
@@ -2086,7 +2600,12 @@ def extract_multimodal_content(
                 elif item_type in AUDIO_CONTENT_TYPES:
                     from rapid_mlx.telemetry.inference import emit_capability_rejected
 
-                    emit_capability_rejected("audio_input_unsupported")
+                    emit_capability_rejected(
+                        "audio_input_unsupported",
+                        model=telemetry_model,
+                        caller_agent=caller_agent,
+                        caller_client=caller_client,
+                    )
                     raise ValueError(
                         "Audio content blocks are not supported on this path."
                     )

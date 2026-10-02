@@ -96,6 +96,17 @@ struct SettingsPerformancePanel: View {
                 modelSection
                 if let alias = targetAlias {
                     if needsReload { reloadBanner(alias: alias) }
+                    if server.isModelResident(alias),
+                       let runtime = server.effectiveRuntimeConfig,
+                       runtime.belongs(to: alias) {
+                        activeRuntimeSection(runtime)
+                    }
+                    if let profile = activeProfile(for: alias),
+                       profile.speculativeDecoding?.runtimeState == .active,
+                       let unsupported = profile.speculativeDecoding?.unsupportedFeatures,
+                       !unsupported.isEmpty {
+                        acceleratedModeNotice(profile: profile, unsupported: unsupported)
+                    }
                     kvSection(alias: alias)
                     speculativeDecodingSection(alias: alias)
                     prefixSection(alias: alias)
@@ -114,10 +125,11 @@ struct SettingsPerformancePanel: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .accessibilityIdentifier("Settings.Performance.Panel")
-        .task(id: server.launchedChildAlias) {
+        .task(id: server.effectiveRuntimeConfigRefreshID) {
             // Snapshot what the original child was spawned with so the legacy
             // primary-record fallback can compare stored opinion with reality.
             launchedFlags = targetAlias.map { perf.launchFlags(forAlias: $0) } ?? []
+            await server.refreshEffectiveRuntimeConfig()
         }
         .task(id: downloads.cacheGeneration) {
             guard let binary = server.binaryPath else { return }
@@ -138,6 +150,59 @@ struct SettingsPerformancePanel: View {
     }
 
     // MARK: - Sections
+
+    private func activeProfile(for alias: String) -> ServerModelProfile? {
+        server.activeModelProfile.flatMap {
+            $0.id.caseInsensitiveCompare(alias) == .orderedSame ? $0 : nil
+        }
+    }
+
+    private func acceleratedModeNotice(
+        profile: ServerModelProfile,
+        unsupported: [String]
+    ) -> some View {
+        let names = unsupported.map {
+            switch $0 {
+            case "media": "photos"
+            case "grammar": "structured output"
+            default: $0
+            }
+        }.joined(separator: ", ")
+        let normal = profile.fallbackModel.map { " with \($0)" } ?? ""
+        return InlineNotice(
+            message: "Accelerated text mode is active. \(names.capitalized) require normal mode\(normal). Turn off acceleration below and restart the model to use them.",
+            tone: .info
+        )
+        .accessibilityIdentifier("Settings.Performance.AcceleratedModeNotice")
+    }
+
+    private func activeRuntimeSection(
+        _ runtime: EffectiveRuntimeConfigSnapshot
+    ) -> some View {
+        SettingsSection(
+            "Active runtime",
+            subtitle: "Values the engine actually started with, including where each one came from."
+        ) {
+            VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
+                ForEach(runtime.fields) { item in
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(item.displayName)
+                            .font(RapidFont.body)
+                        Spacer()
+                        VStack(alignment: .trailing, spacing: 2) {
+                            Text(item.value.displayText)
+                                .font(RapidFont.metric)
+                            Text(item.provenanceText)
+                                .font(RapidFont.caption)
+                                .foregroundStyle(RapidTheme.textSecondary)
+                        }
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("Settings.Performance.Active.\(item.field)")
+                }
+            }
+        }
+    }
 
     private var modelSection: some View {
         SettingsSection(
@@ -277,7 +342,9 @@ struct SettingsPerformancePanel: View {
                             ? preset?.isDefaultEnabled == true
                                 ? "Enabled by default for this qualified model. It accelerates text generation; turn it off and restart to use photo input."
                                 : "MTP accelerates text generation on this model; turn it off and restart to use photo input."
-                            : "Off by default. It can improve generation speed on some Macs, but may be slower on others; accepted output remains token-exact.",
+                            : preset?.method == .dflash
+                                ? "Off by default. This qualified text-only mode uses a paired draft model and one request at a time. To use tools, turn acceleration off and restart the model."
+                                : "Off by default. It can improve generation speed on some Macs, but may be slower on others; accepted output remains token-exact.",
                     warns: false
                 )
             }

@@ -44,6 +44,11 @@ from ..config import get_config
 from ..engine import BaseEngine
 from ..middleware.auth import check_rate_limit_or_x_api_key, verify_api_key_or_x_api_key
 from ..reasoning import finalize_streaming_compat
+from ..request import (
+    is_batch_cap_error,
+    is_chat_template_error,
+    is_media_input_error,
+)
 from ..service.helpers import (
     _TOOL_USE_REQUIRED_SUFFIX,
     SSE_RESPONSE_HEADERS,
@@ -70,11 +75,13 @@ from ..service.helpers import (
     _wait_with_disconnect,
     build_extended_sampling_kwargs,
     count_prompt_tokens,
+    enforce_context_length,
     enforce_context_length_for_messages,
     ensure_engine_ready,
     get_engine,
     maybe_auto_disable_thinking_for_casual_chat,
     maybe_auto_disable_thinking_for_tools,
+    reasoning_stop_scope_kwargs,
 )
 
 
@@ -628,6 +635,9 @@ async def create_anthropic_message(
     Translates Anthropic-format requests to OpenAI format, runs inference
     through the existing engine, and converts the response back.
     """
+    from rapid_mlx.telemetry import inference as _telemetry_inference
+
+    _caller_agent, _caller_client = _telemetry_inference.request_caller_headers(request)
     body = await request.json()
     # ``AnthropicRequest`` is constructed manually (not as a FastAPI body
     # parameter). The raw :class:`pydantic.ValidationError` it can raise
@@ -730,14 +740,32 @@ async def create_anthropic_message(
                         emit_capability_rejected(
                             "image_input_unsupported",
                             model_type=model_type_token(engine),
+                            model=_served_telemetry_id,
+                            caller_agent=_caller_agent,
+                            caller_client=_caller_client,
                         )
-                        raise HTTPException(
-                            status_code=400,
-                            detail=(
-                                f"Model '{cfg_pre.model_name}' does not support "
-                                f"{_block_type} inputs."
-                            ),
+                        from rapid_mlx.api.utils import (
+                            image_rejection_guidance,
+                            public_model_label,
                         )
+
+                        _detail = (
+                            f"Model '{public_model_label(cfg_pre.model_name)}' "
+                            f"does not support {_block_type} inputs."
+                        )
+                        # A vision model cannot read documents on this route
+                        # either, so only image blocks get lane guidance.
+                        _guidance = (
+                            image_rejection_guidance(
+                                getattr(engine, "serving_lane_reason", None),
+                                engine=engine,
+                            )
+                            if _block_type == "image"
+                            else None
+                        )
+                        if _guidance is not None:
+                            _detail = f"{_detail} {_guidance}"
+                        raise HTTPException(status_code=400, detail=_detail)
 
         # Convert Anthropic request -> OpenAI request. The adapter raises
         # ``AnthropicOutputConfigError`` (a ``ValueError`` subclass) on
@@ -752,7 +780,12 @@ async def create_anthropic_message(
         # the source of the H-17 leak (model class name + pydantic
         # version + attacker ``input_value`` echo).
         try:
-            openai_request = anthropic_to_openai(anthropic_request)
+            openai_request = anthropic_to_openai(
+                anthropic_request,
+                telemetry_model=_served_telemetry_id,
+                caller_agent=_caller_agent,
+                caller_client=_caller_client,
+            )
         except AnthropicOutputConfigError as e:
             raise HTTPException(status_code=400, detail=str(e))
         _apply_anthropic_thinking_defaults(openai_request)
@@ -777,6 +810,9 @@ async def create_anthropic_message(
         messages, images, videos = extract_multimodal_content(
             openai_request.messages,
             preserve_native_format=engine.preserve_native_tool_format,
+            telemetry_model=_served_telemetry_id,
+            caller_agent=_caller_agent,
+            caller_client=_caller_client,
         )
         # Dogfood C-05 / F-R2-04 / r5-B C-11 lane parity: auto-prepend the
         # canonical UI-TARS Computer-Use sysprompt on the Anthropic lane
@@ -830,7 +866,24 @@ async def create_anthropic_message(
                 openai_request.max_tokens,
                 _resolve_enable_thinking(openai_request),
             ),
+            telemetry_model=_served_telemetry_id,
+            caller_agent=_caller_agent,
+            caller_client=_caller_client,
         )
+        if _ctx_prompt_tokens is not None:
+            _clamped_max_tokens = enforce_context_length(
+                engine,
+                _ctx_prompt_tokens,
+                max_tokens=_resolve_max_tokens(
+                    openai_request.max_tokens,
+                    _resolve_enable_thinking(openai_request),
+                ),
+                telemetry_model=_served_telemetry_id,
+                caller_agent=_caller_agent,
+                caller_client=_caller_client,
+            )
+            if _clamped_max_tokens is not None:
+                openai_request.max_tokens = _clamped_max_tokens
 
         if anthropic_request.stream:
             _admission_committed = True
@@ -888,6 +941,7 @@ async def create_anthropic_message(
                 _resolve_enable_thinking(openai_request),
             ),
             **_resolved_sampling_kwargs(openai_request),
+            **reasoning_stop_scope_kwargs(engine, openai_request),
         }
 
         if openai_request.tools:
@@ -943,14 +997,12 @@ async def create_anthropic_message(
                     else None
                 ),
                 result="failed",
+                error_class=_telemetry_inference.classify_inference_failure(
+                    e, abort_first=False
+                ),
             )
             err_msg = str(e)
-            err_type = type(e).__name__
-            if (
-                "TemplateError" in err_type
-                or "template" in err_msg.lower()
-                or ("user" in err_msg.lower() and "found" in err_msg.lower())
-            ):
+            if is_chat_template_error(e):
                 raise HTTPException(
                     status_code=400, detail=f"Chat template error: {err_msg}"
                 )
@@ -961,11 +1013,7 @@ async def create_anthropic_message(
             # treats both as client errors; this route must map both to 400
             # or Anthropic-style clients get a 500 for what is really an
             # oversized-image / oversized-prompt user error.
-            if (
-                "Failed to process image" in err_msg
-                or "Failed to process video" in err_msg
-                or "exceeds the per-batch cap" in err_msg
-            ):
+            if is_media_input_error(e) or is_batch_cap_error(e):
                 raise HTTPException(status_code=400, detail=err_msg)
             raise
         if output is None:
@@ -1229,16 +1277,11 @@ async def create_anthropic_message(
             content=anthropic_response.model_dump_json(exclude_none=True),
             media_type="application/json",
         )
-        from rapid_mlx.telemetry import inference as _telemetry_inference
-
-        caller_agent, caller_client = _telemetry_inference.request_caller_headers(
-            request
-        )
         _telemetry_inference.emit_completed_request(
             model=_served_telemetry_id or "<custom>",
             endpoint="/v1/messages",
-            caller_agent=caller_agent,
-            caller_client=caller_client,
+            caller_agent=_caller_agent,
+            caller_client=_caller_client,
             result="ok",
         )
         return response
@@ -1370,6 +1413,11 @@ async def count_anthropic_tokens(request: Request):
 
     engine = get_engine()
     await ensure_engine_ready(engine)
+    from rapid_mlx.telemetry import inference as _telemetry_inference
+    from rapid_mlx.telemetry.model_id import engine_telemetry_id
+
+    _caller_agent, _caller_client = _telemetry_inference.request_caller_headers(request)
+    _served_telemetry_id = engine_telemetry_id(engine)
 
     # F12: count_tokens must apply the SAME chat template + tools
     # rendering that ``/v1/messages`` applies before tokenizing,
@@ -1426,7 +1474,12 @@ async def count_anthropic_tokens(request: Request):
     # propagates as a 500, which is the right shape for a server-side
     # regression (better than a silent fallback to legacy counting).
     try:
-        openai_request = anthropic_to_openai(anthropic_request)
+        openai_request = anthropic_to_openai(
+            anthropic_request,
+            telemetry_model=_served_telemetry_id,
+            caller_agent=_caller_agent,
+            caller_client=_caller_client,
+        )
     except AnthropicOutputConfigError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     _apply_anthropic_thinking_defaults(openai_request)
@@ -1442,6 +1495,9 @@ async def count_anthropic_tokens(request: Request):
             preserve_native_format=getattr(
                 engine, "preserve_native_tool_format", False
             ),
+            telemetry_model=_served_telemetry_id,
+            caller_agent=_caller_agent,
+            caller_client=_caller_client,
         )
     except Exception:
         _ctx_messages = None
@@ -1707,6 +1763,7 @@ async def _stream_anthropic_messages(
             _resolve_enable_thinking(openai_request),
         ),
         **_resolved_sampling_kwargs(openai_request),
+        **reasoning_stop_scope_kwargs(engine, openai_request),
     }
     # C-01: thread the request_id holder to the engine so disconnect
     # detection can force-call scheduler.abort_request.

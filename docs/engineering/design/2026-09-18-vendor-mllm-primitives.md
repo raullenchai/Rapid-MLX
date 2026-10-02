@@ -2,7 +2,7 @@
 
 Date: 2026-09-18
 Status: approved (user ruling: follow the original Phase B plan)
-Upstream pin: `mlx-vlm==0.7.1` (exact pin in `pyproject.toml`, shared with the
+Upstream pin: `mlx-vlm==0.7.2` (exact pin in `pyproject.toml`, shared with the
 Desktop sidecar)
 
 ## Why
@@ -18,36 +18,53 @@ primitives under this repo's review, tests, and mypy budget while keeping the
 upstream pin for what remains (model loading, processors, templating, and the
 speculative-decode runtime).
 
-This is Phase B **step 2** of the mlx-vlm dependency retirement plan:
+This doc spans Phase B **steps 2-3** of the mlx-vlm dependency retirement
+plan:
 
 1. ✅ Step 1 — retire the legacy generation surface (#3534): benchmark on the
    native lane, `MLXMultimodalLM.generate/stream_generate/chat/stream_chat`
    deprecated.
-2. **Step 2 (this doc) — vendor the cache/vision primitives.**
-3. Step 3 — vendor model implementations + the speculative-decode runtime
-   (`mlx_vlm.generate.ar`, `mlx_vlm.speculative.drafters`, model-class hooks).
-   The dflash/native_mtp servers move off mlx-vlm **here**, not earlier: their
-   `generate/stream_generate` calls are the speculative engine itself
-   (`draft_model`/`draft_kind` ride into `mlx_vlm.generate`; the DFlash hooks
-   live on mlx-vlm model classes), so they cannot move before step 3 exists.
+2. ✅ Step 2 — vendor the cache/vision primitives (#3545, #3554, #3558,
+   #3563, #3566): models/cache.py, the APC engine, adapters/vision, and the
+   `prepare_inputs` closure.
+3. **Step 3 (in progress) — vendor model implementations + the
+   speculative-decode runtime**, one slice per PR under the review-diff cap:
+   - **3a** (#3575): `generate/ar.py` + common/types + `sample_utils.py`
+     (text AR core; reduced `generate/__init__` shim); native_mtp binds the
+     vendored `ar`.
+   - **3b**: speculative coordinator core (`cache_state`/`common`/`ddtree`/
+     `dflash`/`mtp`/`utils`) + `models/{base,linear}` + `fp8.py` +
+     `quant_utils.py`; the quantized verifier and the eagle3 backend stay
+     pinned. The quantized argmax helper is pure-array and identity-safe;
+     eagle3 remains cache-coupled and may be dispatched only while its cache
+     contract stays compatible with the vendored cache.
+   - **3c**: drafter registry (`load_drafter`) + concrete drafters
+     (glm5_next_mtp, qwen3_5_mtp, qwen3_dflash) + their model-class closure.
+   - **3d**: `generate/dispatch.py` + modality modules; dflash server's
+     `generate`/`stream_generate` move off mlx-vlm.
+   - **3e**: remaining pinned surface (`load`/`load_config`/`get_model_path`
+     decisions), legacy retirement, and the telemetry-gated revert to
+     byte-verbatim upstream.
 
-## What gets vendored (upstream 0.7.1, verbatim unless noted)
+## What gets vendored (upstream 0.7.2, verbatim unless noted)
 
 | Upstream module | Lines | Deps | Used by |
 |---|---|---|---|
-| `models/cache.py` | 3,615 | mlx + stdlib only | `mllm_batch_generator.py` (ArraysCache/KVCache eligibility + detached extraction), `engine/batched.py` |
-| `apc.py` | 4,994 | mlx, numpy, stdlib, + `apc_coordinator`/`apc_storage`/`kv_quant`/`_stream_cleanup` | `mllm_batch_generator.py` (prefix cache engine) |
-| `apc_coordinator.py` | 251 | stdlib | apc |
+| `models/cache.py` | 3,821 | mlx + stdlib only | `mllm_batch_generator.py` (ArraysCache/KVCache eligibility + detached extraction), `engine/batched.py` |
+| `apc.py` | 4,979 | mlx, numpy, stdlib, + `apc_coordinator`/`apc_storage`/`kv_quant`/`_stream_cleanup` | `mllm_batch_generator.py` (prefix cache engine) |
+| `apc_coordinator.py` | 369 | stdlib | apc |
 | `apc_storage.py` | 96 | stdlib | apc |
 | `kv_quant.py` | 186 | stdlib top-level, **lazy `.turboquant`** (7k lines, imports `.models.cache`) | apc |
 | `_stream_cleanup.py` | 10 | mlx | apc |
-| `apc_adapters.py` | 795 | mlx, stdlib, lazy `from .apc` | `mllm_batch_generator.py` (`clone_cache_entry`, `Capability`, `resolve_capability`) |
+| `apc_adapters.py` | 680 | mlx, stdlib | `mllm_batch_generator.py` (`clone_cache_entry`, `Capability`, `resolve_capability`) |
 | `vision_cache.py` | 81 | mlx, stdlib | `mllm_batch_generator.py` (`VisionFeatureCache`) |
 | `utils.py::prepare_inputs` + helpers | ~900 | mlx, numpy, PIL; lazy cv2/audio imports | `mllm_batch_generator.py` (prompt→model inputs) |
 
-Total ≈ 11k lines. NOT vendored (stays on the pinned dependency): model
-classes, `load`/`load_config`, `prompt_utils` templating, the speculative
-runtime.
+Total ≈ 11k lines for step 2. Step 3 adds ~17k more (generate package,
+speculative coordinator, drafters, model-class closure) split across the
+3a-3e slices above. Still pinned after 3a/3b: `load`/`load_config`,
+`prompt_utils` templating, turboquant, the quantized verifier, the eagle3
+backend, `get_model_path`, and the not-yet-sliced drafter/model classes.
 
 ## PR split (tooling-driven, revised per design review)
 
@@ -123,7 +140,7 @@ rapid_mlx/models/mlx_vlm_vendored/
 
 Rules (modeled on the `gemma4_vendored` precedent):
 
-- Copies are **verbatim** from the upstream 0.7.1 tag except *import
+- Copies are **verbatim** from the upstream 0.7.2 tag except *import
   redirects* and *in-source `VENDOR-DEVIATION(upstream-bugfix)` hunks* for
   defects that reproduce against the pinned upstream, each documented in the
   module body and in the package `__init__.py` inventory. No other logic
@@ -137,7 +154,7 @@ Rules (modeled on the `gemma4_vendored` precedent):
 
 ## Verification
 
-- Mechanical: `diff` vendored file vs upstream 0.7.1 → only the documented
+- Mechanical: `diff` vendored file vs upstream 0.7.2 → only the documented
   redirect hunks.
 - Behavioral: the vendored classes must be drop-ins. Lane unit tests
   (`test_mllm_batch_generator*`, `test_prefix_cache*`, engine tests) pass

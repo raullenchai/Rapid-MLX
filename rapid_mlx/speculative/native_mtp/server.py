@@ -9,6 +9,8 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from rapid_mlx._uvicorn import run_uvicorn
+
 from .eligibility import NativeMTPPair
 from .runtime import QUALIFIED_MLX_VLM_VERSION, load_runtime
 
@@ -51,6 +53,7 @@ def run_native_mtp_server(
     pair: NativeMTPPair,
     host: str,
     port: int,
+    port_explicit: bool | None = None,
     served_model_name: str,
     default_max_tokens: int,
     cors_origins: list[str],
@@ -66,6 +69,7 @@ def run_native_mtp_server(
     tool_call_parser: str | None = "qwen3_coder_xml",
     reasoning_parser_name: str | None = "qwen3",
     prefill_step_size: int = 2048,
+    default_reasoning_effort: str | None = None,
 ) -> None:
     """Load the immutable target/drafter pair and run the serial API server."""
 
@@ -86,7 +90,7 @@ def run_native_mtp_server(
     def _load_all():
         started = time.perf_counter()
         if pair.drafter_model_type == "glm5_next_mtp":
-            # The official 0.7.1 target runtime is complete, but its released
+            # The official 0.7.2 target runtime is complete, but its released
             # loader predates mlx-vlm#2231 and otherwise leaves quantized
             # lm_head scales/biases under the wrong prefix. Install Rapid's
             # narrow sanitizer before model construction.
@@ -113,7 +117,11 @@ def run_native_mtp_server(
         )
         return model, processor, runtime
 
-    model, processor, runtime = _dflash_executor.submit(_load_all).result()
+    from rapid_mlx.telemetry.server_start import failure_stage
+
+    # Both immutable target weights and the MTP runtime materialize here.
+    with failure_stage("prepare"):
+        model, processor, runtime = _dflash_executor.submit(_load_all).result()
 
     def _generation_kwargs(*, max_tokens: int, temperature: float, top_p: float):
         kwargs = {
@@ -153,20 +161,27 @@ def run_native_mtp_server(
         cors_policy=cors_policy,
         tool_call_parser=tool_call_parser,
         reasoning_parser_name=reasoning_parser_name,
+        default_reasoning_effort=default_reasoning_effort,
         generation_kwargs_fn=_generation_kwargs,
         validate_request_fn=_validate_greedy_request,
         backend_name="Native MTP",
     )
 
     host_display = "localhost" if host == "0.0.0.0" else host
-    print(f"  Ready: http://{host_display}:{port}/v1  (Native MTP mode)")
-    print(f"  Model: {served_model_name}")
-    uvicorn.run(
+
+    def _print_ready() -> None:
+        print(f"  Ready: http://{host_display}:{port}/v1  (Native MTP mode)")
+        print(f"  Model: {served_model_name}")
+
+    run_uvicorn(
         app,
         host=host,
         port=port,
         log_level=uvicorn_log_level,
         timeout_keep_alive=30,
+        on_server_accepting=_print_ready,
+        uvicorn_runner=uvicorn.run,
+        port_explicit=port_explicit,
     )
 
 

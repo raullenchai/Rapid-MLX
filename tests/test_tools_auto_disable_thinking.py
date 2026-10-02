@@ -34,11 +34,8 @@ This file pins five contracts:
      or top-level enable_thinking) bypass the auto-disable.
   4. /v1/chat/completions: requests WITHOUT tools are unaffected
      (no auto-disable injection).
-  5. /v1/responses: tools-only path also triggers the auto-disable
-     (and the strict + tools combination, which would be rejected
-     as 400 by the existing ``strict_with_tools_unsupported`` gate
-     above the auto-disable, is exercised via direct helper test
-     to keep the contract uniform).
+  5. /v1/responses: tools-only and strict + tools paths trigger the
+     auto-disable without preventing a schema-valid final answer.
 """
 
 from __future__ import annotations
@@ -343,6 +340,7 @@ def _make_chat_client(engine: _ChatEngine) -> TestClient:
     cfg = reset_config()
     cfg.engine = engine
     cfg.model_name = "test-model"
+    cfg.model_path = "qwen3.5-4b-4bit"
     cfg.model_registry = None
     cfg.no_thinking = False
 
@@ -533,11 +531,8 @@ class TestChatRouteAutoDisableForTools:
 # The Responses route reuses ``maybe_auto_disable_thinking_for_tools``
 # at the SAME plumbing layer as the chat surface (right after the
 # adapter materializes ``openai_request`` from the
-# ``ResponsesRequest``). Strict json_schema + tools is mutually
-# exclusive on this surface and returns 400 ``strict_with_tools_
-# unsupported`` BEFORE either auto-disable can fire, so the two
-# triggers never both reach the helper on /v1/responses — but the
-# helper itself stays oblivious (single contract).
+# ``ResponsesRequest``). The helper stays oblivious to strict schema
+# validation so the two policies compose on strict + tools requests.
 
 
 class _ResponsesEngine:
@@ -681,17 +676,11 @@ class TestResponsesRouteAutoDisableForTools:
 
 
 # ---------------------------------------------------------------------------
-# (4) Combined trigger: tools + strict json_schema (helper-level only)
+# (4) Combined trigger: tools + strict json_schema
 # ---------------------------------------------------------------------------
 #
-# At the surface level the two are mutually exclusive on /v1/responses
-# (``strict_with_tools_unsupported`` 400) and on /v1/chat/completions
-# (``strict_with_tools_unsupported`` 400 — see chat.py around the
-# strict_mode gate). But the helper itself must be idempotent: a future
-# surface that lifts the mutual-exclusion gate (or a request that
-# bypasses the gate via a back door we haven't found yet) should still
-# resolve to ``enable_thinking=False`` exactly once, with both auto-
-# disable triggers firing through the same merge path.
+# Both API surfaces accept this combination, so the shared helper must be
+# idempotent when the strict and tool auto-disable triggers compose.
 
 
 class TestCombinedTriggersHelperLevel:
@@ -829,12 +818,9 @@ class TestM2StrictPathStillFires:
         assert _extract_thinking_from_request(req) is False
 
 
-def test_responses_strict_with_tools_still_rejects_with_400(_rate_limiter_state):
-    """No-regression: the existing /v1/responses
-    ``strict_with_tools_unsupported`` gate must still fire as 400.
-    The new tools auto-disable lives AFTER the strict branch and does
-    NOT inadvertently unlock the combination."""
-    engine = _ResponsesEngine(text="ok")
+def test_responses_strict_with_tools_accepts_valid_final_json(_rate_limiter_state):
+    """Strict + tools accepts a schema-valid final answer without repair."""
+    engine = _ResponsesEngine(text='{"x":"ok"}')
     client = _make_responses_client(engine)
     resp = client.post(
         "/v1/responses",
@@ -855,28 +841,33 @@ def test_responses_strict_with_tools_still_rejects_with_400(_rate_limiter_state)
             },
         },
     )
-    assert resp.status_code == 400, resp.text
-    body = resp.json()
-    # ``strict_with_tools_unsupported`` envelope shape pre-existing.
-    code = body.get("error", {}).get("code") or body.get("detail", {}).get(
-        "error", {}
-    ).get("code")
-    assert code == "strict_with_tools_unsupported", (
-        f"expected strict_with_tools_unsupported, got body={body!r}"
-    )
-    # And no engine call happened — the route bailed at the gate.
-    assert not engine.chat_calls, (
-        "strict+tools must reject at the gate without dispatching to the engine"
-    )
+    assert resp.status_code == 200, resp.text
+    assert engine.chat_calls
+    assert engine.chat_calls[0]["kwargs"]["tools"]
 
 
-def test_chat_strict_with_tools_still_rejects_with_400(_rate_limiter_state):
-    """Mirror gate on /v1/chat/completions — ``strict_with_tools_
-    unsupported`` 400 is unchanged."""
-    engine = _ChatEngine(text="ok")
+def test_chat_strict_with_tools_accepts_valid_final_json(
+    _rate_limiter_state, monkeypatch
+):
+    """Chat parity: strict + tools accepts a schema-valid final answer."""
+    from rapid_mlx.telemetry import inference
+
+    events: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(inference.track_module, "_upload_allowed", lambda: True)
+    monkeypatch.setattr(inference, "_submit", lambda work: work())
+    monkeypatch.setattr(
+        inference.track_module,
+        "track",
+        lambda event, props: events.append((event, dict(props))),
+    )
+    engine = _ChatEngine(text='{"x":"ok"}')
     client = _make_chat_client(engine)
     resp = client.post(
         "/v1/chat/completions",
+        headers={
+            "user-agent": "openai-python/1.2",
+            "x-rapid-client": "rapid-desktop",
+        },
         json={
             "model": "test-model",
             "messages": [{"role": "user", "content": "hi"}],
@@ -894,12 +885,7 @@ def test_chat_strict_with_tools_still_rejects_with_400(_rate_limiter_state):
             },
         },
     )
-    assert resp.status_code == 400, resp.text
-    body = resp.json()
-    code = body.get("error", {}).get("code") or body.get("detail", {}).get(
-        "error", {}
-    ).get("code")
-    assert code == "strict_with_tools_unsupported", (
-        f"expected strict_with_tools_unsupported, got body={body!r}"
-    )
-    assert not engine.chat_calls
+    assert resp.status_code == 200, resp.text
+    assert engine.chat_calls
+    assert engine.chat_calls[0]["kwargs"]["tools"]
+    assert all(event != "capability_rejected" for event, _props in events)

@@ -96,7 +96,9 @@ def test_serve_rejects_embedding_alias_with_the_embedding_model_hint(
     monkeypatch.setattr(
         inference,
         "emit_capability_rejected",
-        lambda value, *, model_type="other": calls.append((value, model_type)),
+        lambda value, *, model_type="other", **_context: calls.append(
+            (value, model_type)
+        ),
     )
     profile = SimpleNamespace(modality="embedding")
     with pytest.raises(SystemExit) as exc_info:

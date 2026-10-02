@@ -76,12 +76,20 @@ class StateCheckpoints:
     cache entry can be shared by every copy of that entry.
     """
 
-    __slots__ = ("_items",)
+    __slots__ = ("_items", "_anchor_position")
 
-    def __init__(self, items: Iterable[tuple[int, tuple[Any, ...]]] = ()):
+    def __init__(
+        self,
+        items: Iterable[tuple[int, tuple[Any, ...]]] = (),
+        *,
+        anchor_position: int | None = None,
+    ):
         self._items: tuple[tuple[int, tuple[Any, ...]], ...] = tuple(
             sorted(((int(p), tuple(a)) for p, a in items), key=lambda it: it[0])
         )
+        positions = {p for p, _ in self._items}
+        anchor = int(anchor_position) if anchor_position is not None else None
+        self._anchor_position = anchor if anchor in positions else None
 
     def __len__(self) -> int:
         return len(self._items)
@@ -95,6 +103,11 @@ class StateCheckpoints:
     @property
     def positions(self) -> tuple[int, ...]:
         return tuple(p for p, _ in self._items)
+
+    @property
+    def anchor_position(self) -> int | None:
+        """The stable session boundary that thinning must retain, if any."""
+        return self._anchor_position
 
     @property
     def nbytes(self) -> int:
@@ -116,7 +129,10 @@ class StateCheckpoints:
 
     def truncated(self, position: int) -> StateCheckpoints:
         """Keep only checkpoints at or below ``position``."""
-        return StateCheckpoints(it for it in self._items if it[0] <= position)
+        return StateCheckpoints(
+            (it for it in self._items if it[0] <= position),
+            anchor_position=self._anchor_position,
+        )
 
     def with_checkpoint(
         self,
@@ -125,6 +141,8 @@ class StateCheckpoints:
         *,
         max_count: int,
         stride: int,
+        force: bool = False,
+        anchor: bool = False,
     ) -> StateCheckpoints:
         """Return a holder that also records ``arrays`` at ``position``.
 
@@ -139,20 +157,38 @@ class StateCheckpoints:
         position = int(position)
         if self._items:
             newest = self._items[-1][0]
-            if position <= newest or position - newest < stride:
+            if position < newest or (position - newest < stride and not force):
                 return self
+            if position == newest:
+                if not anchor or self._anchor_position is not None:
+                    return self
+                return StateCheckpoints(self._items, anchor_position=position)
         items = list(self._items) + [(position, tuple(arrays))]
+        anchor_position = self._anchor_position
+        if anchor and anchor_position is None:
+            anchor_position = position
         while len(items) > max_count:
             # gap of item i = items[i].pos - items[i-1].pos (first item: pos)
-            victim = 0
-            smallest = items[0][0]
-            for i in range(1, len(items) - 1):
+            candidates = [
+                i for i in range(len(items) - 1) if items[i][0] != anchor_position
+            ]
+            if not candidates:
+                # With a one-checkpoint bound, an anchor wins over recency.
+                del items[-1]
+                break
+            victim = candidates[0]
+            smallest = (
+                items[victim][0]
+                if victim == 0
+                else items[victim][0] - items[victim - 1][0]
+            )
+            for i in candidates[1:]:
                 gap = items[i][0] - items[i - 1][0]
                 if gap < smallest:
                     smallest = gap
                     victim = i
             del items[victim]
-        return StateCheckpoints(items)
+        return StateCheckpoints(items, anchor_position=anchor_position)
 
 
 def _recurrent_cache_types() -> tuple[type, ...]:
@@ -285,6 +321,8 @@ def record_checkpoints(
     *,
     max_count: int | None = None,
     stride: int | None = None,
+    force: bool = False,
+    anchor: bool = False,
 ) -> bool:
     """Record every recurrent layer of ``cache`` at ``position`` into ``holders``.
 
@@ -310,14 +348,21 @@ def record_checkpoints(
     # Gate on one layer: all layers share the same position history.
     probe = holders[recurrent[0]]
     newest = probe.positions[-1] if probe is not None and probe.positions else None
-    if newest is not None and (position <= newest or position - newest < stride):
+    if newest is not None and (
+        position < newest or (position - newest < stride and not force)
+    ):
         return False
     if not _materialise(states):
         return False
     for i in recurrent:
         base = holders[i] or StateCheckpoints()
         holders[i] = base.with_checkpoint(
-            position, states[i], max_count=max_count, stride=stride
+            position,
+            states[i],
+            max_count=max_count,
+            stride=stride,
+            force=force,
+            anchor=anchor,
         )
     return True
 

@@ -27,12 +27,12 @@ from rapid_mlx.models.mlx_vlm_vendored import kv_quant as vendored_kv_quant
 from rapid_mlx.models.mlx_vlm_vendored import vision_cache as vendored_vision_cache
 
 _APC_UPSTREAM_SHA256 = (
-    "5b2b940852f11f34f7b4daf627bc31fc701f8abffc72d40189bc3e5ac57f878c"
+    "67f96ba52d44f31749a5bf6b3355a58948f81e525d23465c78821c3e84d9825b"
 )
 _APC_VENDORED_SHA256 = (
-    "74c227cb9def17a60410a40f0cbffe113b42c55a05d2ef3b046019074fa603a8"
+    "50bfdd2f9472612568f35b0dcc42b7e086f29cd4c124843067e0feae2ad92ec1"
 )
-_APC_DEVIATION_COUNT = 22
+_APC_DEVIATION_COUNT = 24
 
 
 class _FakeLM:
@@ -70,7 +70,7 @@ def test_engine_resolves_the_vendored_family():
 def test_engine_matches_reviewed_vendored_source():
     """Fail closed if either provenance anchor or reviewed copy drifts.
 
-    The step-2b-3 engine intentionally differs from mlx-vlm 0.7.1: it has
+    The step-2b-3 engine intentionally differs from mlx-vlm 0.7.2: it has
     dual-namespace support plus three repro-tested upstream bug fixes.  Pin
     both sources and the deviation-sentinel inventory so future edits cannot
     silently hide inside the large coverage-exempt file.
@@ -513,7 +513,8 @@ class _CoordinatorManager:
         self.block_size = 2
         self.exact_cache_min_tokens = 2
         self.lock = threading.Lock()
-        self.stats = types.SimpleNamespace(memory_skips=0)
+        self.stats = types.SimpleNamespace(memory_skips=0, restored_tokens=0)
+        self.memory_plan = apc_coordinator.PrefillMemoryPlan()
 
     def prepare_prefill(self, count):
         self.prepared.append(count)
@@ -529,6 +530,103 @@ class _CoordinatorManager:
         return True
 
 
+def test_prefill_memory_plan_observes_fallbacks_cache_and_raw_kv(monkeypatch):
+    import mlx.core as mx
+    import mlx_vlm.apc as upstream_apc
+
+    plan = apc_coordinator.PrefillMemoryPlan()
+    plan.prepare([4], chunk_size=2, prefix_lengths=[1])
+    previous = vendored_cache.CacheMemory(
+        source_bytes=8,
+        bytes_per_token=4,
+        fallback=True,
+    )
+    plan.observe([previous], live_bytes=0)
+
+    plan.observe([vendored_cache.CacheMemory()], live_bytes=0)
+    assert plan.components[0] is previous
+
+    plan.observe(
+        [
+            vendored_cache.CacheMemory(
+                source_bytes=4,
+                bytes_per_token=2,
+                fallback=True,
+            )
+        ],
+        live_bytes=0,
+    )
+    assert plan.components[0].source_bytes == 4
+    assert plan.components[0].bytes_per_token == 4
+
+    observed = {}
+
+    def _cache_nbytes(cache):
+        observed["cache"] = cache
+        return 3
+
+    monkeypatch.setattr(
+        upstream_apc,
+        "_cache_nbytes",
+        _cache_nbytes,
+    )
+    monkeypatch.setattr(
+        apc_coordinator,
+        "cache_memory_components",
+        lambda cache, token_count, **kwargs: [
+            vendored_cache.CacheMemory(source_bytes=5, bytes_per_token=2)
+        ],
+    )
+    prompt_cache = [object()]
+    plan.observe_cache(prompt_cache, token_count=2)
+    assert observed["cache"] is prompt_cache
+
+    keys = [mx.ones((1, 1, 2, 3), dtype=mx.float32)]
+    values = [mx.zeros((1, 1, 2, 3), dtype=mx.float32)]
+    plan.observe_kv(keys, values, live_bytes=0)
+    assert plan.components[0].source_bytes == keys[0].nbytes + values[0].nbytes
+    assert plan.components[0].bytes_per_token == (keys[0].nbytes + values[0].nbytes) / 2
+
+
+def test_coordinator_observe_and_merge_refresh_memory_reserve(monkeypatch):
+    import mlx_vlm.apc as upstream_apc
+
+    class _MemoryPlan:
+        lengths = [5, 6]
+        chunk_size = 3
+
+        def __init__(self):
+            self.observed = None
+            self.prepared = None
+
+        def observe_cache(self, prompt_cache, token_count, *, batch_size):
+            self.observed = (prompt_cache, token_count, batch_size)
+            return 17
+
+        def prepare(self, lengths, *, chunk_size, prefix_lengths):
+            self.prepared = (list(lengths), chunk_size, list(prefix_lengths))
+            return 29
+
+    manager = _CoordinatorManager()
+    memory_plan = _MemoryPlan()
+    manager.memory_plan = memory_plan
+    coordinator = apc_coordinator.APCCoordinator(manager, _coordinator_model())
+
+    prompt_cache = [object()]
+    coordinator.observe_cache(prompt_cache, token_count=4, batch_size=2)
+    assert memory_plan.observed == (prompt_cache, 4, 2)
+    assert manager.prepared == [17]
+
+    monkeypatch.setattr(
+        upstream_apc,
+        "make_warm_batch_kv_cache_multi",
+        lambda picks, **_kwargs: (["merged"], len(picks)),
+    )
+    assert coordinator.merge_rows([None, None], [1, 2]) == (["merged"], 2)
+    assert memory_plan.prepared == ([5, 6], 3, [1, 2])
+    assert manager.prepared == [17, 29]
+
+
 def test_coordinator_block_and_checkpoint_paths(monkeypatch):
     import types
 
@@ -539,7 +637,7 @@ def test_coordinator_block_and_checkpoint_paths(monkeypatch):
     assert block.enabled and block.strategy == "block" and not block.is_checkpoint
     assert block.legacy_mode == "block"
     block.prepare_prefill(9)
-    assert manager.prepared == [9]
+    assert manager.prepared == [0]
 
     monkeypatch.setattr(
         upstream_apc,
@@ -578,10 +676,10 @@ def test_coordinator_block_and_checkpoint_paths(monkeypatch):
         lambda blocks, **_kw: ["warm", *blocks],
     )
     assert block.materialize_single(
-        {"warm_cache": ["ready"]}, min_capacity_tokens=1
+        {"warm_cache": ["ready"], "prefix_len": 2}, min_capacity_tokens=1
     ) == ["ready"]
     assert block.materialize_single(
-        {"matched_blocks": ["cold"]}, min_capacity_tokens=1
+        {"matched_blocks": ["cold"], "prefix_len": 2}, min_capacity_tokens=1
     ) == ["warm", "cold"]
     monkeypatch.setattr(upstream_apc, "commit_prefix_blocks", lambda *_a, **_kw: None)
     assert block.commit(["cache"], [1, 2], blocks_in_use=["lease"])

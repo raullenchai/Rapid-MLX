@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import os
 import shutil
 import stat
@@ -152,15 +153,21 @@ def registered_wan_runtime_issue(model_name: str) -> str | None:
 
 def require_video_runtime_or_exit(model_name: str | None = None) -> None:
     """Fail before model download when the optional video stack is absent."""
+    from .optional_runtime import OptionalRuntimeMissing, optional_extra_install_hint
+
     if sys.version_info < (3, 11):
-        print(
-            "\n  Error: video generation requires Python 3.11 or newer "
-            f"(current: {sys.version_info.major}.{sys.version_info.minor}). "
-            "Rapid-MLX core still supports Python 3.10, but the upstream "
-            "mlx-video runtime does not.\n",
-            file=sys.stderr,
+        raise OptionalRuntimeMissing(
+            extra="video",
+            install_hint=optional_extra_install_hint("video"),
+            status="incompatible",
+            marker_reason="python_version_unsupported",
+            detail=(
+                "\n  Error: video generation requires Python 3.11 or newer "
+                f"(current: {sys.version_info.major}.{sys.version_info.minor}). "
+                "Rapid-MLX core still supports Python 3.10, but the upstream "
+                "mlx-video runtime does not.\n"
+            ),
         )
-        raise SystemExit(2)
 
     missing = []
     setup_hint = None
@@ -228,13 +235,24 @@ def require_video_runtime_or_exit(model_name: str | None = None) -> None:
     if _resolve_ffmpeg() is None:
         missing.append("ffmpeg (`brew install ffmpeg`)")
     if missing:
-        print(
-            "\n  Error: video generation requires " + " and ".join(missing) + ".\n",
-            file=sys.stderr,
+        message = (
+            "\n  Error: video generation requires " + " and ".join(missing) + ".\n"
         )
         if setup_hint is not None:
-            print(setup_hint, file=sys.stderr)
-        raise SystemExit(2)
+            message += "\n" + setup_hint
+        reason = (
+            "runtime_extra_missing"
+            if any("rapid-mlx[video]" in item for item in missing)
+            else "runtime_dependency_missing"
+        )
+        status = "absent" if reason == "runtime_extra_missing" else "broken"
+        raise OptionalRuntimeMissing(
+            extra="video",
+            install_hint=optional_extra_install_hint("video", status=status),
+            detail=message,
+            status=status,
+            marker_reason=reason,
+        )
 
 
 class VideoEngine:
@@ -291,6 +309,11 @@ class VideoEngine:
         # second Metal graph concurrently with that still-draining worker.
         self._generation_lock = _PROCESS_GENERATION_LOCK
 
+    def _emit_model_served(self) -> None:
+        from ..server import _emit_primary_model_served_once
+
+        _emit_primary_model_served_once(self)
+
     def generate(
         self,
         *,
@@ -332,6 +355,7 @@ class VideoEngine:
                         seed=seed,
                         image=image,
                         conditioning_strength=conditioning_strength,
+                        on_loaded=self._emit_model_served,
                     )
             except LTX25BackendError as exc:
                 raise VideoRuntimeError(str(exc)) from exc
@@ -359,6 +383,7 @@ class VideoEngine:
                         image=image,
                         negative_prompt=negative_prompt,
                         guidance_scale=guidance_scale,
+                        on_loaded=self._emit_model_served,
                     )
             except WanBackendError as exc:
                 raise VideoRuntimeError(str(exc)) from exc
@@ -387,6 +412,7 @@ class VideoEngine:
                     seed=seed,
                     negative_prompt=negative_prompt or "",
                     guidance_scale=(6.0 if guidance_scale is None else guidance_scale),
+                    on_loaded=self._emit_model_served,
                 )
             return
         if _resolve_ffmpeg() is None:
@@ -397,15 +423,17 @@ class VideoEngine:
         try:
             from mlx_video import generate_video_with_audio
         except ImportError as exc:
+            from .optional_runtime import optional_extra_install_hint
+
             raise VideoRuntimeError(
                 "LTX-2.3 support is not installed. "
-                "Run `pip install 'rapid-mlx[video]'`."
+                + optional_extra_install_hint("video")
             ) from exc
 
         # The 22B pipeline is not re-entrant and a second concurrent graph can
         # exhaust unified memory. Serialize jobs per served model.
         with self._generation_lock:
-            generation_kwargs = {
+            generation_kwargs: dict[str, object] = {
                 "model_repo": self.model_name,
                 "text_encoder_repo": None,
                 "prompt": prompt,
@@ -428,7 +456,18 @@ class VideoEngine:
                 generation_kwargs["cfg_scale"] = guidance_scale
             if conditioning_strength is not None:
                 generation_kwargs["image_strength"] = conditioning_strength
+            supports_load_callback = (
+                "on_loaded" in inspect.signature(generate_video_with_audio).parameters
+            )
+            if supports_load_callback:
+                generation_kwargs["on_loaded"] = self._emit_model_served
             generate_video_with_audio(**generation_kwargs)
+            if not supports_load_callback:
+                # The pinned mlx-video-with-audio 0.1.36 export is a
+                # ``(*args, **kwargs)`` wrapper without an on_loaded hook, so
+                # its honest compatibility signal is post-generation. Future
+                # runtimes with an explicit hook signal before inference.
+                self._emit_model_served()
         if not output_path.is_file() or output_path.stat().st_size == 0:
             raise VideoRuntimeError(
                 "LTX-2.3 generation completed without an MP4 output."

@@ -23,5 +23,10 @@
 
     <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
     <true/>
+
+    <!-- Keep the embedded Python sidecar aligned with the host for the
+         browser URL Apple Event used by the approved-domain guard. -->
+    <key>com.apple.security.automation.apple-events</key>
+    <true/>
 </dict>
 </plist>

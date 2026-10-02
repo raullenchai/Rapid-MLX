@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
+from math import ceil
 from typing import Any, Dict, List, Optional, Sequence
 
 import mlx.core as mx
+
+# VENDOR-DEVIATION(redirect): the cache foundation is vendored at the package
+# root; upstream keeps it under ``mlx_vlm.models``.
+from .cache import CacheMemory, cache_nbytes
 
 # v4 invalidates v3 hybrid checkpoints captured with the old 16-token guard.
 # Reusing those 4,080-token snapshots would bypass the new prompt_length - 1
@@ -181,6 +186,22 @@ class CheckpointAdapter:
 
     capability = Capability.CHECKPOINT
 
+    def memory(self, cache: Any, token_count: int) -> CacheMemory:
+        describe = getattr(cache, "memory_profile", None)
+        # VENDOR-DEVIATION(typing): the dynamic hook is intentionally untyped;
+        # annotate its documented contract without changing runtime behavior.
+        profile: Optional[CacheMemory] = (
+            describe(token_count) if callable(describe) else None
+        )
+        if profile is not None:
+            return profile
+        size = cache_nbytes(cache)
+        return CacheMemory(
+            source_bytes=size,
+            bytes_per_token=size / max(1, token_count),
+            fallback=True,
+        )
+
     def capture(self, cache: Any, prefix_len: int) -> Optional[StateFragment]:
         if not _is_snapshotable(cache):
             return None
@@ -228,6 +249,15 @@ def reserve_checkpoint_capacity(
 ) -> None:
     """Apply an optional cache-defined capacity reservation after restoration."""
     if min_capacity_tokens is None:
+        return
+    if resolve_capability(cache) == Capability.COMPOSITE:
+        children = cache if isinstance(cache, tuple) else cache.caches
+        for child in children:
+            reserve_checkpoint_capacity(
+                child,
+                min_capacity_tokens=min_capacity_tokens,
+                eval_targets=eval_targets,
+            )
         return
     reserve = getattr(cache, "prefix_cache_reserve", None)
     if not callable(reserve):
@@ -414,194 +444,46 @@ def apc_mode(caches: Sequence[Any]) -> Optional[str]:
     return build_prefix_cache_plan_from_caches(caches).legacy_mode
 
 
-def _apc_array_helpers():
-    # VENDOR-DEVIATION(redirect): keep the array helpers on the pinned upstream
-    # runtime until the producer cutover; this slice only moves direct engine
-    # ownership and preserves the existing cache-type namespace.
-    from mlx_vlm.apc import _copy_mlx_array, _pad_kv_for_capacity
+def cache_memory_components(caches, token_count, *, batch_size=1):
+    """Resolve composite layouts and inherited memory profiles."""
+    fallback = CheckpointAdapter()
+    profiles = []
+    seen = set()
 
-    return _copy_mlx_array, _pad_kv_for_capacity
-
-
-class KVCacheCloneAdapter:
-    capability = Capability.PAGEABLE
-
-    def clone(self, c, *, min_capacity_tokens, eval_targets):
-        copy, pad = _apc_array_helpers()
-        out = type(c)()
-        off = int(getattr(c, "offset", 0) or 0)
-        if c.keys is not None and c.values is not None and off > 0:
-            keys = copy(c.keys[..., :off, :])
-            values = copy(c.values[..., :off, :])
-            step = int(getattr(c, "step", getattr(type(c), "step", 256)) or 0)
-            keys, values = pad(
-                keys,
-                values,
-                offset=off,
-                min_capacity_tokens=min_capacity_tokens,
-                step=step,
-            )
-            out.keys, out.values, out.offset = keys, values, off
-            eval_targets.extend([keys, values])
-        return out
-
-    def merge_rows(self, caches, prefix_lens):
-        # VENDOR-DEVIATION(dual-namespace): merge in the entries' namespace.
-        return _cache_namespace_of(caches[0]).BatchKVCache.merge(caches)
-
-
-class RotatingKVCacheCloneAdapter:
-    capability = Capability.WINDOWED
-
-    def clone(self, c, *, min_capacity_tokens, eval_targets):
-        copy, _ = _apc_array_helpers()
-        out = type(c)(max_size=int(c.max_size), keep=int(getattr(c, "keep", 0)))
-        out.offset = int(getattr(c, "offset", 0) or 0)
-        out._idx = int(getattr(c, "_idx", 0) or 0)
-        if c.keys is not None and c.values is not None:
-            out.keys, out.values = copy(c.keys), copy(c.values)
-            eval_targets.extend([out.keys, out.values])
-        return out
-
-    def merge_rows(self, caches, prefix_lens):
-        # VENDOR-DEVIATION(dual-namespace): merge in the entries' namespace.
-        return _cache_namespace_of(caches[0]).BatchRotatingKVCache.merge(caches)
-
-
-class ChunkedKVCacheCloneAdapter:
-    capability = Capability.WINDOWED
-
-    def clone(self, c, *, min_capacity_tokens, eval_targets):
-        copy, _ = _apc_array_helpers()
-        out = type(c)(chunk_size=int(c.chunk_size))
-        out.offset = int(getattr(c, "offset", 0) or 0)
-        out.start_position = int(getattr(c, "start_position", 0) or 0)
-        if c.keys is not None and c.values is not None:
-            out.keys, out.values = copy(c.keys), copy(c.values)
-            eval_targets.extend([out.keys, out.values])
-        return out
-
-    def merge_rows(self, caches, prefix_lens):
-        # VENDOR-DEVIATION(dual-namespace): merge in the entries' namespace.
-        return _cache_namespace_of(caches[0]).BatchKVCache.merge(caches)
-
-
-class ArraysCacheCloneAdapter:
-    capability = Capability.CHECKPOINT
-
-    def clone(self, c, *, min_capacity_tokens, eval_targets):
-        copy, _ = _apc_array_helpers()
-        # VENDOR-DEVIATION(dual-namespace): construct in the entry's namespace.
-        out = _cache_namespace_of(c).ArraysCache(len(c.cache))
-        out.cache = []
-        for state in c.cache:
-            if state is None:
-                out.cache.append(None)
-                continue
-            cp = copy(state)
-            out.cache.append(cp)
-            eval_targets.append(cp)
-        if c.left_padding is not None:
-            out.left_padding = copy(c.left_padding)
-            eval_targets.append(out.left_padding)
-        if c.lengths is not None:
-            out.lengths = copy(c.lengths)
-            eval_targets.append(out.lengths)
-        return out
-
-    def merge_rows(self, caches, prefix_lens):
-        # VENDOR-DEVIATION(dual-namespace): construct in the entries' namespace.
-        size = len(caches[0].cache)
-        out = _cache_namespace_of(caches[0]).ArraysCache(size)
-        merged: List[Optional[mx.array]] = []
-        for i in range(size):
-            states = [c.cache[i] for c in caches]
-            sample = next((s for s in states if s is not None), None)
-            if sample is None:
-                merged.append(None)
-                continue
-            rows = [
-                (
-                    mx.zeros((1,) + sample.shape[1:], dtype=sample.dtype)
-                    if s is None
-                    else s[:1]
+    def visit(c):
+        if c is None or id(c) in seen:
+            return
+        seen.add(id(c))
+        if isinstance(c, (list, tuple)):
+            for child in c:
+                visit(child)
+        elif resolve_capability(c) == Capability.COMPOSITE:
+            visit(c.caches)
+        else:
+            profile = fallback.memory(c, token_count)
+            profiles.append(
+                replace(
+                    profile,
+                    source_bytes=ceil(profile.source_bytes / batch_size),
+                    fixed_bytes=ceil(profile.fixed_bytes / batch_size),
+                    bytes_per_token=profile.bytes_per_token / batch_size,
                 )
-                for s in states
-            ]
-            merged.append(mx.concatenate(rows, axis=0))
-        out.cache = merged
-        for name in ("left_padding", "lengths"):
-            states = [getattr(cache, name, None) for cache in caches]
-            sample = next((state for state in states if state is not None), None)
-            if sample is None:
-                continue
-            rows = [
-                (
-                    mx.zeros((1,) + sample.shape[1:], dtype=sample.dtype)
-                    if state is None
-                    else state[:1]
-                )
-                for state in states
-            ]
-            setattr(out, name, mx.concatenate(rows, axis=0))
-        return out
-
-
-class PoolingCacheCloneAdapter:
-    capability = Capability.CHECKPOINT
-
-    def clone(self, c, *, min_capacity_tokens, eval_targets):
-        copy, _ = _apc_array_helpers()
-        out = type(c)(int(c.ratio))
-        out.remainder = int(c.remainder)
-        for name in ("buf_kv", "buf_gate", "pooled"):
-            value = getattr(c, name, None)
-            if value is not None:
-                value = copy(value)
-                eval_targets.append(value)
-            setattr(out, name, value)
-        return out
-
-    def merge_rows(self, caches, prefix_lens):
-        return type(caches[0]).merge(caches)
-
-
-_CLONE_RULES: Optional[list] = None
-
-
-def _clone_rules():
-    global _CLONE_RULES
-    if _CLONE_RULES is None:
-        # VENDOR-DEVIATION(dual-namespace): the same adapters serve every
-        # namespace's cache classes during the transition. Build the list in
-        # a local and publish once — appending to the global inside the loop
-        # let a concurrent first caller observe a partially built rule set
-        # and fall through to the wrong clone path.
-        rules: List[tuple] = []
-        for ns in _cache_namespaces():
-            rules.extend(
-                [
-                    (ns.KVCache, KVCacheCloneAdapter()),
-                    (ns.RotatingKVCache, RotatingKVCacheCloneAdapter()),
-                    (ns.ChunkedKVCache, ChunkedKVCacheCloneAdapter()),
-                    (ns.ArraysCache, ArraysCacheCloneAdapter()),
-                    (ns.PoolingCache, PoolingCacheCloneAdapter()),
-                ]
             )
-        _CLONE_RULES = rules
-    return _CLONE_RULES
+
+    visit(caches)
+    return profiles
 
 
 def _custom_state_contract(c) -> bool:
     """True if ``c`` defines its own ``state`` property, not the trivial base one."""
     # VENDOR-DEVIATION(dual-namespace): base contracts exist in both
     # namespaces during the transition.
-    base_states = set()
-    for ns in _cache_namespaces():
-        base_states.add(ns._BaseCache.__dict__.get("state"))
+    base_states = tuple(
+        ns._BaseCache.__dict__.get("state") for ns in _cache_namespaces()
+    )
     for klass in type(c).__mro__:
         if "state" in klass.__dict__:
-            return klass.__dict__["state"] not in base_states
+            return all(klass.__dict__["state"] is not state for state in base_states)
     return False
 
 
@@ -693,12 +575,6 @@ def clone_cache_entry(c, *, min_capacity_tokens, eval_targets):
             min_capacity_tokens=min_capacity_tokens,
             eval_targets=eval_targets,
         )
-    for typ, adapter in _clone_rules():
-        matched = type(c) is typ if typ is lm.KVCache else isinstance(c, typ)
-        if matched:
-            return adapter.clone(
-                c, min_capacity_tokens=min_capacity_tokens, eval_targets=eval_targets
-            )
     if isinstance(c, lm.CacheList):
         subs = [
             clone_cache_entry(
@@ -713,12 +589,15 @@ def clone_cache_entry(c, *, min_capacity_tokens, eval_targets):
     if _has_explicit_snapshot_contract(c):
         return _snapshot_contract_clone(c, eval_targets, min_capacity_tokens)
     if hasattr(c, "dequantize_for_apc"):
-        copy, _ = _apc_array_helpers()
         dk, dv = c.dequantize_for_apc()
         if dk is None or dv is None:
             return lm.KVCache()
         out = lm.KVCache()
-        out.keys, out.values, out.offset = copy(dk), copy(dv), dk.shape[-2]
+        out.keys, out.values, out.offset = (
+            _copy_array(dk),
+            _copy_array(dv),
+            dk.shape[-2],
+        )
         eval_targets.extend([out.keys, out.values])
         return out
     if _custom_state_contract(c):
@@ -743,8 +622,7 @@ def merge_cache_entries(entries, prefix_lens):
     # VENDOR-DEVIATION(dual-namespace): resolve the owning namespace so
     # merged results keep the producer's cache types. A bare tuple has no
     # namespace of its own; derive the container namespace from its first
-    # element so composite merges keep working in a stripped install
-    # (upstream imports its single cache module unconditionally here).
+    # element so composite merges keep working in a stripped install.
     lm = (
         _cache_namespace_of(first[0])
         if isinstance(first, tuple) and first
@@ -752,13 +630,6 @@ def merge_cache_entries(entries, prefix_lens):
     )
     if lm is None:
         return None
-    for typ, adapter in _clone_rules():
-        if typ is lm.KVCache:
-            ok = all(type(c) is typ for c in entries)
-        else:
-            ok = all(isinstance(c, typ) for c in entries)
-        if ok:
-            return adapter.merge_rows(entries, prefix_lens)
     if all(isinstance(c, lm.CacheList) for c in entries):
         merged = [
             merge_cache_entries([e.caches[i] for e in entries], prefix_lens)

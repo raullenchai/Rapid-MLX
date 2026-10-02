@@ -73,7 +73,7 @@ DIFFUSION_LANE_VERSION = "0.1-wired"
 # header from the FIRST non-empty block emitted per request. Mid-stream
 # channel switches (model alternates ``thought`` → ``final`` in one
 # response) are rare in this model and would require a stateful
-# parser; the leading-strip handles every case observed in v0.7.1.
+# parser; the leading-strip handles every case observed in v0.7.2.
 _LEAKED_CHANNEL_HEADER_RE = re.compile(r"^(?:thought|final)\n")
 
 
@@ -308,6 +308,7 @@ class DiffusionEngine(BaseEngine):
     # Class-level default is False so callers without a profile
     # (programmatic, no alias entry) stay on the conservative side.
     supports_tool_calls: bool = False
+    is_text_diffusion = True
 
     def __init__(
         self,
@@ -700,9 +701,9 @@ class DiffusionEngine(BaseEngine):
         try:
             import mlx.core as mx
 
-            # ``is_diffusion_model`` is present in mlx-vlm 0.7.1, which is the
+            # ``is_diffusion_model`` is present in mlx-vlm 0.7.2, which is the
             # ONLY version this runtime supports: rapid-mlx pins
-            # ``mlx-vlm==0.7.1`` in every vision extra (pyproject.toml), the
+            # ``mlx-vlm==0.7.2`` in every vision extra (pyproject.toml), the
             # doctor gate enforces it, and ``models/mllm.py``
             # ``VALIDATED_MLX_VLM_VERSION`` hard-refuses any other installed
             # version at import. So an unconditional import here is safe by
@@ -714,12 +715,11 @@ class DiffusionEngine(BaseEngine):
             )
             from mlx_vlm.utils import load
         except BaseException as e:  # noqa: BLE001 — propagate to caller
+            from .optional_runtime import optional_extra_install_hint
+
             self._load_error = RuntimeError(
                 "DiffusionEngine failed to import its mlx / mlx-vlm "
-                "dependencies. Install the vision stack: "
-                "`pip install 'rapid-mlx[vision]'` (or, pinned to stay "
-                "compatible with rapid-mlx's transformers pin, "
-                "`pip install 'mlx-vlm==0.7.1'`). "
+                "dependencies. " + optional_extra_install_hint("vision") + ". "
                 f"Underlying error: {e}"
             )
             self._ready.set()
@@ -728,7 +728,7 @@ class DiffusionEngine(BaseEngine):
         try:
             logger.info(f"Loading DiffusionEngine model: {self._model_name}")
             model, processor = load(self._model_name)
-            # The qualified mlx-vlm 0.7.1 routes diffusion detection through
+            # The qualified mlx-vlm 0.7.2 routes diffusion detection through
             # ``is_diffusion_model`` (the deprecated
             # ``diffusion_generation_family`` now returns a generic
             # ``"diffusion"`` and never the block-canvas family name this
