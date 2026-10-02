@@ -9315,6 +9315,9 @@ def models_command(args):
 
     if getattr(args, "cached", False):
         _print_cached_models()
+        from rapid_mlx.byom.imports import print_imports_section
+
+        print_imports_section()
         return
 
     all_profiles = list_profiles()
@@ -10542,6 +10545,11 @@ def rm_command(args):
     ctrl-D) also cancels rather than being treated as accept-by-default.
     ``-y/--yes`` skips the prompt for scripts.
     """
+    from rapid_mlx.byom.imports import remove_import
+
+    if remove_import(args.model, assume_yes=getattr(args, "yes", False)):
+        return
+
     from huggingface_hub import scan_cache_dir
 
     repo_id = args.model
@@ -10591,6 +10599,13 @@ def alias_command(args) -> None:
     reserved = user_alias_reserved_names()
     try:
         if args.alias_action == "set":
+            from rapid_mlx.byom.imports import imported_model_path
+
+            if imported_model_path(args.name) is not None:
+                raise UserAliasError(
+                    f"'{args.name}' is an imported model (rapid-mlx import); "
+                    "pick another alias name."
+                )
             set_user_alias(args.name, args.target, builtins, reserved)
             print(f"  User alias: {args.name} -> {args.target}")
         elif args.alias_action == "remove":
@@ -15497,6 +15512,33 @@ Examples:
             "catalog (format and architecture)."
         ),
     )
+    import_parser = subparsers.add_parser(
+        "import",
+        help="Convert a bf16/fp16 safetensors model to quantized MLX (explicit, "
+        "cancel-safe)",
+    )
+    import_parser.add_argument(
+        "source", help="Hugging Face repo id (org/name) or local model directory"
+    )
+    import_parser.add_argument(
+        "--quantize",
+        type=int,
+        choices=[2, 3, 4, 6, 8],
+        default=4,
+        metavar="BITS",
+        help="Quantization bits: 2, 3, 4, 6 or 8 (default: 4).",
+    )
+    import_parser.add_argument(
+        "--name",
+        default=None,
+        help="Name to serve it by (default: <source-name>-<bits>bit).",
+    )
+    import_parser.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help="Replace an existing import of the same name from another source.",
+    )
     rm_parser = subparsers.add_parser(
         "rm", help="Remove a cached model from the HuggingFace cache"
     )
@@ -16518,6 +16560,10 @@ def main():
         pull_command(args)
     elif args.command == "rm":
         rm_command(args)
+    elif args.command == "import":
+        from rapid_mlx.byom.imports import import_command
+
+        import_command(args, spinner_factory=_StatusSpinner)
     elif args.command == "alias":
         alias_command(args)
     elif args.command == "ps":

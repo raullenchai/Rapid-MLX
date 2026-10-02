@@ -931,7 +931,7 @@ def resolve_model(name: str) -> str:
                 return _load()[canonical].hf_path
             return name
         profile = _load().get(name)
-        return profile.hf_path if profile is not None else name
+        return profile.hf_path if profile is not None else _imported_or(name)
     if "/" in name:
         canonical = _alias_for_hf_path(name)
         repo_name = _load()[canonical].hf_path if canonical is not None else name
@@ -945,7 +945,14 @@ def resolve_model(name: str) -> str:
     if external := _resolve_external_model_path(name):
         return external
     profile = _load().get(name)
-    return profile.hf_path if profile is not None else name
+    return profile.hf_path if profile is not None else _imported_or(name)
+
+
+def _imported_or(name: str) -> str:
+    """A ``rapid-mlx import`` result is served by its bare name."""
+    from .byom.imports import imported_model_path
+
+    return imported_model_path(name) or name
 
 
 def _managed_hub_model_is_runnable(name: str) -> bool:
