@@ -37,6 +37,10 @@ GLM-5.3 Flash, and brings Share Compute to the Desktop app.
   labels it Experimental and offers an explicit opt-out and ordinary fallback.
 
 ### Fixed
+- **GLM TensorFold Desktop chat.** The built-in GLM acceleration profile now
+  accepts ordinary Desktop chat requests by omitting unsupported app-provided
+  tools and applying neutral sampling defaults only when controls are
+  untouched. Explicit unsupported settings remain visible and fail closed.
 - **Accelerated serving contracts.** Qwen admits one accelerated request at a
   time. Runtime source revisions are verified before load, and GLM streaming
   preserves code whitespace and private reasoning boundaries.
