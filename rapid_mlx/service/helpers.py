@@ -5474,11 +5474,6 @@ def enforce_context_length_for_messages(
     prompt_tokens = count_prompt_tokens(engine, prompt)
     if prompt_tokens <= 0:
         if _requires_exact_prompt_count():
-            if (
-                getattr(engine, "is_mllm", False)
-                and get_config().max_prompt_tokens is None
-            ):
-                return max_tokens
             _raise_prompt_count_unavailable()
         return None
     enforce_context_length(
