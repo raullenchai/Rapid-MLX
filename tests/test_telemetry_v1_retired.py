@@ -271,6 +271,12 @@ def test_real_loopback_serve_can_only_flush_to_posthog(monkeypatch, tmp_path):
             assert json.loads(response.read())["choices"][0]["message"]["content"] == (
                 "hello"
             )
+        deadline = time.monotonic() + 2.0
+        while (
+            sum(len(body["batch"]) for body in post_bodies) < 4
+            and time.monotonic() < deadline
+        ):
+            await asyncio.sleep(0.01)
 
     try:
         asyncio.run(exercise())
