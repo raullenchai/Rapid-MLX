@@ -515,15 +515,31 @@ def test_plain_serve_still_consults_the_degrade(monkeypatch):
 
 def test_text_lane_backbone_probe_matches_installed_mlxl_lm():
     """The probe reads the INSTALLED mlx-lm plus the vendored Gemma 4 family:
-    vision arches mlx-lm 0.31+ loads (gemma4, qwen3_vl) and the vendored
-    gemma4_unified/assistant loaders are text-capable; the Bonsai 2 pack and
-    unknown arches are not."""
+    the vendored gemma4_unified/assistant loaders are text-capable everywhere
+    (pure data, no mlx import), while mlx-lm-backed arches (gemma4,
+    qwen3_vl) follow whatever the installed mlx-lm ships — asserted as
+    agreement with a direct find_spec so the test passes on a base wheel AND
+    on the no-MLX CI lane (where mlx_lm is absent and everything mlx-lm
+    backs probes False). The Bonsai 2 pack and unknown arches are never
+    text-capable."""
+    import importlib.util
+
     from rapid_mlx.api.utils import _text_lane_loads_model_type
 
+    # Vendored family: environment-independent (pure data, no mlx import).
     assert _text_lane_loads_model_type("gemma4") is True
     assert _text_lane_loads_model_type("gemma4_unified") is True
     assert _text_lane_loads_model_type("gemma4_assistant") is True
-    assert _text_lane_loads_model_type("qwen3_vl") is True
+    # Arches OUTSIDE the vendored family follow the installed mlx-lm: the
+    # probe must agree with a direct spec probe (both False on the no-MLX
+    # CI lane, both True once mlx-lm ships the arch).
+    for arch in ("qwen3_vl", "qwen3_5"):
+        try:
+            installed = importlib.util.find_spec(f"mlx_lm.models.{arch}") is not None
+        except ImportError:
+            # No mlx-lm on this environment (no-MLX CI lane).
+            installed = False
+        assert _text_lane_loads_model_type(arch) is installed
     assert _text_lane_loads_model_type("prism_hadamard_qwen35") is False
     assert _text_lane_loads_model_type("brand_new_vlm_arch") is False
     # A malformed arch name fails closed through the probe's error guard.

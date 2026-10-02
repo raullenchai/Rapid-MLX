@@ -1660,7 +1660,7 @@ def _text_lane_loads_model_type(model_type: str) -> bool:
         # A malformed arch name (trailing dot, empty segment) just means "no
         # such module" — fail closed to the vendored-family check below.
         pass
-    from ..models.gemma4_text import _GEMMA4_FAMILY_MODEL_TYPES
+    from ..models.gemma4_families import _GEMMA4_FAMILY_MODEL_TYPES
 
     return model_type in _GEMMA4_FAMILY_MODEL_TYPES
 

@@ -198,10 +198,10 @@ def _read_model_type(model_path: str | Path) -> str | None:
 #                          allow-list to preserve that pre-#509 behavior
 #                          (dropping it would regress those aliases to the
 #                          unsupported native-load path).
-_GEMMA4_NONUNIFIED_MODEL_TYPES = ("gemma4", "gemma4_assistant")
-_GEMMA4_UNIFIED_MODEL_TYPES = ("gemma4_unified",)
-_GEMMA4_FAMILY_MODEL_TYPES = (
-    _GEMMA4_NONUNIFIED_MODEL_TYPES + _GEMMA4_UNIFIED_MODEL_TYPES
+from .gemma4_families import (
+    _GEMMA4_FAMILY_MODEL_TYPES,
+    _GEMMA4_NONUNIFIED_MODEL_TYPES,
+    _GEMMA4_UNIFIED_MODEL_TYPES,
 )
 
 
