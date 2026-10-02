@@ -551,6 +551,32 @@ def test_operational_prompt_cap_fails_closed_when_mllm_count_unavailable(failure
     assert "rejected before prefill" in err["message"]
 
 
+@pytest.mark.parametrize("failure", ["missing", "raises", "empty"])
+def test_explicit_context_mllm_defers_unavailable_text_count_to_processor(failure):
+    from rapid_mlx.config import get_config
+    from rapid_mlx.service.helpers import enforce_context_length_for_messages
+
+    class _Tokenizer:
+        def apply_chat_template(self, messages, **kwargs):  # noqa: ARG002
+            if failure == "raises":
+                raise RuntimeError("cannot render")
+            return []
+
+    class _MLLMEngine:
+        is_mllm = True
+        tokenizer = object() if failure == "missing" else _Tokenizer()
+
+    cfg = get_config()
+    cfg.context_length = 4096
+    cfg.max_prompt_tokens = None
+    assert (
+        enforce_context_length_for_messages(
+            _MLLMEngine(), [{"role": "user", "content": "prompt"}]
+        )
+        is None
+    )
+
+
 def test_operational_prompt_cap_fails_closed_when_text_count_unavailable():
     from fastapi import HTTPException
 

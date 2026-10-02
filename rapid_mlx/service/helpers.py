@@ -5383,6 +5383,10 @@ def enforce_context_length_for_messages(
     if getattr(engine, "is_mllm", False):
         if not _requires_exact_prompt_count():
             return None
+        # The multimodal processor performs the authoritative count after
+        # expanding media. A missing text template is only fatal for the
+        # separate pre-prefill max_prompt_tokens admission cap.
+        require_text_preflight = get_config().max_prompt_tokens is not None
         # MLLM engines deliberately reject ``build_prompt`` because media
         # preparation belongs to their processor. The processor's tokenizer
         # can still render and count the text/tool prompt without touching
@@ -5393,7 +5397,9 @@ def enforce_context_length_for_messages(
             )
             apply_template = getattr(tokenizer, "apply_chat_template", None)
             if not callable(apply_template):
-                _raise_prompt_count_unavailable()
+                if require_text_preflight:
+                    _raise_prompt_count_unavailable()
+                return None
             template_kwargs = dict(chat_template_kwargs or {})
             if enable_thinking is not None:
                 template_kwargs.setdefault("enable_thinking", enable_thinking)
@@ -5409,9 +5415,13 @@ def enforce_context_length_for_messages(
             raise
         except Exception:
             logger.debug("MLLM prompt admission tokenization failed", exc_info=True)
-            _raise_prompt_count_unavailable()
+            if require_text_preflight:
+                _raise_prompt_count_unavailable()
+            return None
         if prompt_tokens <= 0:
-            _raise_prompt_count_unavailable()
+            if require_text_preflight:
+                _raise_prompt_count_unavailable()
+            return None
         enforce_context_length(
             engine,
             prompt_tokens,
@@ -5464,6 +5474,11 @@ def enforce_context_length_for_messages(
     prompt_tokens = count_prompt_tokens(engine, prompt)
     if prompt_tokens <= 0:
         if _requires_exact_prompt_count():
+            if (
+                getattr(engine, "is_mllm", False)
+                and get_config().max_prompt_tokens is None
+            ):
+                return max_tokens
             _raise_prompt_count_unavailable()
         return None
     enforce_context_length(
