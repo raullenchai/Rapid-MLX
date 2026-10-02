@@ -277,7 +277,7 @@ def test_cli_serve_draft_alias_fails_fast_at_resolve(monkeypatch, capsys):
     assert emitted[0][2].get("failure_stage") == "resolve"
 
 
-def test_cli_bench_draft_alias_fails_fast_without_telemetry(monkeypatch, capsys):
+def test_cli_bench_draft_alias_fails_fast_with_resolve_telemetry(monkeypatch, capsys):
     import sys
 
     from rapid_mlx import cli
@@ -296,7 +296,11 @@ def test_cli_bench_draft_alias_fails_fast_without_telemetry(monkeypatch, capsys)
 
     assert caught.value.code == 1
     assert "draft checkpoint" in capsys.readouterr().err
-    assert emitted == []
+    # bench telemeters prepare-stage load failures (bench_command's own
+    # emit), so its resolve-stage gate refusal is recorded too.
+    assert len(emitted) == 1
+    assert emitted[0][1] == "qwen3.6-35b-mtp-4bit"
+    assert emitted[0][2].get("failure_stage") == "resolve"
 
 
 def test_cli_pull_keeps_draft_sidecar_warmable(monkeypatch):
