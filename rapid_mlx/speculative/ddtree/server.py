@@ -157,6 +157,7 @@ def _build_app(
                     id=served_model_name,
                     created=int(time.time()),
                     owned_by="rapid-mlx",
+                    max_model_len=get_config().context_length,
                 )
             ]
         )
@@ -169,6 +170,14 @@ def _build_app(
         prompt = _render_prompt(ready_runtime, request, no_thinking=no_thinking)
         max_tokens = (
             request.max_tokens if request.max_tokens is not None else default_max_tokens
+        )
+        from ...service.helpers import enforce_rendered_context_length
+
+        max_tokens = enforce_rendered_context_length(
+            getattr(ready_runtime.generator.target, "model", None),
+            ready_runtime.generator.target.tokenizer,
+            prompt,
+            max_tokens,
         )
         temperature = request.temperature if request.temperature is not None else 0.0
 

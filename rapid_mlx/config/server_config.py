@@ -112,6 +112,9 @@ class ServerConfig:
     # checkpoint's positional limit. Pool operators use this to bound prefill
     # memory and first-token latency. ``None`` keeps model-derived behavior.
     max_prompt_tokens: int | None = None
+    # Operator-selected prompt + completion window. None uses the model's
+    # declared window; the separate Metal admission gate still protects RAM.
+    context_length: int | None = None
 
     # --- Sampling overlay (layers 3 & 4 of the resolve chain) ---
     # Resolve order for every sampling param:
