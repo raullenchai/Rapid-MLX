@@ -116,6 +116,9 @@ class Inspection:
     quantized_from: tuple[str, ...] = ()
     license: str | None = None
     tags: tuple[str, ...] = ()
+    # Anonymously readable (not gated, not private): only such repos may be
+    # named in a support request.
+    public: bool = False
 
 
 @dataclass(frozen=True)
@@ -460,6 +463,8 @@ def inspect_hub(repo_id: str) -> Inspection | None:
         quantized_from=quantized_from(hub_tags(info)),
         license=card_license(getattr(info, "card_data", None)),
         tags=hub_tags(info),
+        public=getattr(info, "private", None) is False
+        and getattr(info, "gated", None) is False,
     )
 
 
@@ -666,6 +671,15 @@ def render_pass(inspection: Inspection, verdict: Verdict) -> list[str]:
 # CLI hook
 
 
+def _cli_version() -> str:
+    try:
+        from importlib.metadata import version
+
+        return version("rapid-mlx")
+    except Exception:
+        return "dev"
+
+
 def gguf_format_requested(fmt: object) -> bool:
     return isinstance(fmt, str) and fmt.strip().lower() == "gguf"
 
@@ -786,6 +800,9 @@ def run_cli_preflight(args: Any, *, spinner_factory: Callable[[str], Any]) -> No
             "    (Think this is wrong? Re-run with --no-preflight to skip this check.)\n",
             file=sys.stderr,
         )
+        from rapid_mlx.byom.support_request import offer
+
+        offer(args, inspection, verdict, _cli_version())
         _emit_rejection(args, PreflightRejectedError(verdict.failure))
         raise SystemExit(1)
     if not is_local and sys.stdout.isatty():

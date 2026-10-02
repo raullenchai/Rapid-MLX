@@ -757,6 +757,10 @@ def hook(monkeypatch, uncached):
 
     hints: dict[str, object] = {"value": ([], False)}
     monkeypatch.setattr(alternatives, "suggest", lambda *a, **kw: hints["value"])
+    from rapid_mlx.byom import support_request
+
+    offered: list[tuple] = []
+    monkeypatch.setattr(support_request, "offer", lambda *a: offered.append(a[1:]))
 
     def run(info=None, args=None, *, tty=False, full_config=None):
         import huggingface_hub
@@ -771,6 +775,7 @@ def hook(monkeypatch, uncached):
 
     run.emitted = emitted
     run.hints = hints
+    run.offered = offered
     return run
 
 
@@ -1084,3 +1089,55 @@ def test_hub_params_and_card_helpers():
     assert pf.card_license(_Exploding()) is None
     assert pf.card_license(None) is None
     assert pf.card_license({"license": ""}) is None
+
+
+def test_hook_offers_a_support_request_on_refusal(hook, capsys, monkeypatch):
+    info = _info({"m-Q4_K_M.gguf": 7 * GIB})
+    info.private = False
+    info.gated = False
+    monkeypatch.setattr(pf, "_cli_version", lambda: "0.15.4")
+    with pytest.raises(SystemExit):
+        hook(info)
+    ((insp, verdict, version),) = hook.offered
+    assert insp.public is True
+    assert verdict.failure == pf.UNSUPPORTED_FORMAT
+    assert version == "0.15.4"
+
+
+def test_cli_version(monkeypatch):
+    import importlib.metadata
+
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: "1.2.3")
+    assert pf._cli_version() == "1.2.3"
+
+    def _missing(name):
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(importlib.metadata, "version", _missing)
+    assert pf._cli_version() == "dev"
+
+
+@pytest.mark.parametrize(
+    "private,gated,public",
+    [
+        (False, False, True),
+        (True, False, False),
+        (False, "auto", False),
+        (None, None, False),
+    ],
+)
+def test_inspect_hub_public_flag(monkeypatch, private, gated, public):
+    _no_deadline(monkeypatch)
+    import huggingface_hub
+
+    info = _info({"model.safetensors": 1})
+    info.private = private
+    info.gated = gated
+    monkeypatch.setattr(huggingface_hub, "model_info", lambda *a, **kw: info)
+    assert pf.inspect_hub("o/r").public is public
+
+
+def test_parsers_expose_request():
+    parser = cli.build_parser()
+    assert parser.parse_args(["serve", "o/r", "--request"]).request
+    assert parser.parse_args(["pull", "o/r"]).request is False

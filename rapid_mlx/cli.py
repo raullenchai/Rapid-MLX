@@ -13793,6 +13793,17 @@ Examples:
         ),
     )
     serve_parser.add_argument(
+        "--request",
+        action="store_true",
+        default=False,
+        help=(
+            "If the pre-download check refuses a public Hugging Face model "
+            "(unsupported architecture or GGUF/.bin-only), file a support "
+            "request without asking. Sends only the repo id, architecture, "
+            "format and Rapid-MLX version."
+        ),
+    )
+    serve_parser.add_argument(
         "--no-preflight",
         action="store_true",
         default=False,
@@ -15486,6 +15497,17 @@ Examples:
             "Pull only the named format variant of a multi-variant repo "
             "(e.g. --format mxfp4, when the repo ships one). GGUF is not "
             "supported: Rapid-MLX cannot run GGUF files."
+        ),
+    )
+    pull_parser.add_argument(
+        "--request",
+        action="store_true",
+        default=False,
+        help=(
+            "If the pre-download check refuses a public Hugging Face model "
+            "(unsupported architecture or GGUF/.bin-only), file a support "
+            "request without asking. Sends only the repo id, architecture, "
+            "format and Rapid-MLX version."
         ),
     )
     pull_parser.add_argument(
