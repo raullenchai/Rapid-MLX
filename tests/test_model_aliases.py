@@ -315,3 +315,16 @@ def test_cli_pull_keeps_draft_sidecar_warmable(monkeypatch):
     cli.main()
 
     assert pulled == ["mlx-community/Qwen3.6-35B-A3B-MTP-4bit"]
+
+
+def test_draft_gate_ignores_profile_without_hf_path(monkeypatch):
+    import types
+
+    import rapid_mlx.model_aliases as model_aliases
+
+    monkeypatch.setattr(
+        model_aliases,
+        "_load",
+        lambda: {"weird": types.SimpleNamespace(hf_path=None, mtp_draft_model=None)},
+    )
+    assert model_aliases.draft_only_conflict("weird") is None

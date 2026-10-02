@@ -2346,3 +2346,37 @@ def test_all_four_model_events_reach_exact_loopback_json(monkeypatch):
         )
     ]
     assert hostile_path not in repr(events)
+
+
+def test_lane_backend_classes_fail_soft_when_the_video_lane_is_absent(monkeypatch):
+    """A slim build without the video package must still classify: the lazy
+    imports degrade to an empty tuple instead of raising."""
+    import sys
+
+    for name in (
+        "rapid_mlx.video.engine",
+        "rapid_mlx.video.wan",
+        "rapid_mlx.video.ltx25",
+    ):
+        monkeypatch.setitem(sys.modules, name, None)
+
+    assert model_events._typed_lane_backend_classes() == ()
+
+
+def test_typed_lane_backend_fail_soft_tolerates_any_import_error(monkeypatch):
+    """The fail-soft arms catch Exception, not just ImportError."""
+    import sys
+    import types
+
+    class _Hostile(types.ModuleType):
+        def __getattr__(self, name):
+            raise RuntimeError("broken lazy module")
+
+    for name in (
+        "rapid_mlx.video.engine",
+        "rapid_mlx.video.wan",
+        "rapid_mlx.video.ltx25",
+    ):
+        monkeypatch.setitem(sys.modules, name, _Hostile(name))
+
+    assert model_events._typed_lane_backend_classes() == ()
