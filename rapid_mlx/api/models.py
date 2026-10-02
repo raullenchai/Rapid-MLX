@@ -2611,10 +2611,9 @@ class ModelInfo(BaseModel):
     # upper bound — without it, the desktop had to fall back to a
     # per-family hard-coded heuristic that drifted out of sync with
     # every new long-context release (Qwen3.6-A3B 1M, DeepSeek-Coder
-    # 160K). Sourced from ``service.helpers.get_model_max_context``
-    # which probes the same chain the engine-side context-length
-    # guard uses, so the value the client sees lines up with the
-    # cap the server will actually enforce. Issue #363.
+    # 160K). Sourced from ``service.helpers.get_model_native_max_context``;
+    # an operator-selected serving window appears in ``max_model_len``.
+    # Issue #363.
     context_window: int | None = None
     # Memory-aware served context ceiling — the largest context that
     # actually FITS on this machine given the loaded weights plus the
@@ -2628,8 +2627,12 @@ class ModelInfo(BaseModel):
     # report it instead. Sourced from the scheduler's own admission
     # projection (``Scheduler.projected_memory_max_context`` →
     # ``_estimate_request_kv_bytes``), so it lines up with what the
-    # server would actually admit. Advisory and re-derived per call
-    # from current residency; ``None`` when no engine is loaded for
+    # server would actually admit. Without an explicit --context-length,
+    # this is advisory and re-derived per call from current residency.
+    # With an override, it reports the chosen logical window. The automatic
+    # projected-KV cap yields to it; an explicit operator Metal cap still
+    # applies, and actual allocator OOM remains possible.
+    # ``None`` when no engine is loaded for
     # the id or the estimate can't be formed, and it serializes as
     # JSON ``null`` (no ``exclude_none``) like the other extensions.
     max_model_len: int | None = None

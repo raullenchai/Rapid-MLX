@@ -65,6 +65,25 @@ def _reset_cfg_around_each_test():
     reset_config()
 
 
+def test_load_model_rejects_context_override_above_native(monkeypatch):
+    from types import SimpleNamespace
+
+    from rapid_mlx import server
+
+    class _LimitedEngine(_StubEngine):
+        _model = SimpleNamespace(args=SimpleNamespace(max_position_embeddings=128))
+
+    monkeypatch.setattr(server, "BatchedEngine", _LimitedEngine)
+    monkeypatch.setattr(server, "_engine", None, raising=False)
+    monkeypatch.setattr(server, "_context_length", 256, raising=False)
+    monkeypatch.setattr(server, "_primary_lazy_load", False, raising=False)
+    monkeypatch.setattr(server, "_ensure_routing_config", lambda name: None)
+    monkeypatch.setattr(server, "_prefetch_routing_metadata", lambda name: name)
+
+    with pytest.raises(ValueError, match="exceeds this model's declared"):
+        server.load_model("publisher/limited-model")
+
+
 def test_load_model_enables_native_tool_format_when_parser_supports_it(monkeypatch):
     """After load_model() returns, the engine MUST reflect the parser's
     native-format support. Pre-fix this asserted False because cfg was

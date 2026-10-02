@@ -73,6 +73,7 @@ def _make_scheduler(
     *,
     gpu_memory_utilization: float = 0.5,
     enable_prefix_cache: bool = False,
+    allow_context_overcommit: bool = False,
 ) -> Scheduler:
     """Build a Scheduler against a stub model+tokenizer so we can drive
     admission control in isolation. We disable the prefix cache by
@@ -84,6 +85,7 @@ def _make_scheduler(
         use_memory_aware_cache=False,
         use_paged_cache=False,
         gpu_memory_utilization=gpu_memory_utilization,
+        allow_context_overcommit=allow_context_overcommit,
     )
     tokenizer = MagicMock()
     tokenizer.encode = lambda s: list(range(len(s)))
@@ -105,6 +107,15 @@ class TestMetalCapAdmissionEnforcement:
             patch.object(sched, "_resolve_metal_cap_bytes", return_value=0),
         ):
             # Should NOT raise — cap is disabled
+            sched._enforce_metal_cap_at_admission(_make_request())
+        assert sched.num_metal_cap_violations == 0
+
+    def test_explicit_context_can_exceed_automatic_memory_projection(self):
+        sched = _make_scheduler(allow_context_overcommit=True)
+        # The explicit logical window takes priority over the automatic
+        # estimate; the model or allocator may still run out of real memory.
+        assert sched._resolve_metal_cap_bytes() == 0
+        with patch.object(sched, "_current_metal_active_bytes", return_value=10**15):
             sched._enforce_metal_cap_at_admission(_make_request())
         assert sched.num_metal_cap_violations == 0
 

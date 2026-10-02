@@ -63,6 +63,8 @@ flag visible in `rapid-mlx serve --help`, grouped by category — lives in the
 | `--completion-batch-size` | Completion batch size | 32 |
 | `--prefill-step-size` | Chunk size for prompt prefill processing | 2048 |
 | `--gpu-memory-utilization` | Fraction of device memory for the Metal allocation limit (0.0-1.0); advanced override of the automatic per-model budget | auto |
+| `--context-length` | Operator-selected per-request window in tokens (prompt plus output), up to the model's declared limit; requests still need to fit available memory | auto |
+
 | `--image-weight-precision` | Explicit FLUX.2 Klein weight source (`q4` or `bf16`); no automatic hardware switch | alias default |
 | `--kv-cache-dtype` | KV cache dtype (`bf16`, `int8`, `int4`); int8/int4 shrink the KV cache 2x/4x at a long-context decode cost. See the [CLI reference](../reference/cli.md#kv-cache-dtype-and-quantization) for the full quantization family (`--kv-cache-quantization*`, `--kv-cache-turboquant*`). | bf16 |
 | `--enable-prefix-cache` / `--disable-prefix-cache` | Toggle prefix caching for repeated prompts | enabled |
@@ -87,6 +89,15 @@ flag visible in `rapid-mlx serve --help`, grouped by category — lives in the
 | `--lazy-load` | Keep the endpoint online in `standby` until the configured primary receives its first text-generation request | False |
 | `--idle-unload-seconds` | Unload the configured primary after an idle interval, preserving its route and reloading on demand; 0 disables | 0 |
 | `--pflash` | PFlash long-prompt prefill compression (`off`, `auto`, `always`); tuning knobs in the [CLI reference](../reference/cli.md#pflash-long-prompt-compression) | `always` for verified aliases, `off` otherwise |
+
+For example, `rapid-mlx serve ling-3.0-tiny-4bit --context-length 65536`
+selects a 64K-token request window for Ling. The model's declared maximum
+remains unchanged. With no flag, `/v1/models.max_model_len` reports the
+current memory-based estimate; with the flag, it reports the selected window.
+The explicit window overrides the automatic memory projection. It may cause
+macOS to swap or run out of memory; start with a value your Mac can handle.
+An explicit `--gpu-memory-utilization` cap still takes priority over memory
+usage and may reject a request with HTTP 503.
 
 Primary standby applies to Chat Completions, legacy Completions, Responses,
 and Anthropic Messages/counting. `/v1/embeddings` has an independent engine

@@ -877,7 +877,12 @@ def _build_app(
     )
     async def list_models() -> ModelsResponse:
         if model_info is not None:
-            return ModelsResponse(data=[model_info])
+            info = model_info.model_copy()
+            if cfg.context_length is not None:
+                info.max_model_len = min(
+                    cfg.context_length, info.context_window or cfg.context_length
+                )
+            return ModelsResponse(data=[info])
         return ModelsResponse(
             data=[
                 ModelInfo(
@@ -885,6 +890,7 @@ def _build_app(
                     created=int(time.time()),
                     owned_by="rapid-mlx",
                     speculative_decoding=published_speculative_info,
+                    max_model_len=cfg.context_length,
                 )
             ]
         )
@@ -929,7 +935,12 @@ def _build_app(
         if model_id != served_model_name:
             raise HTTPException(status_code=404, detail="Model not found")
         if model_info is not None:
-            return model_info
+            info = model_info.model_copy()
+            if cfg.context_length is not None:
+                info.max_model_len = min(
+                    cfg.context_length, info.context_window or cfg.context_length
+                )
+            return info
         from ...routes.models import _build_model_info
 
         info = _build_model_info(model_id)
@@ -1196,6 +1207,14 @@ def _build_app(
                 request.max_tokens
                 if request.max_tokens is not None
                 else default_max_tokens
+            )
+            from ...service.helpers import enforce_rendered_context_length
+
+            max_tokens = enforce_rendered_context_length(
+                model,
+                getattr(processor, "tokenizer", processor),
+                prompt,
+                max_tokens,
             )
             temperature = (
                 request.temperature if request.temperature is not None else 0.0
