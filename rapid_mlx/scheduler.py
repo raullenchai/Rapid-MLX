@@ -441,9 +441,6 @@ class SchedulerConfig:
     # this from ``EngineConfig.gpu_memory_utilization`` via
     # ``BatchedEngine``).
     gpu_memory_utilization: float = 0.0
-    # A manually chosen serving window may exceed the automatic KV budget.
-    # Keep an explicitly requested --gpu-memory-utilization cap authoritative.
-    allow_context_overcommit: bool = False
     # D-METAL-PFX: pressure threshold above which the scheduler
     # proactively evicts prefix-cache entries (LRU) to release Metal
     # slabs. Expressed as a fraction of the hard cap. Default 0.9 keeps
@@ -636,6 +633,11 @@ class SchedulerConfig:
     # percent. ``cache_memory_mb`` is always explicit and is never raised.
     # Appended for positional callers.
     cache_memory_percent_explicit: bool = False
+
+    # A manually chosen serving window may exceed the automatic KV budget.
+    # Keep an explicitly requested --gpu-memory-utilization cap authoritative.
+    # Appended to preserve the positional SchedulerConfig prefix.
+    allow_context_overcommit: bool = False
 
     def __post_init__(self) -> None:
         if self.mllm_singleton_fastpath not in ("auto", "off"):
