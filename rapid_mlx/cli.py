@@ -1949,8 +1949,9 @@ def _check_alias_min_memory(user_typed: str) -> None:
         print(
             f"\n  Error: '{user_typed}' requires at least {floor_gb:.0f} GB "
             f"of unified memory; this Mac reports {total_ram_gb:.1f} GB.\n"
-            "  Rapid-MLX is refusing the load because this qualified runtime "
-            "peaks near 218 GB and an undersized host may become unresponsive.\n",
+            "  Rapid-MLX is refusing the load because this checkpoint is not "
+            "qualified below its memory floor and an undersized host may "
+            "become unresponsive.\n",
             file=sys.stderr,
         )
         raise SystemExit(1)
