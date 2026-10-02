@@ -10,7 +10,10 @@ Two sources, in order:
    that same base. A candidate is shown only when its metadata matches: same
    ``model_type`` as the base, parameter count within 5 %, an MLX (not AWQ /
    GPTQ / …) quantization, an architecture this install positively supports,
-   a comfortable fit in this Mac's memory, and no adult-content tag. It is
+   and a comfortable fit in this Mac's memory. An adult-tagged candidate
+   (``not-for-all-audiences`` / ``nsfw``) is shown only when the user's own
+   source repo carries such a tag: we answer the user's request for the model
+   they chose, but never introduce adult content they did not ask for. It is
    presented as an unreviewed third-party build with its publisher, size and
    license; nothing is ever substituted automatically, and no candidate is
    better than an unverified one.
@@ -36,9 +39,14 @@ _SEARCH_LIMIT = 20
 _MAX_CANDIDATES = 2
 _PREFERRED_BITS = (4, 8, 6, 5, 3, 2)
 _BUDGET_SECONDS = 8.0
-# Hugging Face's adult-content tag. Rapid-MLX never points users at such a
-# repo, even one that is a faithful build of the model they asked for.
-_EXCLUDED_TAGS = frozenset({"not-for-all-audiences", "nsfw"})
+# Hugging Face adult-content tags. A candidate carrying one is suggested only
+# when the user's source repo carries one too (a build of the model the user
+# chose); Rapid-MLX never curates or promotes such repos on its own.
+_ADULT_TAGS = frozenset({"not-for-all-audiences", "nsfw"})
+
+
+def is_adult_tagged(tags: Any) -> bool:
+    return bool(_ADULT_TAGS & {str(tag).lower() for tag in tags})
 
 
 @dataclass(frozen=True)
@@ -139,6 +147,7 @@ def _verified_candidate(
     params: int,
     supported: frozenset[str] | None,
     ram_bytes: int | None,
+    source_adult: bool = False,
 ) -> Candidate | None:
     repo_id = getattr(info, "id", None)
     config = getattr(info, "config", None)
@@ -149,7 +158,7 @@ def _verified_candidate(
     ):
         return None
     tags = pf.hub_tags(info)
-    if "mlx" not in tags or _EXCLUDED_TAGS & {tag.lower() for tag in tags}:
+    if "mlx" not in tags or (is_adult_tagged(tags) and not source_adult):
         return None
     candidate_type = config.get("model_type")
     if not isinstance(candidate_type, str) or candidate_type.lower() != model_type:
@@ -210,6 +219,7 @@ def find_mlx_builds(
             _verified_candidate(
                 info,
                 source=inspection.ref,
+                source_adult=is_adult_tagged(inspection.tags),
                 model_type=model_type,
                 params=params,
                 supported=supported,
@@ -304,7 +314,6 @@ def suggest(
             verdict.failure == pf.UNSUPPORTED_FORMAT
             and verdict.format_label == "GGUF"
             and not inspection.is_local
-            and not _EXCLUDED_TAGS & {tag.lower() for tag in inspection.tags}
         ):
             builds = find_mlx_builds(
                 inspection, supported=supported, ram_bytes=ram_bytes

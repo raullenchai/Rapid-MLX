@@ -3,7 +3,8 @@
 
 All Hub calls are mocked. The matching rules are the product: a candidate
 that is not provably the same model, would not run or fit here, or carries
-an adult-content tag must never be printed.
+an adult-content tag the user's own source does not carry must never be
+printed.
 """
 
 from __future__ import annotations
@@ -137,7 +138,8 @@ def test_odd_bit_widths_rank_last(hub):
         _model("a/too-small", total=PARAMS // 2),
         _model("a/too-big", total=int(PARAMS * 1.2)),
         _model("a/untagged", tags=("safetensors",)),
-        _model("a/adult", tags=("mlx", "Not-For-All-Audiences")),
+        _model("a/tagged", tags=("mlx", "Not-For-All-Audiences")),
+        _model("a/tagged2", tags=("mlx", "nsfw")),
         types.SimpleNamespace(id=None, config={}),
         types.SimpleNamespace(id="a/no-config", config=None),
     ],
@@ -275,12 +277,30 @@ def test_suggest_presents_builds_as_unreviewed_third_party(hub):
     ]
 
 
-def test_suggest_never_searches_for_an_adult_tagged_source(hub, monkeypatch):
+def test_tagged_source_may_get_a_matching_tagged_build(hub):
+    hub["builds"] = [
+        _model("a/tagged-4bit", tags=("mlx", "not-for-all-audiences")),
+        _model("a/plain-8bit", quant={"bits": 8}),
+    ]
+    tagged_source = _gguf_insp(tags=("gguf", "Not-For-All-Audiences"))
+    lines, found = _suggest(tagged_source)
+    assert found is True
+    assert any("a/tagged-4bit" in line for line in lines)
+    assert any("a/plain-8bit" in line for line in lines)
+    assert any("third-party, not reviewed" in line for line in lines)
+
+
+def test_untagged_source_never_gets_a_tagged_build(hub, monkeypatch):
     monkeypatch.setattr(alt, "similar_catalog_model", lambda target, ram: "q")
-    hub["builds"] = [_model("a/x")]
-    lines, found = _suggest(_gguf_insp(tags=("gguf", "not-for-all-audiences")))
+    hub["builds"] = [_model("a/tagged-4bit", tags=("mlx", "nsfw"))]
+    lines, found = _suggest(_gguf_insp())
     assert found is False
-    assert hub["calls"] == []
+    assert not any("a/tagged-4bit" in line for line in lines)
+
+
+def test_is_adult_tagged():
+    assert alt.is_adult_tagged(["gguf", "NSFW"])
+    assert not alt.is_adult_tagged(("gguf",))
 
 
 def test_suggest_falls_back_to_the_catalog(hub, monkeypatch):
