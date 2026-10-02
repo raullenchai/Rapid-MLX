@@ -96,10 +96,27 @@ struct CommunityBenchmarkLiveProgressTests {
     }
 
     /// Collects every state the run tab would have rendered, in order.
-    private actor Recorder {
-        private(set) var states: [CommunityRunProgress] = []
-        func record(_ state: CommunityRunProgress) { states.append(state) }
-        var last: CommunityRunProgress? { states.last }
+    private final class Recorder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var storage: [CommunityRunProgress] = []
+
+        func record(_ state: CommunityRunProgress) {
+            lock.lock()
+            defer { lock.unlock() }
+            storage.append(state)
+        }
+
+        var states: [CommunityRunProgress] {
+            lock.lock()
+            defer { lock.unlock() }
+            return storage
+        }
+
+        var last: CommunityRunProgress? {
+            lock.lock()
+            defer { lock.unlock() }
+            return storage.last
+        }
     }
 
     // MARK: - The whole path
@@ -121,13 +138,10 @@ struct CommunityBenchmarkLiveProgressTests {
             arguments: CommunityBenchmarkCommand.benchmarkRunArguments(alias: "qwen3.5-9b-4bit"),
             onStandardErrorLine: { line in
                 guard let state = reducer.apply(line: line, at: Date()) else { return }
-                Task { await recorder.record(state) }
+                recorder.record(state)
             }
         )
-
-        // Let the recorder drain the hops the production path also makes.
-        try await Task.sleep(nanoseconds: 200_000_000)
-        let states = await recorder.states
+        let states = recorder.states
 
         // 1. The denominator is 12 for a two-case × (1 warmup + 5 measured)
         //    protocol, and it is known before any pass completes.
@@ -171,8 +185,8 @@ struct CommunityBenchmarkLiveProgressTests {
 
         // 6. Saving is reached before the process exits, so the final frame is
         //    truthful about what is happening to the archive.
-        #expect(await recorder.last?.stage == .saving)
-        #expect(await recorder.last?.isSaving == true)
+        #expect(recorder.last?.stage == .saving)
+        #expect(recorder.last?.isSaving == true)
 
         // 7. And the run really did produce a result document.
         #expect(CommunityBenchmarkCommand.runID(from: output) == "run-live-1")
@@ -192,11 +206,10 @@ struct CommunityBenchmarkLiveProgressTests {
             arguments: CommunityBenchmarkCommand.benchmarkRunArguments(alias: "qwen3.5-9b-4bit"),
             onStandardErrorLine: { line in
                 guard let state = reducer.apply(line: line, at: Date()) else { return }
-                Task { await recorder.record(state) }
+                recorder.record(state)
             }
         )
-        try await Task.sleep(nanoseconds: 200_000_000)
-        let states = await recorder.states
+        let states = recorder.states
 
         // Nothing before the second completed pass may quote a time left: one
         // interval is not a rate, and a number invented here is the one the
@@ -231,11 +244,10 @@ struct CommunityBenchmarkLiveProgressTests {
             arguments: CommunityBenchmarkCommand.benchmarkRunArguments(alias: "z-image-turbo"),
             onStandardErrorLine: { line in
                 guard let state = reducer.apply(line: line, at: Date()) else { return }
-                Task { await recorder.record(state) }
+                recorder.record(state)
             }
         )
-        try await Task.sleep(nanoseconds: 200_000_000)
-        let states = await recorder.states
+        let states = recorder.states
 
         #expect(states.allSatisfy { $0.totalPasses == 2 })
         #expect(states.map(\.passesComplete).last == 2)
@@ -244,7 +256,7 @@ struct CommunityBenchmarkLiveProgressTests {
         #expect(!stages.contains(.shortReplies))
         #expect(!stages.contains(.longReplies))
         #expect(stages.contains(.rendering))
-        #expect(await recorder.last?.stage == .saving)
+        #expect(recorder.last?.stage == .saving)
     }
 
     @Test("A video run stays indeterminate rather than inventing a denominator")
@@ -265,11 +277,10 @@ struct CommunityBenchmarkLiveProgressTests {
             arguments: CommunityBenchmarkCommand.benchmarkRunArguments(alias: "ltx-video"),
             onStandardErrorLine: { line in
                 guard let state = reducer.apply(line: line, at: Date()) else { return }
-                Task { await recorder.record(state) }
+                recorder.record(state)
             }
         )
-        try await Task.sleep(nanoseconds: 200_000_000)
-        let states = await recorder.states
+        let states = recorder.states
         #expect(states.allSatisfy { $0.totalPasses == nil })
         #expect(states.allSatisfy { $0.fraction == nil })
         #expect(states.allSatisfy { $0.timeLeft == nil })
@@ -301,11 +312,10 @@ struct CommunityBenchmarkLiveProgressTests {
             arguments: CommunityBenchmarkCommand.benchmarkRunArguments(alias: "qwen3.5-9b-4bit"),
             onStandardErrorLine: { line in
                 guard let state = reducer.apply(line: line, at: Date()) else { return }
-                Task { await recorder.record(state) }
+                recorder.record(state)
             }
         )
-        try await Task.sleep(nanoseconds: 200_000_000)
-        #expect(await recorder.last?.passesComplete == 4)
+        #expect(recorder.last?.passesComplete == 4)
     }
 
     @Test("Untagged stderr never advances the bar or reaches the screen")
@@ -332,11 +342,10 @@ struct CommunityBenchmarkLiveProgressTests {
             arguments: CommunityBenchmarkCommand.benchmarkRunArguments(alias: "qwen3.5-9b-4bit"),
             onStandardErrorLine: { line in
                 guard let state = reducer.apply(line: line, at: Date()) else { return }
-                Task { await recorder.record(state) }
+                recorder.record(state)
             }
         )
-        try await Task.sleep(nanoseconds: 200_000_000)
-        let states = await recorder.states
+        let states = recorder.states
         // Exactly one real pass, from the one tagged line.
         #expect(states.last?.passesComplete == 1)
         #expect(states.allSatisfy { $0.latestMeasurement?.value != "99.9 tok/s" })
