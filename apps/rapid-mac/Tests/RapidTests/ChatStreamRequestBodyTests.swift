@@ -73,6 +73,74 @@ struct ChatStreamRequestBodyTests {
         #expect(body["tool_choice"] == nil)
     }
 
+    @Test("GLM TensorFold production-shaped turn omits tools and normalizes only the implicit default")
+    @MainActor
+    func glmTensorFoldNormalizesImplicitRepetitionDefault() async throws {
+        let request = ChatStreamClient.Request(
+            alias: "glm5.3-flash-tensorfold",
+            messages: [ChatMessage(role: .user, content: "hi", status: .complete)],
+            tools: [
+                ToolDefinition(
+                    name: "weather",
+                    description: "Get weather",
+                    parameters: .object(["type": .string("object")])
+                )
+            ],
+            forcedTool: "weather"
+        )
+
+        let data = try #require(await WireBodyCaptureProtocol.capture(request))
+        let body = try #require(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        #expect(body["repetition_penalty"] as? Double == 1.0)
+        #expect(body["frequency_penalty"] as? Double == 0.0)
+        #expect(body["presence_penalty"] as? Double == 0.0)
+        #expect(body["tools"] == nil)
+        #expect(body["tool_choice"] == nil)
+        let kwargs = try #require(body["chat_template_kwargs"] as? [String: Any])
+        #expect(kwargs["enable_thinking"] as? Bool == false)
+    }
+
+    @Test("GLM TensorFold preserves an explicit 1.1 for fail-closed server rejection")
+    func glmTensorFoldPreservesExplicitDesktopDefault() {
+        let request = ChatStreamClient.Request(
+            alias: "glm5.3-flash-tensorfold",
+            messages: [],
+            repetitionPenalty: 1.1
+        )
+        #expect(!request.repetitionPenaltyIsImplicitDefault)
+        #expect(request.wireRepetitionPenalty == 1.1)
+    }
+
+    @Test("Ordinary aliases retain advertised tools and forced tool choice")
+    func ordinaryAliasesRetainTools() {
+        let request = ChatStreamClient.Request(
+            alias: "ordinary-model",
+            messages: [],
+            tools: [
+                ToolDefinition(
+                    name: "weather",
+                    description: "Get weather",
+                    parameters: .object(["type": .string("object")])
+                )
+            ],
+            forcedTool: "weather"
+        )
+        #expect(request.wireTools?.count == 1)
+        #expect(request.wireToolChoice != nil)
+    }
+
+    @Test("GLM TensorFold preserves unsupported caller-selected repetition values for server rejection")
+    func glmTensorFoldPreservesNondefaultRepetitionValue() {
+        let request = ChatStreamClient.Request(
+            alias: "glm5.3-flash-tensorfold",
+            messages: [],
+            repetitionPenalty: 1.2
+        )
+        #expect(request.wireRepetitionPenalty == 1.2)
+    }
+
     // MARK: - helpers
 
     /// Build the wire body the same way ``ChatStreamClient.send``
@@ -100,14 +168,11 @@ struct ChatStreamRequestBodyTests {
             temperature: request.temperature,
             top_p: request.topP,
             max_tokens: request.maxTokens,
-            repetition_penalty: request.repetitionPenalty,
+            repetition_penalty: request.wireRepetitionPenalty,
             frequency_penalty: request.frequencyPenalty,
             presence_penalty: request.presencePenalty,
-            tools: (request.tools?.isEmpty == false) ? request.tools : nil,
-            tool_choice: Wire.ToolChoice.resolve(
-                hasTools: request.tools?.isEmpty == false,
-                forcedTool: request.forcedTool
-            ),
+            tools: request.wireTools,
+            tool_choice: request.wireToolChoice,
             stream_options: .init(include_usage: true),
             // #161: mirror production's enableThinking → kwargs mapping so
             // the encoded body in tests matches what ``send()`` actually
@@ -256,14 +321,11 @@ struct ChatStream161ThinkingBodyTests {
             temperature: request.temperature,
             top_p: request.topP,
             max_tokens: request.maxTokens,
-            repetition_penalty: request.repetitionPenalty,
+            repetition_penalty: request.wireRepetitionPenalty,
             frequency_penalty: request.frequencyPenalty,
             presence_penalty: request.presencePenalty,
-            tools: (request.tools?.isEmpty == false) ? request.tools : nil,
-            tool_choice: Wire.ToolChoice.resolve(
-                hasTools: request.tools?.isEmpty == false,
-                forcedTool: request.forcedTool
-            ),
+            tools: request.wireTools,
+            tool_choice: request.wireToolChoice,
             stream_options: .init(include_usage: true),
             chat_template_kwargs: request.enableThinking
                 ? nil

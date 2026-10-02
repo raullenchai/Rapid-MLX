@@ -64,6 +64,7 @@ final class SamplingConfigTests {
         #expect(s.topP == 0.95)
         #expect(s.maxTokens == 4096)
         #expect(s.repetitionPenalty == 1.1)
+        #expect(s.repetitionPenaltyIsImplicitDefault)
         #expect(s.isAtDefaults)
     }
 
@@ -76,6 +77,7 @@ final class SamplingConfigTests {
         s.topP = 0.5
         s.maxTokens = 1024
         s.repetitionPenalty = 1.25
+        #expect(!s.repetitionPenaltyIsImplicitDefault)
 
         // Read back via the raw UserDefaults so we pin the wire
         // shape, not just the in-memory state.
@@ -103,6 +105,20 @@ final class SamplingConfigTests {
         #expect(s2.maxTokens == 2048)
         #expect(s2.repetitionPenalty == 1.07)
         #expect(!s2.isAtDefaults)
+    }
+
+    @Test("An explicitly persisted 1.1 remains distinguishable from first-launch default")
+    func explicitDefaultRetainsProvenanceAcrossRelaunch() {
+        let d = freshDefaults()
+        let s1 = SamplingConfig(defaults: d)
+        #expect(s1.repetitionPenaltyIsImplicitDefault)
+
+        s1.repetitionPenalty = SamplingConfig.repetitionPenaltyDefault
+        #expect(!s1.repetitionPenaltyIsImplicitDefault)
+
+        let s2 = SamplingConfig(defaults: d)
+        #expect(s2.repetitionPenalty == SamplingConfig.repetitionPenaltyDefault)
+        #expect(!s2.repetitionPenaltyIsImplicitDefault)
     }
 
     @Test("Persisted out-of-range values are clamped on load")
@@ -214,7 +230,8 @@ final class SamplingConfigTests {
 
     @Test("resetToDefaults restores all four knobs at once + isAtDefaults flips back to true")
     func resetButton() {
-        let s = SamplingConfig(defaults: freshDefaults())
+        let d = freshDefaults()
+        let s = SamplingConfig(defaults: d)
         s.temperature = 0.1
         s.topP = 0.2
         s.maxTokens = 256
@@ -227,7 +244,11 @@ final class SamplingConfigTests {
         #expect(s.topP == 0.95)
         #expect(s.maxTokens == 4096)
         #expect(s.repetitionPenalty == 1.1)
+        #expect(s.repetitionPenaltyIsImplicitDefault)
         #expect(s.isAtDefaults)
+
+        let relaunched = SamplingConfig(defaults: d)
+        #expect(relaunched.repetitionPenaltyIsImplicitDefault)
     }
 
     @Test("isAtDefaults catches partial-default profiles — flipping any one knob trips it")

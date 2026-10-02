@@ -141,6 +141,9 @@ struct ChatStreamClient {
     ///     without changing the per-turn cost ceiling
     ///     dramatically.
     struct Request: Sendable {
+        private static let glm53TensorFoldAlias = "glm5.3-flash-tensorfold"
+        private static let desktopRepetitionPenaltyDefault = 1.1
+
         let alias: String
         let messages: [Wire.Message]
         /// Local identity only; never encoded into the API request.
@@ -149,6 +152,7 @@ struct ChatStreamClient {
         let topP: Double
         let maxTokens: Int
         let repetitionPenalty: Double
+        let repetitionPenaltyIsImplicitDefault: Bool
         let frequencyPenalty: Double
         let presencePenalty: Double
         let tools: [ToolDefinition]?
@@ -169,13 +173,46 @@ struct ChatStreamClient {
         /// nil and keep ``tool_choice=auto``.
         let forcedTool: String?
 
+        /// TensorFold does not implement tool calling. The Desktop registry is
+        /// populated independently of per-model capabilities, so suppress its
+        /// definitions only for this exact built-in alias. Requests arriving
+        /// at the server from any other client remain subject to its strict
+        /// unsupported-tools validation.
+        var wireTools: [ToolDefinition]? {
+            guard alias != Self.glm53TensorFoldAlias else { return nil }
+            return tools?.isEmpty == false ? tools : nil
+        }
+
+        var wireToolChoice: Wire.ToolChoice? {
+            Wire.ToolChoice.resolve(
+                hasTools: wireTools?.isEmpty == false,
+                forcedTool: wireTools == nil ? nil : forcedTool
+            )
+        }
+
+        /// The GLM TensorFold lane does not implement a repetition logits
+        /// processor. Its catalog profile recommends the neutral value 1.0,
+        /// but a first turn can race the asynchronous profile fetch and retain
+        /// Desktop's general 1.1 default. Normalize only that implicit default
+        /// for the exact profile; any other caller-selected value stays on the
+        /// wire so the server can reject unsupported semantics explicitly.
+        var wireRepetitionPenalty: Double {
+            if alias == Self.glm53TensorFoldAlias,
+               repetitionPenaltyIsImplicitDefault,
+               repetitionPenalty == Self.desktopRepetitionPenaltyDefault {
+                return 1.0
+            }
+            return repetitionPenalty
+        }
+
         init(
             alias: String,
             messages: [ChatMessage],
             temperature: Double = 0.7,
             topP: Double = 0.95,
             maxTokens: Int = 4096,
-            repetitionPenalty: Double = 1.1,
+            repetitionPenalty: Double? = nil,
+            repetitionPenaltyIsImplicitDefault: Bool? = nil,
             frequencyPenalty: Double = 0.0,
             presencePenalty: Double = 0.0,
             tools: [ToolDefinition]? = nil,
@@ -223,7 +260,9 @@ struct ChatStreamClient {
             self.temperature = temperature
             self.topP = topP
             self.maxTokens = maxTokens
-            self.repetitionPenalty = repetitionPenalty
+            self.repetitionPenalty = repetitionPenalty ?? Self.desktopRepetitionPenaltyDefault
+            self.repetitionPenaltyIsImplicitDefault = repetitionPenaltyIsImplicitDefault
+                ?? (repetitionPenalty == nil)
             self.frequencyPenalty = frequencyPenalty
             self.presencePenalty = presencePenalty
             self.tools = tools
@@ -417,14 +456,11 @@ struct ChatStreamClient {
             temperature: request.temperature,
             top_p: request.topP,
             max_tokens: request.maxTokens,
-            repetition_penalty: request.repetitionPenalty,
+            repetition_penalty: request.wireRepetitionPenalty,
             frequency_penalty: request.frequencyPenalty,
             presence_penalty: request.presencePenalty,
-            tools: (request.tools?.isEmpty == false) ? request.tools : nil,
-            tool_choice: Wire.ToolChoice.resolve(
-                hasTools: request.tools?.isEmpty == false,
-                forcedTool: request.forcedTool
-            ),
+            tools: request.wireTools,
+            tool_choice: request.wireToolChoice,
             stream_options: .init(include_usage: true),
             // #161: only emit the kwarg when thinking is OFF. Sending
             // it when ON would be a no-op for hybrid models (the
