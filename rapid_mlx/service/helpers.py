@@ -5052,7 +5052,11 @@ def enforce_rendered_context_length(
                 }
             },
         )
-    return enforce_context_length(engine, prompt_tokens, max_tokens=max_tokens)
+    allowed_tokens = enforce_context_length(
+        engine, prompt_tokens, max_tokens=max_tokens
+    )
+    assert allowed_tokens is not None  # max_tokens was provided above
+    return allowed_tokens
 
 
 def count_prompt_tokens(engine, prompt) -> int:

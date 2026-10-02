@@ -210,24 +210,42 @@ def test_context_length_override_applies_across_generation_routes():
     from rapid_mlx.routes.responses import router as responses_router
 
     cases = [
-        (chat_router, "/v1/chat/completions", {
-            "model": "qwen3-0.6b-8bit",
-            "messages": [{"role": "user", "content": _huge_text(100)}],
-            "max_tokens": 16,
-        }),
-        (completions_router, "/v1/completions", {
-            "model": "qwen3-0.6b-8bit", "prompt": _huge_text(100),
-            "max_tokens": 16,
-        }),
-        (anthropic_router, "/v1/messages", {
-            "model": "qwen3-0.6b-8bit",
-            "messages": [{"role": "user", "content": _huge_text(100)}],
-            "max_tokens": 16,
-        }),
-        (responses_router, "/v1/responses", {
-            "model": "qwen3-0.6b-8bit", "input": _huge_text(100),
-            "max_output_tokens": 16,
-        }),
+        (
+            chat_router,
+            "/v1/chat/completions",
+            {
+                "model": "qwen3-0.6b-8bit",
+                "messages": [{"role": "user", "content": _huge_text(100)}],
+                "max_tokens": 16,
+            },
+        ),
+        (
+            completions_router,
+            "/v1/completions",
+            {
+                "model": "qwen3-0.6b-8bit",
+                "prompt": _huge_text(100),
+                "max_tokens": 16,
+            },
+        ),
+        (
+            anthropic_router,
+            "/v1/messages",
+            {
+                "model": "qwen3-0.6b-8bit",
+                "messages": [{"role": "user", "content": _huge_text(100)}],
+                "max_tokens": 16,
+            },
+        ),
+        (
+            responses_router,
+            "/v1/responses",
+            {
+                "model": "qwen3-0.6b-8bit",
+                "input": _huge_text(100),
+                "max_output_tokens": 16,
+            },
+        ),
     ]
     for router, path, payload in cases:
         client = _make_app([router], context_length=80)

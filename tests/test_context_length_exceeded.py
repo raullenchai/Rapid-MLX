@@ -616,10 +616,18 @@ def test_context_length_cli_is_positive_and_available_to_chat_and_serve():
 
     parser = cli.build_parser()
     for command in ("serve", "chat", "run"):
-        assert parser.parse_args([command, "model", "--context-length", "65536"]).context_length == 65536
+        assert (
+            parser.parse_args(
+                [command, "model", "--context-length", "65536"]
+            ).context_length
+            == 65536
+        )
         with pytest.raises(SystemExit):
             parser.parse_args([command, "model", "--context-length", "0"])
-    assert server._build_parser().parse_args(["--context-length", "8192"]).context_length == 8192
+    assert (
+        server._build_parser().parse_args(["--context-length", "8192"]).context_length
+        == 8192
+    )
 
 
 def test_max_prompt_tokens_server_global_syncs_to_request_config():
@@ -657,13 +665,16 @@ def test_serial_inference_uses_the_same_explicit_window():
     from rapid_mlx.service.helpers import enforce_rendered_context_length
 
     cfg = reset_config()
-    cfg.context_length = 128
-    model = _StubModel(args=_StubArgs(max_position_embeddings=512))
-    tokenizer = _StubTokenizer(chars_per_token=4)
-    assert enforce_rendered_context_length(model, tokenizer, "x" * 200, 100) == 78
-    with pytest.raises(HTTPException) as excinfo:
-        enforce_rendered_context_length(model, tokenizer, "x" * 512, 1)
-    assert excinfo.value.detail["error"]["code"] == "context_length_exceeded"
+    try:
+        cfg.context_length = 128
+        model = _StubModel(args=_StubArgs(max_position_embeddings=512))
+        tokenizer = _StubTokenizer(chars_per_token=4)
+        assert enforce_rendered_context_length(model, tokenizer, "x" * 200, 100) == 78
+        with pytest.raises(HTTPException) as excinfo:
+            enforce_rendered_context_length(model, tokenizer, "x" * 512, 1)
+        assert excinfo.value.detail["error"]["code"] == "context_length_exceeded"
+    finally:
+        reset_config()
 
 
 # ─── enforce_context_length_for_messages: build_prompt failure paths ─

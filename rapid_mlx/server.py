@@ -4083,7 +4083,12 @@ def main():
     uvicorn_log_level = configure_logging(args.log_level)
 
     # Set global configuration
-    global _api_key, _default_timeout, _rate_limiter, _max_prompt_tokens, _context_length
+    global \
+        _api_key, \
+        _default_timeout, \
+        _rate_limiter, \
+        _max_prompt_tokens, \
+        _context_length
     global _default_temperature, _default_top_p, _default_top_k
     global _enable_audio_lane
     # Task #292: forward ``--enable-audio`` to the gate that decides
