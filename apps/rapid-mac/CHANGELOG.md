@@ -46,6 +46,9 @@ GLM-5.3 Flash, and brings Share Compute to the Desktop app.
   preserves code whitespace and private reasoning boundaries.
 - **Immutable audio weights.** Stable Audio 3 downloads now resolve a reviewed
   pinned revision.
+- **Restart-loop telemetry deduplication.** Repeated server restarts no longer
+  emit duplicate anonymous startup and app-open events within the bounded
+  deduplication window, while startup attempts and outcomes remain paired.
 - **Release and test hygiene.** Managed GUI test shards have bounded lifetimes,
   release evidence is restored, and obsolete scripts, dead code, and stale
   benchmark artifacts have been removed.
