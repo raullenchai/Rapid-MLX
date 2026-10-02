@@ -87,11 +87,6 @@ enum DevSnapshot {
         let snapshotSparkleUpdater = SparkleUpdateController(infoDictionary: [:])
         let snapshotWebSearch = WebSearchConfig()
         let snapshotPerfDefaults = UserDefaults(suiteName: "rapid.dev-snapshot.perf")!
-        let snapshotConsent = TelemetryNoticeCoordinator(
-            needsNotice: { false },
-            recordPresentation: { .init(persisted: false, uploadAllowedThisRun: false) },
-            startTelemetrySession: {}
-        )
         let snapshotStarDefaults = UserDefaults(suiteName: "rapid.dev-snapshot.github-star")!
         snapshotStarDefaults.removePersistentDomain(forName: "rapid.dev-snapshot.github-star")
         let snapshotStarPrompt = GitHubStarPromptCoordinator(
@@ -322,7 +317,6 @@ enum DevSnapshot {
                     // traps on a missing observable the first time it renders.
                     .environment(snapshotSparkleUpdater)
                     .environment(quickstart)
-                    .environment(snapshotConsent)
                     .environment(snapshotStarPrompt)
                     .environment(dockPromptStore)
                     .environment(snapshotShareCompute)
@@ -958,7 +952,6 @@ enum DevSnapshot {
                     // debug build includes Developer — and that panel reads
                     // the coordinator.
                     .environment(quickstart)
-                    .environment(snapshotConsent)
                     .environment(downloads)
                     .environment(updater)
                     .environment(snapshotSparkleUpdater)
@@ -1161,23 +1154,6 @@ enum DevSnapshot {
                 .tint(RapidTheme.brand)
             ),
             to: "\(dir)/connect-tools.png"
-        )
-
-        // Scenario 4: the default-on telemetry launch notice.
-        let consentBannerCoordinator = TelemetryNoticeCoordinator(
-            needsNotice: { true },
-            recordPresentation: { .init(persisted: true, uploadAllowedThisRun: true) },
-            startTelemetrySession: {}
-        )
-        render(
-            AnyView(
-                TelemetryNoticeBanner()
-                    .environment(consentBannerCoordinator)
-                    .frame(width: 720)
-                    .background(RapidTheme.canvas)
-                    .tint(RapidTheme.brand)
-            ),
-            to: "\(dir)/consent.png"
         )
 
         log("wrote PNGs to \(dir)")

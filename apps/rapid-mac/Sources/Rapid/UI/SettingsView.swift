@@ -661,10 +661,10 @@ struct SettingsView: View {
             } message: {
                 Text("The setting could not be saved. Anonymous usage reporting may still be on. Check that your Mac has free disk space and try again, or set RAPID_MLX_TELEMETRY=0 before launching Rapid.")
             }
-            // The launch notice can enable the default-on policy after this
+            // Launch reconciliation can enable the default-on policy after this
             // view value was seeded, so refresh whenever the panel appears.
             .onAppear { telemetryEnabled = TelemetryConfig.isEnabled }
-            // A successful disclosure-marker write updates UserDefaults; keep
+            // A successful policy-marker write updates UserDefaults; keep
             // an already-visible Settings window in sync with that change.
             //
             // `.receive(on: RunLoop.main)` is load-bearing, not ceremony:
@@ -740,7 +740,7 @@ struct SettingsView: View {
     /// appeared to correct itself because leaving the panel and returning
     /// rebuilds the view for unrelated reasons.
     ///
-    /// Seeded once and re-read in ``onAppear`` so the launch notice's
+    /// Seeded once and re-read in ``onAppear`` so launch reconciliation's
     /// default-on transition is reflected if Settings was already constructed.
     @State private var telemetryEnabled = TelemetryConfig.isEnabled
     @State private var telemetryConsentWrite: Task<Void, Never>?
