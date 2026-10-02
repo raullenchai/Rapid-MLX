@@ -130,6 +130,7 @@ def test_qwen38_flash_next_alias_is_experimental_and_memory_gated() -> None:
     assert profile.hf_path == "rapid-mlx/Qwen3.8-Flash-Next-4bit"
     assert profile.experimental is True
     assert profile.min_memory_gb == 128.0
+    assert profile.enforce_min_memory is True
     assert profile.is_hybrid is True
     assert profile.is_hybrid_explicit is True
     assert profile.is_moe is True
