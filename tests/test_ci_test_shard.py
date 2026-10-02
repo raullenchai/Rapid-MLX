@@ -1,4 +1,6 @@
 import configparser
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -24,6 +26,107 @@ def test_pytest_ini_is_the_only_pytest_config() -> None:
     # table there is silently ignored and drifts from the real config.
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
     assert "pytest" not in pyproject.get("tool", {})
+
+
+def _run_warning_policy_probe(
+    tmp_path: Path, name: str, source: str
+) -> subprocess.CompletedProcess[str]:
+    probe = tmp_path / f"test_{name}.py"
+    probe.parent.mkdir(parents=True)
+    probe.write_text(source, encoding="utf-8")
+    return subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-c",
+            str(REPO_ROOT / "pytest.ini"),
+            "-o",
+            "addopts=",
+            str(probe),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+
+
+def test_pytest_warning_policy_contract_in_isolated_processes(tmp_path: Path) -> None:
+    rapid_owned = _run_warning_policy_probe(
+        tmp_path / "rapid-owned",
+        "rapid_owned",
+        """
+import warnings
+
+def test_warning():
+    warnings.warn_explicit(
+        "rapid-owned warning",
+        DeprecationWarning,
+        __file__,
+        1,
+        module="rapid_mlx.warning_policy_probe",
+    )
+""",
+    )
+    assert rapid_owned.returncode != 0
+    assert "DeprecationWarning: rapid-owned warning" in (
+        rapid_owned.stdout + rapid_owned.stderr
+    )
+
+    third_party = _run_warning_policy_probe(
+        tmp_path / "third-party",
+        "third_party",
+        """
+import warnings
+
+def test_warning():
+    warnings.warn_explicit(
+        "third-party warning",
+        DeprecationWarning,
+        __file__,
+        1,
+        module="third_party.warning_policy_probe",
+    )
+""",
+    )
+    third_party_output = third_party.stdout + third_party.stderr
+    assert third_party.returncode == 0, third_party_output
+    assert "warnings summary" in third_party_output
+    assert "DeprecationWarning: third-party warning" in third_party_output
+
+    collection = _run_warning_policy_probe(
+        tmp_path / "collection",
+        "collection",
+        """
+class TestUncollectable:
+    def __init__(self):
+        pass
+
+def test_control():
+    pass
+""",
+    )
+    assert collection.returncode != 0
+    assert "PytestCollectionWarning" in collection.stdout + collection.stderr
+
+    pytest_deprecation = _run_warning_policy_probe(
+        tmp_path / "pytest-deprecation",
+        "pytest_deprecation",
+        """
+import warnings
+import pytest
+
+def test_warning():
+    warnings.warn(pytest.PytestDeprecationWarning("pytest deprecation"))
+""",
+    )
+    assert pytest_deprecation.returncode != 0
+    assert "PytestDeprecationWarning" in (
+        pytest_deprecation.stdout + pytest_deprecation.stderr
+    )
 
 
 def _write(path: Path, lines: int) -> None:

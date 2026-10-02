@@ -583,6 +583,41 @@ def test_ltx25_materialization_wraps_malformed_archive(
         ltx25._materialize_runtime(tmp_path, tmp_path / "snapshot")
 
 
+def test_ltx25_materialization_falls_back_without_data_filter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = b"safe = True\n"
+    archive = ltx25.io.BytesIO()
+    with ltx25.tarfile.open(fileobj=archive, mode="w:") as source:
+        member = ltx25.tarfile.TarInfo("tracked.py")
+        member.size = len(payload)
+        source.addfile(member, ltx25.io.BytesIO(payload))
+    completed = subprocess.CompletedProcess(
+        [], 0, stdout=archive.getvalue(), stderr=b""
+    )
+    monkeypatch.setattr(ltx25.subprocess, "run", lambda *args, **kwargs: completed)
+    monkeypatch.delattr(ltx25.tarfile, "data_filter", raising=False)
+    extracted_without_filter = []
+
+    def legacy_extractall(source, path, *, members, **kwargs):
+        assert kwargs == {}
+        extracted_without_filter.append(True)
+        destination_path = Path(path)
+        destination_path.mkdir(parents=True)
+        for member in members:
+            extracted = source.extractfile(member)
+            assert extracted is not None
+            (destination_path / member.name).write_bytes(extracted.read())
+
+    monkeypatch.setattr(ltx25.tarfile.TarFile, "extractall", legacy_extractall)
+    destination = tmp_path / "snapshot"
+
+    ltx25._materialize_runtime(tmp_path, destination)
+
+    assert extracted_without_filter == [True]
+    assert (destination / "tracked.py").read_bytes() == payload
+
+
 def test_ltx25_runtime_is_provisioned_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
