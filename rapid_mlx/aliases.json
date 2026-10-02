@@ -514,6 +514,7 @@
     "mtp_speculative_tokens": 1,
     "mtp_default_enabled": false,
     "min_memory_gb": 128,
+    "enforce_min_memory": true,
     "experimental": true
   },
   "qwen3.6-35b-nvfp4": {
