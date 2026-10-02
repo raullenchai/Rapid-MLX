@@ -37,7 +37,8 @@ router = APIRouter(dependencies=[Depends(verify_api_key)])
 admin_router = APIRouter(dependencies=[Depends(verify_api_key_or_x_api_key)])
 
 
-@probe_router.api_route("/", methods=["GET", "HEAD"])
+@probe_router.get("/")
+@probe_router.head("/", include_in_schema=False)
 async def root():
     """Root path — returns a minimal alive response.
 
@@ -45,7 +46,9 @@ async def root():
     connectivity probe before attempting any API call. Without a handler
     here FastAPI returns 404, which the client interprets as "server
     unreachable" and aborts. This endpoint lives on ``probe_router``
-    (no-auth) so the probe succeeds regardless of ``--api-key``.
+    (no-auth) so the probe succeeds regardless of ``--api-key``. HEAD is
+    kept out of the OpenAPI schema: a single GET+HEAD route emits the same
+    operationId twice, which breaks generated clients.
     """
     return {"status": "ok"}
 

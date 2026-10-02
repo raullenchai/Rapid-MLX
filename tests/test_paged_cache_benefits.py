@@ -79,7 +79,7 @@ def _kv(num_tokens, base=0.0):
     ]
 
 
-def test_benefit_1_shared_system_prompts():
+def _benefit_1_shared_system_prompts():
     """
     Benefit 1: Multiple users sharing the same system prompt.
 
@@ -182,7 +182,7 @@ def test_benefit_1_shared_system_prompts():
     return savings
 
 
-def test_benefit_2_memory_efficiency():
+def _benefit_2_memory_efficiency():
     """
     Benefit 2: Memory efficiency with many concurrent requests.
 
@@ -286,7 +286,7 @@ def test_benefit_2_memory_efficiency():
     return savings
 
 
-def test_benefit_3_prefix_sharing():
+def _benefit_3_prefix_sharing():
     """
     Benefit 3: Prefix sharing between similar conversations.
 
@@ -400,6 +400,18 @@ def test_benefit_3_prefix_sharing():
     return efficiency
 
 
+def test_benefit_1_shared_system_prompts():
+    assert _benefit_1_shared_system_prompts() > 0
+
+
+def test_benefit_2_memory_efficiency():
+    assert _benefit_2_memory_efficiency() > 0
+
+
+def test_benefit_3_prefix_sharing():
+    assert _benefit_3_prefix_sharing() > 0
+
+
 def test_copy_on_write_demo():
     """
     Bonus: Demonstrate Copy-on-Write behavior.
@@ -457,9 +469,9 @@ def main():
     results = {}
 
     # Run each test
-    results["shared_prompts"] = test_benefit_1_shared_system_prompts()
-    results["memory_efficiency"] = test_benefit_2_memory_efficiency()
-    results["prefix_sharing"] = test_benefit_3_prefix_sharing()
+    results["shared_prompts"] = _benefit_1_shared_system_prompts()
+    results["memory_efficiency"] = _benefit_2_memory_efficiency()
+    results["prefix_sharing"] = _benefit_3_prefix_sharing()
     test_copy_on_write_demo()
 
     # Final summary

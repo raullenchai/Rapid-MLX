@@ -483,7 +483,10 @@ def _http_error(exc: Exception) -> HTTPException:
             "app_mismatch": status.HTTP_409_CONFLICT,
             "window_stale": status.HTTP_409_CONFLICT,
             "target_drift": status.HTTP_409_CONFLICT,
-            "screenshot_too_large": status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            # Starlette renamed this constant to HTTP_413_CONTENT_TOO_LARGE and
+            # deprecated the old name; the fastapi>=0.100 floor predates the
+            # new one, so use the bare status code.
+            "screenshot_too_large": 413,
         }
         return HTTPException(
             status_code=code_to_status.get(exc.code, status.HTTP_400_BAD_REQUEST),

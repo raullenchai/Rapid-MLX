@@ -1267,8 +1267,7 @@ class ResponseFormatJsonSchema(BaseModel):
     # union arm can't bypass either.
     strict: StrictBool | None = False
 
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
 
 # F-103: legal ``response_format.type`` enum, kept in sync with the

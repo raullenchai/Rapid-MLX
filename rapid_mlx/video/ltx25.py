@@ -209,7 +209,13 @@ def _materialize_runtime(repository: Path, destination: Path) -> None:
                     raise LTX25BackendError(
                         "The pinned LTX-2.5 source archive contains an unsafe entry."
                     )
-            source.extractall(destination, members=members)
+            # Members are pre-validated above; the stdlib ``data`` filter is
+            # defense in depth where available (3.10.12+/3.11.4+) and silences
+            # the Python 3.14 default-filter DeprecationWarning.
+            if hasattr(tarfile, "data_filter"):
+                source.extractall(destination, members=members, filter="data")
+            else:
+                source.extractall(destination, members=members)
     except (
         OSError,
         subprocess.CalledProcessError,

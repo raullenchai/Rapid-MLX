@@ -628,46 +628,50 @@ class TestGuidedGenerator:
 # ---------------------------------------------------------------------------
 
 
+# Module-level (not class-scoped instance-method) fixtures: pytest deprecates
+# class-scoped fixtures defined as instance methods.
+@pytest.fixture(scope="module")
+def hf_fast_tokenizer():
+    """A real *fast* (Rust-backed) tokenizer built entirely in memory —
+    no network, no cache lookup, no model download. This keeps the
+    constrained-decode tests hermetic in a clean/offline CI (the prior
+    ``AutoTokenizer.from_pretrained("gpt2")`` did an uncaught
+    network/cache fetch and failed offline).
+
+    It is a complete byte-level BPE tokenizer: the vocab spans the full
+    256-symbol ByteLevel alphabet, so it can encode ANY UTF-8 string
+    (every JSON structural char, ``Sure``, ``[``, arbitrary content)
+    and round-trips exactly — which is all llguidance needs to build an
+    ``LLTokenizer`` and drive the grammar mask.
+    """
+    return _build_byte_level_fast_tokenizer()
+
+
+@pytest.fixture(scope="module")
+def wrapped_tokenizer(hf_fast_tokenizer):
+    """Wrap the fast tokenizer to mimic mlx-lm's TokenizerWrapper shape:
+    the guided code reads ``._tokenizer`` for the inner fast tokenizer
+    and calls ``.encode``/``.decode`` on the wrapper."""
+
+    class _Wrapper:
+        def __init__(self, inner):
+            self._tokenizer = inner
+
+        def encode(self, s):
+            return self._tokenizer.encode(s)
+
+        def decode(self, ids):
+            return self._tokenizer.decode(ids)
+
+    return _Wrapper(hf_fast_tokenizer)
+
+
 @requires_guided
 class TestConstrainedDecodeWithRealLLGuidance:
     """The heart of the migration: prove the llguidance grammar actually
     constrains an mlx decode loop. Uses a real LLTokenizer (built from a
     real fast tokenizer) + a fake model.
     """
-
-    @pytest.fixture(scope="class")
-    def hf_fast_tokenizer(self):
-        """A real *fast* (Rust-backed) tokenizer built entirely in memory —
-        no network, no cache lookup, no model download. This keeps the
-        constrained-decode tests hermetic in a clean/offline CI (the prior
-        ``AutoTokenizer.from_pretrained("gpt2")`` did an uncaught
-        network/cache fetch and failed offline).
-
-        It is a complete byte-level BPE tokenizer: the vocab spans the full
-        256-symbol ByteLevel alphabet, so it can encode ANY UTF-8 string
-        (every JSON structural char, ``Sure``, ``[``, arbitrary content)
-        and round-trips exactly — which is all llguidance needs to build an
-        ``LLTokenizer`` and drive the grammar mask.
-        """
-        return _build_byte_level_fast_tokenizer()
-
-    @pytest.fixture(scope="class")
-    def wrapped_tokenizer(self, hf_fast_tokenizer):
-        """Wrap the fast tokenizer to mimic mlx-lm's TokenizerWrapper shape:
-        the guided code reads ``._tokenizer`` for the inner fast tokenizer
-        and calls ``.encode``/``.decode`` on the wrapper."""
-
-        class _Wrapper:
-            def __init__(self, inner):
-                self._tokenizer = inner
-
-            def encode(self, s):
-                return self._tokenizer.encode(s)
-
-            def decode(self, ids):
-                return self._tokenizer.decode(ids)
-
-        return _Wrapper(hf_fast_tokenizer)
 
     def _make_generator(self, wrapped, plan, prompt="prompt"):
         import rapid_mlx.api.guided as guided
@@ -1104,10 +1108,6 @@ class TestChunkedPrefillAndEmptyPrompt:
          empty sequence axis → guided generation silently returned None.
          The path now seeds a BOS token when the tokenizer defines one.
     """
-
-    @pytest.fixture(scope="class")
-    def hf_fast_tokenizer(self):
-        return _build_byte_level_fast_tokenizer()
 
     def _wrap(self, hf_fast_tokenizer, bos_token_id=None):
         class _Wrapper:

@@ -13,13 +13,17 @@ from scripts.ci_test_shard import TestFile, discover, ignored_paths, partition
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_discovery_pattern_matches_both_pytest_configs() -> None:
+def test_discovery_pattern_matches_pytest_config() -> None:
     parser = configparser.ConfigParser()
     parser.read(REPO_ROOT / "pytest.ini")
     assert parser["pytest"]["python_files"].split() == ["test_*.py"]
 
+
+def test_pytest_ini_is_the_only_pytest_config() -> None:
+    # pytest.ini wins over pyproject.toml, so a [tool.pytest.ini_options]
+    # table there is silently ignored and drifts from the real config.
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
-    assert pyproject["tool"]["pytest"]["ini_options"]["python_files"] == ["test_*.py"]
+    assert "pytest" not in pyproject.get("tool", {})
 
 
 def _write(path: Path, lines: int) -> None:

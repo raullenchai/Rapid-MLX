@@ -41,6 +41,12 @@ import pytest
 
 import rapid_mlx
 
+# Every test here imports the deprecated shim on purpose; the warning itself is
+# asserted by the dedicated warning tests below.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:The 'vllm_mlx' package has been renamed:DeprecationWarning"
+)
+
 
 def _fresh_import_vllm_mlx(monkeypatch):
     """Import ``vllm_mlx`` as if fresh, without disturbing other tests."""

@@ -516,7 +516,7 @@ def _quote_fidelity_cases():
 
 
 @pytest.mark.parametrize(
-    ("value", "ensure_ascii", "cut", "lead"), _quote_fidelity_cases()
+    ("value", "ensure_ascii", "cut", "lead"), list(_quote_fidelity_cases())
 )
 def test_wrapper_quotes_dropped_without_eating_real_quotes(
     value: str, ensure_ascii: bool, cut: str, lead: str

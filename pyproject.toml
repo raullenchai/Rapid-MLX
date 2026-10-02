@@ -779,8 +779,3 @@ ignore_errors = true
 # repository-wide shrink-only error budget.
 module = "rapid_mlx.models.mlx_vlm_vendored.cache"
 ignore_errors = true
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-python_files = ["test_*.py"]
-asyncio_mode = "auto"

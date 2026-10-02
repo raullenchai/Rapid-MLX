@@ -338,6 +338,19 @@ class TestHealthRoutes:
         finally:
             self._restore_config(orig)
 
+    def test_openapi_operation_ids_are_unique(self):
+        """A single GET+HEAD route used to emit ``root__get`` twice; duplicate
+        operationIds break OpenAPI client generators."""
+        from rapid_mlx.server import app
+
+        ids = [
+            op["operationId"]
+            for path_item in app.openapi()["paths"].values()
+            for op in path_item.values()
+            if isinstance(op, dict) and "operationId" in op
+        ]
+        assert len(ids) == len(set(ids))
+
     @pytest.mark.parametrize(
         ("method", "path"),
         [
