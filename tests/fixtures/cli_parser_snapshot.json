@@ -255,7 +255,7 @@
       }
      ],
      "allow_abbrev": true,
-     "class": "rapid_mlx.cli._PortContextArgumentParser",
+     "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
      "defaults": {},
      "description": null,
      "epilog": null,
@@ -341,7 +341,7 @@
           }
          ],
          "allow_abbrev": true,
-         "class": "rapid_mlx.cli._PortContextArgumentParser",
+         "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
          "defaults": {},
          "description": null,
          "epilog": null,
@@ -395,7 +395,7 @@
           }
          ],
          "allow_abbrev": true,
-         "class": "rapid_mlx.cli._PortContextArgumentParser",
+         "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
          "defaults": {},
          "description": null,
          "epilog": null,
@@ -463,7 +463,7 @@
           }
          ],
          "allow_abbrev": true,
-         "class": "rapid_mlx.cli._PortContextArgumentParser",
+         "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
          "defaults": {},
          "description": null,
          "epilog": null,
@@ -493,7 +493,7 @@
       }
      ],
      "allow_abbrev": true,
-     "class": "rapid_mlx.cli._PortContextArgumentParser",
+     "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
      "defaults": {},
      "description": null,
      "epilog": null,
@@ -590,7 +590,7 @@
         "--disk-stream-cache-gb"
        ],
        "required": false,
-       "type": "rapid_mlx.cli.positive_finite_float"
+       "type": "rapid_mlx.cli_parser.positive_finite_float"
       },
       {
        "class": "argparse._StoreAction",
@@ -1183,7 +1183,7 @@
       }
      ],
      "allow_abbrev": true,
-     "class": "rapid_mlx.cli._PortContextArgumentParser",
+     "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
      "defaults": {},
      "description": null,
      "epilog": null,
@@ -1316,7 +1316,7 @@
             "--memory-gib"
            ],
            "required": false,
-           "type": "rapid_mlx.cli.positive_int"
+           "type": "rapid_mlx.cli_parser.positive_int"
           },
           {
            "class": "argparse._StoreTrueAction",
@@ -1350,7 +1350,7 @@
           }
          ],
          "allow_abbrev": true,
-         "class": "rapid_mlx.cli._PortContextArgumentParser",
+         "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
          "defaults": {},
          "description": null,
          "epilog": null,
@@ -1422,7 +1422,7 @@
           }
          ],
          "allow_abbrev": true,
-         "class": "rapid_mlx.cli._PortContextArgumentParser",
+         "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
          "defaults": {},
          "description": null,
          "epilog": null,
@@ -1494,7 +1494,7 @@
           }
          ],
          "allow_abbrev": true,
-         "class": "rapid_mlx.cli._PortContextArgumentParser",
+         "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
          "defaults": {},
          "description": null,
          "epilog": null,
@@ -1550,7 +1550,7 @@
             "--limit"
            ],
            "required": false,
-           "type": "rapid_mlx.cli.positive_int"
+           "type": "rapid_mlx.cli_parser.positive_int"
           },
           {
            "class": "argparse._StoreTrueAction",
@@ -1569,7 +1569,7 @@
           }
          ],
          "allow_abbrev": true,
-         "class": "rapid_mlx.cli._PortContextArgumentParser",
+         "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
          "defaults": {},
          "description": null,
          "epilog": null,
@@ -1670,7 +1670,7 @@
           }
          ],
          "allow_abbrev": true,
-         "class": "rapid_mlx.cli._PortContextArgumentParser",
+         "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
          "defaults": {},
          "description": null,
          "epilog": null,
@@ -1834,7 +1834,7 @@
           }
          ],
          "allow_abbrev": true,
-         "class": "rapid_mlx.cli._PortContextArgumentParser",
+         "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
          "defaults": {},
          "description": null,
          "epilog": null,
@@ -1870,7 +1870,7 @@
       }
      ],
      "allow_abbrev": true,
-     "class": "rapid_mlx.cli._PortContextArgumentParser",
+     "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
      "defaults": {},
      "description": null,
      "epilog": null,
@@ -1998,7 +1998,7 @@
         "--context-length"
        ],
        "required": false,
-       "type": "rapid_mlx.cli.positive_int"
+       "type": "rapid_mlx.cli_parser.positive_int"
       },
       {
        "class": "argparse._StoreAction",
@@ -2028,7 +2028,7 @@
         "--port"
        ],
        "required": false,
-       "type": "rapid_mlx.cli._port_arg"
+       "type": "rapid_mlx.cli_parser._port_arg"
       },
       {
        "class": "argparse._StoreAction",
@@ -2103,7 +2103,7 @@
         "--mcp-max-rounds"
        ],
        "required": false,
-       "type": "rapid_mlx.cli.positive_int"
+       "type": "rapid_mlx.cli_parser.positive_int"
       },
       {
        "class": "argparse._StoreTrueAction",
@@ -2122,7 +2122,7 @@
       }
      ],
      "allow_abbrev": false,
-     "class": "rapid_mlx.cli._PortContextArgumentParser",
+     "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
      "defaults": {},
      "description": "Interactive chat REPL with a model.\n\nNote: 'rapid-mlx run' is an alias for 'chat'.",
      "epilog": null,
@@ -2232,7 +2232,7 @@
         "--port"
        ],
        "required": false,
-       "type": "rapid_mlx.cli._port_arg"
+       "type": "rapid_mlx.cli_parser._port_arg"
       },
       {
        "class": "argparse._StoreAction",
@@ -2266,7 +2266,7 @@
       }
      ],
      "allow_abbrev": true,
-     "class": "rapid_mlx.cli._PortContextArgumentParser",
+     "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
      "defaults": {},
      "description": null,
      "epilog": null,
@@ -2327,7 +2327,7 @@
       }
      ],
      "allow_abbrev": true,
-     "class": "rapid_mlx.cli._PortContextArgumentParser",
+     "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
      "defaults": {},
      "description": "Run the computer-use agent loop. Fast thinking (outcome routing, fixation detection) is always local; slow thinking (planning) uses the preset or URL you choose: `rapid-mlx cua run --planner local-9b`.",
      "epilog": null,
@@ -2598,7 +2598,7 @@
       }
      ],
      "allow_abbrev": true,
-     "class": "rapid_mlx.cli._PortContextArgumentParser",
+     "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
      "defaults": {},
      "description": null,
      "epilog": null,
@@ -2678,7 +2678,7 @@
       }
      ],
      "allow_abbrev": true,
-     "class": "rapid_mlx.cli._PortContextArgumentParser",
+     "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
      "defaults": {},
      "description": null,
      "epilog": null,
@@ -2733,7 +2733,7 @@
       }
      ],
      "allow_abbrev": true,
-     "class": "rapid_mlx.cli._PortContextArgumentParser",
+     "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
      "defaults": {},
      "description": null,
      "epilog": null,
@@ -2789,7 +2789,7 @@
       }
      ],
      "allow_abbrev": true,
-     "class": "rapid_mlx.cli._PortContextArgumentParser",
+     "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
      "defaults": {},
      "description": null,
      "epilog": null,
@@ -2901,7 +2901,7 @@
         "--port"
        ],
        "required": false,
-       "type": "rapid_mlx.cli._port_arg"
+       "type": "rapid_mlx.cli_parser._port_arg"
       },
       {
        "class": "argparse._StoreTrueAction",
@@ -2950,7 +2950,7 @@
       }
      ],
      "allow_abbrev": true,
-     "class": "rapid_mlx.cli._PortContextArgumentParser",
+     "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
      "defaults": {},
      "description": "Detect an IDE client (Cline, Claude Code, Continue, Cursor) and write/patch its config to route at the rapid-mlx server. Use `rapid-mlx launch list` to see what's supported. Cursor requires a public HTTPS --server-url.",
      "epilog": null,
@@ -3001,7 +3001,7 @@
       }
      ],
      "allow_abbrev": true,
-     "class": "rapid_mlx.cli._PortContextArgumentParser",
+     "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
      "defaults": {},
      "description": null,
      "epilog": null,
@@ -3109,7 +3109,7 @@
       }
      ],
      "allow_abbrev": true,
-     "class": "rapid_mlx.cli._PortContextArgumentParser",
+     "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
      "defaults": {},
      "description": null,
      "epilog": null,
@@ -3155,7 +3155,7 @@
       }
      ],
      "allow_abbrev": true,
-     "class": "rapid_mlx.cli._PortContextArgumentParser",
+     "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
      "defaults": {},
      "description": null,
      "epilog": null,
@@ -3239,7 +3239,7 @@
       }
      ],
      "allow_abbrev": true,
-     "class": "rapid_mlx.cli._PortContextArgumentParser",
+     "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
      "defaults": {},
      "description": null,
      "epilog": null,
@@ -3323,7 +3323,7 @@
       }
      ],
      "allow_abbrev": true,
-     "class": "rapid_mlx.cli._PortContextArgumentParser",
+     "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
      "defaults": {},
      "description": null,
      "epilog": null,
@@ -3395,7 +3395,7 @@
       }
      ],
      "allow_abbrev": true,
-     "class": "rapid_mlx.cli._PortContextArgumentParser",
+     "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
      "defaults": {},
      "description": null,
      "epilog": null,
@@ -3524,7 +3524,7 @@
         "--context-length"
        ],
        "required": false,
-       "type": "rapid_mlx.cli.positive_int"
+       "type": "rapid_mlx.cli_parser.positive_int"
       },
       {
        "class": "argparse._StoreAction",
@@ -3554,7 +3554,7 @@
         "--port"
        ],
        "required": false,
-       "type": "rapid_mlx.cli._port_arg"
+       "type": "rapid_mlx.cli_parser._port_arg"
       },
       {
        "class": "argparse._StoreAction",
@@ -3629,7 +3629,7 @@
         "--mcp-max-rounds"
        ],
        "required": false,
-       "type": "rapid_mlx.cli.positive_int"
+       "type": "rapid_mlx.cli_parser.positive_int"
       },
       {
        "class": "argparse._StoreTrueAction",
@@ -3648,7 +3648,7 @@
       }
      ],
      "allow_abbrev": false,
-     "class": "rapid_mlx.cli._PortContextArgumentParser",
+     "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
      "defaults": {},
      "description": "Interactive chat REPL with a model.\n\nNote: 'rapid-mlx run' is an alias for 'chat'.",
      "epilog": null,
@@ -3823,7 +3823,7 @@
         "--disk-stream-cache-gb"
        ],
        "required": false,
-       "type": "rapid_mlx.cli.positive_finite_float"
+       "type": "rapid_mlx.cli_parser.positive_finite_float"
       },
       {
        "class": "argparse._StoreAction",
@@ -3883,7 +3883,7 @@
         "--listen-fd"
        ],
        "required": false,
-       "type": "rapid_mlx.cli._listen_fd_arg"
+       "type": "rapid_mlx.cli_parser._listen_fd_arg"
       },
       {
        "choices": [
@@ -3904,7 +3904,7 @@
         "--log-level"
        ],
        "required": false,
-       "type": "rapid_mlx.cli._log_level_choice"
+       "type": "rapid_mlx.cli_parser._log_level_choice"
       },
       {
        "class": "argparse._StoreAction",
@@ -4118,7 +4118,7 @@
         "--metal-cap-kv-bytes-per-token"
        ],
        "required": false,
-       "type": "rapid_mlx.cli.non_negative_int"
+       "type": "rapid_mlx.cli_parser.non_negative_int"
       },
       {
        "class": "argparse._StoreAction",
@@ -4133,7 +4133,7 @@
         "--response-cache-entries"
        ],
        "required": false,
-       "type": "rapid_mlx.cli.non_negative_int"
+       "type": "rapid_mlx.cli_parser.non_negative_int"
       },
       {
        "class": "argparse._StoreTrueAction",
@@ -4982,7 +4982,7 @@
         "--vision-prefill-token-budget"
        ],
        "required": false,
-       "type": "rapid_mlx.cli.positive_int"
+       "type": "rapid_mlx.cli_parser.positive_int"
       },
       {
        "class": "argparse._StoreAction",
@@ -4997,7 +4997,7 @@
         "--vision-min-pixels"
        ],
        "required": false,
-       "type": "rapid_mlx.cli.non_negative_int"
+       "type": "rapid_mlx.cli_parser.non_negative_int"
       },
       {
        "class": "argparse._StoreAction",
@@ -5012,7 +5012,7 @@
         "--vision-max-pixels"
        ],
        "required": false,
-       "type": "rapid_mlx.cli.non_negative_int"
+       "type": "rapid_mlx.cli_parser.non_negative_int"
       },
       {
        "class": "argparse._StoreAction",
@@ -5117,7 +5117,7 @@
         "--max-prompt-tokens"
        ],
        "required": false,
-       "type": "rapid_mlx.cli.positive_int"
+       "type": "rapid_mlx.cli_parser.positive_int"
       },
       {
        "class": "argparse._StoreAction",
@@ -5132,7 +5132,7 @@
         "--context-length"
        ],
        "required": false,
-       "type": "rapid_mlx.cli.positive_int"
+       "type": "rapid_mlx.cli_parser.positive_int"
       },
       {
        "class": "argparse._StoreAction",
@@ -5819,7 +5819,7 @@
       }
      ],
      "allow_abbrev": false,
-     "class": "rapid_mlx.cli._PortContextArgumentParser",
+     "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
      "defaults": {},
      "description": "Start a local OpenAI-compatible inference server.\n\n  rapid-mlx serve qwen3.5-4b-4bit\n    <model>    pick yours: a short alias (rapid-mlx models) or HF repo\n    --port     bind port (default: first free in 8000-8009)\n    --host     bind host (default 127.0.0.1, loopback-only)\n    --api-key  require a bearer token on every request\n\nOnce warmed up the server prints its 'Ready:' URL; the OpenAI-compatible\nendpoints (/v1/models, /v1/chat/completions, /v1/audio/*, ...) serve from\nthat base URL. Most options below are advanced tuning; the common journey\nneeds only a model (--port/--host default to local use).",
      "epilog": "First-time tips:\n  rapid-mlx models  lists what you can serve;\n  rapid-mlx recipe  recommends the best model for this Mac.",
@@ -6069,7 +6069,7 @@
           }
          ],
          "allow_abbrev": true,
-         "class": "rapid_mlx.cli._PortContextArgumentParser",
+         "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
          "defaults": {},
          "description": null,
          "epilog": null,
@@ -6128,7 +6128,7 @@
           }
          ],
          "allow_abbrev": true,
-         "class": "rapid_mlx.cli._PortContextArgumentParser",
+         "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
          "defaults": {},
          "description": null,
          "epilog": null,
@@ -6212,7 +6212,7 @@
             "--port"
            ],
            "required": false,
-           "type": "rapid_mlx.cli._port_arg"
+           "type": "rapid_mlx.cli_parser._port_arg"
           },
           {
            "class": "argparse._StoreAction",
@@ -6318,7 +6318,7 @@
           }
          ],
          "allow_abbrev": true,
-         "class": "rapid_mlx.cli._PortContextArgumentParser",
+         "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
          "defaults": {},
          "description": null,
          "epilog": null,
@@ -6405,7 +6405,7 @@
               }
              ],
              "allow_abbrev": true,
-             "class": "rapid_mlx.cli._PortContextArgumentParser",
+             "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
              "defaults": {},
              "description": null,
              "epilog": null,
@@ -6447,7 +6447,7 @@
               }
              ],
              "allow_abbrev": true,
-             "class": "rapid_mlx.cli._PortContextArgumentParser",
+             "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
              "defaults": {},
              "description": null,
              "epilog": null,
@@ -6489,7 +6489,7 @@
               }
              ],
              "allow_abbrev": true,
-             "class": "rapid_mlx.cli._PortContextArgumentParser",
+             "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
              "defaults": {},
              "description": null,
              "epilog": null,
@@ -6531,7 +6531,7 @@
           }
          ],
          "allow_abbrev": true,
-         "class": "rapid_mlx.cli._PortContextArgumentParser",
+         "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
          "defaults": {},
          "description": null,
          "epilog": null,
@@ -6617,7 +6617,7 @@
             "--port"
            ],
            "required": false,
-           "type": "rapid_mlx.cli._port_arg"
+           "type": "rapid_mlx.cli_parser._port_arg"
           },
           {
            "class": "argparse._StoreAction",
@@ -6678,7 +6678,7 @@
           }
          ],
          "allow_abbrev": true,
-         "class": "rapid_mlx.cli._PortContextArgumentParser",
+         "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
          "defaults": {},
          "description": null,
          "epilog": null,
@@ -6789,7 +6789,7 @@
           }
          ],
          "allow_abbrev": true,
-         "class": "rapid_mlx.cli._PortContextArgumentParser",
+         "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
          "defaults": {},
          "description": null,
          "epilog": null,
@@ -6861,7 +6861,7 @@
             "--port"
            ],
            "required": false,
-           "type": "rapid_mlx.cli._port_arg"
+           "type": "rapid_mlx.cli_parser._port_arg"
           },
           {
            "class": "argparse._StoreTrueAction",
@@ -6895,7 +6895,7 @@
           }
          ],
          "allow_abbrev": true,
-         "class": "rapid_mlx.cli._PortContextArgumentParser",
+         "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
          "defaults": {},
          "description": null,
          "epilog": null,
@@ -6971,7 +6971,7 @@
           }
          ],
          "allow_abbrev": true,
-         "class": "rapid_mlx.cli._PortContextArgumentParser",
+         "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
          "defaults": {},
          "description": null,
          "epilog": null,
@@ -7056,7 +7056,7 @@
             "--port"
            ],
            "required": false,
-           "type": "rapid_mlx.cli._port_arg"
+           "type": "rapid_mlx.cli_parser._port_arg"
           },
           {
            "class": "argparse._StoreTrueAction",
@@ -7090,7 +7090,7 @@
           }
          ],
          "allow_abbrev": true,
-         "class": "rapid_mlx.cli._PortContextArgumentParser",
+         "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
          "defaults": {},
          "description": null,
          "epilog": null,
@@ -7167,7 +7167,7 @@
           }
          ],
          "allow_abbrev": true,
-         "class": "rapid_mlx.cli._PortContextArgumentParser",
+         "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
          "defaults": {},
          "description": null,
          "epilog": null,
@@ -7286,7 +7286,7 @@
           }
          ],
          "allow_abbrev": true,
-         "class": "rapid_mlx.cli._PortContextArgumentParser",
+         "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
          "defaults": {},
          "description": null,
          "epilog": null,
@@ -7318,7 +7318,7 @@
       }
      ],
      "allow_abbrev": true,
-     "class": "rapid_mlx.cli._PortContextArgumentParser",
+     "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
      "defaults": {},
      "description": "Install, inspect, and remove Rapid-MLX as an unattended system launchd daemon — the supported path for an always-on Mac mini inference appliance that boots before any GUI login. Sub-commands: install, configure, apply, config, credential, upgrade, status, logs, restart, uninstall.",
      "epilog": null,
@@ -7585,7 +7585,7 @@
       }
      ],
      "allow_abbrev": true,
-     "class": "rapid_mlx.cli._PortContextArgumentParser",
+     "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
      "defaults": {},
      "description": "Start rapid-mlx serve and open a public Cloudflare-fronted URL on rapidmlx.com so you can use the model from a different device — or share it with a friend. Press Ctrl-C to stop.",
      "epilog": "serve-flag passthrough:\n  Anything after a literal `--` is forwarded verbatim to the\n  `rapid-mlx serve` that share spawns, so every serve flag works\n  over the tunnel without share re-declaring it. Spec-decode is\n  off by default; opt in per share like this:\n\n    rapid-mlx share hy3-preview-4bit -- \\\n        --force-spec-decode --speculative-config '{\"method\":\"mtp\"}'\n\n  (`--host` / `--api-key` / `--port` / `--listen-fd` /\n  `--log-level` are owned by share and rejected if forwarded.)",
@@ -7681,7 +7681,7 @@
         "--port"
        ],
        "required": false,
-       "type": "rapid_mlx.cli._port_arg"
+       "type": "rapid_mlx.cli_parser._port_arg"
       },
       {
        "class": "argparse._StoreAction",
@@ -7776,7 +7776,7 @@
       }
      ],
      "allow_abbrev": true,
-     "class": "rapid_mlx.cli._PortContextArgumentParser",
+     "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
      "defaults": {},
      "description": "Start an AI agent with a local model in one command.\n\nResolves the agent profile, picks a recommended model that fits this Mac and is already cached (or previews a download), starts the server in the foreground, and prints the agent's connection instructions (optionally configuring it).",
      "epilog": null,
@@ -7886,7 +7886,7 @@
         "--port"
        ],
        "required": false,
-       "type": "rapid_mlx.cli._port_arg"
+       "type": "rapid_mlx.cli_parser._port_arg"
       },
       {
        "class": "argparse._StoreAction",
@@ -7922,7 +7922,7 @@
         "--log-level"
        ],
        "required": false,
-       "type": "rapid_mlx.cli._log_level_choice"
+       "type": "rapid_mlx.cli_parser._log_level_choice"
       },
       {
        "choices": [
@@ -7976,7 +7976,7 @@
         "--batch-size"
        ],
        "required": false,
-       "type": "rapid_mlx.cli.positive_int"
+       "type": "rapid_mlx.cli_parser.positive_int"
       },
       {
        "class": "argparse._StoreAction",
@@ -8021,7 +8021,7 @@
         "--cache-entries"
        ],
        "required": false,
-       "type": "rapid_mlx.cli.non_negative_int"
+       "type": "rapid_mlx.cli_parser.non_negative_int"
       },
       {
        "class": "argparse._StoreAction",
@@ -8036,7 +8036,7 @@
         "--max-tokens"
        ],
        "required": false,
-       "type": "rapid_mlx.cli.positive_int"
+       "type": "rapid_mlx.cli_parser.positive_int"
       },
       {
        "class": "argparse._StoreAction",
@@ -8051,7 +8051,7 @@
         "--max-work-tokens"
        ],
        "required": false,
-       "type": "rapid_mlx.cli.positive_int"
+       "type": "rapid_mlx.cli_parser.positive_int"
       },
       {
        "class": "argparse._StoreAction",
@@ -8066,11 +8066,11 @@
         "--max-concurrent-requests"
        ],
        "required": false,
-       "type": "rapid_mlx.cli.positive_int"
+       "type": "rapid_mlx.cli_parser.positive_int"
       }
      ],
      "allow_abbrev": false,
-     "class": "rapid_mlx.cli._PortContextArgumentParser",
+     "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
      "defaults": {},
      "description": "Start a TypeSafe-compatible decision server with POST /v1/systemone and POST /v1/rank. This service is independent from the OpenAI-compatible generative server.",
      "epilog": null,
@@ -8167,7 +8167,7 @@
           }
          ],
          "allow_abbrev": true,
-         "class": "rapid_mlx.cli._PortContextArgumentParser",
+         "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
          "defaults": {},
          "description": null,
          "epilog": null,
@@ -8209,7 +8209,7 @@
           }
          ],
          "allow_abbrev": true,
-         "class": "rapid_mlx.cli._PortContextArgumentParser",
+         "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
          "defaults": {},
          "description": null,
          "epilog": null,
@@ -8251,7 +8251,7 @@
           }
          ],
          "allow_abbrev": true,
-         "class": "rapid_mlx.cli._PortContextArgumentParser",
+         "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
          "defaults": {},
          "description": null,
          "epilog": null,
@@ -8293,7 +8293,7 @@
           }
          ],
          "allow_abbrev": true,
-         "class": "rapid_mlx.cli._PortContextArgumentParser",
+         "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
          "defaults": {},
          "description": null,
          "epilog": null,
@@ -8335,7 +8335,7 @@
           }
          ],
          "allow_abbrev": true,
-         "class": "rapid_mlx.cli._PortContextArgumentParser",
+         "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
          "defaults": {},
          "description": null,
          "epilog": null,
@@ -8377,7 +8377,7 @@
           }
          ],
          "allow_abbrev": true,
-         "class": "rapid_mlx.cli._PortContextArgumentParser",
+         "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
          "defaults": {},
          "description": null,
          "epilog": null,
@@ -8419,7 +8419,7 @@
           }
          ],
          "allow_abbrev": true,
-         "class": "rapid_mlx.cli._PortContextArgumentParser",
+         "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
          "defaults": {},
          "description": null,
          "epilog": null,
@@ -8461,7 +8461,7 @@
           }
          ],
          "allow_abbrev": true,
-         "class": "rapid_mlx.cli._PortContextArgumentParser",
+         "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
          "defaults": {},
          "description": null,
          "epilog": null,
@@ -8488,7 +8488,7 @@
       }
      ],
      "allow_abbrev": true,
-     "class": "rapid_mlx.cli._PortContextArgumentParser",
+     "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
      "defaults": {},
      "description": null,
      "epilog": null,
@@ -8563,7 +8563,7 @@
       }
      ],
      "allow_abbrev": true,
-     "class": "rapid_mlx.cli._PortContextArgumentParser",
+     "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
      "defaults": {},
      "description": "Upgrade rapid-mlx to the latest version.\n\nNote: 'rapid-mlx update' is an alias for 'upgrade'.",
      "epilog": null,
@@ -8638,7 +8638,7 @@
       }
      ],
      "allow_abbrev": true,
-     "class": "rapid_mlx.cli._PortContextArgumentParser",
+     "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
      "defaults": {},
      "description": "Upgrade rapid-mlx to the latest version.\n\nNote: 'rapid-mlx update' is an alias for 'upgrade'.",
      "epilog": null,
@@ -8682,7 +8682,7 @@
       }
      ],
      "allow_abbrev": true,
-     "class": "rapid_mlx.cli._PortContextArgumentParser",
+     "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
      "defaults": {},
      "description": null,
      "epilog": null,
@@ -8709,7 +8709,7 @@
   }
  ],
  "allow_abbrev": true,
- "class": "rapid_mlx.cli._PortContextArgumentParser",
+ "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
  "defaults": {},
  "description": "Rapid-MLX — OpenAI- and Anthropic-compatible LLM server and Mac app for Apple Silicon, built on MLX, focused on reliable tool calling for coding agents.",
  "epilog": "Examples:\n  rapid-mlx chat                                      # interactive REPL (defaults to qwen3.5-4b-4bit)\n  rapid-mlx chat qwen3.5-9b-4bit --think                   # larger model, surface reasoning\n  rapid-mlx serve qwen3.5-9b-4bit --port 8000              # OpenAI-compatible server\n  rapid-mlx serve mlx-community/Qwen3.5-9B-4bit       # full HF repo also works\n  rapid-mlx models                                    # list all aliases\n  rapid-mlx info qwen3.5-9b-4bit                           # show per-alias profile\n",

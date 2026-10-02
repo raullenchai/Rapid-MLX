@@ -245,6 +245,19 @@ def _pkg_root() -> pathlib.Path:
     ).resolve()
 
 
+# Entrypoints whose argparse surface lives in a companion module. The
+# routing-flag gates check the union, so the escape-hatch requirement still
+# holds for the entrypoint as a whole.
+ENTRYPOINT_ARGPARSE_FILES: dict[str, tuple[str, ...]] = {
+    "cli.py": ("cli.py", "cli_parser.py"),
+}
+
+
+def _entrypoint_argparse_source(pkg_root: pathlib.Path, rel: str) -> str:
+    files = ENTRYPOINT_ARGPARSE_FILES.get(rel, (rel,))
+    return "\n".join((pkg_root / f).read_text() for f in files)
+
+
 def test_force_text_overrides_auto_detection(monkeypatch):
     """When force_text=True, BatchedEngine._is_mllm is False even if
     is_mllm_model would return True. Verifies the probe is short-
@@ -1766,7 +1779,7 @@ def test_auto_routing_flags_have_force_on_and_force_off_pair():
                 f"file does not exist at {path}. Fix the registry or "
                 "restore the entrypoint."
             )
-            sources_by_file[fname] = path.read_text()
+            sources_by_file[fname] = _entrypoint_argparse_source(pkg_root, fname)
         return sources_by_file[fname]
 
     missing: list[str] = []
@@ -1877,7 +1890,7 @@ def test_load_model_callers_register_every_routing_flag():
     for rel in sorted(load_model_callers):
         if rel in LOAD_MODEL_ENTRYPOINT_EXEMPTIONS:
             continue
-        source = (pkg_root / rel).read_text()
+        source = _entrypoint_argparse_source(pkg_root, rel)
         for pair in AUTO_ROUTING_FLAG_PAIRS:
             if not _flag_in_add_argument_calls(source, pair.force_on):
                 missing.append(
