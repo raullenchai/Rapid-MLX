@@ -214,6 +214,32 @@ refresh_starter_from_installed_cache() {
     RECOMMENDED_MODEL="$(select_starter_model "$RAM_GB" "$cached_aliases")"
 }
 
+# rapidmlx.com/leaderboard?mac=<slug>: what runs well on this Mac class.
+# Same slug as rapid_mlx/leaderboard_links.py (tests/test_leaderboard_links.py
+# keeps them in agreement): "Apple M4 Pro" + 48 -> m4-pro-48. Anything that is
+# not an Apple M-series brand string falls back to the board itself.
+leaderboard_mac_url() {   # leaderboard_mac_url <cpu brand string> <ram GiB>
+    local brand ram re gen variant slug
+    brand="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+    ram="$2"
+    slug=""
+    # The pattern lives in a variable: bash 3.2 (macOS /bin/bash) and 5.x
+    # disagree about quoting inside [[ =~ ]]. The RAM check runs first because
+    # every =~ overwrites BASH_REMATCH.
+    re='^apple m([0-9]+)( (pro|max|ultra))?$'
+    case "$ram" in ''|0*|*[!0-9]*) ram="" ;; esac
+    if [ -n "$ram" ] && [[ "$brand" =~ $re ]]; then
+        gen="${BASH_REMATCH[1]}"
+        variant="${BASH_REMATCH[3]:-}"
+        slug="m${gen}${variant:+-$variant}-${ram}"
+    fi
+    if [ -n "$slug" ]; then
+        printf 'https://rapidmlx.com/leaderboard?mac=%s\n' "$slug"
+    else
+        printf 'https://rapidmlx.com/leaderboard\n'
+    fi
+}
+
 print_quick_start_commands() {
     info "Quick start:"
     echo ""
@@ -236,6 +262,10 @@ print_quick_start_commands() {
     echo "    rapid-mlx launch --all --model ${RECOMMENDED_MODEL} --server-url http://127.0.0.1:8001"
     echo ""
     echo "    rapid-mlx-chat    # web UI (first: ${INSTALL_DIR}/bin/pip install 'rapid-mlx[chat]')"
+    echo ""
+    dim "Measured speeds on Macs like this one:"
+    echo ""
+    echo "    $(leaderboard_mac_url "$(sysctl -n machdep.cpu.brand_string 2>/dev/null || true)" "$RAM_GB")"
 }
 
 # When sourced by the test harness we only want the definitions above, not the
