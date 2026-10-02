@@ -205,12 +205,21 @@
       "values": ["network", "gated", "disk_full", "not_found", "other"]
     },
     "serve_error_class": {
-      "_about": "Closed model_serve_failed categories. local_path_missing distinguishes a user-supplied local path or required local file from Hub/download availability; no path or filename is sent.",
+      "_about": [
+        "Closed model_serve_failed categories. local_path_missing distinguishes a",
+        "user-supplied local path or required local file from Hub/download",
+        "availability; no path or filename is sent. invalid_model_ref is a",
+        "reference no Hub resolution can accept (HFValidationError), and",
+        "backend_load_failed is a typed generative-lane backend error",
+        "(WanBackendError / LTX25BackendError / VideoBackendUnavailableError)",
+        "raised while the lane engine object was being prepared."
+      ],
       "values": [
         "unsupported_architecture", "insufficient_memory",
         "corrupt_weights", "download_failed", "local_path_missing", "missing_extra",
         "invalid_config", "tokenizer_load_failed", "incompatible_weights",
-        "quantization_mismatch", "other"
+        "quantization_mismatch", "invalid_model_ref", "backend_load_failed",
+        "other"
       ]
     },
     "optional_extra": {

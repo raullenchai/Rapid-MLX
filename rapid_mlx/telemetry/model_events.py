@@ -174,12 +174,47 @@ def find_optional_runtime_missing(
     return None
 
 
+def _typed_lane_backend_classes() -> tuple[type[BaseException], ...]:
+    """Typed generative-lane backend failures, resolved lazily and fail-soft.
+
+    The video lanes raise their own backend errors while the engine object is
+    being constructed (config validation, pinned-revision checks), which is a
+    real serve failure — but none of them is an ``OptionalRuntimeMissing`` (a
+    missing extra preflights earlier and types itself) or a load boundary.
+    Import lazily so the no-MLX unit lane never pulls video modules.
+    """
+    classes: list[type[BaseException]] = []
+    try:
+        from rapid_mlx.video.engine import VideoBackendUnavailableError
+
+        classes.append(VideoBackendUnavailableError)
+    except Exception:  # noqa: BLE001 - classification must never raise
+        pass
+    try:
+        from rapid_mlx.video.wan import WanBackendError
+
+        classes.append(WanBackendError)
+    except Exception:  # noqa: BLE001 - classification must never raise
+        pass
+    try:
+        from rapid_mlx.video.ltx25 import LTX25BackendError
+
+        classes.append(LTX25BackendError)
+    except Exception:  # noqa: BLE001 - classification must never raise
+        pass
+    return tuple(classes)
+
+
 def serve_error_class(exc: BaseException, *, model_ref: object = None) -> str:
     """Reduce loader failures to the registry's closed serve categories."""
     try:
         if find_optional_runtime_missing(exc) is not None:
             return "missing_extra"
-        from huggingface_hub.errors import HfHubHTTPError
+        from huggingface_hub.errors import (
+            EntryNotFoundError,
+            HfHubHTTPError,
+            HFValidationError,
+        )
         from huggingface_hub.utils import RepositoryNotFoundError
 
         from rapid_mlx.model_load_errors import (
@@ -221,12 +256,27 @@ def serve_error_class(exc: BaseException, *, model_ref: object = None) -> str:
         # Existing typed availability failures are authoritative too. Inspect
         # the full explicit cause chain before consulting message text so an
         # outer relay that happens to mention memory or corruption cannot
-        # overwrite the concrete Hub/file failure beneath it.
+        # overwrite the concrete Hub/file failure beneath it. An
+        # ``EntryNotFoundError`` is a missing FILE inside an existing repo
+        # (not a ``FileNotFoundError``): same availability outcome.
         if any(
-            isinstance(current, (HfHubHTTPError, RepositoryNotFoundError))
+            isinstance(
+                current,
+                (
+                    HfHubHTTPError,
+                    RepositoryNotFoundError,
+                    EntryNotFoundError,
+                ),
+            )
             for current in chain
         ):
             return "download_failed"
+        # A malformed model reference can never resolve: name it instead of
+        # letting the generic ValueError text markers miss it.
+        if any(isinstance(current, HFValidationError) for current in chain):
+            return "invalid_model_ref"
+        if any(isinstance(current, _typed_lane_backend_classes()) for current in chain):
+            return "backend_load_failed"
         for current in chain:
             # A missing Hub shard is an availability failure; a missing path or
             # shard under a user-supplied local model is not a download failure.

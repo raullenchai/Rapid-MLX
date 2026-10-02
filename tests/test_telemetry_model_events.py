@@ -6,6 +6,7 @@ from __future__ import annotations
 import ast
 import errno
 import http.client
+import importlib
 import json
 import os
 import stat
@@ -465,6 +466,69 @@ def test_serve_error_class_preserves_existing_variants(exc, expected):
 )
 def test_serve_error_class_recognizes_engine_start_wording(exc, expected):
     assert model_events.serve_error_class(exc) == expected
+
+
+@pytest.mark.parametrize("shape", ["bare", "cause", "two_levels_deep"])
+def test_missing_file_inside_existing_repo_is_download_failed(shape):
+    from huggingface_hub.errors import EntryNotFoundError
+
+    inner = EntryNotFoundError("model.safetensors missing from owner/repo")
+    if shape == "bare":
+        exc = inner
+    else:
+        exc = RuntimeError("loader wrapper")
+        if shape == "two_levels_deep":
+            middle = RuntimeError("second loader wrapper")
+            middle.__cause__ = inner
+            inner = middle
+        exc.__cause__ = inner
+
+    assert model_events.serve_error_class(exc, model_ref="owner/repo") == (
+        "download_failed"
+    )
+
+
+@pytest.mark.parametrize("shape", ["bare", "cause"])
+def test_malformed_model_reference_gets_its_own_class(shape):
+    from huggingface_hub.errors import HFValidationError
+
+    inner = HFValidationError(
+        "Repo id must be in the form 'repo_name' or 'namespace/repo_name':"
+        " 'qwen3.5--4bit'."
+    )
+    if shape == "bare":
+        exc = inner
+    else:
+        exc = RuntimeError("loader wrapper")
+        exc.__cause__ = inner
+
+    assert model_events.serve_error_class(exc, model_ref="qwen3.5--4bit") == (
+        "invalid_model_ref"
+    )
+
+
+@pytest.mark.parametrize(
+    "backend_error",
+    [
+        "rapid_mlx.video.engine:VideoBackendUnavailableError",
+        "rapid_mlx.video.wan:WanBackendError",
+        "rapid_mlx.video.ltx25:LTX25BackendError",
+    ],
+)
+@pytest.mark.parametrize("shape", ["bare", "cause"])
+def test_typed_lane_backend_failures_are_not_other(backend_error, shape):
+    module_name, class_name = backend_error.split(":")
+    error_class = getattr(importlib.import_module(module_name), class_name)
+    inner = error_class("the lane backend refused to prepare this checkpoint")
+    if shape == "bare":
+        exc = inner
+    else:
+        exc = RuntimeError("loader wrapper")
+        exc.__cause__ = inner
+
+    assert model_events.serve_error_class(exc, model_ref="wan2.2-ti2v-5b-q8") == (
+        "backend_load_failed"
+    )
 
 
 def test_typed_quantization_beats_memory_wording():
@@ -1479,9 +1543,7 @@ def test_failure_stage_is_emitted_when_declared(monkeypatch, failure_stage, expe
 
 
 @pytest.mark.parametrize("failure_stage", [None, "", "load", "middle", 7])
-def test_failure_stage_outside_the_closed_enum_is_omitted(
-    monkeypatch, failure_stage
-):
+def test_failure_stage_outside_the_closed_enum_is_omitted(monkeypatch, failure_stage):
     calls = []
     _capture_accepted_events(monkeypatch, lambda _event, props: calls.append(props))
     model_events.emit_model_serve_failed(

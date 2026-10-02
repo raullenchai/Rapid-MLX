@@ -145,6 +145,8 @@ def test_optional_property_may_be_absent():
         "incompatible_weights",
         "quantization_mismatch",
         "local_path_missing",
+        "invalid_model_ref",
+        "backend_load_failed",
     ],
 )
 def test_model_serve_failed_accepts_named_engine_start_errors(error_class):

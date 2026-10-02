@@ -183,6 +183,8 @@ def test_serve_error_class_scale_is_exact(registry):
         "tokenizer_load_failed",
         "incompatible_weights",
         "quantization_mismatch",
+        "invalid_model_ref",
+        "backend_load_failed",
         "other",
     ]
 

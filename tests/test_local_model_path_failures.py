@@ -289,7 +289,9 @@ def test_cli_main_missing_local_serve_path_exits_one_and_emits_failure(
     monkeypatch.setattr(sys, "argv", ["rapid-mlx", "serve", str(missing)])
     monkeypatch.setattr(
         "rapid_mlx.telemetry.model_events.emit_model_serve_failed",
-        lambda exc, *, alias_or_path: emitted.append((exc, alias_or_path)),
+        lambda exc, *, alias_or_path, **kwargs: emitted.append(
+            (exc, alias_or_path, kwargs)
+        ),
     )
 
     with pytest.raises(SystemExit) as caught:
@@ -298,3 +300,9 @@ def test_cli_main_missing_local_serve_path_exits_one_and_emits_failure(
     assert caught.value.code == 1
     assert emitted and emitted[0][1] == str(missing)
     assert str(missing) in capsys.readouterr().err
+    # The 0.15.2 funnel reported missing local paths as download_failed.
+    # The resolve-stage emit must keep the honest class and boundary.
+    assert serve_error_class(emitted[0][0], model_ref=emitted[0][1]) == (
+        "local_path_missing"
+    )
+    assert emitted[0][2].get("failure_stage") == "resolve"
