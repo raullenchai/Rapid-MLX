@@ -17,13 +17,13 @@ import argparse
 import json
 import os
 import sys
-from importlib.metadata import version as pkg_version
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from rapid_mlx import cli
+import rapid_mlx
+from rapid_mlx import _version_check, cli
 
 SNAPSHOT = Path(__file__).parent / "fixtures" / "cli_parser_snapshot.json"
 _VERSION_PLACEHOLDER = "<version>"
@@ -118,13 +118,24 @@ def _parser(parser: argparse.ArgumentParser, version: str) -> dict[str, Any]:
 def _snapshot(monkeypatch: pytest.MonkeyPatch) -> str:
     # ``prog`` follows sys.argv[0]; pin it so the runner doesn't leak in.
     monkeypatch.setattr(sys, "argv", ["rapid-mlx"])
+    # Optional-extra install hints in help text depend on how rapid-mlx was
+    # installed (pip / uv / pipx / brew); pin the detector to plain pip.
+    monkeypatch.setattr(
+        _version_check,
+        "detect_install_method",
+        lambda: _version_check.InstallInfo(
+            method="pip",
+            upgrade_command="python -m pip install --upgrade rapid-mlx",
+            upgrade_argv=["python", "-m", "pip", "install", "--upgrade", "rapid-mlx"],
+        ),
+    )
     # Normalize versions after the fact instead of monkeypatching the version
     # helper, so the snapshot does not depend on which module defines it.
     data = _parser(cli.build_parser(), cli._resolve_cli_version())
     text = json.dumps(data, indent=1, sort_keys=True, ensure_ascii=False) + "\n"
-    # Install hints embed the installed distribution version; a version bump
-    # must not churn the snapshot.
-    return text.replace(f"=={pkg_version('rapid-mlx')}", f"=={_VERSION_PLACEHOLDER}")
+    # Install hints pin ``rapid_mlx.__version__``; a version bump must not
+    # churn the snapshot.
+    return text.replace(f"=={rapid_mlx.__version__}", f"=={_VERSION_PLACEHOLDER}")
 
 
 def test_cli_parser_matches_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
