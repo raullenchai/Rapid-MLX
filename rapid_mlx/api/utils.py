@@ -1640,29 +1640,42 @@ def _text_lane_loads_model_type(model_type: str) -> bool:
 
     Two evidence sources, both independent of ``mlx-vlm``:
 
-    * the installed mlx-lm ships ``mlx_lm.models.<model_type>`` — since
-      0.31 its vision-arch modules (gemma4, qwen3_vl, qwen3_5, gemma3,
-      gemma3n, …) load the LANGUAGE backbone and drop the vision tower, so
-      ``--no-mllm`` serves the checkpoint straight from the base wheel; and
-    * Rapid's vendored Gemma 4 family text loaders
-      (:mod:`rapid_mlx.models.gemma4_text`) fall back to the vendored copy
-      under ``rapid_mlx/models/gemma4_vendored/`` when mlx-vlm is absent.
+    * the vendored Rapid loaders — the Gemma 4 family text loaders under
+      ``rapid_mlx/models/gemma4_vendored/`` ship in-tree and load the
+      language backbone without mlx-vlm, whatever is installed; and
+    * the installed mlx-lm — but ONLY for arches on the reviewed
+      :data:`~rapid_mlx.models.text_lane_arches.MLX_LM_MM_BACKBONE_ARCHES`
+      allow-list (gemma3, qwen3_vl, qwen3_5, mistral3, …). Since 0.31 those
+      modules load the LANGUAGE backbone from a multimodal checkpoint and
+      drop the vision tower — verified per module, cited in that list. A
+      module that merely exists (``llama``, ``qwen3``, …) is NOT evidence:
+      routing a multimodal config there would bypass the ``[vision]`` guard
+      and fail later with a worse error, so unlisted arches fail closed even
+      when ``mlx_lm.models.<type>`` is importable.
 
-    Both auto-upgrade: a new mlx-lm release or a retired vendor flips the
-    answer without a code change here.
+    The vendored half auto-upgrades with the code; the mlx-lm half with the
+    installed package — both without a code change here (a new upstream arch
+    needs a reviewed allow-list entry first).
     """
     import importlib.util
 
+    from ..models.text_lane_arches import (
+        _GEMMA4_FAMILY_MODEL_TYPES,
+        MLX_LM_MM_BACKBONE_ARCHES,
+    )
+
+    if model_type in _GEMMA4_FAMILY_MODEL_TYPES:
+        return True
+    if model_type not in MLX_LM_MM_BACKBONE_ARCHES:
+        # An existing module is not proof: only reviewed multimodal-layout
+        # arches may degrade (fail closed for everything else).
+        return False
     try:
-        if importlib.util.find_spec(f"mlx_lm.models.{model_type}") is not None:
-            return True
+        return importlib.util.find_spec(f"mlx_lm.models.{model_type}") is not None
     except (ImportError, ValueError):
         # A malformed arch name (trailing dot, empty segment) just means "no
-        # such module" — fail closed to the vendored-family check below.
-        pass
-    from ..models.gemma4_families import _GEMMA4_FAMILY_MODEL_TYPES
-
-    return model_type in _GEMMA4_FAMILY_MODEL_TYPES
+        # such module".
+        return False
 
 
 def checkpoint_serves_text_without_vision(model_name: str) -> bool:

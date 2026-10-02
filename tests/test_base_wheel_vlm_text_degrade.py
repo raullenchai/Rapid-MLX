@@ -513,37 +513,86 @@ def test_plain_serve_still_consults_the_degrade(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_text_lane_backbone_probe_matches_installed_mlxl_lm():
-    """The probe reads the INSTALLED mlx-lm plus the vendored Gemma 4 family:
-    the vendored gemma4_unified/assistant loaders are text-capable everywhere
-    (pure data, no mlx import), while mlx-lm-backed arches (gemma4,
-    qwen3_vl) follow whatever the installed mlx-lm ships — asserted as
-    agreement with a direct find_spec so the test passes on a base wheel AND
-    on the no-MLX CI lane (where mlx_lm is absent and everything mlx-lm
-    backs probes False). The Bonsai 2 pack and unknown arches are never
-    text-capable."""
+def test_text_lane_backbone_probe_requires_reviewed_arch_and_module():
+    """The probe needs a REVIEWED multimodal-layout arch AND its mlx-lm
+    module: vendored Gemma 4 family members answer True everywhere (pure
+    data, no mlx import); allow-listed arches follow the installed mlx-lm
+    (False on the no-MLX CI lane, True once installed); and an arch whose
+    module merely exists — ``llama`` is importable wherever mlx-lm is — is
+    never evidence, so it stays False even on a full install."""
     import importlib.util
 
     from rapid_mlx.api.utils import _text_lane_loads_model_type
+    from rapid_mlx.models.text_lane_arches import MLX_LM_MM_BACKBONE_ARCHES
 
-    # Vendored family: environment-independent (pure data, no mlx import).
+    # Vendored family: environment-independent.
     assert _text_lane_loads_model_type("gemma4") is True
     assert _text_lane_loads_model_type("gemma4_unified") is True
     assert _text_lane_loads_model_type("gemma4_assistant") is True
-    # Arches OUTSIDE the vendored family follow the installed mlx-lm: the
-    # probe must agree with a direct spec probe (both False on the no-MLX
-    # CI lane, both True once mlx-lm ships the arch).
-    for arch in ("qwen3_vl", "qwen3_5"):
+    # Allow-listed arches OUTSIDE the vendored family follow the installed
+    # mlx-lm: the probe must agree with a direct spec probe (both False on
+    # the no-MLX CI lane, both True once mlx-lm ships the arch).
+    for arch in ("qwen3_vl", "qwen3_5", "mistral3"):
+        assert arch in MLX_LM_MM_BACKBONE_ARCHES
         try:
             installed = importlib.util.find_spec(f"mlx_lm.models.{arch}") is not None
         except ImportError:
             # No mlx-lm on this environment (no-MLX CI lane).
             installed = False
         assert _text_lane_loads_model_type(arch) is installed
+    # An existing-but-unreviewed module is not proof: even with mlx-lm
+    # installed, plain-text arches keep the guard (fail closed).
+    assert _text_lane_loads_model_type("llama") is False
+    assert _text_lane_loads_model_type("qwen3") is False
     assert _text_lane_loads_model_type("prism_hadamard_qwen35") is False
     assert _text_lane_loads_model_type("brand_new_vlm_arch") is False
     # A malformed arch name fails closed through the probe's error guard.
     assert _text_lane_loads_model_type("qwen3.") is False
+
+
+def test_multimodal_config_with_plain_text_arch_keeps_the_guard(monkeypatch):
+    """Regression (pr_validate codex, round 4): a MULTIMODAL checkpoint whose
+    top-level ``model_type`` is a plain text arch (``llama`` — its mlx-lm
+    module exists but cannot consume the vision layout) must NOT degrade:
+    the [vision] guard stays and the checkpoint is never routed to a lane
+    that would crash at load with a worse error."""
+    from rapid_mlx.api.utils import checkpoint_serves_text_without_vision
+
+    _mock_vision_absent(monkeypatch)
+    _patch_degrade_config(
+        monkeypatch,
+        {
+            "model_type": "llama",
+            "architectures": ["LlamaForConditionalGeneration"],
+            "vision_config": {},
+        },
+    )
+    assert checkpoint_serves_text_without_vision("gemma-4-26b-4bit") is False
+
+
+def test_listed_arch_with_module_degrades(monkeypatch):
+    """The allow-list's positive path: a multimodal config whose arch is
+    reviewed (``qwen3_vl``) degrades exactly when the mlx-lm module is
+    installed — asserted against a direct find_spec so the test holds on the
+    no-MLX CI lane (guard keeps) AND a full install (degrade applies)."""
+    import importlib.util
+
+    from rapid_mlx.api.utils import checkpoint_serves_text_without_vision
+
+    _mock_vision_absent(monkeypatch)
+    _patch_degrade_config(
+        monkeypatch,
+        {
+            "model_type": "qwen3_vl",
+            "architectures": ["Qwen3VLForConditionalGeneration"],
+            "vision_config": {},
+        },
+    )
+    try:
+        installed = importlib.util.find_spec("mlx_lm.models.qwen3_vl") is not None
+    except ImportError:
+        installed = False
+    assert checkpoint_serves_text_without_vision("qwen3-vl-8b-4bit") is installed
 
 
 def test_degrade_probe_is_cache_only_and_cold_cache_fails_closed(monkeypatch):
