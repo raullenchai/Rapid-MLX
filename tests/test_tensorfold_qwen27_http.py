@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+import functools
 import sys
 from types import ModuleType, SimpleNamespace
 
@@ -166,6 +167,37 @@ def test_http_gate_rejects_unqualified_features_and_maps_sampling() -> None:
     with pytest.raises(HTTPException) as exc:
         validate_http_request(request)
     assert "reasoning_max_tokens" in exc.value.detail
+
+
+def test_http_gate_accepts_only_neutral_penalties_and_boolean_thinking() -> None:
+    from fastapi import HTTPException
+
+    request = SimpleNamespace(
+        messages=[SimpleNamespace(content="hi")],
+        tools=None,
+        response_format=None,
+        repetition_penalty=1.0,
+        presence_penalty=0.0,
+        frequency_penalty=0.0,
+        chat_template_kwargs={"enable_thinking": False},
+    )
+    validate_http_request(request)
+
+    for field, value in (
+        ("repetition_penalty", 1.1),
+        ("presence_penalty", 0.1),
+        ("frequency_penalty", -0.1),
+    ):
+        changed = SimpleNamespace(**vars(request))
+        setattr(changed, field, value)
+        with pytest.raises(HTTPException, match=field) as exc:
+            validate_http_request(changed)
+        assert exc.value.status_code == 400
+
+    request.chat_template_kwargs = {"reasoning_effort": "low"}
+    with pytest.raises(HTTPException, match="chat_template_kwargs") as exc:
+        validate_http_request(request)
+    assert exc.value.status_code == 400
 
 
 def test_provider_preserves_exact_token_ids_and_request_outputs(
@@ -707,3 +739,139 @@ def test_http_stream_and_nonstream_use_provider_and_reject_tools() -> None:
         json={**body, "tools": [{"type": "function", "function": {"name": "x"}}]},
     )
     assert rejected.status_code == 400
+
+
+def test_glm_desktop_payload_crosses_tensorfold_route_without_weakening_gates() -> None:
+    """Exercise the post-normalization Desktop body at the HTTP boundary."""
+    from fastapi.testclient import TestClient
+
+    from rapid_mlx.speculative.dflash.server import _build_app
+    from rapid_mlx.speculative.tensorfold_qwen27_server import (
+        ProviderResult,
+    )
+
+    rendered = {}
+
+    class Processor:
+        eos_token_id = 99
+        chat_template = "template"
+        tokenizer = None
+
+        def __init__(self):
+            self.tokenizer = self
+
+        def apply_chat_template(self, messages, **kwargs):
+            rendered.update(messages=messages, kwargs=kwargs)
+            return "rendered prompt"
+
+    def generate(_model, _processor, _prompt, **_kwargs):
+        return ProviderResult("hello", [7], 1, 4)
+
+    app = _build_app(
+        model=None,
+        processor=Processor(),
+        runtime=SimpleNamespace(
+            algorithm="mtp",
+            drafter_repo=None,
+            target_revision="a" * 40,
+            drafter_revision=None,
+        ),
+        served_model_name="glm5.3-flash-tensorfold",
+        default_max_tokens=4096,
+        cors_origins=[],
+        generate_fn=generate,
+        generation_kwargs_fn=generation_kwargs,
+        render_prompt_fn=render_prompt,
+        generation_kwargs_with_request=True,
+        validate_request_fn=functools.partial(
+            validate_http_request, supports_reasoning_budget=True
+        ),
+        backend_name="TensorFold GLM-5.3",
+    )
+    client = TestClient(app)
+    desktop_body = {
+        "model": "glm5.3-flash-tensorfold",
+        "messages": [{"role": "user", "content": "hi"}],
+        "stream": False,
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "max_tokens": 4096,
+        "repetition_penalty": 1.0,
+        "frequency_penalty": 0.0,
+        "presence_penalty": 0.0,
+        "stream_options": {"include_usage": True},
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+
+    response = client.post("/v1/chat/completions", json=desktop_body)
+    assert response.status_code == 200
+    assert response.json()["choices"][0]["message"]["content"] == "hello"
+    assert rendered["kwargs"]["enable_thinking"] is False
+
+    for field, value in (
+        ("repetition_penalty", 1.1),
+        ("frequency_penalty", 0.25),
+        ("presence_penalty", -0.25),
+    ):
+        rejected = client.post(
+            "/v1/chat/completions", json={**desktop_body, field: value}
+        )
+        assert rejected.status_code == 400
+        assert field in rejected.json()["error"]["message"]
+
+    rejected_template = client.post(
+        "/v1/chat/completions",
+        json={
+            **desktop_body,
+            "chat_template_kwargs": {"reasoning_effort": "low"},
+        },
+    )
+    assert rejected_template.status_code == 400
+    assert "chat_template_kwargs" in rejected_template.json()["error"]["message"]
+
+    rejected_tools = client.post(
+        "/v1/chat/completions",
+        json={
+            **desktop_body,
+            "tools": [{"type": "function", "function": {"name": "x"}}],
+        },
+    )
+    assert rejected_tools.status_code == 400
+    assert "tools" in rejected_tools.json()["error"]["message"]
+
+    rejected_media = client.post(
+        "/v1/chat/completions",
+        json={
+            **desktop_body,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "hi"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,AA=="},
+                        },
+                    ],
+                }
+            ],
+        },
+    )
+    assert rejected_media.status_code == 400
+    assert "text message content only" in rejected_media.json()["error"]["message"]
+
+    rejected_grammar = client.post(
+        "/v1/chat/completions",
+        json={
+            **desktop_body,
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "answer",
+                    "schema": {"type": "object"},
+                },
+            },
+        },
+    )
+    assert rejected_grammar.status_code == 400
+    assert "response_format" in rejected_grammar.json()["error"]["message"]

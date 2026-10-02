@@ -269,23 +269,47 @@ def validate_http_request(
             status_code=400,
             detail="TensorFold profiles support text message content only",
         )
-    unsupported = [
+    # OpenAI-compatible clients commonly serialize neutral penalty values
+    # instead of omitting them. TensorFold does not implement these
+    # processors, but accepting their mathematical identities is equivalent
+    # to omission and avoids rejecting an otherwise ordinary Desktop turn.
+    # Any value that would change logits remains an explicit 400.
+    unsupported = []
+    neutral_penalties = {
+        "repetition_penalty": 1.0,
+        "presence_penalty": 0.0,
+        "frequency_penalty": 0.0,
+    }
+    for name, neutral in neutral_penalties.items():
+        value = getattr(request, name, None)
+        if value is not None and value != neutral:
+            unsupported.append(name)
+
+    # Rapid's shared prompt renderer supports the one boolean thinking switch.
+    # Keep every other template kwarg fail-closed because TensorFold has not
+    # qualified those semantics.
+    template_kwargs = getattr(request, "chat_template_kwargs", None)
+    if template_kwargs not in (None, {}):
+        if not (
+            isinstance(template_kwargs, dict)
+            and set(template_kwargs) == {"enable_thinking"}
+            and isinstance(template_kwargs["enable_thinking"], bool)
+        ):
+            unsupported.append("chat_template_kwargs")
+
+    unsupported.extend(
         name
         for name in (
-            "repetition_penalty",
-            "presence_penalty",
-            "frequency_penalty",
             "logit_bias",
             "top_logprobs",
             "video_fps",
             "video_max_frames",
             "reasoning_effort",
-            "chat_template_kwargs",
             "parallel_tool_calls",
             "tool_choice",
         )
         if getattr(request, name, None) not in (None, {})
-    ]
+    )
     if (
         not supports_reasoning_budget
         and getattr(request, "reasoning_max_tokens", None) is not None

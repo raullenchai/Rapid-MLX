@@ -141,6 +141,9 @@ struct ChatStreamClient {
     ///     without changing the per-turn cost ceiling
     ///     dramatically.
     struct Request: Sendable {
+        private static let glm53TensorFoldAlias = "glm5.3-flash-tensorfold"
+        private static let desktopRepetitionPenaltyDefault = 1.1
+
         let alias: String
         let messages: [Wire.Message]
         /// Local identity only; never encoded into the API request.
@@ -168,6 +171,20 @@ struct ChatStreamClient {
         /// without the explicit bias. Free-typed prompts leave this
         /// nil and keep ``tool_choice=auto``.
         let forcedTool: String?
+
+        /// The GLM TensorFold lane does not implement a repetition logits
+        /// processor. Its catalog profile recommends the neutral value 1.0,
+        /// but a first turn can race the asynchronous profile fetch and retain
+        /// Desktop's general 1.1 default. Normalize only that implicit default
+        /// for the exact profile; any other caller-selected value stays on the
+        /// wire so the server can reject unsupported semantics explicitly.
+        var wireRepetitionPenalty: Double {
+            if alias == Self.glm53TensorFoldAlias,
+               repetitionPenalty == Self.desktopRepetitionPenaltyDefault {
+                return 1.0
+            }
+            return repetitionPenalty
+        }
 
         init(
             alias: String,
@@ -417,7 +434,7 @@ struct ChatStreamClient {
             temperature: request.temperature,
             top_p: request.topP,
             max_tokens: request.maxTokens,
-            repetition_penalty: request.repetitionPenalty,
+            repetition_penalty: request.wireRepetitionPenalty,
             frequency_penalty: request.frequencyPenalty,
             presence_penalty: request.presencePenalty,
             tools: (request.tools?.isEmpty == false) ? request.tools : nil,

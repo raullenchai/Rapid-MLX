@@ -73,6 +73,35 @@ struct ChatStreamRequestBodyTests {
         #expect(body["tool_choice"] == nil)
     }
 
+    @Test("GLM TensorFold first turn normalizes only Desktop's implicit repetition default")
+    @MainActor
+    func glmTensorFoldNormalizesImplicitRepetitionDefault() async throws {
+        let request = ChatStreamClient.Request(
+            alias: "glm5.3-flash-tensorfold",
+            messages: [ChatMessage(role: .user, content: "hi", status: .complete)]
+        )
+
+        let data = try #require(await WireBodyCaptureProtocol.capture(request))
+        let body = try #require(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        #expect(body["repetition_penalty"] as? Double == 1.0)
+        #expect(body["frequency_penalty"] as? Double == 0.0)
+        #expect(body["presence_penalty"] as? Double == 0.0)
+        let kwargs = try #require(body["chat_template_kwargs"] as? [String: Any])
+        #expect(kwargs["enable_thinking"] as? Bool == false)
+    }
+
+    @Test("GLM TensorFold preserves unsupported caller-selected repetition values for server rejection")
+    func glmTensorFoldPreservesNondefaultRepetitionValue() {
+        let request = ChatStreamClient.Request(
+            alias: "glm5.3-flash-tensorfold",
+            messages: [],
+            repetitionPenalty: 1.2
+        )
+        #expect(request.wireRepetitionPenalty == 1.2)
+    }
+
     // MARK: - helpers
 
     /// Build the wire body the same way ``ChatStreamClient.send``
