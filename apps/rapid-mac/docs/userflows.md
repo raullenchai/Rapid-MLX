@@ -587,6 +587,7 @@ interactive control under `Sources/` without an identifier.
 
 **Chat — `UI/ChatView.swift`:** `ChatView.SendOrStopButton`,
 `ChatView.AddAttachments`, `ChatView.ConversationInstructions`,
+`ChatView.Residency.{Unload,UnloadNotice.OK}`,
 `ChatView.PersonalIntelligence.Toggle`,
 `ToolCallChip.<action>`, `ToolCallChip.Toggle.<call.id>`,
 `ChatView.Message.<action>.<UUID>` (action ∈ {`EditField`, `CancelEdit`,
