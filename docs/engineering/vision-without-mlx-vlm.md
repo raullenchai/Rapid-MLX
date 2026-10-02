@@ -1,7 +1,10 @@
 # Vision without mlx-vlm: vendoring the remaining vision surface
 
 Date: 2026-10-02
-Status: draft (design only — no code in this change)
+Status: draft — forward-looking vendoring design (not implemented). Its
+text-only degrade prerequisite (base-wheel VLM checkpoints with an
+allow-listed language backbone serve text-only) is implemented by the PR
+that adds this document.
 Upstream pin: `mlx-vlm==0.7.2` (exact pin in `pyproject.toml`, shared with the
 signed Desktop sidecar)
 Counts and sizes measured at `9c56a62c1` against the PyPI
