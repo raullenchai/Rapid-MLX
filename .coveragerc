@@ -56,6 +56,29 @@ omit =
     rapid_mlx/models/mlx_vlm_vendored/speculative/dflash.py
     rapid_mlx/models/mlx_vlm_vendored/speculative/mtp.py
     rapid_mlx/models/mlx_vlm_vendored/speculative/utils.py
+    # Pinned upstream drafter package. The Apple MLX lane runs the exact
+    # 19-file source-parity inventory plus the focused behavior probes;
+    # enumerate every current copy so future vendored or Rapid-owned bridge
+    # modules remain subject to changed-line coverage by default.
+    rapid_mlx/models/mlx_vlm_vendored/speculative/drafters/__init__.py
+    rapid_mlx/models/mlx_vlm_vendored/speculative/drafters/compatibility.py
+    rapid_mlx/models/mlx_vlm_vendored/speculative/drafters/mtp_base.py
+    rapid_mlx/models/mlx_vlm_vendored/speculative/drafters/mtp_split.py
+    rapid_mlx/models/mlx_vlm_vendored/speculative/drafters/glm5_next_mtp/__init__.py
+    rapid_mlx/models/mlx_vlm_vendored/speculative/drafters/glm5_next_mtp/config.py
+    rapid_mlx/models/mlx_vlm_vendored/speculative/drafters/glm5_next_mtp/glm5_next_mtp.py
+    rapid_mlx/models/mlx_vlm_vendored/speculative/drafters/glm5_next_mtp/split.py
+    rapid_mlx/models/mlx_vlm_vendored/speculative/drafters/qwen3_5_mtp/__init__.py
+    rapid_mlx/models/mlx_vlm_vendored/speculative/drafters/qwen3_5_mtp/config.py
+    rapid_mlx/models/mlx_vlm_vendored/speculative/drafters/qwen3_5_mtp/qwen3_5_mtp.py
+    rapid_mlx/models/mlx_vlm_vendored/speculative/drafters/qwen3_5_mtp/split.py
+    rapid_mlx/models/mlx_vlm_vendored/speculative/drafters/qwen3_dflash/__init__.py
+    rapid_mlx/models/mlx_vlm_vendored/speculative/drafters/qwen3_dflash/config.py
+    rapid_mlx/models/mlx_vlm_vendored/speculative/drafters/qwen3_dflash/dflash.py
+    rapid_mlx/models/mlx_vlm_vendored/speculative/drafters/qwen3_dflash/parity_check.py
+    rapid_mlx/models/mlx_vlm_vendored/speculative/drafters/dflash2/__init__.py
+    rapid_mlx/models/mlx_vlm_vendored/speculative/drafters/dflash2/config.py
+    rapid_mlx/models/mlx_vlm_vendored/speculative/drafters/dflash2/dflash2.py
     # Test-file mirrors under the package: ``rapid_mlx/_integration_tests``
     # is a symlink farm pointing at ``tests/integrations/``. They are test
     # code — CI executes them via tests/integrations/, not through the

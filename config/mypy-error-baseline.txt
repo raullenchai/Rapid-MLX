@@ -70,6 +70,14 @@ rapid_mlx/models/mlx_vlm_vendored/sample_utils.py 1
 rapid_mlx/models/mlx_vlm_vendored/speculative/cache_state.py 3
 rapid_mlx/models/mlx_vlm_vendored/speculative/common.py 3
 rapid_mlx/models/mlx_vlm_vendored/speculative/dflash.py 4
+rapid_mlx/models/mlx_vlm_vendored/speculative/drafters/dflash2/dflash2.py 5
+rapid_mlx/models/mlx_vlm_vendored/speculative/drafters/glm5_next_mtp/glm5_next_mtp.py 20
+rapid_mlx/models/mlx_vlm_vendored/speculative/drafters/glm5_next_mtp/split.py 1
+rapid_mlx/models/mlx_vlm_vendored/speculative/drafters/mtp_base.py 1
+rapid_mlx/models/mlx_vlm_vendored/speculative/drafters/mtp_split.py 3
+rapid_mlx/models/mlx_vlm_vendored/speculative/drafters/qwen3_5_mtp/qwen3_5_mtp.py 10
+rapid_mlx/models/mlx_vlm_vendored/speculative/drafters/qwen3_5_mtp/split.py 1
+rapid_mlx/models/mlx_vlm_vendored/speculative/drafters/qwen3_dflash/dflash.py 4
 rapid_mlx/models/mlx_vlm_vendored/speculative/mtp.py 3
 rapid_mlx/models/mlx_vlm_vendored/speculative/utils.py 1
 rapid_mlx/models/muse_glimmer.py 7
