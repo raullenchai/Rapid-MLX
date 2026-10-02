@@ -5401,7 +5401,30 @@ def serve_command(args):
     #     ``resolve_serving_lane``, matching the engine-side semantics.
     # An uncached checkpoint (config not yet materialized) probes "not
     # hybrid" and keeps the SAFE ``[vision]``-required default; the guard's
-    # message points at ``--no-mllm`` for a text-capable backbone.
+    # message points at ``--no-mllm`` for a text-capable backbone. For the
+    # degrade probes below (CACHE-ONLY per the resolver's offline contract)
+    # the boot guard materializes config.json ONCE, under the shared Hub
+    # deadline, so a fresh install classifies instead of failing closed —
+    # and repeated probes never refetch. Skipped when a degrade could not
+    # be consulted anyway (explicit --mllm / --no-mllm / spec-decode).
+    from .api.utils import _prefetch_config_for_degrade_probe
+    from .models.mllm import VisionRuntimeStatus, vision_runtime_status
+
+    requested_spec_decode = getattr(args, "spec_decode", "none") or "none"
+    if (
+        _serve_profile is not None
+        and vision_runtime_status()[0] is VisionRuntimeStatus.ABSENT
+        and not getattr(args, "mllm", False)
+        and not getattr(args, "no_mllm", False)
+        and requested_spec_decode in (None, "none")
+        and not getattr(args, "enable_mtp", False)
+        and not getattr(args, "force_spec_decode", False)
+    ):
+        _prefetch_config_for_degrade_probe(
+            _serve_profile.hf_path
+            or getattr(args, "_original_alias", None)
+            or args.model
+        )
     _warn_vision_text_only_degrade(_serve_profile, args=args)
     if _serve_will_run_on_mllm_lane(args):
         from .models.mllm import require_mlx_vlm_or_exit

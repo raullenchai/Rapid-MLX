@@ -1593,23 +1593,44 @@ def resolve_serving_lane_decision(
     return ServingLaneDecision(True, "vision_supported")
 
 
-def _prefetch_config_for_degrade_probe(model_ref: str) -> None:
-    """Pull only ``config.json`` (a few KB) for the text-degrade probe.
+_DEGRADE_CONFIG_PREFETCHED: set[str] = set()
 
-    Best-effort and offline-aware, mirroring the CLI boot guard's own
-    prefetch: a miss means the probe fails closed and the existing
-    ``[vision]``-required guard keeps its safe default.
+
+def _prefetch_config_for_degrade_probe(model_ref: str) -> None:
+    """Pull only ``config.json`` (a few KB) for the text-degrade probes.
+
+    The lane resolver and its probes are CACHE-ONLY (the
+    :func:`resolve_serving_lane_decision` offline contract), so a cold-cache
+    boot would classify "no config" and fail closed to the
+    ``[vision]``-required guard. The CLI boot guard calls this ONCE before
+    consulting them, bounded three ways:
+
+    * local paths and Hub offline mode never touch the network;
+    * the fetch runs under :func:`call_with_deadline` with the shared
+      ``_HF_RESOLVE_TIMEOUT_SECONDS`` — a deadline is the only thing that
+      bounds a huggingface_hub metadata call;
+    * at most one attempt per process per repo — repeated probes never
+      refetch, so a slow or blackholed Hub costs a single bounded window.
     """
     import os
 
+    if os.path.exists(model_ref) or model_ref in _DEGRADE_CONFIG_PREFETCHED:
+        return
+    from .._download_gate import _HF_RESOLVE_TIMEOUT_SECONDS, call_with_deadline
     from ..model_metadata import hub_offline_mode_active
 
-    if os.path.exists(model_ref) or hub_offline_mode_active():
+    if hub_offline_mode_active():
         return
+    _DEGRADE_CONFIG_PREFETCHED.add(model_ref)
     try:
         from huggingface_hub import hf_hub_download
 
-        hf_hub_download(model_ref, "config.json")
+        call_with_deadline(
+            hf_hub_download,
+            _HF_RESOLVE_TIMEOUT_SECONDS,
+            model_ref,
+            "config.json",
+        )
     except Exception:  # noqa: BLE001 - best-effort probe, never fatal
         return
 
@@ -1665,9 +1686,11 @@ def checkpoint_serves_text_without_vision(model_name: str) -> bool:
        MLLM lane (Bonsai 2's ``prism_hadamard_qwen35``) fails this probe and
        keeps the ``[vision]``-required guard.
 
-    No config is no evidence: the probe fails closed (after one best-effort
-    config-only fetch) so an unclassifiable checkpoint never silently loses
-    the safe default.
+    No config is no evidence: the probe fails closed and is CACHE-ONLY — it
+    never touches the network (the resolver's offline contract). Cold-cache
+    callers that want the degrade instead of the safe default materialize
+    the config first via :func:`_prefetch_config_for_degrade_probe`
+    (deadline-bounded, once per process).
     """
     from ..models.mllm import VisionRuntimeStatus, vision_runtime_status
 
@@ -1675,10 +1698,7 @@ def checkpoint_serves_text_without_vision(model_name: str) -> bool:
         return False
     metadata = read_model_metadata(model_name)
     if metadata is None or not isinstance(metadata.config, dict):
-        _prefetch_config_for_degrade_probe(model_name)
-        metadata = read_model_metadata(model_name)
-        if metadata is None or not isinstance(metadata.config, dict):
-            return False
+        return False
     config = metadata.config
     if not config_indicates_multimodal(config):
         return False

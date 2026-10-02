@@ -169,6 +169,7 @@ def test_serve_guard_hybrid_vlm_boots_without_vision_extra(monkeypatch, capsys):
     guard WITHOUT the ``[vision]``-required ``sys.exit(2)`` — it will
     auto-downgrade to the text lane."""
     from rapid_mlx import cli
+    from rapid_mlx.api import utils as api_utils
 
     _patch_probes(monkeypatch, is_mllm=True, hybrid=True)
     _mock_mllm_absent(monkeypatch)
@@ -177,12 +178,23 @@ def test_serve_guard_hybrid_vlm_boots_without_vision_extra(monkeypatch, capsys):
         lambda: False,
     )
     _stub_post_guard_sentinel(monkeypatch)
+    # The boot guard's config prefetch must never open a Hub window in tests.
+    fetched: list[str] = []
+    monkeypatch.setattr(
+        api_utils,
+        "_prefetch_config_for_degrade_probe",
+        lambda repo: fetched.append(repo),
+    )
 
     args = _args("qwen3.5-4b-4bit")
     # Reaching the sentinel means the vision guard did NOT exit — the model
     # is allowed to boot text-only from the base wheel.
     with pytest.raises(_ReachedPastVisionGuardError):
         cli.serve_command(args)
+
+    # The boot guard materialized the config exactly once, for the profile's
+    # repo, before the (cache-only) degrade probes ran.
+    assert fetched == ["mlx-community/Qwen3.5-4B-MLX-4bit"]
 
     err = capsys.readouterr().err
     assert err.count("warning: vision runtime absent") == 1
@@ -205,6 +217,10 @@ def test_serve_guard_text_incapable_vlm_still_requires_vision_extra(
 
     _patch_probes(monkeypatch, is_mllm=True, hybrid=False)
     _mock_mllm_absent(monkeypatch)
+    # The boot guard's config prefetch must never open a Hub window in tests.
+    monkeypatch.setattr(
+        api_utils, "_prefetch_config_for_degrade_probe", lambda _repo: None
+    )
     # Feed the degrade probe the Bonsai 2 pack config: its top-level
     # ``model_type`` has no ``mlx_lm.models`` module and no vendored loader.
     monkeypatch.setattr(

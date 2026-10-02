@@ -122,6 +122,24 @@ def _stub_post_guard_sentinel(monkeypatch) -> None:
     monkeypatch.setattr(audio_probe, "is_audio_model_alias", _raise)
 
 
+def _stub_boot_prefetch(monkeypatch) -> list[str]:
+    """Replace the boot guard's config prefetch with a recording no-op.
+
+    Unit tests must never open a Hub window; the prefetch contract itself is
+    pinned by the dedicated tests below. Returns the recorded repos.
+    """
+    from rapid_mlx.api import utils as api_utils
+
+    fetched: list[str] = []
+    monkeypatch.setattr(api_utils, "_DEGRADE_CONFIG_PREFETCHED", set())
+    monkeypatch.setattr(
+        api_utils,
+        "_prefetch_config_for_degrade_probe",
+        lambda repo: fetched.append(repo),
+    )
+    return fetched
+
+
 # ---------------------------------------------------------------------------
 # Base install (vision runtime ABSENT): Gemma 4 serves text-only.
 # ---------------------------------------------------------------------------
@@ -138,10 +156,15 @@ def test_base_install_gemma4_boots_text_only_with_warning(monkeypatch, capsys):
     _patch_degrade_config(monkeypatch, GEMMA4_VLM_CONFIG)
     _allow_desktop_warning(monkeypatch)
     _stub_post_guard_sentinel(monkeypatch)
+    fetched = _stub_boot_prefetch(monkeypatch)
 
     args = _args("gemma-4-26b-4bit")
     with pytest.raises(_ReachedPastVisionGuardError):
         cli.serve_command(args)
+
+    # The boot guard materialized the config exactly once, for the profile's
+    # hf_path, before the (cache-only) degrade probes ran.
+    assert fetched == ["mlx-community/gemma-4-26b-a4b-it-4bit"]
 
     err = capsys.readouterr().err
     assert err.count("warning: vision runtime absent") == 1
@@ -281,6 +304,7 @@ def test_bonsai2_pack_still_requires_vision_extra(monkeypatch, capsys):
     _patch_degrade_config(monkeypatch, PRISM_PACK_CONFIG)
     _allow_desktop_warning(monkeypatch)
     _stub_post_guard_sentinel(monkeypatch)
+    fetched = _stub_boot_prefetch(monkeypatch)
 
     args = _args("bonsai2-27b-2bit")
     assert cli._serve_will_run_on_mllm_lane(args) is True
@@ -292,6 +316,9 @@ def test_bonsai2_pack_still_requires_vision_extra(monkeypatch, capsys):
         cli.serve_command(args)
     assert exc_info.value.code == 2
     assert "[vision]" in capsys.readouterr().err
+    # The boot prefetch targets the profile's repo even when the probe then
+    # fails closed (the pack is not text-capable) — once, and nothing more.
+    assert fetched == ["prism-ml/Ternary-Bonsai-2-27B-mlx-2bit"]
 
 
 def test_degrade_probe_rejects_mllm_only_pack(monkeypatch):
@@ -337,6 +364,7 @@ def test_explicit_mllm_on_gemma4_still_requires_vision_extra(monkeypatch, capsys
     _patch_degrade_config(monkeypatch, GEMMA4_VLM_CONFIG)
     _allow_desktop_warning(monkeypatch)
     _stub_post_guard_sentinel(monkeypatch)
+    fetched = _stub_boot_prefetch(monkeypatch)
 
     args = _args("gemma-4-26b-4bit", mllm=True)
     assert cli._serve_will_run_on_mllm_lane(args) is True
@@ -344,6 +372,8 @@ def test_explicit_mllm_on_gemma4_still_requires_vision_extra(monkeypatch, capsys
         cli.serve_command(args)
     assert exc_info.value.code == 2
     assert capsys.readouterr().err.count("warning: vision runtime absent") == 0
+    # An explicit vision demand is never a degrade candidate: no prefetch.
+    assert fetched == []
 
 
 def test_desktop_sidecar_degrades_silently(monkeypatch, capsys):
@@ -390,53 +420,113 @@ def test_text_lane_backbone_probe_matches_installed_mlxl_lm():
     assert _text_lane_loads_model_type("qwen3.") is False
 
 
-def test_degrade_probe_prefetches_config_when_cache_is_cold(monkeypatch):
-    """A cold cache gets one best-effort config-only fetch; once it lands the
-    probe decides from the fetched config instead of failing closed."""
+def test_degrade_probe_is_cache_only_and_cold_cache_fails_closed(monkeypatch):
+    """The probe NEVER fetches: a cold cache fails closed to the safe
+    [vision]-required default — materializing the config is the boot guard's
+    job (:func:`_prefetch_config_for_degrade_probe`), not the probe's."""
+    import huggingface_hub
+
     from rapid_mlx.api import utils as api_utils
     from rapid_mlx.api.utils import checkpoint_serves_text_without_vision
 
     _mock_vision_absent(monkeypatch)
-    state = {"current": None}
-    monkeypatch.setattr(
-        api_utils, "read_model_metadata", lambda _name: state["current"]
-    )
+    monkeypatch.setattr(api_utils, "read_model_metadata", lambda _name: None)
 
-    def _prefetch(_name):
-        state["current"] = _meta(GEMMA4_VLM_CONFIG)
+    def _no_network(*a, **k):
+        raise AssertionError("the degrade probe must stay cache-only")
 
-    monkeypatch.setattr(api_utils, "_prefetch_config_for_degrade_probe", _prefetch)
-    assert checkpoint_serves_text_without_vision("gemma-4-26b-4bit") is True
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", _no_network)
+    assert checkpoint_serves_text_without_vision("gemma-4-26b-4bit") is False
 
 
-def test_degrade_probe_prefetch_respects_offline_and_hub_errors(monkeypatch):
-    """The probe's own prefetch mirrors the boot guard's: no network under the
-    offline switch, and Hub failures are swallowed."""
+def test_resolver_never_touches_the_network(monkeypatch):
+    """``resolve_serving_lane_decision``'s offline contract holds on a cold
+    cache: the degrade probe answers from the cache alone (fail closed), with
+    zero Hub calls — even on the ABSENT-runtime path."""
     import huggingface_hub
 
-    from rapid_mlx import model_metadata
+    from rapid_mlx.api import utils as api_utils
+    from rapid_mlx.api.utils import resolve_serving_lane_decision
+
+    _patch_lane_probes(monkeypatch, is_mllm=True, cache_mode=None)
+    _mock_vision_absent(monkeypatch)
+    monkeypatch.setattr(api_utils, "read_model_metadata", lambda _name: None)
+
+    def _no_network(*a, **k):
+        raise AssertionError("the lane resolver must stay cache-only")
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", _no_network)
+    decision = resolve_serving_lane_decision("gemma-4-26b-4bit")
+    # No config is no evidence: the safe MLLM-lane default stands.
+    assert decision.is_mllm is True
+    assert decision.auto_text_fallback is False
+
+
+def test_degrade_probe_prefetch_bounded_once_and_exact_repo(monkeypatch):
+    """The boot guard's prefetch: targets the exact repo's ``config.json``
+    only, under the shared Hub deadline, at most once per process — and Hub
+    failures are swallowed (best-effort, never fatal)."""
+    import huggingface_hub
+
+    from rapid_mlx import _download_gate, model_metadata
     from rapid_mlx.api import utils as api_utils
 
-    monkeypatch.setattr(model_metadata, "hub_offline_mode_active", lambda: True)
-    calls = []
-    monkeypatch.setattr(
-        huggingface_hub, "hf_hub_download", lambda *a, **k: calls.append(a)
-    )
-    api_utils._prefetch_config_for_degrade_probe("org/checkpoint")
-    assert calls == []
-
+    monkeypatch.setattr(api_utils, "_DEGRADE_CONFIG_PREFETCHED", set())
+    # The hermetic suite pins HF_HUB_OFFLINE=1; the prefetch's offline
+    # short-circuit is pinned separately (see the skips test below).
     monkeypatch.setattr(model_metadata, "hub_offline_mode_active", lambda: False)
+
+    deadlines = []
+    real_call_with_deadline = _download_gate.call_with_deadline
+
+    def _recording_deadline(fn, timeout, /, *args, **kwargs):
+        deadlines.append(timeout)
+        return real_call_with_deadline(fn, timeout, *args, **kwargs)
+
+    monkeypatch.setattr(_download_gate, "call_with_deadline", _recording_deadline)
+
+    calls = []
+
+    def _record(repo, filename, **kwargs):
+        calls.append((repo, filename))
+        return "cfg"
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", _record)
+
+    api_utils._prefetch_config_for_degrade_probe("org/checkpoint")
+    # A repeated probe within the same process never refetches.
+    api_utils._prefetch_config_for_degrade_probe("org/checkpoint")
+    assert calls == [("org/checkpoint", "config.json")]
+    assert deadlines == [_download_gate._HF_RESOLVE_TIMEOUT_SECONDS]
 
     def _boom(*a, **k):
         raise OSError("no network")
 
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", _boom)
-    api_utils._prefetch_config_for_degrade_probe("org/checkpoint")  # must not raise
+    monkeypatch.setattr(api_utils, "_DEGRADE_CONFIG_PREFETCHED", set())
+    api_utils._prefetch_config_for_degrade_probe("org/unreachable")  # must not raise
 
-    monkeypatch.setattr(huggingface_hub, "hf_hub_download", lambda *a, **k: "cfg")
+
+def test_degrade_probe_prefetch_skips_local_dir_and_offline(monkeypatch, tmp_path):
+    """A real local directory is served in place and offline mode is honoured:
+    neither ever touches the Hub."""
+    import huggingface_hub
+
+    from rapid_mlx import model_metadata
+    from rapid_mlx.api import utils as api_utils
+
+    calls = []
+    monkeypatch.setattr(
+        huggingface_hub, "hf_hub_download", lambda *a, **k: calls.append(a)
+    )
+
+    local_dir = tmp_path / "snapshot"
+    local_dir.mkdir()
+    api_utils._prefetch_config_for_degrade_probe(str(local_dir))
+    assert calls == []
+
+    monkeypatch.setattr(model_metadata, "hub_offline_mode_active", lambda: True)
     api_utils._prefetch_config_for_degrade_probe("org/checkpoint")
-    # A local directory reference never triggers a fetch.
-    api_utils._prefetch_config_for_degrade_probe("/local/dir")
     assert calls == []
 
 
@@ -461,9 +551,6 @@ def test_degrade_probe_fails_closed_without_config(monkeypatch):
 
     _mock_vision_absent(monkeypatch)
     monkeypatch.setattr(api_utils, "read_model_metadata", lambda _name: None)
-    monkeypatch.setattr(
-        api_utils, "_prefetch_config_for_degrade_probe", lambda _name: None
-    )
     assert checkpoint_serves_text_without_vision("gemma-4-26b-4bit") is False
 
 
