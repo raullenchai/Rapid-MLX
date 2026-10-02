@@ -110,6 +110,7 @@ def _make_app(
     routes: list[Any],
     *,
     max_prompt_tokens: int | None = None,
+    context_length: int | None = None,
     engine: _StubEngine | None = None,
 ) -> TestClient:
     cfg = reset_config()
@@ -122,6 +123,7 @@ def _make_app(
     cfg.default_max_tokens = 1024
     cfg.thinking_token_budget = 0
     cfg.max_prompt_tokens = max_prompt_tokens
+    cfg.context_length = context_length
 
     app = FastAPI()
     for router in routes:
@@ -198,6 +200,76 @@ def test_chat_completions_rejects_over_operational_prompt_cap_before_engine():
     err = _extract_error(resp.json())
     assert err.get("code") == "context_length_exceeded"
     assert "16384" in err.get("message", "")
+
+
+def test_context_length_override_applies_across_generation_routes():
+    """A user window below the native 40K limit applies to every API lane."""
+    from rapid_mlx.routes.anthropic import router as anthropic_router
+    from rapid_mlx.routes.chat import router as chat_router
+    from rapid_mlx.routes.completions import router as completions_router
+    from rapid_mlx.routes.responses import router as responses_router
+
+    cases = [
+        (chat_router, "/v1/chat/completions", {
+            "model": "qwen3-0.6b-8bit",
+            "messages": [{"role": "user", "content": _huge_text(100)}],
+            "max_tokens": 16,
+        }),
+        (completions_router, "/v1/completions", {
+            "model": "qwen3-0.6b-8bit", "prompt": _huge_text(100),
+            "max_tokens": 16,
+        }),
+        (anthropic_router, "/v1/messages", {
+            "model": "qwen3-0.6b-8bit",
+            "messages": [{"role": "user", "content": _huge_text(100)}],
+            "max_tokens": 16,
+        }),
+        (responses_router, "/v1/responses", {
+            "model": "qwen3-0.6b-8bit", "input": _huge_text(100),
+            "max_output_tokens": 16,
+        }),
+    ]
+    for router, path, payload in cases:
+        client = _make_app([router], context_length=80)
+        resp = client.post(path, json=payload)
+        assert resp.status_code == 400, (path, resp.text)
+        err = _extract_error(resp.json())
+        assert err.get("code") == "context_length_exceeded"
+        assert "80" in err.get("message", "")
+
+
+def test_context_length_override_keeps_native_model_window_visible():
+    from types import SimpleNamespace
+
+    from rapid_mlx.routes.models import (
+        _resolve_context_window,
+        _resolve_max_model_len,
+    )
+
+    cfg = reset_config()
+    cfg.engine = _StubEngine()
+    cfg.engine.scheduler = SimpleNamespace(
+        projected_memory_max_context=lambda native: 4_096
+    )
+    cfg.model_name = "qwen3-0.6b-8bit"
+    cfg.model_registry = None
+    assert _resolve_max_model_len(cfg.model_name, _CONTEXT_WINDOW) == 4_096
+    cfg.context_length = 32_768
+    assert _resolve_context_window(cfg.model_name) == _CONTEXT_WINDOW
+    assert _resolve_max_model_len(cfg.model_name, _CONTEXT_WINDOW) == 32_768
+
+
+def test_context_length_above_model_declared_window_is_rejected():
+    from fastapi import HTTPException
+
+    from rapid_mlx.service.helpers import get_model_max_context
+
+    cfg = reset_config()
+    cfg.context_length = _CONTEXT_WINDOW + 1
+    with pytest.raises(HTTPException) as excinfo:
+        get_model_max_context(_StubEngine())
+    assert excinfo.value.status_code == 400
+    assert "declared" in excinfo.value.detail["error"]["message"]
 
 
 # ─── /v1/completions ────────────────────────────────────────────────

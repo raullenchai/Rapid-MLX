@@ -4901,8 +4901,8 @@ def _read_local_config_max_context(config_path: str) -> int | None:
     return None
 
 
-def get_model_max_context(engine) -> int:
-    """Return the model's max prompt-token context window for ``engine``.
+def get_model_native_max_context(engine) -> int:
+    """Return the model-declared context window for ``engine``.
 
     Resolution order (first hit wins):
       1. ``engine._model.args.max_position_embeddings`` — mlx-lm dense
@@ -4999,6 +4999,60 @@ def get_model_max_context(engine) -> int:
                 return int(tok_max)
 
     return _FALLBACK_MAX_CONTEXT_TOKENS
+
+
+def get_model_max_context(engine) -> int:
+    """Return the configured per-request window, bounded by model capability."""
+    native = get_model_native_max_context(engine)
+    requested = get_config().context_length
+    if requested is None:
+        return native
+    if native < _FALLBACK_MAX_CONTEXT_TOKENS and requested > native:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": {
+                    "message": (
+                        f"--context-length {requested} exceeds this model's "
+                        f"declared {native}-token context window."
+                    ),
+                    "type": "invalid_request_error",
+                    "code": "context_length_exceeded",
+                    "param": "messages",
+                }
+            },
+        )
+    return min(native, requested)
+
+
+def enforce_rendered_context_length(
+    model, tokenizer, prompt: str, max_tokens: int
+) -> int:
+    """Apply an explicit window in serial inference lanes after rendering.
+
+    These lanes do not expose a BatchedEngine, but share the same tokenizer
+    and model metadata rules as the normal API routes. Leave their default
+    behavior alone when the operator has not selected a window.
+    """
+    if get_config().context_length is None:
+        return max_tokens
+    from types import SimpleNamespace
+
+    engine = SimpleNamespace(_model=model, tokenizer=tokenizer)
+    prompt_tokens = count_prompt_tokens(engine, prompt)
+    if prompt_tokens <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": {
+                    "message": "Cannot count prompt tokens for --context-length.",
+                    "type": "invalid_request_error",
+                    "code": "context_length_exceeded",
+                    "param": "messages",
+                }
+            },
+        )
+    return enforce_context_length(engine, prompt_tokens, max_tokens=max_tokens)
 
 
 def count_prompt_tokens(engine, prompt) -> int:

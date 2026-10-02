@@ -611,6 +611,17 @@ def test_max_prompt_tokens_cli_is_positive_and_shared_by_entrypoints():
         cli.build_parser().parse_args(["serve", "model", "--max-prompt-tokens", "0"])
 
 
+def test_context_length_cli_is_positive_and_available_to_chat_and_serve():
+    from rapid_mlx import cli, server
+
+    parser = cli.build_parser()
+    for command in ("serve", "chat", "run"):
+        assert parser.parse_args([command, "model", "--context-length", "65536"]).context_length == 65536
+        with pytest.raises(SystemExit):
+            parser.parse_args([command, "model", "--context-length", "0"])
+    assert server._build_parser().parse_args(["--context-length", "8192"]).context_length == 8192
+
+
 def test_max_prompt_tokens_server_global_syncs_to_request_config():
     import rapid_mlx.server as server
     from rapid_mlx.config import get_config
@@ -623,6 +634,36 @@ def test_max_prompt_tokens_server_global_syncs_to_request_config():
     finally:
         server._max_prompt_tokens = original
         server._sync_config()
+
+
+def test_context_length_server_global_syncs_to_request_config():
+    import rapid_mlx.server as server
+    from rapid_mlx.config import get_config
+
+    original = server._context_length
+    try:
+        server._context_length = 65_536
+        server._sync_config()
+        assert get_config().context_length == 65_536
+    finally:
+        server._context_length = original
+        server._sync_config()
+
+
+def test_serial_inference_uses_the_same_explicit_window():
+    from fastapi import HTTPException
+
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.service.helpers import enforce_rendered_context_length
+
+    cfg = reset_config()
+    cfg.context_length = 128
+    model = _StubModel(args=_StubArgs(max_position_embeddings=512))
+    tokenizer = _StubTokenizer(chars_per_token=4)
+    assert enforce_rendered_context_length(model, tokenizer, "x" * 200, 100) == 78
+    with pytest.raises(HTTPException) as excinfo:
+        enforce_rendered_context_length(model, tokenizer, "x" * 512, 1)
+    assert excinfo.value.detail["error"]["code"] == "context_length_exceeded"
 
 
 # ─── enforce_context_length_for_messages: build_prompt failure paths ─

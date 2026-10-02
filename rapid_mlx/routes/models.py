@@ -106,6 +106,11 @@ def _resolve_max_model_len(model_id: str, native_context: int | None) -> int | N
     engine = _engine_for(model_id)
     if engine is None:
         return None
+    configured = get_config().context_length
+    if configured is not None:
+        # An explicit operator window overrides the advisory memory
+        # projection. Request-time Metal admission remains authoritative.
+        return min(configured, native_context) if native_context else configured
     scheduler = _scheduler_of(engine)
     if scheduler is None:
         return None
@@ -220,11 +225,9 @@ def _resolve_context_window(model_id: str) -> int | None:
     """Return the engine-advertised max prompt-token context window for
     ``model_id`` when an engine is loaded for it, else ``None``.
 
-    The currently-loaded engine knows the real cap — it's the same
-    chain the request-time context-length guard consults
-    (``service.helpers.get_model_max_context``), so advertising it on
-    ``/v1/models`` keeps the client's "max tokens" slider lined up
-    with what the server will actually enforce. Issue #363:
+    The currently-loaded engine knows the model-declared limit. An operator
+    ``--context-length`` changes the serving window in ``max_model_len``
+    without changing this native capability. Issue #363:
     rapid-desktop's PR #318 consumer needs this to auto-scale the
     chat-input cap; absent the field the consumer fell through to a
     desktop-side per-family heuristic that drifted out of sync with
@@ -242,7 +245,7 @@ def _resolve_context_window(model_id: str) -> int | None:
         client falls back to its own per-family default. The desktop
         carries that fallback as defense-in-depth.
 
-    Failures inside ``get_model_max_context`` (missing attributes,
+    Failures inside ``get_model_native_max_context`` (missing attributes,
     tokenizer probe raises) must NOT 500 the listing endpoint — they
     fall through to ``None`` and the request still completes. The
     helper's own fallback (``_FALLBACK_MAX_CONTEXT_TOKENS = 4 Mi``)
@@ -266,11 +269,11 @@ def _resolve_context_window(model_id: str) -> int | None:
         # Imported lazily to keep this module's import surface small;
         # ``service.helpers`` pulls in the request lifecycle which we
         # don't need at module-load time.
-        from ..service.helpers import get_model_max_context
+        from ..service.helpers import get_model_native_max_context
     except Exception:  # noqa: BLE001
         return None
     try:
-        window = get_model_max_context(engine)
+        window = get_model_native_max_context(engine)
     except Exception as exc:  # noqa: BLE001
         # A failed probe MUST NOT 500 ``/v1/models``; log once and let
         # the client fall back to its per-family heuristic.
