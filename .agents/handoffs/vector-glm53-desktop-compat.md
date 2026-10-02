@@ -19,9 +19,14 @@ general repetition default with the profile's neutral `1.0` recommendation.
 
 The fix keeps semantics explicit:
 
-- only the exact GLM TensorFold alias maps Desktop's implicit `1.1` default to
-  neutral `1.0`; other aliases and caller-selected nondefault values are
-  untouched;
+- `SamplingConfig` carries persisted provenance so only an untouched implicit
+  Desktop `1.1` maps to neutral `1.0` for the exact GLM TensorFold alias;
+  explicitly selected `1.1`, other values, and ordinary aliases stay on the
+  wire for normal server validation;
+- the Desktop wire boundary omits its independently populated tool registry and
+  tool choice only for the exact built-in TensorFold alias; ordinary aliases
+  retain both, and externally supplied TensorFold tools still fail closed at
+  the server;
 - the server accepts only penalty identities (`1.0`, `0.0`, `0.0`);
 - the shared prompt renderer's qualified boolean `enable_thinking` switch is
   accepted, while other chat-template kwargs still fail closed;
@@ -40,11 +45,14 @@ TensorFold implements unsupported logits processors.
 
 ## Verification and next action
 
-- Python HTTP/adapter contracts cover the real post-normalization Desktop body,
-  prompt-renderer thinking propagation, and negative penalty/template/tool/
-  media/grammar cases.
-- Swift URLProtocol coverage captures the body emitted by the production
-  `ChatStreamClient.send` path and proves other aliases plus nondefault values
-  remain unchanged.
+- Python HTTP/adapter contracts cover the production `stream=true` body through
+  the route, including content, terminal framing, usage, prompt-renderer
+  thinking propagation, and negative penalty/template/tool/media/grammar cases.
+- Swift URLProtocol coverage captures a production-shaped request with a
+  non-empty tool registry and proves exact-alias omission, implicit-default
+  normalization, explicit `1.1` preservation, and ordinary-alias behavior.
+- Verified locally: 60 focused Python tests; 92 focused Swift tests across
+  request-body, sampling, profile, and deterministic-wire suites; Ruff,
+  compileall, diff checks, and the package test build.
 - Independent exact-head review is required after the PR is opened. Do not
   queue from this lane.

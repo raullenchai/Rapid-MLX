@@ -10,6 +10,7 @@ struct ResolvedSampling: Equatable, Sendable {
     var topP: Double
     var maxTokens: Int
     var repetitionPenalty: Double
+    var repetitionPenaltyIsImplicitDefault: Bool
     var enableThinking: Bool
 }
 
@@ -277,6 +278,7 @@ final class SamplingConfig {
     }
     var repetitionPenalty: Double {
         didSet {
+            repetitionPenaltyIsImplicitDefault = false
             let clamped = Self.clamped(
                 repetitionPenalty,
                 to: Self.repetitionPenaltyRange,
@@ -289,6 +291,10 @@ final class SamplingConfig {
             persist(\.repetitionPenalty, value: repetitionPenalty)
         }
     }
+    /// Tracks whether the current 1.1 value came from the untouched Desktop
+    /// default rather than an explicit user choice. Numeric equality is not
+    /// enough: a user can deliberately move the slider back to 1.1.
+    private(set) var repetitionPenaltyIsImplicitDefault: Bool
     /// #161 hybrid-thinking switch. ``false`` (default) sends
     /// ``chat_template_kwargs: {enable_thinking: false}`` on every
     /// turn so a hybrid model skips the ``<think>...</think>`` block
@@ -330,12 +336,16 @@ final class SamplingConfig {
             defaults.object(forKey: "\(keyPrefix).maxTokens") as? Int ?? Self.maxTokensDefault,
             to: Self.maxTokensRange
         )
+        let persistedRepetitionPenalty = defaults.object(
+            forKey: "\(keyPrefix).repetitionPenalty"
+        ) as? Double
         self.repetitionPenalty = Self.clamped(
-            defaults.object(forKey: "\(keyPrefix).repetitionPenalty") as? Double
+            persistedRepetitionPenalty
                 ?? Self.repetitionPenaltyDefault,
             to: Self.repetitionPenaltyRange,
             fallback: Self.repetitionPenaltyDefault
         )
+        self.repetitionPenaltyIsImplicitDefault = persistedRepetitionPenalty == nil
         self.enableThinking = (defaults.object(forKey: "\(keyPrefix).enableThinking") as? Bool)
             ?? Self.enableThinkingDefault
     }
@@ -514,6 +524,7 @@ final class SamplingConfig {
             topP: topP,
             maxTokens: effectiveMaxTokens(toolsEnabled: toolsEnabled),
             repetitionPenalty: repetitionPenalty,
+            repetitionPenaltyIsImplicitDefault: repetitionPenaltyIsImplicitDefault,
             enableThinking: enableThinking
         )
     }
@@ -603,6 +614,8 @@ final class SamplingConfig {
         topP = Self.topPDefault
         maxTokens = Self.maxTokensDefault
         repetitionPenalty = Self.repetitionPenaltyDefault
+        defaults.removeObject(forKey: "\(keyPrefix).repetitionPenalty")
+        repetitionPenaltyIsImplicitDefault = true
         enableThinking = Self.enableThinkingDefault
         // Cycle-3 fix — clear the reasoning bookkeeping so a user
         // who hits "Reset" gets a clean ``v0.4.12`` slate.

@@ -747,6 +747,7 @@ def test_glm_desktop_payload_crosses_tensorfold_route_without_weakening_gates() 
 
     from rapid_mlx.speculative.dflash.server import _build_app
     from rapid_mlx.speculative.tensorfold_qwen27_server import (
+        ProviderChunk,
         ProviderResult,
     )
 
@@ -767,6 +768,9 @@ def test_glm_desktop_payload_crosses_tensorfold_route_without_weakening_gates() 
     def generate(_model, _processor, _prompt, **_kwargs):
         return ProviderResult("hello", [7], 1, 4)
 
+    def stream_generate(_model, _processor, _prompt, **_kwargs):
+        yield ProviderChunk("hello", 7, 1, 4)
+
     app = _build_app(
         model=None,
         processor=Processor(),
@@ -779,6 +783,7 @@ def test_glm_desktop_payload_crosses_tensorfold_route_without_weakening_gates() 
         served_model_name="glm5.3-flash-tensorfold",
         default_max_tokens=4096,
         cors_origins=[],
+        stream_generate_fn=stream_generate,
         generate_fn=generate,
         generation_kwargs_fn=generation_kwargs,
         render_prompt_fn=render_prompt,
@@ -792,7 +797,7 @@ def test_glm_desktop_payload_crosses_tensorfold_route_without_weakening_gates() 
     desktop_body = {
         "model": "glm5.3-flash-tensorfold",
         "messages": [{"role": "user", "content": "hi"}],
-        "stream": False,
+        "stream": True,
         "temperature": 0.0,
         "top_p": 1.0,
         "max_tokens": 4096,
@@ -803,9 +808,15 @@ def test_glm_desktop_payload_crosses_tensorfold_route_without_weakening_gates() 
         "chat_template_kwargs": {"enable_thinking": False},
     }
 
-    response = client.post("/v1/chat/completions", json=desktop_body)
+    with client.stream("POST", "/v1/chat/completions", json=desktop_body) as response:
+        wire = "".join(response.iter_text())
     assert response.status_code == 200
-    assert response.json()["choices"][0]["message"]["content"] == "hello"
+    assert '"content": "hello"' in wire
+    assert '"finish_reason": "stop"' in wire
+    assert '"prompt_tokens": 4' in wire
+    assert '"completion_tokens": 1' in wire
+    assert '"total_tokens": 5' in wire
+    assert wire.rstrip().endswith("data: [DONE]")
     assert rendered["kwargs"]["enable_thinking"] is False
 
     for field, value in (

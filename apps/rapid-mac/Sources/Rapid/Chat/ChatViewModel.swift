@@ -2948,6 +2948,8 @@ final class ChatViewModel {
                     topP: resolved.topP,
                     maxTokens: resolved.maxTokens,
                     repetitionPenalty: resolved.repetitionPenalty,
+                    repetitionPenaltyIsImplicitDefault:
+                        resolved.repetitionPenaltyIsImplicitDefault,
                     tools: definitions.isEmpty ? nil : definitions,
                     enableThinking: resolved.enableThinking,
                     supportsImageInput: supportsImageInput
