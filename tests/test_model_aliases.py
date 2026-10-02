@@ -190,3 +190,128 @@ def test_popular_aliases_curated_list_resolves():
         f"Update rapid_mlx/model_aliases.py POPULAR_ALIASES tuple after "
         f"removing or renaming aliases."
     )
+
+
+def test_draft_only_checkpoints_are_refused_with_the_precise_remedy():
+    """The qwen3.6 MTP sidecars are qwen3_5_mtp checkpoints the pinned
+    mlx-lm cannot serve as a primary; serving them used to die mid-load
+    with a raw unsupported-architecture error. The gate must name the
+    base alias that uses the draft automatically."""
+    from rapid_mlx.model_aliases import draft_only_conflict
+
+    conflict = draft_only_conflict("qwen3.6-35b-mtp-4bit")
+    assert conflict is not None
+    assert "qwen3.6-35b-mtp-4bit" in conflict
+    assert "qwen3.6-35b-4bit" in conflict
+    assert "draft checkpoint" in conflict
+
+
+def test_draft_only_gate_also_covers_the_resolved_hf_path():
+    from rapid_mlx.model_aliases import draft_only_conflict
+
+    assert draft_only_conflict("mlx-community/Qwen3.6-27B-MTP-4bit") is not None
+
+
+def test_embedded_mtp_checkpoints_stay_serable():
+    """qwen3.8 embeds its own MTP head (hf_path == its mtp_draft_model);
+    the gate must not touch it, or every qwen3.8 serve would break."""
+    from rapid_mlx.model_aliases import draft_only_conflict
+
+    assert draft_only_conflict("qwen3.8-27b-4bit") is None
+
+
+def test_draft_gate_ignores_unknown_refs_and_ordinary_aliases():
+    from rapid_mlx.model_aliases import draft_only_conflict
+
+    assert draft_only_conflict("qwen3.5-4b-4bit") is None
+    assert draft_only_conflict("owner/never-heard-of-it") is None
+    assert draft_only_conflict(None) is None
+    assert draft_only_conflict("") is None
+
+
+def test_draft_gate_fails_open_when_the_catalog_cannot_be_read(monkeypatch):
+    import rapid_mlx.model_aliases as model_aliases
+
+    def broken_load():
+        raise RuntimeError("catalog unavailable")
+
+    monkeypatch.setattr(model_aliases, "_load", broken_load)
+    assert model_aliases.draft_only_conflict("qwen3.6-35b-mtp-4bit") is None
+    model_aliases.raise_if_draft_only_model("qwen3.6-35b-mtp-4bit")
+
+
+def test_raise_if_draft_only_model_raises_the_typed_gate_error():
+    from rapid_mlx.model_aliases import (
+        DraftModelNotServableError,
+        raise_if_draft_only_model,
+    )
+
+    with pytest.raises(DraftModelNotServableError, match="qwen3.6-35b-4bit"):
+        raise_if_draft_only_model("qwen3.6-35b-mtp-4bit")
+
+
+def test_cli_serve_draft_alias_fails_fast_at_resolve(monkeypatch, capsys):
+    """End to end: serving the draft alias exits 1 with the remedy, records
+    the resolve-stage failure, and never reaches a download or engine load."""
+    import sys
+
+    from rapid_mlx import cli
+
+    emitted = []
+    monkeypatch.setattr(sys, "argv", ["rapid-mlx", "serve", "qwen3.6-35b-mtp-4bit"])
+    monkeypatch.setattr(
+        "rapid_mlx.telemetry.model_events.emit_model_serve_failed",
+        lambda exc, *, alias_or_path, **kwargs: emitted.append(
+            (exc, alias_or_path, kwargs)
+        ),
+    )
+
+    with pytest.raises(SystemExit) as caught:
+        cli.main()
+
+    assert caught.value.code == 1
+    stderr = capsys.readouterr().err
+    assert "draft checkpoint" in stderr
+    assert "qwen3.6-35b-4bit" in stderr
+    assert emitted and emitted[0][1] == "qwen3.6-35b-mtp-4bit"
+    assert emitted[0][2].get("failure_stage") == "resolve"
+
+
+def test_cli_bench_draft_alias_fails_fast_without_telemetry(monkeypatch, capsys):
+    import sys
+
+    from rapid_mlx import cli
+
+    emitted = []
+    monkeypatch.setattr(sys, "argv", ["rapid-mlx", "bench", "qwen3.6-35b-mtp-4bit"])
+    monkeypatch.setattr(
+        "rapid_mlx.telemetry.model_events.emit_model_serve_failed",
+        lambda exc, *, alias_or_path, **kwargs: emitted.append(
+            (exc, alias_or_path, kwargs)
+        ),
+    )
+
+    with pytest.raises(SystemExit) as caught:
+        cli.main()
+
+    assert caught.value.code == 1
+    assert "draft checkpoint" in capsys.readouterr().err
+    assert emitted == []
+
+
+def test_cli_pull_keeps_draft_sidecar_warmable(monkeypatch):
+    """pull stays storage-only: pre-warming the sidecar must keep working."""
+    import sys
+
+    from rapid_mlx import cli
+
+    pulled = []
+    monkeypatch.setattr(sys, "argv", ["rapid-mlx", "pull", "qwen3.6-35b-mtp-4bit"])
+    monkeypatch.setattr(
+        "rapid_mlx.cli.pull_command",
+        lambda args: pulled.append(args.model),
+    )
+
+    cli.main()
+
+    assert pulled == ["mlx-community/Qwen3.6-35B-A3B-MTP-4bit"]

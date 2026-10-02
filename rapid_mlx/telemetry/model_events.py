@@ -217,6 +217,7 @@ def serve_error_class(exc: BaseException, *, model_ref: object = None) -> str:
         )
         from huggingface_hub.utils import RepositoryNotFoundError
 
+        from rapid_mlx.model_aliases import DraftModelNotServableError
         from rapid_mlx.model_load_errors import (
             IncompatibleWeights,
             InvalidModelConfig,
@@ -252,6 +253,10 @@ def serve_error_class(exc: BaseException, *, model_ref: object = None) -> str:
                 return "incompatible_weights"
             if isinstance(current, QuantizationMismatch):
                 return "quantization_mismatch"
+            if isinstance(current, DraftModelNotServableError):
+                # A draft-only checkpoint cannot be a primary under any
+                # mlx-lm: its dedicated MTP model_type is unsupported there.
+                return "unsupported_architecture"
 
         # Existing typed availability failures are authoritative too. Inspect
         # the full explicit cause chain before consulting message text so an

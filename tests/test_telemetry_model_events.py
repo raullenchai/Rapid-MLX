@@ -531,6 +531,15 @@ def test_typed_lane_backend_failures_are_not_other(backend_error, shape):
     )
 
 
+def test_draft_gate_refusal_is_unsupported_architecture():
+    from rapid_mlx.model_aliases import DraftModelNotServableError
+
+    failure = DraftModelNotServableError(
+        "'qwen3.6-35b-mtp-4bit' is a speculative-decoding draft checkpoint"
+    )
+    assert model_events.serve_error_class(failure) == "unsupported_architecture"
+
+
 def test_typed_quantization_beats_memory_wording():
     typed = QuantizationMismatch(
         "[quantized_matmul] out of memory while checking uint32 weights"
