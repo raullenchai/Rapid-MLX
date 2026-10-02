@@ -419,6 +419,32 @@ def test_operational_prompt_cap_counts_mllm_text_without_prefill():
     assert excinfo.value.detail["error"]["code"] == "context_length_exceeded"
 
 
+def test_explicit_context_length_checks_mllm_text_before_media_expansion():
+    from fastapi import HTTPException
+
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.service.helpers import enforce_context_length_for_messages
+
+    class _Tokenizer:
+        def apply_chat_template(self, messages, **kwargs):  # noqa: ARG002
+            return list(range(65))
+
+    class _MLLMEngine:
+        is_mllm = True
+        tokenizer = _Tokenizer()
+
+    cfg = reset_config()
+    try:
+        cfg.context_length = 64
+        with pytest.raises(HTTPException) as excinfo:
+            enforce_context_length_for_messages(
+                _MLLMEngine(), [{"role": "user", "content": "long prompt"}]
+            )
+        assert excinfo.value.detail["error"]["code"] == "context_length_exceeded"
+    finally:
+        reset_config()
+
+
 def test_operational_prompt_cap_counts_batched_mllm_tokenizer_output():
     from fastapi import HTTPException
 

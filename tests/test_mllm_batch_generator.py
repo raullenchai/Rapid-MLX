@@ -28,9 +28,25 @@ from rapid_mlx.mllm_batch_generator import (
     MLLMBatch,
     MLLMBatchGenerator,
     MLLMBatchRequest,
+    _enforce_preprocessed_context_window,
     _model_supports_vision_feature_cache,
 )
 from rapid_mlx.request import ClientRequestError
+
+
+def test_explicit_context_counts_expanded_media_tokens():
+    from types import SimpleNamespace
+
+    request = MLLMBatchRequest(
+        uid=1, request_id="ctx-test", prompt="hi", max_tokens=100
+    )
+    request.input_ids = SimpleNamespace(size=120)
+    _enforce_preprocessed_context_window([request], 160)
+    assert request.max_tokens == 40
+
+    request.input_ids = SimpleNamespace(size=160)
+    with pytest.raises(ClientRequestError, match="context_length_exceeded"):
+        _enforce_preprocessed_context_window([request], 160)
 
 
 class _RecordingModel:
