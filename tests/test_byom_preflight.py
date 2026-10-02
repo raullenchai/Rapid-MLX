@@ -753,6 +753,10 @@ def hook(monkeypatch, uncached):
     monkeypatch.setattr(pf, "supported_model_types", lambda: SUPPORTED)
     monkeypatch.setattr(pf, "physical_ram_bytes", lambda: 36 * GIB)
     monkeypatch.setattr(pf, "_mlx_lm_version", lambda: "0.31.3")
+    from rapid_mlx.byom import alternatives
+
+    hints: dict[str, object] = {"value": ([], False)}
+    monkeypatch.setattr(alternatives, "suggest", lambda *a, **kw: hints["value"])
 
     def run(info=None, args=None, *, tty=False, full_config=None):
         import huggingface_hub
@@ -766,6 +770,7 @@ def hook(monkeypatch, uncached):
         )
 
     run.emitted = emitted
+    run.hints = hints
     return run
 
 
@@ -1019,3 +1024,63 @@ def test_golden_interactive_pass_summary(monkeypatch, capsys):
         "    Fits your Mac yes · ~7.0 GB of 36 GB\n",
         "",
     )
+
+
+def test_hook_prints_alternatives_and_drops_search_hint(hook, capsys):
+    info = _info({"m-Q4_K_M.gguf": 7 * GIB})
+    hook.hints["value"] = (
+        ["  Same model in MLX format: x", "    rapid-mlx serve x"],
+        True,
+    )
+    with pytest.raises(SystemExit):
+        hook(info)
+    err = capsys.readouterr().err
+    assert "    Same model in MLX format: x" in err
+    assert "huggingface.co/models?search" not in err
+
+
+def test_render_gguf_caps_the_quant_list():
+    files = tuple(f"m-Q{i}_K_M.gguf" for i in range(2, 8))
+    insp = _insp(files=files, config={})
+    line = pf.render_failure(insp, _evaluate(insp))[0]
+    assert line.endswith("(Q2_K_M, Q3_K_M, Q4_K_M, Q5_K_M, …).")
+
+
+def test_hub_provenance_fields(monkeypatch):
+    _no_deadline(monkeypatch)
+    import huggingface_hub
+
+    info = _info({"m-Q8_0.gguf": GIB})
+    info.gguf = {"total": 596049920}
+    info.card_data = {"license": "apache-2.0"}
+    info.tags = [
+        "gguf",
+        "base_model:Qwen/Qwen3-0.6B",
+        "base_model:quantized:Qwen/Qwen3-0.6B",
+        "base_model:finetune:other/x",
+        3,
+    ]
+    monkeypatch.setattr(huggingface_hub, "model_info", lambda *a, **kw: info)
+    insp = pf.inspect_hub("Qwen/Qwen3-0.6B-GGUF")
+    assert insp.params == 596049920
+    assert insp.quantized_from == ("Qwen/Qwen3-0.6B",)
+    assert insp.license == "apache-2.0"
+    assert "gguf" in insp.tags
+
+
+def test_hub_params_and_card_helpers():
+    assert pf._hub_params(_info({}, params={"BF16": 1})) is None  # total missing
+    st = types.SimpleNamespace(safetensors=types.SimpleNamespace(total=7), gguf=None)
+    assert pf._hub_params(st) == 7
+    assert pf._hub_params(types.SimpleNamespace(gguf={"total": 0})) is None
+    assert pf._hub_params(types.SimpleNamespace(gguf="odd")) is None
+    assert pf.hub_tags(types.SimpleNamespace(tags=None)) == ()
+    assert pf.quantized_from(("base_model:quantized:plain",)) == ()
+
+    class _Exploding:
+        def get(self, key):
+            raise RuntimeError
+
+    assert pf.card_license(_Exploding()) is None
+    assert pf.card_license(None) is None
+    assert pf.card_license({"license": ""}) is None
