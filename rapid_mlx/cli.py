@@ -16251,34 +16251,6 @@ def main():
             print(f"  Alias: {args.model} → {resolved}")
             args._original_alias = args.model
             args.model = resolved
-        if getattr(args, "command", None) in ("serve", "bench"):
-            # A draft-only checkpoint cannot be a primary model: gate it at
-            # resolve with the precise remedy instead of a mid-load
-            # "unsupported architecture" crash after the download.
-            from rapid_mlx.model_aliases import (
-                DraftModelNotServableError,
-                raise_if_draft_only_model,
-            )
-
-            try:
-                raise_if_draft_only_model(
-                    getattr(args, "_original_alias", None) or args.model
-                )
-            except DraftModelNotServableError as exc:
-                if getattr(args, "command", None) == "serve":
-                    from rapid_mlx.telemetry.model_events import (
-                        emit_model_serve_failed,
-                    )
-
-                    emit_model_serve_failed(
-                        exc,
-                        alias_or_path=(
-                            getattr(args, "_original_alias", None) or args.model
-                        ),
-                        failure_stage="resolve",
-                    )
-                print(f"\n  Error: {exc}", file=sys.stderr)
-                raise SystemExit(1) from None
         elif "/" not in args.model and not os.path.exists(args.model):
             # R8-M5 (Bo 0.8.9 dogfood): short audio aliases (``kokoro``,
             # ``whisper``, ``parakeet``, ``chatterbox``, ``vibevoice``,
@@ -16341,6 +16313,36 @@ def main():
                     print(f"  Alias: {args.model} → {_audio_hf_id}")
                     args._original_alias = args.model
                     args.model = _audio_hf_id
+        if getattr(args, "command", None) in ("serve", "bench"):
+            # A draft-only checkpoint cannot be a primary model: gate it at
+            # resolve with the precise remedy instead of a mid-load
+            # "unsupported architecture" crash after the download. Runs for
+            # serve/bench only — ``pull`` must stay able to pre-warm the
+            # sidecar for the base alias's speculative decoding.
+            from rapid_mlx.model_aliases import (
+                DraftModelNotServableError,
+                raise_if_draft_only_model,
+            )
+
+            try:
+                raise_if_draft_only_model(
+                    getattr(args, "_original_alias", None) or args.model
+                )
+            except DraftModelNotServableError as exc:
+                if getattr(args, "command", None) == "serve":
+                    from rapid_mlx.telemetry.model_events import (
+                        emit_model_serve_failed,
+                    )
+
+                    emit_model_serve_failed(
+                        exc,
+                        alias_or_path=(
+                            getattr(args, "_original_alias", None) or args.model
+                        ),
+                        failure_stage="resolve",
+                    )
+                print(f"\n  Error: {exc}", file=sys.stderr)
+                raise SystemExit(1) from None
     # --- BEGIN B2: auto-pull confirmation gate -------------------------
     # For subcommands that may trigger a first-time download of a large
     # repo (chat/run/serve/pull/bench), warn the user before kicking off
