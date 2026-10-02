@@ -189,25 +189,48 @@ def test_serve_guard_hybrid_vlm_boots_without_vision_extra(monkeypatch, capsys):
     assert "rapid-mlx[vision]==" in err
 
 
-def test_serve_guard_genuine_vlm_still_requires_vision_extra(monkeypatch, capsys):
-    """Base wheel (mlx-vlm ABSENT): a genuine VLM (non-hybrid backbone) must
-    STILL fail fast with the ``[vision]``-required guard — the fix must not
-    weaken real vision aliases."""
+def test_serve_guard_text_incapable_vlm_still_requires_vision_extra(
+    monkeypatch, capsys
+):
+    """Base wheel (mlx-vlm ABSENT): a VLM whose backbone has NO text-lane
+    loader must STILL fail fast with the ``[vision]``-required guard — the
+    degrade covers only checkpoints whose language backbone the text lane
+    loads. Bonsai 2's ``prism_hadamard_qwen35`` pack has its only loader on
+    the MLLM lane, so it keeps the loud guard (and its ``--no-mllm`` hint is
+    guarded separately by the text-lane pack rejection)."""
+    from pathlib import Path
+    from types import SimpleNamespace as _NS
+
     from rapid_mlx import cli
+    from rapid_mlx.api import utils as api_utils
 
     _patch_probes(monkeypatch, is_mllm=True, hybrid=False)
     _mock_mllm_absent(monkeypatch)
+    # Feed the degrade probe the Bonsai 2 pack config: its top-level
+    # ``model_type`` has no ``mlx_lm.models`` module and no vendored loader.
+    monkeypatch.setattr(
+        api_utils,
+        "read_model_metadata",
+        lambda _name: _NS(
+            config={
+                "model_type": "prism_hadamard_qwen35",
+                "architectures": ["PrismHadamardQwen35ForConditionalGeneration"],
+                "vision_config": {},
+            },
+            snapshot_dir=Path("/snap"),
+        ),
+    )
     # If the guard wrongly let this through, the sentinel would surface
     # instead of SystemExit — making the test fail loudly rather than pass.
     _stub_post_guard_sentinel(monkeypatch)
 
-    args = _args("mlx-community/Qwen3-VL-2B-Instruct-4bit")
+    args = _args("bonsai2-27b-2bit")
     with pytest.raises(SystemExit) as exc_info:
         cli.serve_command(args)
     assert exc_info.value.code == 2
 
     err = capsys.readouterr().err
-    assert "Qwen3-VL-2B-Instruct-4bit" in err
+    assert "bonsai2-27b-2bit" in err
     assert "[vision]" in err
     # The guard message also surfaces --no-mllm as the text-only escape hatch.
     assert "--no-mllm" in err
@@ -377,20 +400,30 @@ def test_real_probe_cached_hybrid_vlm_downgrades_to_text(monkeypatch):
         cli.serve_command(_args(hf_path))
 
 
-def test_real_probe_cached_genuine_vlm_stays_on_mllm_lane():
-    """REAL probe path (no mocks): an actually-cached genuine multimodal
-    checkpoint (Gemma-4, non-hybrid backbone) must stay on the MLLM lane so
-    the guard STILL requires ``[vision]`` — the fix must not weaken real
-    vision checkpoints when consulted through the production probe."""
+def test_real_probe_cached_genuine_vlm_keeps_classification_and_degrades(
+    monkeypatch,
+):
+    """REAL probe path (no lane mocks): an actually-cached genuine multimodal
+    checkpoint (Gemma-4, non-hybrid backbone) keeps its MLLM classification —
+    and with the vision runtime ABSENT the base wheel degrades it to the text
+    lane (same lane ``--no-mllm`` selects) instead of demanding ``[vision]``."""
     from rapid_mlx import cli
     from rapid_mlx.api.utils import is_mllm_model, mllm_backbone_is_hybrid
 
     hf_path = "mlx-community/gemma-4-12B-it-4bit"
     _cached_or_skip(hf_path)
 
+    # Precondition: the real probes see a genuine multimodal checkpoint with a
+    # standard-attention backbone (else this would pass vacuously).
     assert is_mllm_model(hf_path) is True
     assert mllm_backbone_is_hybrid(hf_path) is False
-    assert cli._serve_will_run_on_mllm_lane(_args(hf_path)) is True
+
+    # With the runtime ABSENT the degrade applies: the guard does not demand
+    # [vision] for a text-capable backbone.
+    _mock_mllm_absent(monkeypatch)
+    _stub_post_guard_sentinel(monkeypatch)
+    with pytest.raises(_ReachedPastVisionGuardError):
+        cli.serve_command(_args(hf_path))
 
 
 # ---------------------------------------------------------------------------
