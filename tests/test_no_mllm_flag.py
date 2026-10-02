@@ -198,6 +198,9 @@ NON_ROUTING_FLAGS_ALLOWLIST: frozenset[str] = frozenset(
         "--enable-cors",
         # Perf / UX toggles, not routing decisions.
         "--force-disk-check",  # forces eager disk-space check
+        # Vendored drafter split utility: forces a fresh checkpoint download;
+        # it does not choose a model architecture or serving runtime.
+        "--force-download",
         "--no-gc-control",  # disables Python GC tuning
         "--no-memory-aware-cache",  # disables memory-aware cache sizing
         # Privacy toggle.
