@@ -272,6 +272,7 @@ _default_repetition_penalty: float | None = None  # Set via --default-repetition
 _default_presence_penalty: float | None = None  # Set via --default-presence-penalty
 _default_frequency_penalty: float | None = None  # Set via --default-frequency-penalty
 _max_prompt_tokens: int | None = None
+_context_length: int | None = None
 
 
 def _bind_audio_worker_for_engine(engine: object | None) -> bool:
@@ -2867,6 +2868,22 @@ def load_model(
     # that format on subsequent turns. See #225.
     _sync_config()
 
+    if _context_length is not None and not _primary_lazy_load:
+        from .service.helpers import (
+            _FALLBACK_MAX_CONTEXT_TOKENS,
+            get_model_native_max_context,
+        )
+
+        native_context = get_model_native_max_context(_engine)
+        if (
+            native_context < _FALLBACK_MAX_CONTEXT_TOKENS
+            and _context_length > native_context
+        ):
+            raise ValueError(
+                f"--context-length {_context_length} exceeds this model's "
+                f"declared {native_context}-token context window"
+            )
+
     # Opt-in prompt-deterministic response cache: configure the process
     # singleton's LRU capacity from the resolved SchedulerConfig knob.
     # 0 (default) keeps the cache inert. ``configure_response_cache``
@@ -3324,6 +3341,7 @@ def _sync_config() -> None:
     cfg.default_presence_penalty = _default_presence_penalty
     cfg.default_frequency_penalty = _default_frequency_penalty
     cfg.max_prompt_tokens = _max_prompt_tokens
+    cfg.context_length = _context_length
     cfg.alias_recommended_sampling = _alias_recommended_sampling
     cfg.generation_config_sampling = _generation_config_sampling
     cfg.enable_auto_tool_choice = _enable_auto_tool_choice
@@ -3817,6 +3835,13 @@ Examples:
             "limit are rejected before prefill."
         ),
     )
+    parser.add_argument(
+        "--context-length",
+        type=positive_int,
+        default=None,
+        metavar="TOKENS",
+        help="Per-request context window (prompt plus output); default: automatic.",
+    )
     # ``--api-key`` accepts an inline value OR falls back to the
     # ``RAPID_MLX_API_KEY`` env var. The env-var form keeps the bearer
     # key out of ``argv`` (visible to ``ps -ef`` for any local user) —
@@ -4058,7 +4083,12 @@ def main():
     uvicorn_log_level = configure_logging(args.log_level)
 
     # Set global configuration
-    global _api_key, _default_timeout, _rate_limiter, _max_prompt_tokens
+    global \
+        _api_key, \
+        _default_timeout, \
+        _rate_limiter, \
+        _max_prompt_tokens, \
+        _context_length
     global _default_temperature, _default_top_p, _default_top_k
     global _enable_audio_lane
     # Task #292: forward ``--enable-audio`` to the gate that decides
@@ -4076,6 +4106,7 @@ def main():
     _api_key = _resolve_api_key(args.api_key)
     _default_timeout = args.timeout
     _max_prompt_tokens = args.max_prompt_tokens
+    _context_length = getattr(args, "context_length", None)
     if args.default_temperature is not None:
         _default_temperature = args.default_temperature
     if args.default_top_p is not None:
@@ -4397,6 +4428,7 @@ def main():
             )
         ),
         pflash_config=server_pflash_config,
+        allow_context_overcommit=args.context_length is not None,
         **_server_turboquant_scheduler_kwargs(args),
     )
 

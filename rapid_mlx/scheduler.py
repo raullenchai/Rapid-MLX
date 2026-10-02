@@ -634,6 +634,11 @@ class SchedulerConfig:
     # Appended for positional callers.
     cache_memory_percent_explicit: bool = False
 
+    # A manually chosen serving window may exceed the automatic KV budget.
+    # Keep an explicitly requested --gpu-memory-utilization cap authoritative.
+    # Appended to preserve the positional SchedulerConfig prefix.
+    allow_context_overcommit: bool = False
+
     def __post_init__(self) -> None:
         if self.mllm_singleton_fastpath not in ("auto", "off"):
             raise ValueError(
@@ -6124,10 +6129,13 @@ class Scheduler:
         allocator's leniency window.
 
         Returns ``0`` when the cap should be considered disabled (the
-        SchedulerConfig default ``gpu_memory_utilization=0.0``, or the
-        Metal device probe failed). Callers MUST treat ``0`` as "do not
-        check" rather than "no headroom".
+        SchedulerConfig default ``gpu_memory_utilization=0.0``, an explicit
+        context override without an operator memory cap, or a failed Metal
+        device probe). Callers MUST treat ``0`` as "do not check" rather
+        than "no headroom".
         """
+        if self.config.allow_context_overcommit:
+            return 0
         from .memory_budget import process_utilization_floor
 
         floor, generation = process_utilization_floor()

@@ -2989,6 +2989,50 @@ def test_spawn_chat_server_forwards_disable_prefix_cache(monkeypatch, tmp_path):
     assert captured["cmd"].count("--disable-prefix-cache") == 1
 
 
+def test_spawn_chat_server_forwards_context_length(monkeypatch, tmp_path):
+    captured: dict = {}
+
+    class _FakePopen:
+        def __init__(self, cmd, **kwargs):
+            captured["cmd"] = cmd
+
+        def poll(self):
+            return None
+
+    class _FakeSocket:
+        def __init__(self, *_, **__):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def bind(self, _addr):
+            pass
+
+        def getsockname(self):
+            return ("127.0.0.1", 54321)
+
+    monkeypatch.setattr("socket.socket", _FakeSocket)
+    monkeypatch.setattr("subprocess.Popen", _FakePopen)
+    cli._spawn_chat_server(
+        "ling-3.0-tiny-4bit",
+        str(tmp_path / "fake.log"),
+        context_length=65_536,
+    )
+    index = captured["cmd"].index("--context-length")
+    assert captured["cmd"][index + 1] == "65536"
+
+
+def test_chat_context_length_rejects_attaching_to_existing_server(capsys):
+    with pytest.raises(SystemExit) as excinfo:
+        cli.chat_command(_ns_for_chat(8000, context_length=65_536))
+    assert excinfo.value.code == 2
+    assert "set it on the existing rapid-mlx serve" in capsys.readouterr().err
+
+
 def test_sigterm_handler_masks_second_sigterm(monkeypatch):
     """A second SIGTERM landing mid-cleanup must be silently dropped via
     ``signal.SIG_IGN``, not re-invoke ``_cleanup`` (which would block on
