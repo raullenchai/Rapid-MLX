@@ -71,6 +71,7 @@ def _reset_dflash_shared_globals():
             "enable_auto_tool_choice",
             "tool_call_parser",
             "reasoning_parser_name",
+            "context_length",
         )
     }
     # codex round-8 #3: the CORS tests here call ``configure_cors_from_env``,
@@ -593,6 +594,39 @@ def test_healthz_and_models_routes() -> None:
     assert r.status_code == 200
     assert r.json()["id"] == "qwen3.5-27b-8bit"
     assert client.get("/v1/models/not-the-loaded-model").status_code == 404
+
+
+def test_explicit_context_is_reported_by_dflash_model_routes() -> None:
+    from fastapi.testclient import TestClient
+
+    from rapid_mlx.api.models import ModelInfo
+    from rapid_mlx.config import get_config
+    from rapid_mlx.speculative.dflash.runtime import DFlashRuntime
+    from rapid_mlx.speculative.dflash.server import _build_app
+
+    get_config().context_length = 4096
+    runtime = DFlashRuntime(
+        drafter=MagicMock(), kind="dflash", drafter_repo="local/drafter"
+    )
+    options = dict(
+        model=MagicMock(),
+        processor=MagicMock(),
+        runtime=runtime,
+        served_model_name="test-model",
+        default_max_tokens=128,
+        cors_origins=[],
+    )
+    detailed = TestClient(
+        _build_app(
+            **options,
+            model_info=ModelInfo(id="test-model", context_window=8192),
+        )
+    )
+    assert detailed.get("/v1/models").json()["data"][0]["max_model_len"] == 4096
+    assert detailed.get("/v1/models/test-model").json()["max_model_len"] == 4096
+
+    fallback = TestClient(_build_app(**options))
+    assert fallback.get("/v1/models").json()["data"][0]["max_model_len"] == 4096
 
 
 def test_run_dflash_server_wires_security_configuration(monkeypatch) -> None:

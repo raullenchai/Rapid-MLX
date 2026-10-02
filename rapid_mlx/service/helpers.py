@@ -4901,8 +4901,8 @@ def _read_local_config_max_context(config_path: str) -> int | None:
     return None
 
 
-def get_model_max_context(engine) -> int:
-    """Return the model's max prompt-token context window for ``engine``.
+def get_model_native_max_context(engine) -> int:
+    """Return the model-declared context window for ``engine``.
 
     Resolution order (first hit wins):
       1. ``engine._model.args.max_position_embeddings`` — mlx-lm dense
@@ -4999,6 +4999,64 @@ def get_model_max_context(engine) -> int:
                 return int(tok_max)
 
     return _FALLBACK_MAX_CONTEXT_TOKENS
+
+
+def get_model_max_context(engine) -> int:
+    """Return the configured per-request window, bounded by model capability."""
+    native = get_model_native_max_context(engine)
+    requested = get_config().context_length
+    if requested is None:
+        return native
+    if native < _FALLBACK_MAX_CONTEXT_TOKENS and requested > native:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": {
+                    "message": (
+                        f"--context-length {requested} exceeds this model's "
+                        f"declared {native}-token context window."
+                    ),
+                    "type": "invalid_request_error",
+                    "code": "context_length_exceeded",
+                    "param": "messages",
+                }
+            },
+        )
+    return min(native, requested)
+
+
+def enforce_rendered_context_length(
+    model, tokenizer, prompt: str, max_tokens: int
+) -> int:
+    """Apply an explicit window in serial inference lanes after rendering.
+
+    These lanes do not expose a BatchedEngine, but share the same tokenizer
+    and model metadata rules as the normal API routes. Leave their default
+    behavior alone when the operator has not selected a window.
+    """
+    if get_config().context_length is None:
+        return max_tokens
+    from types import SimpleNamespace
+
+    engine = SimpleNamespace(_model=model, tokenizer=tokenizer)
+    prompt_tokens = count_prompt_tokens(engine, prompt)
+    if prompt_tokens <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": {
+                    "message": "Cannot count prompt tokens for --context-length.",
+                    "type": "invalid_request_error",
+                    "code": "context_length_exceeded",
+                    "param": "messages",
+                }
+            },
+        )
+    allowed_tokens = enforce_context_length(
+        engine, prompt_tokens, max_tokens=max_tokens
+    )
+    assert allowed_tokens is not None  # max_tokens was provided above
+    return allowed_tokens
 
 
 def count_prompt_tokens(engine, prompt) -> int:
@@ -5130,8 +5188,13 @@ def enforce_context_length(
 
 
 def _raise_prompt_count_unavailable() -> NoReturn:
-    """Fail closed when an operational prompt ceiling cannot be enforced."""
-    cap = get_config().max_prompt_tokens
+    """Fail closed when an explicit operator ceiling cannot be enforced."""
+    cfg = get_config()
+    cap = (
+        cfg.max_prompt_tokens
+        if cfg.max_prompt_tokens is not None
+        else cfg.context_length
+    )
     from rapid_mlx.telemetry.inference import emit_capability_rejected
 
     emit_capability_rejected(
@@ -5153,6 +5216,11 @@ def _raise_prompt_count_unavailable() -> NoReturn:
             }
         },
     )
+
+
+def _requires_exact_prompt_count() -> bool:
+    cfg = get_config()
+    return cfg.max_prompt_tokens is not None or cfg.context_length is not None
 
 
 def _tokenized_prompt_length(tokenized) -> int:
@@ -5279,11 +5347,10 @@ def enforce_context_length_for_messages(
     discard the return value keep working unchanged — this is an
     additive contract change.
 
-    Scoped to text-only engines: MLLM models accept image / video /
-    audio inputs whose token cost is computed by the multimodal
-    processor and tracked separately by ``MLLMScheduler``. The
-    body-size middleware still bounds the wire-level payload for
-    those routes.
+    MLLM models normally skip this preflight because media token cost is
+    computed by the multimodal processor. An explicit operator window
+    enables a text-token preflight; the multimodal generator checks the
+    expanded token count after preprocessing as well.
 
     ``enable_thinking`` is forwarded to the engine's ``build_prompt``
     so the rendered template matches what the engine will actually
@@ -5314,8 +5381,12 @@ def enforce_context_length_for_messages(
     applies regardless of which compatibility surface the client uses.
     """
     if getattr(engine, "is_mllm", False):
-        if get_config().max_prompt_tokens is None:
+        if not _requires_exact_prompt_count():
             return None
+        # The multimodal processor performs the authoritative count after
+        # expanding media. A missing text template is only fatal for the
+        # separate pre-prefill max_prompt_tokens admission cap.
+        require_text_preflight = get_config().max_prompt_tokens is not None
         # MLLM engines deliberately reject ``build_prompt`` because media
         # preparation belongs to their processor. The processor's tokenizer
         # can still render and count the text/tool prompt without touching
@@ -5326,7 +5397,9 @@ def enforce_context_length_for_messages(
             )
             apply_template = getattr(tokenizer, "apply_chat_template", None)
             if not callable(apply_template):
-                _raise_prompt_count_unavailable()
+                if require_text_preflight:
+                    _raise_prompt_count_unavailable()
+                return None
             template_kwargs = dict(chat_template_kwargs or {})
             if enable_thinking is not None:
                 template_kwargs.setdefault("enable_thinking", enable_thinking)
@@ -5342,9 +5415,13 @@ def enforce_context_length_for_messages(
             raise
         except Exception:
             logger.debug("MLLM prompt admission tokenization failed", exc_info=True)
-            _raise_prompt_count_unavailable()
+            if require_text_preflight:
+                _raise_prompt_count_unavailable()
+            return None
         if prompt_tokens <= 0:
-            _raise_prompt_count_unavailable()
+            if require_text_preflight:
+                _raise_prompt_count_unavailable()
+            return None
         enforce_context_length(
             engine,
             prompt_tokens,
@@ -5356,7 +5433,7 @@ def enforce_context_length_for_messages(
         return prompt_tokens
     build_prompt = getattr(engine, "build_prompt", None)
     if build_prompt is None:
-        if get_config().max_prompt_tokens is not None:
+        if _requires_exact_prompt_count():
             _raise_prompt_count_unavailable()
         return None
     try:
@@ -5389,14 +5466,14 @@ def enforce_context_length_for_messages(
                 status_code=400,
                 detail=f"Chat template error: {err_msg}",
             )
-        if get_config().max_prompt_tokens is not None:
+        if _requires_exact_prompt_count():
             _raise_prompt_count_unavailable()
         return None
     if not prompt:
         return None
     prompt_tokens = count_prompt_tokens(engine, prompt)
     if prompt_tokens <= 0:
-        if get_config().max_prompt_tokens is not None:
+        if _requires_exact_prompt_count():
             _raise_prompt_count_unavailable()
         return None
     enforce_context_length(
@@ -5509,13 +5586,21 @@ def enforce_context_length_for_prompt(
     handles both shapes; see its docstring for the codex round-2
     BLOCKING #3 rationale on non-string prompts.
     """
-    if getattr(engine, "is_mllm", False) and get_config().max_prompt_tokens is None:
+    if getattr(engine, "is_mllm", False) and not _requires_exact_prompt_count():
         return max_tokens
     if not prompt:
         return max_tokens
     prompt_tokens = count_prompt_tokens(engine, prompt)
     if prompt_tokens <= 0:
-        if get_config().max_prompt_tokens is not None:
+        if _requires_exact_prompt_count():
+            # The multimodal processor performs the authoritative count after
+            # media expansion. Only the separate pre-prefill prompt cap needs
+            # this raw-text path to fail closed when tokenization is unavailable.
+            if (
+                getattr(engine, "is_mllm", False)
+                and get_config().max_prompt_tokens is None
+            ):
+                return max_tokens
             _raise_prompt_count_unavailable()
         return max_tokens
     return enforce_context_length(

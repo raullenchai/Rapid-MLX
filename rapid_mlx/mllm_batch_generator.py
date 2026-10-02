@@ -1135,6 +1135,20 @@ def _apply_request_logits_processors(
     return row_logits
 
 
+def _enforce_preprocessed_context_window(
+    requests: list[MLLMBatchRequest], context_length: int
+) -> None:
+    """Use expanded media token counts for an explicit context window."""
+    for req in requests:
+        prompt_tokens = int(req.input_ids.size) if req.input_ids is not None else 0
+        if prompt_tokens >= context_length:
+            raise ClientRequestError(
+                f"context_length_exceeded: prompt has {prompt_tokens} tokens "
+                f"after media expansion, exceeding --context-length {context_length}"
+            )
+        req.max_tokens = min(req.max_tokens, context_length - prompt_tokens)
+
+
 class MLLMBatchGenerator:
     """
     Batch generator for Vision Language Models.
@@ -3816,6 +3830,16 @@ class MLLMBatchGenerator:
         # Preprocess all requests
         for req in requests:
             self._preprocess_request(req)
+
+        # The route-level check can count text before media preprocessing,
+        # but only input_ids here includes the expanded image/video tokens.
+        # Enforce an explicit operator window before vision encoding or KV
+        # allocation, then leave enough room for the selected decode budget.
+        from .config import get_config
+
+        configured_context = get_config().context_length
+        if configured_context is not None:
+            _enforce_preprocessed_context_window(requests, configured_context)
 
         # Snapshot per-request prompt-token counts BEFORE any later step
         # nulls out ``input_ids`` to release Metal buffers (line ~822 in

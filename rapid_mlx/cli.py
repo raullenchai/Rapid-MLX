@@ -1299,6 +1299,10 @@ def _serve_audio_mode(args, entry) -> None:
     server._api_key = server._resolve_api_key(args.api_key)
     server._default_timeout = args.timeout
     server._max_prompt_tokens = getattr(args, "max_prompt_tokens", None)
+    server._context_length = getattr(args, "context_length", None)
+    from .config import get_config
+
+    get_config().context_length = server._context_length
 
     _max_body_arg = getattr(args, "max_request_bytes", None)
     if _max_body_arg is not None:
@@ -6025,6 +6029,11 @@ def serve_command(args):
     server._api_key = server._resolve_api_key(args.api_key)
     server._default_timeout = args.timeout
     server._max_prompt_tokens = getattr(args, "max_prompt_tokens", None)
+    server._context_length = getattr(args, "context_length", None)
+
+    from .config import get_config
+
+    get_config().context_length = server._context_length
 
     # Per-request body-size cap. Resolution order:
     #   1. ``--max-request-bytes`` (explicit CLI flag, including 0 to disable)
@@ -6913,6 +6922,10 @@ def serve_command(args):
         # utilization, so both enforcement points share one cap.
         gpu_memory_utilization=(
             _effective_runtime_values.gpu_memory_utilization or 0.0
+        ),
+        allow_context_overcommit=(
+            getattr(args, "context_length", None) is not None
+            and args.gpu_memory_utilization is None
         ),
     )
 
@@ -10742,6 +10755,7 @@ def _spawn_chat_server(
     register_in: list | None = None,
     log_handle=None,
     disable_prefix_cache: bool = False,
+    context_length: int | None = None,
 ) -> tuple[object, str]:
     """Spawn a `serve` subprocess on an ephemeral port for chat REPL use.
 
@@ -10796,6 +10810,8 @@ def _spawn_chat_server(
         cmd.extend(["--served-model-name", served_name])
     if disable_prefix_cache:
         cmd.append("--disable-prefix-cache")
+    if context_length is not None:
+        cmd.extend(["--context-length", str(context_length)])
     log = open(log_path, "w")  # noqa: SIM115 — kept open for proc lifetime
     # Tell the child main() that the parent already gated (or that this is
     # an internal spawn, where prompting would deadlock anyway because the
@@ -11716,6 +11732,13 @@ def chat_command(args):
     atexit.register(_cleanup)
 
     attached_to_existing = bool(args.base_url or args.port is not None)
+    if attached_to_existing and getattr(args, "context_length", None) is not None:
+        print(
+            "Error: --context-length configures a server started by chat; "
+            "set it on the existing rapid-mlx serve command instead.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
     if args.base_url:
         base_url = args.base_url.rstrip("/")
@@ -11786,6 +11809,11 @@ def chat_command(args):
                     served_name=original,
                     register_in=_active_procs,
                     log_handle=_log_handle,
+                    **(
+                        {"context_length": args.context_length}
+                        if getattr(args, "context_length", None) is not None
+                        else {}
+                    ),
                     **privacy_kwargs,
                 )
             finally:
@@ -12136,6 +12164,11 @@ def chat_command(args):
                 served_name=new_alias,
                 register_in=_active_procs,
                 log_handle=_new_log_handle,
+                **(
+                    {"context_length": args.context_length}
+                    if getattr(args, "context_length", None) is not None
+                    else {}
+                ),
                 **privacy_kwargs,
             )
         try:
@@ -14590,6 +14623,17 @@ Examples:
         ),
     )
     serve_parser.add_argument(
+        "--context-length",
+        type=positive_int,
+        default=None,
+        metavar="TOKENS",
+        help=(
+            "Per-request context window (prompt plus output), up to the model's "
+            "declared limit. Overrides the automatic memory estimate; an "
+            "explicit --gpu-memory-utilization cap still applies."
+        ),
+    )
+    serve_parser.add_argument(
         "--timeout",
         type=float,
         default=1800.0,
@@ -15547,6 +15591,13 @@ Examples:
         default=None,
         help="Max tokens per assistant response (default: 2048; raised to "
         "4096 when --think is set so reasoning + answer fit the budget).",
+    )
+    chat_parser.add_argument(
+        "--context-length",
+        type=positive_int,
+        default=None,
+        metavar="TOKENS",
+        help="Per-request context window for the server started by chat.",
     )
     chat_parser.add_argument(
         "--temperature",

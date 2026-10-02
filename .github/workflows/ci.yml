@@ -671,6 +671,8 @@ jobs:
             tests/test_bailing_hybrid_model.py \
             tests/test_cohere2_moe_reference_parity.py \
             tests/test_mtp_spec_decode.py \
+            tests/test_metal_cap_enforcement.py \
+            tests/test_ddtree_integration.py \
             tests/test_mtp_gemma4_assistant_inject.py \
             tests/test_mtp_draft_overlap.py \
             tests/test_mtp_nongreedy_distribution.py \
@@ -728,7 +730,7 @@ jobs:
             tests/test_dflash_integration.py \
             -v --tb=short \
             -m "not slow" \
-            -k "not Integration or serial_lane" \
+            -k "not Integration or serial_lane or explicit_context" \
             --cov=rapid_mlx \
             --cov-append \
             --cov-report=term-missing

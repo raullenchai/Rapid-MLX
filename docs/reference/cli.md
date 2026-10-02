@@ -572,6 +572,7 @@ rapid-mlx chat [model] [options]
 | `--system` | System prompt prepended to the conversation | *(none)* |
 | `--think` / `--no-think` | Enable / disable reasoning output in the REPL | off |
 | `--max-tokens` | Max tokens per assistant response | 2048 (raised to 4096 when `--think` is set, so reasoning + answer fit the budget; an explicit `--max-tokens` always wins) |
+| `--context-length` | Window in tokens (prompt plus output) for the spawned server; set it on `serve` instead when attaching with `--port` or `--base-url` | auto |
 | `--temperature` | Sampling temperature | 0.7 |
 | `--port` | Connect to an existing server on `127.0.0.1:<port>` instead of spawning | *(spawn)* |
 | `--base-url` | Connect to an existing server URL (overrides `--port`) | *(spawn)* |
