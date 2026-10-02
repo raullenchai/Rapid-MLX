@@ -1326,6 +1326,25 @@
       "repetition_penalty": 1.0
     }
   },
+  "glm5.3-flash-tensorfold": {
+    "hf_path": "Vontra/GLM-5.3-Flash-MLX-4bit-MTP",
+    "reasoning_parser": "glm5",
+    "is_hybrid": true,
+    "is_hybrid_explicit": true,
+    "is_moe": true,
+    "supports_spec_decode": false,
+    "tensorfold_mtp": true,
+    "tensorfold_target_revision": "76add2a341a1cd90ad0e86bb69839ea9c35827c6",
+    "tensorfold_runtime_revision": "c4646171139ee8a3c38103eaa1699dad226ec12b",
+    "min_memory_gb": 256,
+    "enforce_min_memory": true,
+    "experimental": true,
+    "recommended_sampling": {
+      "temperature": 0.0,
+      "top_p": 1.0,
+      "repetition_penalty": 1.0
+    }
+  },
   "mimo-v2.6-flash-4bit": {
     "hf_path": "Vontra/MiMo-V2.6-Flash-RL-MLX-4bit-MTP",
     "tool_call_parser": "qwen3_coder_xml",

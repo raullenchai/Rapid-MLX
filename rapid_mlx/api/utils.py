@@ -247,7 +247,13 @@ def _sanitize_with(text: str, pattern: re.Pattern[str]) -> str:
         return text
     for ch in text:
         if ch in _SPECIAL_TOKEN_CHARS:
-            cleaned = pattern.sub("", text).strip()
+            cleaned = pattern.sub("", text)
+            # Ordinary code and prose frequently contain marker characters
+            # such as ``[`` and ``<``. Preserve their exact stream whitespace
+            # when no structural token was actually removed.
+            if cleaned == text:
+                return text
+            cleaned = cleaned.strip()
             return cleaned or None  # collapse empty to None
     return text
 

@@ -1547,6 +1547,8 @@ def test_alias_profile_str_fields_are_explicitly_listed():
             # cannot select an engine lane; _coerce requires full 40-char pins.
             "dflash_target_revision",
             "dflash_draft_revision",
+            "tensorfold_target_revision",  # immutable target artifact SHA
+            "tensorfold_runtime_revision",  # immutable runtime source SHA
             # Closed runtime identity receipt validated against
             # VALID_DFLASH_ALGORITHMS before the DFlash lane can start.
             "dflash_algorithm",

@@ -11,6 +11,7 @@ does not inherit a model family's no-tag fallback threshold: GLM-5 is known to
 be inside reasoning until the closing token arrives.
 """
 
+from .base import DeltaMessage
 from .think_parser import BaseThinkingReasoningParser
 
 
@@ -37,6 +38,32 @@ class Glm5ReasoningParser(BaseThinkingReasoningParser):
         del enable_thinking
         self.reset_state()
         self._prompt_primed_thinking = prompt_thinking_active is True
+        self._content_started = False
+
+    def extract_reasoning_streaming(
+        self,
+        previous_text: str,
+        current_text: str,
+        delta_text: str,
+    ) -> DeltaMessage | None:
+        """Match non-stream trimming only at the reasoning/content boundary."""
+
+        message = super().extract_reasoning_streaming(
+            previous_text, current_text, delta_text
+        )
+        if message is None or message.content is None:
+            return message
+        content = message.content
+        if not self._content_started:
+            content = content.lstrip()
+        if content:
+            self._content_started = True
+        return DeltaMessage(
+            role=message.role,
+            content=content or None,
+            reasoning=message.reasoning,
+            source_segments=message.source_segments,
+        )
 
     def extract_reasoning(
         self,

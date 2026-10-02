@@ -35,6 +35,7 @@ from __future__ import annotations
 import asyncio
 import atexit
 import concurrent.futures
+import inspect
 import json
 import logging
 import threading
@@ -2320,9 +2321,29 @@ async def _non_stream_completion(
 
         parser_cls = get_parser(cfg.reasoning_parser_name)
         reasoning_parser = parser_cls()
+        from ...service.helpers import _should_start_in_thinking
+
+        chat_template = getattr(processor, "chat_template", None)
+        if chat_template is None:
+            chat_template = getattr(
+                getattr(processor, "tokenizer", None), "chat_template", None
+            )
+        prompt_thinking_active = _should_start_in_thinking(
+            chat_template,
+            enable_thinking,
+            unconditional=bool(
+                getattr(reasoning_parser, "implicit_reasoning_until_close", False)
+            ),
+            tools_requested=bool(request.tools),
+        )
+        extraction_kwargs: dict[str, Any] = {"enable_thinking": prompt_thinking_active}
+        if (
+            "prompt_thinking_active"
+            in inspect.signature(reasoning_parser.extract_reasoning).parameters
+        ):
+            extraction_kwargs["prompt_thinking_active"] = prompt_thinking_active
         reasoning_content, parsed_content = reasoning_parser.extract_reasoning(
-            result.text,
-            enable_thinking=enable_thinking,
+            result.text, **extraction_kwargs
         )
         if parsed_content is not None:
             content = parsed_content

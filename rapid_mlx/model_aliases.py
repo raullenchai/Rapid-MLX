@@ -209,6 +209,9 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             "dflash_draft_revision",
             "dflash_algorithm",
             "dflash_backend",
+            "tensorfold_mtp",
+            "tensorfold_target_revision",
+            "tensorfold_runtime_revision",
             "supports_ddtree",
             "ddtree_draft_model",
             "ddtree_speculative_tokens",
@@ -418,6 +421,30 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         raise ValueError(
             f"alias {alias!r}: DFlash revision pins require dflash_draft_model"
         )
+    tensorfold_mtp = _strict_bool("tensorfold_mtp", False)
+    tensorfold_target_revision = value.get("tensorfold_target_revision")
+    tensorfold_runtime_revision = value.get("tensorfold_runtime_revision")
+    tensorfold_revisions = {
+        "tensorfold_target_revision": tensorfold_target_revision,
+        "tensorfold_runtime_revision": tensorfold_runtime_revision,
+    }
+    if tensorfold_mtp and any(v is None for v in tensorfold_revisions.values()):
+        raise ValueError(
+            f"alias {alias!r}: tensorfold_mtp=true requires immutable target and runtime revisions"
+        )
+    if not tensorfold_mtp and any(v is not None for v in tensorfold_revisions.values()):
+        raise ValueError(
+            f"alias {alias!r}: TensorFold revisions require tensorfold_mtp=true"
+        )
+    for key, revision in tensorfold_revisions.items():
+        if revision is not None and (
+            not isinstance(revision, str)
+            or len(revision) != 40
+            or any(c not in "0123456789abcdef" for c in revision)
+        ):
+            raise ValueError(
+                f"alias {alias!r}: {key} must be a full lowercase 40-character commit SHA"
+            )
     for key, revision in (
         ("dflash_target_revision", dflash_target_revision),
         ("dflash_draft_revision", dflash_draft_revision),
@@ -739,6 +766,9 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         dflash_draft_revision=dflash_draft_revision,
         dflash_algorithm=dflash_algorithm,
         dflash_backend=dflash_backend,
+        tensorfold_mtp=tensorfold_mtp,
+        tensorfold_target_revision=tensorfold_target_revision,
+        tensorfold_runtime_revision=tensorfold_runtime_revision,
         supports_ddtree=supports_ddtree,
         ddtree_draft_model=ddtree_draft_model,
         ddtree_speculative_tokens=ddtree_speculative_tokens,

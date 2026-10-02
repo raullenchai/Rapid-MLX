@@ -20,7 +20,15 @@ from pathlib import Path
 from typing import Any, cast
 
 SUPPORTED_VERSION = "0.5.0"
+SUPPORTED_REVISION = "9cd52ab4daba68ddd09be89be8f23ad43175e821"
+SUPPORTED_RUNTIME_URL = "https://github.com/ashhart/TensorFold.git"
 SUPPORTED_MLX_VERSION = "0.32.3"
+INSTALL_HINT = (
+    "Install the qualified TensorFold runtime from its vetted revision with:\n"
+    '    python -m pip install "tensorfold @ '
+    "git+https://github.com/ashhart/TensorFold.git@"
+    f'{SUPPORTED_REVISION}"'
+)
 SUPPORTED_MODEL_TYPE = "qwen3_5"
 SUPPORTED_TARGET = "Vontra/Qwen3.8-27B-MLX-4bit"
 SUPPORTED_DRAFTER = "z-lab/Qwen3.8-27B-DFlash2"
@@ -93,8 +101,7 @@ def validate_request(
     ]
     if unsupported:
         raise UnsupportedRequest(
-            "tensorfold-qwen27 proof supports text chat only; unsupported: "
-            + ", ".join(unsupported)
+            "TensorFold text profiles do not support: " + ", ".join(unsupported)
         )
     unknown = set(sampling or ()) - SAMPLING_FIELDS
     if unknown:
@@ -162,7 +169,21 @@ def validate_pair(target: Any, drafter: Any) -> None:
         )
 
 
-def require_runtime(version: str | None = None) -> None:
+def _runtime_direct_url() -> dict[str, Any]:
+    """Return pip's immutable VCS provenance for the installed runtime."""
+
+    try:
+        distribution = importlib.metadata.distribution("tensorfold")
+        raw = distribution.read_text("direct_url.json")
+        parsed = json.loads(raw) if raw else {}
+        return parsed if isinstance(parsed, dict) else {}
+    except (importlib.metadata.PackageNotFoundError, OSError, ValueError):
+        return {}
+
+
+def require_runtime(
+    version: str | None = None, *, direct_url: dict[str, Any] | None = None
+) -> None:
     try:
         found = version or importlib.metadata.version("tensorfold")
     except importlib.metadata.PackageNotFoundError as exc:
@@ -172,6 +193,17 @@ def require_runtime(version: str | None = None) -> None:
     if found != SUPPORTED_VERSION:
         raise TensorFoldUnavailable(
             f"tensorfold-qwen27 requires tensorfold=={SUPPORTED_VERSION}; found {found}"
+        )
+    provenance = _runtime_direct_url() if direct_url is None else direct_url
+    vcs = provenance.get("vcs_info") or {}
+    if (
+        provenance.get("url") != SUPPORTED_RUNTIME_URL
+        or vcs.get("vcs") != "git"
+        or vcs.get("commit_id") != SUPPORTED_REVISION
+        or (provenance.get("dir_info") or {}).get("editable") is True
+    ):
+        raise TensorFoldUnavailable(
+            "tensorfold-qwen27 requires the exact qualified TensorFold git revision"
         )
 
 
@@ -266,7 +298,7 @@ class TensorFoldQwen27Backend:
         **features: Any,
     ) -> AsyncIterator[BackendEvent]:
         if self._closed:
-            raise RuntimeError("tensorfold-qwen27 backend is closed")
+            raise RuntimeError("TensorFold backend is closed")
         validate_request(tools=tools, sampling=sampling, **features)
         from tensorfold.server.cancellation import Cancellation
 
