@@ -172,37 +172,189 @@ def test_base_install_gemma4_boots_text_only_with_warning(monkeypatch, capsys):
     assert "rapid-mlx[vision]==" in err
 
 
-def test_base_install_gemma4_fresh_cache_degrades(monkeypatch, capsys):
-    """Nothing cached yet: the boot guard prefetches config.json alone, sees a
-    text-lane-loadable backbone, and degrades instead of demanding [vision]."""
-    from rapid_mlx import cli, model_aliases, model_metadata
+def _cold_cache_with_boot_prefetch(monkeypatch, config) -> dict:
+    """Cold cache whose ONLY way to materialize metadata is the boot guard's
+    ``_prefetch_config_for_degrade_probe``.
+
+    The lane probes stay real (``is_mllm_model``, the cache-mode probe, the
+    degrade predicate): every ``read_model_metadata`` answers ``None`` until
+    the boot prefetch "downloads" ``config.json`` for a repo, after which that
+    repo — and only that repo — reads back ``config``. The legacy pre-weights
+    prefetch is recorded separately so a test can prove it never ran.
+    """
+    from rapid_mlx import cli, model_metadata
     from rapid_mlx.api import utils as api_utils
 
-    state = {"current": None}
+    state: dict = {"materialized": set(), "fetched": [], "legacy_fetched": []}
 
-    def _read(_name):
-        return state["current"]
+    def _read(name):
+        if name in state["materialized"]:
+            # A config-only Hub snapshot: no weight index, not a local dir.
+            return SimpleNamespace(
+                config=config, snapshot_dir=Path("/snap"), is_local=False
+            )
+        return None
 
-    def _prefetch(_hf_path):
-        state["current"] = _meta(GEMMA4_VLM_CONFIG)
+    def _boot_prefetch(repo):
+        state["fetched"].append(repo)
+        state["materialized"].add(repo)
 
     monkeypatch.setattr(model_metadata, "read_model_metadata", _read)
     monkeypatch.setattr(api_utils, "read_model_metadata", _read)
-    monkeypatch.setattr(cli, "_prefetch_config_for_lane_guard", _prefetch)
+    monkeypatch.setattr(api_utils, "_DEGRADE_CONFIG_PREFETCHED", set())
+    monkeypatch.setattr(api_utils, "_prefetch_config_for_degrade_probe", _boot_prefetch)
+    monkeypatch.setattr(
+        cli, "_prefetch_config_for_lane_guard", state["legacy_fetched"].append
+    )
+    return state
+
+
+def _pretend_mlx_lm_ships(monkeypatch, *module_types: str) -> None:
+    """Make ``mlx_lm.models.<type>`` resolvable for the listed arches only, so
+    the allow-list probe answers the same with and without mlx-lm installed
+    (GitHub Linux CI has no MLX)."""
+    import importlib.util
+
+    real_find_spec = importlib.util.find_spec
+    wanted = {f"mlx_lm.models.{t}" for t in module_types}
+
+    def _find_spec(name, *a, **kw):
+        if name in wanted:
+            return object()
+        if name.startswith("mlx_lm.models."):
+            return None
+        return real_find_spec(name, *a, **kw)
+
+    monkeypatch.setattr(importlib.util, "find_spec", _find_spec)
+
+
+def test_base_install_gemma4_fresh_cache_degrades(monkeypatch, capsys):
+    """Nothing cached yet, catalog alias: ``serve_command``'s boot prefetch
+    materializes config.json for the profile's repo exactly once, the guard
+    sees a text-lane-loadable backbone and lets the serve through, and the
+    degrade warning prints once."""
+    from rapid_mlx import cli
+
+    state = _cold_cache_with_boot_prefetch(monkeypatch, GEMMA4_VLM_CONFIG)
     _mock_vision_absent(monkeypatch)
     _allow_desktop_warning(monkeypatch)
+    _stub_post_guard_sentinel(monkeypatch)
 
-    args = _args("gemma-4-26b-4bit")
-    # Fresh install: no weight evidence, so the guard falls back to the alias
-    # profile + config chain — which must answer "degrades", not "needs vision".
-    assert cli._serve_will_run_on_mllm_lane(args) is False
+    with pytest.raises(_ReachedPastVisionGuardError):
+        cli.serve_command(_args("gemma-4-26b-4bit"))
 
-    profile = model_aliases.resolve_profile("gemma-4-26b-4bit")
-    assert profile is not None
-    assert cli._warn_vision_text_only_degrade(profile, args=args) is True
+    assert state["fetched"] == ["mlx-community/gemma-4-26b-a4b-it-4bit"]
+    assert state["legacy_fetched"] == []
     err = capsys.readouterr().err
     assert err.count("warning: vision runtime absent") == 1
     assert "image and video input" in err
+    assert "[vision]" in err  # the repair command, not a guard failure
+
+
+DIRECT_QWEN3_VL_REPO = "example-org/Qwen3-VL-8B-Instruct-abliterated-4bit"
+QWEN3_VL_CONFIG = {
+    "model_type": "qwen3_vl",
+    "architectures": ["Qwen3VLForConditionalGeneration"],
+    "vision_config": {},
+}
+
+
+def test_base_install_direct_repo_fresh_cache_degrades(monkeypatch, capsys):
+    """Nothing cached yet, direct Hugging Face repo id (no alias profile): the
+    boot prefetch targets ``args.model`` itself, once, and the guard consults
+    that same repo — an allow-listed backbone degrades instead of failing on
+    the name-pattern VLM verdict."""
+    from rapid_mlx import cli
+    from rapid_mlx.model_aliases import resolve_profile
+
+    assert resolve_profile(DIRECT_QWEN3_VL_REPO) is None
+    state = _cold_cache_with_boot_prefetch(monkeypatch, QWEN3_VL_CONFIG)
+    _pretend_mlx_lm_ships(monkeypatch, "qwen3_vl")
+    _mock_vision_absent(monkeypatch)
+    _allow_desktop_warning(monkeypatch)
+    _stub_post_guard_sentinel(monkeypatch)
+
+    with pytest.raises(_ReachedPastVisionGuardError):
+        cli.serve_command(_args(DIRECT_QWEN3_VL_REPO))
+
+    assert state["fetched"] == [DIRECT_QWEN3_VL_REPO]
+    err = capsys.readouterr().err
+    assert err.count("warning: vision runtime absent") == 1
+    assert "image and video input" in err
+
+
+def test_base_install_direct_repo_without_prefetch_keeps_guard(monkeypatch, capsys):
+    """Control for the test above: the same cold direct repo WITHOUT the boot
+    prefetch has no config to classify, so the (cache-only) probe fails closed
+    and the guard exits 2 — proving the prefetch is what unlocks the degrade."""
+    from rapid_mlx import cli
+
+    state = _cold_cache_with_boot_prefetch(monkeypatch, QWEN3_VL_CONFIG)
+    from rapid_mlx.api import utils as api_utils
+
+    monkeypatch.setattr(
+        api_utils, "_prefetch_config_for_degrade_probe", state["fetched"].append
+    )
+    _pretend_mlx_lm_ships(monkeypatch, "qwen3_vl")
+    _mock_vision_absent(monkeypatch)
+    _allow_desktop_warning(monkeypatch)
+    _stub_post_guard_sentinel(monkeypatch)
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.serve_command(_args(DIRECT_QWEN3_VL_REPO))
+    assert exc_info.value.code == 2
+    assert state["fetched"] == [DIRECT_QWEN3_VL_REPO]
+    err = capsys.readouterr().err
+    assert "[vision]" in err
+    assert "warning: vision runtime absent" not in err
+
+
+def test_base_install_direct_repo_unlisted_arch_keeps_guard(monkeypatch, capsys):
+    """A direct repo whose backbone is NOT on the reviewed allow-list keeps
+    the [vision] guard after the prefetch — even though a module of that name
+    is importable — and prints no degrade warning."""
+    from rapid_mlx import cli
+
+    repo = "example-org/BrandNew-VL-7B-4bit"
+    state = _cold_cache_with_boot_prefetch(monkeypatch, UNKNOWN_VLM_CONFIG)
+    _pretend_mlx_lm_ships(monkeypatch, "brand_new_vlm_arch")
+    _mock_vision_absent(monkeypatch)
+    _allow_desktop_warning(monkeypatch)
+    _stub_post_guard_sentinel(monkeypatch)
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.serve_command(_args(repo))
+    assert exc_info.value.code == 2
+    assert state["fetched"] == [repo]
+    err = capsys.readouterr().err
+    assert "[vision]" in err
+    assert "warning: vision runtime absent" not in err
+
+
+def test_direct_repo_explicit_flags_skip_prefetch_and_warning(monkeypatch, capsys):
+    """``--mllm`` / ``--no-mllm`` / a spec decoder on a direct repo id are not
+    degrade candidates: no boot prefetch and no degrade warning."""
+    from rapid_mlx import cli
+
+    state = _cold_cache_with_boot_prefetch(monkeypatch, QWEN3_VL_CONFIG)
+    _pretend_mlx_lm_ships(monkeypatch, "qwen3_vl")
+    _mock_vision_absent(monkeypatch)
+    _allow_desktop_warning(monkeypatch)
+
+    for flags in (
+        {"mllm": True},
+        {"no_mllm": True},
+        {"spec_decode": "dflash"},
+        {"enable_mtp": True},
+        {"force_spec_decode": True},
+    ):
+        args = SimpleNamespace(
+            **{"model": DIRECT_QWEN3_VL_REPO, "mllm": False, "no_mllm": False} | flags
+        )
+        assert cli._warn_vision_text_only_degrade(None, args=args) is False
+    assert cli._warn_vision_text_only_degrade(None) is False
+    assert state["fetched"] == []
+    assert capsys.readouterr().err == ""
 
 
 def test_degraded_lane_contract_is_vision_runtime_absent(monkeypatch):
