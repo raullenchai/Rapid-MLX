@@ -199,7 +199,6 @@ def test_serve_guard_text_incapable_vlm_still_requires_vision_extra(
     the MLLM lane, so it keeps the loud guard (and its ``--no-mllm`` hint is
     guarded separately by the text-lane pack rejection)."""
     from pathlib import Path
-    from types import SimpleNamespace as _NS
 
     from rapid_mlx import cli
     from rapid_mlx.api import utils as api_utils
@@ -211,7 +210,7 @@ def test_serve_guard_text_incapable_vlm_still_requires_vision_extra(
     monkeypatch.setattr(
         api_utils,
         "read_model_metadata",
-        lambda _name: _NS(
+        lambda _name: SimpleNamespace(
             config={
                 "model_type": "prism_hadamard_qwen35",
                 "architectures": ["PrismHadamardQwen35ForConditionalGeneration"],

@@ -4736,8 +4736,7 @@ def _warn_vision_text_only_degrade(profile, *, args=None) -> bool:
     print(
         "warning: vision runtime absent; serving this text-capable checkpoint "
         "text-only (image and video input unavailable). Enable the vision "
-        "runtime with: "
-        + optional_extra_repair_command("vision"),
+        "runtime with: " + optional_extra_repair_command("vision"),
         file=sys.stderr,
     )
     return True

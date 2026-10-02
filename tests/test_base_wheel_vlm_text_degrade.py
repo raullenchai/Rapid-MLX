@@ -72,9 +72,7 @@ def _patch_lane_probes(monkeypatch, *, is_mllm: bool, cache_mode=None):
     from rapid_mlx.api import utils as api_utils
 
     monkeypatch.setattr(api_utils, "is_mllm_model", lambda name: is_mllm)
-    monkeypatch.setattr(
-        api_utils, "mllm_backbone_cache_mode", lambda name: cache_mode
-    )
+    monkeypatch.setattr(api_utils, "mllm_backbone_cache_mode", lambda name: cache_mode)
 
 
 def _mock_vision_absent(monkeypatch) -> None:
@@ -101,9 +99,7 @@ def _patch_degrade_config(monkeypatch, config) -> None:
     """Feed the text-degrade probe a materialized checkpoint config."""
     from rapid_mlx.api import utils as api_utils
 
-    monkeypatch.setattr(
-        api_utils, "read_model_metadata", lambda _name: _meta(config)
-    )
+    monkeypatch.setattr(api_utils, "read_model_metadata", lambda _name: _meta(config))
 
 
 def _allow_desktop_warning(monkeypatch) -> None:
@@ -234,9 +230,12 @@ def test_degraded_gemma4_rejects_image_and_video_with_capability_event(
         lambda capability, **props: events.append((capability, props)),
     )
 
-    assert cli._warn_vision_text_only_degrade(
-        model_aliases.resolve_profile("gemma-4-26b-4bit"), args=_args()
-    ) is True
+    assert (
+        cli._warn_vision_text_only_degrade(
+            model_aliases.resolve_profile("gemma-4-26b-4bit"), args=_args()
+        )
+        is True
+    )
     serving_checkpoint = server._resolve_serving_checkpoint("gemma-4-26b-4bit")
     assert serving_checkpoint.is_mllm is False
     assert serving_checkpoint.lane_reason == "vision_runtime_absent"
@@ -328,9 +327,7 @@ def test_broken_runtime_never_degrades(monkeypatch, capsys):
     assert cli._serve_will_run_on_mllm_lane(_args()) is True
 
 
-def test_explicit_mllm_on_gemma4_still_requires_vision_extra(
-    monkeypatch, capsys
-):
+def test_explicit_mllm_on_gemma4_still_requires_vision_extra(monkeypatch, capsys):
     """``--mllm`` is a deliberate demand for the vision lane: no degrade, no
     warning, and the guard still exits 2 on a base wheel."""
     from rapid_mlx import cli
@@ -389,6 +386,71 @@ def test_text_lane_backbone_probe_matches_installed_mlxl_lm():
     assert _text_lane_loads_model_type("qwen3_vl") is True
     assert _text_lane_loads_model_type("prism_hadamard_qwen35") is False
     assert _text_lane_loads_model_type("brand_new_vlm_arch") is False
+    # A malformed arch name fails closed through the probe's error guard.
+    assert _text_lane_loads_model_type("qwen3.") is False
+
+
+def test_degrade_probe_prefetches_config_when_cache_is_cold(monkeypatch):
+    """A cold cache gets one best-effort config-only fetch; once it lands the
+    probe decides from the fetched config instead of failing closed."""
+    from rapid_mlx.api import utils as api_utils
+    from rapid_mlx.api.utils import checkpoint_serves_text_without_vision
+
+    _mock_vision_absent(monkeypatch)
+    state = {"current": None}
+    monkeypatch.setattr(
+        api_utils, "read_model_metadata", lambda _name: state["current"]
+    )
+
+    def _prefetch(_name):
+        state["current"] = _meta(GEMMA4_VLM_CONFIG)
+
+    monkeypatch.setattr(api_utils, "_prefetch_config_for_degrade_probe", _prefetch)
+    assert checkpoint_serves_text_without_vision("gemma-4-26b-4bit") is True
+
+
+def test_degrade_probe_prefetch_respects_offline_and_hub_errors(monkeypatch):
+    """The probe's own prefetch mirrors the boot guard's: no network under the
+    offline switch, and Hub failures are swallowed."""
+    import huggingface_hub
+
+    from rapid_mlx import model_metadata
+    from rapid_mlx.api import utils as api_utils
+
+    monkeypatch.setattr(model_metadata, "hub_offline_mode_active", lambda: True)
+    calls = []
+    monkeypatch.setattr(
+        huggingface_hub, "hf_hub_download", lambda *a, **k: calls.append(a)
+    )
+    api_utils._prefetch_config_for_degrade_probe("org/checkpoint")
+    assert calls == []
+
+    monkeypatch.setattr(model_metadata, "hub_offline_mode_active", lambda: False)
+
+    def _boom(*a, **k):
+        raise OSError("no network")
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", _boom)
+    api_utils._prefetch_config_for_degrade_probe("org/checkpoint")  # must not raise
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", lambda *a, **k: "cfg")
+    api_utils._prefetch_config_for_degrade_probe("org/checkpoint")
+    # A local directory reference never triggers a fetch.
+    api_utils._prefetch_config_for_degrade_probe("/local/dir")
+    assert calls == []
+
+
+def test_degrade_probe_rejects_config_without_model_type(monkeypatch):
+    """A vision config with no top-level ``model_type`` gives the probe no
+    dispatch key: fail closed."""
+    from rapid_mlx.api.utils import checkpoint_serves_text_without_vision
+
+    _mock_vision_absent(monkeypatch)
+    _patch_degrade_config(
+        monkeypatch,
+        {"architectures": ["SomeForConditionalGeneration"], "vision_config": {}},
+    )
+    assert checkpoint_serves_text_without_vision("gemma-4-26b-4bit") is False
 
 
 def test_degrade_probe_fails_closed_without_config(monkeypatch):

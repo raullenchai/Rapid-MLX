@@ -1635,7 +1635,9 @@ def _text_lane_loads_model_type(model_type: str) -> bool:
     try:
         if importlib.util.find_spec(f"mlx_lm.models.{model_type}") is not None:
             return True
-    except (ImportError, ValueError):  # pragma: no cover - defensive probe
+    except (ImportError, ValueError):
+        # A malformed arch name (trailing dot, empty segment) just means "no
+        # such module" — fail closed to the vendored-family check below.
         pass
     from ..models.gemma4_text import _GEMMA4_FAMILY_MODEL_TYPES
 
