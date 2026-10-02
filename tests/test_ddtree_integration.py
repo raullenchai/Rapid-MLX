@@ -283,7 +283,7 @@ def test_ddtree_model_card_reports_explicit_context(monkeypatch) -> None:
     assert response.json()["data"][0]["max_model_len"] == 4096
 
 
-def test_build_app_healthz_models_and_completion() -> None:
+def test_build_app_healthz_models_and_completion_explicit_context() -> None:
     from fastapi.testclient import TestClient
 
     from rapid_mlx.speculative.ddtree.server import _build_app
