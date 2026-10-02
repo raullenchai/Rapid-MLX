@@ -2089,10 +2089,6 @@ flow_fresh_install() {
         RAPID_MLX_TELEMETRY_ENDPOINT="http://127.0.0.1:$TELEMETRY_SINK_PORT/v1/events"
     wait_identifier Quickstart.GetStarted "$OUT/welcome.json"
     assert_no_telemetry_requests before-onboarding
-    if jq -e '.data.ui_elements[]? | select((.identifier? // "") | startswith("TelemetryNotice."))' \
-        "$OUT/welcome.json" >/dev/null; then
-        die "telemetry notice appeared behind onboarding instead of in the production shell"
-    fi
 
     # Direction D owns the window rather than mounting production controls
     # behind a sheet. Pin all three responsive tiers before continuing the
@@ -2117,40 +2113,24 @@ flow_fresh_install() {
     baseline onboarding-direction-d.compact-chooser "$OUT/chooser-settled.json"
     press "$OUT/chooser-settled.json" Quickstart.Footer.Back "$OUT/chooser-back.json"
     wait_identifier Quickstart.Skip "$OUT/welcome-returned.json"
-    local boundary_second notice_not_before
+    assert_no_telemetry_requests before-leaving-onboarding
+    local boundary_second policy_not_before
     boundary_second="$(date -u +%s)"
     while [[ "$(date -u +%s)" == "$boundary_second" ]]; do sleep 0.05; done
-    notice_not_before="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    policy_not_before="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     press "$OUT/welcome-returned.json" Quickstart.Skip "$OUT/quickstart-skip.json"
-    wait_identifier TelemetryNotice.Banner "$OUT/launch-notice-visible.json"
-    wait_identifier rapid.chat.compose "$OUT/launch-notice-visible.json"
-    selected_model="$(element_field "$OUT/launch-notice-visible.json" ModelPickerBar.ModelMenu value)"
+    wait_identifier rapid.chat.compose "$OUT/steady.json"
+    assert_marker_only_consent \
+        "$PERSONA/home/.rapid-mlx/telemetry-consent.yaml" \
+        || die "launch policy did not persist marker-only default-on state"
+    assert_one_telemetry_request launch-policy "$policy_not_before"
+    selected_model="$(element_field "$OUT/steady.json" ModelPickerBar.ModelMenu value)"
     [[ "$selected_model" == *"lfm2.5-1b-4bit"* ]] \
         || die "#2219: 8 GB onboarding selected '$selected_model' instead of the compact starter"
     for id in Sidebar.NewChat Sidebar.Launch rapid.chat.compose ChatView.SendOrStopButton ModelPickerBar.ModelMenu; do
-        jq -e --arg id "$id" '.data.ui_elements[]? | select(.identifier == $id)' "$OUT/launch-notice-visible.json" >/dev/null \
+        jq -e --arg id "$id" '.data.ui_elements[]? | select(.identifier == $id)' "$OUT/steady.json" >/dev/null \
             || die "post-onboarding shell missing $id"
     done
-    baseline fresh-install.launch-telemetry-notice "$OUT/launch-notice-visible.json"
-    assert_marker_only_consent \
-        "$PERSONA/home/.rapid-mlx/telemetry-consent.yaml" \
-        || die "launch notice did not persist marker-only default-on state"
-    assert_one_telemetry_request launch-notice "$notice_not_before"
-    press "$OUT/launch-notice-visible.json" TelemetryNotice.Acknowledge \
-        "$OUT/launch-notice-acknowledged.json" \
-        || die "telemetry notice acknowledgement was not actionable"
-    for _ in {1..40}; do
-        see_main "$OUT/steady.json"
-        if ! jq -e '.data.ui_elements[]? | select(.identifier == "TelemetryNotice.Banner")' \
-            "$OUT/steady.json" >/dev/null; then
-            break
-        fi
-        sleep 0.25
-    done
-    if jq -e '.data.ui_elements[]? | select(.identifier == "TelemetryNotice.Banner")' \
-        "$OUT/steady.json" >/dev/null; then
-        die "Got it did not dismiss the telemetry launch notice"
-    fi
     baseline fresh-install.steady "$OUT/steady.json"
     # Exercise the scene/content contract, not only the constant. Before the
     # fix the declared floor was never applied and AppKit accepted ~616pt.
@@ -2162,8 +2142,8 @@ flow_fresh_install() {
         "$OUT/window-floor.json" >/dev/null \
         || die "the live main window did not enforce its 720x560 floor: $(jq -c .actual "$OUT/window-floor.json")"
 
-    # Default-on activation follows the already-presented notice without a
-    # second prompt. The sink must receive exactly session_start plus the one
+    # Default-on activation follows launch policy application without a prompt.
+    # The sink must receive exactly session_start plus the one
     # content-free first-chat milestone.
     start_model
     send_prompt "Say hello in one short sentence." "default-on-activation"

@@ -118,7 +118,7 @@ struct TelemetryConsentV2Tests {
 
         let started = ContinuousClock.now
         let write = Task {
-            let result = await TelemetryConsent.noticePresented(
+            let result = await TelemetryConsent.applyDefaultPolicy(
                 version: "0.15.0",
                 defaults: self.defaults("main-actor-lock"),
                 environment: [:],
@@ -171,7 +171,7 @@ struct TelemetryConsentV2Tests {
         #expect(try json(at: consentURL(dir))["notice_revision_seen"] as? Int == 9)
     }
 
-    @Test("Settings writes both consent scopes and never touches the notice marker")
+    @Test("Settings writes both consent scopes and never touches the policy marker")
     func settingsWritesBothScopes() async throws {
         let dir = try directory("settings")
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -244,7 +244,7 @@ struct TelemetryConsentV2Tests {
         #expect(stored["notice_revision_seen"] == nil)
     }
 
-    @Test("Explicit Settings on above the cutoff needs no notice marker")
+    @Test("Explicit Settings on above the cutoff needs no policy marker")
     func explicitSettingsOptInAboveCutoffWithoutMarker() async throws {
         let dir = try directory("settings-on-current-no-marker")
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -264,7 +264,7 @@ struct TelemetryConsentV2Tests {
     }
 
     @Test(arguments: ["0.14.0", "0.14.9rc1"])
-    func legacyRefusalMigratesAfterPresentation(_ recordedVersion: String) async throws {
+    func legacyRefusalMigratesWhenPolicyApplied(_ recordedVersion: String) async throws {
         let dir = try directory("legacy")
         defer { try? FileManager.default.removeItem(at: dir) }
         let userDefaults = defaults("legacy")
@@ -275,8 +275,8 @@ struct TelemetryConsentV2Tests {
             "prompted_at": "keep",
         ], to: consentURL(dir))
 
-        #expect(TelemetryConsent.needsNotice(environment: [:], telemetryDirectory: dir))
-        let result = await TelemetryConsent.noticePresented(
+        #expect(TelemetryConsent.needsDefaultPolicyApplication(environment: [:], telemetryDirectory: dir))
+        let result = await TelemetryConsent.applyDefaultPolicy(
             version: "0.15.0", defaults: userDefaults, environment: [:], telemetryDirectory: dir
         )
         #expect(result == .init(persisted: true, uploadAllowedThisRun: false))
@@ -298,8 +298,8 @@ struct TelemetryConsentV2Tests {
         try writeJSON(record, to: consentURL(dir))
         let before = try Data(contentsOf: consentURL(dir))
 
-        #expect(!TelemetryConsent.needsNotice(environment: [:], telemetryDirectory: dir))
-        let result = await TelemetryConsent.noticePresented(
+        #expect(!TelemetryConsent.needsDefaultPolicyApplication(environment: [:], telemetryDirectory: dir))
+        let result = await TelemetryConsent.applyDefaultPolicy(
             version: "0.15.0", defaults: defaults("current"),
             environment: [:], telemetryDirectory: dir
         )
@@ -319,17 +319,17 @@ struct TelemetryConsentV2Tests {
                 "notice_revision_seen": 1,
             ], to: consentURL(dir))
             let before = try Data(contentsOf: consentURL(dir))
-            #expect(!TelemetryConsent.needsNotice(environment: [:], telemetryDirectory: dir))
+            #expect(!TelemetryConsent.needsDefaultPolicyApplication(environment: [:], telemetryDirectory: dir))
             #expect(try Data(contentsOf: consentURL(dir)) == before)
         }
     }
 
-    @Test("Absent consent gets only the disclosure marker")
+    @Test("Absent consent gets only the policy marker")
     func absentConsentGetsMarkerOnly() async throws {
         let dir = try directory("absent")
         defer { try? FileManager.default.removeItem(at: dir) }
         let userDefaults = defaults("absent")
-        let result = await TelemetryConsent.noticePresented(
+        let result = await TelemetryConsent.applyDefaultPolicy(
             version: "0.15.0", defaults: userDefaults, environment: [:], telemetryDirectory: dir
         )
         #expect(result == .init(persisted: true, uploadAllowedThisRun: true))
@@ -355,22 +355,22 @@ struct TelemetryConsentV2Tests {
         TelemetryConsent.synchronizeExistingDecision(
             version: runningVersion, defaults: userDefaults, telemetryDirectory: dir
         )
-        let needsNotice = TelemetryConsent.needsNotice(
+        let needsDefaultPolicyApplication = TelemetryConsent.needsDefaultPolicyApplication(
             version: runningVersion, environment: [:], telemetryDirectory: dir
         )
-        let result = await TelemetryConsent.noticePresented(
+        let result = await TelemetryConsent.applyDefaultPolicy(
             version: runningVersion, defaults: userDefaults,
             environment: [:], telemetryDirectory: dir
         )
 
         if runningVersion == "0.14.9" {
             #expect(TelemetryConfig.isEnabled(defaults: userDefaults))
-            #expect(!needsNotice)
+            #expect(!needsDefaultPolicyApplication)
             #expect(result == .init(persisted: false, uploadAllowedThisRun: false))
             #expect(try Data(contentsOf: consentURL(dir)) == before)
         } else {
             #expect(!TelemetryConfig.isEnabled(defaults: userDefaults))
-            #expect(needsNotice)
+            #expect(needsDefaultPolicyApplication)
             #expect(result == .init(persisted: true, uploadAllowedThisRun: false))
             #expect(try json(at: consentURL(dir))["notice_revision_seen"] as? Int == 1)
         }
@@ -391,7 +391,7 @@ struct TelemetryConsentV2Tests {
         #expect(stored["notice_revision_seen"] == nil)
     }
 
-    @Test("Kill switches suppress both notice and marker write")
+    @Test("Kill switches suppress default policy and marker writes")
     func killSwitchesDoNotWrite() async throws {
         for environment in [
             ["DO_NOT_TRACK": "1"],
@@ -402,10 +402,10 @@ struct TelemetryConsentV2Tests {
             defer { try? FileManager.default.removeItem(at: dir) }
             try writeJSON(["junk": "unchanged"], to: consentURL(dir))
             let before = try Data(contentsOf: consentURL(dir))
-            #expect(!TelemetryConsent.needsNotice(
+            #expect(!TelemetryConsent.needsDefaultPolicyApplication(
                 environment: environment, telemetryDirectory: dir
             ))
-            let result = await TelemetryConsent.noticePresented(
+            let result = await TelemetryConsent.applyDefaultPolicy(
                 version: "0.15.0", defaults: defaults("kill"),
                 environment: environment, telemetryDirectory: dir
             )
@@ -414,16 +414,16 @@ struct TelemetryConsentV2Tests {
         }
     }
 
-    @Test("Presentation with an unwritable destination leaves existing bytes untouched")
-    func failedPresentationDoesNotWrite() async throws {
+    @Test("Policy application with an unwritable destination leaves existing bytes untouched")
+    func failedPolicyApplicationDoesNotWrite() async throws {
         let parent = try directory("failed-presentation")
         defer { try? FileManager.default.removeItem(at: parent) }
         let notADirectory = parent.appendingPathComponent("blocked")
         let original = Data("do-not-touch\n".utf8)
         try original.write(to: notADirectory)
 
-        #expect(TelemetryConsent.needsNotice(environment: [:], telemetryDirectory: notADirectory))
-        let result = await TelemetryConsent.noticePresented(
+        #expect(TelemetryConsent.needsDefaultPolicyApplication(environment: [:], telemetryDirectory: notADirectory))
+        let result = await TelemetryConsent.applyDefaultPolicy(
             version: "0.15.0", defaults: defaults("failed-presentation"),
             environment: [:], telemetryDirectory: notADirectory
         )
@@ -483,7 +483,7 @@ struct TelemetryConsentV2Tests {
         try write("notice_revision_seen: \(scalar)\n", to: dir)
         let shared = try #require(TelemetryConsent.readSharedConsent(at: consentURL(dir)))
         #expect(shared.noticeRevisionSeen == nil)
-        #expect(TelemetryConsent.needsNotice(environment: [:], telemetryDirectory: dir))
+        #expect(TelemetryConsent.needsDefaultPolicyApplication(environment: [:], telemetryDirectory: dir))
     }
 
     @Test(arguments: ["", "# comments only\n", "consent: [unclosed\n"])
@@ -494,10 +494,10 @@ struct TelemetryConsentV2Tests {
         let before = try Data(contentsOf: consentURL(dir))
 
         #expect(TelemetryConsent.readSharedConsent(at: consentURL(dir)) == nil)
-        #expect(!TelemetryConsent.needsNotice(
+        #expect(!TelemetryConsent.needsDefaultPolicyApplication(
             version: "0.15.0", environment: [:], telemetryDirectory: dir
         ))
-        let result = await TelemetryConsent.noticePresented(
+        let result = await TelemetryConsent.applyDefaultPolicy(
             version: "0.15.0", defaults: defaults("unreadable"),
             environment: [:], telemetryDirectory: dir
         )
@@ -581,7 +581,7 @@ struct TelemetryConsentV2Tests {
             "schema_version": 1,
         ], to: consentURL(mergedDirectory))
         let mergeBefore = try String(contentsOf: consentURL(mergedDirectory), encoding: .utf8)
-        _ = await TelemetryConsent.noticePresented(
+        _ = await TelemetryConsent.applyDefaultPolicy(
             version: "0.15.0", defaults: defaults("evidence-merge"),
             environment: [:], telemetryDirectory: mergedDirectory
         )
@@ -601,7 +601,7 @@ struct TelemetryConsentV2Tests {
             "schema_version": 1,
         ], to: consentURL(refusalDirectory))
         let refusalBefore = try Data(contentsOf: consentURL(refusalDirectory))
-        _ = await TelemetryConsent.noticePresented(
+        _ = await TelemetryConsent.applyDefaultPolicy(
             version: "0.15.0", defaults: defaults("evidence-refusal"),
             environment: [:], telemetryDirectory: refusalDirectory
         )

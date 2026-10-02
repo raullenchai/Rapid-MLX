@@ -48,7 +48,7 @@ enum TelemetryConfig {
     static let schemaVersion = 1
 
     /// UserDefaults mirror of the effective Desktop decision. The automatic
-    /// default-on path stays off while the current launch notice is owed or
+    /// default-on path stays off while the current policy revision is owed or
     /// its marker write failed; Settings records explicit true/false choices
     /// through the shared file.
     static let enabledKey = "com.rapidmlx.rapid.telemetry.enabled"
@@ -71,7 +71,7 @@ enum TelemetryConfig {
     static let sessionID = UUID().uuidString
 
     /// User-facing on/off check. Launch reconciliation installs the default-on
-    /// value only after the current disclosure marker exists.
+    /// value only after the current policy marker exists.
     static var isEnabled: Bool { isEnabled(defaults: .standard) }
 
     /// Testable variant that reads the opt-out flag from an injected
