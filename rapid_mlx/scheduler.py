@@ -441,6 +441,9 @@ class SchedulerConfig:
     # this from ``EngineConfig.gpu_memory_utilization`` via
     # ``BatchedEngine``).
     gpu_memory_utilization: float = 0.0
+    # A manually chosen serving window may exceed the automatic KV budget.
+    # Keep an explicitly requested --gpu-memory-utilization cap authoritative.
+    allow_context_overcommit: bool = False
     # D-METAL-PFX: pressure threshold above which the scheduler
     # proactively evicts prefix-cache entries (LRU) to release Metal
     # slabs. Expressed as a fraction of the hard cap. Default 0.9 keeps
@@ -6124,10 +6127,13 @@ class Scheduler:
         allocator's leniency window.
 
         Returns ``0`` when the cap should be considered disabled (the
-        SchedulerConfig default ``gpu_memory_utilization=0.0``, or the
-        Metal device probe failed). Callers MUST treat ``0`` as "do not
-        check" rather than "no headroom".
+        SchedulerConfig default ``gpu_memory_utilization=0.0``, an explicit
+        context override without an operator memory cap, or a failed Metal
+        device probe). Callers MUST treat ``0`` as "do not check" rather
+        than "no headroom".
         """
+        if self.config.allow_context_overcommit:
+            return 0
         from .memory_budget import process_utilization_floor
 
         floor, generation = process_utilization_floor()

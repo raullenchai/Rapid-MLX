@@ -3026,6 +3026,13 @@ def test_spawn_chat_server_forwards_context_length(monkeypatch, tmp_path):
     assert captured["cmd"][index + 1] == "65536"
 
 
+def test_chat_context_length_rejects_attaching_to_existing_server(capsys):
+    with pytest.raises(SystemExit) as excinfo:
+        cli.chat_command(_ns_for_chat(8000, context_length=65_536))
+    assert excinfo.value.code == 2
+    assert "set it on the existing rapid-mlx serve" in capsys.readouterr().err
+
+
 def test_sigterm_handler_masks_second_sigterm(monkeypatch):
     """A second SIGTERM landing mid-cleanup must be silently dropped via
     ``signal.SIG_IGN``, not re-invoke ``_cleanup`` (which would block on

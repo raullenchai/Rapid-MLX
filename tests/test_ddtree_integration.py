@@ -265,6 +265,24 @@ def _fake_runtime():
     )
 
 
+def test_ddtree_model_card_reports_explicit_context(monkeypatch) -> None:
+    from fastapi.testclient import TestClient
+
+    from rapid_mlx.config import get_config
+    from rapid_mlx.speculative.ddtree.server import _build_app
+
+    monkeypatch.setattr(get_config(), "context_length", 4096)
+    app = _build_app(
+        runtime=_fake_runtime(),
+        served_model_name="qwen3.5-9b-8bit",
+        default_max_tokens=64,
+        cors_origins=[],
+    )
+    response = TestClient(app).get("/v1/models")
+    assert response.status_code == 200
+    assert response.json()["data"][0]["max_model_len"] == 4096
+
+
 def test_build_app_healthz_models_and_completion() -> None:
     from fastapi.testclient import TestClient
 

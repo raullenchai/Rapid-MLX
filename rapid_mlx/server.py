@@ -4428,6 +4428,7 @@ def main():
             )
         ),
         pflash_config=server_pflash_config,
+        allow_context_overcommit=args.context_length is not None,
         **_server_turboquant_scheduler_kwargs(args),
     )
 

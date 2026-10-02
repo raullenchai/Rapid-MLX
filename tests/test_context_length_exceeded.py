@@ -644,6 +644,20 @@ def test_operational_prompt_cap_fails_closed_when_raw_prompt_count_unavailable()
     assert excinfo.value.detail["error"]["code"] == "context_length_exceeded"
 
 
+def test_explicit_context_mllm_raw_prompt_uses_processor_when_count_unavailable():
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.service.helpers import enforce_context_length_for_prompt
+
+    cfg = reset_config()
+    try:
+        cfg.context_length = 128
+        engine = _StubEngine(tokenizer=object())
+        engine.is_mllm = True
+        assert enforce_context_length_for_prompt(engine, "prompt", max_tokens=20) == 20
+    finally:
+        reset_config()
+
+
 def test_max_prompt_tokens_cli_is_positive_and_shared_by_entrypoints():
     from rapid_mlx import cli, server
 
@@ -724,6 +738,23 @@ def test_serial_inference_uses_the_same_explicit_window():
         assert enforce_rendered_context_length(model, tokenizer, "x" * 200, 100) == 78
         with pytest.raises(HTTPException) as excinfo:
             enforce_rendered_context_length(model, tokenizer, "x" * 512, 1)
+        assert excinfo.value.detail["error"]["code"] == "context_length_exceeded"
+    finally:
+        reset_config()
+
+
+def test_serial_inference_rejects_unaccountable_prompt():
+    from fastapi import HTTPException
+
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.service.helpers import enforce_rendered_context_length
+
+    cfg = reset_config()
+    try:
+        cfg.context_length = 128
+        model = _StubModel(args=_StubArgs(max_position_embeddings=512))
+        with pytest.raises(HTTPException) as excinfo:
+            enforce_rendered_context_length(model, object(), "prompt", 10)
         assert excinfo.value.detail["error"]["code"] == "context_length_exceeded"
     finally:
         reset_config()

@@ -2629,8 +2629,9 @@ class ModelInfo(BaseModel):
     # ``_estimate_request_kv_bytes``), so it lines up with what the
     # server would actually admit. Without an explicit --context-length,
     # this is advisory and re-derived per call from current residency.
-    # With an override, it reports the chosen logical window; the Metal
-    # admission gate can still reject requests that cannot fit in RAM.
+    # With an override, it reports the chosen logical window. The automatic
+    # projected-KV cap yields to it; an explicit operator Metal cap still
+    # applies, and actual allocator OOM remains possible.
     # ``None`` when no engine is loaded for
     # the id or the estimate can't be formed, and it serializes as
     # JSON ``null`` (no ``exclude_none``) like the other extensions.

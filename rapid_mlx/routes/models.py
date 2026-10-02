@@ -109,7 +109,7 @@ def _resolve_max_model_len(model_id: str, native_context: int | None) -> int | N
     configured = get_config().context_length
     if configured is not None:
         # An explicit operator window overrides the advisory memory
-        # projection. Request-time Metal admission remains authoritative.
+        # projection. An explicit memory-utilization cap still applies.
         return min(configured, native_context) if native_context else configured
     scheduler = _scheduler_of(engine)
     if scheduler is None:

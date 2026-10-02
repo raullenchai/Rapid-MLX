@@ -94,8 +94,10 @@ For example, `rapid-mlx serve ling-3.0-tiny-4bit --context-length 65536`
 selects a 64K-token request window for Ling. The model's declared maximum
 remains unchanged. With no flag, `/v1/models.max_model_len` reports the
 current memory-based estimate; with the flag, it reports the selected window.
-An explicit window does not reserve RAM or bypass the Metal memory gate, so a
-request that cannot fit at the time of admission can still return HTTP 503.
+The explicit window overrides the automatic memory projection. It may cause
+macOS to swap or run out of memory; start with a value your Mac can handle.
+An explicit `--gpu-memory-utilization` cap still takes priority over memory
+usage and may reject a request with HTTP 503.
 
 Primary standby applies to Chat Completions, legacy Completions, Responses,
 and Anthropic Messages/counting. `/v1/embeddings` has an independent engine

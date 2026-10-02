@@ -6923,6 +6923,10 @@ def serve_command(args):
         gpu_memory_utilization=(
             _effective_runtime_values.gpu_memory_utilization or 0.0
         ),
+        allow_context_overcommit=(
+            getattr(args, "context_length", None) is not None
+            and args.gpu_memory_utilization is None
+        ),
     )
 
     print("Mode: Continuous batching (for multiple concurrent users)")
@@ -14625,7 +14629,8 @@ Examples:
         metavar="TOKENS",
         help=(
             "Per-request context window (prompt plus output), up to the model's "
-            "declared limit. Default: automatic. Memory admission still applies."
+            "declared limit. Overrides the automatic memory estimate; an "
+            "explicit --gpu-memory-utilization cap still applies."
         ),
     )
     serve_parser.add_argument(

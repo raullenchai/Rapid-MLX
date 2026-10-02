@@ -49,6 +49,23 @@ def test_explicit_context_counts_expanded_media_tokens():
         _enforce_preprocessed_context_window([request], 160)
 
 
+def test_process_prompts_checks_expanded_tokens_before_vision(monkeypatch):
+    from types import SimpleNamespace
+
+    from rapid_mlx.config import get_config
+
+    generator = MLLMBatchGenerator.__new__(MLLMBatchGenerator)
+    generator._media_mrope_restore = lambda: None
+    generator._preprocess_request = lambda req: setattr(
+        req, "input_ids", SimpleNamespace(size=120)
+    )
+    request = MLLMBatchRequest(uid=1, request_id="media-overflow", prompt="hi")
+    monkeypatch.setattr(get_config(), "context_length", 100)
+
+    with pytest.raises(ClientRequestError, match="context_length_exceeded"):
+        generator._process_prompts([request])
+
+
 class _RecordingModel:
     """VLM model stub that captures kwargs from its ``__call__``."""
 
