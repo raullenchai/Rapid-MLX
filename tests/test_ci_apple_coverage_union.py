@@ -245,6 +245,7 @@ def test_vendored_mllm_namespace_coverage_runs_on_apple_silicon() -> None:
     assert "tests/test_mllm_cache_namespace_compat.py" in apple_run
     assert "tests/test_mlx_vlm_vendored_generate.py" in apple_run
     assert "tests/test_mlx_vlm_vendored_speculative.py" in apple_run
+    assert "tests/test_mlx_vlm_vendored_drafters.py" in apple_run
 
 
 def test_coverage_data_is_commit_bound_and_fail_closed() -> None:
@@ -306,10 +307,32 @@ def test_vendored_mllm_coverage_omit_is_file_scoped() -> None:
         f"{vendored_prefix}speculative/dflash.py",
         f"{vendored_prefix}speculative/mtp.py",
         f"{vendored_prefix}speculative/utils.py",
+        f"{vendored_prefix}speculative/drafters/__init__.py",
+        f"{vendored_prefix}speculative/drafters/compatibility.py",
+        f"{vendored_prefix}speculative/drafters/mtp_base.py",
+        f"{vendored_prefix}speculative/drafters/mtp_split.py",
+        f"{vendored_prefix}speculative/drafters/glm5_next_mtp/__init__.py",
+        f"{vendored_prefix}speculative/drafters/glm5_next_mtp/config.py",
+        f"{vendored_prefix}speculative/drafters/glm5_next_mtp/glm5_next_mtp.py",
+        f"{vendored_prefix}speculative/drafters/glm5_next_mtp/split.py",
+        f"{vendored_prefix}speculative/drafters/qwen3_5_mtp/__init__.py",
+        f"{vendored_prefix}speculative/drafters/qwen3_5_mtp/config.py",
+        f"{vendored_prefix}speculative/drafters/qwen3_5_mtp/qwen3_5_mtp.py",
+        f"{vendored_prefix}speculative/drafters/qwen3_5_mtp/split.py",
+        f"{vendored_prefix}speculative/drafters/qwen3_dflash/__init__.py",
+        f"{vendored_prefix}speculative/drafters/qwen3_dflash/config.py",
+        f"{vendored_prefix}speculative/drafters/qwen3_dflash/dflash.py",
+        f"{vendored_prefix}speculative/drafters/qwen3_dflash/parity_check.py",
+        f"{vendored_prefix}speculative/drafters/dflash2/__init__.py",
+        f"{vendored_prefix}speculative/drafters/dflash2/config.py",
+        f"{vendored_prefix}speculative/drafters/dflash2/dflash2.py",
     ]
     for guarded_path in (
         "rapid_mlx/models/mlx_vlm_vendored/future_module.py",
         "rapid_mlx/mllm_cache_compat.py",
+        "rapid_mlx/speculative/dflash/runtime.py",
+        "rapid_mlx/speculative/native_mtp/glm5_compat.py",
+        "rapid_mlx/speculative/native_mtp/runtime.py",
     ):
         assert not any(
             fnmatch.fnmatchcase(guarded_path, pattern) for pattern in omit_patterns
