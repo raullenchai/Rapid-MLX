@@ -10033,6 +10033,10 @@ def _resolve_variant_allow_patterns(
         raise ValueError(
             "--bits/--format was supplied but is empty; pass a value or drop the flag"
         )
+    from rapid_mlx.byom.preflight import GGUF_FORMAT_MESSAGE, gguf_format_requested
+
+    if gguf_format_requested(fmt):
+        raise ValueError(GGUF_FORMAT_MESSAGE)
     from huggingface_hub import HfApi, RepoFolder
     from huggingface_hub.errors import RepositoryNotFoundError
 
@@ -13789,6 +13793,15 @@ Examples:
         ),
     )
     serve_parser.add_argument(
+        "--no-preflight",
+        action="store_true",
+        default=False,
+        help=(
+            "Skip the pre-download check for models outside the Rapid-MLX "
+            "catalog (format, architecture and memory fit)."
+        ),
+    )
+    serve_parser.add_argument(
         "--disk-stream-cache-gb",
         type=positive_finite_float,
         default=1.0,
@@ -15471,7 +15484,17 @@ Examples:
         metavar="name",
         help=(
             "Pull only the named format variant of a multi-variant repo "
-            "(e.g. --format mxfp4 or --format gguf, when the repo ships one)."
+            "(e.g. --format mxfp4, when the repo ships one). GGUF is not "
+            "supported: Rapid-MLX cannot run GGUF files."
+        ),
+    )
+    pull_parser.add_argument(
+        "--no-preflight",
+        action="store_true",
+        default=False,
+        help=(
+            "Skip the pre-download check for models outside the Rapid-MLX "
+            "catalog (format and architecture)."
         ),
     )
     rm_parser = subparsers.add_parser(
@@ -16309,6 +16332,14 @@ def main():
                     print(f"  Alias: {args.model} → {_audio_hf_id}")
                     args._original_alias = args.model
                     args.model = _audio_hf_id
+    # Bring-your-own-model preflight: an uncataloged repo or local path that
+    # provably cannot run here (GGUF/.bin-only, unsupported architecture, too
+    # big for this Mac) stops BEFORE the size gate and any download. Silent for
+    # catalog, cached and unreadable models. See rapid_mlx/byom/preflight.py.
+    if getattr(args, "command", None) in ("serve", "pull"):
+        from rapid_mlx.byom.preflight import run_cli_preflight
+
+        run_cli_preflight(args, spinner_factory=_StatusSpinner)
     # --- BEGIN B2: auto-pull confirmation gate -------------------------
     # For subcommands that may trigger a first-time download of a large
     # repo (chat/run/serve/pull/bench), warn the user before kicking off

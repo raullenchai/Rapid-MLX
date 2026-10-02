@@ -182,10 +182,8 @@ def test_empty_selector_errors_cleanly(capsys):
 
 
 def test_missing_variant_shows_available_folders(capsys):
-    """--format gguf when the repo has no gguf/ fails loudly, listing folders."""
-    args = argparse.Namespace(
-        model="LiquidAI/LFM2.5-2.6B-MLX", bits=None, format="gguf"
-    )
+    """--format awq when the repo has no awq/ fails loudly, listing folders."""
+    args = argparse.Namespace(model="LiquidAI/LFM2.5-2.6B-MLX", bits=None, format="awq")
     with (
         patch(
             "huggingface_hub.HfApi.list_repo_tree", return_value=_multi_variant_tree()
@@ -196,7 +194,7 @@ def test_missing_variant_shows_available_folders(capsys):
     ):
         cli.pull_command(args)
     out = capsys.readouterr().out
-    assert "no 'gguf' variant" in out
+    assert "no 'awq' variant" in out
     assert "4bit" in out  # lists an available folder
     assert "8bit" in out
 
@@ -206,7 +204,7 @@ def test_missing_variant_uses_original_alias(capsys):
     args = argparse.Namespace(
         model="LiquidAI/LFM2.5-2.6B-MLX",
         bits=None,
-        format="gguf",
+        format="awq",
         _original_alias="my-alias",
     )
     with (
@@ -220,14 +218,12 @@ def test_missing_variant_uses_original_alias(capsys):
         cli.pull_command(args)
     out = capsys.readouterr().out
     assert "my-alias" in out
-    assert "has no 'gguf' variant" in out
+    assert "has no 'awq' variant" in out
 
 
 def test_missing_variant_no_folders(capsys):
     """A single-variant repo (no folders) says so instead of listing folders."""
-    args = argparse.Namespace(
-        model="LiquidAI/LFM2.5-2.6B-MLX", bits=None, format="gguf"
-    )
+    args = argparse.Namespace(model="LiquidAI/LFM2.5-2.6B-MLX", bits=None, format="awq")
     flat = [RepoFile(path="model.safetensors", size=100, oid="a")]
     with (
         patch("huggingface_hub.HfApi.list_repo_tree", return_value=flat),
