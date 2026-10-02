@@ -357,6 +357,23 @@ def test_direct_repo_explicit_flags_skip_prefetch_and_warning(monkeypatch, capsy
     assert capsys.readouterr().err == ""
 
 
+def test_direct_repo_broken_runtime_never_warns(monkeypatch, capsys):
+    """Only an ABSENT runtime may degrade a direct repo id: a BROKEN install
+    prints no degrade warning (the guard owns the repair message)."""
+    from rapid_mlx import cli
+
+    state = _cold_cache_with_boot_prefetch(monkeypatch, QWEN3_VL_CONFIG)
+    state["materialized"].add(DIRECT_QWEN3_VL_REPO)
+    _pretend_mlx_lm_ships(monkeypatch, "qwen3_vl")
+    _mock_vision_broken(monkeypatch)
+    _allow_desktop_warning(monkeypatch)
+
+    args = _args(DIRECT_QWEN3_VL_REPO)
+    assert cli._warn_vision_text_only_degrade(None, args=args) is False
+    assert capsys.readouterr().err == ""
+    assert cli._serve_will_run_on_mllm_lane(args) is True
+
+
 def test_degraded_lane_contract_is_vision_runtime_absent(monkeypatch):
     """The engine-side resolver returns the SAME lane ``--no-mllm`` selects:
     text lane, reason ``vision_runtime_absent``, auto-downgrade flagged so
