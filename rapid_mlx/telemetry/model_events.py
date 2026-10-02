@@ -552,9 +552,6 @@ def _claim_ledger_key(
             _prepare_state_dir,
         )
 
-        current = _serve_failed_clock() if now is None else now
-        if not math.isfinite(current):
-            return enqueue_accepted()
         encoded_key = json.dumps(key, separators=(",", ":"))
         path = resolve_path()
         if not _prepare_state_dir(path.parent):
@@ -569,7 +566,16 @@ def _claim_ledger_key(
     should_enqueue = False
     try:
         try:
-            if not _acquire_serve_failed_lock(dir_fd):
+            acquired = _acquire_serve_failed_lock(dir_fd)
+            # Sample only after the bounded acquisition attempt. A waiter that
+            # sampled before blocking could observe a lock winner's newer
+            # claim as future-dated, discard it as clock rollback, and emit a
+            # duplicate. Successful acquisitions keep the sample and read in
+            # the same critical section.
+            current = _serve_failed_clock() if now is None else now
+            if not math.isfinite(current):
+                should_enqueue = True
+            elif not acquired:
                 # Ledger replacement is atomic, so an unlocked read is a
                 # consistent snapshot. The lock winner may already have
                 # published this key even though our bounded wait expired.

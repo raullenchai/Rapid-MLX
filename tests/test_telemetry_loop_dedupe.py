@@ -358,6 +358,41 @@ def test_concurrent_claims_elect_exactly_one_writer(loop_env):
     assert results.count(0) == 7
 
 
+def test_contended_claim_samples_clock_after_lock_acquisition(loop_env, monkeypatch):
+    """A waiter must compare a winner's claim against a post-wait timestamp."""
+    tmp_path, events, _advance = loop_env
+    path = tmp_path / ".rapid-mlx" / "state" / "serve-start-recent.json"
+    key = ("resolve", None)
+    encoded_key = json.dumps(key, separators=(",", ":"))
+    acquired = False
+
+    def publish_winner_before_acquiring(_dir_fd: int) -> bool:
+        nonlocal acquired
+        path.write_text(json.dumps({encoded_key: 1001.0}), encoding="utf-8")
+        acquired = True
+        return True
+
+    monkeypatch.setattr(
+        model_events, "_acquire_serve_failed_lock", publish_winner_before_acquiring
+    )
+    monkeypatch.setattr(
+        model_events,
+        "_serve_failed_clock",
+        lambda: 1001.0 if acquired else 1000.0,
+    )
+
+    assert (
+        model_events._claim_ledger_key(
+            server_start._serve_start_recent_path,
+            key,
+            window_seconds=WINDOW,
+            on_claim=lambda: events.append(("duplicate", {})),
+        )
+        is False
+    )
+    assert events == []
+
+
 def test_claim_contains_base_exception_and_keeps_durable_claim(loop_env):
     """A host-control exception from enqueue cannot undo or escape a claim."""
     _tmp_path, _events, _advance = loop_env
