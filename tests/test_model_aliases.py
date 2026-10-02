@@ -328,3 +328,36 @@ def test_draft_gate_ignores_profile_without_hf_path(monkeypatch):
         lambda: {"weird": types.SimpleNamespace(hf_path=None, mtp_draft_model=None)},
     )
     assert model_aliases.draft_only_conflict("weird") is None
+
+
+def test_draft_gate_skips_attached_remote_bench(monkeypatch, capsys):
+    """bench --base-url targets an existing server: the named model lives
+    remotely and must not be gated against the local catalog."""
+    import sys
+
+    from rapid_mlx import cli
+
+    emitted = []
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "rapid-mlx",
+            "bench",
+            "qwen3.6-35b-mtp-4bit",
+            "--base-url",
+            "http://127.0.0.1:8123",
+        ],
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.telemetry.model_events.emit_model_serve_failed",
+        lambda exc, *, alias_or_path, **kwargs: emitted.append(kwargs),
+    )
+    reached = []
+    monkeypatch.setattr(cli, "bench_command", lambda args: reached.append(args.model))
+
+    cli.main()
+
+    assert reached == ["mlx-community/Qwen3.6-35B-A3B-MTP-4bit"]
+    assert "draft checkpoint" not in capsys.readouterr().err
+    assert emitted == []

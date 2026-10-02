@@ -16313,12 +16313,19 @@ def main():
                     print(f"  Alias: {args.model} → {_audio_hf_id}")
                     args._original_alias = args.model
                     args.model = _audio_hf_id
-        if getattr(args, "command", None) in ("serve", "bench"):
+        if getattr(args, "command", None) in ("serve", "bench") and not (
+            getattr(args, "base_url", None)
+            or (
+                getattr(args, "command", None) == "bench"
+                and getattr(args, "port", None) is not None
+            )
+        ):
             # A draft-only checkpoint cannot be a primary model: gate it at
             # resolve with the precise remedy instead of a mid-load
             # "unsupported architecture" crash after the download. Runs for
-            # serve/bench only — ``pull`` must stay able to pre-warm the
-            # sidecar for the base alias's speculative decoding.
+            # local serve/bench only — ``pull`` must stay able to pre-warm
+            # the sidecar, and an attached bench targets a remote server
+            # whose model is not meant to be local (codex #2357-P1).
             from rapid_mlx.model_aliases import (
                 DraftModelNotServableError,
                 raise_if_draft_only_model,
