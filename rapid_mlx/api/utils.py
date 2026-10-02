@@ -1580,7 +1580,110 @@ def resolve_serving_lane_decision(
         return ServingLaneDecision(
             False, "vision_hybrid_runtime_unsupported", auto_text_fallback=True
         )
+    from ..models.mllm import VisionRuntimeStatus, vision_runtime_status
+
+    if vision_runtime_status()[0] is VisionRuntimeStatus.ABSENT and (
+        checkpoint_serves_text_without_vision(model_name)
+    ):
+        # Base wheel + a text-capable backbone: degrade to the text lane
+        # (exactly the ``--no-mllm`` path) instead of failing the serve.
+        return ServingLaneDecision(
+            False, "vision_runtime_absent", auto_text_fallback=True
+        )
     return ServingLaneDecision(True, "vision_supported")
+
+
+def _prefetch_config_for_degrade_probe(model_ref: str) -> None:
+    """Pull only ``config.json`` (a few KB) for the text-degrade probe.
+
+    Best-effort and offline-aware, mirroring the CLI boot guard's own
+    prefetch: a miss means the probe fails closed and the existing
+    ``[vision]``-required guard keeps its safe default.
+    """
+    import os
+
+    from ..model_metadata import hub_offline_mode_active
+
+    if os.path.exists(model_ref) or hub_offline_mode_active():
+        return
+    try:
+        from huggingface_hub import hf_hub_download
+
+        hf_hub_download(model_ref, "config.json")
+    except Exception:  # noqa: BLE001 - best-effort probe, never fatal
+        return
+
+
+def _text_lane_loads_model_type(model_type: str) -> bool:
+    """Whether the TEXT lane can load this checkpoint architecture.
+
+    Two evidence sources, both independent of ``mlx-vlm``:
+
+    * the installed mlx-lm ships ``mlx_lm.models.<model_type>`` — since
+      0.31 its vision-arch modules (gemma4, qwen3_vl, qwen3_5, gemma3,
+      gemma3n, …) load the LANGUAGE backbone and drop the vision tower, so
+      ``--no-mllm`` serves the checkpoint straight from the base wheel; and
+    * Rapid's vendored Gemma 4 family text loaders
+      (:mod:`rapid_mlx.models.gemma4_text`) fall back to the vendored copy
+      under ``rapid_mlx/models/gemma4_vendored/`` when mlx-vlm is absent.
+
+    Both auto-upgrade: a new mlx-lm release or a retired vendor flips the
+    answer without a code change here.
+    """
+    import importlib.util
+
+    try:
+        if importlib.util.find_spec(f"mlx_lm.models.{model_type}") is not None:
+            return True
+    except (ImportError, ValueError):  # pragma: no cover - defensive probe
+        pass
+    from ..models.gemma4_text import _GEMMA4_FAMILY_MODEL_TYPES
+
+    return model_type in _GEMMA4_FAMILY_MODEL_TYPES
+
+
+def checkpoint_serves_text_without_vision(model_name: str) -> bool:
+    """Whether an ABSENT vision runtime may leave this checkpoint text-only.
+
+    The #3831 hybrid-backbone degrade covers linear-attention/recurrent
+    language backbones (``mllm_backbone_cache_mode``). This predicate covers
+    the remaining standard-attention VLM checkpoints (Gemma 4, Qwen3-VL,
+    Gemma 3(n), …): a checkpoint degrades to the ``--no-mllm`` text path iff
+
+    1. the vision runtime status is exactly ABSENT — a BROKEN or
+       INCOMPATIBLE install keeps its loud repair guard, and a working one
+       serves the vision lane;
+    2. the checkpoint config declares a multimodal layout (positive evidence
+       the checkpoint routes to the vision lane once weights arrive — a text
+       fork never needed the lane); and
+    3. the config's top-level ``model_type`` resolves to a language backbone
+       the text lane loads without mlx-vlm (see
+       :func:`_text_lane_loads_model_type`). The top-level type is the
+       dispatch key the loaders use — a pack whose only loader lives on the
+       MLLM lane (Bonsai 2's ``prism_hadamard_qwen35``) fails this probe and
+       keeps the ``[vision]``-required guard.
+
+    No config is no evidence: the probe fails closed (after one best-effort
+    config-only fetch) so an unclassifiable checkpoint never silently loses
+    the safe default.
+    """
+    from ..models.mllm import VisionRuntimeStatus, vision_runtime_status
+
+    if vision_runtime_status()[0] is not VisionRuntimeStatus.ABSENT:
+        return False
+    metadata = read_model_metadata(model_name)
+    if metadata is None or not isinstance(metadata.config, dict):
+        _prefetch_config_for_degrade_probe(model_name)
+        metadata = read_model_metadata(model_name)
+        if metadata is None or not isinstance(metadata.config, dict):
+            return False
+    config = metadata.config
+    if not config_indicates_multimodal(config):
+        return False
+    model_type = config.get("model_type")
+    if not isinstance(model_type, str) or not model_type:
+        return False
+    return _text_lane_loads_model_type(model_type)
 
 
 def resolve_serving_lane(

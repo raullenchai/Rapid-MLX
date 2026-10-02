@@ -4579,8 +4579,10 @@ def _serve_will_run_on_mllm_lane(args) -> bool:
     A multimodal alias whose LANGUAGE backbone is hybrid/linear-attention
     (Qwen3.6 GatedDeltaNet) auto-downgrades to the text-only mlx-lm lane and
     never touches mlx-vlm, so it must NOT be pushed into a ~1 GB ``[vision]``
-    install. A genuine VLM (non-hybrid backbone, e.g. qwen3-vl) stays on the
-    MLLM lane and still needs it. ``--mllm`` / ``--no-mllm`` are honoured via
+    install. A genuine VLM whose backbone the text lane cannot load (Bonsai 2's
+    ``prism_hadamard_qwen35``) stays on the MLLM lane and still needs it; one
+    whose backbone mlx-lm loads (gemma4, qwen3_vl, …) degrades to the text
+    lane on a base wheel instead. ``--mllm`` / ``--no-mllm`` are honoured via
     ``resolve_serving_lane``'s explicit-flag short-circuits.
 
     The probe reads the cached checkpoint config offline (no network, no
@@ -4636,11 +4638,23 @@ def _serve_will_run_on_mllm_lane(args) -> bool:
         # verdict (#3113: no weights cached yet) may fall back to the
         # curated alias profile.
         return False
-    return _alias_needs_vision_runtime_without_weights(
+    if not _alias_needs_vision_runtime_without_weights(
         args.model,
         force_text=force_text,
         requested_spec_decode=requested_spec_decode,
-    )
+    ):
+        return False
+    # A fresh install whose checkpoint will land on the vision lane once its
+    # weights arrive still boots text-only from the base wheel when the
+    # vision runtime is ABSENT and the backbone is text-lane loadable — the
+    # same degrade the engine resolves with after the pull. Anything else
+    # (broken runtime, unloadable backbone, no config) keeps the guard.
+    from .api.utils import checkpoint_serves_text_without_vision
+    from .model_aliases import resolve_profile
+
+    profile = resolve_profile(args.model)
+    degrade_model = profile.hf_path if profile is not None else args.model
+    return not checkpoint_serves_text_without_vision(degrade_model)
 
 
 def _alias_modality(model_name: str) -> str | None:
@@ -4669,7 +4683,10 @@ def _alias_text_degrades_without_vision(profile, *, args=None) -> bool:
             return False
     if vision_runtime_status()[0] is not VisionRuntimeStatus.ABSENT:
         return False
-    from .api.utils import resolve_serving_lane_decision
+    from .api.utils import (
+        checkpoint_serves_text_without_vision,
+        resolve_serving_lane_decision,
+    )
 
     if args is not None:
         # The serve guard owns the cold-cache metadata prefetch. Run that same
@@ -4686,7 +4703,26 @@ def _alias_text_degrades_without_vision(profile, *, args=None) -> bool:
             getattr(args, "spec_decode", "none") if args is not None else "none"
         ),
     )
-    return decision.auto_text_fallback
+    if decision.auto_text_fallback:
+        return True
+    if decision.is_mllm:
+        # Warm evidence still routes the vision lane while the runtime is
+        # ABSENT — only possible when the backbone is NOT text-lane loadable
+        # (the resolver owns that contract). The guard's own error is the
+        # message; never print a degrade warning against a lane that runs.
+        return False
+    # No positive lane evidence yet: a fresh install probes "text_checkpoint"
+    # on an empty cache. Decide from the SAME profile + config chain the boot
+    # guard uses — if the checkpoint would land on the vision lane once its
+    # weights arrive and the backbone is text-lane loadable, the serve
+    # degrades to text-only instead of failing.
+    return _alias_needs_vision_runtime_without_weights(
+        model_name,
+        force_text=bool(args is not None and getattr(args, "no_mllm", False)),
+        requested_spec_decode=(
+            getattr(args, "spec_decode", "none") if args is not None else "none"
+        ),
+    ) and checkpoint_serves_text_without_vision(model_name)
 
 
 def _warn_vision_text_only_degrade(profile, *, args=None) -> bool:
@@ -4699,7 +4735,8 @@ def _warn_vision_text_only_degrade(profile, *, args=None) -> bool:
         return False
     print(
         "warning: vision runtime absent; serving this text-capable checkpoint "
-        "text-only. Enable image input with: "
+        "text-only (image and video input unavailable). Enable the vision "
+        "runtime with: "
         + optional_extra_repair_command("vision"),
         file=sys.stderr,
     )
