@@ -13,6 +13,7 @@ forgery can never put registry-invalid or free-text properties on the wire.
 from __future__ import annotations
 
 import copy
+import hashlib
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -308,6 +309,12 @@ def _app_opened_recent_path() -> Path:
     return state._default_telemetry_dir() / "state" / "app-opened-recent.json"
 
 
+def _app_opened_install_scope() -> str:
+    """Return a local-only one-way scope for the current install identity."""
+    install_id = state.get_or_create_client_id()
+    return hashlib.sha256(install_id.encode("utf-8")).hexdigest()
+
+
 def _emit_app_opened(surface: str) -> None:
     """Attempt ``app_opened`` once per process for an eligible process.
 
@@ -323,7 +330,7 @@ def _emit_app_opened(surface: str) -> None:
     try:
         if not _upload_allowed():
             return
-    except Exception:
+    except BaseException:
         return
     with _context_lock:
         if _app_opened_attempted:
@@ -338,11 +345,16 @@ def _emit_app_opened(surface: str) -> None:
             return
         model_events._claim_ledger_key(
             _app_opened_recent_path,
-            ("app_opened", surface, rapid_mlx.__version__),
+            (
+                "app_opened",
+                surface,
+                rapid_mlx.__version__,
+                _app_opened_install_scope(),
+            ),
             window_seconds=model_events.SERVE_FAILED_DEDUPE_SECONDS,
             on_claim=lambda: _enqueue_accepted(accepted),
         )
-    except Exception:
+    except BaseException:
         return
 
 

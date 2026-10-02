@@ -78,7 +78,7 @@ def _failure_window_snapshot() -> tuple[bool, frozenset[str]]:
             and now - timestamp < model_events.SERVE_FAILED_DEDUPE_SECONDS
         )
         return bool(fresh), fresh
-    except Exception:
+    except BaseException:
         return False, frozenset()
 
 
@@ -494,11 +494,10 @@ def ready() -> None:
     # uses it to distinguish this process's open sink from stale diagnostics;
     # the atexit hook removes it on a clean shutdown. A failed telemetry write
     # likewise leaves the attempted marker behind for the next run to report.
-    if deferred:
-        # The pair deferred at start is emitted now that the loop reached
-        # ready: attempted first, then the terminal, from the same run.
-        _emit_deferred_attempted()
-    if _track("ready") is not False:
+    terminal_enqueued = (
+        _emit_deferred_ready_pair() if deferred else _track("ready") is not False
+    )
+    if terminal_enqueued:
         with _lock:
             _mark_inflight_terminal()
     # A success ends the restart loop, so the recorded failure window clears
@@ -519,16 +518,24 @@ def _failure_key(
     return (failure_stage, None)
 
 
-def _emit_deferred_attempted() -> None:
-    """Emit the ``attempted`` half of a deferred pair; never affect the host."""
+def _emit_deferred_ready_pair() -> bool:
+    """Queue a deferred attempted/ready pair without a terminal-only event."""
     try:
         from rapid_mlx.telemetry.track import _enqueue_accepted, would_accept
 
-        accepted = would_accept("server_start_state", _server_start_props("attempted"))
-        if accepted is not None:
-            _enqueue_accepted(accepted)
-    except Exception:
-        return
+        accepted_attempted = would_accept(
+            "server_start_state", _server_start_props("attempted")
+        )
+        accepted_ready = would_accept(
+            "server_start_state", _server_start_props("ready")
+        )
+        if accepted_attempted is None or accepted_ready is None:
+            return False
+        if not _enqueue_accepted(accepted_attempted):
+            return False
+        return _enqueue_accepted(accepted_ready)
+    except BaseException:
+        return False
 
 
 def _clear_failure_ledger() -> None:
@@ -540,7 +547,7 @@ def _clear_failure_ledger() -> None:
         if not _upload_allowed():
             return
         model_events._clear_ledger(_serve_start_recent_path())
-    except Exception:
+    except BaseException:
         return
 
 
@@ -606,12 +613,18 @@ def failed(failure_stage: object, *, port_explicit: bool | None = None) -> None:
             # our attempted was never emitted, so going silent orphans nothing.
             return
         if deferred:
-            _enqueue_accepted(accepted_attempted)
+            assert accepted_attempted is not None
+            if not _enqueue_accepted(accepted_attempted):
+                # The durable failure claim stays written, matching #3763's
+                # no-rollback contract, but an unqueued attempted must never
+                # be followed by a terminal-only event. The marker likewise
+                # remains until clean exit or the next run's recovery scan.
+                return
         if _enqueue_accepted(accepted_failed):
             # Only a successfully queued terminal may retire the crash-liveness
             # marker; a lost terminal leaves it for the next run to report.
             _remove_inflight_marker()
-    except Exception:
+    except BaseException:
         return
 
 

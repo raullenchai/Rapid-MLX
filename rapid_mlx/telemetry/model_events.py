@@ -18,13 +18,14 @@ import time
 import urllib.error
 from collections.abc import Callable
 from pathlib import Path
-from typing import ParamSpec
+from typing import ParamSpec, TypeAlias
 
 from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
 
 _serve_failure_lock = threading.Lock()
 _serve_failure_claimed = False
 _P = ParamSpec("_P")
+_LedgerKeyPart: TypeAlias = str | bool | None
 _EXCEPTION_CHAIN_LIMIT = 32
 SERVE_FAILED_DEDUPE_SECONDS = 600
 _SERVE_FAILED_MAX_KEYS = 64
@@ -498,7 +499,7 @@ def _ledger_claim_is_fresh(
 
 def _claim_ledger_key(
     resolve_path: Callable[[], Path],
-    key: tuple[str, ...],
+    key: tuple[_LedgerKeyPart, ...],
     *,
     window_seconds: float,
     now: float | None = None,
@@ -523,21 +524,25 @@ def _claim_ledger_key(
         return decision
 
     def enqueue_accepted() -> bool:
-        if not accepted():
+        try:
+            is_accepted = accepted()
+        except BaseException:
+            logger.debug("telemetry acceptance check raised; event was dropped")
+            return False
+        if not is_accepted:
             return False
         if on_claim is not None:
             try:
                 enqueue_result = on_claim()
-            except Exception:
+            except BaseException:
                 logger.debug(
-                    "model_serve_failed enqueue raised; any durable dedupe claim "
-                    "was left intact"
+                    "telemetry enqueue raised; any durable dedupe claim was left intact"
                 )
             else:
                 if enqueue_result is False:
                     logger.debug(
-                        "model_serve_failed enqueue was rejected; any durable dedupe "
-                        "claim was left intact"
+                        "telemetry enqueue was rejected; any durable dedupe claim "
+                        "was left intact"
                     )
         return True
 
@@ -558,7 +563,7 @@ def _claim_ledger_key(
         flags |= getattr(os, "O_CLOEXEC", 0)
         flags |= getattr(os, "O_NOFOLLOW", 0)
         dir_fd = os.open(path.parent, flags)
-    except Exception:
+    except BaseException:
         return enqueue_accepted()
 
     should_enqueue = False
@@ -610,10 +615,13 @@ def _claim_ledger_key(
                     )
                 _atomic_write_marker(path, value=recent)
                 should_enqueue = True
-        except Exception:
+        except BaseException:
             should_enqueue = True
     finally:
-        os.close(dir_fd)
+        try:
+            os.close(dir_fd)
+        except BaseException:
+            pass
     return enqueue_accepted() if should_enqueue else False
 
 
@@ -657,16 +665,19 @@ def _clear_ledger(path: Path) -> None:
         flags |= getattr(os, "O_CLOEXEC", 0)
         flags |= getattr(os, "O_NOFOLLOW", 0)
         dir_fd = os.open(path.parent, flags)
-    except Exception:
+    except BaseException:
         return
     try:
         if not _acquire_serve_failed_lock(dir_fd):
             return
         _atomic_write_marker(path, value={})
-    except Exception:
+    except BaseException:
         return
     finally:
-        os.close(dir_fd)
+        try:
+            os.close(dir_fd)
+        except BaseException:
+            pass
 
 
 @_never_raise

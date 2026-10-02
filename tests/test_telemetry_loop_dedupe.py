@@ -10,6 +10,7 @@ suppression, and #3763's consent, rollback, and lock semantics.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 from pathlib import Path
@@ -41,6 +42,7 @@ FACTS = PlatformFacts(
 )
 
 WINDOW = model_events.SERVE_FAILED_DEDUPE_SECONDS
+REAL_GET_OR_CREATE_CLIENT_ID = state.get_or_create_client_id
 
 
 @pytest.fixture
@@ -264,7 +266,15 @@ def test_app_opened_burst_emits_once_per_window(loop_env):
     path = tmp_path / ".rapid-mlx" / "state" / "app-opened-recent.json"
     ledger = json.loads(path.read_text(encoding="utf-8"))
     assert list(ledger) == [
-        json.dumps(("app_opened", "cli", "0.15.1"), separators=(",", ":"))
+        json.dumps(
+            (
+                "app_opened",
+                "cli",
+                "0.15.1",
+                hashlib.sha256(INSTALL_ID.encode("utf-8")).hexdigest(),
+            ),
+            separators=(",", ":"),
+        )
     ]
     assert path.stat().st_mode & 0o777 == 0o600
 
@@ -285,6 +295,38 @@ def test_app_opened_surface_or_version_change_emits(loop_env):
     track_module._emit_app_opened("server")
 
     assert [event for event, _props in events] == ["app_opened", "app_opened"]
+
+
+@pytest.mark.parametrize("rotate", ["reset-id", "reset"])
+def test_app_opened_new_install_identity_emits_inside_window(
+    loop_env, monkeypatch, rotate
+):
+    """Identity reset starts a new per-install launch window immediately."""
+    tmp_path, events, _advance = loop_env
+    monkeypatch.setattr(state, "get_or_create_client_id", REAL_GET_OR_CREATE_CLIENT_ID)
+
+    track_module._emit_app_opened("cli")
+    first_id = state.read_client_id()
+    assert first_id is not None
+
+    track_module._reset_for_tests()
+    if rotate == "reset-id":
+        state.rotate_client_id()
+    else:
+        result = state.reset_state()
+        assert result.client_id.succeeded is True
+    second_id = state.read_client_id()
+    assert second_id is not None and second_id != first_id
+
+    track_module._emit_app_opened("cli")
+
+    assert [event for event, _props in events] == ["app_opened", "app_opened"]
+    path = tmp_path / ".rapid-mlx" / "state" / "app-opened-recent.json"
+    ledger = json.loads(path.read_text(encoding="utf-8"))
+    assert len(ledger) == 2
+    serialized = "\n".join(ledger)
+    assert first_id not in serialized
+    assert second_id not in serialized
 
 
 def test_concurrent_claims_elect_exactly_one_writer(loop_env):
@@ -316,7 +358,38 @@ def test_concurrent_claims_elect_exactly_one_writer(loop_env):
     assert results.count(0) == 7
 
 
-@pytest.mark.parametrize("mode", ["rejected", "raised"])
+def test_claim_contains_base_exception_and_keeps_durable_claim(loop_env):
+    """A host-control exception from enqueue cannot undo or escape a claim."""
+    _tmp_path, _events, _advance = loop_env
+
+    claimed = model_events._claim_ledger_key(
+        server_start._serve_start_recent_path,
+        ("preflight", None),
+        window_seconds=WINDOW,
+        on_claim=lambda: (_ for _ in ()).throw(SystemExit(9)),
+    )
+
+    assert claimed is True
+    _path, ledger = _start_ledger(loop_env)
+    assert ledger is not None and len(ledger) == 1
+
+
+def test_claim_contains_base_exception_from_acceptance_gate(loop_env):
+    """A host-control exception from the gate drops telemetry, not the host."""
+    _tmp_path, events, _advance = loop_env
+
+    claimed = model_events._claim_ledger_key(
+        server_start._serve_start_recent_path,
+        ("preflight", None),
+        window_seconds=WINDOW,
+        would_accept=lambda: (_ for _ in ()).throw(SystemExit(9)),
+    )
+
+    assert claimed is False
+    assert events == []
+
+
+@pytest.mark.parametrize("mode", ["rejected", "raised", "base_exception"])
 def test_enqueue_rejection_keeps_the_durable_start_claim(loop_env, mode, monkeypatch):
     """Invariant 4: rollback semantics identical to #3763 (no rollback)."""
     _tmp_path, events, _advance = loop_env
@@ -325,6 +398,8 @@ def test_enqueue_rejection_keeps_the_durable_start_claim(loop_env, mode, monkeyp
 
     def fail_failed_enqueue(accepted) -> bool:
         if dict(accepted.props)["state"] == "failed":
+            if mode == "base_exception":
+                raise SystemExit(9)
             if mode == "raised":
                 raise RuntimeError("defensive enqueue failure")
             return False
@@ -339,6 +414,77 @@ def test_enqueue_rejection_keeps_the_durable_start_claim(loop_env, mode, monkeyp
     # The attempted half went out before the rejected failed enqueue; the
     # durable claim survives the rejection, so the repeat stays silent.
     assert _states(events) == ["attempted"]
+
+
+@pytest.mark.parametrize("terminal", ["ready", "preflight"])
+def test_deferred_attempted_rejection_never_emits_terminal_only(
+    loop_env, monkeypatch, terminal
+):
+    """A rejected attempted half prevents either deferred terminal half."""
+    _tmp_path, events, _advance = loop_env
+    _run(loop_env, outcome="resolve")
+    server_start._reset_for_tests()
+    server_start.attempted("test-model", load_policy="eager")
+    real_enqueue = track_module._enqueue_accepted
+    enqueue_states: list[str] = []
+
+    def reject_attempted(accepted) -> bool:
+        state_value = str(dict(accepted.props)["state"])
+        enqueue_states.append(state_value)
+        if state_value == "attempted":
+            return False
+        return real_enqueue(accepted)
+
+    monkeypatch.setattr(track_module, "_enqueue_accepted", reject_attempted)
+    if terminal == "ready":
+        server_start.ready()
+    else:
+        server_start.failed(terminal)
+
+    assert _states(events) == ["attempted", "failed"]
+    assert enqueue_states == ["attempted"]
+    assert server_start._marker_path().exists()
+    _path, ledger = _start_ledger(loop_env)
+    if terminal == "ready":
+        assert ledger == {}
+    else:
+        assert ledger is not None and len(ledger) == 2
+
+
+@pytest.mark.parametrize("terminal", ["ready", "preflight"])
+def test_deferred_terminal_rejection_keeps_claim_and_marker(
+    loop_env, monkeypatch, terminal
+):
+    """An accepted attempted with a rejected terminal retains recovery state."""
+    _tmp_path, events, _advance = loop_env
+    _run(loop_env, outcome="resolve")
+    server_start._reset_for_tests()
+    server_start.attempted("test-model", load_policy="eager")
+    real_enqueue = track_module._enqueue_accepted
+    enqueue_states: list[str] = []
+    terminal_state = "ready" if terminal == "ready" else "failed"
+
+    def reject_terminal(accepted) -> bool:
+        state_value = str(dict(accepted.props)["state"])
+        enqueue_states.append(state_value)
+        if state_value == terminal_state:
+            return False
+        return real_enqueue(accepted)
+
+    monkeypatch.setattr(track_module, "_enqueue_accepted", reject_terminal)
+    if terminal == "ready":
+        server_start.ready()
+    else:
+        server_start.failed(terminal)
+
+    assert _states(events) == ["attempted", "failed", "attempted"]
+    assert enqueue_states == ["attempted", terminal_state]
+    assert server_start._marker_path().exists()
+    _path, ledger = _start_ledger(loop_env)
+    if terminal == "ready":
+        assert ledger == {}
+    else:
+        assert ledger is not None and len(ledger) == 2
 
 
 def test_consent_off_emits_nothing_and_writes_no_ledger(loop_env, monkeypatch):
@@ -400,12 +546,13 @@ def test_nonfinite_clock_fails_open_to_immediate_attempted(loop_env, monkeypatch
     assert _states(events) == ["attempted", "failed"]
 
 
-def test_snapshot_read_failure_fails_open(loop_env, monkeypatch):
+@pytest.mark.parametrize("failure", [OSError("ledger unavailable"), SystemExit(9)])
+def test_snapshot_read_failure_fails_open(loop_env, monkeypatch, failure):
     _tmp_path, events, _advance = loop_env
     monkeypatch.setattr(
         model_events,
         "_read_serve_failed_recent",
-        lambda _path: (_ for _ in ()).throw(OSError("ledger unavailable")),
+        lambda _path: (_ for _ in ()).throw(failure),
     )
 
     _run(loop_env, outcome="resolve")
@@ -465,6 +612,53 @@ def test_clear_ledger_is_silent_on_every_failure_shape(loop_env, monkeypatch):
     assert json.loads(path.read_text(encoding="utf-8")) == {"k": 1.0}
 
 
+def test_clear_ledger_contains_base_exception(loop_env, monkeypatch):
+    tmp_path, _events, _advance = loop_env
+    path = tmp_path / ".rapid-mlx" / "state" / "serve-start-recent.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"k": 1.0}), encoding="utf-8")
+    monkeypatch.setattr(
+        "rapid_mlx.telemetry.server_start._atomic_write_marker",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(SystemExit(9)),
+    )
+
+    model_events._clear_ledger(path)
+
+    assert json.loads(path.read_text(encoding="utf-8")) == {"k": 1.0}
+
+
+@pytest.mark.parametrize("operation", ["claim", "clear"])
+def test_ledger_close_contains_base_exception(loop_env, monkeypatch, operation):
+    """Descriptor cleanup is telemetry infrastructure and cannot stop the host."""
+    tmp_path, _events, _advance = loop_env
+    path = tmp_path / ".rapid-mlx" / "state" / "serve-start-recent.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"k": 1.0}), encoding="utf-8")
+    real_close = model_events.os.close
+
+    def close_then_raise(fd: int) -> None:
+        real_close(fd)
+        raise SystemExit(9)
+
+    monkeypatch.setattr(server_start, "_prepare_state_dir", lambda _path: True)
+    monkeypatch.setattr(
+        server_start, "_atomic_write_marker", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(model_events.os, "close", close_then_raise)
+
+    if operation == "claim":
+        assert (
+            model_events._claim_ledger_key(
+                server_start._serve_start_recent_path,
+                ("preflight", None),
+                window_seconds=WINDOW,
+            )
+            is True
+        )
+    else:
+        model_events._clear_ledger(path)
+
+
 def test_ready_skips_ledger_clear_when_consent_off(loop_env, monkeypatch):
     tmp_path, _events, _advance = loop_env
     path = tmp_path / ".rapid-mlx" / "state" / "serve-start-recent.json"
@@ -493,6 +687,19 @@ def test_clear_failure_ledger_swallows_errors(loop_env, monkeypatch):
     server_start.ready()
 
 
+def test_clear_failure_ledger_contains_base_exception(loop_env, monkeypatch):
+    _tmp_path, _events, _advance = loop_env
+    monkeypatch.setattr(
+        model_events,
+        "_clear_ledger",
+        lambda _path: (_ for _ in ()).throw(SystemExit(9)),
+    )
+    server_start._reset_for_tests()
+    server_start.attempted("test-model", load_policy="eager")
+
+    server_start.ready()
+
+
 def test_deferred_attempted_swallows_emit_errors(loop_env, monkeypatch):
     """A raising deferred-attempted emission never blocks the ready path."""
     _tmp_path, events, _advance = loop_env
@@ -509,6 +716,42 @@ def test_deferred_attempted_swallows_emit_errors(loop_env, monkeypatch):
     server_start.ready()
 
     assert _states(events) == ["attempted", "failed"]
+
+
+def test_deferred_ready_contains_base_exception(loop_env, monkeypatch):
+    _tmp_path, events, _advance = loop_env
+
+    _run(loop_env, outcome="resolve")
+    server_start._reset_for_tests()
+    server_start.attempted("test-model", load_policy="eager")
+    monkeypatch.setattr(
+        track_module,
+        "would_accept",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(SystemExit(9)),
+    )
+
+    server_start.ready()
+
+    assert _states(events) == ["attempted", "failed"]
+    assert server_start._marker_path().exists()
+
+
+def test_deferred_failed_contains_base_exception(loop_env, monkeypatch):
+    _tmp_path, events, _advance = loop_env
+
+    _run(loop_env, outcome="resolve")
+    server_start._reset_for_tests()
+    server_start.attempted("test-model", load_policy="eager")
+    monkeypatch.setattr(
+        model_events,
+        "_claim_ledger_key",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(SystemExit(9)),
+    )
+
+    server_start.failed("preflight")
+
+    assert _states(events) == ["attempted", "failed"]
+    assert server_start._marker_path().exists()
 
 
 def test_deferred_attempted_is_dropped_when_rejected(loop_env, monkeypatch):
@@ -543,16 +786,31 @@ def test_app_opened_rejected_token_writes_nothing(loop_env, monkeypatch):
     assert not (tmp_path / ".rapid-mlx" / "state" / "app-opened-recent.json").exists()
 
 
-def test_app_opened_claim_failure_is_contained(loop_env, monkeypatch):
+@pytest.mark.parametrize("failure", [OSError("claim failed"), SystemExit(9)])
+def test_app_opened_claim_failure_is_contained(loop_env, monkeypatch, failure):
     _tmp_path, _events, _advance = loop_env
     monkeypatch.setattr(
         model_events,
         "_claim_ledger_key",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("claim failed")),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(failure),
     )
 
     track_module._emit_app_opened("cli")
 
+    assert track_module._app_opened_attempted is True
+
+
+def test_app_opened_identity_failure_is_contained(loop_env, monkeypatch):
+    _tmp_path, events, _advance = loop_env
+    monkeypatch.setattr(
+        state,
+        "get_or_create_client_id",
+        lambda: (_ for _ in ()).throw(SystemExit(9)),
+    )
+
+    track_module._emit_app_opened("cli")
+
+    assert events == []
     assert track_module._app_opened_attempted is True
 
 
