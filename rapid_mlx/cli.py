@@ -4583,7 +4583,10 @@ def _serve_will_run_on_mllm_lane(args) -> bool:
     ``prism_hadamard_qwen35``) stays on the MLLM lane and still needs it; one
     whose backbone mlx-lm loads (gemma4, qwen3_vl, …) degrades to the text
     lane on a base wheel instead. ``--mllm`` / ``--no-mllm`` are honoured via
-    ``resolve_serving_lane``'s explicit-flag short-circuits.
+    ``resolve_serving_lane``'s explicit-flag short-circuits, and a requested
+    speculative decoder / MTP short-circuits before the degrade probe (the
+    decoder is honoured by the text lane, whose routing the resolver already
+    decided — the degrade never answers those requests).
 
     The probe reads the cached checkpoint config offline (no network, no
     weight load). ``is_mllm_model`` promotes a checkpoint only on positive
@@ -4637,6 +4640,14 @@ def _serve_will_run_on_mllm_lane(args) -> bool:
         # the text lane on purpose. Only the evidence-free "text_checkpoint"
         # verdict (#3113: no weights cached yet) may fall back to the
         # curated alias profile.
+        return False
+    if requested_spec_decode not in (None, "none"):
+        # A requested speculative decoder (or MTP via the flag shorthands) is
+        # routed to the text lane by ``resolve_serving_lane`` on its own —
+        # the decoder is only honoured there. The degrade below decides the
+        # PLAIN automatic path and must never answer a spec-decode request:
+        # short-circuit before consulting it so the predicate cannot flip a
+        # spec-decode serve's lane in either direction.
         return False
     if not _alias_needs_vision_runtime_without_weights(
         args.model,

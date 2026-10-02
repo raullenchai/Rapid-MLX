@@ -399,6 +399,116 @@ def test_desktop_sidecar_degrades_silently(monkeypatch, capsys):
 
 
 # ---------------------------------------------------------------------------
+# Speculative decode / MTP requests never consult the degrade. The resolver
+# routes those requests to the text lane on its own (the decoder is only
+# honoured there), so both the [vision] guard and the degrade warning must
+# answer from that routing — checkpoint_serves_text_without_vision is never
+# applied to them. Pinned for the guard (fresh AND weight-evidenced caches)
+# and the warning path; a control proves the degrade still applies without.
+# ---------------------------------------------------------------------------
+
+
+def _spec_decode_args(**flags):
+    base = {"model": "gemma-4-26b-4bit", "mllm": False, "no_mllm": False}
+    base.update(flags)
+    return SimpleNamespace(**base)
+
+
+def _forbid_degrade_consult(monkeypatch) -> None:
+    """Make the degrade predicate scream if anyone consults it."""
+    from rapid_mlx.api import utils as api_utils
+
+    def _forbidden(_name):
+        raise AssertionError(
+            "checkpoint_serves_text_without_vision must not be consulted for "
+            "speculative-decode / MTP requests"
+        )
+
+    monkeypatch.setattr(api_utils, "checkpoint_serves_text_without_vision", _forbidden)
+
+
+def test_spec_decode_requests_skip_the_degrade_in_the_guard(monkeypatch):
+    """Guard, fresh install: spec-decode / MTP requests short-circuit BEFORE
+    the degrade probe — the predicate is never consulted and the lane follows
+    the resolver's own text-lane routing for the decoder."""
+    from rapid_mlx import cli
+    from rapid_mlx.api import utils as api_utils
+
+    _mock_vision_absent(monkeypatch)
+    # Fresh install: no weight evidence (the resolver's spec branch then
+    # answers text_checkpoint on its own).
+    monkeypatch.setattr(api_utils, "read_model_metadata", lambda _name: None)
+    monkeypatch.setattr(cli, "_prefetch_config_for_lane_guard", lambda _p: None)
+    _forbid_degrade_consult(monkeypatch)
+
+    for flags in (
+        {"spec_decode": "dflash"},
+        {"spec_decode": "mtp"},
+        {"enable_mtp": True},
+        {"force_spec_decode": True},
+    ):
+        assert cli._serve_will_run_on_mllm_lane(_spec_decode_args(**flags)) is False
+
+
+def test_spec_decode_requests_skip_the_degrade_with_weight_evidence(
+    monkeypatch,
+):
+    """Guard, cached VLM: even with MLLM weight evidence (the resolver's own
+    ``text_lane_speculative_decode`` routing) a spec-decode request never
+    reaches the degrade probe."""
+    from rapid_mlx import cli
+
+    _mock_vision_absent(monkeypatch)
+    _patch_lane_probes(monkeypatch, is_mllm=True, cache_mode=None)
+    _patch_degrade_config(monkeypatch, GEMMA4_VLM_CONFIG)
+    _forbid_degrade_consult(monkeypatch)
+
+    for flags in (
+        {"spec_decode": "dflash"},
+        {"enable_mtp": True},
+        {"force_spec_decode": True},
+    ):
+        assert cli._serve_will_run_on_mllm_lane(_spec_decode_args(**flags)) is False
+
+
+def test_spec_decode_requests_never_trigger_the_degrade_warning(monkeypatch):
+    """Warning path: a spec-decode / MTP request gets no degrade warning and
+    never consults the predicate."""
+    from rapid_mlx import cli
+    from rapid_mlx.model_aliases import resolve_profile
+
+    _mock_vision_absent(monkeypatch)
+    _patch_degrade_config(monkeypatch, GEMMA4_VLM_CONFIG)
+    _forbid_degrade_consult(monkeypatch)
+    profile = resolve_profile("gemma-4-26b-4bit")
+    assert profile is not None
+
+    for flags in (
+        {"spec_decode": "dflash"},
+        {"spec_decode": "mtp"},
+        {"enable_mtp": True},
+        {"force_spec_decode": True},
+    ):
+        args = _spec_decode_args(**flags)
+        assert cli._alias_text_degrades_without_vision(profile, args=args) is False
+        assert cli._warn_vision_text_only_degrade(profile, args=args) is False
+
+
+def test_plain_serve_still_consults_the_degrade(monkeypatch):
+    """Control for the spec-decode short-circuit: without a requested decoder
+    the guard DOES consult the predicate — a False verdict keeps the loud
+    [vision] guard (the probe's fail-closed default)."""
+    from rapid_mlx import cli
+
+    _mock_vision_absent(monkeypatch)
+    _patch_lane_probes(monkeypatch, is_mllm=True, cache_mode=None)
+    _patch_degrade_config(monkeypatch, UNKNOWN_VLM_CONFIG)
+
+    args = _spec_decode_args()
+    assert cli._serve_will_run_on_mllm_lane(args) is True
+
+
+# ---------------------------------------------------------------------------
 # Eligibility probe unit contracts (real mlx_lm import probes, no mocks).
 # ---------------------------------------------------------------------------
 
