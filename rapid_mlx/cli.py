@@ -4677,8 +4677,15 @@ def _alias_modality(model_name: str) -> str | None:
 
 
 def _alias_text_degrades_without_vision(profile, *, args=None) -> bool:
-    """Whether an absent vision extra leaves this catalog alias text-capable."""
-    if profile is None or profile.modality != "text" or profile.is_text_only:
+    """Whether an absent vision extra leaves this checkpoint text-capable.
+
+    ``profile`` is the catalog alias profile; ``None`` means ``serve`` was
+    given a direct Hugging Face repo id (or local path), which degrades only
+    on the resolver's own positive evidence for ``args.model``.
+    """
+    if profile is None:
+        return args is not None and _direct_ref_text_degrades_without_vision(args)
+    if profile.modality != "text" or profile.is_text_only:
         return False
     from .models.mllm import VisionRuntimeStatus, vision_runtime_status
 
@@ -4734,6 +4741,33 @@ def _alias_text_degrades_without_vision(profile, *, args=None) -> bool:
             getattr(args, "spec_decode", "none") if args is not None else "none"
         ),
     ) and checkpoint_serves_text_without_vision(model_name)
+
+
+def _direct_ref_text_degrades_without_vision(args) -> bool:
+    """Degrade verdict for a ``serve`` ref with no catalog alias profile.
+
+    Without a curated profile there is no pre-weights fallback chain: the
+    warning fires only when the (cache-only) resolver itself routes
+    ``args.model`` to the text lane with the absent-runtime degrade — the
+    same decision the boot guard and the engine act on.
+    """
+    requested_spec_decode = getattr(args, "spec_decode", "none") or "none"
+    if (
+        getattr(args, "mllm", False)
+        or getattr(args, "no_mllm", False)
+        or requested_spec_decode not in (None, "none")
+        or getattr(args, "enable_mtp", False)
+        or getattr(args, "force_spec_decode", False)
+    ):
+        return False
+    from .models.mllm import VisionRuntimeStatus, vision_runtime_status
+
+    if vision_runtime_status()[0] is not VisionRuntimeStatus.ABSENT:
+        return False
+    from .api.utils import resolve_serving_lane_decision
+
+    decision = resolve_serving_lane_decision(args.model)
+    return decision.auto_text_fallback and decision.reason == "vision_runtime_absent"
 
 
 def _warn_vision_text_only_degrade(profile, *, args=None) -> bool:
@@ -5423,18 +5457,25 @@ def serve_command(args):
 
     requested_spec_decode = getattr(args, "spec_decode", "none") or "none"
     if (
-        _serve_profile is not None
-        and vision_runtime_status()[0] is VisionRuntimeStatus.ABSENT
+        vision_runtime_status()[0] is VisionRuntimeStatus.ABSENT
         and not getattr(args, "mllm", False)
         and not getattr(args, "no_mllm", False)
         and requested_spec_decode in (None, "none")
         and not getattr(args, "enable_mtp", False)
         and not getattr(args, "force_spec_decode", False)
     ):
+        # A catalog alias probes its profile's hf_path; a direct Hugging Face
+        # repo id (no alias profile) probes ``args.model`` itself — the SAME
+        # ref the guard's resolver reads below. Local paths and Hub offline
+        # mode are no-ops inside the helper.
         _prefetch_config_for_degrade_probe(
-            _serve_profile.hf_path
-            or getattr(args, "_original_alias", None)
-            or args.model
+            (
+                _serve_profile.hf_path
+                or getattr(args, "_original_alias", None)
+                or args.model
+            )
+            if _serve_profile is not None
+            else args.model
         )
     _warn_vision_text_only_degrade(_serve_profile, args=args)
     if _serve_will_run_on_mllm_lane(args):
