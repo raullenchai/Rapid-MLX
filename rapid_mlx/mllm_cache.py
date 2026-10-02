@@ -307,7 +307,7 @@ class MLLMPrefixCacheManager:
         # Check for image-only match (can reuse vision embeddings)
         if images:
             image_key = self._make_image_only_key(images)
-            for key, entry in self._cache.items():
+            for _key, entry in self._cache.items():
                 if (
                     entry.image_hash == image_key
                     and entry.vision_embeddings is not None

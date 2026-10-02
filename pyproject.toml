@@ -681,10 +681,7 @@ ignore = [
     "E402",   # module-level import not at top
     "E501",   # line too long
     "E731",   # lambda assignment
-    "F811",   # redefined unused
-    "F841",   # unused variable
     "B004",   # unreliable callable check
-    "B007",   # unused loop variable
     "B008",   # function call in default arg
     "B011",   # assert false
     "B017",   # assert raises exception

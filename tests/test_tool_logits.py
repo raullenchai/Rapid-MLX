@@ -77,7 +77,7 @@ class TestMiniMaxToolLogitsProcessor:
     def test_init_tokenizes_patterns(self, processor):
         """Structural patterns should be pre-tokenized."""
         assert len(processor._pattern_tokens) > 0
-        for pattern, tokens in processor._pattern_tokens.items():
+        for _pattern, tokens in processor._pattern_tokens.items():
             assert isinstance(tokens, list)
             assert len(tokens) > 0
 
