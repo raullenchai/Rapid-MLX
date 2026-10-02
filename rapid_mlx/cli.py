@@ -11805,7 +11805,11 @@ def chat_command(args):
                     served_name=original,
                     register_in=_active_procs,
                     log_handle=_log_handle,
-                    context_length=getattr(args, "context_length", None),
+                    **(
+                        {"context_length": args.context_length}
+                        if getattr(args, "context_length", None) is not None
+                        else {}
+                    ),
                     **privacy_kwargs,
                 )
             finally:
@@ -12156,7 +12160,11 @@ def chat_command(args):
                 served_name=new_alias,
                 register_in=_active_procs,
                 log_handle=_new_log_handle,
-                context_length=getattr(args, "context_length", None),
+                **(
+                    {"context_length": args.context_length}
+                    if getattr(args, "context_length", None) is not None
+                    else {}
+                ),
                 **privacy_kwargs,
             )
         try:
