@@ -835,11 +835,13 @@ def test_dspark_first_artifact_download_failure_is_download_stage(monkeypatch):
     monkeypatch.setattr(
         "rapid_mlx.telemetry.posthog_sender.install_atexit", lambda: None
     )
-    monkeypatch.setattr(
-        server_start,
-        "_track",
-        lambda state, *, failure_stage=None: events.append((state, failure_stage)),
-    )
+
+    def capture(accepted) -> bool:
+        props = dict(accepted.props)
+        events.append((props["state"], props.get("failure_stage")))
+        return True
+
+    monkeypatch.setattr("rapid_mlx.telemetry.track._enqueue_accepted", capture)
     server_start._reset_for_tests()
     server_start.attempted(args.model, load_policy="eager")
     try:
@@ -859,8 +861,8 @@ async def test_listener_creation_emits_ready_after_attempted(monkeypatch):
     events: list[dict[str, object]] = []
     monkeypatch.setattr("rapid_mlx.telemetry.track._upload_allowed", lambda: True)
     monkeypatch.setattr(
-        "rapid_mlx.telemetry.track.track",
-        lambda event, props: events.append({"event": event, **props}),
+        "rapid_mlx.telemetry.track._enqueue_accepted",
+        lambda accepted: events.append({"event": accepted.event, **accepted.props}),
     )
     server_start._reset_for_tests()
     server_start.attempted("qwen3.5-4b-4bit", load_policy="lazy")
@@ -886,8 +888,8 @@ async def test_lifespan_failure_emits_engine_start_without_ready(monkeypatch):
     events: list[dict[str, object]] = []
     monkeypatch.setattr("rapid_mlx.telemetry.track._upload_allowed", lambda: True)
     monkeypatch.setattr(
-        "rapid_mlx.telemetry.track.track",
-        lambda event, props: events.append({"event": event, **props}),
+        "rapid_mlx.telemetry.track._enqueue_accepted",
+        lambda accepted: events.append({"event": accepted.event, **accepted.props}),
     )
 
     async def failing_lifespan(scope, receive, send):
@@ -924,8 +926,8 @@ async def test_lifespan_failure_return_emits_engine_start_without_ready(monkeypa
     events: list[dict[str, object]] = []
     monkeypatch.setattr("rapid_mlx.telemetry.track._upload_allowed", lambda: True)
     monkeypatch.setattr(
-        "rapid_mlx.telemetry.track.track",
-        lambda event, props: events.append({"event": event, **props}),
+        "rapid_mlx.telemetry.track._enqueue_accepted",
+        lambda accepted: events.append({"event": accepted.event, **accepted.props}),
     )
 
     async def lifespan_failed_without_raise(instance, sockets=None):
@@ -955,8 +957,8 @@ async def test_listener_without_banner_callback_still_emits_ready(monkeypatch):
     events: list[dict[str, object]] = []
     monkeypatch.setattr("rapid_mlx.telemetry.track._upload_allowed", lambda: True)
     monkeypatch.setattr(
-        "rapid_mlx.telemetry.track.track",
-        lambda event, props: events.append({"event": event, **props}),
+        "rapid_mlx.telemetry.track._enqueue_accepted",
+        lambda accepted: events.append({"event": accepted.event, **accepted.props}),
     )
 
     async def create_listener(instance, sockets=None):
@@ -980,8 +982,8 @@ def test_runner_failure_emits_bind_and_preserves_exit(monkeypatch):
     events: list[dict[str, object]] = []
     monkeypatch.setattr("rapid_mlx.telemetry.track._upload_allowed", lambda: True)
     monkeypatch.setattr(
-        "rapid_mlx.telemetry.track.track",
-        lambda event, props: events.append({"event": event, **props}),
+        "rapid_mlx.telemetry.track._enqueue_accepted",
+        lambda accepted: events.append({"event": accepted.event, **accepted.props}),
     )
     server_start._reset_for_tests()
     server_start.attempted("qwen3.5-4b-4bit", load_policy="eager")
@@ -1008,8 +1010,8 @@ def test_listen_fd_bind_failure_omits_port_context(monkeypatch, port_argv):
     events: list[dict[str, object]] = []
     monkeypatch.setattr("rapid_mlx.telemetry.track._upload_allowed", lambda: True)
     monkeypatch.setattr(
-        "rapid_mlx.telemetry.track.track",
-        lambda event, props: events.append({"event": event, **props}),
+        "rapid_mlx.telemetry.track._enqueue_accepted",
+        lambda accepted: events.append({"event": accepted.event, **accepted.props}),
     )
 
     def fail_runner(*_args, **_kwargs):
@@ -1038,8 +1040,8 @@ def test_port_collision_emits_only_failed_bind(monkeypatch):
     legacy_failures: list[BaseException] = []
     monkeypatch.setattr("rapid_mlx.telemetry.track._upload_allowed", lambda: True)
     monkeypatch.setattr(
-        "rapid_mlx.telemetry.track.track",
-        lambda event, props: events.append({"event": event, **props}),
+        "rapid_mlx.telemetry.track._enqueue_accepted",
+        lambda accepted: events.append({"event": accepted.event, **accepted.props}),
     )
     monkeypatch.setattr(
         "rapid_mlx.telemetry.model_events.emit_model_serve_failed",
@@ -1070,8 +1072,8 @@ def test_implicit_port_scan_exhaustion_emits_nonexplicit_bind(monkeypatch):
     events: list[dict[str, object]] = []
     monkeypatch.setattr("rapid_mlx.telemetry.track._upload_allowed", lambda: True)
     monkeypatch.setattr(
-        "rapid_mlx.telemetry.track.track",
-        lambda event, props: events.append({"event": event, **props}),
+        "rapid_mlx.telemetry.track._enqueue_accepted",
+        lambda accepted: events.append({"event": accepted.event, **accepted.props}),
     )
     monkeypatch.setattr(cli, "_port_collision_host", lambda _host, _port: _host)
     server_start._reset_for_tests()

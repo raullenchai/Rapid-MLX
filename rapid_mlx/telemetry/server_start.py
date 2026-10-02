@@ -6,6 +6,7 @@ from __future__ import annotations
 import atexit
 import json
 import logging
+import math
 import os
 import stat
 import tempfile
@@ -30,11 +31,13 @@ _FAILURE_STAGES = frozenset(
 _lock = threading.Lock()
 _attempted = False
 _attempted_emitted = False
+_attempted_deferred = False
 _terminal = False
 _model_type: str | None = None
 _load_policy: str | None = None
 _current_failure_stage = "resolve"
 _previous_run_unterminated = False
+_start_failure_snapshot: frozenset[str] = frozenset()
 _owns_inflight_marker = False
 _owned_inflight_snapshot: tuple[int, int] | None = None
 _marker_cleanup_registered = False
@@ -42,6 +45,41 @@ _marker_cleanup_registered = False
 logger = logging.getLogger(__name__)
 
 _MAX_MARKER_BYTES = 4096
+
+
+def _serve_start_recent_path() -> Path:
+    """Resolve the server-start dedupe ledger beneath the state root."""
+    from rapid_mlx.telemetry.state import _default_telemetry_dir
+
+    return _default_telemetry_dir() / "state" / "serve-start-recent.json"
+
+
+def _failure_window_snapshot() -> tuple[bool, frozenset[str]]:
+    """Read the start ledger without writing anything.
+
+    Returns ``(defer_attempted, fresh_failure_keys)``. A run that starts while
+    any failure window is active defers its ``attempted`` event until its own
+    outcome is known, so a repeated identical failure can stay silent without
+    orphaning an ``attempted``. A run outside any window keeps today's
+    immediate ``attempted``: a crash before any terminal is still visible
+    exactly as before. Any read failure fails open (no deferral).
+    """
+    try:
+        from rapid_mlx.telemetry import model_events
+
+        recent = model_events._read_serve_failed_recent(_serve_start_recent_path())
+        now = model_events._serve_failed_clock()
+        if not math.isfinite(now):
+            return False, frozenset()
+        fresh = frozenset(
+            encoded_key
+            for encoded_key, timestamp in recent.items()
+            if timestamp <= now
+            and now - timestamp < model_events.SERVE_FAILED_DEDUPE_SECONDS
+        )
+        return bool(fresh), fresh
+    except BaseException:
+        return False, frozenset()
 
 
 def _marker_path() -> Path:
@@ -335,6 +373,27 @@ def _register_marker_cleanup() -> None:
     _marker_cleanup_registered = True
 
 
+def _server_start_props(
+    state: str,
+    *,
+    failure_stage: str | None = None,
+    port_explicit: bool | None = None,
+) -> dict[str, object]:
+    """Build only registry-approved properties for ``server_start_state``."""
+    props: dict[str, object] = {"state": state}
+    if _model_type is not None:
+        props["model_type"] = _model_type
+    if _load_policy is not None:
+        props["load_policy"] = _load_policy
+    if state == "failed" and failure_stage is not None:
+        props["failure_stage"] = failure_stage
+    if state == "failed" and failure_stage == "bind" and port_explicit is not None:
+        props["port_explicit"] = port_explicit
+    if state == "attempted" and _previous_run_unterminated:
+        props["previous_run_unterminated"] = True
+    return props
+
+
 def _track(
     state: str,
     *,
@@ -345,26 +404,30 @@ def _track(
     try:
         from rapid_mlx.telemetry.track import track
 
-        props: dict[str, object] = {"state": state}
-        if _model_type is not None:
-            props["model_type"] = _model_type
-        if _load_policy is not None:
-            props["load_policy"] = _load_policy
-        if state == "failed" and failure_stage is not None:
-            props["failure_stage"] = failure_stage
-        if state == "failed" and failure_stage == "bind" and port_explicit is not None:
-            props["port_explicit"] = port_explicit
-        if state == "attempted" and _previous_run_unterminated:
-            props["previous_run_unterminated"] = True
-        return track("server_start_state", props)
+        return track(
+            "server_start_state",
+            _server_start_props(
+                state,
+                failure_stage=failure_stage,
+                port_explicit=port_explicit,
+            ),
+        )
     except BaseException:
         return False
 
 
 def attempted(model_ref: object = None, *, load_policy: object = None) -> None:
-    """Emit the accepted invocation exactly once for this process."""
-    global _attempted, _attempted_emitted, _model_type, _load_policy
-    global _previous_run_unterminated
+    """Emit the accepted invocation exactly once for this process.
+
+    When this run starts inside an active failure window (a restart loop), the
+    ``attempted`` event is deferred until the run's own terminal outcome is
+    known, so a repeated identical failure emits nothing at all while a
+    ``ready`` or different failure still emits its full pair. Runs outside a
+    window emit ``attempted`` immediately, exactly as before.
+    """
+    global _attempted, _attempted_emitted, _attempted_deferred
+    global _model_type, _load_policy
+    global _previous_run_unterminated, _start_failure_snapshot
     global _owns_inflight_marker
     resolved_policy = (
         load_policy
@@ -396,6 +459,12 @@ def attempted(model_ref: object = None, *, load_policy: object = None) -> None:
             _model_type = model_type(model_ref)
         except BaseException:
             return
+        defer, _start_failure_snapshot = _failure_window_snapshot()
+        if defer:
+            # The outcome decides the pair; hold the one-shot latch meanwhile.
+            _attempted = True
+            _attempted_deferred = True
+            return
         if _track("attempted") is not False:
             _attempted = True
             _attempted_emitted = True
@@ -415,7 +484,8 @@ def ready() -> None:
             return
         _terminal = True
         attempted_emitted = _attempted_emitted
-        if not attempted_emitted:
+        deferred = _attempted_deferred
+        if not (attempted_emitted or deferred):
             # No attempted event exists to balance, but the marker still has
             # to remain for crash-log liveness until clean process exit.
             _mark_inflight_terminal()
@@ -424,28 +494,138 @@ def ready() -> None:
     # uses it to distinguish this process's open sink from stale diagnostics;
     # the atexit hook removes it on a clean shutdown. A failed telemetry write
     # likewise leaves the attempted marker behind for the next run to report.
-    if _track("ready") is not False:
+    terminal_enqueued = (
+        _emit_deferred_ready_pair() if deferred else _track("ready") is not False
+    )
+    if terminal_enqueued:
         with _lock:
             _mark_inflight_terminal()
+    # A success ends the restart loop, so the recorded failure window clears
+    # and a recurrence is new information again. Best effort and fail-open.
+    _clear_failure_ledger()
+
+
+def _failure_key(
+    failure_stage: str, port_explicit: bool | None
+) -> tuple[str, bool | None]:
+    """Reduce one failed terminal to its loop-dedupe key.
+
+    Two failures are "the same failure" when both the closed stage and the
+    explicit-port fact match; ``port_explicit`` only participates for binds.
+    """
+    if failure_stage == "bind":
+        return (failure_stage, port_explicit)
+    return (failure_stage, None)
+
+
+def _emit_deferred_ready_pair() -> bool:
+    """Queue a deferred attempted/ready pair without a terminal-only event."""
+    try:
+        from rapid_mlx.telemetry.track import _enqueue_accepted, would_accept
+
+        accepted_attempted = would_accept(
+            "server_start_state", _server_start_props("attempted")
+        )
+        accepted_ready = would_accept(
+            "server_start_state", _server_start_props("ready")
+        )
+        if accepted_attempted is None or accepted_ready is None:
+            return False
+        if not _enqueue_accepted(accepted_attempted):
+            return False
+        return _enqueue_accepted(accepted_ready)
+    except BaseException:
+        return False
+
+
+def _clear_failure_ledger() -> None:
+    """End the failure window after a successful start; best effort, silent."""
+    try:
+        from rapid_mlx.telemetry import model_events
+        from rapid_mlx.telemetry.track import _upload_allowed
+
+        if not _upload_allowed():
+            return
+        model_events._clear_ledger(_serve_start_recent_path())
+    except BaseException:
+        return
 
 
 def failed(failure_stage: object, *, port_explicit: bool | None = None) -> None:
-    """Emit the sole failed terminal state with a closed startup stage."""
+    """Emit the sole failed terminal state with a closed startup stage.
+
+    A repeat of the failure that was already recorded when this run started
+    emits nothing at all: the deferred ``attempted`` is dropped with its
+    terminal, so suppression never creates an orphan. A run whose
+    ``attempted`` already went out keeps its terminal even if a concurrent
+    process claimed the same key meanwhile. The durable claim is written only
+    when this failure emits, so suppressed repeats never extend the window.
+    """
     global _terminal
     if not isinstance(failure_stage, str) or failure_stage not in _FAILURE_STAGES:
         return
     with _lock:
         if _terminal:
             return
-        if not _attempted_emitted:
+        if not (_attempted_emitted or _attempted_deferred):
             _remove_inflight_marker()
             return
+        deferred = _attempted_deferred
+        snapshot = _start_failure_snapshot
         _terminal = True
     context: dict[str, bool] = {}
     if failure_stage == "bind" and port_explicit is not None:
         context["port_explicit"] = port_explicit
-    if _track("failed", failure_stage=failure_stage, **context) is not False:
-        _remove_inflight_marker()
+    try:
+        from rapid_mlx.telemetry import model_events
+        from rapid_mlx.telemetry.track import _enqueue_accepted, would_accept
+
+        if deferred and (
+            json.dumps(
+                _failure_key(failure_stage, port_explicit), separators=(",", ":")
+            )
+            in snapshot
+        ):
+            # Same failure as the previous recorded one, inside the window the
+            # run started in: emit neither half of the pair and write no
+            # claim, so the window stays anchored at the last emitted failure.
+            return
+        accepted_failed = would_accept(
+            "server_start_state",
+            _server_start_props("failed", failure_stage=failure_stage, **context),
+        )
+        accepted_attempted = (
+            would_accept("server_start_state", _server_start_props("attempted"))
+            if deferred
+            else None
+        )
+        if accepted_failed is None or (deferred and accepted_attempted is None):
+            # A rejected consent or registry decision must not consume the
+            # durable window claim, matching the model_serve_failed contract.
+            return
+        claimed = model_events._claim_ledger_key(
+            _serve_start_recent_path,
+            _failure_key(failure_stage, port_explicit),
+            window_seconds=model_events.SERVE_FAILED_DEDUPE_SECONDS,
+        )
+        if deferred and not claimed:
+            # A concurrent process claimed this same failure after our start;
+            # our attempted was never emitted, so going silent orphans nothing.
+            return
+        if deferred:
+            assert accepted_attempted is not None
+            if not _enqueue_accepted(accepted_attempted):
+                # The durable failure claim stays written, matching #3763's
+                # no-rollback contract, but an unqueued attempted must never
+                # be followed by a terminal-only event. The marker likewise
+                # remains until clean exit or the next run's recovery scan.
+                return
+        if _enqueue_accepted(accepted_failed):
+            # Only a successfully queued terminal may retire the crash-liveness
+            # marker; a lost terminal leaves it for the next run to report.
+            _remove_inflight_marker()
+    except BaseException:
+        return
 
 
 def load_policy(model_ref: object, *, lazy_load: bool = False) -> str:
@@ -490,14 +670,16 @@ def fail_current() -> None:
 
 
 def _reset_for_tests() -> None:
-    global _attempted, _attempted_emitted, _terminal, _model_type, _load_policy
+    global _attempted, _attempted_emitted, _attempted_deferred, _terminal
+    global _model_type, _load_policy
     global _current_failure_stage
     global _previous_run_unterminated, _owned_inflight_snapshot
-    global _owns_inflight_marker
+    global _owns_inflight_marker, _start_failure_snapshot
     with _lock:
         _remove_inflight_marker()
         _attempted = False
         _attempted_emitted = False
+        _attempted_deferred = False
         _terminal = False
         _model_type = None
         _load_policy = None
@@ -505,3 +687,4 @@ def _reset_for_tests() -> None:
         _previous_run_unterminated = False
         _owns_inflight_marker = False
         _owned_inflight_snapshot = None
+        _start_failure_snapshot = frozenset()

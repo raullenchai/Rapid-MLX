@@ -479,9 +479,12 @@ def test_zero_nth_model_served_is_omitted(monkeypatch):
 
 def test_app_opened_attempted_once_and_surface_selected(monkeypatch):
     calls: list[tuple[str, dict[str, object]]] = []
-    monkeypatch.setattr(
-        track_module, "track", lambda event, props: calls.append((event, props))
-    )
+
+    def enqueue(accepted) -> bool:
+        calls.append((accepted.event, dict(accepted.props)))
+        return True
+
+    monkeypatch.setattr(track_module, "_enqueue_accepted", enqueue)
     track_module._emit_app_opened("server")
     track_module._emit_app_opened("server")
     assert calls == [("app_opened", {})]

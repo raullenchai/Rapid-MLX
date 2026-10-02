@@ -18,13 +18,14 @@ import time
 import urllib.error
 from collections.abc import Callable
 from pathlib import Path
-from typing import ParamSpec
+from typing import ParamSpec, TypeAlias
 
 from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
 
 _serve_failure_lock = threading.Lock()
 _serve_failure_claimed = False
 _P = ParamSpec("_P")
+_LedgerKeyPart: TypeAlias = str | bool | None
 _EXCEPTION_CHAIN_LIMIT = 32
 SERVE_FAILED_DEDUPE_SECONDS = 600
 _SERVE_FAILED_MAX_KEYS = 64
@@ -482,25 +483,38 @@ def _acquire_serve_failed_lock(dir_fd: int) -> bool:
             time.sleep(min(_SERVE_FAILED_LOCK_SLEEP_SECONDS, remaining))
 
 
-def _serve_failure_claim_is_fresh(
-    recent: dict[str, float], encoded_key: str, current: float
+def _ledger_claim_is_fresh(
+    recent: dict[str, float],
+    encoded_key: str,
+    current: float,
+    window_seconds: float,
 ) -> bool:
     previous = recent.get(encoded_key)
     return (
         previous is not None
         and current >= previous
-        and current - previous < SERVE_FAILED_DEDUPE_SECONDS
+        and current - previous < window_seconds
     )
 
 
-def _claim_serve_failure_key(
-    key: tuple[str, str, str, str],
+def _claim_ledger_key(
+    resolve_path: Callable[[], Path],
+    key: tuple[_LedgerKeyPart, ...],
     *,
+    window_seconds: float,
     now: float | None = None,
     would_accept: Callable[[], bool] | None = None,
     on_claim: Callable[[], object] | None = None,
 ) -> bool:
-    """Accept then claim a cross-process failure key and enqueue after unlock."""
+    """Accept then claim a cross-process dedupe key and enqueue after unlock.
+
+    This is the shared durable-claim machinery introduced for
+    ``model_serve_failed`` (mode-0600 ledger, atomic claim, bounded lock wait,
+    fail-open contention path). Other emitters reuse it with their own ledger
+    path and window; the ledger format and lock discipline stay identical.
+    ``resolve_path`` is evaluated inside the guarded body so an unavailable
+    state root fails open exactly like the other storage failures.
+    """
     decision: bool | None = None
 
     def accepted() -> bool:
@@ -510,21 +524,25 @@ def _claim_serve_failure_key(
         return decision
 
     def enqueue_accepted() -> bool:
-        if not accepted():
+        try:
+            is_accepted = accepted()
+        except BaseException:
+            logger.debug("telemetry acceptance check raised; event was dropped")
+            return False
+        if not is_accepted:
             return False
         if on_claim is not None:
             try:
                 enqueue_result = on_claim()
-            except Exception:
+            except BaseException:
                 logger.debug(
-                    "model_serve_failed enqueue raised; any durable dedupe claim "
-                    "was left intact"
+                    "telemetry enqueue raised; any durable dedupe claim was left intact"
                 )
             else:
                 if enqueue_result is False:
                     logger.debug(
-                        "model_serve_failed enqueue was rejected; any durable dedupe "
-                        "claim was left intact"
+                        "telemetry enqueue was rejected; any durable dedupe claim "
+                        "was left intact"
                     )
         return True
 
@@ -538,14 +556,14 @@ def _claim_serve_failure_key(
         if not math.isfinite(current):
             return enqueue_accepted()
         encoded_key = json.dumps(key, separators=(",", ":"))
-        path = _serve_failed_recent_path()
+        path = resolve_path()
         if not _prepare_state_dir(path.parent):
             return enqueue_accepted()
         flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
         flags |= getattr(os, "O_CLOEXEC", 0)
         flags |= getattr(os, "O_NOFOLLOW", 0)
         dir_fd = os.open(path.parent, flags)
-    except Exception:
+    except BaseException:
         return enqueue_accepted()
 
     should_enqueue = False
@@ -562,7 +580,7 @@ def _claim_serve_failure_key(
                 # N processes simultaneously hit >250 ms contention on the
                 # local file; the unlocked re-read handles the common case.
                 recent = _read_serve_failed_recent(path)
-                if _serve_failure_claim_is_fresh(recent, encoded_key, current):
+                if _ledger_claim_is_fresh(recent, encoded_key, current, window_seconds):
                     return False
                 should_enqueue = True
             else:
@@ -576,7 +594,7 @@ def _claim_serve_failure_key(
                     for stored_key, timestamp in recent.items()
                     if timestamp <= current
                 }
-                if _serve_failure_claim_is_fresh(recent, encoded_key, current):
+                if _ledger_claim_is_fresh(recent, encoded_key, current, window_seconds):
                     return False
                 if not accepted():
                     return False
@@ -597,11 +615,69 @@ def _claim_serve_failure_key(
                     )
                 _atomic_write_marker(path, value=recent)
                 should_enqueue = True
-        except Exception:
+        except BaseException:
             should_enqueue = True
     finally:
-        os.close(dir_fd)
+        try:
+            os.close(dir_fd)
+        except BaseException:
+            pass
     return enqueue_accepted() if should_enqueue else False
+
+
+def _claim_serve_failure_key(
+    key: tuple[str, str, str, str],
+    *,
+    now: float | None = None,
+    would_accept: Callable[[], bool] | None = None,
+    on_claim: Callable[[], object] | None = None,
+) -> bool:
+    """Claim one ``model_serve_failed`` key in its shared ledger window."""
+    return _claim_ledger_key(
+        _serve_failed_recent_path,
+        key,
+        window_seconds=SERVE_FAILED_DEDUPE_SECONDS,
+        now=now,
+        would_accept=would_accept,
+        on_claim=on_claim,
+    )
+
+
+def _clear_ledger(path: Path) -> None:
+    """Best-effort locked clear of one dedupe ledger; never raises.
+
+    Used when a loop finally reaches ``ready``: the failure window ends with
+    the success, so a recurrence is new information again. Failing to take the
+    bounded lock keeps the existing claims (conservative suppression); any
+    other error is swallowed because telemetry must never affect the host.
+    """
+    try:
+        from rapid_mlx.telemetry.server_start import (
+            _atomic_write_marker,
+            _prepare_state_dir,
+        )
+
+        if not path.exists():
+            return
+        if not _prepare_state_dir(path.parent):
+            return
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        flags |= getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        dir_fd = os.open(path.parent, flags)
+    except BaseException:
+        return
+    try:
+        if not _acquire_serve_failed_lock(dir_fd):
+            return
+        _atomic_write_marker(path, value={})
+    except BaseException:
+        return
+    finally:
+        try:
+            os.close(dir_fd)
+        except BaseException:
+            pass
 
 
 @_never_raise

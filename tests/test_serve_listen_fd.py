@@ -283,13 +283,13 @@ def _assert_unsupported_lane_rejects_before_bind(
             monkeypatch.setattr(
                 "rapid_mlx.telemetry.posthog_sender.install_atexit", lambda: None
             )
-            monkeypatch.setattr(
-                server_start,
-                "_track",
-                lambda state, *, failure_stage=None: events.append(
-                    (state, failure_stage)
-                ),
-            )
+
+            def capture(accepted) -> bool:
+                props = dict(accepted.props)
+                events.append((props["state"], props.get("failure_stage")))
+                return True
+
+            monkeypatch.setattr("rapid_mlx.telemetry.track._enqueue_accepted", capture)
             server_start._reset_for_tests()
             server_start.attempted(args.model, load_policy="eager")
             server_start.set_failure_stage("preflight")

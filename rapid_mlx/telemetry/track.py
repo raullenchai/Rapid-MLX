@@ -13,10 +13,12 @@ forgery can never put registry-invalid or free-text properties on the wire.
 from __future__ import annotations
 
 import copy
+import hashlib
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
+from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Protocol
 
@@ -302,20 +304,58 @@ def _enqueue_accepted(accepted: _AcceptedEvent) -> bool:
         return False
 
 
+def _app_opened_recent_path() -> Path:
+    """Resolve the ``app_opened`` dedupe ledger beneath the state root."""
+    return state._default_telemetry_dir() / "state" / "app-opened-recent.json"
+
+
+def _app_opened_install_scope() -> str:
+    """Return a local-only one-way scope for the current install identity."""
+    install_id = state.get_or_create_client_id()
+    return hashlib.sha256(install_id.encode("utf-8")).hexdigest()
+
+
 def _emit_app_opened(surface: str) -> None:
-    """Attempt ``app_opened`` once per process for an eligible process."""
+    """Attempt ``app_opened`` once per process for an eligible process.
+
+    At most one event per (surface, app_version) per install per ten-minute
+    window survives, using the same durable mode-0600 claim ledger as
+    ``model_serve_failed``: a restart loop that relaunches the process every
+    few seconds cannot flood launch telemetry, while a launch after the window
+    expires emits again. The claim is written before enqueue and is not rolled
+    back when the sender rejects the item, exactly like the serve-failure
+    ledger; consent-off processes never touch the ledger.
+    """
     global _app_opened_attempted
     try:
         if not _upload_allowed():
             return
-    except Exception:
+    except BaseException:
         return
     with _context_lock:
         if _app_opened_attempted:
             return
         _app_opened_attempted = True
     _set_surface(surface)
-    track("app_opened", {})
+    try:
+        from rapid_mlx.telemetry import model_events
+
+        accepted = would_accept("app_opened", {})
+        if accepted is None:
+            return
+        model_events._claim_ledger_key(
+            _app_opened_recent_path,
+            (
+                "app_opened",
+                surface,
+                rapid_mlx.__version__,
+                _app_opened_install_scope(),
+            ),
+            window_seconds=model_events.SERVE_FAILED_DEDUPE_SECONDS,
+            on_claim=lambda: _enqueue_accepted(accepted),
+        )
+    except BaseException:
+        return
 
 
 def start_lifecycle(surface: str) -> None:
