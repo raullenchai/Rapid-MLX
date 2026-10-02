@@ -6188,6 +6188,21 @@ class Scheduler:
             self._resolve_metal_cap_bytes(), self._current_metal_active_bytes()
         )
 
+    def _log_admission_fallback(self, key: str, message: str) -> None:
+        """Debug-log a memory-estimator fallback once per scheduler.
+
+        The admission estimators below degrade silently (0 bytes, RSS, an
+        fp32 dtype guess) so a rejected or over-admitted request would
+        otherwise be undiagnosable even at ``--log-level DEBUG``. Once per
+        key keeps per-step callers from flooding DEBUG output. Must be
+        called from inside the ``except`` block so ``exc_info`` is attached.
+        """
+        logged = self.__dict__.setdefault("_admission_fallbacks_logged", set())
+        if key in logged:
+            return
+        logged.add(key)
+        logger.debug(message, exc_info=True)
+
     def _current_metal_active_bytes(self) -> int:
         """Best-effort snapshot of MLX-reported Metal active memory.
 
@@ -6197,6 +6212,11 @@ class Scheduler:
         try:
             return int(mx.get_active_memory())
         except Exception:
+            self._log_admission_fallback(
+                "metal_active",
+                "Metal active-memory probe failed; admission treats MLX "
+                "active memory as 0 bytes",
+            )
             return 0
 
     def _current_process_resident_bytes(self) -> int:
@@ -6213,12 +6233,20 @@ class Scheduler:
             if footprint > 0:
                 return footprint
         except Exception:
-            pass
+            self._log_admission_fallback(
+                "phys_footprint",
+                "phys_footprint probe failed; falling back to RSS for "
+                "process memory pressure",
+            )
         try:
             import psutil
 
             return int(psutil.Process().memory_info().rss)
         except Exception:
+            self._log_admission_fallback(
+                "process_rss",
+                "RSS probe failed; admission treats process footprint as 0 bytes",
+            )
             return 0
 
     def _continuous_mtp_free_bytes(self) -> int:
@@ -6451,7 +6479,11 @@ class Scheduler:
                 if n > 0:
                     return n
         except Exception:
-            pass
+            self._log_admission_fallback(
+                "kv_dtype",
+                "KV dtype inference from the model config failed; assuming "
+                "fp32 (4 bytes) for KV admission estimates",
+            )
         # Default: assume the LARGEST plausible dtype (fp32 = 4) so we
         # over-estimate KV usage and err toward rejection rather than
         # admitting a request that exceeds the cap. Reached only when
@@ -7013,7 +7045,11 @@ class Scheduler:
             try:
                 mx.clear_cache()
             except Exception:
-                pass
+                self._log_admission_fallback(
+                    "preflight_clear_cache",
+                    "mx.clear_cache() failed during Metal admission preflight; "
+                    "re-reading active memory without releasing allocator cache",
+                )
             active = self._current_metal_active_bytes()
         if active + smallest_kv < cap:
             return
