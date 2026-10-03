@@ -99,8 +99,10 @@ def _ancestors(monkeypatch, chain):
     )
 
 
-def _unfocusable(monkeypatch, clicks):
+def _unfocusable(monkeypatch, clicks, hit="live"):
     monkeypatch.setattr(backend, "_live_element", lambda *a, **k: "live")
+    monkeypatch.setattr(backend, "_pid_app_element", lambda app: "app")
+    monkeypatch.setattr(backend.ax_driver, "_element_at", lambda app, x, y: hit)
     monkeypatch.setattr(backend, "_focused_ax_element", lambda app: None)
     monkeypatch.setattr(
         backend.ax_driver, "AXUIElementSetAttributeValue", lambda *a: -25205
@@ -383,3 +385,52 @@ def test_borrow_foreground_revalidates_identity_while_polling(monkeypatch):
     with pytest.raises(errors.ComputerUseError) as exc:
         backend._borrow_foreground(snapshot)
     assert exc.value.code == "target_drift"
+
+
+def _hit_chain(monkeypatch, parents, actions):
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_get",
+        lambda el, attr: (
+            parents.get(el)
+            if attr == "AXParent"
+            else {"n0": "AXWindow"}.get(el)
+            if attr == "AXRole"
+            else None
+        ),
+    )
+    monkeypatch.setattr(
+        backend.ax_driver, "_action_names_or_none", lambda el: actions.get(el, [])
+    )
+
+
+@pytest.mark.parametrize(
+    ("hit", "parents", "actions", "clicked"),
+    [
+        # the app's hit-test returns an inner editor of the field: allowed
+        ("editor", {"live": "n0", "editor": "live"}, {}, True),
+        # an overlay button covers the field's center: refused
+        ("overlay", {"live": "n0", "overlay": "n0"}, {"overlay": ["AXPress"]}, False),
+        # nothing readable at the point: refused
+        (None, {"live": "n0"}, {}, False),
+        # the field itself is pressable (a control styled as an input): refused
+        ("live", {"live": "n0"}, {"live": ["AXPress"]}, False),
+        # AXConfirm on the field itself is normal for text inputs: allowed
+        ("live", {"live": "n0"}, {"live": ["AXConfirm"]}, True),
+    ],
+)
+def test_pixel_focus_hit_tests_the_exact_point(
+    monkeypatch, hit, parents, actions, clicked
+):
+    clicks = []
+    _unfocusable(monkeypatch, clicks, hit=hit)
+    _hit_chain(monkeypatch, parents, actions)
+    snapshot = _snapshot({"role": "AXTextField", "label": "q", "actions": []})
+    if clicked:
+        backend.click("App", 0, expected_snapshot=snapshot, focus_only=True)
+        assert clicks == [(50.0, 60.0)]
+    else:
+        with pytest.raises(errors.ComputerUseError) as exc:
+            backend.click("App", 0, expected_snapshot=snapshot, focus_only=True)
+        assert exc.value.code == "synthetic_input_blocked"
+        assert clicks == []

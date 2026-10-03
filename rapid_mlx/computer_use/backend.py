@@ -1982,6 +1982,11 @@ def _pixel_focus_is_safe(entry: dict, live: object | None) -> bool:
         return False
     if entry.get("role") in COMMIT_ON_CLICK_ROLES:
         return False
+    # Text fields commonly expose AXConfirm (Enter); a click never fires it,
+    # but a pressable or openable "text field" is a control, not an input.
+    own = ax_driver._action_names_or_none(live)
+    if own is None or set(own) & _CLICK_COMMIT_ACTIONS:
+        return False
     seen: set[int] = set()
     node = ax_driver._get(live, "AXParent")
     for _ in range(64):
@@ -2005,6 +2010,31 @@ def _pixel_focus_is_safe(entry: dict, live: object | None) -> bool:
 
 
 _COMMIT_ACTIONS = frozenset({"AXPress", "AXConfirm", "AXOpen"})
+_CLICK_COMMIT_ACTIONS = frozenset({"AXPress", "AXOpen"})
+
+
+def _pixel_hits_target(snapshot: dict, live: object, center) -> bool:
+    """Whether a click at ``center`` lands on ``live`` itself, right now.
+
+    The app's own hit-test must return ``live`` or a non-pressable part of
+    it (a text field's inner editor); an overlay, sibling button or anything
+    unreadable at that point refuses the click.
+    """
+    try:
+        app_element = _pid_app_element(snapshot["app"])
+    except ComputerUseError:
+        return False
+    node = ax_driver._element_at(app_element, float(center[0]), float(center[1]))
+    for _ in range(8):
+        if node is None:
+            return False
+        if node == live:
+            return True
+        names = ax_driver._action_names_or_none(node)
+        if names is None or set(names) & _CLICK_COMMIT_ACTIONS:
+            return False
+        node = ax_driver._get(node, "AXParent")
+    return False
 
 
 def _focus_without_commit(snapshot: dict, live: object | None) -> str | None:
@@ -2119,7 +2149,9 @@ def click(
                     verification="exact Accessibility element holds keyboard focus",
                     include_post_state=include_post_state,
                 )
-            if not _pixel_focus_is_safe(entry, live):
+            if not _pixel_focus_is_safe(entry, live) or not _pixel_hits_target(
+                snapshot, live, center
+            ):
                 raise ComputerUseError(
                     "synthetic_input_blocked",
                     "cannot focus this control without clicking it; "
