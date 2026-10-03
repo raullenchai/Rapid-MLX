@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Any
 from urllib.parse import quote
 
+from ..leaderboard_links import run_url
 from .atomic_upload import preview_run, upload_run
 from .hardware import host_memory_gib
 from .local_runner import LocalBenchmarkError, run_local
@@ -479,6 +480,8 @@ def benchmark_command(args) -> int:
             receipt = value["receipt"]
             suffix = " (already uploaded)" if receipt["already_exists"] else ""
             print(f"Accepted benchmark {receipt['submission_id']}{suffix}.")
+            if link := run_url(receipt["submission_id"]):
+                print(f"See it on the leaderboard: {link}")
             if profile := _contributor_profile(receipt):
                 identity, url = profile
                 print(f"You contributed as {identity}.")
