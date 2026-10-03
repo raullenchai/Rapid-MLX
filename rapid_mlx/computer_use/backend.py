@@ -1329,8 +1329,8 @@ def _borrow_foreground(snapshot: dict) -> None:
     the Cmd+A synthetic-typing fallback) activate it here, narrowly and only
     after the process identity matches the observation.
     """
-    if observation_activates(snapshot.get("app")):
-        return  # the observation already activated it (historical path)
+    # Decide on the process's actual state, not the delivery policy: the user
+    # may have switched away since an activating observation.
     expected = snapshot.get("app") or {}
     running = _same_process(expected)
     if bool(running.isActive()):

@@ -18,6 +18,9 @@ def _foreground_input_delivery(monkeypatch):
     # default "auto" mode would route through background delivery instead.
     # Background routing has its own tests in test_computer_use_background.py.
     monkeypatch.setenv(background_input.DELIVERY_ENV, "foreground")
+    # Activation of the exact process is covered in test_cua_observe_safety.py;
+    # these fakes model an app that is already frontmost.
+    monkeypatch.setattr(backend, "_borrow_foreground", lambda snapshot: None)
 
 
 def _window(window_id=101, index=0, x=0, y=0, width=100, height=100):

@@ -280,14 +280,13 @@ def test_borrow_foreground_refuses_recycled_pid(monkeypatch):
     assert running.activations == 0
 
 
-def test_borrow_foreground_is_noop_on_foreground_route(monkeypatch):
+def test_borrow_foreground_reactivates_on_foreground_route(monkeypatch):
+    # An activating observation does not prove the app is still frontmost.
+    running = _Running()
+    snapshot = _borrow_setup(monkeypatch, running)
     monkeypatch.setattr(background_input, "background_enabled", lambda: False)
-    monkeypatch.setattr(
-        backend.ax_driver,
-        "_application_for_pid",
-        lambda pid: pytest.fail("foreground route already activated on observe"),
-    )
-    backend._borrow_foreground(_snapshot({"role": "AXTextField"}))
+    backend._borrow_foreground(snapshot)
+    assert running.activations == 1
 
 
 def test_save_and_synthetic_fill_borrow_foreground_first(monkeypatch):
