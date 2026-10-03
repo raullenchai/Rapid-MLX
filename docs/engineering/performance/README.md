@@ -54,6 +54,7 @@ summary statistics, and limitations.
 - [Qwen Image 2.1 source-environment dogfood (2026-09-21)](2026-09-21-qwen-image-2.1-dogfood.md)
 - [Qwen Image 2.1 8/16 GB feasibility spike (2026-09-25)](2026-09-25-qwen-image-2.1-low-memory-spike.md)
 - [Qwen 27B pool customer experience, 2026-09-30](2026-09-30-qwen-pool-customer-ux.md)
+- [MTP under concurrency on an M4 Pro (2026-10-02)](2026-10-02-mtp-concurrency-m4-pro.md)
 - [Muse-Glimmer 30B 8-bit DFlash qualification](muse-glimmer-30b-dflash-qualification.md)
 - [Contention-aware prompt admission benchmark](scheduler-admission-1950.md)
 - [Telemetry v2 inference-path overhead](telemetry-v2-inference.md)
