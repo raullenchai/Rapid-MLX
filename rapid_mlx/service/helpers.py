@@ -5159,20 +5159,21 @@ def enforce_context_length(
         )
         reject_reason = "operational_cap"
     else:
-        if get_config().context_length is not None:
-            window_lead = (
-                "This server's maximum context length is "
-                f"{max_context} tokens (set by --context-length)."
-            )
-        else:
-            window_lead = (
-                f"This model's maximum context length is {max_context} tokens."
-            )
+        # The lead sentence stays byte-identical to origin/main (and to the
+        # OpenAI wording): clients such as LiteLLM string-match "This
+        # model's maximum context length is" to classify a context-window
+        # overflow. The operator-flag attribution is appended instead.
         detail = (
-            f"{window_lead} However, your prompt contains "
-            f"{int(prompt_tokens)} tokens, leaving no room for generation. "
-            "Please reduce the length of the messages."
+            f"This model's maximum context length is {max_context} tokens. "
+            f"However, your prompt contains {int(prompt_tokens)} tokens, leaving "
+            "no room for generation. Please reduce the length of the messages."
         )
+        requested = get_config().context_length
+        if requested is not None and int(requested) == max_context:
+            detail += (
+                f" This {max_context}-token window is set by the server's "
+                "--context-length flag, not by the model."
+            )
         reject_reason = "prompt_over_window"
     from rapid_mlx.telemetry.inference import (
         emit_capability_rejected,

@@ -981,6 +981,11 @@ def test_enforce_over_cap_names_the_remedy_for_a_native_window():
     assert err["code"] == "context_length_exceeded"
     assert "reduce the length of the messages" in err["message"]
     assert "--context-length" not in err["message"]  # native window: no flag
+    assert err["message"] == (
+        "This model's maximum context length is 2048 tokens. However, your "
+        "prompt contains 3000 tokens, leaving no room for generation. "
+        "Please reduce the length of the messages."
+    )  # byte-identical to origin/main
 
 
 def test_enforce_over_cap_attributes_operator_window_to_the_flag():
@@ -1006,6 +1011,13 @@ def test_enforce_over_cap_attributes_operator_window_to_the_flag():
     assert err["code"] == "context_length_exceeded"
     assert "--context-length" in err["message"]
     assert "reduce the length of the messages" in err["message"]
+    # origin/main's OpenAI-shaped lead is a client contract (LiteLLM and
+    # others string-match it): the attribution is appended, never swapped in.
+    assert err["message"].startswith(
+        "This model's maximum context length is 2048 tokens. However, your "
+        "prompt contains 3000 tokens, leaving no room for generation. "
+        "Please reduce the length of the messages."
+    )
 
 
 def test_operational_cap_body_names_the_max_prompt_tokens_flag():
