@@ -1304,3 +1304,41 @@ class TestAdmissionFallbackDebugLogging:
             "KV dtype inference" in r.getMessage() and r.exc_info is not None
             for r in caplog.records
         )
+
+    def test_phys_footprint_failure_falls_back_to_rss_and_logs(self, caplog):
+        import psutil
+
+        sched = _make_scheduler()
+        rss = SimpleNamespace(rss=123_456)
+        with (
+            patch(
+                "rapid_mlx.runtime.process_memory.get_phys_footprint",
+                side_effect=OSError("no footprint"),
+            ),
+            patch.object(
+                psutil, "Process", return_value=SimpleNamespace(memory_info=lambda: rss)
+            ),
+            caplog.at_level(logging.DEBUG, logger="rapid_mlx.scheduler"),
+        ):
+            assert sched._current_process_resident_bytes() == 123_456
+        assert any(
+            "phys_footprint probe failed" in r.getMessage() and r.exc_info
+            for r in caplog.records
+        )
+
+    def test_rss_failure_after_footprint_failure_returns_zero_and_logs(self, caplog):
+        import psutil
+
+        sched = _make_scheduler()
+        with (
+            patch(
+                "rapid_mlx.runtime.process_memory.get_phys_footprint",
+                side_effect=OSError("no footprint"),
+            ),
+            patch.object(psutil, "Process", side_effect=RuntimeError("no psutil")),
+            caplog.at_level(logging.DEBUG, logger="rapid_mlx.scheduler"),
+        ):
+            assert sched._current_process_resident_bytes() == 0
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("phys_footprint probe failed" in m for m in messages)
+        assert any("RSS probe failed" in m for m in messages)
