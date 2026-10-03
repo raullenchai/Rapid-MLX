@@ -580,6 +580,12 @@ def activate_without_raise(
         # Never leave the user's window defocused with nothing focused.
         _post_record(front, _focus_record(front_record_wid, 0x01))
         return False
+    # The focus record activates the process but leaves AppKit's key window
+    # as it was; a window that was never key (shown inactive, as Electron
+    # apps do) stays unkeyed and drops keys and AX focus. yabai follows the
+    # focus record with the make-key records for this reason.
+    _post_record(target, _make_key_record(target_wid, 0x01))
+    _post_record(target, _make_key_record(target_wid, 0x02))
     return True
 
 

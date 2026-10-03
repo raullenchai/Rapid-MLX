@@ -383,6 +383,40 @@ def _point_size(element: object) -> tuple[float, float, float, float] | None:
         return None
 
 
+def _wake_hidden_renderer(window: object) -> bool:
+    """Make Chromium re-send a hidden window's web-content tree.
+
+    A Chromium window that was already off screen (another Space, covered)
+    when accessibility was first enabled never builds its web-content tree:
+    the hidden renderer does not serialize it. A resize does (measured on
+    Electron), so the window is grown by one point and put straight back.
+    Only off-screen windows are touched; the user cannot see the change.
+    """
+    from . import background_input
+
+    window_id = background_input.ax_window_id(window)
+    frame = _point_size(window)
+    if window_id is None or frame is None:
+        return False
+    try:
+        from Quartz import (  # type: ignore[import-untyped]
+            CGWindowListCopyWindowInfo,
+            kCGWindowListOptionIncludingWindow,
+        )
+
+        info = CGWindowListCopyWindowInfo(kCGWindowListOptionIncludingWindow, window_id)
+        if not info or bool(info[0].get("kCGWindowIsOnscreen")):
+            return False
+    except Exception:  # pragma: no cover - pyobjc variants
+        return False
+    _, _, width, height = frame
+    for size in ((width + 1.0, height), (width, height)):
+        value = AS.AXValueCreate(AS.kAXValueCGSizeType, size)
+        if AS.AXUIElementSetAttributeValue(window, "AXSize", value) != 0:
+            return False
+    return True
+
+
 def _label(element: object) -> str:
     for attribute in ("AXDescription", "AXTitle", "AXValue"):
         value = _get(element, attribute)
@@ -538,11 +572,12 @@ class AppNotFoundError(LookupError):
 
 
 # Processes already initialised, keyed by (kind, pid, launch time) so a
-# recycled pid is handled again. "attrs": the AXManualAccessibility /
-# AXEnhancedUserInterface poke was sent (it sticks for the process lifetime;
-# only the first poke needs the settle wait). "settle": the plain first-touch
-# settle wait ran (no attributes set).
-_EXPOSED: set[tuple[str, int, float]] = set()
+# recycled pid is handled again, mapped to the monotonic time it was first
+# seen (the readiness clock :func:`exposure_age` reads). "attrs": the
+# AXManualAccessibility / AXEnhancedUserInterface poke was sent (it sticks for
+# the process lifetime; only the first poke needs the settle wait). "settle":
+# the plain first-touch settle wait ran (no attributes set).
+_EXPOSED: dict[tuple[str, int, float], float] = {}
 
 
 def _launch_time(app: Any) -> float | None:
@@ -563,8 +598,51 @@ def first_exposure(app: Any, kind: str = "attrs") -> bool:
     key = (kind, int(app.processIdentifier()), launched)
     if key in _EXPOSED:
         return False
-    _EXPOSED.add(key)
+    _EXPOSED[key] = time.monotonic()
     return True
+
+
+_WOKEN_PIDS: set[int] = set()
+
+
+def _mark_woken(app_element: object) -> None:
+    try:
+        from ApplicationServices import AXUIElementGetPid  # type: ignore[import-untyped]
+
+        err, pid = AXUIElementGetPid(app_element, None)
+    except Exception:  # pragma: no cover - pyobjc variants
+        return
+    if err == 0:
+        _WOKEN_PIDS.add(int(pid))
+
+
+def clear_woken(pid: int) -> None:
+    _WOKEN_PIDS.discard(pid)
+
+
+def renderer_was_woken(pid: int) -> bool:
+    """True when this process's web content had to be woken while hidden."""
+    return pid in _WOKEN_PIDS
+
+
+def _restart_exposure(app_element: object) -> None:
+    """Restart the readiness clock of the process behind ``app_element``."""
+    try:
+        from ApplicationServices import AXUIElementGetPid  # type: ignore[import-untyped]
+
+        err, pid = AXUIElementGetPid(app_element, None)
+    except Exception:  # pragma: no cover - pyobjc variants
+        return
+    if err != 0:
+        return
+    for key in [k for k in _EXPOSED if k[1] == pid]:
+        _EXPOSED[key] = time.monotonic()
+
+
+def exposure_age(pid: int) -> float | None:
+    """Seconds since this process's accessibility was first switched on here."""
+    started = [t for (_, p, _), t in _EXPOSED.items() if p == pid]
+    return time.monotonic() - max(started) if started else None
 
 
 def _app_element(app_name: str, expected_pid: int | None = None) -> object:
@@ -683,7 +761,15 @@ def collect(
         # already enabled manual accessibility for Chromium apps. Repeating
         # that write here restarts the tree build, and writing it for native
         # apps can temporarily hide their deep children.
-        time.sleep(1.5)
+        woken = attempt == 0 and any(
+            [_wake_hidden_renderer(window) for window in selected_windows]
+        )
+        if woken:
+            # The woken renderer serves its tree but drops AX actions until
+            # it handles one renderer-side action (see backend).
+            _restart_exposure(app)
+            _mark_woken(app)
+        time.sleep(0.4 if woken else 1.5)
     if not targets and window_index == 0 and window_frame is None:  # menu-bar-only apps
         _walk(AXUIElementCreateSystemWide(), 0, targets, counter)
     if not keep_elements:
