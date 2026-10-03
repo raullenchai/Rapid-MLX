@@ -1104,14 +1104,8 @@ def _target_ids(snapshot: dict) -> tuple[int, int]:
     return int(snapshot["app"]["pid"]), _cg_window_id(snapshot["window"]["window_id"])
 
 
-def _frontmost_window() -> tuple[int, int] | None:
-    """(pid, CGWindowID) of the user's key window.
-
-    The key window is the front app's ``AXFocusedWindow`` (CG z-order does
-    not identify it and skips floating panels). Falls back to
-    ``(front app pid, 0)`` when it cannot be mapped, so focus is handed back
-    by re-activating that app rather than to a guessed window.
-    """
+def _live_front_pid() -> int | None:
+    """Current front pid from WindowServer, with a live AppKit fallback."""
     front = background_input.front_pid()
     if front is None:
         try:
@@ -1121,6 +1115,18 @@ def _frontmost_window() -> tuple[int, int] | None:
             front = int(app.processIdentifier()) if app is not None else None
         except Exception:  # noqa: BLE001 - no front app to restore to
             front = None
+    return front
+
+
+def _frontmost_window() -> tuple[int, int] | None:
+    """(pid, CGWindowID) of the user's key window.
+
+    The key window is the front app's ``AXFocusedWindow`` (CG z-order does
+    not identify it and skips floating panels). Falls back to
+    ``(front app pid, 0)`` when it cannot be mapped, so focus is handed back
+    by re-activating that app rather than to a guessed window.
+    """
+    front = _live_front_pid()
     if front is None:
         return None
     return front, _key_window_id(front) or 0
@@ -1147,8 +1153,12 @@ def _restore_user_focus(
     if previous is None or tuple(previous) == (pid, window_id):
         return None
     previous_pid, previous_wid = previous
-    current = background_input.front_pid()
-    if current is not None and current not in (previous_pid, pid):
+    current = _live_front_pid()
+    if current is None:
+        # Restoring a stale capture when the live foreground is unknown can
+        # override a user switch that happened during the gesture.
+        return False
+    if current not in (previous_pid, pid):
         # The user switched to a third app during the gesture: their new
         # choice wins; restoring the stale capture would steal it back.
         return None
@@ -1314,6 +1324,7 @@ def _validate_focused_window(
     *,
     require_active_app: bool = True,
     allow_exact_main_window: bool = False,
+    require_exact_window_id: bool = False,
 ) -> None:
     services = ax_driver.AS
     expected_pid = int(snapshot["app"]["pid"])
@@ -1384,6 +1395,14 @@ def _validate_focused_window(
             focused = main
     focused_frame = ax_driver._point_size(focused) if focused is not None else None
     expected = expected_window or snapshot["window"]
+    if require_exact_window_id:
+        focused_window_id = background_input.ax_window_id(focused)
+        expected_window_id = _cg_window_id(expected["window_id"])
+        if focused_window_id != expected_window_id:
+            raise ComputerUseError(
+                "target_drift",
+                f"window {expected['window_id']} is not the focused AX window; re-observe",
+            )
     expected_frame = (
         float(expected["x"]),
         float(expected["y"]),
@@ -2253,7 +2272,14 @@ def _prepare_synthetic_action(
         _validate_focused_window(
             snapshot,
             expected_window,
-            **({"require_active_app": False} if background else {}),
+            **(
+                {
+                    "require_active_app": False,
+                    "require_exact_window_id": True,
+                }
+                if background
+                else {}
+            ),
         )
     return snapshot
 

@@ -52,8 +52,8 @@ def background(monkeypatch):
     calls: list[tuple] = []
     monkeypatch.setenv(background_input.DELIVERY_ENV, "background")
     monkeypatch.setattr(background_input, "skylight_available", lambda: True)
-    # No live front process: tests drive focus capture via _frontmost_window.
-    monkeypatch.setattr(background_input, "front_pid", lambda: None)
+    # The user's captured front process remains current unless a test changes it.
+    monkeypatch.setattr(background_input, "front_pid", lambda: 999)
     monkeypatch.setattr(
         background_input,
         "click",
@@ -222,6 +222,7 @@ def test_focus_restored_to_other_window_of_same_app(monkeypatch, background):
     # focus-without-raise made 101 key, so 555 must get focus back.
     snapshot = _snapshot()
     monkeypatch.setattr(backend, "_frontmost_window", lambda: (4, 555))
+    monkeypatch.setattr(background_input, "front_pid", lambda: 4)
     monkeypatch.setattr(
         backend, "_validate_snapshot_window", lambda snap, **k: snap["window"]
     )
@@ -379,6 +380,13 @@ def test_gesture_events_released_when_posting_raises(monkeypatch):
 
 def test_restore_falls_back_to_app_activation(monkeypatch):
     monkeypatch.setattr(background_input, "front_pid", lambda: None)
+    previous = types.SimpleNamespace(processIdentifier=lambda: 999)
+    workspace = types.SimpleNamespace(frontmostApplication=lambda: previous)
+    _install_module(
+        monkeypatch,
+        "AppKit",
+        NSWorkspace=types.SimpleNamespace(sharedWorkspace=lambda: workspace),
+    )
     activated = []
     monkeypatch.setattr(background_input, "front_process_matches", lambda *a: False)
     monkeypatch.setattr(
@@ -393,7 +401,49 @@ def test_restore_falls_back_to_app_activation(monkeypatch):
     assert backend._restore_user_focus((999, 0), 4, 101) is True
     assert activated == [999, 999]
     # Same app, record refused: activation cannot pick a window.
+    workspace.frontmostApplication = lambda: types.SimpleNamespace(
+        processIdentifier=lambda: 4
+    )
     assert backend._restore_user_focus((4, 555), 4, 101) is False
+
+
+def test_restore_skips_when_workspace_detects_mid_gesture_switch(monkeypatch):
+    monkeypatch.setattr(background_input, "front_pid", lambda: None)
+    replacement = types.SimpleNamespace(processIdentifier=lambda: 31)
+    workspace = types.SimpleNamespace(frontmostApplication=lambda: replacement)
+    _install_module(
+        monkeypatch,
+        "AppKit",
+        NSWorkspace=types.SimpleNamespace(sharedWorkspace=lambda: workspace),
+    )
+    monkeypatch.setattr(
+        background_input,
+        "restore_focus_after_without_raise",
+        lambda *a: pytest.fail("must not restore stale focus over the user's new app"),
+    )
+    monkeypatch.setattr(
+        backend, "_activate_app", lambda pid: pytest.fail("must not re-activate")
+    )
+    assert backend._restore_user_focus((999, 555), 4, 101) is None
+
+
+def test_restore_fails_closed_when_live_foreground_is_unknown(monkeypatch):
+    monkeypatch.setattr(background_input, "front_pid", lambda: None)
+    workspace = types.SimpleNamespace(frontmostApplication=lambda: None)
+    _install_module(
+        monkeypatch,
+        "AppKit",
+        NSWorkspace=types.SimpleNamespace(sharedWorkspace=lambda: workspace),
+    )
+    monkeypatch.setattr(
+        background_input,
+        "restore_focus_after_without_raise",
+        lambda *a: pytest.fail("unknown foreground must not receive a stale restore"),
+    )
+    monkeypatch.setattr(
+        backend, "_activate_app", lambda pid: pytest.fail("must not re-activate")
+    )
+    assert backend._restore_user_focus((999, 555), 4, 101) is False
 
 
 def test_click_fails_closed_without_a_focus_capture(monkeypatch, background):
@@ -582,10 +632,40 @@ def test_type_text_goes_to_pid_without_requiring_frontmost(monkeypatch, backgrou
     result = backend.type_text("App", "héllo 世界")
     assert window_checks == [{"point": (200.0, 150.0), "require_topmost": False}]
     # The exact window must still be the app's focused AX window.
-    assert focus_checks == [{"require_active_app": False}]
+    assert focus_checks == [
+        {"require_active_app": False, "require_exact_window_id": True}
+    ]
     assert background == [("type_text", (4, "héllo 世界"), {})]
     assert result["mode"] == "SkyLight-unicode"
     assert result["route"] == "pid_events"
+
+
+@pytest.mark.parametrize("focused_window_id", [202, None])
+def test_background_text_rejects_identical_frame_wrong_or_unmapped_window(
+    monkeypatch, background, focused_window_id
+):
+    snapshot = _snapshot()
+    focused = object()
+    monkeypatch.setattr(backend, "get_app_state", lambda *a, **k: snapshot)
+    monkeypatch.setattr(
+        backend,
+        "_validate_snapshot_window",
+        lambda snap, **k: snap["window"],
+    )
+    monkeypatch.setattr(backend, "_focused_ax_window", lambda app: focused)
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_point_size",
+        lambda window: (0.0, 0.0, 400.0, 300.0),
+    )
+    monkeypatch.setattr(
+        background_input, "ax_window_id", lambda window: focused_window_id
+    )
+
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend.type_text("App", "must not reach another document")
+    assert exc.value.code == "target_drift"
+    assert background == []
 
 
 def test_plain_and_modified_keys_go_to_pid(monkeypatch, background):
