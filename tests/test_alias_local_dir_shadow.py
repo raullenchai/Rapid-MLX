@@ -107,7 +107,7 @@ def test_non_alias_folder_is_untouched(cwd):
     assert resolve_model("my-model") == "my-model"
 
 
-def test_unreadable_folder_is_not_a_model(cwd, monkeypatch):
+def test_unreadable_folder_keeps_path_precedence(cwd, monkeypatch):
     (cwd / ALIAS).mkdir()
     real_listdir = os.listdir
 
@@ -117,7 +117,8 @@ def test_unreadable_folder_is_not_a_model(cwd, monkeypatch):
         return real_listdir(path)
 
     monkeypatch.setattr(model_aliases.os, "listdir", listdir)
-    assert local_dir_shadows_alias(ALIAS) is True
+    assert local_dir_shadows_alias(ALIAS) is False
+    assert resolve_model(ALIAS) == ALIAS
 
 
 def test_registry_failure_keeps_historical_precedence(cwd, monkeypatch):

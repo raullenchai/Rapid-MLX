@@ -919,7 +919,9 @@ def _looks_like_local_model_dir(path: str) -> bool:
     try:
         names = os.listdir(path)
     except OSError:
-        return False
+        # Could not inspect it: keep the historical local-path precedence
+        # rather than silently swapping in (and downloading) the catalog model.
+        return True
     return any(
         name in _LOCAL_MODEL_MARKER_FILES or name.endswith(_LOCAL_MODEL_WEIGHT_SUFFIXES)
         for name in names
