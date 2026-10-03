@@ -244,9 +244,13 @@ def launch_command(args: argparse.Namespace) -> None:
         from rapid_mlx.agents.adapter import fetch_context_window
         from rapid_mlx.run.cli import _cached_context_window
 
-        claude_context_length = fetch_context_window(
-            f"{server_url.rstrip('/').removesuffix('/v1')}/v1", model
-        ) or _cached_context_window(model)
+        # --start-server patches the client before the detached server boots;
+        # probing it now only adds a guaranteed timeout to first run.
+        if not args.start_server:
+            claude_context_length = fetch_context_window(
+                f"{server_url.rstrip('/').removesuffix('/v1')}/v1", model
+            )
+        claude_context_length = claude_context_length or _cached_context_window(model)
     for name in targets:
         adapter = ADAPTERS[name]
         if not adapter.detect():
