@@ -27,6 +27,8 @@ from pydantic import (
     model_validator,
 )
 
+from .sampler_compat import apply_sampler_compat, parse_sequence_breakers
+
 # =============================================================================
 # Shared sampling-parameter validators (F-011)
 # =============================================================================
@@ -617,6 +619,8 @@ _FINITE_SAMPLING_FIELDS: tuple[str, ...] = (
     "repetition_penalty",
     "presence_penalty",
     "frequency_penalty",
+    "dry_multiplier",
+    "dry_base",
     "timeout",
 )
 
@@ -1610,6 +1614,16 @@ class ChatCompletionRequest(BaseModel):
     # which Field bounds skip (NaN comparisons always return False).
     presence_penalty: float | None = Field(default=None, ge=-2.0, le=2.0)
     frequency_penalty: float | None = Field(default=None, ge=-2.0, le=2.0)
+    # SillyTavern / text-generation-webui samplers (see api/sampler_compat.py).
+    # ``repetition_penalty_range`` is the repetition-penalty window in tokens
+    # (0 = the whole context; default: mlx-lm's 20). DRY penalizes extending
+    # verbatim repeats: ``dry_multiplier`` 0 = off.
+    repetition_penalty_range: int | None = Field(default=None, ge=0, le=1_048_576)
+    dry_multiplier: float | None = Field(default=None, ge=0.0, le=10.0)
+    dry_base: float | None = Field(default=None, ge=1.0, le=8.0)
+    dry_allowed_length: int | None = Field(default=None, ge=1, le=100)
+    dry_penalty_last_n: int | None = Field(default=None, ge=-1, le=1_048_576)
+    dry_sequence_breakers: list[str] | None = None
     # Tool calling
     tools: list[ToolDefinition] | None = None
     tool_choice: str | dict | None = None  # "auto", "none", or specific tool
@@ -1716,6 +1730,16 @@ class ChatCompletionRequest(BaseModel):
     @classmethod
     def _scrub_nonfinite_sampling(cls, data):
         return _scrub_nonfinite_sampling_raw(data)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _sampler_compat(cls, data):
+        return apply_sampler_compat(data)
+
+    @field_validator("dry_sequence_breakers", mode="before")
+    @classmethod
+    def _parse_dry_sequence_breakers(cls, v):
+        return parse_sequence_breakers(v)
 
     # F-103: tighten ``response_format`` dict-arm validation so the
     # silent-200 hazard (``json_schema.schema=42`` / ``"hello"``
@@ -2282,6 +2306,16 @@ class CompletionRequest(BaseModel):
     repetition_penalty: float | None = Field(default=None, ge=0.0, le=2.0)
     presence_penalty: float | None = Field(default=None, ge=-2.0, le=2.0)
     frequency_penalty: float | None = Field(default=None, ge=-2.0, le=2.0)
+    # SillyTavern / text-generation-webui samplers (see api/sampler_compat.py).
+    # ``repetition_penalty_range`` is the repetition-penalty window in tokens
+    # (0 = the whole context; default: mlx-lm's 20). DRY penalizes extending
+    # verbatim repeats: ``dry_multiplier`` 0 = off.
+    repetition_penalty_range: int | None = Field(default=None, ge=0, le=1_048_576)
+    dry_multiplier: float | None = Field(default=None, ge=0.0, le=10.0)
+    dry_base: float | None = Field(default=None, ge=1.0, le=8.0)
+    dry_allowed_length: int | None = Field(default=None, ge=1, le=100)
+    dry_penalty_last_n: int | None = Field(default=None, ge=-1, le=1_048_576)
+    dry_sequence_breakers: list[str] | None = None
     # Logprobs — per the *legacy* OpenAI completions schema, this is an
     # *integer* (0..5) specifying the number of top alternative tokens
     # to return alongside each generated token, NOT a boolean (that is
@@ -2345,6 +2379,16 @@ class CompletionRequest(BaseModel):
     @classmethod
     def _scrub_nonfinite_sampling(cls, data):
         return _scrub_nonfinite_sampling_raw(data)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _sampler_compat(cls, data):
+        return apply_sampler_compat(data)
+
+    @field_validator("dry_sequence_breakers", mode="before")
+    @classmethod
+    def _parse_dry_sequence_breakers(cls, v):
+        return parse_sequence_breakers(v)
 
     # R10-H4: response_format validation shares one helper with chat.
     @field_validator("response_format", mode="before")
