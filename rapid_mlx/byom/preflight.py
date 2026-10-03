@@ -85,6 +85,7 @@ _SERVE_OVERHEAD_BYTES = 1 << 30
 _COMFORTABLE_FRACTION = 0.75
 
 _GIB = float(1 << 30)
+_MAX_QUANTS_SHOWN = 4
 
 
 class PreflightRejectedError(Exception):
@@ -107,6 +108,17 @@ class Inspection:
     has_chat_template: bool | None = None
     dtype: str | None = None
     revision: str | None = None
+    # Hub-only provenance used to look for an MLX build of the same model:
+    # parameter count (safetensors or GGUF header), the repos this one is a
+    # QUANTIZATION of (``base_model:quantized:<repo>`` tags only — finetunes
+    # and merges are different models), its license and content tags.
+    params: int | None = None
+    quantized_from: tuple[str, ...] = ()
+    license: str | None = None
+    tags: tuple[str, ...] = ()
+    # Anonymously readable (not gated, not private): only such repos may be
+    # named in a support request.
+    public: bool = False
 
 
 @dataclass(frozen=True)
@@ -375,6 +387,40 @@ def _hub_dtype(info: Any) -> str | None:
     return None
 
 
+def _hub_params(info: Any) -> int | None:
+    """Parameter count from the safetensors index or the GGUF header."""
+    total = getattr(getattr(info, "safetensors", None), "total", None)
+    if not isinstance(total, int):
+        gguf = getattr(info, "gguf", None)
+        total = gguf.get("total") if isinstance(gguf, dict) else None
+    return total if isinstance(total, int) and total > 0 else None
+
+
+def _card_get(card: Any, key: str) -> Any:
+    try:
+        return card.get(key) if card is not None else None
+    except Exception:
+        return None
+
+
+def hub_tags(info: Any) -> tuple[str, ...]:
+    tags = getattr(info, "tags", None)
+    return (
+        tuple(t for t in tags if isinstance(t, str)) if isinstance(tags, list) else ()
+    )
+
+
+def quantized_from(tags: tuple[str, ...]) -> tuple[str, ...]:
+    """Repos a Hub repo declares itself a quantization of."""
+    prefix = "base_model:quantized:"
+    return tuple(t[len(prefix) :] for t in tags if t.startswith(prefix) and "/" in t)
+
+
+def card_license(card: Any) -> str | None:
+    value = _card_get(card, "license")
+    return value if isinstance(value, str) and value else None
+
+
 def inspect_hub(repo_id: str) -> Inspection | None:
     """Metadata for a Hub repo, or ``None`` when it cannot be read."""
     try:
@@ -413,6 +459,12 @@ def inspect_hub(repo_id: str) -> Inspection | None:
         has_chat_template=has_template,
         dtype=_hub_dtype(info),
         revision=getattr(info, "sha", None),
+        params=_hub_params(info),
+        quantized_from=quantized_from(hub_tags(info)),
+        license=card_license(getattr(info, "card_data", None)),
+        tags=hub_tags(info),
+        public=getattr(info, "private", None) is False
+        and getattr(info, "gated", None) is False,
     )
 
 
@@ -548,16 +600,21 @@ def _hf_search_url(ref: str) -> str:
     return f"https://huggingface.co/models?search={quote(name)}%20mlx"
 
 
-def render_failure(inspection: Inspection, verdict: Verdict) -> list[str]:
+def render_failure(
+    inspection: Inspection, verdict: Verdict, *, search_hint: bool = True
+) -> list[str]:
     nothing = "" if inspection.is_local else " Nothing was downloaded."
     shown = inspection.ref
     if verdict.failure == UNSUPPORTED_FORMAT and verdict.format_label == "GGUF":
-        quants = f" ({', '.join(verdict.gguf_quants)})" if verdict.gguf_quants else ""
+        shown_quants = list(verdict.gguf_quants[:_MAX_QUANTS_SHOWN])
+        if len(verdict.gguf_quants) > _MAX_QUANTS_SHOWN:
+            shown_quants.append("…")
+        quants = f" ({', '.join(shown_quants)})" if shown_quants else ""
         lines = [
             f"! {shown} only has GGUF files{quants}.",
             f"  Rapid-MLX runs MLX and safetensors weights, not GGUF.{nothing}",
         ]
-        if not inspection.is_local:
+        if not inspection.is_local and search_hint:
             lines += [
                 "  Look for an MLX build of the same model:",
                 f"    {_hf_search_url(shown)}",
@@ -612,6 +669,15 @@ def render_pass(inspection: Inspection, verdict: Verdict) -> list[str]:
 
 # --------------------------------------------------------------------------
 # CLI hook
+
+
+def _cli_version() -> str:
+    try:
+        from importlib.metadata import version
+
+        return version("rapid-mlx")
+    except Exception:
+        return "dev"
 
 
 def gguf_format_requested(fmt: object) -> bool:
@@ -716,13 +782,27 @@ def run_cli_preflight(args: Any, *, spinner_factory: Callable[[str], Any]) -> No
         ):
             return
     if verdict.failure is not None:
+        from rapid_mlx.byom.alternatives import suggest
+
+        with spinner_factory("Looking for a model that runs here …"):
+            hints, found_build = suggest(
+                inspection,
+                verdict,
+                command=args.command,
+                supported=supported,
+                ram_bytes=verdict.ram_bytes or physical_ram_bytes(),
+            )
         print("", file=sys.stderr)
-        for line in render_failure(inspection, verdict):
+        lines = render_failure(inspection, verdict, search_hint=not found_build)
+        for line in lines + hints:
             print(f"  {line}", file=sys.stderr)
         print(
             "    (Think this is wrong? Re-run with --no-preflight to skip this check.)\n",
             file=sys.stderr,
         )
+        from rapid_mlx.byom.support_request import offer
+
+        offer(args, inspection, verdict, _cli_version())
         _emit_rejection(args, PreflightRejectedError(verdict.failure))
         raise SystemExit(1)
     if not is_local and sys.stdout.isatty():
