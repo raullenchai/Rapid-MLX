@@ -187,6 +187,7 @@ class RequestOutputCollector:
             spec_decode_metrics=(
                 new.spec_decode_metrics or existing.spec_decode_metrics
             ),
+            timing_metrics=new.timing_metrics or existing.timing_metrics,
         )
 
     def clear(self) -> None:

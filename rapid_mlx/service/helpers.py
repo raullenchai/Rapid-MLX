@@ -2791,18 +2791,31 @@ def reasoning_stop_scope_kwargs(engine: Any, request: Any) -> dict:
 # ── Usage / logprobs ───────────────────────────────────────────────
 
 
-def _build_response_metrics(output: Any) -> PerRequestMetrics | None:
-    """Build terminal response metrics when this request actually ran MTP."""
+def _build_response_metrics(
+    output: Any, *, include_timing: bool = True
+) -> PerRequestMetrics | None:
+    """Build the optional metrics from one completed engine generation."""
     metrics = getattr(output, "spec_decode_metrics", None)
-    if not isinstance(metrics, (dict, SpeculativeDecodingMetrics)):
+    timing = getattr(output, "timing_metrics", None) if include_timing else None
+    speculative = (
+        SpeculativeDecodingMetrics.model_validate(metrics)
+        if isinstance(metrics, (dict, SpeculativeDecodingMetrics))
+        else None
+    )
+    if speculative is None and not isinstance(timing, dict):
         return None
     return PerRequestMetrics(
-        speculative_decoding=SpeculativeDecodingMetrics.model_validate(metrics)
+        speculative_decoding=speculative,
+        **(timing if isinstance(timing, dict) else {}),
     )
 
 
 def _merge_response_metrics(outputs: list[Any]) -> PerRequestMetrics | None:
     """Combine per-generation counters for one multi-prompt HTTP request."""
+    # A single generation has a meaningful timing window. Multiple independent
+    # prompts/attempts cannot be represented by one TTFT or mean token interval.
+    if len(outputs) == 1:
+        return _build_response_metrics(outputs[0])
     merged: SpeculativeDecodingMetrics | None = None
     for output in outputs:
         envelope = _build_response_metrics(output)
@@ -2840,6 +2853,7 @@ def _aggregate_generation_attempts(
     metrics = _merge_response_metrics([initial, delivered])
     return replace(
         delivered,
+        timing_metrics=None,
         prompt_tokens=initial.prompt_tokens + delivered.prompt_tokens,
         completion_tokens=(initial.completion_tokens + delivered.completion_tokens),
         cached_tokens=(

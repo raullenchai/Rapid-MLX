@@ -649,6 +649,8 @@ class RequestOutput:
     # output and only when at least one MTP verify call ran. Appended last to
     # preserve positional compatibility for downstream RequestOutput callers.
     spec_decode_metrics: dict[str, int | list[int]] | None = None
+    # Frozen scheduler timings for a successful terminal text generation.
+    timing_metrics: dict[str, float] | None = None
 
     @property
     def usage(self) -> dict[str, int]:

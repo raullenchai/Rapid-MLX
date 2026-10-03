@@ -349,9 +349,45 @@ The counters belong only to that HTTP request, so concurrent traffic cannot
 mix their values. Multi-prompt Completions sum the counters across their
 choices. They appear on non-streaming Chat Completions, Completions, and
 Responses payloads, or on the single terminal event for their streaming forms.
-The `metrics` field is omitted when MTP did not perform a verification round,
-including ordinary decoding and response-cache hits. The process-wide
+The `speculative_decoding` block is omitted when MTP did not perform a
+verification round, including ordinary decoding and response-cache hits. The process-wide
 `/metrics` series remain the right surface for service dashboards.
+
+#### Request timing metrics
+
+Successful requests through the text scheduler report experimental server-side
+`metrics.time_to_first_token_ms` and, when measurable, `metrics.mean_itl_ms`
+on Chat Completions, single-prompt Completions, and Responses. Streaming emits
+these fields once on the terminal event, independently of
+`stream_options.include_usage`.
+
+```json
+{
+  "metrics": {
+    "time_to_first_token_ms": 250.0,
+    "mean_itl_ms": 20.0
+  }
+}
+```
+
+TTFT runs from the engine request's scheduler arrival to its first output
+token. It includes queueing and prefill, including any prefix-cache reuse;
+it is not a pure prefill measurement or HTTP end-to-end latency. Mean ITL is
+`(last_token_time - first_token_time) * 1000 / (completion_tokens - 1)`;
+`1000 / mean_itl_ms` gives the request's post-first-token decode tokens/second.
+Times are frozen at the scheduler's observation of the final engine token,
+before output decoding, cache finalization, buffering, or response delivery.
+Counts include engine-generated reasoning and stop tokens, even when those
+are not visible in the response text. Concurrent requests have independent
+windows; the rate is per-request wall time, not aggregate batch throughput.
+
+A one-token generation reports only TTFT. Zero-token, failed/cancelled,
+response-cache replay, and unmeasured engine paths omit timing fields.
+Non-positive or non-finite decode windows omit mean ITL. Multi-prompt generations,
+transparent retries, and aggregated repair attempts omit timing rather than combine incompatible
+windows. Anthropic Messages does not expose this experimental extension.
+These fields can coexist with `metrics.speculative_decoding`; existing
+`usage` fields and Prometheus aggregates are unchanged.
 
 #### MTP sidecar heads are not standalone models
 

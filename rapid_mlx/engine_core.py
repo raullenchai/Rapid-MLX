@@ -1485,6 +1485,10 @@ class EngineCore:
                 req_output.spec_decode_metrics
                 or (buf.spec_decode_metrics if buf is not None else None)
             ),
+            timing_metrics=(
+                req_output.timing_metrics
+                or (buf.timing_metrics if buf is not None else None)
+            ),
         )
 
     async def stream_outputs(
