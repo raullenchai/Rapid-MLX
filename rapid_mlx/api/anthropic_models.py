@@ -10,7 +10,7 @@ Claude Code to communicate with rapid-mlx.
 import uuid
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .models import (
     _TOP_K_SENTINEL_CAP,
@@ -286,8 +286,7 @@ class AnthropicOutputFormat(BaseModel):
     description: str | None = None
     strict: bool | None = None
 
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class AnthropicOutputConfig(BaseModel):

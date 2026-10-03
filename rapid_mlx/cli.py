@@ -7293,6 +7293,33 @@ def serve_command(args):
     _hard_exit_after_serve()
 
 
+def _refuse_bench_submit(args) -> NoReturn:
+    """``bench --submit`` no longer uploads anything.
+
+    The legacy board (``/api/benchmarks``) is closed; its old runs are folded
+    into the community leaderboard, which only takes ``benchmark run`` +
+    ``benchmark share`` results. Like other unsupported flag uses, this is a
+    usage error (exit 2) on stderr, before any benchmark work or network call.
+    """
+    # main() rewrites a catalog alias into its HF path and keeps what the
+    # user typed in _original_alias; `benchmark run` takes the alias.
+    model = (
+        getattr(args, "_original_alias", None)
+        or getattr(args, "model", None)
+        or "<alias>"
+    )
+    print(
+        "`rapid-mlx bench --submit` no longer submits results; nothing was run "
+        "or sent.\n"
+        "Share a benchmark with the community benchmark instead:\n"
+        f"  rapid-mlx benchmark run {model}\n"
+        "  rapid-mlx benchmark share <run-id>\n"
+        "Results appear on https://rapidmlx.com/leaderboard",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+
+
 def _run_tier_submit_flow(args) -> int:
     """``rapid-mlx bench <model> --tier <T> --submit`` — PR #5 unification.
 
@@ -7893,6 +7920,11 @@ def bench_command(args):
     """Run benchmark."""
     import asyncio
     import time
+
+    # First thing, before the compat shim, the staleness check and any
+    # benchmark or network work.
+    if getattr(args, "submit", False):
+        _refuse_bench_submit(args)
 
     # Install the MLX hardware-compat shim BEFORE `from mlx_lm import load`.
     # `mlx_lm/__init__.py` re-exports from `mlx_lm.generate`, which captures
@@ -8996,6 +9028,17 @@ def recipe_command(args) -> None:
             command += " " + " ".join(pick["launch_flags"])
         print(f"   {command}")
 
+    from rapid_mlx.leaderboard_links import LEADERBOARD_URL, this_mac_url
+
+    # With --max-ram the recipe describes a hypothetical Mac, so linking this
+    # host's row would contradict the header above; point at the board.
+    link = (
+        LEADERBOARD_URL
+        if getattr(args, "max_ram", None) is not None
+        else this_mac_url(round(ram_gb))
+    )
+    print(f"\nMeasured speeds on Macs like this one: {link}")
+
 
 def _recipe_free_disk_gb() -> float | None:
     """Return free GiB on the filesystem that receives HF downloads.
@@ -10035,6 +10078,10 @@ def _resolve_variant_allow_patterns(
         raise ValueError(
             "--bits/--format was supplied but is empty; pass a value or drop the flag"
         )
+    from rapid_mlx.byom.preflight import GGUF_FORMAT_MESSAGE, gguf_format_requested
+
+    if gguf_format_requested(fmt):
+        raise ValueError(GGUF_FORMAT_MESSAGE)
     from huggingface_hub import HfApi, RepoFolder
     from huggingface_hub.errors import RepositoryNotFoundError
 
@@ -13810,6 +13857,26 @@ Examples:
         ),
     )
     serve_parser.add_argument(
+        "--request",
+        action="store_true",
+        default=False,
+        help=(
+            "If the pre-download check refuses a public Hugging Face model "
+            "(unsupported architecture or GGUF/.bin-only), file a support "
+            "request without asking. Sends only the repo id, architecture, "
+            "format and Rapid-MLX version."
+        ),
+    )
+    serve_parser.add_argument(
+        "--no-preflight",
+        action="store_true",
+        default=False,
+        help=(
+            "Skip the pre-download check for models outside the Rapid-MLX "
+            "catalog (format, architecture and memory fit)."
+        ),
+    )
+    serve_parser.add_argument(
         "--disk-stream-cache-gb",
         type=positive_finite_float,
         default=1.0,
@@ -15178,15 +15245,9 @@ Examples:
         "--submit",
         action="store_true",
         help=(
-            "Run the standardized B=1 community benchmark and submit it to "
-            "the community board at rapidmlx.com. Asks for consent first; "
-            "declining writes and sends nothing. After consent a local copy "
-            "is saved before the upload where the filesystem allows it, so "
-            "a failed send is usually recoverable; if the copy cannot be "
-            "written you are warned before anything is sent. "
-            "Locks every comparability knob; "
-            "ignores the freeform --num-prompts / --max-tokens / "
-            "--max-num-seqs args."
+            "Removed: exits with an error pointing to `rapid-mlx benchmark "
+            "run` + `rapid-mlx benchmark share`, which replace it. Nothing is "
+            "run or uploaded."
         ),
     )
     bench_parser.add_argument(
@@ -15492,7 +15553,28 @@ Examples:
         metavar="name",
         help=(
             "Pull only the named format variant of a multi-variant repo "
-            "(e.g. --format mxfp4 or --format gguf, when the repo ships one)."
+            "(e.g. --format mxfp4, when the repo ships one). GGUF is not "
+            "supported: Rapid-MLX cannot run GGUF files."
+        ),
+    )
+    pull_parser.add_argument(
+        "--request",
+        action="store_true",
+        default=False,
+        help=(
+            "If the pre-download check refuses a public Hugging Face model "
+            "(unsupported architecture or GGUF/.bin-only), file a support "
+            "request without asking. Sends only the repo id, architecture, "
+            "format and Rapid-MLX version."
+        ),
+    )
+    pull_parser.add_argument(
+        "--no-preflight",
+        action="store_true",
+        default=False,
+        help=(
+            "Skip the pre-download check for models outside the Rapid-MLX "
+            "catalog (format and architecture)."
         ),
     )
     rm_parser = subparsers.add_parser(
@@ -16095,6 +16177,14 @@ def main():
             file=sys.stderr,
         )
         sys.exit(2)
+
+    # ``bench --submit`` is a removed invocation. Reject it at the parse
+    # boundary so global model resolution and the auto-pull gate cannot do
+    # work (including Hub metadata requests) before the usage error. Keep the
+    # same guard in ``bench_command`` for direct/programmatic callers.
+    if getattr(args, "command", None) == "bench" and getattr(args, "submit", False):
+        _refuse_bench_submit(args)
+
     if getattr(args, "command", None) in ("chat", "run"):
         args._model_was_explicit = getattr(args, "model", None) is not None
         args._telemetry_auto_selected = not args._model_was_explicit
@@ -16381,6 +16471,15 @@ def main():
                 )
                 print(f"\n  Error: {exc}", file=sys.stderr)
                 raise SystemExit(1) from None
+
+    # Bring-your-own-model preflight: an uncataloged repo or local path that
+    # provably cannot run here (GGUF/.bin-only, unsupported architecture, too
+    # big for this Mac) stops BEFORE the size gate and any download. Silent for
+    # catalog, cached and unreadable models. See rapid_mlx/byom/preflight.py.
+    if getattr(args, "command", None) in ("serve", "pull"):
+        from rapid_mlx.byom.preflight import run_cli_preflight
+
+        run_cli_preflight(args, spinner_factory=_StatusSpinner)
     # --- BEGIN B2: auto-pull confirmation gate -------------------------
     # For subcommands that may trigger a first-time download of a large
     # repo (chat/run/serve/pull/bench), warn the user before kicking off

@@ -174,6 +174,7 @@ def test_count_bucket_scale_is_exact(registry):
 def test_serve_error_class_scale_is_exact(registry):
     assert registry["enums"]["serve_error_class"]["values"] == [
         "unsupported_architecture",
+        "unsupported_format",
         "insufficient_memory",
         "corrupt_weights",
         "download_failed",

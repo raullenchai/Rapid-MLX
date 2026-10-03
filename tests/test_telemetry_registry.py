@@ -147,6 +147,7 @@ def test_optional_property_may_be_absent():
         "local_path_missing",
         "invalid_model_ref",
         "backend_load_failed",
+        "unsupported_format",
     ],
 )
 def test_model_serve_failed_accepts_named_engine_start_errors(error_class):
