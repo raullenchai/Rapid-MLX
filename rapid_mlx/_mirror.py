@@ -1874,9 +1874,15 @@ def download_with_mirror_fallback(
                 try:
                     resolved.relative_to(blobs_root_resolved)
                 except ValueError:
-                    # Symlink escapes the blobs/ store → malicious or
-                    # accidentally-misplaced. Drop and refetch.
-                    _safe_unlink(target)
+                    from ._download_gate import _is_shared_cache_blob
+
+                    # A two-hop link through this repo's blobs into the
+                    # Hub-wide deduplicated store is a legit HF cache entry
+                    # (#4096); dropping it would refetch every warm shard.
+                    if not _is_shared_cache_blob(str(target), str(repo_root)):
+                        # Symlink escapes the blobs/ store → malicious or
+                        # accidentally-misplaced. Drop and refetch.
+                        _safe_unlink(target)
                     # Don't try the rest of the cached-checks on a
                     # deleted target — fall through to R2/HF.
                 # else: legit HF blob symlink, fall through to the
