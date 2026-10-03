@@ -2,6 +2,7 @@
 
 - Receiving role: Atlas
 - Branch: `atlas/clef-support` (based on `origin/main` at `f4ffa41f`)
+- PR: https://github.com/raullenchai/Rapid-MLX/pull/4061 (draft)
 - Scope: Cloudflare Clef and Clef-Flash as a System One backend, using the
   official joint schema head on Torch/MPS. No deployment or release change.
 
