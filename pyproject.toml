@@ -219,6 +219,16 @@ embeddings = [
 system-one = [
     "laya-mlx>=0.2,<0.3; python_version >= '3.11'",
 ]
+# Cloudflare Clef's joint-schema head currently uses the official Torch
+# implementation on Metal. Keep this separate from the native MLX decision
+# backends so the default install stays small.
+clef = [
+    "torch>=2.11.0; platform_system == 'Darwin'",
+    "torchvision>=0.26.0; platform_system == 'Darwin'",
+    "accelerate>=1.4.0",
+    "transformers>=5.10.2,!=5.13.0,<5.16",
+    "pillow>=10.0.0",
+]
 # HF → Cloudflare R2 mirror tooling (scripts/mirror_to_r2.py).
 # Off the hot path — only maintainers who seed models.rapidmlx.com need
 # this. Users NEVER install [mirror]; the client-side download path
@@ -612,6 +622,8 @@ rapid_mlx = [
     # Vendored Stability AI MLX Stable Audio 3 attribution — the MIT license
     # text + provenance NOTICE/README must travel with the redistributed code.
     "audio/sa3/LICENSE",
+    "clef/vendor/LICENSE",
+    "clef/vendor/NOTICE",
     "audio/sa3/NOTICE",
     "audio/sa3/README.md",
     # Vendored HiDream-O1 MLX adapter attribution must ship in wheels and the

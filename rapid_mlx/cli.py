@@ -5058,6 +5058,8 @@ def _resolve_system_one_backend(model: str, requested: str) -> str:
         "contrastive-lm/"
     ):
         return "clm"
+    if model_key in {"clef", "clef-flash", "cloudflare/clef", "cloudflare/clef-flash"}:
+        return "clef"
     return "laya"
 
 
@@ -5066,7 +5068,12 @@ def system_one_command(args) -> None:
     import os
 
     from rapid_mlx._uvicorn import run_uvicorn
-    from rapid_mlx.system_one.backends import CLMBackend, DecisionBackend, LayaBackend
+    from rapid_mlx.system_one.backends import (
+        ClefBackend,
+        CLMBackend,
+        DecisionBackend,
+        LayaBackend,
+    )
     from rapid_mlx.system_one.server import create_app
 
     backend_name = _resolve_system_one_backend(args.model, args.backend)
@@ -5100,6 +5107,8 @@ def system_one_command(args) -> None:
             max_tokens=args.max_tokens,
             max_work_tokens=args.max_work_tokens,
         )
+    elif backend_name == "clef":
+        backend = ClefBackend(args.model, device=args.device)
     else:
         backend = LayaBackend(
             args.model,
@@ -13826,10 +13835,10 @@ Examples:
         "model",
         nargs="?",
         default="convaiinnovations/laya",
-        help="Laya model id/path, or the public name for a CLM head",
+        help="Laya model id/path, CLM public name, or clef/clef-flash",
     )
     system_one_parser.add_argument(
-        "--backend", choices=("auto", "laya", "clm"), default="auto"
+        "--backend", choices=("auto", "laya", "clm", "clef"), default="auto"
     )
     system_one_parser.add_argument("--host", default="127.0.0.1")
     system_one_parser.add_argument("--port", type=_port_arg, default=None)
@@ -13844,7 +13853,7 @@ Examples:
         "--device",
         choices=("gpu", "cpu"),
         default="gpu",
-        help="MLX device for the selected System One backend",
+        help="MLX device for Laya/CLM; Metal/MPS device for Clef",
     )
     system_one_parser.add_argument(
         "--dtype",

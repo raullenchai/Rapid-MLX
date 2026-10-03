@@ -376,16 +376,21 @@ Also: word-level timestamps on transcription, and local text-to-music at
 Serve fast `noul`, `choice`, and `score` decisions through a
 TypeSafe-compatible `/v1/systemone` API. Laya-MLX is the compact default;
 CLM-8B uses a native MLX Qwen3-8B encoder and cached state/action projections.
+Cloudflare Clef adds joint-schema decisions from text, images, and video frames
+using its official head on Torch/Metal.
 
 ```bash
 pip install 'rapid-mlx[system-one]'
 rapid-mlx system-one convaiinnovations/laya
+# Optional Cloudflare backend:
+pip install 'rapid-mlx[clef]'
+rapid-mlx system-one clef-flash
 ```
 
 CLM uses a converted copy of its upstream projection head and does not require
 PyTorch or vLLM while serving.
 
-→ [Laya and CLM setup, API examples, and compatibility limits](docs/guides/system-one.md)
+→ [Laya, CLM, and Clef setup, API examples, and compatibility limits](docs/guides/system-one.md)
 
 ---
 
