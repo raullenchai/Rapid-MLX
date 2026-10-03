@@ -887,7 +887,7 @@
        "const": true,
        "default": false,
        "dest": "submit",
-       "help": "Run the standardized B=1 community benchmark and submit it to the community board at rapidmlx.com. Asks for consent first; declining writes and sends nothing. After consent a local copy is saved before the upload where the filesystem allows it, so a failed send is usually recoverable; if the copy cannot be written you are warned before anything is sent. Locks every comparability knob; ignores the freeform --num-prompts / --max-tokens / --max-num-seqs args.",
+       "help": "Removed: exits with an error pointing to `rapid-mlx benchmark run` + `rapid-mlx benchmark share`, which replace it. Nothing is run or uploaded.",
        "metavar": null,
        "nargs": 0,
        "option_strings": [
@@ -3228,11 +3228,41 @@
        "const": null,
        "default": null,
        "dest": "format",
-       "help": "Pull only the named format variant of a multi-variant repo (e.g. --format mxfp4 or --format gguf, when the repo ships one).",
+       "help": "Pull only the named format variant of a multi-variant repo (e.g. --format mxfp4, when the repo ships one). GGUF is not supported: Rapid-MLX cannot run GGUF files.",
        "metavar": "name",
        "nargs": null,
        "option_strings": [
         "--format"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreTrueAction",
+       "completer": null,
+       "const": true,
+       "default": false,
+       "dest": "request",
+       "help": "If the pre-download check refuses a public Hugging Face model (unsupported architecture or GGUF/.bin-only), file a support request without asking. Sends only the repo id, architecture, format and Rapid-MLX version.",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "--request"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreTrueAction",
+       "completer": null,
+       "const": true,
+       "default": false,
+       "dest": "no_preflight",
+       "help": "Skip the pre-download check for models outside the Rapid-MLX catalog (format and architecture).",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "--no-preflight"
        ],
        "required": false,
        "type": null
@@ -3257,7 +3287,9 @@
        "dests": [
         "help",
         "bits",
-        "format"
+        "format",
+        "request",
+        "no_preflight"
        ],
        "title": "options"
       }
@@ -3806,6 +3838,36 @@
        "nargs": 0,
        "option_strings": [
         "--disk-stream"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreTrueAction",
+       "completer": null,
+       "const": true,
+       "default": false,
+       "dest": "request",
+       "help": "If the pre-download check refuses a public Hugging Face model (unsupported architecture or GGUF/.bin-only), file a support request without asking. Sends only the repo id, architecture, format and Rapid-MLX version.",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "--request"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreTrueAction",
+       "completer": null,
+       "const": true,
+       "default": false,
+       "dest": "no_preflight",
+       "help": "Skip the pre-download check for models outside the Rapid-MLX catalog (format, architecture and memory fit).",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "--no-preflight"
        ],
        "required": false,
        "type": null
@@ -5842,6 +5904,8 @@
         "force_disk_check",
         "image_weight_precision",
         "disk_stream",
+        "request",
+        "no_preflight",
         "disk_stream_cache_gb",
         "host",
         "port",

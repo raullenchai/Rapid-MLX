@@ -18,6 +18,8 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class TestFile:
+    __test__ = False  # not a pytest test class
+
     path: str
     weight: int
 

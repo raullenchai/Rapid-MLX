@@ -41,6 +41,7 @@ from ..service.helpers import (
     _validate_model_name,
     _wait_with_disconnect,
     build_extended_sampling_kwargs,
+    dry_sampling_kwargs,
     enforce_context_length_for_prompt,
     ensure_engine_ready,
     get_engine,
@@ -489,6 +490,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
         completed_outputs = []
 
         extended_kwargs = build_extended_sampling_kwargs(request)
+        extended_kwargs.update(dry_sampling_kwargs(engine, request))
 
         # F-152/F-153: ``logprobs`` is an integer (top-k count). When
         # non-None we route through ``stream_generate`` to accumulate
@@ -810,6 +812,7 @@ async def stream_completion(
             client disconnect. ``None`` (default) is a no-op.
     """
     extended_kwargs = build_extended_sampling_kwargs(request)
+    extended_kwargs.update(dry_sampling_kwargs(engine, request))
     # C-01: pass the holder through so the engine can publish the
     # scheduler request id without changing every engine signature.
     if request_id_holder is not None:

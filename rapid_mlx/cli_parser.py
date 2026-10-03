@@ -454,6 +454,26 @@ def _add_serve_parser(
         ),
     )
     serve_parser.add_argument(
+        "--request",
+        action="store_true",
+        default=False,
+        help=(
+            "If the pre-download check refuses a public Hugging Face model "
+            "(unsupported architecture or GGUF/.bin-only), file a support "
+            "request without asking. Sends only the repo id, architecture, "
+            "format and Rapid-MLX version."
+        ),
+    )
+    serve_parser.add_argument(
+        "--no-preflight",
+        action="store_true",
+        default=False,
+        help=(
+            "Skip the pre-download check for models outside the Rapid-MLX "
+            "catalog (format, architecture and memory fit)."
+        ),
+    )
+    serve_parser.add_argument(
         "--disk-stream-cache-gb",
         type=positive_finite_float,
         default=1.0,
@@ -1828,15 +1848,9 @@ def _add_bench_parser(
         "--submit",
         action="store_true",
         help=(
-            "Run the standardized B=1 community benchmark and submit it to "
-            "the community board at rapidmlx.com. Asks for consent first; "
-            "declining writes and sends nothing. After consent a local copy "
-            "is saved before the upload where the filesystem allows it, so "
-            "a failed send is usually recoverable; if the copy cannot be "
-            "written you are warned before anything is sent. "
-            "Locks every comparability knob; "
-            "ignores the freeform --num-prompts / --max-tokens / "
-            "--max-num-seqs args."
+            "Removed: exits with an error pointing to `rapid-mlx benchmark "
+            "run` + `rapid-mlx benchmark share`, which replace it. Nothing is "
+            "run or uploaded."
         ),
     )
     bench_parser.add_argument(
@@ -2169,7 +2183,28 @@ def _add_pull_parser(
         metavar="name",
         help=(
             "Pull only the named format variant of a multi-variant repo "
-            "(e.g. --format mxfp4 or --format gguf, when the repo ships one)."
+            "(e.g. --format mxfp4, when the repo ships one). GGUF is not "
+            "supported: Rapid-MLX cannot run GGUF files."
+        ),
+    )
+    pull_parser.add_argument(
+        "--request",
+        action="store_true",
+        default=False,
+        help=(
+            "If the pre-download check refuses a public Hugging Face model "
+            "(unsupported architecture or GGUF/.bin-only), file a support "
+            "request without asking. Sends only the repo id, architecture, "
+            "format and Rapid-MLX version."
+        ),
+    )
+    pull_parser.add_argument(
+        "--no-preflight",
+        action="store_true",
+        default=False,
+        help=(
+            "Skip the pre-download check for models outside the Rapid-MLX "
+            "catalog (format and architecture)."
         ),
     )
 

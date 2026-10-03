@@ -311,6 +311,11 @@ def _validate_request(request: ChatCompletionRequest) -> None:
                 "use presence_penalty=0."
             ),
         )
+    if getattr(request, "dry_multiplier", None) not in (None, 0, 0.0):
+        raise HTTPException(
+            status_code=400,
+            detail="DRY is not supported in DDTree mode; use dry_multiplier=0.",
+        )
     if request.frequency_penalty is not None and request.frequency_penalty != 0.0:
         raise HTTPException(
             status_code=400,
