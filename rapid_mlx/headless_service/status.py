@@ -76,7 +76,7 @@ def _parse_legacy_serve(argv: object) -> tuple[str, str, str, int]:
         or not argv[0].endswith("rapid-mlx")
     ):
         raise ValueError("unrecognized legacy service executable")
-    from rapid_mlx.cli import build_parser
+    from rapid_mlx.cli_parser import build_parser
 
     try:
         with (
