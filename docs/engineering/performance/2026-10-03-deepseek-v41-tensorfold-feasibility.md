@@ -43,9 +43,16 @@ TensorFold upstream `609ca419abecebdc5a059498a613680bd3aa847f` exposes
 size 4096, 4-bit affine group-64 base weights, and mxfp4 routed experts. Its
 compression ratios and attention/cache semantics also differ from V4.1.
 Changing only the model type does not fix the weight and architecture mismatch.
-The upstream V4.1 contribution plan, issue #299, explicitly targets CUDA on
-two DGX Sparks. PR #300 introduces CUDA interfaces; it does not add a V4.1
-family or Metal kernels.
+The upstream V4.1 contribution plan, issue #299, targets CUDA on two DGX
+Sparks. PR #300 introduces CUDA interfaces; it does not add a V4.1 family or
+Metal kernels. A later comment on issue #299 reports a **separate Mac MLX
+V4.1 prototype** on four unpublished branches. Its authors measured 35.1-38.1
+tokens/s on code and 26.3-28.0 tokens/s on prose with DSpark on an M3 Ultra
+512 GB host, using `Jundot/DeepSeek-V4.1-Flash-oQ4e-mtp`. They report 287 GiB
+resident weights and about 305 GiB peak RSS. This is real prototype evidence,
+but the code is not yet in public `main` or a V4.1 PR, and that checkpoint
+cannot fit this 256 GiB Studio. It is a different checkpoint from Rapid's
+REAP 2-bit target, so its speed numbers are not a same-weights comparison.
 
 The current Studio has 13.1 GiB swap in use and other large model processes.
 Under the large-model qualification policy, this invalidates a new 200+ GiB
@@ -53,8 +60,9 @@ performance capture. No V4.1 TensorFold speed claim was made.
 
 ## Engineering decision
 
-An honest MLX MVP needs a V4.1-specific TensorFold family or a focused port of
-its row-kernel/lane ideas into Rapid's existing V4.1 runtime. A V4 profile
+An honest MLX MVP needs the reported V4.1-specific TensorFold family to be
+published and adapted to the 2-bit REAP checkpoint, or a focused port of its
+row-kernel/lane ideas into Rapid's existing V4.1 runtime. A V4 profile
 alias would load the wrong architecture and must not ship. The first real
 speed gate is a same-checkpoint, same-prompt, same-host comparison against
 Rapid's current K4 path, with serial and speculative output agreement, warmup,
