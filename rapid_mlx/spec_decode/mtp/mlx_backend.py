@@ -635,7 +635,7 @@ class RapidMLXSelfMTPBackend:
             )
         finally:
             _finalize_group(draft_cache)
-        for row, (lane, depth, valid) in enumerate(zip(lanes, depths, first_lengths)):
+        for row, (lane, _depth, valid) in enumerate(zip(lanes, depths, first_lengths)):
             position = valid - 1
             token, _ = self._distribution(
                 lane,

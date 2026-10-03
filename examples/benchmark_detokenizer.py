@@ -172,9 +172,6 @@ def main():
     for name, text in test_texts[:1]:
         tokens = raw_tokenizer.encode(text)
 
-        # Naive
-        naive_texts = [raw_tokenizer.decode([t]) for t in tokens]
-
         # Streaming
         detok = tokenizer_wrapper._detokenizer_class(tokenizer_wrapper)
         detok.reset()

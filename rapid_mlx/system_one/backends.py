@@ -320,7 +320,7 @@ class CLMBackend:
         head = self._state_head if kind == "state" else self._action_head
         output = []
         input_tokens = 0
-        for text, token_ids in zip(texts, token_rows, strict=True):
+        for _text, token_ids in zip(texts, token_rows, strict=True):
             key = (kind, tuple(token_ids))
             cached = self._cache.get(key)
             if cached is None:

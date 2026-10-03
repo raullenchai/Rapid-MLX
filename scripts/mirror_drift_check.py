@@ -1130,7 +1130,7 @@ def audit(
     if progress is not None:
         progress.mirror_seconds = time.monotonic() - mirror_started
 
-    for report, spec, entry, files, in_progress in report_context:
+    for report, _spec, entry, files, in_progress in report_context:
         if report.intentionally_unmirrored:
             continue
         required = _required_files(files, None)
