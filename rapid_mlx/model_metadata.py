@@ -229,7 +229,7 @@ def _complete_cached_checkpoint(
 ) -> Path | None:
     """Validate one immutable snapshot and return its checkpoint directory."""
     try:
-        from ._download_gate import _snapshot_is_complete
+        from ._download_gate import _is_repo_blob, _snapshot_is_complete
         from .model_aliases import checkpoint_prefix
 
         if snapshot.is_symlink() or not snapshot.is_dir():
@@ -244,15 +244,19 @@ def _complete_cached_checkpoint(
         config_path = checkpoint / "config.json"
 
         # HF snapshot leaves normally symlink into this repository's own
-        # ``blobs`` directory. Reject a fabricated snapshot whose config or
-        # weight links escape the repository cache root before opening them.
+        # ``blobs`` directory (which may itself link into the Hub-wide shared
+        # store, #4096). Reject a fabricated snapshot whose config or weight
+        # links escape the repository's cache before opening them.
         repo_real = repo_root.resolve(strict=True)
         inspected = [config_path, *checkpoint.glob("model*.safetensors")]
         index_path = checkpoint / "model.safetensors.index.json"
         if index_path.exists():
             inspected.append(index_path)
         for path in inspected:
-            path.resolve(strict=True).relative_to(repo_real)
+            if not path.resolve(strict=True).is_relative_to(
+                repo_real
+            ) and not _is_repo_blob(str(path), str(repo_root)):
+                return None
         if _read_json(config_path) is None or not _snapshot_is_complete(
             str(checkpoint)
         ):

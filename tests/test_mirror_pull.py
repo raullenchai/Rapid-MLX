@@ -2659,6 +2659,69 @@ def test_cached_hf_blob_symlink_skips_rehash(
     assert link.read_bytes() == payload
 
 
+def test_cached_shared_store_blob_is_kept_and_skips_rehash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """#4096: a deduplicating HF cache links ``snapshot -> <repo>/blobs/<sha>
+    -> <hub>/blobs/<xx>/<digest>``. That entry is this repo's own blob: a warm
+    pull must neither drop it nor refetch it, and the repo blob name (the LFS
+    sha256) still lets it skip the rehash."""
+    import hashlib
+
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "f1f1" * 10
+    payload = b"S" * 200
+    sha = hashlib.sha256(payload).hexdigest()
+    files = [("model.safetensors", 200, sha)]
+    catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
+
+    digest = "9" * 64  # shared-store digest is not the LFS sha256
+    shared = tmp_path / "blobs" / digest[:2] / digest
+    shared.parent.mkdir(parents=True)
+    shared.write_bytes(payload)
+    repo_root = tmp_path / "models--mlx-community--Qwen3-0.6B-4bit"
+    (repo_root / "blobs").mkdir(parents=True)
+    owned = repo_root / "blobs" / sha
+    owned.symlink_to(os.path.relpath(shared, owned.parent))
+    snap = repo_root / "snapshots" / revision
+    snap.mkdir(parents=True)
+    link = snap / "model.safetensors"
+    link.symlink_to(os.path.relpath(owned, link.parent))
+
+    import rapid_mlx._mirror as m
+
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+    created_hashers = []
+    real_sha256 = hashlib.sha256
+    monkeypatch.setattr(
+        hashlib,
+        "sha256",
+        lambda *a: created_hashers.append(1) or real_sha256(*a),
+    )
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download") as hf_mock,
+    ):
+        ok = m.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    assert ok
+    assert [r for r in router.requests if "model.safetensors" in r["url"]] == []
+    assert hf_mock.call_count == 0
+    assert created_hashers == []
+    assert link.is_symlink() and os.path.realpath(link) == str(shared.resolve())
+    assert link.read_bytes() == payload
+
+
 # ---------------------------------------------------------------------------
 # Issue #652 — after a sha-verified R2 download of an LFS file, the
 # bytes must land at ``blobs/<sha>`` and the snapshot path must be a
