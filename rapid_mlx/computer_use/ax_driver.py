@@ -383,6 +383,25 @@ def _point_size(element: object) -> tuple[float, float, float, float] | None:
         return None
 
 
+def window_is_onscreen(window_id: int) -> bool | None:
+    """Whether the window server is compositing ``window_id`` right now.
+
+    False for a window on another Space or minimized; None when unknown.
+    """
+    try:
+        from Quartz import (  # type: ignore[import-untyped]
+            CGWindowListCopyWindowInfo,
+            kCGWindowListOptionIncludingWindow,
+        )
+
+        info = CGWindowListCopyWindowInfo(kCGWindowListOptionIncludingWindow, window_id)
+    except Exception:  # pragma: no cover - pyobjc variants
+        return None
+    if not info:
+        return None
+    return bool(info[0].get("kCGWindowIsOnscreen"))
+
+
 def _wake_hidden_renderer(window: object) -> bool:
     """Make Chromium re-send a hidden window's web-content tree.
 
@@ -396,18 +415,7 @@ def _wake_hidden_renderer(window: object) -> bool:
 
     window_id = background_input.ax_window_id(window)
     frame = _point_size(window)
-    if window_id is None or frame is None:
-        return False
-    try:
-        from Quartz import (  # type: ignore[import-untyped]
-            CGWindowListCopyWindowInfo,
-            kCGWindowListOptionIncludingWindow,
-        )
-
-        info = CGWindowListCopyWindowInfo(kCGWindowListOptionIncludingWindow, window_id)
-        if not info or bool(info[0].get("kCGWindowIsOnscreen")):
-            return False
-    except Exception:  # pragma: no cover - pyobjc variants
+    if window_id is None or frame is None or window_is_onscreen(window_id) is not False:
         return False
     _, _, width, height = frame
     for size in ((width + 1.0, height), (width, height)):

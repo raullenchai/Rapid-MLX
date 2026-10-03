@@ -306,6 +306,12 @@ def _window_records(app_info: dict) -> list[dict]:
                 "height": bounds.get("Height"),
             }
         )
+    if any(not record["title"] for record in records):
+        # Without Screen Recording, CG hides window titles; AX still has them.
+        titles = _ax_window_titles(int(app_info["pid"]))
+        for record in records:
+            if not record["title"]:
+                record["title"] = titles.get(int(record["window_id"][3:]), "")
     # Windows on other Spaces (e.g. behind the user's full-screen app) are
     # not "on screen" but still take AX + SkyLight input. Keep only CG windows
     # that are real AX windows of this app (same CGWindowID), so hidden helper
@@ -314,6 +320,34 @@ def _window_records(app_info: dict) -> list[dict]:
         window["index"] = len(records)
         records.append(window)
     return records
+
+
+def _cg_window_names_visible() -> bool:
+    """Whether CG reports window titles (it hides them without Screen Recording)."""
+    try:
+        import Quartz
+
+        return bool(Quartz.CGPreflightScreenCaptureAccess())
+    except Exception:  # noqa: BLE001 - older macOS without the API
+        return True
+
+
+def _ax_window_titles(pid: int) -> dict[int, str]:
+    """CG window id -> AX title for ``pid``'s windows on the current Space
+    (best-effort: empty when Accessibility cannot be read)."""
+    if ax_driver.AS is None:
+        return {}
+    titles: dict[int, str] = {}
+    try:
+        app_element = ax_driver.AXUIElementCreateApplication(pid)
+        for window in ax_driver._as_list(ax_driver._get(app_element, "AXWindows")):
+            window_id = background_input.ax_window_id(window)
+            title = ax_driver._get(window, "AXTitle")
+            if window_id is not None and isinstance(title, str):
+                titles[int(window_id)] = title
+    except Exception:  # noqa: BLE001 - titles must never break listing
+        return {}
+    return titles
 
 
 # CG window ids already searched for by remote token, per pid, tagged with the
@@ -365,15 +399,28 @@ def _offscreen_ax_windows_unchecked(app_info: dict, seen: set[int]) -> list[dict
     cg_windows = (
         CGWindowListCopyWindowInfo(kCGWindowListOptionAll, kCGNullWindowID) or []
     )
+    names_visible = _cg_window_names_visible()
+
+    def candidate(window: dict) -> bool:
+        # Untitled layer-0 surfaces are mostly helpers (Chromium has several);
+        # scanning for each would cost the full budget. An untitled off-Space
+        # window is still found via AXFocusedWindow/AXMainWindow. Without
+        # Screen Recording CG hides every title, so a plausible size stands
+        # in for it (helper surfaces are 1x1 or thin strips).
+        if names_visible:
+            return bool(window.get("kCGWindowName"))
+        bounds = window.get("kCGWindowBounds") or {}
+        return (
+            float(bounds.get("Width", 0)) >= 200
+            and float(bounds.get("Height", 0)) >= 150
+        )
+
     unmapped = {
         int(window["kCGWindowNumber"])
         for window in cg_windows
         if int(window.get("kCGWindowOwnerPID", -1)) == pid
         and int(window.get("kCGWindowLayer", 99)) == 0
-        # Untitled layer-0 surfaces are mostly helpers (Chromium has several);
-        # scanning for each would cost the full budget. An untitled
-        # off-Space window is still found via AXFocusedWindow/AXMainWindow.
-        and window.get("kCGWindowName")
+        and candidate(window)
         and int(window["kCGWindowNumber"]) not in titles
         and int(window["kCGWindowNumber"]) not in seen
     }
@@ -4905,6 +4952,145 @@ def _background_chord(
     )
 
 
+_AX_SCROLL_NODE_LIMIT = 400
+_AX_SCROLL_STEPS = 8
+
+
+def _ax_scroll_target(
+    live: object, vertical: bool, forward: bool, reach: float
+) -> tuple[float, float, object] | None:
+    """Pick the descendant of scroller ``live`` to bring into view.
+
+    Returns (viewport start, viewport end, node). Chromium reports content
+    clipped by the scroller as zero-size frames pinned to its edge, so such
+    content has no measurable distance: the nearest one in document order is
+    taken. Measurable content prefers the furthest still within ``reach``.
+    """
+    frame = ax_driver._point_size(live)
+    if frame is None:
+        return None
+    x0, y0, w, h = frame
+    lo, hi = (y0, y0 + h) if vertical else (x0, x0 + w)
+    within: tuple[float, object] | None = None
+    beyond: tuple[float, object] | None = None
+    clipped: list[object] = []
+    queue, seen = list(ax_driver._get(live, "AXChildren") or []), 0
+    while queue and seen < _AX_SCROLL_NODE_LIMIT:
+        node = queue.pop(0)
+        seen += 1
+        queue[:0] = list(ax_driver._get(node, "AXChildren") or [])  # document order
+        box = ax_driver._point_size(node)
+        if box is None:
+            continue
+        start = box[1] if vertical else box[0]
+        length = box[3] if vertical else box[2]
+        if length <= 0:
+            if (start >= hi - 1) if forward else (start <= lo + 1):
+                clipped.append(node)
+            continue
+        end = start + length
+        travel = end - hi if forward else lo - start
+        if travel <= 1:
+            continue
+        if travel <= reach:
+            if within is None or travel > within[0]:
+                within = (travel, node)
+        elif beyond is None or travel < beyond[0]:
+            beyond = (travel, node)
+    if within is not None:
+        return lo, hi, within[1]
+    if clipped:
+        return lo, hi, clipped[0] if forward else clipped[-1]
+    if beyond is not None:
+        return lo, hi, beyond[1]
+    return None
+
+
+def _ax_subtree_frames(live: object) -> list[tuple[float, float, float, float]]:
+    frames = []
+    queue = list(ax_driver._get(live, "AXChildren") or [])
+    while queue and len(frames) < _AX_SCROLL_NODE_LIMIT:
+        node = queue.pop(0)
+        queue.extend(ax_driver._get(node, "AXChildren") or [])
+        box = ax_driver._point_size(node)
+        if box is not None:
+            frames.append(box)
+    return frames
+
+
+def _ax_scroll(
+    snapshot: dict, point: tuple[float, float], direction: str, pages: float
+) -> dict | None:
+    """Scroll the scroller under ``point`` by bringing hidden content into view.
+
+    The smallest snapshot element containing the point that has content past
+    its edge in ``direction`` is the scroller. Its descendants are scrolled
+    into view (AXScrollToVisible) until about ``pages`` viewports have
+    passed. Returns None when nothing moved, so the caller can fall back to a
+    wheel event.
+    """
+    px, py = point
+    containers = sorted(
+        (
+            e
+            for e in snapshot.get("elements", [])
+            if all(isinstance(e.get(k), (int, float)) for k in ("x", "y", "width", "height"))
+            and e["width"] > 0
+            and e["height"] > 0
+            and e["x"] <= px <= e["x"] + e["width"]
+            and e["y"] <= py <= e["y"] + e["height"]
+        ),
+        key=lambda e: e["width"] * e["height"],
+    )
+    vertical = direction in {"up", "down"}
+    forward = direction in {"down", "right"}
+    for container in containers[:6]:
+        try:
+            live = _live_element(snapshot, int(container["index"]), validate_point=False)
+        except ComputerUseError:
+            continue
+        if live is None:
+            continue
+        frame = ax_driver._point_size(live)
+        if frame is None:
+            continue
+        reach = (frame[3] if vertical else frame[2]) * max(pages, 0.1)
+        moved = 0.0
+        for _ in range(_AX_SCROLL_STEPS):
+            picked = _ax_scroll_target(live, vertical, forward, reach - moved)
+            if picked is not None:
+                node = picked[2]
+            elif not forward:
+                # Content above or left with no nodes of its own: bringing
+                # the scroller's first content box into view returns to its
+                # start.
+                children = ax_driver._get(live, "AXChildren") or []
+                if not children:
+                    break
+                node = children[0]
+            else:
+                break
+            before = _ax_subtree_frames(live)
+            ax_driver.AXUIElementPerformAction(node, "AXScrollToVisible")
+            time.sleep(0.1)
+            after = _ax_subtree_frames(live)
+            if before == after:
+                break
+            # Clipped frames are pinned to the edge, so this underestimates
+            # the distance; it still bounds the loop.
+            step = max(
+                (abs((a[1] - b[1]) if vertical else (a[0] - b[0])) for a, b in zip(after, before)),
+                default=1.0,
+            )
+            step = max(step, 1.0)
+            moved += step
+            if moved >= reach * 0.9:
+                break
+        if moved >= 1:
+            return {"scroller": int(container["index"]), "points": round(moved)}
+    return None
+
+
 def scroll(
     app: str,
     direction: str,
@@ -4936,6 +5122,20 @@ def scroll(
         window = _validate_snapshot_window(snapshot, point=point, require_topmost=False)
         pid, cg_window_id = _target_ids(snapshot)
         vertical = direction in {"up", "down"}
+        if ax_driver.window_is_onscreen(cg_window_id) is False:
+            # Chromium drops wheel events for a window the window server is
+            # not compositing (another Space), so content is scrolled into
+            # view through accessibility instead.
+            moved = _ax_scroll(snapshot, point, direction, pages)
+            if moved is not None:
+                return _finish_action(
+                    app,
+                    snapshot,
+                    {"mode": "AX-scroll", "direction": direction, **moved},
+                    verified=True,
+                    verification="scrolled content into view; its position changed",
+                    include_post_state=include_post_state,
+                )
         if not _synthesize(
             background_input.scroll,
             pid,
