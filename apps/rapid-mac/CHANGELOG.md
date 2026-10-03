@@ -27,9 +27,11 @@ qualified speculative decoding, and improves model import and server recovery.
   the chat composer, while the resident-memory footer remains available as a
   secondary entry point. Multi-model pools say `Unload all`, and active work
   retains the existing guarded/disabled behaviour.
-- **Background-first Computer Use.** Supported clicks, text entry, and
-  keystrokes are routed to the exact approved app window while the user's
-  foreground app stays in place. Unsupported or ambiguous targets fail closed.
+- **Background-first Computer Use.** Eligible clicks, plain text entry, and
+  non-Command keystrokes can target the exact approved app window without
+  bringing it forward. Finder, Command shortcuts, and automatic fallback when
+  background routing is unavailable still use the foreground; forced
+  background mode refuses that fallback.
 - **Faster continuous MTP decoding.** Qualified Qwen and GLM speculative paths
   reduce host synchronization inside an accepted draft cycle.
 - **Safer model import.** Uncataloged models are checked before download,
