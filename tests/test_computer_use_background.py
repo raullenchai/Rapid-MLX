@@ -1025,8 +1025,11 @@ def test_interrupted_typing_releases_the_held_character(monkeypatch):
     assert posted == [1, 2, 3, 4]
 
 
+@pytest.mark.parametrize("raises", [True, False])
 @pytest.mark.parametrize("primitive", ["press_key", "type_text", "scroll"])
-def test_primitive_errors_surface_as_action_failed(monkeypatch, background, primitive):
+def test_primitive_errors_surface_as_action_failed(
+    monkeypatch, background, primitive, raises
+):
     snapshot = _snapshot()
     monkeypatch.setattr(
         backend, "_validate_snapshot_window", lambda snap, **k: snap["window"]
@@ -1034,6 +1037,8 @@ def test_primitive_errors_surface_as_action_failed(monkeypatch, background, prim
     monkeypatch.setattr(backend, "_validate_focused_window", lambda *a, **k: None)
 
     def explode(*_a, **_k):
+        if not raises:
+            return False  # the primitive refused (allocation, no focus, ...)
         raise OSError("SPI failed")
 
     monkeypatch.setattr(background_input, primitive, explode)

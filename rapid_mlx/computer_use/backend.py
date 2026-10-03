@@ -1101,11 +1101,7 @@ def _background_delivery(snapshot: dict) -> bool:
 
 
 def _target_ids(snapshot: dict) -> tuple[int, int]:
-    pid = int(snapshot["app"]["pid"])
-    window_id = _cg_window_id(snapshot["window"]["window_id"])
-    if window_id is None:
-        raise ComputerUseError("stale_observation", "snapshot has no CGWindow id")
-    return pid, window_id
+    return int(snapshot["app"]["pid"]), _cg_window_id(snapshot["window"]["window_id"])
 
 
 def _frontmost_window() -> tuple[int, int] | None:
