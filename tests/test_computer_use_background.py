@@ -271,7 +271,6 @@ def _fake_syms(monkeypatch):
         "set_location": lambda *a: None,
         "set_window_location": lambda ev, x, y: log.append((ev, x, y)),
         "sl_post": lambda *a: None,
-        "public_post": lambda *a: None,
         "release": lambda *a: None,
     }
     monkeypatch.setattr(background_input, "_syms", lambda: syms)
@@ -698,8 +697,8 @@ def test_live_background_click_types_into_calculator_without_stealing_focus():
     )
     previous = backend._frontmost_window()
     subprocess.run(["open", "-g", "-a", "Calculator"], check=True)
+    pid = None
     try:
-        pid = None
         for _ in range(40):
             out = subprocess.run(
                 ["pgrep", "-x", "Calculator"], capture_output=True, text=True
@@ -754,7 +753,17 @@ def test_live_background_click_types_into_calculator_without_stealing_focus():
             round(cursor_before.y),
         )
     finally:
-        subprocess.run(["pkill", "-x", "Calculator"])
+        # Quit only the instance this test launched, never one opened since.
+        if pid is not None:
+            running = (
+                AppKit.NSRunningApplication.runningApplicationWithProcessIdentifier_(
+                    pid
+                )
+            )
+            if running is not None and running.bundleIdentifier() == (
+                "com.apple.calculator"
+            ):
+                running.terminate()
 
 
 # --- pr_validate codex round 5 -------------------------------------------------

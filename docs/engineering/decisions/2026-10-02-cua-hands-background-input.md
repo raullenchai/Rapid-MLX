@@ -55,9 +55,9 @@ through it whenever it is available.
 | Gesture | Background route | Notes |
 |---|---|---|
 | Left click | focus-without-raise record → stamped `mouseMoved` primer → `(-1,-1)` decoy down/up → target down/up via `SLEventPostToPid` | Stamped fields: f40 target pid, f51/f91/f92 window, f58 click group |
-| Right / middle click | primer → down/up with the matching button number, posted via SkyLight **and** `CGEventPostToPid` | Right-down stamped as button 0 arrives as a left click; window-local point stamped |
+| Right / middle click | primer → down/up with the matching button number, posted via SkyLight only (cua also posts `CGEventPostToPid`; measured on Chrome and TextEdit, each route alone works and both together deliver every event twice) | Right-down stamped as button 0 arrives as a left click; window-local point stamped |
 | Double click | clickState 1 → 2 pairs | `AXOpen` first when the element advertises it |
-| Wheel scroll | primer + ≤10-line notches, both posts | Window-local point stamped (a screen point does nothing once the window is off the origin — measured); nested scrollers work |
+| Wheel scroll | primer + ≤10-line notches, SkyLight only (both routes double the distance: 3 lines → 240px vs 120px in Chrome, 2× in TextEdit) | Window-local point stamped (a screen point does nothing once the window is off the origin — measured); nested scrollers work |
 | Text | keycode-0 + `CGEventKeyboardSetUnicodeString` per scalar, flags forced to 0 | Bypasses layout and IME; CJK and emoji arrive literally |
 | Keys / non-Cmd chords | keycode + exact flags to the pid, with `SLSEventAuthenticationMessage` | Envelope only on macOS 15+ |
 | Cmd chords | **foreground (HID)** | See "Measured limits" |

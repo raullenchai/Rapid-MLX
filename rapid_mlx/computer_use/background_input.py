@@ -247,7 +247,6 @@ def _load() -> dict | None:
         ),
         "set_location": _bind(cg, "CGEventSetLocation", [c_void_p, _CGPoint], None),
         "set_flags": _bind(cg, "CGEventSetFlags", [c_void_p, c_uint64], None),
-        "public_post": _bind(cg, "CGEventPostToPid", [c_int32, c_void_p], None),
         "release": _bind(cf, "CFRelease", [c_void_p], None),
         "malloc_size": _bind(libsystem, "malloc_size", [c_void_p], c_size_t),
         "malloc_zone_from_ptr": _bind(
@@ -630,11 +629,10 @@ def click(
             _stamp_mouse(ev, pid, wid, step, group, local)
             if flags and step.phase == 3:
                 s["set_flags"](ev, int(flags))
+            # One route only: cua also posts CGEventPostToPid here, but
+            # apps that accept both (Chrome, TextEdit — measured) then see
+            # every down/up twice (two context menus, a double scroll).
             s["sl_post"](int(pid), ev)
-            if button != "left":
-                # AppKit right/middle handlers drop SkyLight-only delivery;
-                # cua posts both routes for non-left buttons.
-                s["public_post"](int(pid), ev)
             if step.delay_after_s:
                 time.sleep(step.delay_after_s)
     return True
@@ -687,7 +685,6 @@ def scroll(
         ev = events[0]
         _stamp_mouse(ev, pid, wid, primer, group, local)
         s["sl_post"](int(pid), ev)
-        s["public_post"](int(pid), ev)
         time.sleep(primer.delay_after_s)
         for ev in events[1:]:
             s["set_location"](ev, _CGPoint(x, y))
@@ -696,10 +693,9 @@ def scroll(
             s["set_field"](ev, _F_WINDOW, int(wid))
             s["set_field"](ev, _F_WINDOW_UNDER, int(wid))
             s["set_field"](ev, _F_WINDOW_HANDLER, int(wid))
-            # SkyLight reaches backgrounded Chromium/Catalyst; the public
-            # route lands on AppKit/WKWebView scrollers.
+            # SkyLight alone scrolls both Chromium and AppKit scrollers;
+            # adding the public route doubles the distance (measured).
             s["sl_post"](int(pid), ev)
-            s["public_post"](int(pid), ev)
             time.sleep(0.03)
     return True
 
