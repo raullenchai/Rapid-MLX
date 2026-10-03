@@ -19,9 +19,9 @@
   tiny CPU backbone. The wheel contains the vendored source, license, and notice.
 - An earlier sandboxed session could not access Metal or the Hugging Face
   cache. A later unrestricted session on the same M3 Ultra confirmed MPS and
-  loaded the real pinned 9B checkpoint. Text, image, video-frame, and rank
-  requests all returned 200; see
-  `docs/engineering/performance/2026-10-03-clef-flash-m3-ultra-dogfood.md`
+  loaded the real pinned 9B and 27B checkpoints. Text, image, video-frame,
+  and rank requests all returned 200; see
+  `docs/engineering/performance/2026-10-03-clef-family-m3-ultra-dogfood.md`
   for inputs, outputs, timings, and memory.
 - Local Clef tests pass (7/7); repository Ruff lint/format and the pinned
   shrink-only mypy budget pass after CI fixes. The optional Torch tests skip
@@ -29,10 +29,9 @@
 
 ## Remaining qualification
 
-- The 27B Clef checkpoint has not been downloaded or run. Cloudflare only
-  validated its reference runtime on H200; one successful M3 Ultra run is not
-  a Mac hardware qualification matrix.
-- Synthetic video color frames work, but a two-frame order-reversal probe
-  was ambiguous. Real video decision quality and concurrency remain unmeasured.
-- The PR remains draft until its changed-lines coverage gate is addressed;
-  the pinned vendor source is currently counted as uncovered by that gate.
+- Both model sizes now work on M3 Ultra, but this is not a Mac hardware
+  qualification matrix. Real video decision quality and concurrency remain
+  unmeasured.
+- The pinned vendor source now has an exact SHA-256 test and is omitted from
+  changed-lines coverage. Rapid-owned Clef code reaches 100% local diff
+  coverage; the updated Apple CI coverage gate has not completed yet.

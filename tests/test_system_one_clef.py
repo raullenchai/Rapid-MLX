@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import math
+import sys
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -16,8 +19,15 @@ from PIL import Image
 from rapid_mlx.clef.media import decode_images, decode_videos
 from rapid_mlx.cli import _resolve_system_one_backend, build_parser
 from rapid_mlx.system_one.backends import ClefBackend
-from rapid_mlx.system_one.schema import Question
+from rapid_mlx.system_one.schema import Question, SystemOneRequest
 from rapid_mlx.system_one.server import create_app
+
+
+def test_clef_vendor_source_matches_pinned_release():
+    source = Path(__file__).parents[1] / "rapid_mlx/clef/vendor/joint_schema_model.py"
+    assert hashlib.sha256(source.read_bytes()).hexdigest() == (
+        "0e304cf7c6500e8bb59bef7e2afd2c6373f82596dfb3b57d1aa93c175e2dc3a3"
+    )
 
 
 def _png_data_url() -> str:
@@ -31,6 +41,55 @@ def test_clef_cli_selects_existing_system_one_service():
         assert _resolve_system_one_backend(model, "auto") == "clef"
         assert build_parser().parse_args(["system-one", model]).model == model
     assert _resolve_system_one_backend("org/clefish", "auto") == "laya"
+
+
+def test_clef_schema_rejects_too_many_video_frames():
+    with pytest.raises(ValueError, match="at most 32 frames total"):
+        SystemOneRequest(
+            state="state",
+            questions={"visible": Question(type="noul")},
+            videos=[["frame"] * 33],
+        )
+
+
+def test_system_one_keeps_tokenizer_import_lazy(monkeypatch):
+    import rapid_mlx.utils as utils
+
+    sentinel = object()
+    monkeypatch.setitem(
+        sys.modules,
+        "rapid_mlx.utils.tokenizer",
+        SimpleNamespace(load_model_with_fallback=sentinel),
+    )
+    assert utils.load_model_with_fallback is sentinel
+    missing_name = "not_a_utility"
+    with pytest.raises(AttributeError):
+        getattr(utils, missing_name)
+
+
+def test_clef_cli_starts_selected_backend(monkeypatch):
+    import rapid_mlx._uvicorn as uvicorn_module
+    import rapid_mlx.cli as cli_module
+    import rapid_mlx.system_one.backends as backend_module
+
+    observed = {}
+
+    def fake_backend(model, *, device):
+        observed.update(model=model, device=device)
+        return SimpleNamespace(default_model="clef-flash")
+
+    monkeypatch.setattr(backend_module, "ClefBackend", fake_backend)
+    monkeypatch.setattr(cli_module, "_port_preflight_or_die", lambda *a, **k: None)
+    monkeypatch.setattr(
+        uvicorn_module,
+        "run_uvicorn",
+        lambda app, **kwargs: observed.update(app=app, kwargs=kwargs),
+    )
+    args = build_parser().parse_args(["system-one", "clef-flash", "--port", "8701"])
+    cli_module.system_one_command(args)
+    assert observed["model"] == "clef-flash"
+    assert observed["device"] == "gpu"
+    assert observed["kwargs"]["port"] == 8701
 
 
 def test_clef_uses_official_joint_head_result(monkeypatch):
@@ -83,9 +142,23 @@ def test_clef_uses_official_joint_head_result(monkeypatch):
     assert media_response.status_code == 200
     assert observed["request"]["images"][0].size == (2, 2)
 
+    video_response = client.post(
+        "/v1/systemone",
+        json={
+            "state": "Review these frames",
+            "videos": [[_png_data_url(), _png_data_url()]],
+            "questions": {"approve": {"type": "noul"}},
+        },
+    )
+    assert video_response.status_code == 200
+    assert observed["request"]["videos"][0][0].shape == (2, 2, 3)
 
-def test_clef_backend_loads_pinned_checkpoint_without_remote_code(monkeypatch):
-    pytest.importorskip("torch")
+
+@pytest.mark.parametrize("device,expected_device", [("cpu", "cpu"), ("gpu", "mps")])
+def test_clef_backend_loads_pinned_checkpoint_without_remote_code(
+    monkeypatch, device, expected_device
+):
+    torch = pytest.importorskip("torch")
     import huggingface_hub
 
     from rapid_mlx.clef.vendor import joint_schema_model
@@ -102,14 +175,47 @@ def test_clef_backend_loads_pinned_checkpoint_without_remote_code(monkeypatch):
 
     monkeypatch.setattr(huggingface_hub, "snapshot_download", snapshot_download)
     monkeypatch.setattr(joint_schema_model, "load_release_model", load_release_model)
-    backend = ClefBackend("clef-flash", device="cpu")
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: True)
+    backend = ClefBackend("clef-flash", device=device)
     assert backend.default_model == "clef-flash"
     assert captured == {
         "repo": "Cloudflare/clef-flash",
         "revision": "17f0b0ad64efb65d273590632833508766b2aae6",
         "path": "/a/local/snapshot",
-        "device": "cpu",
+        "device": expected_device,
     }
+
+
+def test_clef_backend_rejects_bad_setup(monkeypatch):
+    import importlib.metadata
+
+    torch = pytest.importorskip("torch")
+    with pytest.raises(ValueError, match="unknown Clef model"):
+        ClefBackend("Cloudflare/not-clef", device="cpu")
+    with pytest.raises(ValueError, match="Clef device"):
+        ClefBackend("clef-flash", device="other")
+
+    original_version = importlib.metadata.version
+
+    def missing_torch(package):
+        if package == "torch":
+            raise importlib.metadata.PackageNotFoundError(package)
+        return original_version(package)
+
+    monkeypatch.setattr(importlib.metadata, "version", missing_torch)
+    with pytest.raises(RuntimeError, match="optional runtime"):
+        ClefBackend("clef-flash", device="cpu")
+    monkeypatch.setattr(
+        importlib.metadata,
+        "version",
+        lambda package: "2.10" if package == "torch" else original_version(package),
+    )
+    with pytest.raises(RuntimeError, match="torch>=2.11"):
+        ClefBackend("clef-flash", device="cpu")
+    monkeypatch.setattr(importlib.metadata, "version", original_version)
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: False)
+    with pytest.raises(RuntimeError, match="Apple Metal/MPS"):
+        ClefBackend("clef-flash", device="gpu")
 
 
 def test_clef_media_decodes_locally_and_rejects_urls():
@@ -125,6 +231,51 @@ def test_clef_media_decodes_locally_and_rejects_urls():
         assert "data URL" in str(exc)
     else:
         raise AssertionError("remote media URL was accepted")
+
+
+def test_clef_media_rejects_invalid_and_oversized_inputs(monkeypatch):
+    from PIL import Image
+
+    png = _png_data_url()
+    cases = [
+        ("data:image/png;base64", "data URL"),
+        ("data:image/gif;base64,AAAA", "PNG, JPEG, or WebP"),
+        (
+            "data:image/png;base64," + "A" * (4 * 1024 * 1024 * 4 // 3 + 5),
+            "encoded limit",
+        ),
+        ("data:image/png;base64,not-base64!", "invalid base64"),
+        (
+            "data:image/png;base64,"
+            + base64.b64encode(b"x" * (4 * 1024 * 1024 + 1)).decode(),
+            "encoded limit",
+        ),
+        (
+            "data:image/png;base64," + base64.b64encode(b"not an image").decode(),
+            "invalid or oversized",
+        ),
+    ]
+    bitmap = io.BytesIO()
+    Image.new("RGB", (2, 2)).save(bitmap, format="BMP")
+    cases.append(
+        (
+            "data:image/png;base64," + base64.b64encode(bitmap.getvalue()).decode(),
+            "format does not match",
+        )
+    )
+    for value, message in cases:
+        with pytest.raises(ValueError, match=message):
+            decode_images([value])
+    with pytest.raises(ValueError, match="at most 8 images"):
+        decode_images([png] * 9)
+    with pytest.raises(ValueError, match="at most 2 videos"):
+        decode_videos([[png, png]] * 3)
+    monkeypatch.setattr("rapid_mlx.clef.media._MAX_PIXELS", 1)
+    with pytest.raises(ValueError, match="16 MP pixel limit"):
+        decode_images([png])
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 1)
+    with pytest.raises(ValueError, match="invalid or oversized"):
+        decode_images([png])
 
 
 def test_other_decision_backends_reject_media_before_inference():
@@ -162,6 +313,22 @@ def test_clef_rejects_wrong_model_or_temperature_without_inference():
             pass
         else:
             raise AssertionError("invalid Clef request was accepted")
+
+
+def test_clef_rank_and_model_catalog(monkeypatch):
+    backend = object.__new__(ClefBackend)
+    backend.default_model = "clef-flash"
+    backend.repo_id = "Cloudflare/clef-flash"
+    monkeypatch.setattr(
+        backend,
+        "answer",
+        lambda *_args: {"answers": {"rank": {"probabilities": {"0": 0.2, "1": 0.8}}}},
+    )
+    assert backend.rank("context", None, ["wrong", "right"], "clef-flash", 1.0) == [
+        {"rank": 1, "candidate": "right", "prob": 0.8},
+        {"rank": 2, "candidate": "wrong", "prob": 0.2},
+    ]
+    assert backend.models()[0]["hf_id"] == "Cloudflare/clef-flash"
 
 
 def test_official_joint_head_runs_one_cpu_forward_pass():
