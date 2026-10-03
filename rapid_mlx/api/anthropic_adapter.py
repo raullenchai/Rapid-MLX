@@ -106,24 +106,42 @@ def to_anthropic_tool_use_id(openai_id: str | None) -> str:
 #      "text": "<total_tokens>14982239 tokens left</total_tokens>",
 #      "cache_control": {"type": "ephemeral"}}]}
 #
-# It always trails the array, so ``--relocate-mid-conversation-system`` cannot
+# It is appended as the LAST message, and later requests keep it in the history
+# where it was, i.e. directly before that turn's assistant reply (the 0.15.4
+# server log shows each later turn diverging one counter-length past the
+# previous one). Trailing, ``--relocate-mid-conversation-system`` cannot
 # place it (no following user turn: the all-or-nothing rule hoists) and the
 # default hoist appends its per-request value to the leading system block. The
 # front of the prompt then differs on every turn and the hybrid prefix cache
 # misses every time: ~17.6k tokens re-prefilled, ~25 s TTFT per tool-loop turn
 # measured on qwen3.6-35b. It carries no instruction, only client bookkeeping
 # (same class as the ``x-anthropic-billing-header`` scrub below), so it is
-# dropped. Only a message whose ENTIRE text is the counter is dropped.
+# dropped, but only in the exact shape Claude Code emits: a system message whose
+# whole content is the counter (a string, or one text block), sitting last or
+# directly before an assistant message. ``cache_control`` is not part of the
+# parsed block model, so it cannot be checked here.
 _TOKEN_BUDGET_COUNTER_RE = re.compile(
     r"<total_tokens>\s*\d[\d,]*\s+tokens?\s+left\s*</total_tokens>"
 )
 
 
-def _is_token_budget_counter(message: Message) -> bool:
-    """True for a system message whose whole text is Claude Code's counter."""
-    if message.role != "system" or not isinstance(message.content, str):
+def _is_token_budget_counter(messages: list[AnthropicMessage], index: int) -> bool:
+    """True when ``messages[index]`` is Claude Code's per-turn token counter."""
+    message = messages[index]
+    if message.role != "system":
         return False
-    return _TOKEN_BUDGET_COUNTER_RE.fullmatch(message.content.strip()) is not None
+    following = messages[index + 1] if index + 1 < len(messages) else None
+    if following is not None and following.role != "assistant":
+        return False
+    content = message.content
+    if isinstance(content, list):
+        if len(content) != 1:
+            return False
+        block = content[0]
+        if block.type != "text" or set(block.model_fields_set) != {"type", "text"}:
+            return False
+        content = block.text or ""
+    return _TOKEN_BUDGET_COUNTER_RE.fullmatch(content.strip()) is not None
 
 
 def _relocate_mid_system_enabled() -> bool:
@@ -229,7 +247,12 @@ def anthropic_to_openai(
         messages.append(Message(role="system", content=system_text))
 
     # Convert each message
-    for msg in request.messages:
+    # Claude Code's per-request token counter is skipped (#4036): under either
+    # relocation setting it would land in the leading system block and change
+    # the front of the prompt on every turn.
+    for index, msg in enumerate(request.messages):
+        if _is_token_budget_counter(request.messages, index):
+            continue
         converted = _convert_message(msg)
         messages.extend(converted)
 
@@ -270,11 +293,6 @@ def anthropic_to_openai(
     # override it. Trading that for a cache hit is not ours to do
     # silently, so the optimisation is opt-in and the shipped default is
     # the historical hoist.
-    #
-    # Claude Code's per-request token counter is dropped first (#4036): under
-    # either setting it would land in the leading block and change the front
-    # of the prompt on every turn.
-    messages = [m for m in messages if not _is_token_budget_counter(m)]
     messages = _merge_system_messages(
         messages, relocate_mid_conversation=_relocate_mid_system_enabled()
     )

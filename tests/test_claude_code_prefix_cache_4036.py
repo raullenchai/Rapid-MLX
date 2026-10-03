@@ -27,7 +27,6 @@ from rapid_mlx.api.anthropic_adapter import (
     anthropic_to_openai,
 )
 from rapid_mlx.api.anthropic_models import AnthropicRequest
-from rapid_mlx.api.models import Message
 from rapid_mlx.api.utils import extract_multimodal_content
 from rapid_mlx.config import get_config
 from rapid_mlx.utils.chat_template import apply_chat_template
@@ -145,7 +144,9 @@ class TestCapturedTurnsSharePrefix:
     def test_red_without_the_drop(self, relocate, monkeypatch):
         """The prefix assertion above can fail: origin/main's hoist breaks it."""
         monkeypatch.setattr(
-            anthropic_adapter, "_is_token_budget_counter", lambda message: False
+            anthropic_adapter,
+            "_is_token_budget_counter",
+            lambda messages, index: False,
         )
         turn1, turn2 = CAPTURED["turns"]
         first = _prompt(turn1, add_generation_prompt=False)
@@ -185,35 +186,65 @@ def test_requests_without_the_counter_convert_as_on_main(case, monkeypatch):
     assert [m.model_dump(exclude_none=True) for m in converted] == case["expected"]
 
 
+def _counter_at(messages: list[dict], index: int) -> bool:
+    request = AnthropicRequest(model="m", max_tokens=8, messages=messages)
+    return _is_token_budget_counter(request.messages, index)
+
+
+COUNTER = "<total_tokens>14982239 tokens left</total_tokens>"
+USER = {"role": "user", "content": "go"}
+ASSISTANT = {"role": "assistant", "content": "ok"}
+
+
+def _block(text: str, **extra) -> dict:
+    return {"role": "system", "content": [{"type": "text", "text": text, **extra}]}
+
+
 @pytest.mark.parametrize(
     "text",
     [
-        "<total_tokens>14982239 tokens left</total_tokens>",
+        COUNTER,
         "  <total_tokens> 1,234,567 tokens left </total_tokens>\n",
         "<total_tokens>1 token left</total_tokens>",
     ],
 )
 def test_counter_shapes_are_recognised(text):
-    assert _is_token_budget_counter(Message(role="system", content=text))
+    assert _counter_at([USER, {"role": "system", "content": text}], 1)
+    assert _counter_at([USER, _block(text, cache_control={"type": "ephemeral"})], 1)
+
+
+def test_counter_kept_in_history_before_the_assistant_reply_is_recognised():
+    """Later turns keep the old counter where it was: before that turn's reply."""
+    messages = [USER, _block(COUNTER), ASSISTANT, USER, _block(COUNTER)]
+    assert _counter_at(messages, 1)
+    assert _counter_at(messages, 4)
 
 
 @pytest.mark.parametrize(
-    "message",
+    "messages, index",
     [
-        Message(role="user", content="<total_tokens>5 tokens left</total_tokens>"),
-        Message(role="system", content="<total_tokens>see runbook</total_tokens>"),
-        Message(
-            role="system",
-            content="<total_tokens>5 tokens left</total_tokens> Wrap up now.",
-        ),
-        Message(role="system", content="<total_tokens>tokens left</total_tokens>"),
-        Message(
-            role="system",
-            content=[
-                {"type": "text", "text": "<total_tokens>5 tokens left</total_tokens>"}
+        # Not Claude Code's position: a user turn follows.
+        ([USER, _block(COUNTER), USER], 1),
+        ([USER, {"role": "system", "content": COUNTER}, USER], 1),
+        # Not the counter's shape.
+        ([{"role": "user", "content": COUNTER}], 0),
+        ([USER, _block("<total_tokens>see runbook</total_tokens>")], 1),
+        ([USER, _block(COUNTER + " Wrap up now.")], 1),
+        ([USER, _block("<total_tokens>tokens left</total_tokens>")], 1),
+        (
+            [
+                USER,
+                {
+                    "role": "system",
+                    "content": [
+                        {"type": "text", "text": COUNTER},
+                        {"type": "text", "text": "Wrap up now."},
+                    ],
+                },
             ],
+            1,
         ),
     ],
 )
-def test_anything_else_is_not_the_counter(message):
-    assert not _is_token_budget_counter(message)
+def test_anything_else_is_not_the_counter(messages, index):
+    assert not _counter_at(messages, index)
