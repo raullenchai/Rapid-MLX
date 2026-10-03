@@ -2667,7 +2667,60 @@ def build_extended_sampling_kwargs(request) -> dict:
         value = resolver(getattr(request, name, None))
         if value is not None:
             kwargs[name] = value
+    # SillyTavern's ``repetition_penalty_range`` (request-only, no cascade).
+    window = getattr(request, "repetition_penalty_range", None)
+    if isinstance(window, int) and not isinstance(window, bool):
+        kwargs["repetition_context_size"] = window
     return kwargs
+
+
+def dry_sampling_kwargs(engine: Any, request: Any) -> dict:
+    """``{"dry_logits_processor": ...}`` when the request enables DRY.
+
+    Sequence breakers are mapped to token ids with the serving tokenizer
+    (SillyTavern's defaults when the request names none). A tokenizer that
+    cannot encode them leaves DRY active without breakers rather than
+    silently dropping the sampler the user asked for.
+    """
+    multiplier = getattr(request, "dry_multiplier", None)
+    if not isinstance(multiplier, (int, float)) or multiplier <= 0:
+        return {}
+    if getattr(engine, "is_mllm", False):
+        # The multimodal lane exposes no tokenized prompt history to its
+        # processors, so DRY could only see generated text there.
+        raise HTTPException(
+            status_code=400,
+            detail="DRY (dry_multiplier) is not supported for multimodal models.",
+        )
+    from ..sampling_dry import (
+        DEFAULT_ALLOWED_LENGTH,
+        DEFAULT_BASE,
+        DEFAULT_SEQUENCE_BREAKERS,
+        DRYLogitsProcessor,
+        breaker_token_ids,
+    )
+
+    breakers = getattr(request, "dry_sequence_breakers", None)
+    if breakers is None:
+        breakers = list(DEFAULT_SEQUENCE_BREAKERS)
+    tokenizer = getattr(engine, "tokenizer", None)
+    try:
+        breaker_ids = breaker_token_ids(tokenizer, breakers)
+    except Exception:
+        breaker_ids = frozenset()
+    base = getattr(request, "dry_base", None)
+    allowed = getattr(request, "dry_allowed_length", None)
+    last_n = getattr(request, "dry_penalty_last_n", None)
+    return {
+        "dry_logits_processor": DRYLogitsProcessor(
+            multiplier=float(multiplier),
+            base=DEFAULT_BASE if base is None else float(base),
+            allowed_length=DEFAULT_ALLOWED_LENGTH if allowed is None else allowed,
+            breakers=breaker_ids,
+            # 0 and -1 (llama.cpp's "context size") both mean the whole context.
+            penalty_last_n=max(last_n or 0, 0),
+        )
+    }
 
 
 def reasoning_stop_scope_kwargs(engine: Any, request: Any) -> dict:
