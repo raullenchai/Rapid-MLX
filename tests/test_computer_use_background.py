@@ -297,12 +297,20 @@ def test_event_record_rejects_out_of_bounds_and_non_heap_words(monkeypatch):
     event[2] = 0xADE49453  # offset 16: junk, not a malloc block
     event[3] = 0x1000  # offset 24: candidate record pointer
     sizes = {ctypes.addressof(event): 32, 0x1000: 256}
-    syms = {"malloc_size": lambda ptr: sizes.get(ptr, 0)}
+
+    def malloc_size(ptr):
+        assert ptr in sizes, "malloc_size must only see zone-owned pointers"
+        return sizes[ptr]
+
+    syms = {
+        "malloc_size": malloc_size,
+        "malloc_zone_from_ptr": lambda ptr: 1 if ptr in sizes else None,
+    }
     monkeypatch.setattr(background_input, "_syms", lambda: syms)
     assert background_input._event_record(ctypes.addressof(event)) == 0x1000
     sizes[0x1000] = 16  # too small to be a record
     assert background_input._event_record(ctypes.addressof(event)) is None
-    syms["malloc_size"] = None
+    syms["malloc_zone_from_ptr"] = None
     assert background_input._event_record(ctypes.addressof(event)) is None
 
 
@@ -322,6 +330,44 @@ def test_restore_falls_back_to_app_activation(monkeypatch):
     assert activated == [999, 999]
     # Same app, record refused: activation cannot pick a window.
     assert backend._restore_user_focus((4, 555), 4, 101) is False
+
+
+def test_click_fails_closed_without_a_focus_capture(monkeypatch, background):
+    snapshot = _snapshot()
+    monkeypatch.setattr(
+        backend, "_validate_snapshot_window", lambda snap, **k: snap["window"]
+    )
+    monkeypatch.setattr(backend, "_frontmost_window", lambda: None)
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend.click("App", x=5, y=5, expected_snapshot=snapshot)
+    assert exc.value.code == "action_failed"
+    assert background == []
+
+
+def test_restore_error_does_not_mask_delivered_click(monkeypatch, background):
+    snapshot = _snapshot()
+    monkeypatch.setattr(
+        backend, "_validate_snapshot_window", lambda snap, **k: snap["window"]
+    )
+
+    def explode(*_a):
+        raise RuntimeError("activation raised")
+
+    monkeypatch.setattr(backend, "_restore_user_focus", explode)
+    result = backend.click("App", x=5, y=5, expected_snapshot=snapshot)
+    assert result["focus_restored"] is False
+    assert "warning" in result
+
+
+def test_type_text_rejects_unpaired_surrogate(monkeypatch, background):
+    monkeypatch.setattr(
+        backend,
+        "_prepare_synthetic_action",
+        lambda *a, **k: pytest.fail("invalid text must be rejected first"),
+    )
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend.type_text("App", "a\ud800b")
+    assert exc.value.code == "invalid_argument"
 
 
 def test_unrestored_focus_is_reported_as_warning(monkeypatch, background):

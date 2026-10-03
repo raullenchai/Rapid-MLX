@@ -1203,6 +1203,13 @@ def _pixel_click(
         # handed back even when synthesis fails after the target was focused.
         with background_input.GESTURE_LOCK:
             previous = _frontmost_window()
+            if previous is None:
+                # Focus-without-raise defocuses whatever is front; without a
+                # capture there is nothing to hand focus back to.
+                raise ComputerUseError(
+                    "action_failed",
+                    "could not capture the user's focused window before clicking",
+                )
             restored = None
             try:
                 if not background_input.click(
@@ -1220,7 +1227,12 @@ def _pixel_click(
                 # Let the target consume the stream before focus moves back.
                 time.sleep(0.05)
             finally:
-                restored = _restore_user_focus(previous, pid, window_id)
+                # Never let a restoration error mask the click's own outcome
+                # (a delivered click reported as failed invites a retry).
+                try:
+                    restored = _restore_user_focus(previous, pid, window_id)
+                except Exception:  # noqa: BLE001 - surfaced as focus_restored
+                    restored = False
         result = {
             "mode": "SkyLight-click",
             "route": ROUTE_PID,
@@ -2226,6 +2238,12 @@ def type_text(
     window_id: int | str | None = None,
     include_post_state: bool = False,
 ) -> dict:
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ComputerUseError(
+            "invalid_argument", "text contains an unpaired surrogate"
+        ) from exc
     snapshot = _prepare_synthetic_action(app, window_id)
     if _keyboard_background(snapshot):
         if not background_input.type_text(_target_ids(snapshot)[0], text):

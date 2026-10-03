@@ -210,6 +210,10 @@ def _load() -> dict | None:
     except OSError:
         return None
     try:
+        libsystem = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
+    except OSError:
+        libsystem = None
+    try:
         hiservices = ctypes.CDLL(
             "/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices"
         )
@@ -242,11 +246,9 @@ def _load() -> dict | None:
         "set_flags": _bind(cg, "CGEventSetFlags", [c_void_p, c_uint64], None),
         "public_post": _bind(cg, "CGEventPostToPid", [c_int32, c_void_p], None),
         "release": _bind(cf, "CFRelease", [c_void_p], None),
-        "malloc_size": _bind(
-            ctypes.CDLL("/usr/lib/libSystem.B.dylib"),
-            "malloc_size",
-            [c_void_p],
-            c_size_t,
+        "malloc_size": _bind(libsystem, "malloc_size", [c_void_p], c_size_t),
+        "malloc_zone_from_ptr": _bind(
+            libsystem, "malloc_zone_from_ptr", [c_void_p], c_void_p
         ),
         "sl_post": _bind(sky, "SLEventPostToPid", [c_int32, c_void_p], None),
         "set_field": _bind(
@@ -624,9 +626,10 @@ def scroll(
 # --- keyboard ----------------------------------------------------------------
 
 
-# A live SLSEventRecord is a malloc block of 256 bytes on macOS 26; anything
-# much smaller is not a record.
-_MIN_RECORD_BYTES = 128
+# sizeof(SLSEventRecord) is 248 on macOS 26 (SLEventGetEventRecord asserts it;
+# the copy matches the embedded record byte for byte). Smaller blocks are not
+# records.
+_MIN_RECORD_BYTES = 0xF8
 
 
 def _event_record(ev: int) -> int | None:
@@ -638,16 +641,22 @@ def _event_record(ev: int) -> int | None:
     bounds) and offset 16 holds a non-pointer. Only accept a word that lies
     inside the event allocation and points at a live malloc block of record
     size; otherwise the caller posts without the envelope.
+
+    ``malloc_zone_from_ptr`` is safe on arbitrary addresses (NULL when no zone
+    owns them), so ``malloc_size`` is only ever asked about real heap blocks.
+    The exported ``SLEventGetEventRecord`` copy accessor is not used: it
+    aborts the process when the caller's size disagrees with the OS's.
     """
-    malloc_size = _syms()["malloc_size"]
-    if malloc_size is None:
+    s = _syms()
+    zone_of, malloc_size = s.get("malloc_zone_from_ptr"), s.get("malloc_size")
+    if zone_of is None or malloc_size is None or not zone_of(int(ev)):
         return None
     event_bytes = malloc_size(int(ev))
     for offset in (24, 32, 16):
         if offset + 8 > event_bytes:
             continue
         value = c_void_p.from_address(int(ev) + offset).value
-        if value and malloc_size(value) >= _MIN_RECORD_BYTES:
+        if value and zone_of(value) and malloc_size(value) >= _MIN_RECORD_BYTES:
             return value
     return None
 
