@@ -45,6 +45,14 @@ UNSUPPORTED_SAMPLERS: dict[str, tuple[Any, ...]] = {
     "nsigma": (0.0,),
     "top_n_sigma": (0.0, -1.0),
     "skew": (0.0,),
+    # These controls are present in generic SillyTavern/Kobold payloads too.
+    # Accept their stock identities, but never let an enabled value disappear
+    # through Pydantic's extra-field ignore policy.
+    "rep_pen_slope": (1.0,),
+    "sampler_order": ([6, 0, 1, 3, 4, 2, 5],),
+    "temperature_last": (False,),
+    "custom_token_bans": ("", []),
+    "banned_strings": ([],),
 }
 
 SUPPORTED_SUMMARY = (
@@ -62,11 +70,20 @@ MAX_SEQUENCE_BREAKER_CHARS = 32
 def _is_neutral(value: Any, neutral: tuple[Any, ...]) -> bool:
     if value is None:
         return True
-    if isinstance(value, bool) or isinstance(neutral[0], bool):
-        return value in neutral and isinstance(value, bool)
-    if not isinstance(value, (int, float)) or not math.isfinite(value):
-        return False
-    return any(float(value) == float(option) for option in neutral)
+    if isinstance(value, bool) or any(isinstance(option, bool) for option in neutral):
+        return isinstance(value, bool) and any(
+            isinstance(option, bool) and value is option for option in neutral
+        )
+    if isinstance(value, (int, float)):
+        if not math.isfinite(value):
+            return False
+        return any(
+            isinstance(option, (int, float))
+            and not isinstance(option, bool)
+            and float(value) == float(option)
+            for option in neutral
+        )
+    return any(value == option for option in neutral)
 
 
 def apply_sampler_compat(data: Any) -> Any:

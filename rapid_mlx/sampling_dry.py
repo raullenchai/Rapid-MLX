@@ -33,9 +33,15 @@ from typing import Any
 DEFAULT_BASE = 1.75
 DEFAULT_ALLOWED_LENGTH = 2
 DEFAULT_SEQUENCE_BREAKERS = ("\n", ":", '"', "*")
+MAX_MATCH_LENGTH = 50
 # A penalty this large already removes the token from any sampler, so a
-# match is only measured up to the length that reaches it. This bounds the
-# per-step scan without changing which tokens DRY suppresses.
+# match need not be measured past the length that reaches it. The upstream
+# algorithm also caps a match at 50 tokens. We extend that cap only when the
+# caller's accepted ``allowed_length`` is higher (bounded at 100 by the API),
+# so every valid threshold remains meaningful. Keeping a hard work bound is
+# essential here: ``base`` is client controlled and can be arbitrarily close
+# to 1, where a saturation-only cap would otherwise make the nested scan
+# quadratic in the entire context on a repeated-token prompt.
 SATURATING_PENALTY = 1e4
 _MAX_LOG_PENALTY = 700.0  # math.exp overflow guard
 
@@ -44,7 +50,8 @@ def _max_useful_length(multiplier: float, base: float, allowed_length: int) -> i
     if base <= 1.0 or multiplier >= SATURATING_PENALTY:
         return allowed_length
     extra = math.log(SATURATING_PENALTY / multiplier) / math.log(base)
-    return allowed_length + max(0, math.ceil(extra))
+    hard_cap = max(MAX_MATCH_LENGTH, allowed_length)
+    return min(hard_cap, allowed_length + max(0, math.ceil(extra)))
 
 
 def dry_penalties(

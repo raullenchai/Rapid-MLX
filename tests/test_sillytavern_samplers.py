@@ -8,7 +8,9 @@ scheduler / multimodal plumbing tests are ``requires_mlx`` (Apple lane).
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi import HTTPException
@@ -18,6 +20,7 @@ from rapid_mlx.api import sampler_compat as sc
 from rapid_mlx.api.models import ChatCompletionRequest, CompletionRequest
 from rapid_mlx.sampling_dry import (
     DEFAULT_SEQUENCE_BREAKERS,
+    MAX_MATCH_LENGTH,
     DRYLogitsProcessor,
     _max_useful_length,
     breaker_token_ids,
@@ -76,12 +79,12 @@ def test_dry_window_and_off_switch():
     assert _dry([7]) == {}
 
 
-def test_dry_exponent_follows_the_reference_beyond_any_fixed_length():
+def test_dry_exponent_uses_the_reference_match_cap():
     tokens = [1] * 400
-    # base 1.01 needs a long match before the penalty saturates: the full
-    # reference exponent is used, not a fixed cap.
+    # The reference sampler caps backward matching at 50 tokens. This also
+    # bounds adversarial work when ``base`` is arbitrarily close to one.
     penalties = _dry(tokens, base=1.01, multiplier=1.0)
-    assert penalties[1] == pytest.approx(1.01 ** (399 - 2), rel=1e-6)
+    assert penalties[1] == pytest.approx(1.01 ** (MAX_MATCH_LENGTH - 2), rel=1e-6)
 
 
 def test_dry_scan_stops_once_the_penalty_saturates():
@@ -92,6 +95,43 @@ def test_dry_scan_stops_once_the_penalty_saturates():
     # A repeat longer than the cap gets the cap's (already huge) penalty.
     assert _dry([1] * 100, base=2.0)[1] == pytest.approx(2.0 ** (cap - 2))
     assert _dry([1] * 100, base=1.0)[1] == pytest.approx(1.0)
+    # Accepted thresholds above the reference cap remain meaningful while the
+    # API's <=100 bound still gives the scan a fixed upper work limit.
+    assert _dry([1] * 101, allowed_length=100)[1] == pytest.approx(1.0)
+
+
+class _CountingTokens(Sequence[int]):
+    def __init__(self, size: int) -> None:
+        self.size = size
+        self.reads = 0
+
+    def __len__(self) -> int:
+        return self.size
+
+    def __getitem__(self, index):
+        self.reads += 1
+        if isinstance(index, slice):
+            return [1] * len(range(*index.indices(self.size)))
+        if index < 0:
+            index += self.size
+        if not 0 <= index < self.size:
+            raise IndexError(index)
+        return 1
+
+
+def test_dry_worst_case_work_is_bounded_for_base_near_one():
+    tokens = _CountingTokens(8_192)
+    penalties = dry_penalties(
+        tokens,
+        multiplier=0.8,
+        base=1.0000001,
+        allowed_length=2,
+        breakers=NO_BREAKERS,
+    )
+    assert penalties[1] == pytest.approx(0.8 * 1.0000001**48)
+    # Each prior match performs at most MAX_MATCH_LENGTH backward checks.
+    # A saturation-only cap would do O(n^2) reads for this repeated history.
+    assert tokens.reads <= len(tokens) * (2 * MAX_MATCH_LENGTH + 4)
 
 
 def test_dry_penalty_never_overflows():
@@ -200,6 +240,33 @@ def test_dynamic_temperature_false_is_neutral_but_zero_is_not_a_bool():
     _chat(dynamic_temperature=False)
     with pytest.raises(ValidationError):
         _chat(dynamic_temperature=0)
+
+
+def test_known_sillytavern_controls_accept_only_stock_neutral_values():
+    neutral = {
+        "rep_pen_slope": 1,
+        "sampler_order": [6, 0, 1, 3, 4, 2, 5],
+        "temperature_last": False,
+        "custom_token_bans": "",
+        "banned_strings": [],
+    }
+    _chat(**neutral)
+    CompletionRequest(prompt="x", **neutral)
+
+    enabled = {
+        "rep_pen_slope": 0.2,
+        "sampler_order": [0, 1, 2],
+        "temperature_last": True,
+        "custom_token_bans": "1,2",
+        "banned_strings": ["spoiler"],
+    }
+    for field, value in enabled.items():
+        with pytest.raises(ValidationError, match=field):
+            _chat(**{field: value})
+        with pytest.raises(ValidationError, match=field):
+            CompletionRequest(prompt="x", **{field: value})
+    with pytest.raises(ValidationError, match="rep_pen_slope"):
+        _chat(rep_pen_slope=True)
 
 
 def test_rep_pen_range_alias_and_precedence():
@@ -384,6 +451,67 @@ def test_deepseek_v41_refuses_dry_and_range():
     )
     with pytest.raises(HTTPException, match="repetition_penalty_range, dry_multiplier"):
         validate_request(request)
+
+
+@pytest.mark.requires_mlx
+def test_deepseek_v41_accepts_neutral_dry_multiplier():
+    from rapid_mlx.models.deepseek_v41_native.serving import validate_request
+
+    fields = dict.fromkeys(
+        (
+            "stop",
+            "top_k",
+            "min_p",
+            "repetition_penalty",
+            "repetition_penalty_range",
+            "presence_penalty",
+            "frequency_penalty",
+            "top_logprobs",
+            "logit_bias",
+            "video_fps",
+            "video_max_frames",
+            "reasoning_max_tokens",
+            "reasoning_effort",
+            "seed",
+        )
+    )
+    validate_request(
+        SimpleNamespace(**fields, dry_multiplier=0.0, chat_template_kwargs=None)
+    )
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [("dry_multiplier", 0.8), ("repetition_penalty_range", 256)],
+)
+def test_ordinary_dflash_refuses_unimplemented_samplers(field, value):
+    from fastapi.testclient import TestClient
+
+    from rapid_mlx.speculative.dflash.runtime import DFlashRuntime
+    from rapid_mlx.speculative.dflash.server import _build_app
+
+    app = _build_app(
+        model=MagicMock(),
+        processor=MagicMock(),
+        runtime=DFlashRuntime(
+            drafter=MagicMock(),
+            kind="dflash",
+            drafter_repo="z-lab/Qwen3.5-27B-DFlash",
+        ),
+        served_model_name="qwen3.5-27b-8bit",
+        default_max_tokens=64,
+        cors_origins=[],
+    )
+    response = TestClient(app).post(
+        "/v1/chat/completions",
+        json={
+            "model": "qwen3.5-27b-8bit",
+            "messages": [{"role": "user", "content": "hi"}],
+            field: value,
+        },
+    )
+    assert response.status_code == 400
+    assert field in json.dumps(response.json())
 
 
 # --------------------------------------------------------- serving plumbing

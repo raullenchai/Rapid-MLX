@@ -53,6 +53,11 @@ STOCK_SAMPLERS = {
     "xtc_threshold": 0.1,
     "xtc_probability": 0,
     "smoothing_factor": 0,
+    "rep_pen_slope": 1,
+    "sampler_order": [6, 0, 1, 3, 4, 2, 5],
+    "temperature_last": False,
+    "custom_token_bans": "",
+    "banned_strings": [],
     "dry_multiplier": 0,
     "max_tokens": 64,
 }

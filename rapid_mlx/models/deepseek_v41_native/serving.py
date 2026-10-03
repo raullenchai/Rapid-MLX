@@ -312,7 +312,6 @@ def validate_request(request) -> None:
             "repetition_penalty_range",
             "presence_penalty",
             "frequency_penalty",
-            "dry_multiplier",
             "top_logprobs",
             "logit_bias",
             "video_fps",
@@ -323,6 +322,8 @@ def validate_request(request) -> None:
         )
         if getattr(request, name, None) is not None
     ]
+    if getattr(request, "dry_multiplier", None) not in (None, 0, 0.0):
+        unsupported.append("dry_multiplier")
     template_kwargs = getattr(request, "chat_template_kwargs", None) or {}
     if set(template_kwargs) - {"enable_thinking"}:
         unsupported.append("chat_template_kwargs")
