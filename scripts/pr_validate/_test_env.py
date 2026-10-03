@@ -398,6 +398,8 @@ class TestEnvStatus:
     wants. ``message`` is a one-liner suitable for a step-result summary.
     """
 
+    __test__ = False  # not a pytest test class
+
     ok: bool
     missing: tuple[str, ...]
     message: str
