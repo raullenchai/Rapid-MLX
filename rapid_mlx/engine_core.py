@@ -1156,6 +1156,7 @@ class EngineCore:
         suppressed_tokens_logits_processor: Any | None = None,
         lifecycle_admission_token: str | None = None,
         on_request_committed: Callable[[], None] | None = None,
+        dry_logits_processor: Any | None = None,
     ) -> str:
         """
         Add a request for processing.
@@ -1201,6 +1202,7 @@ class EngineCore:
             grammar_logits_processor=grammar_logits_processor,
             reasoning_budget_logits_processor=reasoning_budget_logits_processor,
             suppressed_tokens_logits_processor=suppressed_tokens_logits_processor,
+            dry_logits_processor=dry_logits_processor,
             lifecycle_admission_token=lifecycle_admission_token,
         )
 

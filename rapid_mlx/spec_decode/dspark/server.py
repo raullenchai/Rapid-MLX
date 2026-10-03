@@ -82,6 +82,8 @@ def _validate_greedy_request(
         unsupported.append("presence_penalty")
     if request.frequency_penalty not in (None, 0, 0.0):
         unsupported.append("frequency_penalty")
+    if getattr(request, "dry_multiplier", None) not in (None, 0, 0.0):
+        unsupported.append("dry_multiplier")
     if request.seed is not None:
         unsupported.append("seed")
     if request.stop:

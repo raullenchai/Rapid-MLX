@@ -123,6 +123,7 @@ from ..service.helpers import (
     _validate_tool_call_params,
     _wait_with_disconnect,
     build_extended_sampling_kwargs,
+    dry_sampling_kwargs,
     enable_thinking_warning_header,
     enforce_context_length,
     enforce_context_length_for_messages,
@@ -4788,6 +4789,7 @@ async def _create_chat_completion_impl(
     # alias → generation_config cascade. Only forwards values the
     # cascade actually produced.
     chat_kwargs.update(build_extended_sampling_kwargs(request))
+    chat_kwargs.update(dry_sampling_kwargs(engine, request))
     chat_kwargs.update(reasoning_stop_scope_kwargs(engine, request))
 
     # Add multimodal content
