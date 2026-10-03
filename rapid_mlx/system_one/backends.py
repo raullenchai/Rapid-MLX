@@ -205,7 +205,7 @@ class ClefBackend:
         with self._lock:
             result = systemone(self._model, self._processor, request)
         result["usage"]["billing_units"] = len(questions)
-        return result
+        return dict(result)
 
     def rank(
         self,

@@ -9,7 +9,7 @@ import math
 import threading
 from types import SimpleNamespace
 
-import torch
+import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
@@ -34,6 +34,7 @@ def test_clef_cli_selects_existing_system_one_service():
 
 
 def test_clef_uses_official_joint_head_result(monkeypatch):
+    pytest.importorskip("torch")
     from rapid_mlx.clef.vendor import joint_schema_model
 
     backend = object.__new__(ClefBackend)
@@ -84,6 +85,7 @@ def test_clef_uses_official_joint_head_result(monkeypatch):
 
 
 def test_clef_backend_loads_pinned_checkpoint_without_remote_code(monkeypatch):
+    pytest.importorskip("torch")
     import huggingface_hub
 
     from rapid_mlx.clef.vendor import joint_schema_model
@@ -161,6 +163,7 @@ def test_clef_rejects_wrong_model_or_temperature_without_inference():
 
 
 def test_official_joint_head_runs_one_cpu_forward_pass():
+    torch = pytest.importorskip("torch")
     from rapid_mlx.clef.vendor.joint_schema_model import (
         ClefModel,
         JointSchemaHead,

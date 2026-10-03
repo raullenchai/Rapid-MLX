@@ -17,6 +17,13 @@
 - The new tests exercise the route contract, media bounds, pinned checkpoint
   selection, and a genuine forward pass through the official joint head on a
   tiny CPU backbone. The wheel contains the vendored source, license, and notice.
+- Studio hardware is an M3 Ultra Mac Studio with Metal support, but this
+  execution session reports `torch.backends.mps.is_available() == False` and
+  MLX raises `No Metal device available`. The pinned Clef snapshots are not in
+  the required default Hugging Face cache, which this session cannot write.
+- Local Clef tests pass (7/7); repository Ruff lint/format and the pinned
+  shrink-only mypy budget pass after CI fixes. The optional Torch tests skip
+  in the default test matrix when the `[clef]` extra is absent.
 
 ## Remaining validation
 
