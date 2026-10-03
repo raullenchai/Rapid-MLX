@@ -45,6 +45,7 @@ from ctypes import (
     c_int32,
     c_int64,
     c_long,
+    c_size_t,
     c_uint8,
     c_uint16,
     c_uint32,
@@ -241,6 +242,12 @@ def _load() -> dict | None:
         "set_flags": _bind(cg, "CGEventSetFlags", [c_void_p, c_uint64], None),
         "public_post": _bind(cg, "CGEventPostToPid", [c_int32, c_void_p], None),
         "release": _bind(cf, "CFRelease", [c_void_p], None),
+        "malloc_size": _bind(
+            ctypes.CDLL("/usr/lib/libSystem.B.dylib"),
+            "malloc_size",
+            [c_void_p],
+            c_size_t,
+        ),
         "sl_post": _bind(sky, "SLEventPostToPid", [c_int32, c_void_p], None),
         "set_field": _bind(
             sky, "SLEventSetIntegerValueField", [c_void_p, c_uint32, c_int64], None
@@ -515,7 +522,11 @@ def click(
         return False
     plan = click_plan(x, y, button=button, count=count)
     with _GESTURE_LOCK:
-        activate_without_raise(pid, wid)
+        if not activate_without_raise(pid, wid):
+            # Without key focus the stream could reach a different responder;
+            # post nothing (any partial defocus is undone by the caller's
+            # focus restoration).
+            return False
         time.sleep(0.05)
         group = time.time_ns() & 0x7FFFFFFF
         for step in plan:
@@ -580,13 +591,14 @@ def scroll(
         group = time.time_ns() & 0x7FFFFFFF
         primer = MouseStep(_MOUSE_MOVED, x, y, 2, 0, 0, 0.012)
         ev = s["mouse_event"](s["source"], _MOUSE_MOVED, _CGPoint(x, y), 0)
-        if ev:
-            try:
-                _stamp_mouse(ev, pid, wid, primer, group, local)
-                s["sl_post"](int(pid), ev)
-                s["public_post"](int(pid), ev)
-            finally:
-                s["release"](ev)
+        if not ev:
+            return False
+        try:
+            _stamp_mouse(ev, pid, wid, primer, group, local)
+            s["sl_post"](int(pid), ev)
+            s["public_post"](int(pid), ev)
+        finally:
+            s["release"](ev)
         time.sleep(primer.delay_after_s)
         for dy, dx in zip(ticks_y, ticks_x, strict=True):
             ev = s["scroll_event"](s["source"], _SCROLL_UNIT_LINE, 2, dy, dx, 0)
@@ -612,15 +624,30 @@ def scroll(
 # --- keyboard ----------------------------------------------------------------
 
 
-def _event_record(ev: int) -> int | None:
-    """Pointer to the ``SLSEventRecord`` embedded in a ``CGEventRef``.
+# A live SLSEventRecord is a malloc block of 256 bytes on macOS 26; anything
+# much smaller is not a record.
+_MIN_RECORD_BYTES = 128
 
-    ``__CGEvent`` is ``{CFRuntimeBase(16), uint32, pad, SLSEventRecord *}``;
-    cua/Swift probe offsets 24, 32, 16 for resilience across releases.
+
+def _event_record(ev: int) -> int | None:
+    """Pointer to the ``SLSEventRecord`` embedded in a ``CGEventRef``, or None.
+
+    ``__CGEvent`` is ``{CFRuntimeBase(16), uint32, pad, SLSEventRecord *}``.
+    cua probes offsets 24, 32 and 16 and takes the first non-null word, which
+    is unsafe: on macOS 26 the event object is 32 bytes (offset 32 is out of
+    bounds) and offset 16 holds a non-pointer. Only accept a word that lies
+    inside the event allocation and points at a live malloc block of record
+    size; otherwise the caller posts without the envelope.
     """
+    malloc_size = _syms()["malloc_size"]
+    if malloc_size is None:
+        return None
+    event_bytes = malloc_size(int(ev))
     for offset in (24, 32, 16):
+        if offset + 8 > event_bytes:
+            continue
         value = c_void_p.from_address(int(ev) + offset).value
-        if value:
+        if value and malloc_size(value) >= _MIN_RECORD_BYTES:
             return value
     return None
 

@@ -1094,7 +1094,24 @@ def _target_ids(snapshot: dict) -> tuple[int, int]:
 
 
 def _frontmost_window() -> tuple[int, int] | None:
-    """(pid, CGWindowID) of the front-most normal window, i.e. the user's key window."""
+    """(pid, CGWindowID) of the user's key window.
+
+    Falls back to ``(front app pid, 0)`` when no normal window is on screen,
+    so focus can still be handed back by re-activating that app.
+    """
+    window = _frontmost_layer0_window()
+    if window is not None:
+        return window
+    try:
+        from AppKit import NSWorkspace
+
+        front = NSWorkspace.sharedWorkspace().frontmostApplication()
+        return (int(front.processIdentifier()), 0) if front is not None else None
+    except Exception:  # noqa: BLE001 - no front app to restore to
+        return None
+
+
+def _frontmost_layer0_window() -> tuple[int, int] | None:
     from Quartz import (
         CGWindowListCopyWindowInfo,
         kCGNullWindowID,
@@ -1129,19 +1146,29 @@ def _restore_user_focus(
     """
     if previous is None or tuple(previous) == (pid, window_id):
         return None
-    if previous[0] != pid and background_input.front_process_matches(pid, window_id):
+    previous_pid, previous_wid = previous
+    other_app = previous_pid != pid
+    if other_app and background_input.front_process_matches(pid, window_id):
         # The target activated itself in response to the click (some apps do
         # on mouseDown); re-activate the user's app rather than leave it behind.
-        running = ax_driver._application_for_pid(previous[0])
-        if running is None:
-            return False
-        try:
-            return bool(running.activateWithOptions_(1 << 1))
-        except Exception:  # noqa: BLE001 - restoration is best-effort
-            return False
-    return background_input.restore_focus_after_without_raise(
-        previous[0], previous[1], pid, window_id
-    )
+        return _activate_app(previous_pid)
+    if previous_wid and background_input.restore_focus_after_without_raise(
+        previous_pid, previous_wid, pid, window_id
+    ):
+        return True
+    # No window to target, or the record was refused: re-activating the
+    # user's app is the remaining way to give their keyboard back.
+    return _activate_app(previous_pid) if other_app else False
+
+
+def _activate_app(pid: int) -> bool:
+    running = ax_driver._application_for_pid(pid)
+    if running is None:
+        return False
+    try:
+        return bool(running.activateWithOptions_(1 << 1))
+    except Exception:  # noqa: BLE001 - restoration is best-effort
+        return False
 
 
 def _window_origin(window: dict) -> tuple[float, float] | None:
@@ -1194,13 +1221,20 @@ def _pixel_click(
                 time.sleep(0.05)
             finally:
                 restored = _restore_user_focus(previous, pid, window_id)
-        return {
+        result = {
             "mode": "SkyLight-click",
             "route": ROUTE_PID,
             "button": button,
             "click_count": count,
             "focus_restored": restored,
         }
+        if restored is False:
+            # The click itself was delivered, so this is not an action failure
+            # (raising would invite a duplicate retry); surface it instead.
+            result["warning"] = (
+                "keyboard focus could not be handed back to the user's window"
+            )
+        return result
     _validate_snapshot_window(snapshot, point=(x, y))
     ax_driver._cg_click(float(x), float(y), clicks=count, button=button)
     return {

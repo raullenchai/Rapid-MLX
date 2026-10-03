@@ -277,6 +277,64 @@ def _fake_syms(monkeypatch):
     return log
 
 
+def test_click_posts_nothing_when_focus_without_raise_fails(monkeypatch):
+    log = _fake_syms(monkeypatch)
+    monkeypatch.setattr(background_input, "activate_without_raise", lambda *a: False)
+    assert background_input.click(4, 101, 5.0, 5.0) is False
+    assert log == []
+
+
+def test_scroll_fails_when_primer_cannot_be_created(monkeypatch):
+    _fake_syms(monkeypatch)
+    background_input._syms()["mouse_event"] = lambda *a: 0
+    assert background_input.scroll(4, 101, 5.0, 5.0, lines_y=-3) is False
+
+
+def test_event_record_rejects_out_of_bounds_and_non_heap_words(monkeypatch):
+    import ctypes
+
+    event = (ctypes.c_uint64 * 4)()  # a 32-byte event: offsets 0..24 only
+    event[2] = 0xADE49453  # offset 16: junk, not a malloc block
+    event[3] = 0x1000  # offset 24: candidate record pointer
+    sizes = {ctypes.addressof(event): 32, 0x1000: 256}
+    syms = {"malloc_size": lambda ptr: sizes.get(ptr, 0)}
+    monkeypatch.setattr(background_input, "_syms", lambda: syms)
+    assert background_input._event_record(ctypes.addressof(event)) == 0x1000
+    sizes[0x1000] = 16  # too small to be a record
+    assert background_input._event_record(ctypes.addressof(event)) is None
+    syms["malloc_size"] = None
+    assert background_input._event_record(ctypes.addressof(event)) is None
+
+
+def test_restore_falls_back_to_app_activation(monkeypatch):
+    activated = []
+    monkeypatch.setattr(background_input, "front_process_matches", lambda *a: False)
+    monkeypatch.setattr(
+        background_input, "restore_focus_after_without_raise", lambda *a: False
+    )
+    monkeypatch.setattr(
+        backend, "_activate_app", lambda pid: activated.append(pid) or True
+    )
+    # Focus record refused -> re-activate the user's app.
+    assert backend._restore_user_focus((999, 555), 4, 101) is True
+    # No user window on screen (pid, 0) -> app activation, no record.
+    assert backend._restore_user_focus((999, 0), 4, 101) is True
+    assert activated == [999, 999]
+    # Same app, record refused: activation cannot pick a window.
+    assert backend._restore_user_focus((4, 555), 4, 101) is False
+
+
+def test_unrestored_focus_is_reported_as_warning(monkeypatch, background):
+    snapshot = _snapshot()
+    monkeypatch.setattr(
+        backend, "_validate_snapshot_window", lambda snap, **k: snap["window"]
+    )
+    monkeypatch.setattr(backend, "_restore_user_focus", lambda *a: False)
+    result = backend.click("App", x=5, y=5, expected_snapshot=snapshot)
+    assert result["focus_restored"] is False
+    assert "focus" in result["warning"]
+
+
 def test_right_click_and_scroll_stamp_window_local_point(monkeypatch):
     log = _fake_syms(monkeypatch)
     assert background_input.click(
