@@ -1207,7 +1207,13 @@ def _detect_metadata_config(
     # avoid the legacy scheduler wedge.  Qwen3.8's official aliases and MTP
     # path use the SSM-safe engine and must retain the truthful architecture
     # classification even when served from a local snapshot path.
-    is_qwen38 = bool(re.search(r"qwen[._-]?3[._]8", model_path, re.IGNORECASE))
+    is_qwen38 = bool(
+        re.search(
+            r"qwen[._-]?3[._]8(?=$|[^0-9])",
+            _extract_model_name_segment(model_path),
+            re.IGNORECASE,
+        )
+    )
 
     if "qwen4_exp" in model_types:
         settings.update(
@@ -1375,18 +1381,30 @@ def detect_model_config(model_path: str) -> ModelConfig | None:
     # legacy generic Qwen3 regex can classify a local snapshot as a plain
     # attention Qwen3 model.  Known aliases returned above remain the SSOT;
     # this is only the direct-HF/local-path fallback.
-    if re.search(r"qwen[._-]?3[._]8(?=$|[^0-9])", model_path, re.I):
+    if re.search(r"qwen[._-]?3[._]8(?=$|[^0-9])", name_segment, re.I):
         if metadata_cfg is not None:
+            # Metadata is authoritative for hybrid/MoE safety, but the
+            # architecture-only result can have no parsers even when the
+            # checkpoint's Qwen template emits <think> and nested XML calls.
+            # Keep experimental non-Qwen architectures on their own metadata
+            # policy (for example Flash-Next's qwen4_exp checkpoint).
+            if metadata_cfg.experimental:
+                return metadata_cfg
+            resolved = replace(
+                metadata_cfg,
+                tool_call_parser="qwen3_coder_xml",
+                reasoning_parser="qwen3",
+            )
             _log_resolution_once(
                 model_path,
                 "Auto-detected checkpoint metadata for "
-                f"'{model_path}' → tool_call_parser={metadata_cfg.tool_call_parser}, "
-                f"reasoning_parser={metadata_cfg.reasoning_parser}, "
-                f"is_hybrid={metadata_cfg.is_hybrid}",
+                f"'{model_path}' → tool_call_parser={resolved.tool_call_parser}, "
+                f"reasoning_parser={resolved.reasoning_parser}, "
+                f"is_hybrid={resolved.is_hybrid}",
             )
-            return metadata_cfg
+            return resolved
         return ModelConfig(
-            tool_call_parser="hermes",
+            tool_call_parser="qwen3_coder_xml",
             reasoning_parser="qwen3",
             is_hybrid=True,
             is_hybrid_explicit=True,
@@ -1420,7 +1438,10 @@ def detect_model_config(model_path: str) -> ModelConfig | None:
         return cfg
 
     for pattern, config in _MODEL_PATTERNS:
-        if not pattern.search(model_path):
+        # Qwen family markers belong to the checkpoint name; an organization
+        # or storage parent can mention Qwen without changing the checkpoint.
+        match_path = name_segment if pattern.pattern.startswith("qwen") else model_path
+        if not pattern.search(match_path):
             continue
         if config is _R1_DISTILL_FAMILY_SENTINEL:
             if not re.search(r"deepseek.*r1.*distill", name_segment, re.I):
