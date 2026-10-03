@@ -2092,6 +2092,409 @@ def test_install_mtp_vendored_defers_new_admission_until_singleton_departs(
     assert list(queued) == []
 
 
+def _boundary_fake_generator(monkeypatch, emissions):
+    from rapid_mlx.spec_decode.mtp import generator as _gen_mod
+
+    stream = iter(emissions)
+
+    class _FakeGen:
+        closed = False
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return next(stream)
+
+        def close(self):
+            _FakeGen.closed = True
+
+    monkeypatch.setattr(_gen_mod, "mtp_generate_step", lambda *a, **kw: _FakeGen())
+    return _FakeGen
+
+
+def test_install_mtp_vendored_reports_token_boundaries(monkeypatch):
+    """The singleton owner is resumable only between rounds.
+
+    A round yields its accepted drafts first and its target token last; only
+    after that last token (or the primed first token) does the target cache
+    end exactly before the most recently emitted token.
+    """
+    from types import SimpleNamespace
+
+    import mlx.core as mx
+
+    from rapid_mlx.scheduler import _install_mtp_vendored
+
+    _boundary_fake_generator(
+        monkeypatch,
+        [
+            (1001, mx.array([0.0]), True),
+            (1002, mx.array([0.0]), False),
+            (1003, mx.array([0.0]), True),
+            (1004, mx.array([0.0]), False),
+        ],
+    )
+    batch_gen, gb = _make_batch_gen_with_gb()
+    batch_gen.completion_batch_size = 4
+    batch_gen.remove = lambda uids, return_prompt_caches=False: None
+    gb.uids = [7]
+    assert _install_mtp_vendored(
+        batch_gen,
+        model=_StubModel(),
+        requests={
+            "req-7": SimpleNamespace(sampling_params=SimpleNamespace(temperature=0.0))
+        },
+        uid_to_request_id={7: "req-7"},
+    )
+    at_boundary = batch_gen._mtp_vendored_at_token_boundary
+    # Without mlx-lm's prompt queue there is nothing to yield to.
+    assert not hasattr(batch_gen, "_mtp_vendored_requeue_owner")
+    assert at_boundary(7) is False  # no state yet
+
+    gb._next_tokens = mx.array([500], dtype=mx.uint32)
+    gb._next_logprobs = [mx.array([0.0])]
+    gb._step()  # primed first token
+    assert at_boundary(7) is True
+    assert at_boundary(8) is False  # not the admission owner
+
+    gb._step()  # accepted draft: the cache is ahead of delivery
+    assert at_boundary(7) is False
+    gb._step()  # the round's target token
+    assert at_boundary(7) is True
+    gb._step()
+    assert at_boundary(7) is False
+    gb._step()
+    gb._mtp_vendored_terminal_uids[7] = "req-7"
+    # A latched terminal uid is never resumable.
+    assert at_boundary(7) is False
+
+
+class _YieldingBatchGenerator:
+    """mlx-lm BatchGenerator shell: prompt FIFO, prompt batch, remove."""
+
+    def __init__(self, gb):
+        from collections import deque
+        from types import SimpleNamespace
+
+        self.completion_batch_size = 4
+        self._generation_batch = gb
+        self._unprocessed_sequences = deque()
+        self._prompt_batch = SimpleNamespace(uids=[])
+        self.removed = []
+        self.next_calls = 0
+        self.remove_error = None
+
+    def next(self):
+        self.next_calls += 1
+        self._generation_batch._step()
+        return [], []
+
+    def _find_uids(self, uids):
+        return {
+            uid: (2, index)
+            for index, uid in enumerate(self._generation_batch.uids)
+            if uid in set(uids)
+        }
+
+    def remove(self, uids, return_prompt_caches=False):
+        if self.remove_error is not None:
+            raise self.remove_error
+        self.removed.append(tuple(uids))
+        self._generation_batch.uids = [
+            uid for uid in self._generation_batch.uids if uid not in set(uids)
+        ]
+        return {} if return_prompt_caches else None
+
+
+class _Matcher:
+    """mlx-lm SequenceStateMachine shape: (state, trie node, states)."""
+
+    root = {}
+    states = {}
+
+    def make_state(self):
+        return ("normal", self.root, self.states)
+
+
+def _yielding_setup(monkeypatch, *, emissions=None, prompt_len=10):
+    from types import SimpleNamespace
+
+    import mlx.core as mx
+
+    from rapid_mlx.scheduler import _install_mtp_vendored
+
+    fake = _boundary_fake_generator(
+        monkeypatch,
+        emissions
+        or [
+            (1001, mx.array([0.0]), True),
+            (1002, mx.array([0.0]), False),
+        ],
+    )
+    gb = _StubBatchGen()
+    gb.uids = [7]
+    gb.max_tokens = [16]
+    gb._num_tokens = [0]
+    gb.samplers = ["sampler"]
+    gb.logits_processors = [[]]
+    gb.state_machines = [_Matcher()]
+    gb._matcher_states = [gb.state_machines[0].make_state()]
+    gb.tokens = [[]]
+    gb.cache = [SimpleNamespace(offset=0)]
+    gb.extract_cache = lambda index: gb.cache
+    batch_gen = _YieldingBatchGenerator(gb)
+    requests = {
+        "req-7": SimpleNamespace(
+            sampling_params=SimpleNamespace(temperature=0.0),
+            prompt_token_ids=list(range(prompt_len)),
+        )
+    }
+    assert _install_mtp_vendored(
+        batch_gen,
+        model=_StubModel(),
+        requests=requests,
+        uid_to_request_id={7: "req-7"},
+    )
+    gb._next_tokens = mx.array([500], dtype=mx.uint32)
+    gb._next_logprobs = [mx.array([0.0])]
+    return batch_gen, gb, requests, fake
+
+
+def _emit(batch_gen, gb):
+    """One mlx-lm cycle: generate, then count the emitted token."""
+    batch_gen.next()
+    gb._num_tokens[0] += 1
+
+
+def test_singleton_yields_at_a_token_boundary_to_a_waiting_request(monkeypatch):
+    batch_gen, gb, _requests, fake = _yielding_setup(monkeypatch)
+    _emit(batch_gen, gb)  # primed token 500 (boundary)
+    assert batch_gen.completion_batch_size == 1
+    _emit(batch_gen, gb)  # accepted draft 1001 (mid-round)
+
+    # A second request arrives in mlx-lm's FIFO while the round is open.
+    batch_gen._unprocessed_sequences.append(("waiting",))
+    gb.cache = [SimpleNamespace(offset=10 + 2 - 1)]
+    _emit(batch_gen, gb)  # mid-round: no yield, the round finishes (1002)
+    assert batch_gen.removed == []
+    assert gb.tokens[0] == [500, 1001, 1002]
+
+    gb.cache = [SimpleNamespace(offset=10 + 3 - 1)]
+    batch_gen.next()  # at the boundary: yield before generating
+
+    assert batch_gen.removed == [(7,)]
+    assert fake.closed is True
+    assert batch_gen.completion_batch_size == 4
+    assert batch_gen._mtp_vendored_admission_owner is None
+    requeued = batch_gen._unprocessed_sequences[0]
+    # prompt + emitted[:-1] is cached; the last emitted token is the only
+    # prompt token left, and the budget is what remains of max_tokens.
+    assert requeued[:3] == (7, [[1002]], 16 - 3)
+    assert requeued[3] is gb.cache
+    # Processors resume with the row's history minus the re-fed token.
+    assert requeued[4] == [500, 1001]
+    assert requeued[5:7] == ("sampler", [])
+    assert requeued[7] is gb.state_machines[0]
+    assert batch_gen._unprocessed_sequences[1] == ("waiting",)
+
+
+def test_singleton_yields_to_a_request_already_in_the_prompt_batch(monkeypatch):
+    batch_gen, gb, _requests, _fake = _yielding_setup(monkeypatch)
+    _emit(batch_gen, gb)
+    batch_gen._prompt_batch.uids = [8]
+    gb.cache = [SimpleNamespace(offset=10)]
+
+    batch_gen.next()
+
+    assert batch_gen.removed == [(7,)]
+    assert batch_gen._unprocessed_sequences[0][:3] == (7, [[500]], 15)
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "nothing_waiting",
+        "offset_mismatch",
+        "foreign_batch",
+        "remove_fails",
+        "extract_fails",
+        "no_prompt_ids",
+        "budget_exhausted",
+        "matcher_mid_sequence",
+        "matcher_other_state",
+        "matcher_foreign_states",
+        "short_attention_layer",
+        "non_integer_offset",
+        "no_positional_layer",
+        "seeded_sampled",
+        "missing_bookkeeping",
+        "matcher_states_missing",
+        "matcher_without_make_state",
+    ],
+)
+def test_singleton_yield_refusals_leave_the_owner_untouched(monkeypatch, case):
+    from types import SimpleNamespace
+
+    batch_gen, gb, requests, fake = _yielding_setup(monkeypatch)
+    _emit(batch_gen, gb)
+    gb.cache = [SimpleNamespace(offset=10)]
+    if case != "nothing_waiting":
+        batch_gen._unprocessed_sequences.append(("waiting",))
+    if case == "offset_mismatch":
+        gb.cache = [SimpleNamespace(offset=3)]
+    if case == "foreign_batch":
+        gb.uids = [7, 8]
+    if case == "remove_fails":
+        batch_gen.remove_error = RuntimeError("busy")
+    if case == "extract_fails":
+        gb.extract_cache = lambda _index: (_ for _ in ()).throw(RuntimeError("x"))
+    if case == "no_prompt_ids":
+        requests["req-7"].prompt_token_ids = []
+    if case == "budget_exhausted":
+        gb.max_tokens = [1]
+    if case == "matcher_mid_sequence":
+        gb._matcher_states = [("normal", {"partial": True}, _Matcher.states)]
+    if case == "matcher_other_state":
+        gb._matcher_states = [("reasoning", _Matcher.root, _Matcher.states)]
+    if case == "matcher_foreign_states":
+        gb._matcher_states = [("normal", _Matcher.root, {"other": {}})]
+    if case == "short_attention_layer":
+        gb.cache = [SimpleNamespace(offset=10), SimpleNamespace(offset=9)]
+    if case == "non_integer_offset":
+        gb.cache = [SimpleNamespace(offset=10), SimpleNamespace(offset="10")]
+    if case == "no_positional_layer":
+        gb.cache = [SimpleNamespace(state="recurrent")]
+    if case == "missing_bookkeeping":
+        del gb._num_tokens
+    if case == "matcher_states_missing":
+        # A stop matcher whose live state is unreadable cannot be compared.
+        gb._matcher_states = []
+    if case == "matcher_without_make_state":
+        gb.state_machines = [SimpleNamespace()]
+    if case == "seeded_sampled":
+        # The verifier consumed RNG keys for drafts it will discard.
+        requests["req-7"].sampling_params = SimpleNamespace(temperature=0.7, seed=3)
+
+    if case == "nothing_waiting":
+        batch_gen.next()  # the wrapper only offers a yield when one is due
+    else:
+        assert batch_gen._mtp_vendored_requeue_owner() is False
+    assert batch_gen.removed == []
+    assert fake.closed is False
+    assert batch_gen._mtp_vendored_admission_owner == 7
+    assert [seq for seq in batch_gen._unprocessed_sequences if seq[0] == 7] == []
+
+
+def test_singleton_yield_reads_nested_and_recurrent_cache_layers(monkeypatch):
+    from types import SimpleNamespace
+
+    batch_gen, gb, _requests, _fake = _yielding_setup(monkeypatch)
+    _emit(batch_gen, gb)
+    batch_gen._unprocessed_sequences.append(("waiting",))
+    # A CacheList-style layer reports its children's offsets; a recurrent
+    # layer carries no offset and is exempt from the boundary check.
+    gb.cache = [
+        SimpleNamespace(caches=[SimpleNamespace(offset=10)]),
+        SimpleNamespace(state="recurrent"),
+    ]
+
+    assert batch_gen._mtp_vendored_requeue_owner() is True
+    assert batch_gen.removed == [(7,)]
+
+
+def test_singleton_requeues_when_removal_raises_after_departure(monkeypatch):
+    from types import SimpleNamespace
+
+    batch_gen, gb, _requests, _fake = _yielding_setup(monkeypatch)
+    _emit(batch_gen, gb)
+    gb.cache = [SimpleNamespace(offset=10)]
+    original_remove = batch_gen.remove
+
+    def remove_then_raise(uids, return_prompt_caches=False):
+        original_remove(uids, return_prompt_caches=return_prompt_caches)
+        raise RuntimeError("late failure")
+
+    # Replacing ``remove`` bypasses the installer's reaping wrapper: the row
+    # left the batch but nothing released its verifier state.
+    batch_gen.remove = remove_then_raise
+
+    assert batch_gen._mtp_vendored_requeue_owner() is True
+    # The row is gone, so it must be resumed rather than orphaned, and the
+    # yield itself releases the verifier state and admission lock.
+    assert batch_gen._unprocessed_sequences[0][:3] == (7, [[500]], 15)
+    assert batch_gen._mtp_vendored_admission_owner is None
+    assert batch_gen.completion_batch_size == 4
+    assert _fake.closed is True
+
+
+def test_singleton_yield_requires_an_emitted_token_and_an_owner(monkeypatch):
+    batch_gen, gb, _requests, _fake = _yielding_setup(monkeypatch)
+    batch_gen._unprocessed_sequences.append(("waiting",))
+    # Nothing emitted yet: no owner, so the wrapper simply generates.
+    assert batch_gen._mtp_vendored_requeue_owner() is False
+    batch_gen.next()
+    assert batch_gen.removed == []
+    assert batch_gen.next_calls == 1
+
+
+def test_max_running_sequences_opens_full_width_when_the_singleton_yields():
+    from types import SimpleNamespace
+
+    from rapid_mlx.scheduler import Scheduler
+
+    scheduler = Scheduler.__new__(Scheduler)
+    scheduler.config = SimpleNamespace(spec_decode="mtp", max_num_seqs=6)
+    scheduler.spec_decode_runtime_attempted = True
+    scheduler.spec_decode_runtime_method = "mtp"
+    scheduler.batch_generator = SimpleNamespace()
+    assert scheduler._max_running_sequences() == 1
+
+    scheduler.batch_generator._mtp_vendored_requeue_owner = lambda: False
+    assert scheduler._max_running_sequences() == 6
+
+
+def test_resumed_generation_never_masquerades_as_a_prompt_snapshot():
+    """A yielded singleton is re-promoted with prompt + output in its cache."""
+    from types import SimpleNamespace
+
+    from rapid_mlx.scheduler import Scheduler
+
+    stored = []
+    scheduler = Scheduler.__new__(Scheduler)
+    scheduler.config = SimpleNamespace(non_trimmable_exact_prefix_reuse=False)
+    scheduler.memory_aware_cache = SimpleNamespace(
+        store=lambda tokens, cache, **_kw: stored.append((tokens, cache)) or True
+    )
+    resumed = SimpleNamespace(
+        prompt_token_ids=[1, 2, 3], output_token_ids=[9], pflash_metadata=None
+    )
+    scheduler.uid_to_request_id = {7: "req-7"}
+    scheduler.requests = {"req-7": resumed}
+    save = scheduler._make_prompt_cache_save_callback()
+
+    save(7, ["cache"])
+    assert stored == []
+
+    extracted = []
+    scheduler.batch_generator = SimpleNamespace(
+        extract_cache=lambda uids: extracted.append(tuple(uids)) or {}
+    )
+    scheduler._hybrid_checkpoints_enabled = lambda: True
+    scheduler._hybrid_checkpoints = {}
+    scheduler._record_hybrid_checkpoints(
+        [SimpleNamespace(uid=7, end_of_prompt=False, progress=(1, 1))]
+    )
+    scheduler._snapshot_boundary_segments(
+        [
+            SimpleNamespace(
+                uid=7, end_of_prompt=False, end_of_segment=True, progress=(1, 1)
+            )
+        ]
+    )
+    assert extracted == []
+
+
 @pytest.mark.parametrize("departure", ["finish", "remove"])
 def test_install_mtp_vendored_reaps_request_state_on_departure(
     monkeypatch,
