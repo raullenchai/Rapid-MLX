@@ -569,15 +569,25 @@ def _allocate(count: int, create) -> list[int] | None:
     and invite a duplicating retry, so allocation failure posts nothing.
     """
     events: list[int] = []
-    for index in range(count):
-        ev = create(index)
-        if not ev:
-            release = _syms()["release"]
-            for made in events:
-                release(made)
-            return None
-        events.append(ev)
-    return events
+    try:
+        for index in range(count):
+            ev = create(index)
+            if not ev:
+                break
+            events.append(ev)
+        else:
+            return events
+    except BaseException:
+        _release_all(events)
+        raise
+    _release_all(events)
+    return None
+
+
+def _release_all(events: list[int]) -> None:
+    release = _syms()["release"]
+    for made in events:
+        release(made)
 
 
 def click(
@@ -821,6 +831,12 @@ def press_key(
     return True
 
 
+# Every character costs two native events allocated up front (all-or-nothing);
+# bound it so caller-supplied text cannot exhaust memory. Long values belong
+# to AXSetValue fills, not synthetic typing.
+MAX_TYPE_TEXT_CHARS = 10_000
+
+
 def type_text(pid: int, text: str) -> bool:
     """Type ``text`` literally into ``pid``'s focused element.
 
@@ -833,6 +849,8 @@ def type_text(pid: int, text: str) -> bool:
     if s is None:
         return False
     chars = list(text)
+    if len(chars) > MAX_TYPE_TEXT_CHARS:
+        return False
     events = _allocate(
         2 * len(chars), lambda i: s["key_event"](s["source"], 0, i % 2 == 0)
     )

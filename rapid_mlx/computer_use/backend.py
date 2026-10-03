@@ -2274,6 +2274,12 @@ def type_text(
         raise ComputerUseError(
             "invalid_argument", "text contains an unpaired surrogate"
         ) from exc
+    if len(text) > background_input.MAX_TYPE_TEXT_CHARS:
+        raise ComputerUseError(
+            "invalid_argument",
+            f"text longer than {background_input.MAX_TYPE_TEXT_CHARS} characters; "
+            "set the field's value instead of typing it",
+        )
     snapshot = _prepare_synthetic_action(app, window_id)
     if _keyboard_background(snapshot):
         if not _synthesize(background_input.type_text, _target_ids(snapshot)[0], text):

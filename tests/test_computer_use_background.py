@@ -739,8 +739,12 @@ def test_live_background_click_types_into_calculator_without_stealing_focus():
         for digit in "73":
             assert background_input.click(pid, wid, *center(button(digit)))
             time.sleep(0.25)
-        backend._restore_user_focus(previous, pid, wid)
+        restored = backend._restore_user_focus(previous, pid, wid)
+        assert restored is not False
         time.sleep(0.4)
+        if previous and previous[1]:
+            # Keyboard focus is back on the user's own window, not Calculator.
+            assert backend._key_window_id(previous[0]) == previous[1]
         shown = []
         find(
             app,
@@ -1006,3 +1010,35 @@ def test_primitive_errors_surface_as_action_failed(monkeypatch, background, prim
         else:
             backend.scroll("App", "down", expected_snapshot=snapshot)
     assert exc.value.code == "action_failed"
+
+
+def test_allocation_exception_releases_created_events(monkeypatch):
+    _fake_syms(monkeypatch)
+    released = []
+    background_input._syms()["release"] = released.append
+
+    def create(index):
+        if index == 2:
+            raise OSError("create failed")
+        return index + 1
+
+    with pytest.raises(OSError):
+        background_input._allocate(4, create)
+    assert released == [1, 2]
+
+
+def test_type_text_bounds_length(monkeypatch, background):
+    too_long = "x" * (background_input.MAX_TYPE_TEXT_CHARS + 1)
+    monkeypatch.setattr(
+        backend, "_prepare_synthetic_action", lambda *a: pytest.fail("no dispatch")
+    )
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend.type_text("App", too_long)
+    assert exc.value.code == "invalid_argument"
+
+
+def test_type_text_primitive_refuses_oversized_text_before_allocating(monkeypatch):
+    _fake_syms(monkeypatch)
+    background_input._syms()["key_event"] = lambda *a: pytest.fail("no allocation")
+    too_long = "x" * (background_input.MAX_TYPE_TEXT_CHARS + 1)
+    assert background_input.type_text(4, too_long) is False
