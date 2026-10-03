@@ -39,7 +39,8 @@ from typing import Any  # noqa: E402
 
 import mlx.core as mx  # noqa: E402
 import mlx.nn as nn  # noqa: E402
-from vllm_mlx.mllm_batch_generator import (  # noqa: E402
+
+from rapid_mlx.mllm_batch_generator import (  # noqa: E402
     _MEDIA_ROPE_CONSUMING_LM_IMPLEMENTATIONS,
     _MEDIA_ROPE_MISSING,
     _MEDIA_ROPE_PLUMBING_WRAPPER_IMPLEMENTATIONS,
@@ -52,8 +53,8 @@ from vllm_mlx.mllm_batch_generator import (  # noqa: E402
     _media_leaves_bytes,
     _MediaSplitUnsupportedError,
 )
-from vllm_mlx.mllm_scheduler import MLLMSchedulerConfig  # noqa: E402
-from vllm_mlx.scheduler import SchedulerConfig  # noqa: E402
+from rapid_mlx.mllm_scheduler import MLLMSchedulerConfig  # noqa: E402
+from rapid_mlx.scheduler import SchedulerConfig  # noqa: E402
 
 VOCAB = 8
 # Stands in for the model's processor-expanded image placeholder token.
@@ -297,7 +298,7 @@ def _pin_test_fakes_into_rope_contract(monkeypatch):
     contract explicitly. Without this fixture every fake stays
     contract-unpinned and the split path would never engage.
     """
-    import vllm_mlx.mllm_batch_generator as mlbg
+    import rapid_mlx.mllm_batch_generator as mlbg
 
     module = _RecordingModel.__module__
     monkeypatch.setattr(
@@ -397,7 +398,7 @@ class TestRopeKwargGate:
         # production contract restored — the fixture pins the fakes for
         # the mechanics tests — nothing is pinned, so the gate stays
         # closed regardless of what the source shape looks like.
-        import vllm_mlx.mllm_batch_generator as mlbg
+        import rapid_mlx.mllm_batch_generator as mlbg
 
         monkeypatch.setattr(
             mlbg,
@@ -423,7 +424,7 @@ class TestRopeKwargGate:
         gen = _stub_generator(model=_PositionOverrideModel())
         gen.language_model = _DirectLanguageModel()
         monkeypatch.setattr(
-            "vllm_mlx.mllm_batch_generator._MEDIA_ROPE_CONSUMING_LM_IMPLEMENTATIONS",
+            "rapid_mlx.mllm_batch_generator._MEDIA_ROPE_CONSUMING_LM_IMPLEMENTATIONS",
             frozenset(
                 {
                     (
@@ -447,18 +448,18 @@ class TestRopeKwargGate:
             type(gen.language_model).__qualname__,
         )
         monkeypatch.setattr(
-            "vllm_mlx.mllm_batch_generator._MEDIA_ROPE_PLUMBING_WRAPPER_IMPLEMENTATIONS",
+            "rapid_mlx.mllm_batch_generator._MEDIA_ROPE_PLUMBING_WRAPPER_IMPLEMENTATIONS",
             frozenset({wrapper_key}),
         )
         # The fixture pins the fake LM as a consumer; drop that pin so
         # only the wrapper side is pinned first.
         monkeypatch.setattr(
-            "vllm_mlx.mllm_batch_generator._MEDIA_ROPE_CONSUMING_LM_IMPLEMENTATIONS",
+            "rapid_mlx.mllm_batch_generator._MEDIA_ROPE_CONSUMING_LM_IMPLEMENTATIONS",
             frozenset(),
         )
         assert gen._media_model_supports_rope_kwarg() is False
         monkeypatch.setattr(
-            "vllm_mlx.mllm_batch_generator._MEDIA_ROPE_CONSUMING_LM_IMPLEMENTATIONS",
+            "rapid_mlx.mllm_batch_generator._MEDIA_ROPE_CONSUMING_LM_IMPLEMENTATIONS",
             frozenset({lm_key}),
         )
         assert gen._media_model_supports_rope_kwarg() is True
@@ -498,7 +499,7 @@ class TestRopeKwargGate:
         def boom(target):
             raise SyntaxError("stale linecache")
 
-        monkeypatch.setattr("vllm_mlx.mllm_batch_generator.inspect.getsource", boom)
+        monkeypatch.setattr("rapid_mlx.mllm_batch_generator.inspect.getsource", boom)
         gen = _stub_generator(model=_PositionOverrideModel())
         gen.language_model = _DirectLanguageModel()
         assert gen._media_model_supports_rope_kwarg() is False
@@ -991,7 +992,7 @@ class TestStorePath:
         assert gen.model.calls[-1] == (full_ids[0], len(full_ids), True)
 
     def test_unmeasurable_snapshot_refuses_the_store(self, monkeypatch):
-        import vllm_mlx.mllm_batch_generator as mlbg
+        import rapid_mlx.mllm_batch_generator as mlbg
 
         gen = _stub_generator()
         full_ids = _full_ids()
@@ -1465,7 +1466,7 @@ class TestBudget:
             return _kv_leaves()
 
         monkeypatch.setattr(
-            "vllm_mlx.mllm_batch_generator._media_clone_leaves", fake_clone
+            "rapid_mlx.mllm_batch_generator._media_clone_leaves", fake_clone
         )
         for image in ("img1.png", "img2.png", "img3.png"):
             req = _make_request(
@@ -1506,7 +1507,7 @@ class TestBudget:
             )()
         monkeypatch.setattr(gen, "_exact_entries", lambda cache: (lock, entries))
         monkeypatch.setattr(
-            "vllm_mlx.mllm_batch_generator.checkpoint_bytes", lambda stored: 0
+            "rapid_mlx.mllm_batch_generator.checkpoint_bytes", lambda stored: 0
         )
         # Effective budget 12 - 10 = 2 against 10 text bytes: the text side
         # empties completely — the combined footprint must fit the shared
@@ -1534,7 +1535,7 @@ class TestBudget:
             )()
         monkeypatch.setattr(gen, "_exact_entries", lambda cache: (lock, entries))
         monkeypatch.setattr(
-            "vllm_mlx.mllm_batch_generator.checkpoint_bytes", lambda stored: 0
+            "rapid_mlx.mllm_batch_generator.checkpoint_bytes", lambda stored: 0
         )
         gen._enforce_exact_cache_budget(object())
         assert list(entries) == []
@@ -1576,7 +1577,7 @@ class TestBudget:
             )()
         monkeypatch.setattr(gen, "_exact_entries", lambda cache: (lock, entries))
         monkeypatch.setattr(
-            "vllm_mlx.mllm_batch_generator.checkpoint_bytes", lambda stored: 0
+            "rapid_mlx.mllm_batch_generator.checkpoint_bytes", lambda stored: 0
         )
         gen._prefix_cache = object()
         gen._media_enforce_budget()
@@ -1596,7 +1597,7 @@ class TestBudget:
             return _kv_leaves()
 
         monkeypatch.setattr(
-            "vllm_mlx.mllm_batch_generator._media_clone_leaves", fake_clone
+            "rapid_mlx.mllm_batch_generator._media_clone_leaves", fake_clone
         )
         req = _make_request(
             prompt="a" * 24,
@@ -1767,7 +1768,7 @@ class TestMediaBudgetAccounting:
         def _boom(*args, **kwargs):
             raise RuntimeError("no memory discovery")
 
-        monkeypatch.setattr("vllm_mlx.memory_cache.MemoryCacheConfig", _boom)
+        monkeypatch.setattr("rapid_mlx.memory_cache.MemoryCacheConfig", _boom)
         full_ids = _full_ids()
         req = _make_request(
             prompt="a" * 24,
@@ -1812,7 +1813,7 @@ class TestMediaBudgetFailClosed:
             raise AssertionError("clone must not run for a refused snapshot")
 
         monkeypatch.setattr(
-            "vllm_mlx.mllm_batch_generator._media_clone_leaves", forbidden_clone
+            "rapid_mlx.mllm_batch_generator._media_clone_leaves", forbidden_clone
         )
         req = _make_request(
             prompt="a" * 24,
@@ -1948,7 +1949,7 @@ def probe():
         assert gen._media_identity_digest(_make_request(vision_feature_key=123)) is None
 
     def test_signature_and_suffix_contract_failures(self, monkeypatch):
-        import vllm_mlx.mllm_batch_generator as module
+        import rapid_mlx.mllm_batch_generator as module
 
         monkeypatch.setattr(
             module.inspect,
@@ -1999,7 +2000,7 @@ def probe():
         assert gen._media_boundary_misses == 1
 
     def test_store_fail_closed_edges(self, monkeypatch):
-        import vllm_mlx.mllm_batch_generator as module
+        import rapid_mlx.mllm_batch_generator as module
 
         gen = _stub_generator()
         request = _make_request()
@@ -2032,7 +2033,7 @@ def probe():
         assert gen._media_store(request, _kv_leaves(), ids, 64, [1]) is None
 
     def test_store_generation_budget_promotion_and_discard_edges(self, monkeypatch):
-        import vllm_mlx.mllm_batch_generator as module
+        import rapid_mlx.mllm_batch_generator as module
 
         gen = _stub_generator()
         request = _make_request()
@@ -2100,7 +2101,7 @@ def probe():
         assert gen._media_mrope_saved is None
 
     def test_resume_clone_and_split_fail_closed(self, monkeypatch):
-        import vllm_mlx.mllm_batch_generator as module
+        import rapid_mlx.mllm_batch_generator as module
 
         gen = _stub_generator()
         request = _make_request(pixel_values=mx.zeros((1, 2)))
@@ -2143,7 +2144,7 @@ class TestMediaMaterializationContract:
         monkeypatch.setenv("RAPID_MLX_MEDIA_ROOT", str(tmp_path))
         from pathlib import Path as _Path
 
-        from vllm_mlx.models.mllm import process_image_input
+        from rapid_mlx.models.mllm import process_image_input
 
         source = _Path(tmp_path) / "in.png"
         source.write_bytes(b"\x89PNG\r\n\x1a\n" + b"payload")
@@ -2161,7 +2162,7 @@ class TestMediaMaterializationContract:
         monkeypatch.setenv("RAPID_MLX_MEDIA_ROOT", str(tmp_path))
         from pathlib import Path as _Path
 
-        from vllm_mlx.models.mllm import process_image_input
+        from rapid_mlx.models.mllm import process_image_input
 
         source = _Path(tmp_path) / "in.png"
         source.write_bytes(b"\x89PNG\r\n\x1a\n" + b"payload")
