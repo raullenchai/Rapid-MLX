@@ -190,11 +190,11 @@ def _run_server_main_capturing_scheduler(
 @pytest.mark.requires_mlx
 def test_server_module_applies_per_alias_keep_ratio_override():
     # bonsai-27b-2bit pins pflash_tier=verified + pflash_keep_ratio=0.50.
-    # Text lane (is_mllm False) → verified tier auto-enables PFlash "always".
+    # Text lane (is_mllm False) → verified tier defaults PFlash to "auto".
     captured = _run_server_main_capturing_config(["--model", "bonsai-27b-2bit"])
     cfg = captured.get("config")
     assert cfg is not None, "validate_model_support was never reached"
-    assert cfg.mode == "always"
+    assert cfg.mode == "auto"
     # The whole point of #1458: the alias override reaches this entrypoint too.
     # Old two-call wiring captured 0.20 here; the shared resolver yields 0.50.
     assert cfg.keep_ratio == pytest.approx(0.5)

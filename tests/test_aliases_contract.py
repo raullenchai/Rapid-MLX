@@ -565,7 +565,7 @@ def test_pflash_verified_aliases_are_qwen35_or_qwen36() -> None:
     (bench-validated at the keep_ratio=0.20 default in PR #649) PLUS an explicit
     allowlist of other families we've since benched. Promoting a new alias to
     ``"verified"`` should be a deliberate review-blocking change: it flips the
-    engine's default ``--pflash`` mode to ``"always"``, silently shifting the
+    engine's default ``--pflash`` mode to ``"auto"``, silently shifting the
     quality/speed tradeoff for every user who hadn't passed an explicit flag.
     A non-Qwen3.5/3.6 verified alias MUST also pin a ``pflash_keep_ratio``
     override — bench evidence showed at least one such arch (Ternary-Bonsai-27B)

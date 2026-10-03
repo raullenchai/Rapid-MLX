@@ -1264,10 +1264,13 @@ class TestGenerationOutputFieldOrder:
             # ``matched_stop``. Keep it at the tail for the same positional
             # compatibility guarantee.
             "spec_decode_metrics",
+            # #4092 appended PFlash ``prompt_compression`` after it.
+            "prompt_compression",
         ], (
             f"new GenerationOutput fields must be APPENDED in order "
             f"(raw_text → reasoning_text → tool_calls → cached_tokens "
-            f"→ matched_stop → spec_decode_metrics) to preserve "
+            f"→ matched_stop → spec_decode_metrics → prompt_compression) "
+            f"to preserve "
             f"positional-arg compatibility "
             f"for the pre-v0.6.65 surface. Current trailing fields "
             f"after ``channel``: {appended}"

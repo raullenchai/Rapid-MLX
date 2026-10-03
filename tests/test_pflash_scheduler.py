@@ -303,3 +303,47 @@ class TestPrefixCacheNamespacing:
         scheduler._cleanup_finished({request.request_id})
 
         fake_cache.store_cache.assert_called_once()
+
+
+class TestTerminalOutputSurfacesCompression:
+    """#4092: the terminal RequestOutput names the compression so the API
+    layer can announce it (header + ``metrics.prompt_compression``)."""
+
+    def _finish(self, scheduler: Scheduler, request: Request):
+        scheduler.batch_generator = MagicMock()
+        scheduler.batch_generator.remove.return_value = {}
+        scheduler.running[request.request_id] = request
+        scheduler.uid_to_request_id[0] = request.request_id
+        scheduler._decode_tokens = lambda tokens: ""  # type: ignore[method-assign]
+        response = MagicMock()
+        response.uid = 0
+        response.token = 42
+        response.finish_reason = "stop"
+        response.logprobs = None
+        del response.prompt_cache
+        outputs, finished = scheduler._process_batch_responses([response])
+        assert finished == {request.request_id}
+        return outputs[0]
+
+    def test_compressed_request_reports_kept_over_original(self):
+        scheduler = _make_scheduler(_compressing_config())
+        request = Request("req-surface", list(range(128)), SamplingParams(max_tokens=4))
+        scheduler.add_request(request)
+        assert request.pflash_metadata["compressed"] is True
+
+        output = self._finish(scheduler, request)
+
+        assert output.prompt_compression == {
+            "original_tokens": 128,
+            "kept_tokens": len(request.prompt_token_ids),
+        }
+
+    def test_uncompressed_request_reports_nothing(self):
+        scheduler = _make_scheduler(PFlashConfig(mode="auto", threshold=10_000))
+        request = Request("req-plain", list(range(128)), SamplingParams(max_tokens=4))
+        scheduler.add_request(request)
+        assert request.pflash_metadata["compressed"] is False
+
+        output = self._finish(scheduler, request)
+
+        assert output.prompt_compression is None

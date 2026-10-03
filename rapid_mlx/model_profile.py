@@ -268,7 +268,7 @@ class ModelProfile:
     # ``"unknown"`` keeps the engine's PFlash mode at ``"off"`` so a
     # brand-new alias never silently enables compression on an
     # unbenched architecture. ``"verified"`` flips the engine's default
-    # to ``"always"`` — used only for aliases where we've measured both
+    # to ``"auto"`` (#4092) — used only for aliases where we've measured both
     # the TTFT speedup AND the needle-recall floor (Qwen3.5 / Qwen3.6
     # families per #287). Explicit CLI ``--pflash {off,auto,always}``
     # still wins; this only changes the no-flag default.

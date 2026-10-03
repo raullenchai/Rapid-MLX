@@ -4281,7 +4281,7 @@ def main():
     from .scheduler import SchedulerConfig
 
     # Per-alias PFlash default (#287): verified Qwen3.5 / Qwen3.6 aliases
-    # switch to ``always`` when the user passes no ``--pflash`` flag; all
+    # switch to ``auto`` when the user passes no ``--pflash`` flag; all
     # other aliases keep the conservative ``off``. Explicit overrides win.
     #
     # Resolve the FINAL serving lane once. PFlash defaulting and

@@ -58,14 +58,16 @@ VALID_SUFFIX_TIERS: frozenset[str] = frozenset({"unknown", "neutral", "good", "a
 # at keep_ratio=0.20, but we have no evidence for other families. To
 # avoid a silent quality regression on an unbenched arch, an alias must
 # be explicitly tagged ``"verified"`` before the engine defaults
-# ``--pflash`` to ``always`` for it; everything else stays ``"unknown"``
+# ``--pflash`` to ``auto`` for it; everything else stays ``"unknown"``
 # and the engine keeps PFlash off (preserving v0.7.x behaviour). Any
 # explicit ``--pflash {off,auto,always}`` flag on the CLI still wins
 # over the tier-based default.
 #
 # - ``unknown``:  not benched / no decision (default, engine keeps PFlash off)
 # - ``verified``: bench-validated speedup + recall on this alias; engine
-#                 defaults PFlash to ``always`` unless the user overrides
+#                 defaults PFlash to ``auto`` (compress only prompts at or
+#                 above ``--pflash-threshold``, #4092) unless the user
+#                 overrides
 #
 # The recall validation is AT the keep_ratio the alias will actually run:
 # by default 0.20, or the per-alias ``pflash_keep_ratio`` override when set.

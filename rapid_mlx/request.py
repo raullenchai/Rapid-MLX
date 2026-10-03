@@ -649,6 +649,11 @@ class RequestOutput:
     # output and only when at least one MTP verify call ran. Appended last to
     # preserve positional compatibility for downstream RequestOutput callers.
     spec_decode_metrics: dict[str, int | list[int]] | None = None
+    # PFlash compression applied to this request's prompt (#4092):
+    # ``{"original_tokens": N, "kept_tokens": M}`` on the terminal output
+    # when compression actually dropped tokens, else ``None``. Appended
+    # last to preserve positional compatibility.
+    prompt_compression: dict[str, int] | None = None
 
     @property
     def usage(self) -> dict[str, int]:

@@ -8014,7 +8014,9 @@ class Scheduler:
                     f"compressed {metadata['original_tokens']} -> "
                     f"{metadata['kept_tokens']} tokens "
                     f"ratio={metadata['compression_ratio']:.3f} "
-                    f"scoring_ms={metadata['scoring_seconds'] * 1000.0:.2f}"
+                    f"scoring_ms={metadata['scoring_seconds'] * 1000.0:.2f} "
+                    "(lossy: middle of prompt dropped, prefix cache bypassed; "
+                    "--pflash off disables)"
                 )
             else:
                 logger.debug(
@@ -9714,6 +9716,13 @@ class Scheduler:
                     output.spec_decode_metrics = (
                         request_mtp_counter.snapshot().response_metrics()
                     )
+                # #4092: surface PFlash compression on the terminal output so
+                # the API layer can tell the client its prompt was shortened.
+                if _pflash_compressed(request):
+                    output.prompt_compression = {
+                        "original_tokens": request.pflash_metadata["original_tokens"],
+                        "kept_tokens": request.pflash_metadata["kept_tokens"],
+                    }
                 if repetition_error is not None:
                     output.error = repetition_error
                     # Mark this abort as the graceful repetition-guard stop so
