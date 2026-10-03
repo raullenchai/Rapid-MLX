@@ -16100,6 +16100,14 @@ def main():
             file=sys.stderr,
         )
         sys.exit(2)
+
+    # ``bench --submit`` is a removed invocation. Reject it at the parse
+    # boundary so global model resolution and the auto-pull gate cannot do
+    # work (including Hub metadata requests) before the usage error. Keep the
+    # same guard in ``bench_command`` for direct/programmatic callers.
+    if getattr(args, "command", None) == "bench" and getattr(args, "submit", False):
+        _refuse_bench_submit(args)
+
     if getattr(args, "command", None) in ("chat", "run"):
         args._model_was_explicit = getattr(args, "model", None) is not None
         args._telemetry_auto_selected = not args._model_was_explicit

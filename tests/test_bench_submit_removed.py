@@ -90,6 +90,16 @@ def test_main_entry_point_refuses_with_the_typed_alias(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     _forbid(monkeypatch)
+
+    def boom(*args, **kwargs):
+        raise AssertionError("bench --submit must stop at the parse boundary")
+
+    import rapid_mlx.model_aliases as model_aliases
+    import rapid_mlx.telemetry.consent_runtime as consent_runtime
+
+    monkeypatch.setattr(model_aliases, "resolve_model", boom)
+    monkeypatch.setattr(consent_runtime, "startup", boom)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(
         sys, "argv", ["rapid-mlx", "bench", "qwen3.5-9b-4bit", "--submit"]
     )
