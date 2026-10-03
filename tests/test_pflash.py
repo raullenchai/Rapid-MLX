@@ -253,23 +253,25 @@ class TestResolvePFlashModeDefault:
     * If the user passed ``--pflash {off,auto,always}`` (i.e. ``args.pflash``
       is not None), the resolver returns that value unchanged.
     * Otherwise the alias's ``pflash_tier`` decides: ``"verified"`` →
-      ``"always"``, anything else → ``"off"``.
+      ``"auto"`` (``"always"`` before #4092), anything else → ``"off"``.
     """
 
     def _ns(self, pflash):
         return SimpleNamespace(pflash=pflash)
 
-    def test_verified_alias_with_no_flag_defaults_to_always(self):
+    def test_verified_alias_with_no_flag_defaults_to_auto(self):
         # qwen3.5-4b-4bit is tagged pflash_tier=verified in aliases.json
         # (PR #649). Mirror the alias-driven default the engine wires up.
+        # #4092: ``auto`` (threshold-gated), never ``always`` — ``always``
+        # silently compressed ordinary 12-32K chat/RAG prompts.
         mode = resolve_pflash_mode_default(self._ns(None), model_name="qwen3.5-4b-4bit")
-        assert mode == "always"
+        assert mode == "auto"
 
     def test_verified_alias_default_branch_emits_log_without_error(self, caplog):
         # Regression guard for the module-level ``logger`` binding: the
         # verified-alias default path calls ``logger.info(...)`` and must
         # resolve cleanly (a stray NameError here would break the exact code
-        # this PR touches). Assert the branch both returns "always" AND emits
+        # this PR touches). Assert the branch both returns "auto" AND emits
         # its INFO line, so the logging call is provably exercised.
         import logging as _logging
 
@@ -277,7 +279,7 @@ class TestResolvePFlashModeDefault:
             mode = resolve_pflash_mode_default(
                 self._ns(None), model_name="qwen3.5-4b-4bit"
             )
-        assert mode == "always"
+        assert mode == "auto"
         assert any(
             "pflash_tier=verified" in rec.message and "qwen3.5-4b-4bit" in rec.message
             for rec in caplog.records
@@ -360,7 +362,7 @@ class TestResolvePFlashModeDefault:
     def test_verified_aliases_in_registry_match_qwen35_or_qwen36(self):
         # Defense-in-depth alongside the contract test in
         # tests/test_aliases_contract.py: verify the resolver returns
-        # "always" for every verified alias in the registry, not just
+        # "auto" for every verified alias in the registry, not just
         # the qwen3.5-4b-4bit sample. Catches the case where a future
         # contributor edits the JSON-level tag but the model_auto_config
         # → pflash threading regresses.
@@ -372,7 +374,7 @@ class TestResolvePFlashModeDefault:
         assert verified, "no verified aliases — see PR #649 / aliases.json"
         for alias in verified:
             mode = resolve_pflash_mode_default(self._ns(None), model_name=alias)
-            assert mode == "always", (
+            assert mode == "auto", (
                 f"{alias}: tier=verified but resolver returned {mode!r}"
             )
 
@@ -461,17 +463,17 @@ class TestResolvePFlashKeepRatioDefault:
     def test_resolve_pflash_config_wires_bonsai_mode_and_ratio_end_to_end(self):
         # Guards the actual serve/bench WIRING, not just the resolvers: a bare
         # ``serve bonsai-27b-2bit`` routes through resolve_pflash_config, which
-        # must resolve mode→"always" AND keep_ratio→0.5 from the alias and bake
+        # must resolve mode→"auto" AND keep_ratio→0.5 from the alias and bake
         # both into the built PFlashConfig. If either resolver call is dropped
         # from the helper, one of these assertions fails (a test that called the
         # resolvers directly would still pass — codex #1458 BLOCKING).
         args = self._full_ns()
         config = resolve_pflash_config(args, model_name="bonsai-27b-2bit")
-        assert config.mode == "always"
+        assert config.mode == "auto"
         assert config.keep_ratio == 0.5
         # The helper also materializes the resolved values back onto args so
         # later readers (engine wiring) see them, not the None sentinels.
-        assert args.pflash == "always"
+        assert args.pflash == "auto"
         assert args.pflash_keep_ratio == 0.5
 
     def test_resolve_pflash_config_explicit_keep_ratio_flag_wins(self):
@@ -479,7 +481,7 @@ class TestResolvePFlashKeepRatioDefault:
         # when the alias pins its own override.
         args = self._full_ns(pflash_keep_ratio=0.33)
         config = resolve_pflash_config(args, model_name="bonsai-27b-2bit")
-        assert config.mode == "always"
+        assert config.mode == "auto"
         assert config.keep_ratio == 0.33
 
     def test_resolve_pflash_config_unknown_alias_stays_off_at_default(self):

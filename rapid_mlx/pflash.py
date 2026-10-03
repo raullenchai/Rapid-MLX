@@ -12,7 +12,9 @@ Original design + reference fork by @michaelasper on the
 
 This adaptation differs from the fork in three places:
 
-* It is disabled by default (``--pflash off``).
+* It is disabled by default (``--pflash off``); aliases tagged
+  ``pflash_tier="verified"`` default to ``--pflash auto``, which only
+  compresses prompts at or above ``--pflash-threshold`` (#4092).
 * The compressor's output bypasses the prefix cache entirely on the
   scheduler side — see ``scheduler.add_request`` — so a later
   uncompressed request that shares a sink-token prefix with a compressed
@@ -45,8 +47,9 @@ class PFlashConfig:
     retain a usable amount of body context, large 2 048-token tail
     because the user's actual query tends to live there. The fork's
     default was 0.10 but our bench evidence (TTFT 3.87x-8.5x, needle
-    recall 5/5) is all at 0.20 — the verified-tier auto-ON default
-    must match the validated number, so we use 0.20 here.
+    recall 5/5) is all at 0.20 — the verified-tier default
+    (``auto`` at this threshold) must match the validated number, so we
+    use 0.20 here.
     """
 
     mode: PFlashMode = "off"
@@ -188,10 +191,15 @@ def resolve_pflash_mode_default(
     * Otherwise, look up the model's profile via ``detect_model_config``
       and switch on ``pflash_tier``:
 
-      - ``"verified"`` → ``"always"``  (Qwen3.5 / Qwen3.6 family, bench
+      - ``"verified"`` → ``"auto"`` (Qwen3.5 / Qwen3.6 family, bench
         evidence in PR #649: 3.87x-8.5x TTFT speedup at keep_ratio=0.20
         with 100% needle recall across tested cells) — UNLESS the model is
-        multimodal, see below.
+        multimodal, see below. ``auto`` only compresses prompts at or above
+        ``--pflash-threshold`` (32 768 tokens, the validated #649 profile).
+        The default used to be ``"always"``, which compressed every no-tools
+        prompt above ~11.5K tokens and silently dropped ~80% of the middle
+        of ordinary long chats, RAG prompts and long-document Q&A (#4092).
+        Users who want that behaviour opt in with ``--pflash always``.
       - anything else → ``"off"`` (today's behaviour preserved for every
         alias we haven't measured).
 
@@ -247,19 +255,26 @@ def resolve_pflash_mode_default(
                 model_name,
             )
             return "off"
-        # Surface the alias-driven flip at INFO so a developer running
-        # ``rapid-mlx bench qwen3.5-4b-4bit`` immediately sees that
-        # PFlash is on by default — the verified-tier policy is
-        # uniform across ``serve``/``bench`` by design, but the bench
-        # workflow specifically expects to see what mode is being
-        # measured (codex r4 BLOCKING called out this surprise).
+        # Surface the alias-driven default at INFO so a developer running
+        # ``rapid-mlx bench qwen3.5-4b-4bit`` immediately sees which mode
+        # is being measured — the verified-tier policy is uniform across
+        # ``serve``/``bench`` by design (codex r4 BLOCKING on #649).
+        #
+        # ``auto``, not ``always`` (#4092): ``always`` compressed every
+        # no-tools prompt whose 0.20 keep budget exceeded sink+tail
+        # (~11.5K tokens), so long chat-app sessions, RAG and document
+        # Q&A silently lost most of their middle and bypassed the prefix
+        # cache. ``auto`` leaves everything below ``--pflash-threshold``
+        # (32 768 by default, the threshold #649 validated) untouched.
         logger.info(
             "PFlash default: alias %r is pflash_tier=verified — "
-            "engine defaults to --pflash always. Pass --pflash off to "
-            "compare against the no-compression baseline.",
+            "engine defaults to --pflash auto (compresses only prompts of "
+            "at least %d tokens). Pass --pflash off to disable or "
+            "--pflash always to compress every eligible long prompt.",
             model_name,
+            getattr(args, "pflash_threshold", PFlashConfig.threshold),
         )
-        return "always"
+        return "auto"
     return "off"
 
 

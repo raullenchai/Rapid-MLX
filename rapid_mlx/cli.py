@@ -2835,17 +2835,21 @@ def _add_pflash_args(parser) -> None:
     sync. The default for ``--pflash`` is intentionally ``None``
     (sentinel for "user passed nothing") so the per-alias resolver in
     ``pflash.resolve_pflash_mode_default`` can switch the engine to
-    ``always`` for ``pflash_tier="verified"`` aliases (Qwen3.5 /
-    Qwen3.6 family per #287) without breaking the explicit-override
-    contract: passing ``--pflash off`` still wins.
+    ``auto`` for ``pflash_tier="verified"`` aliases (Qwen3.5 /
+    Qwen3.6 family per #287; ``auto`` rather than ``always`` since
+    #4092) without breaking the explicit-override contract: passing
+    ``--pflash off`` still wins.
     """
     parser.add_argument(
         "--pflash",
         choices=["off", "auto", "always"],
         default=None,
         help="Enable PFlash long-prompt prefill compression "
-        "(off, auto, always). Default: 'always' for verified aliases "
-        "(Qwen3.5 / Qwen3.6 family per #287), 'off' for everything else.",
+        "(off, auto, always). Compression is lossy: it drops most of the "
+        "middle of the prompt. Default: 'auto' for verified aliases "
+        "(Qwen3.5 / Qwen3.6 family, bonsai-27b-2bit), which compresses only "
+        "prompts of at "
+        "least --pflash-threshold tokens; 'off' for everything else.",
     )
     parser.add_argument(
         "--pflash-threshold",
@@ -5931,7 +5935,7 @@ def serve_command(args):
     # after a multi-minute weight download. See #287.
     #
     # ``resolve_pflash_mode_default`` runs before ``config_from_args``
-    # so the per-alias default (``"always"`` for verified Qwen3.5 /
+    # so the per-alias default (``"auto"`` for verified Qwen3.5 /
     # Qwen3.6 aliases, ``"off"`` everywhere else) is materialized into
     # ``args.pflash``. The resolved value then flows through the same
     # validation path the user-explicit case takes.
