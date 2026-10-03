@@ -2659,14 +2659,14 @@ def test_cached_hf_blob_symlink_skips_rehash(
     assert link.read_bytes() == payload
 
 
-def test_cached_shared_store_blob_is_kept_and_skips_rehash(
+def test_cached_shared_store_blob_is_kept_and_verified(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
     """#4096: a deduplicating HF cache links ``snapshot -> <repo>/blobs/<sha>
     -> <hub>/blobs/<xx>/<digest>``. That entry is this repo's own blob: a warm
-    pull must neither drop it nor refetch it, and the repo blob name (the LFS
-    sha256) still lets it skip the rehash."""
+    pull must neither drop it nor refetch it. The shared target's name is not
+    the LFS sha256, so its bytes are verified by a rehash, not trusted."""
     import hashlib
 
     repo_id = "mlx-community/Qwen3-0.6B-4bit"
@@ -2717,7 +2717,7 @@ def test_cached_shared_store_blob_is_kept_and_skips_rehash(
     assert ok
     assert [r for r in router.requests if "model.safetensors" in r["url"]] == []
     assert hf_mock.call_count == 0
-    assert created_hashers == []
+    assert created_hashers  # verified by content, not by link name
     assert link.is_symlink() and os.path.realpath(link) == str(shared.resolve())
     assert link.read_bytes() == payload
 

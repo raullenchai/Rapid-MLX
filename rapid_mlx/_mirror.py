@@ -1914,23 +1914,6 @@ def download_with_mirror_fallback(
                         if target.is_symlink():
                             try:
                                 blob_name = target.resolve(strict=False).name
-                                if blob_name != expected_sha256:
-                                    from ._download_gate import (
-                                        _is_shared_cache_blob,
-                                    )
-
-                                    # Shared-store digests are not the LFS
-                                    # sha256; the repo's own blob link is.
-                                    # Same trust as the shortcut above: the
-                                    # HF-written repo blob name vouches for
-                                    # its bytes (no multi-GB rehash per warm
-                                    # pull). Size is still checked above.
-                                    if _is_shared_cache_blob(
-                                        str(target), str(repo_root)
-                                    ):
-                                        blob_name = os.path.basename(
-                                            os.readlink(target)
-                                        )
                             except OSError:
                                 blob_name = ""
                             if blob_name == expected_sha256:
