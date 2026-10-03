@@ -9,7 +9,15 @@ import types
 
 import pytest
 
-from rapid_mlx.computer_use import ax_driver, backend, errors
+from rapid_mlx.computer_use import ax_driver, backend, background_input, errors
+
+
+@pytest.fixture(autouse=True)
+def _foreground_input_delivery(monkeypatch):
+    # These tests pin the global-HID contract; on a Mac with SkyLight the
+    # default "auto" mode would route through background delivery instead.
+    # Background routing has its own tests in test_computer_use_background.py.
+    monkeypatch.setenv(background_input.DELIVERY_ENV, "foreground")
 
 
 def _window(window_id=101, index=0, x=0, y=0, width=100, height=100):
@@ -1013,7 +1021,7 @@ def test_hotkey_and_scroll_activate_target_before_posting(monkeypatch):
     monkeypatch.setattr(
         backend,
         "_prepare_synthetic_action",
-        lambda app, window_id: calls.append(app) or snapshot,
+        lambda app, window_id, **_kwargs: calls.append(app) or snapshot,
     )
     monkeypatch.setattr(backend, "get_app_state", lambda *a, **k: snapshot)
     monkeypatch.setattr(

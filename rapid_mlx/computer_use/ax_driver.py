@@ -489,17 +489,34 @@ def collect(
     return targets
 
 
-def _cg_click(x: float, y: float, clicks: int = 1) -> None:
+# (down, up, CGMouseButton) per button; right/other values are the stable
+# kCGEventRightMouseDown/Up and kCGEventOtherMouseDown/Up enum constants.
+_HID_BUTTONS = {
+    "left": (kCGEventLeftMouseDown, kCGEventLeftMouseUp, 0),
+    "right": (3, 4, 1),
+    "middle": (25, 26, 2),
+}
+_K_CG_MOUSE_EVENT_BUTTON_NUMBER = 3
+
+
+def _cg_click(x: float, y: float, clicks: int = 1, button: str = "left") -> None:
+    down_type, up_type, button_number = _HID_BUTTONS[button]
     move = CGEventCreateMouseEvent(None, kCGEventMouseMoved, (x, y), 0)
     CGEventPost(kCGHIDEventTap, move)
     time.sleep(0.05)
-    down = CGEventCreateMouseEvent(None, kCGEventLeftMouseDown, (x, y), 0)
-    CGEventSetIntegerValueField(down, kCGMouseEventClickState, clicks)
-    up = CGEventCreateMouseEvent(None, kCGEventLeftMouseUp, (x, y), 0)
-    CGEventSetIntegerValueField(up, kCGMouseEventClickState, clicks)
-    CGEventPost(kCGHIDEventTap, down)
-    time.sleep(0.03)
-    CGEventPost(kCGHIDEventTap, up)
+    for click_state in range(1, max(1, clicks) + 1):
+        down = CGEventCreateMouseEvent(None, down_type, (x, y), button_number)
+        up = CGEventCreateMouseEvent(None, up_type, (x, y), button_number)
+        for event in (down, up):
+            CGEventSetIntegerValueField(event, kCGMouseEventClickState, click_state)
+            CGEventSetIntegerValueField(
+                event, _K_CG_MOUSE_EVENT_BUTTON_NUMBER, button_number
+            )
+        CGEventPost(kCGHIDEventTap, down)
+        time.sleep(0.03)
+        CGEventPost(kCGHIDEventTap, up)
+        if click_state < clicks:
+            time.sleep(0.08)
 
 
 def _press_key(keycode: int, modifiers: int = FLAG_NONE) -> None:
