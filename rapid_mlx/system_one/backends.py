@@ -107,6 +107,177 @@ class LayaBackend:
         ]
 
 
+class ClefBackend:
+    """Cloudflare's joint-schema decision model, using its audited release code.
+
+    Clef scores all questions in one backbone pass.  In particular it cannot be
+    implemented by asking a generative Qwen model for JSON: that would discard
+    the trained joint head and its calibrated option probabilities.
+    """
+
+    _MODELS = {
+        "clef": ("Cloudflare/clef", "2f3de3dd85f379784083b0814d997ab627200f0c"),
+        "clef-flash": (
+            "Cloudflare/clef-flash",
+            "17f0b0ad64efb65d273590632833508766b2aae6",
+        ),
+    }
+
+    def __init__(self, model: str, *, device: str = "gpu") -> None:
+        import importlib.metadata
+
+        from packaging.specifiers import SpecifierSet
+
+        selected = model.rsplit("/", 1)[-1].lower()
+        if selected not in self._MODELS or model not in {
+            selected,
+            self._MODELS[selected][0],
+        }:
+            raise ValueError(f"unknown Clef model {model!r}; choose clef or clef-flash")
+        if device not in {"gpu", "cpu"}:
+            raise ValueError("Clef device must be 'gpu' or 'cpu'")
+        for package, constraint in (
+            ("torch", ">=2.11.0"),
+            ("transformers", ">=5.10.2,!=5.13.0,<5.16"),
+        ):
+            try:
+                installed = importlib.metadata.version(package)
+            except importlib.metadata.PackageNotFoundError as exc:
+                raise RuntimeError(
+                    "Clef requires the optional runtime: pip install 'rapid-mlx[clef]'"
+                ) from exc
+            if installed not in SpecifierSet(constraint):
+                raise RuntimeError(
+                    f"Clef requires {package}{constraint}, found {installed}; "
+                    "install 'rapid-mlx[clef]'"
+                )
+
+        import torch
+        from huggingface_hub import snapshot_download
+
+        if device == "gpu" and not torch.backends.mps.is_available():
+            raise RuntimeError(
+                "Clef GPU mode requires Apple Metal/MPS; use --device cpu"
+            )
+        from rapid_mlx.clef.vendor.joint_schema_model import load_release_model
+
+        self.default_model = selected
+        self.repo_id, revision = self._MODELS[selected]
+        path = snapshot_download(self.repo_id, revision=revision)
+        self._model, self._processor = load_release_model(
+            path, device="mps" if device == "gpu" else "cpu"
+        )
+        self._lock = threading.Lock()
+
+    def answer(
+        self, state: Any, questions: dict[str, Question], model: str, temperature: float
+    ) -> dict:
+        return self.answer_media(state, questions, model, temperature, None, None)
+
+    def answer_media(
+        self,
+        state: Any,
+        questions: dict[str, Question],
+        model: str,
+        temperature: float,
+        images: list[str] | None,
+        videos: list[list[str]] | None,
+    ) -> dict:
+        if model not in (self.default_model, self.repo_id):
+            raise KeyError(f"unknown model {model!r}; available: {self.default_model}")
+        if temperature != 1.0:
+            raise ValueError(
+                "Clef uses checkpoint calibration and requires temperature=1"
+            )
+
+        from rapid_mlx.clef.media import decode_media
+        from rapid_mlx.clef.vendor.joint_schema_model import systemone
+
+        request = {
+            "model": self.default_model,
+            "state": state,
+            "questions": {
+                key: value.model_dump(exclude_none=True)
+                for key, value in questions.items()
+            },
+        }
+        with self._lock:
+            # Decode only after acquiring the model lock. Otherwise every
+            # queued request can hold an expanded RGB copy while it waits.
+            if images or videos:
+                decoded_images, decoded_videos = decode_media(images, videos)
+                if decoded_images:
+                    request["images"] = decoded_images
+                if decoded_videos:
+                    request["videos"] = decoded_videos
+            result = systemone(self._model, self._processor, request)
+        result["usage"]["billing_units"] = len(questions)
+        return dict(result)
+
+    def rank(
+        self,
+        context: Any,
+        question: str | None,
+        answers: list[str],
+        model: str,
+        temperature: float,
+    ) -> list[dict]:
+        if model not in (self.default_model, self.repo_id):
+            raise KeyError(f"unknown model {model!r}; available: {self.default_model}")
+        if temperature != 1.0:
+            raise ValueError(
+                "Clef uses checkpoint calibration and requires temperature=1"
+            )
+        request = Question(
+            type="choice",
+            instructions=question or "Choose the best answer.",
+            criteria={str(index): value for index, value in enumerate(answers)},
+        )
+        # The official SystemOne response rounds option probabilities to four
+        # decimals. Rank from the raw head scores so near-ties keep their true
+        # order instead of falling back to candidate insertion order.
+        import torch
+
+        from rapid_mlx.clef.vendor.joint_schema_model import (
+            collate_records,
+            encode_record,
+        )
+
+        encoded = encode_record(
+            self._processor.tokenizer,
+            {
+                "model": self.default_model,
+                "state": context,
+                "questions": {"rank": request.model_dump(exclude_none=True)},
+            },
+            processor=self._processor,
+        )
+        device = next(self._model.parameters()).device
+        with self._lock, torch.inference_mode():
+            logits = self._model(
+                collate_records(
+                    [encoded], self._processor.tokenizer.pad_token_id, device
+                )
+            )[0][0]
+            scores = logits.float().softmax(-1).tolist()
+        probabilities = dict(zip(encoded.questions[0].option_ids, scores))
+        ordered = sorted(probabilities.items(), key=lambda item: -item[1])
+        return [
+            {"rank": rank + 1, "candidate": answers[int(index)], "prob": probability}
+            for rank, (index, probability) in enumerate(ordered)
+        ]
+
+    def models(self) -> list[dict]:
+        return [
+            {
+                "name": self.default_model,
+                "backend": "clef-torch-mps",
+                "hf_id": self.repo_id,
+                "description": "Cloudflare Clef typed decisions with joint schema head",
+            }
+        ]
+
+
 class _ProjectionHead:
     def __init__(self, config: dict[str, Any]):
         import mlx.nn as nn

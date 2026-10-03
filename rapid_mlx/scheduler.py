@@ -2239,6 +2239,9 @@ def _install_mtp_vendored(
                 "primed": True,
                 "request_id": _first_call_req_id,
                 "sampling_fingerprint": sampling_options["fingerprint"],
+                # The primed first token came from mlx-lm's plain step and is
+                # not yet in the cache: a token boundary (see below).
+                "last_from_draft": False,
             }
             _lock_singleton_admission(uid)
             _stats["vendored_steps"] += 1
@@ -2265,6 +2268,7 @@ def _install_mtp_vendored(
             try:
                 tok_int, lp_arr, _from_draft = next(gen)
                 queue.append((int(tok_int), lp_arr))
+                state["last_from_draft"] = bool(_from_draft)
             except StopIteration:
                 _stats["gen_exhausted"] += 1
                 # Codex round-G BLOCKING #2: preserve the terminal
@@ -2428,6 +2432,187 @@ def _install_mtp_vendored(
             "[MTP-vendored] BatchGenerator has no remove(); abort-path "
             "state reaping is not installed (mlx-lm version mismatch?)."
         )
+
+    def _at_token_boundary(uid: int) -> bool:
+        """Whether ``uid``'s caches end exactly before its last emitted token.
+
+        The generator yields a round's accepted drafts first and its target
+        token (bonus or residual) last; that final token is the next round's
+        input and is not in the target cache yet.  So once every queued token
+        is delivered and the last one was not a draft, the target cache holds
+        exactly the delivered prefix minus that token.  Mid-round, the cache
+        already contains accepted drafts the caller has not received.
+        """
+        if uid != _admission_owner_uid:
+            return False
+        if uid in _terminal_uids or uid in _disabled_uids:
+            return False
+        state = _state.get(uid)
+        return bool(
+            state is not None
+            and not state.get("queue")
+            and state.get("last_from_draft") is False
+        )
+
+    def _positional_offsets(values: Any) -> list[Any]:
+        """Offsets of every positional (attention) leaf cache.
+
+        Recurrent leaves carry no ``offset`` and are exempt; any other
+        offset is returned as-is so the caller can refuse non-integers.
+        """
+        offsets: list[Any] = []
+        for value in values or ():
+            children = getattr(value, "caches", None)
+            if isinstance(children, (list, tuple)):
+                offsets.extend(_positional_offsets(children))
+            elif hasattr(value, "offset"):
+                offsets.append(value.offset)
+        return offsets
+
+    def _requeue_owner_at_boundary() -> bool:
+        """Hand the singleton back to mlx-lm's queue as a resumable prompt.
+
+        The singleton verifier owns the generation batch exclusively, so a
+        request that arrives a moment after another used to wait for that
+        whole generation.  At a token boundary the owner's target cache holds
+        exactly ``prompt + emitted[:-1]``: a prefix-cache hit whose remaining
+        prompt is the last emitted token.  mlx-lm resumes that without replay
+        -- its prompt step feeds the token and samples the next one -- so the
+        owner can join the waiting requests in one batch.  A request that is
+        alone again later re-enters this verifier through the ordinary
+        first-call path.  Every refusal leaves the singleton untouched.
+        """
+        owner = _admission_owner_uid
+        if owner is None or not _at_token_boundary(owner):
+            return False
+        if list(getattr(gb, "uids", ()) or ()) != [owner]:
+            return False
+        try:
+            emitted = int(gb._num_tokens[0])
+            remaining = int(gb.max_tokens[0]) - emitted
+            last_token = int(gb.tokens[0][-1])
+        except (AttributeError, IndexError, TypeError, ValueError):
+            return False
+        request = None
+        if uid_to_request_id is not None and requests is not None:
+            request_id = uid_to_request_id.get(owner)
+            request = requests.get(request_id) if request_id is not None else None
+        prompt_ids = getattr(request, "prompt_token_ids", None)
+        if emitted < 1 or remaining < 1 or not prompt_ids:
+            return False
+        # The verifier launches its next draft chain before yielding a
+        # round's last token, consuming request-local RNG keys.  A seeded
+        # sampled request must not depend on whether another request
+        # arrived, so it keeps the singleton verifier.
+        params = getattr(request, "sampling_params", None)
+        if (
+            getattr(params, "seed", None) is not None
+            and float(getattr(params, "temperature", 0.0) or 0.0) > 0.0
+        ):
+            return False
+        try:
+            cache = gb.extract_cache(0)
+        except Exception as exc:  # noqa: BLE001 - optional handoff fails closed
+            logger.debug("[MTP-vendored] singleton cache extract refused: %s", exc)
+            return False
+        # Fail closed unless the cache provably ends at the boundary: every
+        # positional (attention) layer holds exactly prompt + emitted - 1
+        # positions, and there is at least one such layer to check.
+        expected_offset = len(prompt_ids) + emitted - 1
+        offsets = _positional_offsets(cache)
+        if not offsets or any(
+            isinstance(offset, bool)
+            or not isinstance(offset, int)
+            or offset != expected_offset
+            for offset in offsets
+        ):
+            return False
+
+        def _row(values: Any, default: Any) -> Any:
+            return values[0] if values else default
+
+        # A resumed row starts its stop matcher afresh, so yield only while
+        # the matcher sits at its initial state's root: never mid-way through
+        # a multi-token stop sequence or inside a non-initial state.
+        # A row with a stop matcher whose live state cannot be read or
+        # compared refuses too.
+        machine = _row(getattr(gb, "state_machines", None), None)
+        if machine is not None:
+            matcher_states = getattr(gb, "_matcher_states", None)
+            make_state = getattr(machine, "make_state", None)
+            if not matcher_states or not callable(make_state):
+                return False
+            live, fresh = matcher_states[0], make_state()
+            if not (
+                isinstance(live, tuple)
+                and isinstance(fresh, tuple)
+                and len(live) == len(fresh)
+                and len(live) >= 2
+                and live[0] == fresh[0]
+                and all(
+                    part is fresh_part
+                    for part, fresh_part in zip(live[1:], fresh[1:], strict=True)
+                )
+            ):
+                return False
+        sequence = (
+            owner,
+            [[last_token]],
+            remaining,
+            cache,
+            # The token context logits processors see: exactly the row's
+            # history minus the token about to be re-fed, so penalties continue
+            # from the same window they would have without the yield.
+            list(gb.tokens[0][:-1]),
+            _row(getattr(gb, "samplers", None), None),
+            _row(getattr(gb, "logits_processors", None), []),
+            machine,
+        )
+        try:
+            # Reaps the request's verifier state and releases the admission
+            # lock without emitting anything.
+            batch_gen.remove([owner])
+        except Exception as exc:  # noqa: BLE001 - optional handoff fails closed
+            if owner in list(getattr(gb, "uids", ()) or ()):
+                logger.warning("[MTP-vendored] singleton requeue refused: %s", exc)
+                return False
+            # The row already left the batch, but the wrapper may not have
+            # reaped it before the error.  Reap here (idempotent) so the
+            # verifier state and admission lock are released, then requeue
+            # so the request resumes instead of being orphaned.
+            _reap_uid(owner)
+            logger.warning(
+                "[MTP-vendored] singleton removal raised after departure; "
+                "requeueing uid=%d: %s",
+                owner,
+                exc,
+            )
+        batch_gen._unprocessed_sequences.appendleft(sequence)
+        logger.info(
+            "[MTP-vendored] uid=%d yielded the singleton verifier at a token "
+            "boundary (emitted=%d remaining=%d) to batch with waiting requests",
+            owner,
+            emitted,
+            remaining,
+        )
+        return True
+
+    def _others_waiting() -> bool:
+        queue = getattr(batch_gen, "_unprocessed_sequences", None)
+        prompt_batch = getattr(batch_gen, "_prompt_batch", None)
+        return bool(queue) or bool(getattr(prompt_batch, "uids", None))
+
+    _base_next = getattr(batch_gen, "next", None)
+
+    def _yielding_next(*args, **kwargs):
+        if _admission_owner_uid is not None and _others_waiting():
+            _requeue_owner_at_boundary()
+        return _base_next(*args, **kwargs)
+
+    if callable(_base_next) and hasattr(batch_gen, "_unprocessed_sequences"):
+        batch_gen.next = _yielding_next
+        batch_gen._mtp_vendored_requeue_owner = _requeue_owner_at_boundary
+    batch_gen._mtp_vendored_at_token_boundary = _at_token_boundary
     batch_gen._mtp_vendored_stats = _stats
     gb._mtp_vendored_state = _state
     gb._mtp_vendored_disabled_uids = _disabled_uids
@@ -5078,6 +5263,12 @@ class Scheduler:
             request = self.requests.get(request_id)
             if not request or not request.prompt_token_ids:
                 return
+            # A request that already produced output and is re-promoted (the
+            # speculative singleton yielding at a token boundary) carries
+            # prompt + output in its cache; storing that under the prompt key
+            # would poison exact-prompt hits.  Completion stores it correctly.
+            if getattr(request, "output_token_ids", None):
+                return
             # PFlash bypass: see scheduler.add_request — compressed
             # prompt_token_ids are not positionally faithful so storing
             # KV under this key would poison the trie.
@@ -5356,6 +5547,9 @@ class Scheduler:
             request = self.requests.get(request_id) if request_id else None
             if request is None or _pflash_compressed(request):
                 continue
+            # Prompt-relative positions do not describe a resumed generation.
+            if getattr(request, "output_token_ids", None):
+                continue
             position = int(request.cached_tokens or 0) + int(progress[0])
             holders = self._hybrid_checkpoints.get(resp.uid)
             if holders:
@@ -5474,7 +5668,7 @@ class Scheduler:
             if not request_id:
                 continue
             request = self.requests.get(request_id)
-            if not request:
+            if not request or getattr(request, "output_token_ids", None):
                 continue
             snapshot_boundary = getattr(
                 request,
@@ -8758,6 +8952,13 @@ class Scheduler:
             router_config = getattr(router, "config", None)
             runtime_capabilities = getattr(runtime, "capabilities", None)
             if router_config is None or runtime_capabilities is None:
+                # The singleton verifier yields to waiting requests at its
+                # next token boundary, after which the batch decodes them
+                # together; admitting them is therefore safe at full width.
+                if callable(
+                    getattr(batch_generator, "_mtp_vendored_requeue_owner", None)
+                ):
+                    return self.config.max_num_seqs
                 return 1
             fixed_core = all(
                 getattr(runtime_capabilities, name, False) is True
@@ -8987,6 +9188,13 @@ class Scheduler:
                     repetition_penalty=(
                         sp.repetition_penalty if sp.repetition_penalty != 1.0 else None
                     ),
+                    # ``repetition_penalty_range`` (SillyTavern); 0 = whole
+                    # context, because mlx-lm slices ``tokens[-size:]``.
+                    repetition_context_size=(
+                        20
+                        if sp.repetition_context_size is None
+                        else sp.repetition_context_size
+                    ),
                     presence_penalty=(
                         sp.presence_penalty if sp.presence_penalty != 0.0 else None
                     ),
@@ -8997,6 +9205,13 @@ class Scheduler:
                     frequency_context_size=4096,
                 )
                 request_processors.extend(penalty_processors)
+            # DRY (SillyTavern) reads this request's full prompt + committed
+            # output, not the KV-cache view. It has no MTP draft transaction,
+            # so it stays out of ``_mtp_safe_logits_processors`` below and a
+            # DRY request decodes without MTP (fail-closed handoff).
+            _dry = getattr(request, "dry_logits_processor", None)
+            if _dry is not None:
+                request_processors.append(_dry.bind(request))
             # Generation-time thinking-token budget (force-close </think>).
             # Appended LAST so its force-close mask (all but </think> -> -inf)
             # has final say over any penalty/grammar bias in the same step;

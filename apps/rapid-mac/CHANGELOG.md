@@ -17,6 +17,42 @@ can actually understand.
 
 ## [Unreleased]
 
+## [0.15.5] — 2026-10-03
+
+Rapid-MLX 0.15.5 makes experimental Computer Use less disruptive, speeds up
+qualified speculative decoding, and improves model import and server recovery.
+
+### Changed
+- Model unload is now a prominent labelled action beside the active model in
+  the chat composer, while the resident-memory footer remains available as a
+  secondary entry point. Multi-model pools say `Unload all`, and active work
+  retains the existing guarded/disabled behaviour.
+- **Background-first Computer Use.** Eligible clicks, plain text entry, and
+  non-Command keystrokes can target the exact approved app window without
+  bringing it forward. Finder, Command shortcuts, and automatic fallback when
+  background routing is unavailable still use the foreground; forced
+  background mode refuses that fallback.
+- **Faster continuous MTP decoding.** Qualified Qwen and GLM speculative paths
+  reduce host synchronization inside an accepted draft cycle.
+- **Safer model import.** Uncataloged models are checked before download,
+  runnable alternatives are suggested when needed, and local MLX import and
+  quantization can be cancelled cleanly.
+
+### Added
+- A universal `--context-length` override for advanced server and CLI use.
+- Additional headless agent profiles and clearer caller attribution in local
+  telemetry.
+
+### Fixed
+- Text-capable vision checkpoints can fall back to the text lane when optional
+  vision dependencies are unavailable.
+- First-start failures now produce specific recovery guidance instead of
+  falling into a generic startup error.
+- Agent tool-call parsing handles prefix caching, numeric JSON values, and
+  undeclared tool markup more reliably.
+- SillyTavern-compatible sampling validates unsupported combinations instead
+  of silently changing them.
+
 ## [0.15.4] — 2026-10-01
 
 Rapid-MLX 0.15.4 adds experimental accelerated profiles for Qwen3.8 27B and
@@ -4169,7 +4205,8 @@ Older versions: see the
 [GitHub Releases page](https://github.com/machinefi/rapid-desktop/releases)
 for auto-generated notes against earlier tags.
 
-[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.15.4...HEAD
+[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.15.5...HEAD
+[0.15.5]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.15.4...rapid-mac-v0.15.5
 [0.15.4]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.15.3...rapid-mac-v0.15.4
 [0.15.3]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.15.2...rapid-mac-v0.15.3
 [0.15.2]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.15.1...rapid-mac-v0.15.2

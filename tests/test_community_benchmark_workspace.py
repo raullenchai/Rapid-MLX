@@ -1168,6 +1168,10 @@ def test_share_cli_text_reports_cancel_and_unsaved_existing_acceptance(
         "https://rapidmlx.com/leaderboard/contributors/rapid-silver-otter-abc" in output
     )
     assert "local receipt could not be saved" in output
+    assert (
+        "See it on the leaderboard: "
+        f"https://rapidmlx.com/leaderboard?run={run['run_id']}" in output
+    )
 
     anonymous_receipt = {**receipt, "contributor": None}
     anonymous_acceptance = atomic_upload.AtomicUploadAcceptance(

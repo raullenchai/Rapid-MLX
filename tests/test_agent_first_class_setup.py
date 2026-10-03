@@ -104,12 +104,12 @@ def test_verify_server_checks_health_and_models(monkeypatch):
 def test_dsh_plan_and_profile_template_agree_on_the_provider_contract(monkeypatch):
     """The two DSH provider definitions must not drift apart.
 
-    ``agents dsh --setup`` builds the provider block in ``agents/setup.py``,
-    while ``agents dsh --test`` renders the template in
-    ``profiles/deepseek-harness.yaml``. They are deliberately separate — only
-    the plan adapts ``reasoningEfforts`` to the served model — but every other
-    key is the same contract, and nothing but this test notices when an edit
-    lands in one and not the other.
+    ``agents dsh --setup`` builds the provider block in ``agents/setup.py``
+    (as a Cordis patch-layer list for dsh >= 0.2), while ``agents dsh --test``
+    renders the template in ``profiles/deepseek-harness.yaml``. They are
+    deliberately separate — only the plan adapts ``reasoningEfforts`` to the
+    served model — but every other key is the same contract, and nothing but
+    this test notices when an edit lands in one and not the other.
     """
     import yaml
 
@@ -121,17 +121,22 @@ def test_dsh_plan_and_profile_template_agree_on_the_provider_contract(monkeypatc
     context = 131072
 
     monkeypatch.setattr(
-        "rapid_mlx.agents.setup._dsh_settings_path",
-        lambda: __import__("pathlib").Path("/nonexistent/settings.yaml"),
+        "rapid_mlx.agents.setup._dsh_patch_path",
+        lambda: __import__("pathlib").Path("/nonexistent/cordis.patch.yml"),
     )
     plan = build_setup_plan("dsh", base_url, model, context_length=context)
-    planned = plan.after["llm-pi-ai"]["providers"]["rapid-mlx"]
+    planned = {layer["id"]: layer["config"] for layer in plan.after}["llm-pi-ai"][
+        "providers"
+    ]["rapid-mlx"]
 
     profile = get_profile("deepseek-harness")
     rendered = yaml.safe_load(
         profile.render_config(base_url, model, context_length=context)
     )
-    templated = rendered["llm-pi-ai"]["providers"]["rapid-mlx"]
+    assert isinstance(rendered, list), "dsh patch template must be a top-level list"
+    templated = {layer["id"]: layer["config"] for layer in rendered}["llm-pi-ai"][
+        "providers"
+    ]["rapid-mlx"]
 
     for key in (
         "displayName",
@@ -143,7 +148,16 @@ def test_dsh_plan_and_profile_template_agree_on_the_provider_contract(monkeypatc
     ):
         assert planned[key] == templated[key], f"DSH provider key drifted: {key}"
 
-    assert plan.after["agent-default-model"] == rendered["agent-default-model"]
+    assert {layer["id"]: layer["config"] for layer in plan.after}[
+        "agent-default-model"
+    ] == {layer["id"]: layer["config"] for layer in rendered}["agent-default-model"]
+
+    planned_model = planned["models"][0]
+    templated_model = templated["models"][0]
+    for key in ("id", "name", "contextWindow", "maxTokens"):
+        assert planned_model[key] == templated_model[key], (
+            f"DSH model key drifted: {key}"
+        )
 
     planned_model = planned["models"][0]
     templated_model = templated["models"][0]
@@ -198,14 +212,14 @@ def test_agents_footer_counts_agents_and_frameworks_separately(
     builtin_profiles, monkeypatch, capsys
 ):
     """The ``rapid-mlx agents`` footer must not count frameworks as
-    agents: 13 rows are 10 agents + 3 frameworks (#2082)."""
+    agents: 14 rows are 11 agents + 3 frameworks (#2082)."""
     import rapid_mlx.cli as cli
 
     monkeypatch.setattr("sys.argv", ["rapid-mlx", "agents"])
     cli.main()
     out = capsys.readouterr().out
-    assert "10 agents + 3 frameworks supported" in out
-    assert "13 agents supported" not in out
+    assert "11 agents + 3 frameworks supported" in out
+    assert "14 agents supported" not in out
     assert "GitHub" in out
     assert "tools" in out
     assert "FC = function calling" in out

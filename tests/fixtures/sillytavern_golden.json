@@ -1,0 +1,143 @@
+{
+ "chat": [
+  200,
+  {
+   "choices": [
+    {
+     "finish_reason": "stop",
+     "index": 0,
+     "message": {
+      "content": "*smiles* Hello, traveler.",
+      "role": "assistant"
+     }
+    }
+   ],
+   "model": "my-rp-model",
+   "object": "chat.completion",
+   "usage": {
+    "completion_tokens": 3,
+    "prompt_tokens": 12,
+    "total_tokens": 15
+   }
+  }
+ ],
+ "chat_stream": [
+  200,
+  [
+   {
+    "choices": [
+     {
+      "delta": {
+       "role": "assistant"
+      },
+      "index": 0
+     }
+    ],
+    "model": "my-rp-model",
+    "object": "chat.completion.chunk"
+   },
+   {
+    "choices": [
+     {
+      "delta": {
+       "content": "*smiles* "
+      },
+      "index": 0
+     }
+    ],
+    "model": "my-rp-model",
+    "object": "chat.completion.chunk"
+   },
+   {
+    "choices": [
+     {
+      "delta": {
+       "content": "Hello"
+      },
+      "index": 0
+     }
+    ],
+    "model": "my-rp-model",
+    "object": "chat.completion.chunk"
+   },
+   {
+    "choices": [
+     {
+      "delta": {
+       "content": ", traveler."
+      },
+      "finish_reason": "stop",
+      "index": 0
+     }
+    ],
+    "model": "my-rp-model",
+    "object": "chat.completion.chunk"
+   },
+   "[DONE]"
+  ]
+ ],
+ "models": [
+  200,
+  [
+   "my-rp-model"
+  ]
+ ],
+ "text": [
+  200,
+  {
+   "choices": [
+    {
+     "finish_reason": "stop",
+     "index": 0,
+     "text": "*smiles* Hello, traveler."
+    }
+   ],
+   "model": "my-rp-model",
+   "object": "text_completion",
+   "usage": {
+    "completion_tokens": 3,
+    "prompt_tokens": 12,
+    "total_tokens": 15
+   }
+  }
+ ],
+ "text_stream": [
+  200,
+  [
+   {
+    "choices": [
+     {
+      "finish_reason": null,
+      "index": 0,
+      "text": "*smiles* "
+     }
+    ],
+    "model": "my-rp-model",
+    "object": "text_completion"
+   },
+   {
+    "choices": [
+     {
+      "finish_reason": null,
+      "index": 0,
+      "text": "Hello"
+     }
+    ],
+    "model": "my-rp-model",
+    "object": "text_completion"
+   },
+   {
+    "choices": [
+     {
+      "finish_reason": "stop",
+      "index": 0,
+      "text": ", traveler."
+     }
+    ],
+    "model": "my-rp-model",
+    "object": "text_completion"
+   },
+   "[DONE]"
+  ]
+ ]
+}

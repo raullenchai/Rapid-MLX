@@ -6,6 +6,7 @@ from __future__ import annotations
 import ast
 import errno
 import http.client
+import importlib
 import json
 import os
 import stat
@@ -465,6 +466,94 @@ def test_serve_error_class_preserves_existing_variants(exc, expected):
 )
 def test_serve_error_class_recognizes_engine_start_wording(exc, expected):
     assert model_events.serve_error_class(exc) == expected
+
+
+@pytest.mark.parametrize("shape", ["bare", "cause", "two_levels_deep"])
+def test_missing_file_inside_existing_repo_is_download_failed(shape):
+    from huggingface_hub.errors import EntryNotFoundError
+
+    inner = EntryNotFoundError("model.safetensors missing from owner/repo")
+    if shape == "bare":
+        exc = inner
+    else:
+        exc = RuntimeError("loader wrapper")
+        if shape == "two_levels_deep":
+            middle = RuntimeError("second loader wrapper")
+            middle.__cause__ = inner
+            inner = middle
+        exc.__cause__ = inner
+
+    assert model_events.serve_error_class(exc, model_ref="owner/repo") == (
+        "download_failed"
+    )
+
+
+def test_local_entry_not_found_keeps_the_local_path_decision(tmp_path):
+    """LocalEntryNotFoundError is both an EntryNotFoundError and a
+    FileNotFoundError: a local ref must stay local_path_missing (origin/main),
+    while a Hub ref stays download_failed."""
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    exc = LocalEntryNotFoundError("config.json missing")
+    assert (
+        model_events.serve_error_class(exc, model_ref=str(tmp_path / "my-model"))
+        == "local_path_missing"
+    )
+    assert model_events.serve_error_class(exc, model_ref="owner/repo") == (
+        "download_failed"
+    )
+
+
+@pytest.mark.parametrize("shape", ["bare", "cause"])
+def test_malformed_model_reference_gets_its_own_class(shape):
+    from huggingface_hub.errors import HFValidationError
+
+    inner = HFValidationError(
+        "Repo id must be in the form 'repo_name' or 'namespace/repo_name':"
+        " 'qwen3.5--4bit'."
+    )
+    if shape == "bare":
+        exc = inner
+    else:
+        exc = RuntimeError("loader wrapper")
+        exc.__cause__ = inner
+
+    assert model_events.serve_error_class(exc, model_ref="qwen3.5--4bit") == (
+        "invalid_model_ref"
+    )
+
+
+@pytest.mark.parametrize(
+    "backend_error",
+    [
+        "rapid_mlx.video.engine:VideoBackendUnavailableError",
+        "rapid_mlx.video.wan:WanBackendError",
+        "rapid_mlx.video.ltx25:LTX25BackendError",
+    ],
+)
+@pytest.mark.parametrize("shape", ["bare", "cause"])
+def test_typed_lane_backend_failures_are_not_other(backend_error, shape):
+    module_name, class_name = backend_error.split(":")
+    error_class = getattr(importlib.import_module(module_name), class_name)
+    inner = error_class("the lane backend refused to prepare this checkpoint")
+    if shape == "bare":
+        exc = inner
+    else:
+        exc = RuntimeError("loader wrapper")
+        exc.__cause__ = inner
+
+    assert model_events.serve_error_class(exc, model_ref="wan2.2-ti2v-5b-q8") == (
+        "backend_load_failed"
+    )
+
+
+def test_draft_gate_refusal_is_unsupported_architecture():
+    from rapid_mlx.model_aliases import DraftModelNotServableError
+
+    failure = DraftModelNotServableError(
+        "'qwen3.6-35b-mtp-4bit' is a speculative-decoding draft checkpoint"
+    )
+    assert model_events.serve_error_class(failure) == "unsupported_architecture"
 
 
 def test_typed_quantization_beats_memory_wording():
@@ -1458,6 +1547,38 @@ def test_failure_prefers_engine_telemetry_identity(monkeypatch):
     assert calls == [{"error_class": "other", "model": "tmax-9b"}]
 
 
+@pytest.mark.parametrize(
+    ("failure_stage", "expected"),
+    [
+        ("resolve", "resolve"),
+        ("download", "download"),
+        ("preflight", "preflight"),
+        ("prepare", "prepare"),
+        ("engine_start", "engine_start"),
+        ("bind", "bind"),
+    ],
+)
+def test_failure_stage_is_emitted_when_declared(monkeypatch, failure_stage, expected):
+    calls = []
+    _capture_accepted_events(monkeypatch, lambda _event, props: calls.append(props))
+    model_events.emit_model_serve_failed(
+        RuntimeError("load"), alias_or_path="unknown", failure_stage=failure_stage
+    )
+    assert calls[0]["failure_stage"] == expected
+
+
+@pytest.mark.parametrize("failure_stage", [None, "", "load", "middle", 7])
+def test_failure_stage_outside_the_closed_enum_is_omitted(monkeypatch, failure_stage):
+    calls = []
+    _capture_accepted_events(monkeypatch, lambda _event, props: calls.append(props))
+    model_events.emit_model_serve_failed(
+        RuntimeError("load"), alias_or_path="unknown", failure_stage=failure_stage
+    )
+    assert "failure_stage" not in calls[0]
+    # The rest of the event stays valid: a dropped stage never drops the event.
+    assert calls[0]["error_class"] == "other"
+
+
 def test_optional_runtime_failure_class_and_extra_are_structured(monkeypatch):
     from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
 
@@ -2241,3 +2362,37 @@ def test_all_four_model_events_reach_exact_loopback_json(monkeypatch):
         )
     ]
     assert hostile_path not in repr(events)
+
+
+def test_lane_backend_classes_fail_soft_when_the_video_lane_is_absent(monkeypatch):
+    """A slim build without the video package must still classify: the lazy
+    imports degrade to an empty tuple instead of raising."""
+    import sys
+
+    for name in (
+        "rapid_mlx.video.engine",
+        "rapid_mlx.video.wan",
+        "rapid_mlx.video.ltx25",
+    ):
+        monkeypatch.setitem(sys.modules, name, None)
+
+    assert model_events._typed_lane_backend_classes() == ()
+
+
+def test_typed_lane_backend_fail_soft_tolerates_any_import_error(monkeypatch):
+    """The fail-soft arms catch Exception, not just ImportError."""
+    import sys
+    import types
+
+    class _Hostile(types.ModuleType):
+        def __getattr__(self, name):
+            raise RuntimeError("broken lazy module")
+
+    for name in (
+        "rapid_mlx.video.engine",
+        "rapid_mlx.video.wan",
+        "rapid_mlx.video.ltx25",
+    ):
+        monkeypatch.setitem(sys.modules, name, _Hostile(name))
+
+    assert model_events._typed_lane_backend_classes() == ()

@@ -1580,7 +1580,152 @@ def resolve_serving_lane_decision(
         return ServingLaneDecision(
             False, "vision_hybrid_runtime_unsupported", auto_text_fallback=True
         )
+    from ..models.mllm import VisionRuntimeStatus, vision_runtime_status
+
+    if vision_runtime_status()[0] is VisionRuntimeStatus.ABSENT and (
+        checkpoint_serves_text_without_vision(model_name)
+    ):
+        # Base wheel + a text-capable backbone: degrade to the text lane
+        # (exactly the ``--no-mllm`` path) instead of failing the serve.
+        return ServingLaneDecision(
+            False, "vision_runtime_absent", auto_text_fallback=True
+        )
     return ServingLaneDecision(True, "vision_supported")
+
+
+_DEGRADE_CONFIG_PREFETCHED: set[str] = set()
+
+
+def _prefetch_config_for_degrade_probe(model_ref: str) -> None:
+    """Pull only ``config.json`` (a few KB) for the text-degrade probes.
+
+    The lane resolver and its probes are CACHE-ONLY (the
+    :func:`resolve_serving_lane_decision` offline contract), so a cold-cache
+    boot would classify "no config" and fail closed to the
+    ``[vision]``-required guard. The CLI boot guard calls this ONCE before
+    consulting them, bounded three ways:
+
+    * local paths, an already-cached config, and Hub offline mode never touch
+      the network;
+    * the fetch runs under :func:`call_with_deadline` with the shared
+      ``_HF_RESOLVE_TIMEOUT_SECONDS`` — a deadline is the only thing that
+      bounds a huggingface_hub metadata call;
+    * at most one attempt per process per repo — repeated probes never
+      refetch, so a slow or blackholed Hub costs a single bounded window.
+    """
+    import os
+
+    if os.path.exists(model_ref) or model_ref in _DEGRADE_CONFIG_PREFETCHED:
+        return
+    from .._download_gate import _HF_RESOLVE_TIMEOUT_SECONDS, call_with_deadline
+    from ..model_metadata import hub_offline_mode_active
+
+    if hub_offline_mode_active():
+        return
+    metadata = read_model_metadata(model_ref)
+    if metadata is not None and isinstance(metadata.config, dict):
+        # The routing probes are cache-only and already have all of the
+        # evidence they can use.  Avoid turning every warm serve into a Hub
+        # metadata request merely to re-materialize the same config.
+        return
+    _DEGRADE_CONFIG_PREFETCHED.add(model_ref)
+    try:
+        from huggingface_hub import hf_hub_download
+
+        call_with_deadline(
+            hf_hub_download,
+            _HF_RESOLVE_TIMEOUT_SECONDS,
+            model_ref,
+            "config.json",
+        )
+    except Exception:  # noqa: BLE001 - best-effort probe, never fatal
+        return
+
+
+def _text_lane_loads_model_type(model_type: str) -> bool:
+    """Whether the TEXT lane can load this checkpoint architecture.
+
+    Two evidence sources, both independent of ``mlx-vlm``:
+
+    * the vendored Rapid loaders — the Gemma 4 family text loaders under
+      ``rapid_mlx/models/gemma4_vendored/`` ship in-tree and load the
+      language backbone without mlx-vlm, whatever is installed; and
+    * the installed mlx-lm — but ONLY for arches on the reviewed
+      :data:`~rapid_mlx.models.text_lane_arches.MLX_LM_MM_BACKBONE_ARCHES`
+      allow-list (gemma3, qwen3_vl, qwen3_5, mistral3, …). Since 0.31 those
+      modules load the LANGUAGE backbone from a multimodal checkpoint and
+      drop the vision tower — verified per module, cited in that list. A
+      module that merely exists (``llama``, ``qwen3``, …) is NOT evidence:
+      routing a multimodal config there would bypass the ``[vision]`` guard
+      and fail later with a worse error, so unlisted arches fail closed even
+      when ``mlx_lm.models.<type>`` is importable.
+
+    The vendored half auto-upgrades with the code; the mlx-lm half with the
+    installed package — both without a code change here (a new upstream arch
+    needs a reviewed allow-list entry first).
+    """
+    import importlib.util
+
+    from ..models.text_lane_arches import (
+        _GEMMA4_FAMILY_MODEL_TYPES,
+        MLX_LM_MM_BACKBONE_ARCHES,
+    )
+
+    if model_type in _GEMMA4_FAMILY_MODEL_TYPES:
+        return True
+    if model_type not in MLX_LM_MM_BACKBONE_ARCHES:
+        # An existing module is not proof: only reviewed multimodal-layout
+        # arches may degrade (fail closed for everything else).
+        return False
+    try:
+        return importlib.util.find_spec(f"mlx_lm.models.{model_type}") is not None
+    except (ImportError, ValueError):
+        # A malformed arch name (trailing dot, empty segment) just means "no
+        # such module".
+        return False
+
+
+def checkpoint_serves_text_without_vision(model_name: str) -> bool:
+    """Whether an ABSENT vision runtime may leave this checkpoint text-only.
+
+    The #3831 hybrid-backbone degrade covers linear-attention/recurrent
+    language backbones (``mllm_backbone_cache_mode``). This predicate covers
+    the remaining standard-attention VLM checkpoints (Gemma 4, Qwen3-VL,
+    Gemma 3(n), …): a checkpoint degrades to the ``--no-mllm`` text path iff
+
+    1. the vision runtime status is exactly ABSENT — a BROKEN or
+       INCOMPATIBLE install keeps its loud repair guard, and a working one
+       serves the vision lane;
+    2. the checkpoint config declares a multimodal layout (positive evidence
+       the checkpoint routes to the vision lane once weights arrive — a text
+       fork never needed the lane); and
+    3. the config's top-level ``model_type`` resolves to a language backbone
+       the text lane loads without mlx-vlm (see
+       :func:`_text_lane_loads_model_type`). The top-level type is the
+       dispatch key the loaders use — a pack whose only loader lives on the
+       MLLM lane (Bonsai 2's ``prism_hadamard_qwen35``) fails this probe and
+       keeps the ``[vision]``-required guard.
+
+    No config is no evidence: the probe fails closed and is CACHE-ONLY — it
+    never touches the network (the resolver's offline contract). Cold-cache
+    callers that want the degrade instead of the safe default materialize
+    the config first via :func:`_prefetch_config_for_degrade_probe`
+    (deadline-bounded, once per process).
+    """
+    from ..models.mllm import VisionRuntimeStatus, vision_runtime_status
+
+    if vision_runtime_status()[0] is not VisionRuntimeStatus.ABSENT:
+        return False
+    metadata = read_model_metadata(model_name)
+    if metadata is None or not isinstance(metadata.config, dict):
+        return False
+    config = metadata.config
+    if not config_indicates_multimodal(config):
+        return False
+    model_type = config.get("model_type")
+    if not isinstance(model_type, str) or not model_type:
+        return False
+    return _text_lane_loads_model_type(model_type)
 
 
 def resolve_serving_lane(

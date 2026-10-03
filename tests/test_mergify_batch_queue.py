@@ -29,20 +29,20 @@ def _rules_by_name(kind: str) -> dict[str, dict[str, object]]:
     return {rule["name"]: rule for rule in _config()[kind]}
 
 
-def test_queue_runs_single_ready_prs_without_batch_features_or_fill_waits():
+def test_queue_runs_single_ready_prs_without_speculation_or_fill_waits():
     config = _config()
     queue = config["merge_queue"]
     rules = _rules_by_name("queue_rules")
 
     assert queue["mode"] == "serial"
-    assert "max_parallel_checks" not in queue
+    assert queue["max_parallel_checks"] == 1
     assert queue["skip_intermediate_results"] is False
     assert set(rules) == {"no-mac-batch", "mac-batch"}
     for rule in rules.values():
-        assert "batch_size" not in rule
+        assert rule["batch_size"] == 1
         assert "batch_max_wait_time" not in rule
         assert "batch_max_failure_resolution_attempts" not in rule
-    assert {rule["checks_timeout"] for rule in rules.values()} == {"90 min"}
+    assert {rule["checks_timeout"] for rule in rules.values()} == {"auto"}
 
 
 def test_queue_avoids_subscription_gated_batch_and_scope_features():

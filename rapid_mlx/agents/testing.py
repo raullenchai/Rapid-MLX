@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -106,6 +107,8 @@ _PLAIN_CHAT_EXPECTED_RE = _exact_number_re("4")
 
 
 class TestStatus(Enum):
+    __test__ = False  # not a pytest test class
+
     PASS = "PASS"
     FAIL = "FAIL"
     SKIP = "SKIP"
@@ -114,6 +117,8 @@ class TestStatus(Enum):
 
 @dataclass
 class TestResult:
+    __test__ = False  # not a pytest test class
+
     name: str
     status: TestStatus
     duration_ms: float = 0
@@ -931,6 +936,16 @@ def _workspace_or(cwd: str | None):
             yield workdir
 
 
+# XDG base directories and their spec-default locations under HOME. The test
+# runner pins each one inside the throwaway home (see ``AgentTestRunner.run``).
+_XDG_BASE_DIRS: tuple[tuple[str, str], ...] = (
+    ("XDG_CONFIG_HOME", ".config"),
+    ("XDG_DATA_HOME", ".local/share"),
+    ("XDG_STATE_HOME", ".local/state"),
+    ("XDG_CACHE_HOME", ".cache"),
+)
+
+
 def _agent_query(
     binary: str,
     query_cmd: str,
@@ -948,7 +963,6 @@ def _agent_query(
     treated bare names as relative paths so every e2e gate silently
     skipped with "Binary not found" even when the CLI was installed.
     """
-    import shlex
 
     if "/" not in binary and not binary.startswith("~"):
         resolved = shutil.which(binary)
@@ -1610,6 +1624,38 @@ class AgentTestRunner:
         )
         env_overrides = dict(env_overrides or {})
         env_overrides["HOME"] = isolated_config_home.name
+        # HOME alone is not a boundary for XDG-aware CLIs: OpenCode (and the
+        # Qwen Code / Kilo family) resolve config, data, state and cache via
+        # XDG_*_HOME first, so an operator who exports XDG_CONFIG_HOME would
+        # have the child read their REAL global config — plugins, remote
+        # provider credentials — and write state outside the throwaway home.
+        # Pin every XDG base directory to its default location inside it.
+        isolated_root = Path(isolated_config_home.name)
+        for xdg_key, xdg_rel in _XDG_BASE_DIRS:
+            env_overrides[xdg_key] = str(isolated_root / xdg_rel)
+        # OpenCode also honours explicit config relocations; an inherited
+        # OPENCODE_CONFIG / OPENCODE_CONFIG_DIR would bypass the redirected
+        # XDG tree, so point both at the file this sweep just generated.
+        # OPENCODE_CONFIG_CONTENT (inline config) outranks both, so it gets
+        # the generated config too, and project-level config discovery is off.
+        if self.profile.name == "opencode" and active_config.path:
+            generated = isolated_root / Path(active_config.path).relative_to("~")
+            env_overrides["OPENCODE_CONFIG"] = str(generated)
+            env_overrides["OPENCODE_CONFIG_DIR"] = str(generated.parent)
+            try:
+                env_overrides["OPENCODE_CONFIG_CONTENT"] = generated.read_text(
+                    encoding="utf-8"
+                )
+            except OSError:
+                # Setup refresh failed (already logged): an empty inline
+                # config still overrides an inherited one.
+                env_overrides["OPENCODE_CONFIG_CONTENT"] = "{}"
+            env_overrides["OPENCODE_DISABLE_PROJECT_CONFIG"] = "1"
+        # pi: no install/update telemetry or catalog refresh from a test run
+        # (both documented in the profile's known_issues).
+        if self.profile.name == "pi":
+            env_overrides["PI_TELEMETRY"] = "0"
+            env_overrides["PI_OFFLINE"] = "1"
         # Claude Code documents CLAUDE_CONFIG_DIR as its supported config
         # relocation.  Set it even though HOME is redirected: some packaged
         # launchers resolve the account home before applying the child env.
@@ -1662,13 +1708,19 @@ class AgentTestRunner:
         # --- E2E tests ---
         if self._agent_binary_available() and testing.binary and testing.query_cmd:
             binary = os.path.expanduser(testing.binary)
+            # ``{model_id}`` lets a profile pin the local model on the command
+            # line (pi: ``--provider rapid-mlx --model {model_id}``). Quoted so
+            # the id stays one argv entry whatever it contains.
+            query_cmd = testing.query_cmd.replace(
+                "{model_id}", shlex.quote(self.model_id)
+            )
             # No shared workspace here on purpose: each _test_e2e_* opens
             # its own, so one invocation's leftovers cannot become the
             # next one's starting condition.
             report.results.append(
                 _test_e2e_chat(
                     binary,
-                    testing.query_cmd,
+                    query_cmd,
                     testing.query_timeout,
                     env_overrides=env_overrides,
                 )
@@ -1677,7 +1729,7 @@ class AgentTestRunner:
                 report.results.append(
                     _test_e2e_file_read(
                         binary,
-                        testing.query_cmd,
+                        query_cmd,
                         testing.query_timeout,
                         env_overrides=env_overrides,
                     )
@@ -1685,7 +1737,7 @@ class AgentTestRunner:
                 report.results.append(
                     _test_e2e_terminal(
                         binary,
-                        testing.query_cmd,
+                        query_cmd,
                         testing.query_timeout,
                         self.profile.name,
                         env_overrides=env_overrides,

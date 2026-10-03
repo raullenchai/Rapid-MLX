@@ -1006,6 +1006,20 @@ def _build_app(
                     f"in {backend_name} mode."
                 ),
             )
+        unsupported_samplers: list[str] = []
+        if getattr(request, "dry_multiplier", None) not in (None, 0, 0.0):
+            unsupported_samplers.append("dry_multiplier")
+        if getattr(request, "repetition_penalty_range", None) is not None:
+            unsupported_samplers.append("repetition_penalty_range")
+        if unsupported_samplers:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{backend_name} does not support sampler setting(s): "
+                    + ", ".join(unsupported_samplers)
+                    + "."
+                ),
+            )
         # F1: the slot was reserved at the ASGI layer
         # (``_DFlashAdmissionMiddleware``) BEFORE this body was parsed, so
         # admission bounds parsed-body memory too. Reuse that slot. A

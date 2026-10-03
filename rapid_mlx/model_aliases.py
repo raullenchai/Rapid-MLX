@@ -897,6 +897,68 @@ def resolve_subfolder(name: str) -> str | None:
     return profile.subfolder if profile is not None else None
 
 
+class DraftModelNotServableError(ValueError):
+    """Raised when a spec-decode draft checkpoint is served as a primary."""
+
+
+def draft_only_conflict(model_ref: object) -> str | None:
+    """Explain why a catalog checkpoint cannot be served standalone, or None.
+
+    A draft-only checkpoint is derived from the catalog itself: its ``hf_path``
+    is declared as another alias's ``mtp_draft_model`` while the checkpoint does
+    not embed its own draft (the qwen3.8 self-referencing pattern). Such
+    checkpoints carry a dedicated MTP ``model_type`` the pinned mlx-lm cannot
+    serve as a primary — ``rapid-mlx serve`` used to die mid-load with a raw
+    ``unsupported architecture`` error (#first-start sweep). ``pull`` keeps
+    working so the sidecar stays pre-warmable.
+    """
+    if not isinstance(model_ref, str) or not model_ref:
+        return None
+    # ``resolve_model`` gives an existing local file/directory precedence over
+    # every catalog spelling; a local model is whatever is on disk, never the
+    # catalog checkpoint whose name it happens to share.
+    if os.path.exists(model_ref):
+        return None
+    try:
+        profiles = _load()
+    except Exception:  # noqa: BLE001 — the gate must never break resolution
+        return None
+    profile = profiles.get(model_ref)
+    if profile is None and "/" in model_ref:
+        canonical = _alias_for_hf_path(model_ref)
+        profile = profiles.get(canonical) if canonical is not None else None
+    if profile is None:
+        return None
+    hf_path = profile.hf_path
+    if not hf_path:
+        return None
+    own_draft = getattr(profile, "mtp_draft_model", None)
+    if isinstance(own_draft, str) and own_draft == hf_path:
+        # The checkpoint embeds its own MTP head; it is a normal primary.
+        return None
+    bases = [
+        alias
+        for alias, other in profiles.items()
+        if isinstance(getattr(other, "mtp_draft_model", None), str)
+        and other.mtp_draft_model == hf_path
+        and other.hf_path != hf_path
+    ]
+    if not bases:
+        return None
+    return (
+        f"{model_ref!r} is a speculative-decoding draft checkpoint, not a "
+        f"standalone model. Serve {bases[0]!r} instead — it uses this draft "
+        "automatically for multi-token prediction."
+    )
+
+
+def raise_if_draft_only_model(model_ref: object) -> None:
+    """Refuse a draft-only checkpoint before any download or engine load."""
+    conflict = draft_only_conflict(model_ref)
+    if conflict is not None:
+        raise DraftModelNotServableError(conflict)
+
+
 def resolve_model(name: str) -> str:
     """Resolve a model alias to its full HuggingFace path.
 
@@ -931,7 +993,7 @@ def resolve_model(name: str) -> str:
                 return _load()[canonical].hf_path
             return name
         profile = _load().get(name)
-        return profile.hf_path if profile is not None else name
+        return profile.hf_path if profile is not None else _imported_or(name)
     if "/" in name:
         canonical = _alias_for_hf_path(name)
         repo_name = _load()[canonical].hf_path if canonical is not None else name
@@ -945,7 +1007,14 @@ def resolve_model(name: str) -> str:
     if external := _resolve_external_model_path(name):
         return external
     profile = _load().get(name)
-    return profile.hf_path if profile is not None else name
+    return profile.hf_path if profile is not None else _imported_or(name)
+
+
+def _imported_or(name: str) -> str:
+    """A ``rapid-mlx import`` result is served by its bare name."""
+    from .byom.imports import imported_model_path
+
+    return imported_model_path(name) or name
 
 
 def _managed_hub_model_is_runnable(name: str) -> bool:

@@ -1,7 +1,7 @@
 # Native System One server boundary
 
-Date: 2026-09-24  
-Owner: Atlas  
+Date: 2026-09-24
+Owner: Atlas
 Status: Accepted for implementation
 
 ## Context

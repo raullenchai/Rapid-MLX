@@ -79,6 +79,10 @@ class SamplingParams:
     # rolling-window effect; use `presence_penalty` / `frequency_penalty`
     # for chat-length anti-repetition.
     repetition_penalty: float = 1.0
+    # Window (tokens) for ``repetition_penalty``: ``None`` keeps mlx-lm's
+    # 20-token default, 0 covers the whole context (SillyTavern's
+    # ``repetition_penalty_range``).
+    repetition_context_size: int | None = None
     presence_penalty: float = 0.0
     frequency_penalty: float = 0.0
     stop: list[str] | None = None
@@ -205,6 +209,11 @@ class Request:
     # Structural-token suppression for requests that must not re-enter a
     # parser state after the prompt has explicitly closed it.
     suppressed_tokens_logits_processor: Any | None = None
+
+    # DRY repetition penalty settings (``rapid_mlx.sampling_dry``), set by the
+    # OpenAI routes when ``dry_multiplier > 0``. The scheduler binds them to
+    # this request's prompt + committed output at admission.
+    dry_logits_processor: Any | None = None
 
     # Exact processors admitted to MTP for this request: standard history-only
     # penalties plus any processor with an engine-owned speculative transaction

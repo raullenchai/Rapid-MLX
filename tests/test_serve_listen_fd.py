@@ -492,6 +492,7 @@ def test_serve_load_failure_emits_v2_model_failure(
                 "engine": server_mod._engine,
                 "alias_or_path": ns._original_alias or ns.model,
                 "auto_selected": True,
+                "failure_stage": "prepare",
             },
         )
     ]

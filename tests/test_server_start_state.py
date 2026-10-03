@@ -1484,7 +1484,7 @@ def test_offline_uncached_refusal_uses_shared_terminal_failure(monkeypatch, caps
     monkeypatch.setattr(
         model_events,
         "emit_model_serve_failed",
-        lambda exc, alias_or_path: serve_failures.append((exc, alias_or_path)),
+        lambda exc, alias_or_path, **_kw: serve_failures.append((exc, alias_or_path)),
     )
     monkeypatch.setattr(
         server_start,
