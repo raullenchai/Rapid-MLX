@@ -44,7 +44,7 @@ streaming:
 
 testing:
   binary: opencode
-  query_cmd: null  # opencode is interactive — no single-query mode
+  query_cmd: "opencode run '{query}'"
   query_timeout: 120
   install_cmd: "brew install sst/tap/opencode  # or: npm install -g opencode-ai"
 
