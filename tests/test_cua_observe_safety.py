@@ -341,7 +341,9 @@ def test_borrow_foreground_revalidates_identity_while_polling(monkeypatch):
 def test_same_process_refuses_an_exited_app(monkeypatch):
     monkeypatch.setattr(backend.ax_driver, "_application_for_pid", lambda pid: None)
     with pytest.raises(errors.ComputerUseError) as exc:
-        backend._same_process({"pid": 4})
+        backend._same_process(
+            {"pid": 4, "bundleId": "com.example.app", "processStartTime": 1.0}
+        )
     assert exc.value.code == "target_drift"
 
 
@@ -360,6 +362,27 @@ def test_borrow_foreground_types_activation_errors(monkeypatch):
 
     running.activateWithOptions_ = refuse
     snapshot = _borrow_setup(monkeypatch, running)
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend._borrow_foreground(snapshot)
+    assert exc.value.code == "action_failed"
+
+
+def test_same_process_requires_launch_time(monkeypatch):
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_application_for_pid",
+        lambda pid: pytest.fail("incomplete identity must not be resolved"),
+    )
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend._same_process({"pid": 4, "bundleId": "com.example.app"})
+    assert exc.value.code == "target_drift"
+
+
+def test_borrow_foreground_fails_fast_when_activation_refused(monkeypatch):
+    running = _Running()
+    running.activateWithOptions_ = lambda _options: False
+    snapshot = _borrow_setup(monkeypatch, running)
+    monkeypatch.setattr(backend.time, "sleep", lambda *_: pytest.fail("no polling"))
     with pytest.raises(errors.ComputerUseError) as exc:
         backend._borrow_foreground(snapshot)
     assert exc.value.code == "action_failed"

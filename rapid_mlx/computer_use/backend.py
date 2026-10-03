@@ -1304,15 +1304,21 @@ def _same_process(expected: dict):
     A pid can be recycled after the observed process exits, so the full
     identity (bundle, name, launch time) is checked on every lookup.
     """
+    if any(expected.get(key) is None for key in _PROCESS_IDENTITY):
+        # Without the launch time a recycled pid is indistinguishable.
+        raise ComputerUseError("target_drift", "selected app identity is incomplete")
     running = ax_driver._application_for_pid(int(expected["pid"]))
     if running is None:
         raise ComputerUseError("target_drift", "selected app exited")
     info = _resolved_app_info(running)
-    for key in ("pid", "bundleId", "name", "processStartTime"):
+    for key in (*_PROCESS_IDENTITY, "name"):
         wanted = expected.get(key)
         if wanted is not None and info.get(key) != wanted:
             raise ComputerUseError("target_drift", "selected app identity changed")
     return running
+
+
+_PROCESS_IDENTITY = ("pid", "bundleId", "processStartTime")
 
 
 def _borrow_foreground(snapshot: dict) -> None:
@@ -1330,9 +1336,11 @@ def _borrow_foreground(snapshot: dict) -> None:
     if bool(running.isActive()):
         return
     try:
-        running.activateWithOptions_(1 << 1)
+        accepted = bool(running.activateWithOptions_(1 << 1))
     except Exception as exc:  # noqa: BLE001 - surfaced as a typed failure
         raise ComputerUseError("action_failed", "could not activate target") from exc
+    if not accepted:
+        raise ComputerUseError("action_failed", "target refused activation")
     deadline = time.monotonic() + 1.5
     while time.monotonic() < deadline:
         # Re-resolve each poll: without an NSRunLoop in this process a held
