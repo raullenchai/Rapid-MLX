@@ -54,6 +54,7 @@ from ctypes import (
     c_void_p,
 )
 from dataclasses import dataclass
+from typing import Any
 
 __all__ = [
     "DELIVERY_ENV",
@@ -189,7 +190,7 @@ class _PSN(Structure):  # ProcessSerialNumber: two UInt32
     _fields_ = [("hi", c_uint32), ("lo", c_uint32)]
 
 
-def _bind(lib, name: str, argtypes: list, restype) -> object | None:
+def _bind(lib, name: str, argtypes: list, restype) -> Any:
     fn = getattr(lib, name, None)
     if fn is None:
         return None
@@ -334,10 +335,11 @@ def _load() -> dict | None:
             # class object (as the upstream port does) checks instance methods
             # and is false on macOS 26, silently dropping the envelope. The
             # selector is absent before macOS 15; then keys post unenveloped.
-            if cls and sel and responds(metaclass_of(cls), sel):
+            send_addr = ctypes.cast(send, c_void_p).value
+            if cls and sel and send_addr and responds(metaclass_of(cls), sel):
                 factory = CFUNCTYPE(
                     c_void_p, c_void_p, c_void_p, c_void_p, c_int32, c_uint32
-                )(ctypes.cast(send, c_void_p).value)
+                )(send_addr)
                 s["auth_factory"] = (factory, cls, sel)
 
     source = s["source_create"](_K_HID_SYSTEM_STATE)
@@ -422,11 +424,21 @@ def ax_window_id(element: object) -> int | None:
     return int(wid.value)
 
 
+def _live() -> dict[str, Any]:
+    """The bound symbols, for helpers only reached after availability checks."""
+    s = _syms()
+    if s is None:
+        raise RuntimeError("SkyLight input SPI is unavailable")
+    return s
+
+
 def front_pid() -> int | None:
     """Pid of the process WindowServer considers frontmost (live, no run loop)."""
-    s = _syms()
     front = _front_psn()
-    if front is None or s.get("pid_for_psn") is None:
+    if front is None:
+        return None
+    s = _live()
+    if s.get("pid_for_psn") is None:
         return None
     pid = c_int32()
     if s["pid_for_psn"](byref(front), byref(pid)) != 0 or pid.value <= 0:
@@ -463,8 +475,8 @@ def _focus_record(wid: int, direction: int) -> ctypes.Array:
 
 
 def _post_record(psn: _PSN, record: ctypes.Array) -> bool:
-    s = _syms()
-    return (
+    s = _live()
+    return bool(
         s["post_record"](
             ctypes.cast(byref(psn), c_void_p), ctypes.cast(record, c_void_p)
         )
@@ -526,7 +538,7 @@ def _stamp_mouse(
     group: int,
     window_point: tuple[float, float] | None = None,
 ) -> None:
-    s = _syms()
+    s = _live()
     set_field = s["set_field"]
     set_field(ev, _F_PHASE, step.phase)
     set_field(ev, _F_CLICK_STATE, step.click_state)
@@ -558,7 +570,7 @@ def _owned(events: list[int]):
     try:
         yield events
     finally:
-        release = _syms()["release"]
+        release = _live()["release"]
         for ev in events:
             release(ev)
 
@@ -586,7 +598,7 @@ def _allocate(count: int, create) -> list[int] | None:
 
 
 def _release_all(events: list[int]) -> None:
-    release = _syms()["release"]
+    release = _live()["release"]
     for made in events:
         release(made)
 
@@ -774,7 +786,7 @@ def _event_record(ev: int) -> int | None:
     The exported ``SLEventGetEventRecord`` copy accessor is not used: it
     aborts the process when the caller's size disagrees with the OS's.
     """
-    s = _syms()
+    s = _live()
     zone_of, malloc_size = s.get("malloc_zone_from_ptr"), s.get("malloc_size")
     if zone_of is None or malloc_size is None or not zone_of(int(ev)):
         return None
@@ -794,7 +806,7 @@ def _event_record(ev: int) -> int | None:
 
 
 def _record_header_matches(record: int, ev: int) -> bool:
-    event_type = _syms().get("event_type")
+    event_type = _live().get("event_type")
     if event_type is None:
         return False
     length = c_uint32.from_address(record + 4).value
@@ -803,7 +815,7 @@ def _record_header_matches(record: int, ev: int) -> bool:
 
 
 def _post_key_event(pid: int, ev: int, *, authenticated: bool) -> None:
-    s = _syms()
+    s = _live()
     if authenticated and s["auth_factory"] is not None:
         factory, cls, sel = s["auth_factory"]
         record = _event_record(ev)

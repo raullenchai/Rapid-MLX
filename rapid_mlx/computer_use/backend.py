@@ -1182,7 +1182,7 @@ def _restore_user_focus(
 def _synthesize(primitive, *args, **kwargs) -> bool:
     """Run a background input primitive; SPI/ctypes errors become typed."""
     try:
-        return primitive(*args, **kwargs)
+        return bool(primitive(*args, **kwargs))
     except Exception as exc:  # noqa: BLE001 - surfaced as action_failed
         raise ComputerUseError(
             "action_failed", f"background input failed: {exc}"
