@@ -106,6 +106,8 @@ _PLAIN_CHAT_EXPECTED_RE = _exact_number_re("4")
 
 
 class TestStatus(Enum):
+    __test__ = False  # not a pytest test class
+
     PASS = "PASS"
     FAIL = "FAIL"
     SKIP = "SKIP"
@@ -114,6 +116,8 @@ class TestStatus(Enum):
 
 @dataclass
 class TestResult:
+    __test__ = False  # not a pytest test class
+
     name: str
     status: TestStatus
     duration_ms: float = 0
