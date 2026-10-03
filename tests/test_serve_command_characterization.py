@@ -208,10 +208,14 @@ def _pristine_server_state() -> Iterator[None]:
     """
     from rapid_mlx import server
     from rapid_mlx.config import reset_config
+    from rapid_mlx.runtime.model_registry import ModelRegistry
 
     saved = dict(vars(server))
     for key, value in _server_import_defaults().items():
         setattr(server, key, value)
+    # Not a scalar, so the defaults above miss it, and other tests register
+    # models into it; the residency manager reads it into the config.
+    server._model_registry = ModelRegistry()
     reset_config()
     try:
         yield
