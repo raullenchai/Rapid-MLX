@@ -91,7 +91,7 @@ class _MLXArrayOps:
         # One evaluation for the selected ids and every array the caller is
         # about to hand out (the verify log-probabilities), then one copy.
         self.mx.eval(ids, *materialize)
-        return ids.tolist()
+        return list(ids.tolist())
 
 
 @dataclass(frozen=True)
