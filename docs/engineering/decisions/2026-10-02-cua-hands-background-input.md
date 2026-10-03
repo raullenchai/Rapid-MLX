@@ -150,8 +150,12 @@ RAPID_MLX_LIVE_GUI=1 pytest tests/test_computer_use_background.py -q -k live
    and an unknown identity keep activating. Measured: TextEdit observed in
    0.56 s with the user's app still front, versus 1.06 s and a stolen focus
    when activating. Safety fixes:
-   - `focus_only` (focusing before Tab/arrow/Escape) no longer AXPresses or
-     clicks commit controls. It sets `AXFocused` and refuses when that fails.
+   - `focus_only` (focusing before Tab/arrow/Escape) never AXPresses or
+     clicks. It sets `AXFocused` and refuses when that fails; the planner
+     then needs a consent-gated click. A pixel fallback was tried and
+     dropped: AX roles, actions, ancestors and a hit-test still cannot prove
+     a click is non-committing (a web input may submit on click while
+     reading as a plain `AXTextField`).
      The old path pressed the button under a key plan, bypassing click
      consent;
    - sign-in detection reads `subrole` (password fields are `AXTextField` +

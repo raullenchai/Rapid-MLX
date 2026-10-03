@@ -83,69 +83,24 @@ def test_focus_only_refuses_commit_control_it_cannot_focus(monkeypatch, no_input
     assert exc.value.code == "synthetic_input_blocked"
 
 
-def _ancestors(monkeypatch, chain):
-    """chain: list of (role, actions) from parent up to the boundary."""
-    names = ["live"] + [f"n{i}" for i in range(len(chain))]
-    parents = dict(zip(names, names[1:], strict=False))
-    roles = {f"n{i}": role for i, (role, _) in enumerate(chain)}
-    actions = {f"n{i}": acts for i, (_, acts) in enumerate(chain)}
-    monkeypatch.setattr(
-        backend.ax_driver,
-        "_get",
-        lambda el, attr: {"AXParent": parents, "AXRole": roles}.get(attr, {}).get(el),
-    )
-    monkeypatch.setattr(
-        backend.ax_driver, "_action_names_or_none", lambda el: actions.get(el, [])
-    )
-
-
-def _unfocusable(monkeypatch, clicks, hit="live"):
+@pytest.mark.parametrize(
+    "role", ["AXTextField", "AXTextArea", "AXComboBox", "AXRow", "AXStaticText"]
+)
+def test_focus_only_never_pixel_clicks_when_axfocused_fails(monkeypatch, role):
+    # AX cannot prove a click is non-committing (a web input may submit on
+    # click and still read as AXTextField), so no role gets a pixel fallback.
     monkeypatch.setattr(backend, "_live_element", lambda *a, **k: "live")
-    monkeypatch.setattr(backend, "_pid_app_element", lambda app: "app")
-    monkeypatch.setattr(backend.ax_driver, "_element_at", lambda app, x, y: hit)
     monkeypatch.setattr(backend, "_focused_ax_element", lambda app: None)
     monkeypatch.setattr(
         backend.ax_driver, "AXUIElementSetAttributeValue", lambda *a: -25205
     )
     monkeypatch.setattr(
-        backend,
-        "_pixel_click",
-        lambda snap, x, y, **k: clicks.append((x, y)) or {"mode": "click"},
+        backend, "_pixel_click", lambda *a, **k: pytest.fail("must not click")
     )
-
-
-def test_focus_only_pixel_focuses_text_input_with_safe_ancestors(monkeypatch):
-    clicks = []
-    _unfocusable(monkeypatch, clicks)
-    _ancestors(monkeypatch, [("AXGroup", []), ("AXWindow", [])])
-    snapshot = _snapshot({"role": "AXTextField", "label": "q", "actions": []})
-    backend.click("App", 0, expected_snapshot=snapshot, focus_only=True)
-    assert clicks == [(50.0, 60.0)]
-
-
-@pytest.mark.parametrize(
-    ("role", "chain"),
-    [
-        ("AXRow", [("AXWindow", [])]),  # not a text input: refuse, never click
-        ("AXTextField", [("AXGroup", ["AXPress"]), ("AXWebArea", [])]),
-        ("AXTextField", [("AXLink", []), ("AXWindow", [])]),
-        ("AXTextField", [("AXGroup", [])] * 70),  # over-deep chain is unsafe
-        ("AXTextField", [("AXGroup", [])]),  # chain ends before a boundary
-        ("AXTextField", [(None, []), ("AXWindow", [])]),  # unreadable role
-        ("AXTextField", [("AXWebArea", ["AXPress"])]),  # pressable boundary
-        ("AXTextField", [("AXGroup", None), ("AXWindow", [])]),  # action read failed
-        ("AXTextField", [("AXWindow", None)]),  # boundary action read failed
-    ],
-)
-def test_focus_only_refuses_unsafe_pixel_focus(monkeypatch, role, chain):
-    clicks = []
-    _unfocusable(monkeypatch, clicks)
-    _ancestors(monkeypatch, chain)
     snapshot = _snapshot({"role": role, "label": "x", "actions": []})
     with pytest.raises(errors.ComputerUseError) as exc:
         backend.click("App", 0, expected_snapshot=snapshot, focus_only=True)
     assert exc.value.code == "synthetic_input_blocked"
-    assert clicks == []
 
 
 def test_plain_click_keeps_semantic_press(monkeypatch):
@@ -241,28 +196,6 @@ def test_loop_observes_without_activation_on_background_route(
 
 
 # --- codex round 1 on PR 2 ------------------------------------------------------
-
-
-def test_focus_only_refuses_child_of_commit_control(monkeypatch, no_input):
-    snapshot = _snapshot({"role": "AXStaticText", "label": "Delete", "actions": []})
-    parents = {"live": "button", "button": "window"}
-    roles = {"button": "AXButton", "window": "AXWindow"}
-
-    def get(element, attr):
-        if attr == "AXParent":
-            return parents.get(element)
-        if attr == "AXRole":
-            return roles.get(element)
-        return None
-
-    monkeypatch.setattr(backend.ax_driver, "_get", get)
-    monkeypatch.setattr(backend, "_focused_ax_element", lambda app: None)
-    monkeypatch.setattr(
-        backend.ax_driver, "AXUIElementSetAttributeValue", lambda *a: -25205
-    )
-    with pytest.raises(errors.ComputerUseError) as exc:
-        backend.click("App", 0, expected_snapshot=snapshot, focus_only=True)
-    assert exc.value.code == "synthetic_input_blocked"
 
 
 class _Running:
@@ -385,52 +318,3 @@ def test_borrow_foreground_revalidates_identity_while_polling(monkeypatch):
     with pytest.raises(errors.ComputerUseError) as exc:
         backend._borrow_foreground(snapshot)
     assert exc.value.code == "target_drift"
-
-
-def _hit_chain(monkeypatch, parents, actions):
-    monkeypatch.setattr(
-        backend.ax_driver,
-        "_get",
-        lambda el, attr: (
-            parents.get(el)
-            if attr == "AXParent"
-            else {"n0": "AXWindow"}.get(el)
-            if attr == "AXRole"
-            else None
-        ),
-    )
-    monkeypatch.setattr(
-        backend.ax_driver, "_action_names_or_none", lambda el: actions.get(el, [])
-    )
-
-
-@pytest.mark.parametrize(
-    ("hit", "parents", "actions", "clicked"),
-    [
-        # the app's hit-test returns an inner editor of the field: allowed
-        ("editor", {"live": "n0", "editor": "live"}, {}, True),
-        # an overlay button covers the field's center: refused
-        ("overlay", {"live": "n0", "overlay": "n0"}, {"overlay": ["AXPress"]}, False),
-        # nothing readable at the point: refused
-        (None, {"live": "n0"}, {}, False),
-        # the field itself is pressable (a control styled as an input): refused
-        ("live", {"live": "n0"}, {"live": ["AXPress"]}, False),
-        # AXConfirm on the field itself is normal for text inputs: allowed
-        ("live", {"live": "n0"}, {"live": ["AXConfirm"]}, True),
-    ],
-)
-def test_pixel_focus_hit_tests_the_exact_point(
-    monkeypatch, hit, parents, actions, clicked
-):
-    clicks = []
-    _unfocusable(monkeypatch, clicks, hit=hit)
-    _hit_chain(monkeypatch, parents, actions)
-    snapshot = _snapshot({"role": "AXTextField", "label": "q", "actions": []})
-    if clicked:
-        backend.click("App", 0, expected_snapshot=snapshot, focus_only=True)
-        assert clicks == [(50.0, 60.0)]
-    else:
-        with pytest.raises(errors.ComputerUseError) as exc:
-            backend.click("App", 0, expected_snapshot=snapshot, focus_only=True)
-        assert exc.value.code == "synthetic_input_blocked"
-        assert clicks == []

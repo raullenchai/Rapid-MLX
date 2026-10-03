@@ -194,24 +194,6 @@ def _action_names(element: object) -> list[str]:
     return list(names) if err == kAXErrorSuccess and names else []
 
 
-def _element_at(app_element: object, x: float, y: float) -> object | None:
-    """The app's own hit-test at a screen point, or ``None`` on any error."""
-    if AS is None:
-        return None
-    err, element = AS.AXUIElementCopyElementAtPosition(
-        app_element, float(x), float(y), None
-    )
-    return element if err == kAXErrorSuccess and element is not None else None
-
-
-def _action_names_or_none(element: object) -> list[str] | None:
-    """Like ``_action_names`` but ``None`` when the query itself failed."""
-    err, names = AXUIElementCopyActionNames(element, None)
-    if err != kAXErrorSuccess:
-        return None
-    return list(names or [])
-
-
 def _priority_children(element: object) -> list[object]:
     """Return stable, bounded region ordering with navigation before tables."""
 

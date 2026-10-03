@@ -5550,16 +5550,10 @@ def test_anchor_editable_focus_drift_keeps_occlusion_fail_closed(monkeypatch):
     )
     monkeypatch.setattr(backend, "_live_element", lambda *a, **k: object())
     monkeypatch.setattr(backend, "_focused_ax_element", lambda *a, **k: object())
-    # A readable, safe chain up to the window so the pixel path is reached.
+    monkeypatch.setattr(backend.ax_driver, "_get", lambda *a, **k: False)
     monkeypatch.setattr(
-        backend.ax_driver,
-        "_get",
-        lambda el, attr, *a, **k: {"AXParent": "window", "AXRole": "AXWindow"}.get(
-            attr, False
-        ),
+        backend.ax_driver, "AXUIElementSetAttributeValue", lambda *a: -25205
     )
-    monkeypatch.setattr(backend.ax_driver, "_action_names_or_none", lambda el: [])
-    monkeypatch.setattr(backend, "_pixel_hits_target", lambda *a: True)
     monkeypatch.setattr(
         backend,
         "_validate_snapshot_window",
@@ -5576,7 +5570,9 @@ def test_anchor_editable_focus_drift_keeps_occlusion_fail_closed(monkeypatch):
     with pytest.raises(errors.ComputerUseError) as excinfo:
         backend.click("pid:4", 0, expected_snapshot=snapshot, focus_only=True)
 
-    assert excinfo.value.code == "target_occluded"
+    # focus_only never falls back to a pixel click, so focus drift is refused
+    # before occlusion is even consulted; either way nothing is dispatched.
+    assert excinfo.value.code == "synthetic_input_blocked"
 
 
 def test_set_value_and_synthetic_fill_paths(monkeypatch):

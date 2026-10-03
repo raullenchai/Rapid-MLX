@@ -1969,74 +1969,6 @@ COMMIT_ON_CLICK_ROLES = {
 }
 
 
-def _pixel_focus_is_safe(entry: dict, live: object | None) -> bool:
-    """Whether focusing ``entry`` by a pixel click cannot commit anything.
-
-    Only text inputs qualify: clicking one places the caret. The click lands
-    on whatever contains the point, so every live ancestor up to the window
-    or web area must also be free of commit roles and commit actions;
-    an unreadable or over-deep chain counts as unsafe. Anything else that
-    rejects ``AXFocused`` is refused rather than clicked.
-    """
-    if entry.get("role") not in FILL_ROLES or live is None:
-        return False
-    if entry.get("role") in COMMIT_ON_CLICK_ROLES:
-        return False
-    # Text fields commonly expose AXConfirm (Enter); a click never fires it,
-    # but a pressable or openable "text field" is a control, not an input.
-    own = ax_driver._action_names_or_none(live)
-    if own is None or set(own) & _CLICK_COMMIT_ACTIONS:
-        return False
-    seen: set[int] = set()
-    node = ax_driver._get(live, "AXParent")
-    for _ in range(64):
-        # _get returns None on any AX error, so a chain that ends before an
-        # explicit boundary is unreadable, not proven safe.
-        if not node or id(node) in seen:
-            return False
-        seen.add(id(node))
-        role = ax_driver._get(node, "AXRole")
-        if not role:
-            return False
-        names = ax_driver._action_names_or_none(node)
-        if names is None:
-            return False  # an unreadable action list may hide AXPress
-        if role in COMMIT_ON_CLICK_ROLES or set(names) & _COMMIT_ACTIONS:
-            return False
-        if role in {"AXWindow", "AXWebArea", "AXApplication"}:
-            return True
-        node = ax_driver._get(node, "AXParent")
-    return False
-
-
-_COMMIT_ACTIONS = frozenset({"AXPress", "AXConfirm", "AXOpen"})
-_CLICK_COMMIT_ACTIONS = frozenset({"AXPress", "AXOpen"})
-
-
-def _pixel_hits_target(snapshot: dict, live: object, center) -> bool:
-    """Whether a click at ``center`` lands on ``live`` itself, right now.
-
-    The app's own hit-test must return ``live`` or a non-pressable part of
-    it (a text field's inner editor); an overlay, sibling button or anything
-    unreadable at that point refuses the click.
-    """
-    try:
-        app_element = _pid_app_element(snapshot["app"])
-    except ComputerUseError:
-        return False
-    node = ax_driver._element_at(app_element, float(center[0]), float(center[1]))
-    for _ in range(8):
-        if node is None:
-            return False
-        if node == live:
-            return True
-        names = ax_driver._action_names_or_none(node)
-        if names is None or set(names) & _CLICK_COMMIT_ACTIONS:
-            return False
-        node = ax_driver._get(node, "AXParent")
-    return False
-
-
 def _focus_without_commit(snapshot: dict, live: object | None) -> str | None:
     """Give ``live`` keyboard focus via AXFocused; the mode name, or None."""
     if live is None:
@@ -2149,14 +2081,14 @@ def click(
                     verification="exact Accessibility element holds keyboard focus",
                     include_post_state=include_post_state,
                 )
-            if not _pixel_focus_is_safe(entry, live) or not _pixel_hits_target(
-                snapshot, live, center
-            ):
-                raise ComputerUseError(
-                    "synthetic_input_blocked",
-                    "cannot focus this control without clicking it; "
-                    "plan a click (consent-gated) instead",
-                )
+            # A pixel click can never be proven non-committing (a web input
+            # may submit on click and still read as a plain AXTextField), so
+            # focus without AXFocused is the planner's consent-gated click.
+            raise ComputerUseError(
+                "synthetic_input_blocked",
+                "cannot focus this control without clicking it; "
+                "plan a click (consent-gated) instead",
+            )
         if is_transient:
             raise ComputerUseError(
                 "synthetic_input_blocked",
