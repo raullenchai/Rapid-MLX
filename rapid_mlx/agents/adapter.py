@@ -14,6 +14,7 @@ import subprocess
 from pathlib import Path
 
 from .base import AgentProfile
+from .config_merge import is_id_list, merge_by_id, merge_patch_layers
 from .telemetry import track_agent_configure_failed, track_agent_configured
 
 logger = logging.getLogger(__name__)
@@ -109,6 +110,7 @@ def _deep_merge(
 
     - Dict values are merged recursively (existing keys in *base* that
       are absent from *override* are preserved).
+    - An id-keyed ``models`` list merges entry-by-entry on ``id``.
     - All other types in *override* win unconditionally.
 
     Returns a new dict — neither input is mutated.
@@ -122,6 +124,11 @@ def _deep_merge(
                 _path=(*_path, key),
                 _supported_toolsets=_supported_toolsets,
             )
+        elif key == "models" and isinstance(merged.get(key), list) and is_id_list(val):
+            # An id-keyed model list (pi's providers.<name>.models) is shared
+            # with the user's own entries under the same provider: merge it by
+            # ``id`` instead of replacing the whole list.
+            merged[key] = merge_by_id(merged[key], val)
         elif (
             (*_path, key) == ("platform_toolsets", "cli")
             and isinstance(merged.get(key), list)
@@ -171,27 +178,25 @@ def _atomic_write(target: Path, content: str) -> bool:
     """Write changed *content* atomically and report whether bytes changed.
 
     When *target* already exists, its mode bits are copied to the
-    replacement file.  When it does not exist, a simple ``write_text``
-    is used so no metadata is lost (there's nothing to preserve).
-    Symlinks are resolved before writing so dotfile-managed configs
-    stay connected to their real target.
+    replacement file.  When it does not exist, it is created owner-only
+    (``0600``): agent configs such as pi's ``models.json`` hold API keys for
+    the user's other providers, and a ``write_text`` here used to create them
+    ``0644`` — readable by every local account, a mode later rewrites then
+    faithfully preserved.  Symlinks are resolved before writing so
+    dotfile-managed configs stay connected to their real target.
     """
     import stat
     import tempfile
 
     resolved = target.resolve()
 
-    # If the file doesn't exist yet, a plain write is safe and
-    # avoids the metadata-preservation question entirely.
-    if not resolved.exists():
+    if resolved.exists():
+        if resolved.read_text(encoding="utf-8") == content:
+            return False
+        mode = stat.S_IMODE(resolved.stat().st_mode)
+    else:
         resolved.parent.mkdir(parents=True, exist_ok=True)
-        resolved.write_text(content, encoding="utf-8")
-        return True
-
-    if resolved.read_text(encoding="utf-8") == content:
-        return False
-
-    mode = stat.S_IMODE(resolved.stat().st_mode)
+        mode = 0o600
 
     fd, tmp_path = tempfile.mkstemp(
         dir=str(resolved.parent), prefix=".rapid-mlx-", suffix=".tmp"
@@ -469,23 +474,18 @@ def _merge_yaml(
     if not isinstance(existing, dict):
         if isinstance(existing, list):
             # Cordis patch layers (dsh >= 0.2) are a top-level LIST of
-            # ``{id, config}`` entries, not a mapping. Merge by entry id:
-            # template entries replace same-id entries, everything else
-            # survives in place. A list existing beside a mapping template
+            # ``{id, config}`` entries, not a mapping. Same-id layers are
+            # merged in place (their ``config`` recursively — ``llm-pi-ai``
+            # also holds the user's other providers), everything else
+            # survives untouched. A list existing beside a mapping template
             # (or vice versa) is a real conflict, not a merge.
             if not isinstance(template, list):
                 raise _MergeParseError(
                     "existing config is a patch-layer list but the rendered "
                     "template is a YAML mapping"
                 )
-            template_ids = {
-                layer.get("id") for layer in template if isinstance(layer, dict)
-            }
-            merged_layers = [
-                layer
-                for layer in existing
-                if not (isinstance(layer, dict) and layer.get("id") in template_ids)
-            ] + list(template)
+
+            merged_layers = merge_patch_layers(existing, template)
             dumped: str = yaml.dump(
                 merged_layers, default_flow_style=False, sort_keys=False
             )

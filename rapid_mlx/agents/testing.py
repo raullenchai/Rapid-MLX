@@ -931,6 +931,16 @@ def _workspace_or(cwd: str | None):
             yield workdir
 
 
+# XDG base directories and their spec-default locations under HOME. The test
+# runner pins each one inside the throwaway home (see ``AgentTestRunner.run``).
+_XDG_BASE_DIRS: tuple[tuple[str, str], ...] = (
+    ("XDG_CONFIG_HOME", ".config"),
+    ("XDG_DATA_HOME", ".local/share"),
+    ("XDG_STATE_HOME", ".local/state"),
+    ("XDG_CACHE_HOME", ".cache"),
+)
+
+
 def _agent_query(
     binary: str,
     query_cmd: str,
@@ -1610,6 +1620,22 @@ class AgentTestRunner:
         )
         env_overrides = dict(env_overrides or {})
         env_overrides["HOME"] = isolated_config_home.name
+        # HOME alone is not a boundary for XDG-aware CLIs: OpenCode (and the
+        # Qwen Code / Kilo family) resolve config, data, state and cache via
+        # XDG_*_HOME first, so an operator who exports XDG_CONFIG_HOME would
+        # have the child read their REAL global config — plugins, remote
+        # provider credentials — and write state outside the throwaway home.
+        # Pin every XDG base directory to its default location inside it.
+        isolated_root = Path(isolated_config_home.name)
+        for xdg_key, xdg_rel in _XDG_BASE_DIRS:
+            env_overrides[xdg_key] = str(isolated_root / xdg_rel)
+        # OpenCode also honours explicit config relocations; an inherited
+        # OPENCODE_CONFIG / OPENCODE_CONFIG_DIR would bypass the redirected
+        # XDG tree, so point both at the file this sweep just generated.
+        if self.profile.name == "opencode" and active_config.path:
+            generated = isolated_root / Path(active_config.path).relative_to("~")
+            env_overrides["OPENCODE_CONFIG"] = str(generated)
+            env_overrides["OPENCODE_CONFIG_DIR"] = str(generated.parent)
         # Claude Code documents CLAUDE_CONFIG_DIR as its supported config
         # relocation.  Set it even though HOME is redirected: some packaged
         # launchers resolve the account home before applying the child env.

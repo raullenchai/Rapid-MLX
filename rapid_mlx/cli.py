@@ -12853,12 +12853,14 @@ def agents_command(args):
             # User specified model — look up *that* model's context window
             context_length = fetch_context_window(base_url, model_id)
 
-        # Claude Code, Continue and DSH have first-class setup flows. They
+        # Claude Code, Continue, DSH and pi have first-class setup flows. They
         # preview an exact diff, require consent, back up existing config,
         # write atomically, and verify the server afterwards. The generic
         # profile writer below still lacks the diff/consent/backup half, but
         # it does honour --dry-run, so a preview never writes on either path.
-        if profile.name in {"claude-code", "continue", "deepseek-harness"}:
+        from rapid_mlx.agents.setup import FIRST_CLASS_SETUP_AGENTS
+
+        if profile.name in FIRST_CLASS_SETUP_AGENTS:
             from rapid_mlx.agents.setup import (
                 apply_setup_plan,
                 build_setup_plan,

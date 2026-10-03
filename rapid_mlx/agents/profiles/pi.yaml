@@ -8,9 +8,11 @@ stars: 111777
 # from <agent-dir>/models.json, the agent dir defaulting to ~/.pi/agent.
 # PI_CODING_AGENT_DIR relocates the whole agent dir (pi docs:
 # environment-variables.md) — the same contract as CODEX_HOME / HERMES_HOME,
-# so --setup can target a throwaway dir in tests. The adapter's dict-merge
-# keeps any other providers the user already has in models.json; only
-# providers.rapid-mlx is (re)written.
+# so --setup can target a throwaway dir in tests. `agents pi --setup` is a
+# first-class flow (rapid_mlx/agents/setup.py renders THIS template): diff
+# preview, consent, timestamped backup, atomic 0600 write. The merge keeps
+# the user's other providers and merges providers.rapid-mlx.models by `id`,
+# so their other models under this provider survive too.
 #
 # Verified 2026-10-02 (harness-lab, M4 Pro, rapid-mlx 0.15.4 /
 # qwen3.6-35b-4bit): pi 1.0.0 passed T1–T6 plus the follow-up turn with this

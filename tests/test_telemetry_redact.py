@@ -355,8 +355,8 @@ def test_normalize_caller_agent_buckets_known(ua, expected):
             "codex_exec/0.160.0 (Mac OS 26.5.1; arm64) unknown (codex_exec; 0.160.0)",
             "codex",
         ),
-        # The interactive TUI is expected to send codex_cli_rs/…; the codex_
-        # marker covers both product tokens.
+        # The interactive TUI is expected to send codex_cli_rs/…; the leading
+        # codex_ prefix covers both product tokens.
         ("codex_cli_rs/0.160.0 (Mac OS 26.5.1; arm64)", "codex"),
         (
             "opencode/1.18.34 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14",
@@ -389,6 +389,33 @@ def test_normalize_caller_agent_buckets_real_harness_user_agents(ua, expected):
 )
 def test_normalize_caller_agent_leaves_unattributable_uas_as_other(ua):
     assert normalize_caller_agent(ua) == "other"
+
+
+@pytest.mark.parametrize(
+    "ua",
+    [
+        # The harness markers are LEADING-token rules (#4056 review): a
+        # wrapper or comment that merely mentions the product is not it.
+        "my-opencode/compatibility-test",
+        "proxy (+https://github.com/anomalyco/opencode/)",
+        "notqwencode/1",
+        "my_codex_exec_wrapper/1",
+        "relay/1.0 (+https://github.com/deepseek-ai/deepseek-harness)",
+    ],
+)
+def test_normalize_caller_agent_harness_markers_need_a_leading_token(ua):
+    assert normalize_caller_agent(ua) == "other"
+
+
+def test_normalize_caller_agent_leading_harness_token_beats_later_markers():
+    # dsh's real UA embeds a URL; when another marker (here ``cline``)
+    # appears later in the UA, the leading product token must still win.
+    assert (
+        normalize_caller_agent(
+            "deepseek-harness/0.2.0-rc.2 (+https://github.com/cline/fork)"
+        )
+        == "deepseek-harness"
+    )
 
 
 def test_normalize_caller_agent_prefix_marker_is_case_insensitive():

@@ -154,8 +154,8 @@ def normalize_model_path(path: str) -> str:
 # (codex_exec; 0.160.0)`` and opencode 1.18.34 sends ``opencode/1.18.34
 # ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14`` — an earlier audit
 # recorded these two as carrying no product UA, which is out of date; both
-# now lead with a product token (the ``codex_`` marker also covers the
-# interactive TUI's ``codex_cli_rs/…``). qwen-code 0.24.7 sends
+# now lead with a product token (the interactive codex TUI sends
+# ``codex_cli_rs/…``). qwen-code 0.24.7 sends
 # ``QwenCode/0.24.7 (darwin; arm64)`` and dsh 0.2.0-rc.2 sends
 # ``deepseek-harness/0.2.0-rc.2 (+https://github.com/deepseek-ai/...)``.
 #
@@ -174,12 +174,6 @@ _CALLER_AGENT_MARKERS: tuple[tuple[str, str], ...] = (
     ("aider", "aider"),
     ("cline", "cline"),
     ("continue", "continue"),
-    # Agent harnesses verified against their real 2026-10-02 UAs — see the
-    # block comment above for the exact strings and the cline/goose limits.
-    ("codex_", "codex"),
-    ("opencode/", "opencode"),
-    ("qwencode", "qwen-code"),
-    ("deepseek-harness", "deepseek-harness"),
     ("openai-python", "openai-python"),
     ("openai/python", "openai-python"),
     ("openai-node", "openai-node"),
@@ -212,10 +206,24 @@ _CALLER_AGENT_MARKERS: tuple[tuple[str, str], ...] = (
 )
 
 
-# Prefix markers — the UA must START with the token, never contain it. The
-# only entry is pi: its UA is ``pi (<os> <ver>; <arch>)`` and a substring
-# "pi" or even "pi (" would also match ``api (…)``-style tokens.
-_CALLER_AGENT_PREFIXES: tuple[tuple[str, str], ...] = (("pi (", "pi"),)
+# Prefix markers — the UA must START with the token, never contain it. Every
+# agent harness verified against its real 2026-10-02 UA (see the block
+# comment above for the exact strings and the cline/goose limits) leads with
+# its product token, so a leading-token match is both sufficient and the only
+# safe rule: a substring would also claim wrappers and comments such as
+# ``my-opencode/1``, ``proxy (+https://github.com/anomalyco/opencode/)``,
+# ``notqwencode/1`` or ``my_codex_exec_wrapper/1`` — and pi's ``pi (`` would
+# match any ``api (…)``-style token. Checked before the substring table, so a
+# real leading product token also beats an SDK marker later in the UA.
+_CALLER_AGENT_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("pi (", "pi"),
+    # Codex's originator token: codex_exec/… (exec mode), codex_cli_rs/…
+    # (interactive TUI) and its other codex_<surface>/… originators.
+    ("codex_", "codex"),
+    ("opencode/", "opencode"),
+    ("qwencode/", "qwen-code"),
+    ("deepseek-harness/", "deepseek-harness"),
+)
 
 
 def normalize_caller_agent(

@@ -237,9 +237,10 @@ class TestMergeOnWrite:
     def test_yaml_patch_layer_list_merges_by_id(self, tmp_path):
         """dsh >= 0.2 patch layers are a top-level LIST of {id, config}.
 
-        Template entries replace same-id entries; layers the user added
-        survive in place. A list beside a mapping is a conflict, not a
-        merge (issue #4040).
+        Same-id entries merge their ``config`` recursively (the shared
+        ``llm-pi-ai`` layer also holds the user's other providers — #4056
+        review); layers the user added survive in place. A list beside a
+        mapping is a conflict, not a merge (issue #4040).
         """
         existing = tmp_path / "cordis.patch.yml"
         existing.write_text(
@@ -252,7 +253,7 @@ class TestMergeOnWrite:
         merged = yaml.safe_load(_merge_file_config(existing, template, "yaml"))
         assert merged == [
             {"id": "my-own-layer", "config": []},
-            {"id": "llm-pi-ai", "config": {"fresh": True}},
+            {"id": "llm-pi-ai", "config": {"stale": True, "fresh": True}},
         ]
 
         # Shape conflicts must fail loudly, never silently overwrite.

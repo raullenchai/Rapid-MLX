@@ -14,11 +14,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from rapid_mlx.agents.config_merge import deep_merge, merge_patch_layers
 from rapid_mlx.agents.telemetry import (
     track_agent_configure_failed,
 )
 from rapid_mlx.launch import _common as launch_common
 from rapid_mlx.launch import claude_code, continue_dev
+
+# Agents whose ``--setup`` goes through the plan/apply flow below: an exact
+# diff preview, consent (or --yes), a timestamped backup of the existing file
+# and an atomic write. Every CLI entry point routes on this one set.
+FIRST_CLASS_SETUP_AGENTS = frozenset(
+    {"claude-code", "continue", "deepseek-harness", "pi"}
+)
 
 
 @dataclass(frozen=True)
@@ -138,31 +146,6 @@ def _load_patch_layers(
     return value
 
 
-def _merge_patch_layers(existing: list[Any], incoming: list[Any]) -> list[Any]:
-    """Merge Cordis patch layers by entry ``id``.
-
-    Our layers replace same-id entries; anything else the user keeps in the
-    file survives untouched, in place, ahead of the (re)written layers.
-    """
-    incoming_ids = {layer.get("id") for layer in incoming if isinstance(layer, dict)}
-    kept = [
-        layer
-        for layer in existing
-        if not (isinstance(layer, dict) and layer.get("id") in incoming_ids)
-    ]
-    return [*kept, *incoming]
-
-
-def _merge_dict(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
-    merged = dict(base)
-    for key, value in patch.items():
-        if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = _merge_dict(merged[key], value)
-        else:
-            merged[key] = value
-    return merged
-
-
 def _dsh_patch_path() -> Path:
     """dsh's home-level Cordis patch layer: ``$DSH_HOME/cordis.patch.yml``.
 
@@ -178,6 +161,25 @@ def _dsh_patch_path() -> Path:
     configured = os.environ.get("DSH_HOME", "").strip()
     root = Path(configured).expanduser() if configured else Path.home() / ".dsh"
     return root / "cordis.patch.yml"
+
+
+def _pi_profile() -> Any:
+    from rapid_mlx.agents import get_profile
+
+    profile = get_profile("pi")
+    assert profile is not None, "the pi profile ships with rapid-mlx"
+    return profile
+
+
+def _pi_models_path() -> Path:
+    """pi's ``<agent-dir>/models.json``, honouring ``PI_CODING_AGENT_DIR``.
+
+    Resolved through the same helper the generic writer uses, so the
+    relocation contract lives in one place (the profile's ``home_env``).
+    """
+    from rapid_mlx.agents.adapter import _resolve_config_path
+
+    return _resolve_config_path(_pi_profile().get_config_for_version(None))
 
 
 def _atomic_write_secure_text(path: Path, text: str) -> None:
@@ -309,7 +311,7 @@ def build_setup_plan(
             "DeepSeek Harness",
             path,
             before,
-            _merge_patch_layers(before, patch),
+            merge_patch_layers(before, patch),
             base_url,
             model,
             "yaml",
@@ -317,8 +319,35 @@ def build_setup_plan(
             credentials_before,
             credentials_after,
         )
-    # Reserved for defensive callers. The CLI only routes the three
-    # first-class profiles here, so this outcome is currently unreachable.
+    if agent == "pi":
+        path = _pi_models_path()
+        try:
+            loaded_pi = launch_common.load_json_lenient(path)
+        except json.JSONDecodeError:
+            if emit_telemetry:
+                track_agent_configure_failed("config_invalid", "pi")
+            raise
+        if not isinstance(loaded_pi, dict):
+            if emit_telemetry:
+                track_agent_configure_failed("config_invalid", "pi")
+            raise ValueError(f"{path} must contain a JSON object")
+        # Render the shipped profile template so the plan and the profile can
+        # never drift; merge so the user's other providers AND their other
+        # models under providers.rapid-mlx survive (models merge by ``id``).
+        template = json.loads(
+            _pi_profile().render_config(base_url, model, context_length=context_length)
+        )
+        return SetupPlan(
+            "pi",
+            "Pi Coding Agent",
+            path,
+            loaded_pi,
+            deep_merge(loaded_pi, template),
+            base_url,
+            model,
+        )
+    # Reserved for defensive callers. The CLIs only route
+    # FIRST_CLASS_SETUP_AGENTS here, so this outcome is currently unreachable.
     if emit_telemetry:
         track_agent_configure_failed("no_safe_setup_flow", agent)
     raise ValueError(f"{agent} does not have a first-class safe setup flow")
