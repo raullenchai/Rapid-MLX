@@ -200,6 +200,10 @@ class AgentProfile:
                     "{rapid_api_key}",
                     "{env:RAPID_MLX_API_KEY}" if has_rapid_key else "not-needed",
                 )
+                .replace(
+                    "{pi_api_key}",
+                    "$RAPID_MLX_API_KEY" if has_rapid_key else "not-needed",
+                )
             )
 
         if cfg.type == "env":
