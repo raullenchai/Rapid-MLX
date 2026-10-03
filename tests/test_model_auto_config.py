@@ -2854,6 +2854,23 @@ class TestCheckpointMetadataFallback:
         assert config is not None
         assert config.tool_call_parser != "qwen3_coder_xml"
 
+    def test_qwen38_checkpoint_inside_directory_named_snapshots(self, monkeypatch):
+        """A storage parent called snapshots must not hide the checkpoint name."""
+        monkeypatch.setattr(
+            auto_config_mod,
+            "read_model_metadata",
+            lambda _name: self._metadata(
+                {"model_type": "qwen3_5", "layer_types": ["linear_attention"]},
+                None,
+            ),
+        )
+
+        config = detect_model_config("/mnt/snapshots/Qwen3.8-9B-heretic-4bit")
+
+        assert config is not None
+        assert config.tool_call_parser == "qwen3_coder_xml"
+        assert config.reasoning_parser == "qwen3"
+
     def test_incomplete_template_is_not_advertised_as_native_tools(self, monkeypatch):
         # The template PARSES successfully (``{% endif %}`` is present), but the
         # XML tool contract is genuinely INCOMPLETE: it opens
