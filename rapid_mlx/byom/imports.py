@@ -101,6 +101,12 @@ def list_imports() -> list[ImportedModel]:
     except OSError:
         return found
     for entry in entries:
+        # Internal recovery/lock directories are not published imports.  A
+        # process can die after a successful replacement but before its
+        # ``.old-*`` backup is removed, so filtering by manifest alone would
+        # expose that backup as another model in ``models --cached``.
+        if not _valid_name(entry.name) or entry.is_symlink() or not entry.is_dir():
+            continue
         try:
             manifest = json.loads((entry / MANIFEST).read_text(encoding="utf-8"))
             size = sum(f.stat().st_size for f in entry.iterdir() if f.is_file())
@@ -458,8 +464,14 @@ def execute(
     root.mkdir(parents=True, exist_ok=True)
     final = root / plan.name
     with _Lock(root / ".locks" / f"{plan.name}.lock"):
+        temps = list(root.glob(f".tmp-{plan.name}-*"))
+        backups = sorted(root.glob(f".old-{plan.name}-*"))
         existing = _existing_key(final)
         if existing == plan.key:
+            # The published model won the previous atomic replacement.  A
+            # crash may still have left its full-size old copy or temp dir.
+            for stale in [*temps, *backups]:
+                shutil.rmtree(stale, ignore_errors=True)
             return final, True
         if final.exists() and not force:
             raise ImportRefusedError(
@@ -470,13 +482,14 @@ def execute(
         # We hold the lock: any temp dir for this name is an abandoned run,
         # and a backup without a published import is a --force replacement
         # that died between its two renames — put it back.
-        backups = sorted(root.glob(f".old-{plan.name}-*"))
         if backups and not final.exists():
             os.rename(backups.pop(), final)
             existing = _existing_key(final)
             if existing == plan.key:
+                for stale in [*temps, *backups]:
+                    shutil.rmtree(stale, ignore_errors=True)
                 return final, True
-        for stale in [*root.glob(f".tmp-{plan.name}-*"), *backups]:
+        for stale in [*temps, *backups]:
             shutil.rmtree(stale, ignore_errors=True)
         tmp = Path(tempfile.mkdtemp(prefix=f".tmp-{plan.name}-", dir=root))
         try:
@@ -509,7 +522,18 @@ def execute(
                 # two renames leaves a recoverable copy (restored above).
                 backup = root / f".old-{plan.name}-{os.getpid()}-{time.time_ns()}"
                 os.rename(final, backup)
-                os.rename(out, final)
+                try:
+                    os.rename(out, final)
+                except BaseException:
+                    # Restore immediately for ordinary I/O failures and
+                    # Ctrl-C in the narrow publish window.  SIGKILL cannot run
+                    # this handler; the next invocation recovers the backup.
+                    try:
+                        if not final.exists() and backup.exists():
+                            os.rename(backup, final)
+                    except OSError:
+                        pass
+                    raise
                 shutil.rmtree(backup, ignore_errors=True)
             else:
                 os.rename(out, final)

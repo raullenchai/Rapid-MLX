@@ -673,6 +673,36 @@ def test_force_replacement_recovery_then_rebuild(home):
     assert json.loads((final / im.MANIFEST).read_text())["key"] == plan.key
 
 
+def test_same_key_reuse_cleans_orphans_and_listing_hides_them(home):
+    plan = _plan()
+    final = _publish(home, plan.name, key=plan.key)
+    backup = _publish(home, f".old-{plan.name}-1-2", key="older")
+    stale = home / "imports" / f".tmp-{plan.name}-abandoned"
+    stale.mkdir()
+
+    assert [item.path for item in im.list_imports()] == [final]
+    assert _execute(plan, []) == (final, True)
+    assert not backup.exists() and not stale.exists()
+
+
+def test_force_replacement_publish_failure_restores_old(home, monkeypatch):
+    plan = _plan()
+    old = _publish(home, plan.name, key="older")
+    real_rename = im.os.rename
+
+    def fail_publish(source, destination):
+        if Path(source).name == "model" and Path(destination) == old:
+            raise OSError("publish failed")
+        return real_rename(source, destination)
+
+    monkeypatch.setattr(im.os, "rename", fail_publish)
+    with pytest.raises(OSError, match="publish failed"):
+        _execute(plan, [], force=True)
+    assert json.loads((old / im.MANIFEST).read_text())["key"] == "older"
+    assert not list((home / "imports").glob(".old-*"))
+    assert not list((home / "imports").glob(".tmp-*"))
+
+
 def test_alias_set_refuses_an_import_name(home, monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("RAPID_MLX_USER_ALIASES_FILE", str(tmp_path / "ua.json"))
     _publish(home, "my-ft-4bit")
