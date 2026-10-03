@@ -5423,72 +5423,6 @@ def serve_command(args):
     _preflight_native_mtp_or_exit(args)
     _companion_dspark_pair = _preflight_companion_dspark_or_exit(args)
 
-    # R-10 (PyPI 0.8.6 dogfood): same boot-guard shape for vision /
-    # multimodal aliases. ``mlx-vlm`` lives behind the ``[vision]``
-    # extra, but ``rapid-mlx serve ui-tars-1.5-7b-4bit`` on a fresh
-    # ``pip install rapid-mlx`` previously fell into the engine load
-    # path BEFORE the missing-dep error surfaced (deep ImportError
-    # after weight download + alias resolution). Probe here so the
-    # operator sees an actionable hint before the long download starts.
-    #
-    # 0.10.16 dogfood follow-up (④): consult the SAME resolved-lane signal
-    # the engine uses (#1178 ``resolve_serving_lane`` + ``_auto_text_
-    # fallback``) instead of the raw ``is_mllm_model`` classification. A
-    # multimodal alias whose LANGUAGE backbone is hybrid/linear-attention
-    # (Qwen3.6 GatedDeltaNet) auto-downgrades to the text-only mlx-lm lane
-    # and NEVER touches mlx-vlm — forcing a base-wheel user into a ~1 GB
-    # ``[vision]`` install for a model that then serves text-only was the
-    # dogfood pain point. ``_serve_will_run_on_mllm_lane`` is True only when
-    # the model will actually run on the MLLM lane, so:
-    #   * genuine VLM (qwen3-vl, non-hybrid backbone) → still requires it,
-    #   * hybrid-backbone VLM (qwen3.6) → boots text-only from the base wheel,
-    #   * ``--mllm`` force-on / ``--no-mllm`` escape hatch → honoured by
-    #     ``resolve_serving_lane``, matching the engine-side semantics.
-    # An uncached checkpoint (config not yet materialized) probes "not
-    # hybrid" and keeps the SAFE ``[vision]``-required default; the guard's
-    # message points at ``--no-mllm`` for a text-capable backbone. For the
-    # degrade probes below (CACHE-ONLY per the resolver's offline contract)
-    # the boot guard materializes config.json ONCE, under the shared Hub
-    # deadline, so a fresh install classifies instead of failing closed —
-    # and repeated probes never refetch. Skipped when a degrade could not
-    # be consulted anyway (explicit --mllm / --no-mllm / spec-decode).
-    from .api.utils import _prefetch_config_for_degrade_probe
-    from .models.mllm import VisionRuntimeStatus, vision_runtime_status
-
-    requested_spec_decode = getattr(args, "spec_decode", "none") or "none"
-    if (
-        vision_runtime_status()[0] is VisionRuntimeStatus.ABSENT
-        and not getattr(args, "mllm", False)
-        and not getattr(args, "no_mllm", False)
-        and requested_spec_decode in (None, "none")
-        and not getattr(args, "enable_mtp", False)
-        and not getattr(args, "force_spec_decode", False)
-    ):
-        # A catalog alias probes its profile's hf_path; a direct Hugging Face
-        # repo id (no alias profile) probes ``args.model`` itself — the SAME
-        # ref the guard's resolver reads below. Local paths and Hub offline
-        # mode are no-ops inside the helper.
-        _prefetch_config_for_degrade_probe(
-            (
-                _serve_profile.hf_path
-                or getattr(args, "_original_alias", None)
-                or args.model
-            )
-            if _serve_profile is not None
-            else args.model
-        )
-    _warn_vision_text_only_degrade(_serve_profile, args=args)
-    if _serve_will_run_on_mllm_lane(args):
-        from .models.mllm import require_mlx_vlm_or_exit
-
-        _run_optional_runtime_guard(
-            require_mlx_vlm_or_exit,
-            args.model,
-            alias_or_path=getattr(args, "_original_alias", None) or args.model,
-            assume_yes=bool(getattr(args, "yes", False)),
-            text_diffusion=_alias_modality(args.model) == "text-diffusion",
-        )
-
     # R6-H4 (Eva 0.8.7 dogfood): same boot-guard shape for audio aliases.
     # ``mlx-audio`` lives behind the ``[audio]`` extra; pre-fix
     # ``rapid-mlx serve kokoro`` (or whisper/parakeet/chatterbox/...) on
@@ -5622,6 +5556,79 @@ def serve_command(args):
         )
         _serve_audio_mode(args, audio_entry)
         return
+
+    # R-10 (PyPI 0.8.6 dogfood): same boot-guard shape for vision /
+    # multimodal aliases. ``mlx-vlm`` lives behind the ``[vision]``
+    # extra, but ``rapid-mlx serve ui-tars-1.5-7b-4bit`` on a fresh
+    # ``pip install rapid-mlx`` previously fell into the engine load
+    # path BEFORE the missing-dep error surfaced (deep ImportError
+    # after weight download + alias resolution). Probe here so the
+    # operator sees an actionable hint before the long download starts.
+    #
+    # 0.10.16 dogfood follow-up (④): consult the SAME resolved-lane signal
+    # the engine uses (#1178 ``resolve_serving_lane`` + ``_auto_text_
+    # fallback``) instead of the raw ``is_mllm_model`` classification. A
+    # multimodal alias whose LANGUAGE backbone is hybrid/linear-attention
+    # (Qwen3.6 GatedDeltaNet) auto-downgrades to the text-only mlx-lm lane
+    # and NEVER touches mlx-vlm — forcing a base-wheel user into a ~1 GB
+    # ``[vision]`` install for a model that then serves text-only was the
+    # dogfood pain point. ``_serve_will_run_on_mllm_lane`` is True only when
+    # the model will actually run on the MLLM lane, so:
+    #   * genuine VLM (qwen3-vl, non-hybrid backbone) → still requires it,
+    #   * hybrid-backbone VLM (qwen3.6) → boots text-only from the base wheel,
+    #   * ``--mllm`` force-on / ``--no-mllm`` escape hatch → honoured by
+    #     ``resolve_serving_lane``, matching the engine-side semantics.
+    # An uncached checkpoint (config not yet materialized) probes "not
+    # hybrid" and keeps the SAFE ``[vision]``-required default; the guard's
+    # message points at ``--no-mllm`` for a text-capable backbone. For the
+    # degrade probes below (CACHE-ONLY per the resolver's offline contract)
+    # the boot guard materializes config.json ONCE, under the shared Hub
+    # deadline, so a fresh install classifies instead of failing closed —
+    # and repeated probes never refetch. Skipped when a degrade could not
+    # be consulted anyway (explicit --mllm / --no-mllm / spec-decode).
+    from .api.utils import _prefetch_config_for_degrade_probe
+    from .models.mllm import VisionRuntimeStatus, vision_runtime_status
+
+    requested_spec_decode = getattr(args, "spec_decode", "none") or "none"
+    catalog_degrade_candidate = _serve_profile is None or (
+        _serve_profile.modality == "text"
+        and _serve_profile.supports_image_input
+        and not _serve_profile.is_text_only
+    )
+    if (
+        catalog_degrade_candidate
+        and vision_runtime_status()[0] is VisionRuntimeStatus.ABSENT
+        and not getattr(args, "mllm", False)
+        and not getattr(args, "no_mllm", False)
+        and requested_spec_decode in (None, "none")
+        and not getattr(args, "enable_mtp", False)
+        and not getattr(args, "force_spec_decode", False)
+    ):
+        # A vision-capable catalog alias probes its profile's hf_path; an
+        # unknown direct Hugging Face repo id probes ``args.model`` itself so
+        # config evidence can classify it. Pure-text/non-text catalog entries
+        # never need this VLM-only prefetch. Local paths, warm config caches,
+        # and Hub offline mode are no-ops inside the helper.
+        _prefetch_config_for_degrade_probe(
+            (
+                _serve_profile.hf_path
+                or getattr(args, "_original_alias", None)
+                or args.model
+            )
+            if _serve_profile is not None
+            else args.model
+        )
+    _warn_vision_text_only_degrade(_serve_profile, args=args)
+    if _serve_will_run_on_mllm_lane(args):
+        from .models.mllm import require_mlx_vlm_or_exit
+
+        _run_optional_runtime_guard(
+            require_mlx_vlm_or_exit,
+            args.model,
+            alias_or_path=getattr(args, "_original_alias", None) or args.model,
+            assume_yes=bool(getattr(args, "yes", False)),
+            text_diffusion=_alias_modality(args.model) == "text-diffusion",
+        )
 
     # Interactive auto-upgrade prompt — when serve runs interactively and a
     # newer release is available, ask once before booting the model. Honors

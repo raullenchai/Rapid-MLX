@@ -115,11 +115,15 @@ class _ReachedPastVisionGuardError(Exception):
 
 def _stub_post_guard_sentinel(monkeypatch) -> None:
     import rapid_mlx.audio.probe as audio_probe
+    from rapid_mlx import _version_check, cli
 
-    def _raise(_name):
+    monkeypatch.setattr(audio_probe, "is_audio_model_alias", lambda _name: False)
+    monkeypatch.setattr(cli, "_resolve_audio_model_for_serve", lambda _name: None)
+
+    def _raise():
         raise _ReachedPastVisionGuardError()
 
-    monkeypatch.setattr(audio_probe, "is_audio_model_alias", _raise)
+    monkeypatch.setattr(_version_check, "prompt_upgrade_if_available", _raise)
 
 
 def _stub_boot_prefetch(monkeypatch) -> list[str]:
@@ -329,6 +333,55 @@ def test_base_install_direct_repo_unlisted_arch_keeps_guard(monkeypatch, capsys)
     err = capsys.readouterr().err
     assert "[vision]" in err
     assert "warning: vision runtime absent" not in err
+
+
+def test_catalog_text_model_never_prefetches_for_vision_degrade(monkeypatch):
+    """A known text-only catalog lane is not a VLM degrade candidate.
+
+    In particular, a base-wheel text serve must reach the normal version /
+    download path without opening the new config-prefetch network window.
+    """
+    from rapid_mlx import _version_check, cli
+
+    fetched = _stub_boot_prefetch(monkeypatch)
+    _mock_vision_absent(monkeypatch)
+    _patch_lane_probes(monkeypatch, is_mllm=False, cache_mode=None)
+    monkeypatch.setattr(cli, "_resolve_audio_model_for_serve", lambda _name: None)
+
+    def _reached_normal_boot():
+        raise _ReachedPastVisionGuardError()
+
+    monkeypatch.setattr(
+        _version_check, "prompt_upgrade_if_available", _reached_normal_boot
+    )
+
+    with pytest.raises(_ReachedPastVisionGuardError):
+        cli.serve_command(_args("qwen3.5-4b-4bit"))
+
+    assert fetched == []
+
+
+def test_audio_fork_never_prefetches_for_vision_degrade(monkeypatch):
+    """Audio dispatch returns before the VLM-only config prefetch."""
+    from rapid_mlx import cli
+
+    fetched = _stub_boot_prefetch(monkeypatch)
+    _mock_vision_absent(monkeypatch)
+    monkeypatch.setattr(cli, "_run_optional_runtime_guard", lambda *_a, **_kw: None)
+    monkeypatch.setattr(cli, "_offline_hub_mode_active", lambda: False)
+    served = []
+    monkeypatch.setattr(
+        cli, "_serve_audio_mode", lambda args, entry: served.append((args, entry))
+    )
+
+    args = _args("kokoro")
+    args.host = "127.0.0.1"
+    args.port = 8000
+    args.listen_fd = None
+    cli.serve_command(args)
+
+    assert len(served) == 1
+    assert fetched == []
 
 
 def test_direct_repo_explicit_flags_skip_prefetch_and_warning(monkeypatch, capsys):
@@ -816,6 +869,7 @@ def test_degrade_probe_prefetch_bounded_once_and_exact_repo(monkeypatch):
     from rapid_mlx.api import utils as api_utils
 
     monkeypatch.setattr(api_utils, "_DEGRADE_CONFIG_PREFETCHED", set())
+    monkeypatch.setattr(api_utils, "read_model_metadata", lambda _name: None)
     # The hermetic suite pins HF_HUB_OFFLINE=1; the prefetch's offline
     # short-circuit is pinned separately (see the skips test below).
     monkeypatch.setattr(model_metadata, "hub_offline_mode_active", lambda: False)
@@ -849,6 +903,32 @@ def test_degrade_probe_prefetch_bounded_once_and_exact_repo(monkeypatch):
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", _boom)
     monkeypatch.setattr(api_utils, "_DEGRADE_CONFIG_PREFETCHED", set())
     api_utils._prefetch_config_for_degrade_probe("org/unreachable")  # must not raise
+
+
+def test_degrade_probe_prefetch_skips_warm_cached_config(monkeypatch):
+    """A warm VLM config already contains every cache-only routing input, so
+    serve must not revalidate it through the Hub on each new process."""
+    import huggingface_hub
+
+    from rapid_mlx import model_metadata
+    from rapid_mlx.api import utils as api_utils
+
+    monkeypatch.setattr(api_utils, "_DEGRADE_CONFIG_PREFETCHED", set())
+    monkeypatch.setattr(
+        api_utils,
+        "read_model_metadata",
+        lambda _name: _meta(GEMMA4_VLM_CONFIG),
+    )
+    monkeypatch.setattr(model_metadata, "hub_offline_mode_active", lambda: False)
+
+    def _no_network(*_args, **_kwargs):
+        raise AssertionError("warm config prefetch must stay network-free")
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", _no_network)
+    api_utils._prefetch_config_for_degrade_probe(
+        "mlx-community/gemma-4-26b-a4b-it-4bit"
+    )
+    assert not api_utils._DEGRADE_CONFIG_PREFETCHED
 
 
 def test_degrade_probe_prefetch_skips_local_dir_and_offline(monkeypatch, tmp_path):

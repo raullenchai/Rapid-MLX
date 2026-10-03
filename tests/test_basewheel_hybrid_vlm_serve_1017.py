@@ -138,8 +138,7 @@ def test_helper_non_vlm_does_not_run_on_mllm_lane(monkeypatch):
 
 
 class _ReachedPastVisionGuardError(Exception):
-    """Sentinel raised by the stubbed audio probe that immediately follows
-    the vision guard — proves the vision guard did NOT sys.exit(2)."""
+    """Sentinel proving the vision guard did not exit first."""
 
 
 def _mock_mllm_absent(monkeypatch):
@@ -153,15 +152,17 @@ def _mock_mllm_absent(monkeypatch):
 
 
 def _stub_post_guard_sentinel(monkeypatch):
-    """Make the audio boot guard (the very next step after the vision guard)
-    raise a sentinel so ``serve_command`` stops right there — we only care
-    whether the vision guard let us through."""
+    """Stop at the normal version prompt after the non-text forks and guard."""
     import rapid_mlx.audio.probe as audio_probe
+    from rapid_mlx import _version_check, cli
 
-    def _raise(_name):
+    monkeypatch.setattr(audio_probe, "is_audio_model_alias", lambda _name: False)
+    monkeypatch.setattr(cli, "_resolve_audio_model_for_serve", lambda _name: None)
+
+    def _raise():
         raise _ReachedPastVisionGuardError()
 
-    monkeypatch.setattr(audio_probe, "is_audio_model_alias", _raise)
+    monkeypatch.setattr(_version_check, "prompt_upgrade_if_available", _raise)
 
 
 def test_serve_guard_hybrid_vlm_boots_without_vision_extra(monkeypatch, capsys):
@@ -192,9 +193,10 @@ def test_serve_guard_hybrid_vlm_boots_without_vision_extra(monkeypatch, capsys):
     with pytest.raises(_ReachedPastVisionGuardError):
         cli.serve_command(args)
 
-    # The boot guard materialized the config exactly once, for the profile's
-    # repo, before the (cache-only) degrade probes ran.
-    assert fetched == ["mlx-community/Qwen3.5-4B-MLX-4bit"]
+    # This catalog profile is not image-capable and the existing hybrid-lane
+    # verdict already owns its fallback, so the standard-VLM degrade prefetch
+    # must not open an unrelated Hub window.
+    assert fetched == []
 
     err = capsys.readouterr().err
     assert err.count("warning: vision runtime absent") == 1

@@ -1605,7 +1605,8 @@ def _prefetch_config_for_degrade_probe(model_ref: str) -> None:
     ``[vision]``-required guard. The CLI boot guard calls this ONCE before
     consulting them, bounded three ways:
 
-    * local paths and Hub offline mode never touch the network;
+    * local paths, an already-cached config, and Hub offline mode never touch
+      the network;
     * the fetch runs under :func:`call_with_deadline` with the shared
       ``_HF_RESOLVE_TIMEOUT_SECONDS`` — a deadline is the only thing that
       bounds a huggingface_hub metadata call;
@@ -1620,6 +1621,12 @@ def _prefetch_config_for_degrade_probe(model_ref: str) -> None:
     from ..model_metadata import hub_offline_mode_active
 
     if hub_offline_mode_active():
+        return
+    metadata = read_model_metadata(model_ref)
+    if metadata is not None and isinstance(metadata.config, dict):
+        # The routing probes are cache-only and already have all of the
+        # evidence they can use.  Avoid turning every warm serve into a Hub
+        # metadata request merely to re-materialize the same config.
         return
     _DEGRADE_CONFIG_PREFETCHED.add(model_ref)
     try:
