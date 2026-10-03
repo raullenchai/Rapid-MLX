@@ -99,6 +99,33 @@ def to_anthropic_tool_use_id(openai_id: str | None) -> str:
     return f"toolu_{secrets.token_hex(12)}"
 
 
+# Claude Code >= 2.1.287 appends a content-free token-budget counter to
+# ``messages`` as a ``role="system"`` item on EVERY request (issue #4036)::
+#
+#     {"role": "system", "content": [{"type": "text",
+#      "text": "<total_tokens>14982239 tokens left</total_tokens>",
+#      "cache_control": {"type": "ephemeral"}}]}
+#
+# It always trails the array, so ``--relocate-mid-conversation-system`` cannot
+# place it (no following user turn: the all-or-nothing rule hoists) and the
+# default hoist appends its per-request value to the leading system block. The
+# front of the prompt then differs on every turn and the hybrid prefix cache
+# misses every time: ~17.6k tokens re-prefilled, ~25 s TTFT per tool-loop turn
+# measured on qwen3.6-35b. It carries no instruction, only client bookkeeping
+# (same class as the ``x-anthropic-billing-header`` scrub below), so it is
+# dropped. Only a message whose ENTIRE text is the counter is dropped.
+_TOKEN_BUDGET_COUNTER_RE = re.compile(
+    r"<total_tokens>\s*\d[\d,]*\s+tokens?\s+left\s*</total_tokens>"
+)
+
+
+def _is_token_budget_counter(message: Message) -> bool:
+    """True for a system message whose whole text is Claude Code's counter."""
+    if message.role != "system" or not isinstance(message.content, str):
+        return False
+    return _TOKEN_BUDGET_COUNTER_RE.fullmatch(message.content.strip()) is not None
+
+
 def _relocate_mid_system_enabled() -> bool:
     """Whether to fold a mid-conversation system message into the next user turn.
 
@@ -243,6 +270,11 @@ def anthropic_to_openai(
     # override it. Trading that for a cache hit is not ours to do
     # silently, so the optimisation is opt-in and the shipped default is
     # the historical hoist.
+    #
+    # Claude Code's per-request token counter is dropped first (#4036): under
+    # either setting it would land in the leading block and change the front
+    # of the prompt on every turn.
+    messages = [m for m in messages if not _is_token_budget_counter(m)]
     messages = _merge_system_messages(
         messages, relocate_mid_conversation=_relocate_mid_system_enabled()
     )
