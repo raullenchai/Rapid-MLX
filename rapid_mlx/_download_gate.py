@@ -113,8 +113,20 @@ _EXTERNAL_REF_READ_TIMEOUT_SECONDS: float = 2.0
 _MAX_REF_BYTES: int = 256
 
 
-class CacheProbeTimeoutError(RuntimeError):
-    """The process could not read an external Hugging Face cache promptly."""
+class ExternalCacheProbeError(RuntimeError):
+    """An external Hugging Face cache could not be read during startup."""
+
+    def user_message(self) -> str:
+        return (
+            "Rapid-MLX cannot read the Hugging Face cache on the external "
+            f"volume ({self.path}). Grant this terminal or app access to that "
+            "volume in System Settings → Privacy & Security → Files & Folders, "
+            "then retry."
+        )
+
+
+class CacheProbeTimeoutError(ExternalCacheProbeError):
+    """The process could not read an external cache before the deadline."""
 
     def __init__(self, path: str, timeout: float):
         self.path = path
@@ -124,12 +136,14 @@ class CacheProbeTimeoutError(RuntimeError):
             f"within {timeout:g}s"
         )
 
-    def user_message(self) -> str:
-        return (
-            "Rapid-MLX cannot read the Hugging Face cache on the external "
-            f"volume ({self.path}). Grant this terminal or app access to that "
-            "volume in System Settings → Privacy & Security → Files & Folders, "
-            "then retry."
+
+class CacheProbePermissionError(ExternalCacheProbeError):
+    """The macOS volume helper was explicitly denied access to a cache ref."""
+
+    def __init__(self, path: str):
+        self.path = path
+        super().__init__(
+            f"permission denied reading Hugging Face cache metadata at {path!r}"
         )
 
 
@@ -912,6 +926,7 @@ def _read_ref_text(path: str, *, raise_on_timeout: bool) -> str | None:
             capture_output=True,
             check=False,
             text=True,
+            env={**os.environ, "LC_ALL": "C"},
             timeout=_EXTERNAL_REF_READ_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired as exc:
@@ -924,6 +939,11 @@ def _read_ref_text(path: str, *, raise_on_timeout: bool) -> str | None:
         return None
 
     if result.returncode != 0:
+        if raise_on_timeout and (
+            "Permission denied" in result.stderr
+            or "Operation not permitted" in result.stderr
+        ):
+            raise CacheProbePermissionError(os.path.realpath(path))
         return None
     return result.stdout
 
@@ -1017,7 +1037,7 @@ def _is_repo_cached(repo_id: str, *, raise_on_probe_timeout: bool) -> bool:
         # the gate re-prompts on every single serve.
         snap_dir = _descend_to_checkpoint(snap_dir, repo_id)
         return _snapshot_is_complete(snap_dir)
-    except CacheProbeTimeoutError:
+    except ExternalCacheProbeError:
         raise
     except Exception:
         pass

@@ -16693,7 +16693,7 @@ def main():
         _interactive = sys.stdin.isatty()
         if not _auto_yes and _interactive:
             from rapid_mlx._download_gate import (
-                CacheProbeTimeoutError,
+                ExternalCacheProbeError,
                 confirm_or_abort,
                 estimate_download_size_bytes,
                 require_repo_cache_probe,
@@ -16701,7 +16701,7 @@ def main():
 
             try:
                 _repo_cached = require_repo_cache_probe(args.model)
-            except CacheProbeTimeoutError as exc:
+            except ExternalCacheProbeError as exc:
                 print(f"\n  Error: {exc.user_message()}", file=sys.stderr)
                 raise SystemExit(2) from None
 

@@ -441,6 +441,43 @@ def test_external_ref_timeout_degrades_to_cache_miss_by_default(tmp_path, monkey
     assert gate._resolved_snapshot_sha(str(repo_root)) is None
 
 
+@pytest.mark.parametrize("error", ["Permission denied", "Operation not permitted"])
+def test_external_ref_permission_failure_is_actionable_only_in_strict_probe(
+    tmp_path, monkeypatch, error
+):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    _seed_refs_main(repo_root, "abc123")
+    monkeypatch.setattr(gate, "_is_macos_external_path", lambda _path: True)
+    monkeypatch.setattr(
+        gate.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=1, stdout="", stderr=f"head: refs/main: {error}"
+        ),
+    )
+
+    assert gate._resolved_snapshot_sha(str(repo_root)) is None
+    with pytest.raises(gate.CacheProbePermissionError) as raised:
+        gate._resolved_snapshot_sha(str(repo_root), raise_on_timeout=True)
+    assert "Files & Folders" in raised.value.user_message()
+
+
+def test_external_ref_absent_is_still_a_cache_miss(tmp_path, monkeypatch):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    monkeypatch.setattr(gate, "_is_macos_external_path", lambda _path: True)
+    monkeypatch.setattr(
+        gate.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=1, stdout="", stderr="head: refs/main: No such file or directory"
+        ),
+    )
+
+    assert gate._resolved_snapshot_sha(str(repo_root), raise_on_timeout=True) is None
+
+
 def test_external_ref_helper_reads_only_a_bounded_payload(tmp_path, monkeypatch):
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
@@ -458,6 +495,7 @@ def test_external_ref_helper_reads_only_a_bounded_payload(tmp_path, monkeypatch)
     assert gate._resolved_snapshot_sha(str(repo_root)) == "abc123"
     assert seen["command"][:3] == ("/usr/bin/head", "-c", "256")
     assert seen["kwargs"]["timeout"] == gate._EXTERNAL_REF_READ_TIMEOUT_SECONDS
+    assert seen["kwargs"]["env"]["LC_ALL"] == "C"
 
 
 def test_is_repo_cached_true_when_weight_file_present(tmp_path, monkeypatch):
