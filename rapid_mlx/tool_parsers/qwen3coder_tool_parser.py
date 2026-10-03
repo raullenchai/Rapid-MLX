@@ -134,7 +134,27 @@ class _MarkdownCodeTracker:
     def _result(self) -> bool:
         if self._fence is not None or _MARKDOWN_FENCE_RE.match(self._line):
             return True
-        return self._line.count("`") % 2 == 1
+        # A Markdown code span is delimited by matching backtick RUNS, not by
+        # an odd number of individual backticks.  In particular, ``code``
+        # uses a two-backtick opener; counting characters classified that as
+        # ordinary text and let the undeclared-tool scrubber delete examples
+        # written inside it (#4038).
+        opener_length: int | None = None
+        cursor = 0
+        while cursor < len(self._line):
+            start = self._line.find("`", cursor)
+            if start == -1:
+                break
+            end = start + 1
+            while end < len(self._line) and self._line[end] == "`":
+                end += 1
+            run_length = end - start
+            if opener_length is None:
+                opener_length = run_length
+            elif run_length == opener_length:
+                opener_length = None
+            cursor = end
+        return opener_length is not None
 
 
 def _merge_content(
@@ -1101,6 +1121,11 @@ class Qwen3CoderToolParser(ToolParser):
         released = text[self._undeclared_start : upto]
         rest = text[upto:]
         self._advance_past(upto)
+        # The released candidate remains visible content, so its
+        # ``<function=`` opener is an earlier non-dropped opener.  Mirror the
+        # non-streaming ``blocked`` state: no later canonical block in this
+        # response may be deleted after that ambiguity has been exposed.
+        self._undeclared_blocked = True
         if not rest:
             return {"content": released}
         return _Continue(released, rest)

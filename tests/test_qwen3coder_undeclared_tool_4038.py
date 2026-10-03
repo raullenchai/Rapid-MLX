@@ -269,6 +269,50 @@ def test_blocks_inside_markdown_code_are_documentation(name):
     assert "<tool_call>" in case["main_non_stream"]["content"]
 
 
+@pytest.mark.parametrize("size", [1, 7, 10_000])
+def test_double_backtick_inline_code_is_preserved(size):
+    """Markdown code spans use matching runs, including even-length ones."""
+    block = (
+        "<tool_call><function=read><parameter=path>README.md</parameter>"
+        "</function></tool_call>"
+    )
+    text = f"Example: ``{block}`` end"
+    expected = ([], text)
+    assert non_stream(text, REQUESTS["tools"]) == expected
+    assert stream(text, REQUESTS["tools"], size) == expected
+
+
+def _undeclared_block(name: str, value: str = "") -> str:
+    parameter = f"<parameter=content>\n{value}\n</parameter>\n" if value else ""
+    return f"<tool_call>\n<function={name}>\n{parameter}</function></tool_call>"
+
+
+@pytest.mark.parametrize("size", [1, 997, 10_000_000])
+def test_released_over_limit_block_prevents_later_drop(size):
+    """A preserved opener blocks later drops in both parsing paths."""
+    text = (
+        _undeclared_block("first_bad", "x" * 40_000)
+        + "middle"
+        + _undeclared_block("second_bad")
+        + "end"
+    )
+    expected = ([], text)
+    assert non_stream(text, REQUESTS["tools"]) == expected
+    assert stream(text, REQUESTS["tools"], size) == expected
+
+
+@pytest.mark.parametrize("size", [1, 7, 10_000])
+def test_released_non_lone_wrapper_prevents_later_drop(size):
+    """A wrapper with residual text is content and blocks later drops."""
+    first = (
+        "<tool_call>\n<function=first_bad>\n</function>\nresidual text\n</tool_call>"
+    )
+    text = first + "middle" + _undeclared_block("second_bad") + "end"
+    expected = ([], text)
+    assert non_stream(text, REQUESTS["tools"]) == expected
+    assert stream(text, REQUESTS["tools"], size) == expected
+
+
 def test_reused_parser_logs_every_response(caplog):
     """Logging state is per response: a parser reused for several
     non-streaming responses logs each one's drops."""
