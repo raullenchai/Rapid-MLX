@@ -52,6 +52,8 @@ def background(monkeypatch):
     calls: list[tuple] = []
     monkeypatch.setenv(background_input.DELIVERY_ENV, "background")
     monkeypatch.setattr(background_input, "skylight_available", lambda: True)
+    # No live front process: tests drive focus capture via _frontmost_window.
+    monkeypatch.setattr(background_input, "front_pid", lambda: None)
     monkeypatch.setattr(
         background_input,
         "click",
@@ -315,7 +317,37 @@ def test_event_record_rejects_out_of_bounds_and_non_heap_words(monkeypatch):
     assert background_input._event_record(ctypes.addressof(event)) is None
 
 
+def test_restore_skips_when_user_moved_to_third_app(monkeypatch):
+    monkeypatch.setattr(background_input, "front_pid", lambda: 31)
+    monkeypatch.setattr(
+        background_input,
+        "restore_focus_after_without_raise",
+        lambda *a: pytest.fail("must not steal focus back from the user's new app"),
+    )
+    monkeypatch.setattr(
+        backend, "_activate_app", lambda pid: pytest.fail("no re-activation")
+    )
+    assert backend._restore_user_focus((999, 555), 4, 101) is None
+
+
+def test_gesture_events_released_when_posting_raises(monkeypatch):
+    _fake_syms(monkeypatch)
+    syms = background_input._syms()
+    released, made = [], iter(range(1, 100))
+    syms["release"] = lambda ev: released.append(ev)
+    syms["mouse_event"] = lambda *a: next(made)
+
+    def boom(*_a):
+        raise OSError("post failed")
+
+    syms["sl_post"] = boom
+    with pytest.raises(OSError):
+        background_input.click(4, 101, 5.0, 5.0)
+    assert sorted(released) == [1, 2, 3, 4, 5]
+
+
 def test_restore_falls_back_to_app_activation(monkeypatch):
+    monkeypatch.setattr(background_input, "front_pid", lambda: None)
     activated = []
     monkeypatch.setattr(background_input, "front_process_matches", lambda *a: False)
     monkeypatch.setattr(

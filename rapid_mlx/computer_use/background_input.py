@@ -34,6 +34,7 @@ import ctypes
 import os
 import threading
 import time
+from contextlib import contextmanager
 from ctypes import (
     CFUNCTYPE,
     POINTER,
@@ -517,6 +518,17 @@ def _window_point(
     return float(x) - float(origin[0]), float(y) - float(origin[1])
 
 
+@contextmanager
+def _owned(events: list[int]):
+    """Release every event of a gesture on any exit, including exceptions."""
+    try:
+        yield events
+    finally:
+        release = _syms()["release"]
+        for ev in events:
+            release(ev)
+
+
 def _allocate(count: int, create) -> list[int] | None:
     """Create every event of a gesture before posting any of them.
 
@@ -571,33 +583,28 @@ def click(
     )
     if events is None:
         return False
-    with _GESTURE_LOCK:
+    with _owned(events), _GESTURE_LOCK:
         if not activate_without_raise(pid, wid):
             # Without key focus the stream could reach a different responder;
             # post nothing (any partial defocus is undone by the caller's
             # focus restoration).
-            for ev in events:
-                s["release"](ev)
             return False
         time.sleep(0.05)
         group = time.time_ns() & 0x7FFFFFFF
         for step, ev in zip(plan, events, strict=True):
-            try:
-                local = (
-                    None
-                    if button == "left"
-                    else _window_point(step.x, step.y, window_origin)
-                )
-                _stamp_mouse(ev, pid, wid, step, group, local)
-                if flags and step.phase == 3:
-                    s["set_flags"](ev, int(flags))
-                s["sl_post"](int(pid), ev)
-                if button != "left":
-                    # AppKit right/middle handlers drop SkyLight-only delivery;
-                    # cua posts both routes for non-left buttons.
-                    s["public_post"](int(pid), ev)
-            finally:
-                s["release"](ev)
+            local = (
+                None
+                if button == "left"
+                else _window_point(step.x, step.y, window_origin)
+            )
+            _stamp_mouse(ev, pid, wid, step, group, local)
+            if flags and step.phase == 3:
+                s["set_flags"](ev, int(flags))
+            s["sl_post"](int(pid), ev)
+            if button != "left":
+                # AppKit right/middle handlers drop SkyLight-only delivery;
+                # cua posts both routes for non-left buttons.
+                s["public_post"](int(pid), ev)
             if step.delay_after_s:
                 time.sleep(step.delay_after_s)
     return True
@@ -644,31 +651,25 @@ def scroll(
     )
     if events is None:
         return False
-    with _GESTURE_LOCK:
+    with _owned(events), _GESTURE_LOCK:
         group = time.time_ns() & 0x7FFFFFFF
         primer = MouseStep(_MOUSE_MOVED, x, y, 2, 0, 0, 0.012)
         ev = events[0]
-        try:
-            _stamp_mouse(ev, pid, wid, primer, group, local)
-            s["sl_post"](int(pid), ev)
-            s["public_post"](int(pid), ev)
-        finally:
-            s["release"](ev)
+        _stamp_mouse(ev, pid, wid, primer, group, local)
+        s["sl_post"](int(pid), ev)
+        s["public_post"](int(pid), ev)
         time.sleep(primer.delay_after_s)
         for ev in events[1:]:
-            try:
-                s["set_location"](ev, _CGPoint(x, y))
-                s["set_window_location"](ev, float(wx), float(wy))
-                s["set_field"](ev, _F_TARGET_PID, int(pid))
-                s["set_field"](ev, _F_WINDOW, int(wid))
-                s["set_field"](ev, _F_WINDOW_UNDER, int(wid))
-                s["set_field"](ev, _F_WINDOW_HANDLER, int(wid))
-                # SkyLight reaches backgrounded Chromium/Catalyst; the public
-                # route lands on AppKit/WKWebView scrollers.
-                s["sl_post"](int(pid), ev)
-                s["public_post"](int(pid), ev)
-            finally:
-                s["release"](ev)
+            s["set_location"](ev, _CGPoint(x, y))
+            s["set_window_location"](ev, float(wx), float(wy))
+            s["set_field"](ev, _F_TARGET_PID, int(pid))
+            s["set_field"](ev, _F_WINDOW, int(wid))
+            s["set_field"](ev, _F_WINDOW_UNDER, int(wid))
+            s["set_field"](ev, _F_WINDOW_HANDLER, int(wid))
+            # SkyLight reaches backgrounded Chromium/Catalyst; the public
+            # route lands on AppKit/WKWebView scrollers.
+            s["sl_post"](int(pid), ev)
+            s["public_post"](int(pid), ev)
             time.sleep(0.03)
     return True
 
@@ -739,15 +740,12 @@ def press_key(
     events = _allocate(2, lambda i: s["key_event"](s["source"], int(keycode), i == 0))
     if events is None:
         return False
-    with _GESTURE_LOCK:
+    with _owned(events), _GESTURE_LOCK:
         for ev in events:
-            try:
-                # HIDSystemState sources inherit physically held modifiers;
-                # always overwrite, including with 0.
-                s["set_flags"](ev, int(flags))
-                _post_key_event(pid, ev, authenticated=not menu_shortcut)
-            finally:
-                s["release"](ev)
+            # HIDSystemState sources inherit physically held modifiers;
+            # always overwrite, including with 0.
+            s["set_flags"](ev, int(flags))
+            _post_key_event(pid, ev, authenticated=not menu_shortcut)
             time.sleep(_KEY_GAP_S)
     return True
 
@@ -769,16 +767,13 @@ def type_text(pid: int, text: str) -> bool:
     )
     if events is None:
         return False
-    with _GESTURE_LOCK:
+    with _owned(events), _GESTURE_LOCK:
         for index, ch in enumerate(chars):
             units = ch.encode("utf-16-le")
             buf = (c_uint16 * (len(units) // 2)).from_buffer_copy(units)
             for ev in events[2 * index : 2 * index + 2]:
-                try:
-                    s["set_unicode"](ev, len(buf), buf)
-                    s["set_flags"](ev, 0)
-                    _post_key_event(pid, ev, authenticated=True)
-                finally:
-                    s["release"](ev)
+                s["set_unicode"](ev, len(buf), buf)
+                s["set_flags"](ev, 0)
+                _post_key_event(pid, ev, authenticated=True)
                 time.sleep(_KEY_GAP_S)
     return True

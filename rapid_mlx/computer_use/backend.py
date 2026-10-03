@@ -1166,6 +1166,11 @@ def _restore_user_focus(
     if previous is None or tuple(previous) == (pid, window_id):
         return None
     previous_pid, previous_wid = previous
+    current = background_input.front_pid()
+    if current is not None and current not in (previous_pid, pid):
+        # The user switched to a third app during the gesture: their new
+        # choice wins; restoring the stale capture would steal it back.
+        return None
     other_app = previous_pid != pid
     if other_app and background_input.front_process_matches(pid, window_id):
         # The target activated itself in response to the click (some apps do
