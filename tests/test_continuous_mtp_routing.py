@@ -189,7 +189,12 @@ def test_speculative_config_preserves_continuous_auto_and_explicit_values():
     enabled = parse_speculative_config('{"method":"mtp","continuous_batching":true}')
     disabled = parse_speculative_config('{"method":"mtp","continuous_batching":false}')
     assert default is not None and default.continuous_batching is None
-    assert default.allow_dynamic_membership is False
+    # Omitted means "follow the resolved continuous route", not "fixed".
+    assert default.allow_dynamic_membership is None
+    pinned = parse_speculative_config(
+        '{"method":"mtp","allow_dynamic_membership":false}'
+    )
+    assert pinned is not None and pinned.allow_dynamic_membership is False
     assert enabled is not None and enabled.continuous_batching is True
     assert disabled is not None and disabled.continuous_batching is False
 
@@ -1183,3 +1188,437 @@ def test_queue_only_admission_remains_queue_when_every_lane_is_plain(monkeypatch
         free_bytes=0,
     )
     assert decision.route is ContinuousMTPIntegrationRoute.QUEUE
+
+
+# ---------------------------------------------------------------------------
+# Dynamic membership: resumed caches, memory-planned lanes, singleton requeue
+# ---------------------------------------------------------------------------
+
+
+class _RecordingDriver:
+    """Minimal live driver: records joins and exposes dynamic membership."""
+
+    def __init__(self, specs, *, dynamic=True):
+        self.specs = list(specs)
+        self.dynamic_membership = dynamic
+        self.pending = ()
+        self.joined = []
+        self.has_work = True
+        self.closed = False
+        self.has_pending_responses = False
+        self.last_attached_uids = ()
+
+    @property
+    def lane_uids(self):
+        return tuple(spec.uid for spec in self.specs)
+
+    @property
+    def pending_join_uids(self):
+        return self.pending
+
+    def next(self):
+        self.specs.extend(self.joined_specs if self.pending else ())
+        self.pending = ()
+        return []
+
+    def take_terminal_detaches(self):
+        return ()
+
+    def queue_lanes(self, specs, **_kwargs):
+        self.joined_specs = list(specs)
+        self.joined.append(tuple(spec.uid for spec in specs))
+        self.pending = tuple(spec.uid for spec in specs)
+        return self.pending
+
+    def remove_uids(self, _uids):
+        return ()
+
+    def discard_all(self):
+        return ()
+
+
+def _install_recording_router(
+    monkeypatch,
+    batch_gen,
+    requests,
+    uid_to_request_id,
+    *,
+    dynamic=True,
+    free_bytes=16 * 1024**3,
+    estimator=None,
+    max_lanes=8,
+):
+    from rapid_mlx.scheduler import SchedulerConfig, _install_continuous_mtp_router
+    from rapid_mlx.spec_decode.mtp import continuous_runtime
+    from rapid_mlx.spec_decode.mtp.continuous_driver import ContinuousMTPDriver
+    from rapid_mlx.spec_decode.mtp.continuous_engine import (
+        ContinuousSelfMTPCapabilities,
+    )
+
+    capabilities = ContinuousSelfMTPCapabilities(
+        target_return_hidden=True,
+        mtp_return_hidden=True,
+        confirmed_target_forward=True,
+        ragged_rollback=True,
+        atomic_cache_commit=True,
+        dynamic_membership=dynamic,
+    )
+    monkeypatch.setattr(
+        continuous_runtime,
+        "assemble_continuous_self_mtp_runtime",
+        lambda *_args, **_kwargs: SimpleNamespace(capabilities=capabilities),
+    )
+    created = []
+
+    def _create(_cls, specs, _runtime, **_kwargs):
+        driver = _RecordingDriver(specs, dynamic=dynamic)
+        created.append(driver)
+        return driver
+
+    monkeypatch.setattr(ContinuousMTPDriver, "create", classmethod(_create))
+    config = SchedulerConfig(
+        spec_decode="mtp",
+        mtp_continuous_batching=True,
+        mtp_allow_dynamic_membership=dynamic,
+        max_num_seqs=max_lanes,
+        completion_batch_size=max_lanes,
+    )
+    assert _install_continuous_mtp_router(
+        batch_gen,
+        _Model(),
+        config,
+        requests=requests,
+        uid_to_request_id=uid_to_request_id,
+        free_bytes_getter=free_bytes if callable(free_bytes) else (lambda: free_bytes),
+        stop_tokens={99},
+        lane_bytes_estimator=estimator,
+    )
+    return created
+
+
+def _requests_for(*uids, **request_changes):
+    requests = {f"req-{uid}": _scheduler_request(**request_changes) for uid in uids}
+    return requests, {uid: f"req-{uid}" for uid in uids}
+
+
+@pytest.mark.requires_mlx
+@pytest.mark.parametrize("nested", [False, True], ids=["flat", "nested"])
+def test_resumed_prefix_cache_lane_joins_the_cohort_with_its_cache(monkeypatch, nested):
+    batch_gen = _SchedulerBatchGenerator()
+    leaf = SimpleNamespace(offset=12, nbytes=0)
+    # A CacheList-style wrapper resumes from its leaves' offsets too.
+    resumed_cache = [SimpleNamespace(caches=[leaf], nbytes=0) if nested else leaf]
+    batch_gen._unprocessed_sequences.extend(
+        [
+            _scheduler_sequence(1),
+            _scheduler_sequence(2, caches=resumed_cache, segments=[[44]]),
+        ]
+    )
+    requests, mapping = _requests_for(1, 2)
+    created = _install_recording_router(monkeypatch, batch_gen, requests, mapping)
+
+    batch_gen.next()
+
+    assert len(created) == 1
+    fresh, resumed = created[0].specs
+    assert fresh.prompt_cache is None
+    assert resumed.prompt_cache == resumed_cache
+    # Only the unprocessed remainder is prefilled on top of the cache.
+    assert tuple(resumed.prompt) == (44,)
+
+
+@pytest.mark.requires_mlx
+def test_windowed_or_quantized_layer_anywhere_keeps_the_lane_off_the_cohort(
+    monkeypatch,
+):
+    class RotatingKVCache:
+        offset = 0
+        nbytes = 0
+
+    class QuantizedKVCache(RotatingKVCache):
+        pass
+
+    batch_gen = _SchedulerBatchGenerator()
+    nested_window = [
+        SimpleNamespace(offset=0, nbytes=0),
+        SimpleNamespace(caches=[RotatingKVCache()]),
+    ]
+    batch_gen._unprocessed_sequences.extend(
+        [
+            _scheduler_sequence(1),
+            _scheduler_sequence(2, caches=nested_window),
+            _scheduler_sequence(3, caches=[QuantizedKVCache()]),
+        ]
+    )
+    requests, mapping = _requests_for(1, 2, 3)
+    created = _install_recording_router(monkeypatch, batch_gen, requests, mapping)
+
+    batch_gen.next()
+
+    # Neither refused lane may pair with uid 1, so no cohort forms at all.
+    assert created == []
+    assert [sequence[0] for sequence in batch_gen._unprocessed_sequences] == [1, 2, 3]
+
+
+@pytest.mark.requires_mlx
+@pytest.mark.parametrize(
+    ("free_bytes", "expected"),
+    [
+        # Reserve (8 GiB) + room for exactly two 1 GiB lanes: FIFO prefix of 2.
+        (8 * 1024**3 + int(2.5 * 1024**3), (1, 2)),
+        # No headroom telemetry: lane count alone bounds the cohort.
+        (None, (1, 2, 3)),
+        # Unusable telemetry is unknown telemetry, not zero headroom.
+        ("n/a", (1, 2, 3)),
+        # A known cap with no headroom admits nothing that costs memory.
+        (0, None),
+    ],
+)
+def test_initial_cohort_is_memory_planned_from_lane_estimates(
+    monkeypatch, free_bytes, expected
+):
+    batch_gen = _SchedulerBatchGenerator()
+    batch_gen._unprocessed_sequences.extend(
+        [_scheduler_sequence(uid) for uid in (1, 2, 3)]
+    )
+    requests, mapping = _requests_for(1, 2, 3)
+    estimated = []
+
+    def estimator(request):
+        estimated.append(request)
+        return 1024**3
+
+    created = _install_recording_router(
+        monkeypatch,
+        batch_gen,
+        requests,
+        mapping,
+        free_bytes=free_bytes,
+        estimator=estimator,
+    )
+    batch_gen.next()
+
+    if expected is None:
+        assert created == []
+    else:
+        assert created[0].lane_uids == expected
+    assert bool(estimated) is isinstance(free_bytes, int)
+
+
+@pytest.mark.requires_mlx
+@pytest.mark.parametrize(
+    ("free_bytes", "max_lanes", "expected"),
+    [
+        # Live headroom already includes the running lanes; only joiners are
+        # charged, the hard reserve stays intact, and FIFO stops at the first
+        # lane that does not fit.
+        (8 * 1024**3 + int(2.5 * 1024**3), 8, (3, 4)),
+        # Without telemetry the join is bounded by lane capacity alone.
+        (None, 8, (3, 4, 5)),
+        # A known cap with no headroom admits no joiner.
+        (0, 8, None),
+        (16 * 1024**3, 3, (3,)),
+        # No room left under the reserve: nothing joins.
+        (8 * 1024**3, 8, None),
+    ],
+)
+def test_dynamic_joins_charge_projected_lane_bytes_against_headroom(
+    monkeypatch, free_bytes, max_lanes, expected
+):
+    batch_gen = _SchedulerBatchGenerator()
+    batch_gen._unprocessed_sequences.extend(
+        [_scheduler_sequence(uid) for uid in (1, 2)]
+    )
+    requests, mapping = _requests_for(1, 2, 3, 4, 5)
+    headroom = {"free": 16 * 1024**3}
+    created = _install_recording_router(
+        monkeypatch,
+        batch_gen,
+        requests,
+        mapping,
+        free_bytes=lambda: headroom["free"],
+        estimator=lambda _request: 1024**3,
+        max_lanes=max_lanes,
+    )
+    batch_gen.next()
+    driver = created[0]
+    assert driver.lane_uids == (1, 2)
+
+    headroom["free"] = free_bytes
+    batch_gen._unprocessed_sequences.extend(
+        [_scheduler_sequence(uid) for uid in (3, 4, 5)]
+    )
+    batch_gen.next()
+
+    if expected is None:
+        assert driver.joined == []
+    else:
+        assert driver.joined == [expected]
+        assert [seq[0] for seq in batch_gen._unprocessed_sequences] == [
+            uid for uid in (3, 4, 5) if uid not in expected
+        ]
+
+
+class _OwnerGenerationBatch:
+    Response = _SchedulerResponse
+
+    def __init__(self, uid, *, processors=None):
+        self.uids = [uid]
+        self.logits_processors = [[] if processors is None else processors]
+        self.prompt_cache = [SimpleNamespace(offset=40, nbytes=0)]
+
+
+class _SingletonBatchGenerator(_SchedulerBatchGenerator):
+    """Base generator whose generation batch holds the vendored owner."""
+
+    def __init__(self, owner_batch, *, with_hook=True):
+        super().__init__()
+        self._generation_batch = owner_batch
+        self._mtp_vendored_admission_owner = owner_batch.uids[0]
+        self.requeued = []
+        if with_hook:
+            self._mtp_vendored_requeue_owner = self._requeue
+
+    def _requeue(self):
+        owner = self._mtp_vendored_admission_owner
+        self.requeued.append(owner)
+        self._generation_batch.uids = []
+        self._mtp_vendored_admission_owner = None
+        requeued = list(
+            _scheduler_sequence(
+                owner, caches=[SimpleNamespace(offset=40, nbytes=0)], segments=[[99]]
+            )
+        )
+        # The verifier hands back the row's processor context with it.
+        requeued[4] = list(range(40))
+        self._unprocessed_sequences.appendleft(tuple(requeued))
+        return True
+
+
+def _absorb_setup(monkeypatch, *, owner_request=None, dynamic=True, **batch_changes):
+    owner_batch = _OwnerGenerationBatch(
+        7, processors=batch_changes.pop("processors", None)
+    )
+    batch_gen = _SingletonBatchGenerator(owner_batch, **batch_changes)
+    requests, mapping = _requests_for(1, 2)
+    requests["req-7"] = owner_request or _scheduler_request()
+    mapping[7] = "req-7"
+    batch_gen._unprocessed_sequences.extend(
+        [_scheduler_sequence(1), _scheduler_sequence(2)]
+    )
+    created = _install_recording_router(
+        monkeypatch, batch_gen, requests, mapping, dynamic=dynamic
+    )
+    batch_gen.next()  # the waiting pair forms a cohort beside the singleton
+    assert created[0].lane_uids == (1, 2)
+    return batch_gen, owner_batch, created[0]
+
+
+@pytest.mark.requires_mlx
+def test_live_dynamic_cohort_absorbs_an_eligible_singleton(monkeypatch):
+    batch_gen, _owner, driver = _absorb_setup(monkeypatch)
+
+    batch_gen.next()
+
+    assert batch_gen.requeued == [7]
+    assert driver.joined == [(7,)]
+    joined = driver.joined_specs[0]
+    assert tuple(joined.prompt) == (99,)
+    assert joined.prompt_cache is not None
+
+
+@pytest.mark.requires_mlx
+@pytest.mark.parametrize(
+    "case", ["sampled_owner", "processor_owner", "fixed_cohort", "foreign", "no_hook"]
+)
+def test_singleton_stays_put_when_the_cohort_cannot_absorb_it(monkeypatch, case):
+    kwargs = {}
+    if case == "sampled_owner":
+        kwargs["owner_request"] = _scheduler_request(temperature=0.7)
+    if case == "processor_owner":
+        kwargs["processors"] = [object()]
+    if case == "fixed_cohort":
+        kwargs["dynamic"] = False
+    if case == "no_hook":
+        kwargs["with_hook"] = False
+    batch_gen, owner_batch, driver = _absorb_setup(monkeypatch, **kwargs)
+    if case == "foreign":
+        owner_batch.uids = [7, 8]
+
+    batch_gen.next()
+
+    assert batch_gen.requeued == []
+    assert driver.joined == []
+    assert batch_gen._mtp_vendored_admission_owner == 7
+
+
+@pytest.mark.requires_mlx
+def test_lane_bytes_estimate_adds_the_mtp_head_kv_to_the_target_projection():
+    from rapid_mlx.scheduler import Scheduler
+
+    scheduler = Scheduler.__new__(Scheduler)
+    scheduler._estimate_request_kv_bytes = lambda _request: 1_000
+    attention = SimpleNamespace(num_key_value_heads=2, head_dim=256)
+    head = SimpleNamespace(layers=[SimpleNamespace(self_attn=attention)])
+    scheduler.model = SimpleNamespace(language_model=SimpleNamespace(mtp=head))
+    request = SimpleNamespace(
+        prompt_token_ids=list(range(30)),
+        sampling_params=SimpleNamespace(max_tokens=226),
+    )
+
+    # One bf16 attention layer: 2 (K,V) * 2 heads * 256 dims * 2 bytes.
+    assert scheduler._mtp_draft_kv_bytes_per_token() == 2048
+    assert scheduler._continuous_mtp_lane_bytes(request) == 1_000 + 2048 * 256
+
+    bare = Scheduler.__new__(Scheduler)
+    bare._estimate_request_kv_bytes = lambda _request: 7
+    bare.model = SimpleNamespace()
+    assert bare._continuous_mtp_lane_bytes(request) == 7
+
+
+@pytest.mark.requires_mlx
+def test_resumed_lane_prepares_on_a_private_copy_of_its_cache(monkeypatch):
+    batch_gen = _SchedulerBatchGenerator()
+    resumed_cache = [SimpleNamespace(offset=12, nbytes=0, keys=[1, 2, 3])]
+    resumed = _scheduler_sequence(2, caches=resumed_cache, segments=[[44]])
+    batch_gen._unprocessed_sequences.extend([_scheduler_sequence(1), resumed])
+    requests, mapping = _requests_for(1, 2)
+    created = _install_recording_router(monkeypatch, batch_gen, requests, mapping)
+
+    batch_gen.next()
+
+    spec = created[0].specs[1]
+    # Preparation mutates its cache before the cohort is known to form; the
+    # queued tuple (the fallback owner) must keep the original untouched.
+    assert spec.prompt_cache == resumed_cache
+    assert spec.prompt_cache[0] is not resumed_cache[0]
+    assert resumed[3][0] is resumed_cache[0]
+
+
+@pytest.mark.requires_mlx
+def test_unplannable_lane_is_never_admitted_on_a_guess(monkeypatch):
+    batch_gen = _SchedulerBatchGenerator()
+    batch_gen._unprocessed_sequences.extend(
+        [_scheduler_sequence(uid) for uid in (1, 2, 3)]
+    )
+    requests, mapping = _requests_for(1, 2, 3)
+
+    def estimator(request):
+        if request is requests["req-2"]:
+            raise RuntimeError("no model config")
+        return 1024**3
+
+    created = _install_recording_router(
+        monkeypatch,
+        batch_gen,
+        requests,
+        mapping,
+        free_bytes=16 * 1024**3,
+        estimator=estimator,
+    )
+    batch_gen.next()
+
+    # The FIFO prefix stops at the lane whose footprint is unknown, leaving a
+    # single lane: below the cohort minimum, so the base path keeps them all.
+    assert created == []
+    assert [seq[0] for seq in batch_gen._unprocessed_sequences] == [1, 2, 3]

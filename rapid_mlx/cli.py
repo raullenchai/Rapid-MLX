@@ -3504,7 +3504,15 @@ def _normalize_speculative_config_or_exit(args):
         # and silently stop being the requested baseline.
         if config.num_speculative_tokens == 0:
             args.mtp_continuous_batching = False
-        args.mtp_allow_dynamic_membership = config.allow_dynamic_membership
+        # Membership follows the resolved route unless the JSON pins it: a
+        # continuous cohort admits late requests and releases finished ones
+        # between transactions instead of serializing them behind the whole
+        # cohort.  ``"allow_dynamic_membership": false`` keeps fixed cohorts.
+        args.mtp_allow_dynamic_membership = (
+            bool(args.mtp_continuous_batching)
+            if config.allow_dynamic_membership is None
+            else config.allow_dynamic_membership
+        )
         if (
             continuous_was_explicit
             and args.mtp_continuous_batching
@@ -14464,7 +14472,8 @@ Examples:
             '\'{"method":"mtp","num_speculative_tokens":3,'
             '"disable_auto_k":false,"continuous_batching":false,'
             '"allow_dynamic_membership":false}\'. '
-            "Continuous self-MTP and dynamic membership are default-off. "
+            "Verified aliases select continuous self-MTP with dynamic "
+            "membership automatically; set either key to false to opt out. "
             "SuffixDecoding is an explicit, "
             "workload-specific flag for high prompt/output-overlap traffic "
             "and is available with "

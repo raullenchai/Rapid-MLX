@@ -278,6 +278,50 @@ def test_verified_alias_defaults_to_continuous_when_mtp_is_selected(
 
     assert args.mtp_continuous_batching is True
     assert args.mtp_continuous_batching_tier == "verified"
+    # A continuous cohort admits late requests instead of serializing them.
+    assert args.mtp_allow_dynamic_membership is True
+
+
+@pytest.mark.parametrize(
+    ("payload", "continuous", "dynamic"),
+    [
+        ('{"method":"mtp"}', True, True),
+        ('{"method":"mtp","allow_dynamic_membership":false}', True, False),
+        ('{"method":"mtp","continuous_batching":false}', False, False),
+        (
+            '{"method":"mtp","continuous_batching":true,'
+            '"allow_dynamic_membership":true}',
+            True,
+            True,
+        ),
+        # K=0 is the serial validation baseline: no cohort, no membership.
+        (
+            '{"method":"mtp","num_speculative_tokens":0,"disable_auto_k":true}',
+            False,
+            False,
+        ),
+    ],
+)
+def test_dynamic_membership_follows_the_resolved_continuous_route(
+    payload: str, continuous: bool, dynamic: bool
+) -> None:
+    from rapid_mlx.cli import _normalize_speculative_config_or_exit
+
+    args = _args("qwen3.6-35b-4bit", payload)
+    _normalize_speculative_config_or_exit(args)
+
+    assert args.mtp_continuous_batching is continuous
+    assert args.mtp_allow_dynamic_membership is dynamic
+
+
+def test_unknown_alias_ordinary_mtp_keeps_fixed_membership() -> None:
+    from rapid_mlx.cli import _normalize_speculative_config_or_exit
+
+    args = _args("qwen3.5-9b-8bit", '{"method":"mtp"}')
+    _normalize_speculative_config_or_exit(args)
+
+    assert args.mtp_continuous_batching is False
+    assert args.mtp_allow_dynamic_membership is False
 
 
 def test_verified_alias_explicit_false_keeps_ordinary_mtp() -> None:
