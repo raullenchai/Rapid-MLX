@@ -495,6 +495,10 @@ for _ in range(16):
 
 
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="requires os.fork")
+# The test forks on purpose to verify post-fork state reset.
+@pytest.mark.filterwarnings(
+    "ignore:This process .* is multi-threaded, use of fork:DeprecationWarning"
+)
 def test_forked_child_starts_fresh_telemetry_worker(monkeypatch):
     from rapid_mlx.telemetry import inference
 

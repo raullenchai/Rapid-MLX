@@ -849,7 +849,10 @@ def test_scheduler_config_rejects_legacy_enable_mtp_with_optimistic():
     """
     from rapid_mlx.scheduler import SchedulerConfig
 
-    with pytest.raises(ValueError, match="mtp_optimistic=True.*not supported"):
+    with (
+        pytest.warns(DeprecationWarning, match=r"enable_mtp=True\) is deprecated"),
+        pytest.raises(ValueError, match="mtp_optimistic=True.*not supported"),
+    ):
         SchedulerConfig(enable_mtp=True, mtp_optimistic=True)
 
 
