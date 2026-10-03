@@ -83,9 +83,23 @@ def test_focus_only_refuses_commit_control_it_cannot_focus(monkeypatch, no_input
     assert exc.value.code == "synthetic_input_blocked"
 
 
-def test_focus_only_still_clicks_non_committing_targets(monkeypatch):
-    snapshot = _snapshot({"role": "AXRow", "label": "item", "actions": []})
-    clicks = []
+def _ancestors(monkeypatch, chain):
+    """chain: list of (role, actions) from parent up to the boundary."""
+    names = ["live"] + [f"n{i}" for i in range(len(chain))]
+    parents = dict(zip(names, names[1:], strict=False))
+    roles = {f"n{i}": role for i, (role, _) in enumerate(chain)}
+    actions = {f"n{i}": acts for i, (_, acts) in enumerate(chain)}
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_get",
+        lambda el, attr: {"AXParent": parents, "AXRole": roles}.get(attr, {}).get(el),
+    )
+    monkeypatch.setattr(
+        backend.ax_driver, "_action_names", lambda el: actions.get(el, [])
+    )
+
+
+def _unfocusable(monkeypatch, clicks):
     monkeypatch.setattr(backend, "_live_element", lambda *a, **k: "live")
     monkeypatch.setattr(backend, "_focused_ax_element", lambda app: None)
     monkeypatch.setattr(
@@ -96,8 +110,35 @@ def test_focus_only_still_clicks_non_committing_targets(monkeypatch):
         "_pixel_click",
         lambda snap, x, y, **k: clicks.append((x, y)) or {"mode": "click"},
     )
+
+
+def test_focus_only_pixel_focuses_text_input_with_safe_ancestors(monkeypatch):
+    clicks = []
+    _unfocusable(monkeypatch, clicks)
+    _ancestors(monkeypatch, [("AXGroup", []), ("AXWindow", [])])
+    snapshot = _snapshot({"role": "AXTextField", "label": "q", "actions": []})
     backend.click("App", 0, expected_snapshot=snapshot, focus_only=True)
     assert clicks == [(50.0, 60.0)]
+
+
+@pytest.mark.parametrize(
+    ("role", "chain"),
+    [
+        ("AXRow", [("AXWindow", [])]),  # not a text input: refuse, never click
+        ("AXTextField", [("AXGroup", ["AXPress"]), ("AXWebArea", [])]),
+        ("AXTextField", [("AXLink", []), ("AXWindow", [])]),
+        ("AXTextField", [("AXGroup", [])] * 70),  # over-deep chain is unsafe
+    ],
+)
+def test_focus_only_refuses_unsafe_pixel_focus(monkeypatch, role, chain):
+    clicks = []
+    _unfocusable(monkeypatch, clicks)
+    _ancestors(monkeypatch, chain)
+    snapshot = _snapshot({"role": role, "label": "x", "actions": []})
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend.click("App", 0, expected_snapshot=snapshot, focus_only=True)
+    assert exc.value.code == "synthetic_input_blocked"
+    assert clicks == []
 
 
 def test_plain_click_keeps_semantic_press(monkeypatch):
@@ -212,22 +253,6 @@ def test_focus_only_refuses_child_of_commit_control(monkeypatch, no_input):
     monkeypatch.setattr(
         backend.ax_driver, "AXUIElementSetAttributeValue", lambda *a: -25205
     )
-    with pytest.raises(errors.ComputerUseError) as exc:
-        backend.click("App", 0, expected_snapshot=snapshot, focus_only=True)
-    assert exc.value.code == "synthetic_input_blocked"
-
-
-def test_fill_role_inside_link_is_not_pixel_focused(monkeypatch, no_input):
-    snapshot = _snapshot({"role": "AXTextField", "label": "q", "actions": ["AXPress"]})
-    monkeypatch.setattr(
-        backend.ax_driver,
-        "_get",
-        lambda el, attr: {
-            "AXParent": {"live": "link"},
-            "AXRole": {"link": "AXLink"},
-        }.get(attr, {}).get(el),
-    )
-    monkeypatch.setattr(backend, "_focused_ax_element", lambda app: None)
     with pytest.raises(errors.ComputerUseError) as exc:
         backend.click("App", 0, expected_snapshot=snapshot, focus_only=True)
     assert exc.value.code == "synthetic_input_blocked"
