@@ -486,7 +486,10 @@ def _merge_yaml(
                 for layer in existing
                 if not (isinstance(layer, dict) and layer.get("id") in template_ids)
             ] + list(template)
-            return yaml.dump(merged_layers, default_flow_style=False, sort_keys=False)
+            dumped: str = yaml.dump(
+                merged_layers, default_flow_style=False, sort_keys=False
+            )
+            return dumped
         raise _MergeParseError("existing config is not a YAML mapping")
     if not isinstance(template, dict):
         raise _MergeParseError("rendered template is not a YAML mapping")

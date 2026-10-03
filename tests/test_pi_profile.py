@@ -123,7 +123,9 @@ def test_pi_profile_has_runnable_headless_query():
     assert profile is not None
     assert profile.testing.binary == "pi"
     assert profile.testing.query_cmd == "pi --print --no-session '{query}'"
-    assert profile.testing.install_cmd == "npm install -g @earendil-works/pi-coding-agent"
+    assert (
+        profile.testing.install_cmd == "npm install -g @earendil-works/pi-coding-agent"
+    )
 
 
 def test_pi_e2e_receives_relocated_agent_dir_and_home(tmp_path):

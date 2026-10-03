@@ -26,8 +26,10 @@ class SetupPlan:
     agent: str
     display_name: str
     path: Path
-    before: dict[str, Any]
-    after: dict[str, Any]
+    # A mapping for every JSON/mapping plan; a top-level LIST of Cordis patch
+    # layers for the dsh plan (dsh >= 0.2 patch files are lists, #4040).
+    before: dict[str, Any] | list[Any]
+    after: dict[str, Any] | list[Any]
     base_url: str
     model: str
     format: str = "json"
@@ -82,7 +84,7 @@ class SetupPlan:
         return "\n".join(part for part in (primary, credentials) if part)
 
 
-def _serialize(data: dict[str, Any], format: str) -> str:
+def _serialize(data: dict[str, Any] | list[Any], format: str) -> str:
     if format == "yaml":
         import yaml
 
@@ -211,8 +213,13 @@ def build_setup_plan(
     if agent in {"claude", "claude-code"}:
         path = claude_code.current_config_path()
         assert path is not None
-        before = launch_common.load_json_lenient(path)
-        after = claude_code.patched_config(before, base_url, model)
+        # The union annotation is the contract: only the dsh plan carries a
+        # patch-layer list; every other flow is a mapping.
+        loaded: dict[str, Any] = launch_common.load_json_lenient(path)
+        before: dict[str, Any] | list[Any] = loaded
+        after: dict[str, Any] | list[Any] = claude_code.patched_config(
+            loaded, base_url, model
+        )
         return SetupPlan(
             "claude-code", "Claude Code", path, before, after, base_url, model
         )
