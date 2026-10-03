@@ -914,6 +914,11 @@ def draft_only_conflict(model_ref: object) -> str | None:
     """
     if not isinstance(model_ref, str) or not model_ref:
         return None
+    # ``resolve_model`` gives an existing local file/directory precedence over
+    # every catalog spelling; a local model is whatever is on disk, never the
+    # catalog checkpoint whose name it happens to share.
+    if os.path.exists(model_ref):
+        return None
     try:
         profiles = _load()
     except Exception:  # noqa: BLE001 — the gate must never break resolution

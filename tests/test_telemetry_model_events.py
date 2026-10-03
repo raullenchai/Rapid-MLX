@@ -488,6 +488,22 @@ def test_missing_file_inside_existing_repo_is_download_failed(shape):
     )
 
 
+def test_local_entry_not_found_keeps_the_local_path_decision(tmp_path):
+    """LocalEntryNotFoundError is both an EntryNotFoundError and a
+    FileNotFoundError: a local ref must stay local_path_missing (origin/main),
+    while a Hub ref stays download_failed."""
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    exc = LocalEntryNotFoundError("config.json missing")
+    assert (
+        model_events.serve_error_class(exc, model_ref=str(tmp_path / "my-model"))
+        == "local_path_missing"
+    )
+    assert model_events.serve_error_class(exc, model_ref="owner/repo") == (
+        "download_failed"
+    )
+
+
 @pytest.mark.parametrize("shape", ["bare", "cause"])
 def test_malformed_model_reference_gets_its_own_class(shape):
     from huggingface_hub.errors import HFValidationError

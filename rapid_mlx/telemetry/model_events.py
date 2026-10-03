@@ -214,6 +214,7 @@ def serve_error_class(exc: BaseException, *, model_ref: object = None) -> str:
             EntryNotFoundError,
             HfHubHTTPError,
             HFValidationError,
+            LocalEntryNotFoundError,
         )
         from huggingface_hub.utils import RepositoryNotFoundError
 
@@ -262,8 +263,10 @@ def serve_error_class(exc: BaseException, *, model_ref: object = None) -> str:
         # the full explicit cause chain before consulting message text so an
         # outer relay that happens to mention memory or corruption cannot
         # overwrite the concrete Hub/file failure beneath it. An
-        # ``EntryNotFoundError`` is a missing FILE inside an existing repo
-        # (not a ``FileNotFoundError``): same availability outcome.
+        # ``EntryNotFoundError`` is a missing FILE inside an existing repo:
+        # same availability outcome. ``LocalEntryNotFoundError`` is excluded —
+        # it is also a ``FileNotFoundError`` and must keep origin/main's
+        # local-path decision below (``local_path_missing`` for a local ref).
         if any(
             isinstance(
                 current,
@@ -273,6 +276,7 @@ def serve_error_class(exc: BaseException, *, model_ref: object = None) -> str:
                     EntryNotFoundError,
                 ),
             )
+            and not isinstance(current, LocalEntryNotFoundError)
             for current in chain
         ):
             return "download_failed"

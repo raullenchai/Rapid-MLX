@@ -365,3 +365,58 @@ def test_draft_gate_skips_attached_remote_bench(monkeypatch, capsys):
     assert reached == ["mlx-community/Qwen3.6-35B-A3B-MTP-4bit"]
     assert "draft checkpoint" not in capsys.readouterr().err
     assert emitted == []
+
+
+@pytest.mark.parametrize(
+    "target", ["qwen3.6-35b-mtp-4bit", "mlx-community/Qwen3.6-35B-A3B-MTP-4bit"]
+)
+def test_cli_serve_user_alias_to_a_draft_is_gated_on_the_resolved_path(
+    monkeypatch, capsys, tmp_path, target
+):
+    """A user alias reaches the draft only through its resolved HF path; the
+    gate must check that too, or the download + mid-load crash come back."""
+    import json
+    import sys
+
+    from rapid_mlx import cli
+
+    alias_file = tmp_path / "user-aliases.json"
+    alias_file.write_text(
+        json.dumps({"version": 1, "aliases": {"my-draft": target}}) + "\n"
+    )
+    monkeypatch.setenv("RAPID_MLX_USER_ALIASES_FILE", str(alias_file))
+    emitted = []
+    monkeypatch.setattr(sys, "argv", ["rapid-mlx", "serve", "my-draft"])
+    monkeypatch.setattr(
+        "rapid_mlx.telemetry.model_events.emit_model_serve_failed",
+        lambda exc, *, alias_or_path, **kwargs: emitted.append((alias_or_path, kwargs)),
+    )
+    monkeypatch.setattr(
+        cli,
+        "serve_command",
+        lambda args: pytest.fail("the draft gate must refuse before serve"),
+    )
+
+    with pytest.raises(SystemExit) as caught:
+        cli.main()
+
+    assert caught.value.code == 1
+    stderr = capsys.readouterr().err
+    assert "draft checkpoint" in stderr
+    assert "qwen3.6-35b-4bit" in stderr
+    assert emitted == [("my-draft", {"failure_stage": "resolve"})]
+
+
+def test_draft_gate_never_refuses_an_existing_local_path(monkeypatch, tmp_path):
+    """resolve_model gives an existing local path precedence over every
+    catalog spelling; a local model that shares a draft's name is served."""
+    from rapid_mlx.model_aliases import draft_only_conflict
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "mlx-community" / "Qwen3.6-27B-MTP-4bit").mkdir(parents=True)
+    (tmp_path / "qwen3.6-35b-mtp-4bit").mkdir()
+
+    assert draft_only_conflict("mlx-community/Qwen3.6-27B-MTP-4bit") is None
+    assert draft_only_conflict("qwen3.6-35b-mtp-4bit") is None
+    # A draft with no local twin is still refused.
+    assert draft_only_conflict("mlx-community/Qwen3.6-35B-A3B-MTP-4bit") is not None

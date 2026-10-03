@@ -16332,9 +16332,15 @@ def main():
             )
 
             try:
+                # Check what the user typed AND what it resolved to: a user
+                # alias (``my-draft -> qwen3.6-35b-mtp-4bit``) reaches the
+                # draft only through its resolved HF path. A typed ref that
+                # is an existing local path short-circuits both (the
+                # resolver keeps it verbatim, so both checks see the path).
                 raise_if_draft_only_model(
                     getattr(args, "_original_alias", None) or args.model
                 )
+                raise_if_draft_only_model(args.model)
             except DraftModelNotServableError as exc:
                 from rapid_mlx.telemetry.model_events import (
                     emit_model_serve_failed,
