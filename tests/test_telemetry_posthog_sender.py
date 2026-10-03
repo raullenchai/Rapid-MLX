@@ -920,6 +920,10 @@ def test_capture_snapshots_item_and_properties(sender_env):
     s.close(0.5)
 
 
+# The test forks on purpose to verify post-fork state reset.
+@pytest.mark.filterwarnings(
+    "ignore:This process .* is multi-threaded, use of fork:DeprecationWarning"
+)
 def test_fork_child_resets_sender_state_and_locks(sender_env):
     _reset_for_tests()
     singleton = get_sender()
