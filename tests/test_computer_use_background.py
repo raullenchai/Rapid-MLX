@@ -281,9 +281,12 @@ def _fake_syms(monkeypatch):
 
 def test_click_posts_nothing_when_focus_without_raise_fails(monkeypatch):
     log = _fake_syms(monkeypatch)
+    posted = []
+    background_input._syms()["sl_post"] = lambda pid, ev: posted.append(ev)
     monkeypatch.setattr(background_input, "activate_without_raise", lambda *a: False)
     assert background_input.click(4, 101, 5.0, 5.0) is False
     assert log == []
+    assert posted == []
 
 
 def test_scroll_fails_when_primer_cannot_be_created(monkeypatch):
@@ -833,6 +836,28 @@ def test_restore_skips_when_user_picked_another_window_of_their_app(monkeypatch)
         lambda *a: pytest.fail("must not refocus the stale window"),
     )
     assert backend._restore_user_focus((999, 555), 4, 101) is None
+
+
+def test_restore_skips_when_user_switched_to_another_window_of_target(monkeypatch):
+    # The target app is front, but its key window is not the one the agent
+    # clicked: the user chose that window, so their app is not re-activated.
+    monkeypatch.setattr(background_input, "front_pid", lambda: 4)
+    monkeypatch.setattr(background_input, "front_process_matches", lambda *a: True)
+    monkeypatch.setattr(backend, "_key_window_id", lambda pid: 202)
+    monkeypatch.setattr(backend, "_activate_app", lambda pid: pytest.fail("steal"))
+    assert backend._restore_user_focus((999, 555), 4, 101) is None
+
+
+def test_restore_reactivates_user_app_when_target_self_activated(monkeypatch):
+    monkeypatch.setattr(background_input, "front_pid", lambda: 4)
+    monkeypatch.setattr(background_input, "front_process_matches", lambda *a: True)
+    monkeypatch.setattr(backend, "_key_window_id", lambda pid: 101)
+    activated = []
+    monkeypatch.setattr(
+        backend, "_activate_app", lambda pid: activated.append(pid) or True
+    )
+    assert backend._restore_user_focus((999, 555), 4, 101) is True
+    assert activated == [999]
 
 
 def test_defocus_record_names_the_front_window(monkeypatch):

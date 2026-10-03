@@ -1163,6 +1163,10 @@ def _restore_user_focus(
             return None
     other_app = previous_pid != pid
     if other_app and background_input.front_process_matches(pid, window_id):
+        key = _key_window_id(pid)
+        if key is not None and key != window_id:
+            # The user switched to another window of the target app.
+            return None
         # The target activated itself in response to the click (some apps do
         # on mouseDown); re-activate the user's app rather than leave it behind.
         return _activate_app(previous_pid)
