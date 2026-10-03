@@ -231,6 +231,7 @@ def test_counter_kept_in_history_before_the_assistant_reply_is_recognised():
         ([USER, _block("<total_tokens>see runbook</total_tokens>")], 1),
         ([USER, _block(COUNTER + " Wrap up now.")], 1),
         ([USER, _block("<total_tokens>tokens left</total_tokens>")], 1),
+        ([USER, _block(COUNTER, name="extra-field")], 1),
         (
             [
                 USER,
