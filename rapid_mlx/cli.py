@@ -9026,6 +9026,17 @@ def recipe_command(args) -> None:
             command += " " + " ".join(pick["launch_flags"])
         print(f"   {command}")
 
+    from rapid_mlx.leaderboard_links import LEADERBOARD_URL, this_mac_url
+
+    # With --max-ram the recipe describes a hypothetical Mac, so linking this
+    # host's row would contradict the header above; point at the board.
+    link = (
+        LEADERBOARD_URL
+        if getattr(args, "max_ram", None) is not None
+        else this_mac_url(round(ram_gb))
+    )
+    print(f"\nMeasured speeds on Macs like this one: {link}")
+
 
 def _recipe_free_disk_gb() -> float | None:
     """Return free GiB on the filesystem that receives HF downloads.
