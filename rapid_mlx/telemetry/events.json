@@ -243,7 +243,7 @@
       "values": [
         "aider", "claude-code", "codex", "continue", "deepseek-harness",
         "hermes", "kilo-code", "langchain", "opencode", "openhands",
-        "pydanticai", "qwen-code", "smolagents", "other"
+        "pi", "pydanticai", "qwen-code", "smolagents", "other"
       ]
     },
     "agent_error_class": {

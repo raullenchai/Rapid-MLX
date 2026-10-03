@@ -1,0 +1,75 @@
+name: pi
+display_name: "Pi Coding Agent"
+repo: "earendil-works/pi"
+stars: 111777
+
+# Pi (the coding agent in the earendil-works/pi monorepo, npm package
+# @earendil-works/pi-coding-agent) reads custom OpenAI-compatible endpoints
+# from <agent-dir>/models.json, the agent dir defaulting to ~/.pi/agent.
+# PI_CODING_AGENT_DIR relocates the whole agent dir (pi docs:
+# environment-variables.md) — the same contract as CODEX_HOME / HERMES_HOME,
+# so --setup can target a throwaway dir in tests. The adapter's dict-merge
+# keeps any other providers the user already has in models.json; only
+# providers.rapid-mlx is (re)written.
+#
+# Verified 2026-10-02 (harness-lab, M4 Pro, rapid-mlx 0.15.4 /
+# qwen3.6-35b-4bit): pi 1.0.0 passed T1–T6 plus the follow-up turn with this
+# exact config and was the fastest harness in the run (~1.8k-token prompt,
+# prefix-cache HIT on every later turn).
+config:
+  type: json
+  path: "~/.pi/agent/models.json"
+  home_env: PI_CODING_AGENT_DIR
+  template: |
+    {
+      "providers": {
+        "rapid-mlx": {
+          "baseUrl": "{base_url}",
+          "api": "openai-completions",
+          "apiKey": "not-needed",
+          "models": [
+            {
+              "id": "{model_id}",
+              "name": "{model_id} (Rapid-MLX)",
+              "contextWindow": {context_length},
+              "maxTokens": 8192,
+              "input": ["text"],
+              "reasoning": false
+            }
+          ]
+        }
+      }
+    }
+
+models:
+  recommended:
+    # Verified: T1–T6 all pass; fastest harness in the run.
+    - "qwen3.6-35b-4bit"
+    - "qwen3.5-9b-4bit"
+    - "qwen3-coder-30b-4bit"
+
+streaming:
+  extra_tool_tags: []
+  # pi sends 4 tools per request (read, bash, edit, write) — a tiny prompt,
+  # so the prefix cache hits on every later turn.
+  max_tools: 8
+
+testing:
+  binary: pi
+  # --print = one-shot non-interactive; --no-session = don't persist a
+  # session. With only the rapid-mlx provider authenticated, pi selects it
+  # without --provider/--model flags (verified).
+  query_cmd: "pi --print --no-session '{query}'"
+  query_timeout: 120
+  install_cmd: "npm install -g @earendil-works/pi-coding-agent"
+
+capabilities:
+  function_calling: true
+  streaming: true
+
+known_issues:
+  - "If the user has other providers authenticated (auth.json or env keys), pi may default to one of them — pick the local model with `/model` (Ctrl+S saves it as default) or pass `--provider rapid-mlx --model <id>`."
+  - "\"reasoning\": false is the verified setting: pi then sends no reasoning preference and rapid-mlx auto-disables thinking on tool turns (R12-T1F), which is what makes pi fast. Setting \"reasoning\": true should let /thinking drive reasoning_effort but was NOT verified (T7 inconclusive)."
+  - "Against the Rapid-MLX desktop app (per-launch API key) set \"apiKey\": \"$RAPID_MLX_API_KEY\" — pi interpolates $NAME in models.json — and export the key."
+  - "Follow-ups in print mode: `pi --print --continue '<query>'` reuses the last session in the cwd (verified, T5b)."
+  - "Privacy: PI_TELEMETRY=0 disables pi's own install/update telemetry and provider attribution headers; PI_OFFLINE=1 stops catalog refreshes."

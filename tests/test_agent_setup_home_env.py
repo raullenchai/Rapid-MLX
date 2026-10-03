@@ -27,7 +27,11 @@ from rapid_mlx.agents.adapter import _resolve_config_path, setup_agent_config
 
 @pytest.mark.parametrize(
     ("agent", "home_env", "filename"),
-    [("codex", "CODEX_HOME", "config.toml"), ("hermes", "HERMES_HOME", "config.yaml")],
+    [
+        ("codex", "CODEX_HOME", "config.toml"),
+        ("hermes", "HERMES_HOME", "config.yaml"),
+        ("pi", "PI_CODING_AGENT_DIR", "models.json"),
+    ],
 )
 def test_profile_declares_its_home_env(agent: str, home_env: str, filename: str):
     """Each agent profile names the variable its own CLI honours."""
@@ -37,7 +41,12 @@ def test_profile_declares_its_home_env(agent: str, home_env: str, filename: str)
 
 
 @pytest.mark.parametrize(
-    ("agent", "home_env"), [("codex", "CODEX_HOME"), ("hermes", "HERMES_HOME")]
+    ("agent", "home_env"),
+    [
+        ("codex", "CODEX_HOME"),
+        ("hermes", "HERMES_HOME"),
+        ("pi", "PI_CODING_AGENT_DIR"),
+    ],
 )
 def test_home_env_redirects_the_config_path(agent, home_env, tmp_path, monkeypatch):
     cfg = get_profile(agent).config
@@ -56,7 +65,12 @@ def test_home_env_redirects_the_config_path(agent, home_env, tmp_path, monkeypat
 
 
 @pytest.mark.parametrize(
-    ("agent", "home_env"), [("codex", "CODEX_HOME"), ("hermes", "HERMES_HOME")]
+    ("agent", "home_env"),
+    [
+        ("codex", "CODEX_HOME"),
+        ("hermes", "HERMES_HOME"),
+        ("pi", "PI_CODING_AGENT_DIR"),
+    ],
 )
 def test_empty_or_blank_home_env_falls_back(agent, home_env, monkeypatch):
     """An exported-but-empty variable must not send the config to the cwd."""
