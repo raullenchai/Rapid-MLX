@@ -181,6 +181,20 @@ def _log_level_choice(value: str) -> str:
     return value.upper()
 
 
+def _configure_bootstrap_logging(log_level: str) -> None:
+    """Apply the serve log level before importing diagnostic-heavy modules."""
+
+    import logging
+
+    normalized = _log_level_choice(log_level)
+    level = getattr(logging, normalized, logging.INFO)
+    # Install a handler when this is a standalone CLI process. If an embedder
+    # already owns the handlers, basicConfig is deliberately a no-op while the
+    # explicit root level still honors the serve flag.
+    logging.basicConfig(level=level)
+    logging.getLogger().setLevel(level)
+
+
 def _add_video_job_args(parser: argparse.ArgumentParser) -> None:
     """Register the shared video artifact-store option on a serve parser."""
     parser.add_argument(
@@ -5833,6 +5847,12 @@ def serve_command(args):
                 file=sys.stderr,
             )
             sys.exit(1)
+
+    # Importing the unified server also imports scheduler modules that report
+    # optional kernel installation at INFO. Apply the parsed level first so a
+    # WARNING/ERROR serve does not leak those lines before configure_logging()
+    # gets a chance to run.
+    _configure_bootstrap_logging(args.log_level)
 
     # Import unified server
     from . import server
