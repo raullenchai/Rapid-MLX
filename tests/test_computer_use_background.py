@@ -240,8 +240,10 @@ def test_focus_restored_even_when_click_synthesis_fails(monkeypatch, background)
         raise OSError("SPI failed after focusing the target")
 
     monkeypatch.setattr(background_input, "click", explode)
-    with pytest.raises(OSError):
+    with pytest.raises(errors.ComputerUseError) as exc:
         backend.click("App", x=5, y=5, expected_snapshot=snapshot)
+    assert exc.value.code == "action_failed"
+    assert isinstance(exc.value.__cause__, OSError)
     assert background == [("restore", (999, 555, 4, 101), {})]
 
 
@@ -981,3 +983,26 @@ def test_interrupted_typing_releases_the_held_character(monkeypatch):
     with pytest.raises(KeyboardInterrupt):
         background_input.type_text(4, "abc")
     assert posted == [1, 2, 3, 4]
+
+
+@pytest.mark.parametrize("primitive", ["press_key", "type_text", "scroll"])
+def test_primitive_errors_surface_as_action_failed(monkeypatch, background, primitive):
+    snapshot = _snapshot()
+    monkeypatch.setattr(
+        backend, "_validate_snapshot_window", lambda snap, **k: snap["window"]
+    )
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a, **k: None)
+
+    def explode(*_a, **_k):
+        raise OSError("SPI failed")
+
+    monkeypatch.setattr(background_input, primitive, explode)
+    with pytest.raises(errors.ComputerUseError) as exc:
+        if primitive == "press_key":
+            backend.press_key("App", "Tab", expected_snapshot=snapshot)
+        elif primitive == "type_text":
+            monkeypatch.setattr(backend, "get_app_state", lambda *a, **k: snapshot)
+            backend.type_text("App", "hi")
+        else:
+            backend.scroll("App", "down", expected_snapshot=snapshot)
+    assert exc.value.code == "action_failed"

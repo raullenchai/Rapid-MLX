@@ -1179,6 +1179,16 @@ def _restore_user_focus(
     return _activate_app(previous_pid) if other_app else False
 
 
+def _synthesize(primitive, *args, **kwargs) -> bool:
+    """Run a background input primitive; SPI/ctypes errors become typed."""
+    try:
+        return primitive(*args, **kwargs)
+    except Exception as exc:  # noqa: BLE001 - surfaced as action_failed
+        raise ComputerUseError(
+            "action_failed", f"background input failed: {exc}"
+        ) from exc
+
+
 def _activate_app(pid: int) -> bool:
     running = ax_driver._application_for_pid(pid)
     if running is None:
@@ -1230,7 +1240,8 @@ def _pixel_click(
                 )
             restored = None
             try:
-                if not background_input.click(
+                if not _synthesize(
+                    background_input.click,
                     pid,
                     window_id,
                     float(x),
@@ -1289,7 +1300,7 @@ def _keyboard_background(snapshot: dict, modifiers: int = 0) -> bool:
 def _send_key(snapshot: dict, keycode: int, modifiers: int, background: bool) -> str:
     if background:
         pid, _ = _target_ids(snapshot)
-        if not background_input.press_key(pid, keycode, modifiers):
+        if not _synthesize(background_input.press_key, pid, keycode, modifiers):
             raise ComputerUseError(
                 "action_failed", "background key could not be synthesized"
             )
@@ -2265,7 +2276,7 @@ def type_text(
         ) from exc
     snapshot = _prepare_synthetic_action(app, window_id)
     if _keyboard_background(snapshot):
-        if not background_input.type_text(_target_ids(snapshot)[0], text):
+        if not _synthesize(background_input.type_text, _target_ids(snapshot)[0], text):
             raise ComputerUseError(
                 "action_failed", "background text could not be synthesized"
             )
@@ -3274,7 +3285,8 @@ def scroll(
         window = _validate_snapshot_window(snapshot, point=point, require_topmost=False)
         pid, cg_window_id = _target_ids(snapshot)
         vertical = direction in {"up", "down"}
-        if not background_input.scroll(
+        if not _synthesize(
+            background_input.scroll,
             pid,
             cg_window_id,
             float(point[0]),
