@@ -223,6 +223,7 @@ system-one = [
 # implementation on Metal. Keep this separate from the native MLX decision
 # backends so the default install stays small.
 clef = [
+    "packaging>=24.0",
     "torch>=2.11.0; platform_system == 'Darwin'",
     "torchvision>=0.26.0; platform_system == 'Darwin'",
     "accelerate>=1.4.0",
