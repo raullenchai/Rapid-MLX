@@ -8,6 +8,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
 import yaml
 
 from rapid_mlx.agents import get_profile, load_profiles
@@ -455,3 +456,37 @@ def test_dsh_declined_reasoning_survives_yaml_round_trip(tmp_path, monkeypatch):
     assert entry["reasoningEfforts"] is False
     raw = (tmp_path / "cordis.patch.yml").read_text()
     assert "reasoningEfforts: false" in raw, raw
+
+
+def test_dsh_patch_loader_surfaces_yaml_errors_with_telemetry(tmp_path, monkeypatch):
+    """A corrupt cordis.patch.yml raises YAMLError and reports config_invalid."""
+    from rapid_mlx.agents import setup
+    from rapid_mlx.agents.setup import _load_patch_layers
+
+    patch_file = tmp_path / "cordis.patch.yml"
+    patch_file.write_text("key: [unterminated\n", encoding="utf-8")
+    failures = []
+    monkeypatch.setattr(
+        setup, "track_agent_configure_failed", lambda *args: failures.append(args)
+    )
+
+    with pytest.raises(yaml.YAMLError):
+        _load_patch_layers(patch_file, "deepseek-harness")
+    assert failures == [("config_invalid", "deepseek-harness")]
+
+
+def test_dsh_patch_loader_rejects_non_list_documents(tmp_path, monkeypatch):
+    """dsh's parser wants a top-level array; a mapping is invalid, not empty."""
+    from rapid_mlx.agents import setup
+    from rapid_mlx.agents.setup import _load_patch_layers
+
+    patch_file = tmp_path / "cordis.patch.yml"
+    patch_file.write_text("providers: {}\n", encoding="utf-8")
+    failures = []
+    monkeypatch.setattr(
+        setup, "track_agent_configure_failed", lambda *args: failures.append(args)
+    )
+
+    with pytest.raises(ValueError, match="must contain a YAML list"):
+        _load_patch_layers(patch_file, "deepseek-harness")
+    assert failures == [("config_invalid", "deepseek-harness")]

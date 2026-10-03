@@ -72,15 +72,17 @@ inference._record_completed_request(
 
 ## Counter cardinality
 
-The closed registry currently has 8 endpoint values (including `other`), 27
-caller values, and one `ok` key plus one `failed` key per
-`inference_error_class` value (10): 8 × 27 × 11 = 2,376 worst-case counter keys
-per model. `store.MAX_KEYS = 67_000` therefore holds every combination for 28
-complete models (`28 × 2,376 = 66,528`); the 29th model is where a fully
+The closed registry currently has 8 endpoint values (including `other`), 32
+caller values (27 before the #4041 harness labels — codex, opencode, pi,
+qwen-code, deepseek-harness — joined), and one `ok` key plus one `failed` key
+per `inference_error_class` value (10): 8 × 32 × 11 = 2,816 worst-case counter
+keys per model. `store.MAX_KEYS = 80_000` therefore holds every combination for
+28 complete models (`28 × 2,816 = 78,848`); the 29th model is where a fully
 saturated worst-case installation begins exhausting new keys. The cap was
-raised from 2,000 to 12,000 when that allowed only 5 complete models, and from
+raised from 2,000 to 12,000 when that allowed only 5 complete models, from
 12,000 to 67,000 when failures started being counted per class (which would
-otherwise have left 5). Even 67,000 short rows remain a small local SQLite
+otherwise have left 5), and from 67,000 to 80,000 when #4041 added the five
+harness caller labels. Even 80,000 short rows remain a small local SQLite
 database, and existing keys continue counting at the cap. The longest key
 the registry permits (its 128-character `model_id` cap on a failed request) is
 204 characters, under `store.MAX_KEY_LENGTH = 256`; `telemetry_model_id()`
