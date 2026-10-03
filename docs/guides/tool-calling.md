@@ -272,11 +272,13 @@ that does not exist, for example `read` when the client offered `shell` and
 With `qwen3_coder_xml`, a complete call block to an undeclared tool
 (`<tool_call>`, one `<function=NAME>…</function>`, `</tool_call>`) is removed
 from the response text, and the server logs a warning naming the tool. The
-block is removed only when the request declared tools and no tool call came
-earlier in the same response. The response then has `finish_reason: "stop"`
+block is removed only when the request declared tools, it is not inside
+Markdown code (a ```` ``` ```` or `~~~` fence, or inline code on its line), and
+no other tool-call markup came earlier in the same response. The response then has `finish_reason: "stop"`
 and whatever text the model wrote around the block. Other text that only looks
-like tool-call markup, such as a bare `<function=…>` example or an unfinished
-block, is returned unchanged, so prose about the format keeps working.
+like tool-call markup, such as a bare `<function=…>` example, a block inside a
+code example, or an unfinished block, is returned unchanged, so prose about the
+format keeps working.
 
 ## CLI Reference
 

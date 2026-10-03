@@ -13,9 +13,11 @@ Contract after the fix:
 * A LONE CANONICAL BLOCK -- ``<tool_call>``, one closed ``<function=NAME>``,
   ``</tool_call>``, only whitespace between -- with an undeclared NAME is an
   attempted call: it is removed from the content and a WARNING is logged.
-  This applies only when the request declared tools (not ``tool_choice=none``)
-  and no call was admitted before it in the same response, so streaming can
-  decide causally and agree with non-streaming.
+  This applies only when the request declared tools (not ``tool_choice=none``),
+  the block is not inside Markdown code (an open ``` / ~~~ fence or an inline
+  code span on its line), and every ``<function=`` opener before it belongs
+  to an earlier dropped block, so streaming can decide causally and agree
+  with non-streaming at any chunk size.
 * Everything else keeps origin/main's preserve-as-text behaviour: bare
   ``<function=…>`` spans (prose about the wire format), shared wrappers,
   unclosed or truncated blocks, requests without tools.
@@ -36,7 +38,8 @@ import pytest
 
 from rapid_mlx.config import get_config
 from rapid_mlx.service import helpers
-from tests.qwen3coder_stream_harness import non_stream, stream
+from rapid_mlx.tool_parsers.qwen3coder_tool_parser import Qwen3CoderToolParser
+from tests.qwen3coder_stream_harness import deltas, non_stream, stream
 
 GOLDEN = json.loads(
     (
@@ -68,8 +71,9 @@ def test_non_streaming(case):
     got = _shape(non_stream(case["text"], REQUESTS[case["request"]]))
     if case["changed_by_4038"]:
         assert got == case["expected"]
-        assert "<function=" in case["main_non_stream"]["content"]
-        assert "<function=" not in got["content"]
+        assert got["content"].count("<function=") < case["main_non_stream"][
+            "content"
+        ].count("<function=")
     else:
         assert got == case["main_non_stream"]
 
@@ -78,7 +82,14 @@ def test_non_streaming(case):
 @pytest.mark.parametrize("case", CASES, ids=[c["name"] for c in CASES])
 def test_streaming(case, size):
     got = _shape(stream(case["text"], REQUESTS[case["request"]], size))
-    if case["changed_by_4038"]:
+    if "after_drop_main" in case:
+        # The leading block is dropped; the rest streams exactly as
+        # origin/main streams that remaining text on its own.
+        after = case["after_drop_main"]
+        assert case["text"].endswith(after["remainder"])
+        assert case["expected"] == after["non_stream"]
+        assert got == after["stream"][str(size)]
+    elif case["changed_by_4038"]:
         assert got == case["expected"]
     else:
         overrides = case.get("stream_overrides", {})
@@ -240,3 +251,64 @@ def test_many_dropped_blocks_in_one_delta_do_not_recurse(caplog):
     with caplog.at_level(logging.WARNING, logger=LOGGER):
         assert stream(text, request, 0) == ([], "ok")
     assert _drop_logs(caplog) == 2000
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "lone_undeclared_in_code_fence",
+        "lone_undeclared_in_tilde_fence",
+        "lone_undeclared_in_inline_code",
+        "lone_undeclared_in_unclosed_fence",
+        "short_fence_does_not_close",
+    ],
+)
+def test_blocks_inside_markdown_code_are_documentation(name):
+    case = _case(name)
+    assert not case["changed_by_4038"]
+    assert "<tool_call>" in case["main_non_stream"]["content"]
+
+
+def test_reused_parser_logs_every_response(caplog):
+    """Logging state is per response: a parser reused for several
+    non-streaming responses logs each one's drops."""
+    parser = Qwen3CoderToolParser(None)
+    case = _case("goose_e3_lone_undeclared")
+    request = REQUESTS[case["request"]]
+    with caplog.at_level(logging.WARNING, logger=LOGGER):
+        for _ in range(3):
+            parser.extract_tool_calls(case["text"], request)
+    assert _drop_logs(caplog) == 3
+
+
+def test_reused_parser_logs_after_a_stream(caplog):
+    """A streamed response's drops are logged once (finalize re-parses the
+    same text); a later, different response on the same parser logs again,
+    with or without reset()."""
+    parser = Qwen3CoderToolParser(None)
+    case = _case("goose_e3_lone_undeclared")
+    request = REQUESTS[case["request"]]
+    text = case["text"]
+    with caplog.at_level(logging.WARNING, logger=LOGGER):
+        previous = ""
+        for piece in deltas(text, 5):
+            parser.extract_tool_calls_streaming(
+                previous, previous + piece, piece, request=request
+            )
+            previous += piece
+        parser.extract_tool_calls(text, request)  # the finalize re-parse
+        assert _drop_logs(caplog) == 1
+        parser.extract_tool_calls("Other.\n" + text, request)
+        assert _drop_logs(caplog) == 2
+        parser.reset()
+        parser.extract_tool_calls(text, request)
+        assert _drop_logs(caplog) == 3
+
+
+def test_markdown_code_tracker_answers_out_of_order_queries():
+    from rapid_mlx.tool_parsers.qwen3coder_tool_parser import _MarkdownCodeTracker
+
+    text = "```\nx\n```\nafter <tool_call>open"
+    tracker = _MarkdownCodeTracker()
+    assert tracker.inside(text, len(text)) is False
+    assert tracker.inside(text, 4) is True  # earlier position, inside the fence

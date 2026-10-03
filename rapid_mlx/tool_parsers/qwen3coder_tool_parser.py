@@ -67,6 +67,76 @@ class _Continue(NamedTuple):
 _StepResult = dict[str, Any] | _Continue | None
 
 
+_MARKDOWN_FENCE_RE = re.compile(r"[ ]{0,3}(`{3,}|~{3,})")
+
+
+class _MarkdownCodeTracker:
+    """Whether a position lies inside Markdown code: an open fenced block
+    (``` or ~~~), or an inline code span opened earlier on the same line.
+
+    Decided from the text before the position alone, so streaming (which
+    only has a prefix) and non-streaming reach the same answer (#4038).
+    Complete ``<tool_call>…</tool_call>`` spans are skipped, so backticks in
+    an earlier call's arguments do not count. Queries must come at
+    non-decreasing positions of one growing text; the scan resumes where
+    the previous query stopped, so many queries cost linear time.
+    """
+
+    _OPEN = "<tool_call>"
+    _CLOSE = "</tool_call>"
+
+    def __init__(self) -> None:
+        self._committed = 0
+        self._fence: str | None = None
+        self._line = ""
+
+    def inside(self, text: str, pos: int) -> bool:
+        if pos < self._committed:
+            # Out-of-order query: answer it from scratch.
+            return _MarkdownCodeTracker().inside(text, pos)
+        cursor = self._committed
+        while cursor < pos:
+            start = text.find(self._OPEN, cursor, pos)
+            if start == -1:
+                self._feed(text[cursor:pos])
+                cursor = pos
+                break
+            self._feed(text[cursor:start])
+            close = text.find(self._CLOSE, start + len(self._OPEN), pos)
+            if close == -1 or close + len(self._CLOSE) > pos:
+                # Unclosed before ``pos``: its text counts for this query
+                # only; resume from the opener next time.
+                self._committed = start
+                fence, line = self._fence, self._line
+                self._feed(text[start:pos])
+                result = self._result()
+                self._fence, self._line = fence, line
+                return result
+            cursor = close + len(self._CLOSE)
+        self._committed = max(self._committed, cursor)
+        return self._result()
+
+    def _feed(self, chunk: str) -> None:
+        *done, self._line = (self._line + chunk).split("\n")
+        for line in done:
+            match = _MARKDOWN_FENCE_RE.match(line)
+            if self._fence is None:
+                if match:
+                    self._fence = match.group(1)
+            elif (
+                match
+                and match.group(1)[0] == self._fence[0]
+                and len(match.group(1)) >= len(self._fence)
+                and not line[match.end() :].strip()
+            ):
+                self._fence = None
+
+    def _result(self) -> bool:
+        if self._fence is not None or _MARKDOWN_FENCE_RE.match(self._line):
+            return True
+        return self._line.count("`") % 2 == 1
+
+
 def _merge_content(
     content: str, result: dict[str, Any] | None
 ) -> dict[str, Any] | None:
@@ -355,6 +425,21 @@ class Qwen3CoderToolParser(ToolParser):
         self._undeclared_declared: set[str] = set()
         self._undeclared_text = ""
         self._undeclared_dropped = 0
+        self._undeclared_logged = 0
+        # Full text of the current stream (before ``_undeclared_offset``
+        # slicing): the Markdown-code check and the finalize log dedup use it.
+        self._stream_text = ""
+        # Set once the stream rejects any candidate as content; later blocks
+        # are then never dropped (non-streaming: an earlier ``<function=``
+        # opener outside dropped blocks) (#4038).
+        self._undeclared_blocked = False
+        self._code_tracker = _MarkdownCodeTracker()
+
+    def reset(self) -> None:
+        """Reset for a new request, including the per-response #4038 state
+        (so a reused parser logs every response's drops)."""
+        super().reset()
+        self._stream_text = ""
         self._undeclared_logged = 0
 
     def _emit_string_increment(self, param_name: str, value_text: str) -> str:
@@ -764,7 +849,22 @@ class Qwen3CoderToolParser(ToolParser):
             tool_calls: list[dict[str, Any]] = []
             accepted_spans: list[tuple[int, int]] = []
             dropped: list[tuple[int, int, str]] = []
+            # #4038 drop gate: every ``<function=`` opener before a dropped
+            # block must belong to an earlier dropped block.
+            openers = self._function_start_positions(model_output)
+            opener_index = 0
+            dropped_openers: set[int] = set()
+            blocked = False
+            code = _MarkdownCodeTracker()
             for fc_str, span_start, span_end, is_wrapped in candidates:
+                function_start = model_output.find(self.tool_call_prefix, span_start)
+                while (
+                    opener_index < len(openers)
+                    and openers[opener_index] < function_start
+                ):
+                    if openers[opener_index] not in dropped_openers:
+                        blocked = True
+                    opener_index += 1
                 candidate_name = fc_str.split(">", 1)[0]
                 if (
                     not is_wrapped
@@ -790,19 +890,29 @@ class Qwen3CoderToolParser(ToolParser):
                     if (
                         declared
                         and not tool_calls
+                        and not blocked
                         and self._is_lone_canonical_block(
                             model_output, span_start, span_end
                         )
+                        and not code.inside(model_output, span_start)
                     ):
                         dropped.append((span_start, span_end, tc["name"]))
+                        dropped_openers.add(function_start)
                     continue
                 tool_calls.append(tc)
                 accepted_spans.append((span_start, span_end))
 
-            for index, (_, _, name) in enumerate(dropped):
-                if index >= self._undeclared_logged:
-                    self._log_undeclared_drop(name, declared)
-            self._undeclared_logged = max(self._undeclared_logged, len(dropped))
+            # Log each drop once per response. When this re-parses the stream
+            # this parser just handled (the post-processor's finalize pass),
+            # the streaming path has already logged the first drops.
+            same_stream = bool(self._stream_text) and model_output.startswith(
+                self._stream_text
+            )
+            already_logged = self._undeclared_logged if same_stream else 0
+            for _, _, name in dropped[already_logged:]:
+                self._log_undeclared_drop(name, declared)
+            if same_stream:
+                self._undeclared_logged = max(already_logged, len(dropped))
 
             if not tool_calls and not dropped:
                 return ExtractedToolCallInformation(
@@ -871,11 +981,19 @@ class Qwen3CoderToolParser(ToolParser):
         lone canonical block: wrapped (only whitespace between ``<tool_call>``
         and ``<function=``) and no call emitted before it, mirroring the
         non-streaming ``not tool_calls`` condition."""
-        if self.prev_tool_call_arr or self.current_tool_index:
+        if (
+            self.prev_tool_call_arr
+            or self.current_tool_index
+            or self._undeclared_blocked
+        ):
             return False
         wrapper = text.rfind(self.tool_call_start_token, 0, function_start)
         if wrapper < 0 or (
             self._pending_tool_start is not None and wrapper < self._pending_tool_start
+        ):
+            return False
+        if self._code_tracker.inside(
+            self._stream_text, self._undeclared_offset + wrapper
         ):
             return False
         return not text[
@@ -884,12 +1002,17 @@ class Qwen3CoderToolParser(ToolParser):
 
     def _advance_past(self, consumed: int) -> None:
         """Restart the state machine after ``consumed`` chars of the
-        post-offset text, keeping the per-stream request and drop counters."""
+        post-offset text, keeping the per-stream request, offset, drop
+        counters and stream text. ``consumed=0`` is the in-place restart
+        used when a candidate is rejected as content."""
         saved = (
             self._streaming_request,
             self._undeclared_offset + consumed,
             self._undeclared_dropped,
             self._undeclared_logged,
+            self._stream_text,
+            self._undeclared_blocked,
+            self._code_tracker,
         )
         self._reset_streaming_state()
         (
@@ -897,7 +1020,16 @@ class Qwen3CoderToolParser(ToolParser):
             self._undeclared_offset,
             self._undeclared_dropped,
             self._undeclared_logged,
+            self._stream_text,
+            self._undeclared_blocked,
+            self._code_tracker,
         ) = saved
+
+    def _reject_candidate(self) -> None:
+        """Restart in place after a candidate was rejected as content; no
+        later block in this stream is dropped (#4038)."""
+        self._advance_past(0)
+        self._undeclared_blocked = True
 
     def _begin_undeclared_block(
         self,
@@ -1170,6 +1302,7 @@ class Qwen3CoderToolParser(ToolParser):
             self._streaming_request = request
         elif request is not None and self._streaming_request is None:
             self._streaming_request = request
+        self._stream_text = current_text
 
         if not delta_text:
             return None
@@ -1305,9 +1438,7 @@ class Qwen3CoderToolParser(ToolParser):
                                 declared,
                             )
                         if candidate_name not in declared:
-                            saved_request = self._streaming_request
-                            self._reset_streaming_state()
-                            self._streaming_request = saved_request
+                            self._reject_candidate()
                             return {"content": delta_text}
                         candidate_text = current_text[header_start:]
                         if (
@@ -1315,9 +1446,7 @@ class Qwen3CoderToolParser(ToolParser):
                             and self.function_end_token in candidate_text
                             and self.parameter_prefix not in candidate_text
                         ):
-                            saved_request = self._streaming_request
-                            self._reset_streaming_state()
-                            self._streaming_request = saved_request
+                            self._reject_candidate()
                             return {"content": delta_text}
                 content_before = (
                     delta_text[:opener_pos] if opener_pos < len(delta_text) else ""
@@ -1384,9 +1513,7 @@ class Qwen3CoderToolParser(ToolParser):
                         rejected = (
                             current_text[start:] if start is not None else delta_text
                         )
-                        saved_request = self._streaming_request
-                        self._reset_streaming_state()
-                        self._streaming_request = saved_request
+                        self._reject_candidate()
                         return {"content": rejected}
                     if (
                         not self._pending_tool_wrapped
@@ -1404,9 +1531,7 @@ class Qwen3CoderToolParser(ToolParser):
                         rejected = (
                             current_text[start:] if start is not None else delta_text
                         )
-                        saved_request = self._streaming_request
-                        self._reset_streaming_state()
-                        self._streaming_request = saved_request
+                        self._reject_candidate()
                         return {"content": rejected}
                     first_param = tool_text.find(self.parameter_prefix, func_end)
                     if first_param >= 0 and func_close_idx == -1:
