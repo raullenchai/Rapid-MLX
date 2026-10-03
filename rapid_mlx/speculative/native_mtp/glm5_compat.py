@@ -52,8 +52,17 @@ def install_glm5_mtp_compatibility() -> bool:
 
     with _LOCK:
         from mlx_vlm.models.linear import linear
-        from mlx_vlm.speculative.drafters import glm5_next_mtp as package
+        from mlx_vlm.speculative.drafters import (
+            glm5_next_mtp as pinned_package,
+        )
         from mlx_vlm.speculative.drafters.glm5_next_mtp import (
+            glm5_next_mtp as pinned_implementation,
+        )
+
+        from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters import (
+            glm5_next_mtp as package,
+        )
+        from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.glm5_next_mtp import (
             glm5_next_mtp as implementation,
         )
 
@@ -131,9 +140,25 @@ def install_glm5_mtp_compatibility() -> bool:
         RapidGlm5NextMTPDraftModel.__qualname__ = "Glm5NextMTPDraftModel"
         RapidGlm5NextMTPDraftModel.__module__ = implementation.__name__
 
-        implementation.Glm5NextMTPDraftModel = RapidGlm5NextMTPDraftModel
-        package.Glm5NextMTPDraftModel = RapidGlm5NextMTPDraftModel
-        package.Model = RapidGlm5NextMTPDraftModel
+        # setattr (not attribute assignment): the vendored package is typed,
+        # and this compat shim intentionally swaps the class object.
+        # setattr with constant names is intentional: the packages are typed
+        # and this compat shim swaps the class object (mypy misc). The swap
+        # covers BOTH registries: the vendored package (step 3c consumers)
+        # and the pinned package, whose class object pinned ``load_model``
+        # still resolves at construction time during the transition.
+        setattr(implementation, "Glm5NextMTPDraftModel", RapidGlm5NextMTPDraftModel)  # noqa: B010
+        setattr(package, "Glm5NextMTPDraftModel", RapidGlm5NextMTPDraftModel)  # noqa: B010
+        setattr(package, "Model", RapidGlm5NextMTPDraftModel)  # noqa: B010
+        setattr(  # noqa: B010
+            pinned_implementation, "Glm5NextMTPDraftModel", RapidGlm5NextMTPDraftModel
+        )
+        setattr(  # noqa: B010
+            pinned_package, "Glm5NextMTPDraftModel", RapidGlm5NextMTPDraftModel
+        )
+        setattr(  # noqa: B010
+            pinned_package, "Model", RapidGlm5NextMTPDraftModel
+        )
 
         _INSTALLED = True
         return True

@@ -2209,6 +2209,39 @@ def _add_pull_parser(
     )
 
 
+def _add_import_parser(
+    subparsers: "argparse._SubParsersAction[_PortContextArgumentParser]",
+) -> None:
+    """Register the ``import`` subcommand."""
+    import_parser = subparsers.add_parser(
+        "import",
+        help="Convert a bf16/fp16 safetensors model to quantized MLX (explicit, "
+        "cancel-safe)",
+    )
+    import_parser.add_argument(
+        "source", help="Hugging Face repo id (org/name) or local model directory"
+    )
+    import_parser.add_argument(
+        "--quantize",
+        type=int,
+        choices=[2, 3, 4, 6, 8],
+        default=4,
+        metavar="BITS",
+        help="Quantization bits: 2, 3, 4, 6 or 8 (default: 4).",
+    )
+    import_parser.add_argument(
+        "--name",
+        default=None,
+        help="Name to serve it by (default: <source-name>-<bits>bit).",
+    )
+    import_parser.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help="Replace an existing import of the same name from another source.",
+    )
+
+
 def _add_rm_parser(
     subparsers: "argparse._SubParsersAction[_PortContextArgumentParser]",
 ) -> None:
@@ -2764,6 +2797,7 @@ Examples:
     _add_recipe_parser(subparsers)
     _add_help_parser(subparsers)
     _add_pull_parser(subparsers)
+    _add_import_parser(subparsers)
     _add_rm_parser(subparsers)
     _add_alias_parser(subparsers)
     _add_upgrade_parser(subparsers)

@@ -5,6 +5,8 @@ Performance benchmarks for rapid-mlx on Apple Silicon.
 ## Benchmark Types
 
 - [LLM Benchmarks](llm.md) - Text generation performance
+- [Measured model recommendations](model-recommendations.md) - RAM-tier gates,
+  methodology, measurements, and caveats behind Desktop defaults
 - [Recent large models on M3 Ultra](recent-large-models-m3-ultra.md) - Qwen3.8
   27B, Qwen3.8 Flash-Next, and GLM-5.3-Flash
 - [Qwen3.8 Flash-Next on M3 Ultra](qwen38-flash-next-m3-ultra.md) -

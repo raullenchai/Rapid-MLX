@@ -723,11 +723,18 @@ def test_emit_rejection_serve(monkeypatch):
     monkeypatch.setattr(
         me,
         "emit_model_serve_failed",
-        lambda exc, alias_or_path: seen.update(exc=exc, ref=alias_or_path),
+        lambda exc, alias_or_path, failure_stage: seen.update(
+            exc=exc, ref=alias_or_path, event_stage=failure_stage
+        ),
     )
     exc = pf.PreflightRejectedError(pf.UNSUPPORTED_FORMAT)
     pf._emit_rejection(_args(_original_alias="my-alias"), exc)
-    assert seen == {"s": "preflight", "exc": exc, "ref": "my-alias"}
+    assert seen == {
+        "s": "preflight",
+        "exc": exc,
+        "ref": "my-alias",
+        "event_stage": "preflight",
+    }
 
 
 def test_emit_rejection_pull(monkeypatch):

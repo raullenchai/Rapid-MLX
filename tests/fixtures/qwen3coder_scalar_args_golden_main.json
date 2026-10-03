@@ -1,0 +1,3073 @@
+{
+ "_comment": "qwen3_coder_xml non-streaming arguments on origin/main 9221ff773 (issue #4037 golden). Regenerate only from origin/main.",
+ "cases": [
+  {
+   "schema_key": "number",
+   "schema": {
+    "type": "number"
+   },
+   "literal": "10000",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n10000\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 10000.0}"
+  },
+  {
+   "schema_key": "number",
+   "schema": {
+    "type": "number"
+   },
+   "literal": "-5",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n-5\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": -5.0}"
+  },
+  {
+   "schema_key": "number",
+   "schema": {
+    "type": "number"
+   },
+   "literal": "+5",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n+5\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 5.0}"
+  },
+  {
+   "schema_key": "number",
+   "schema": {
+    "type": "number"
+   },
+   "literal": "0",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n0\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 0.0}"
+  },
+  {
+   "schema_key": "number",
+   "schema": {
+    "type": "number"
+   },
+   "literal": "-0",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n-0\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": -0.0}"
+  },
+  {
+   "schema_key": "number",
+   "schema": {
+    "type": "number"
+   },
+   "literal": "007",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n007\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 7.0}"
+  },
+  {
+   "schema_key": "number",
+   "schema": {
+    "type": "number"
+   },
+   "literal": "1.5",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1.5\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 1.5}"
+  },
+  {
+   "schema_key": "number",
+   "schema": {
+    "type": "number"
+   },
+   "literal": "1.0",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1.0\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 1.0}"
+  },
+  {
+   "schema_key": "number",
+   "schema": {
+    "type": "number"
+   },
+   "literal": "-2.50",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n-2.50\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": -2.5}"
+  },
+  {
+   "schema_key": "number",
+   "schema": {
+    "type": "number"
+   },
+   "literal": "1e3",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1e3\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 1000.0}"
+  },
+  {
+   "schema_key": "number",
+   "schema": {
+    "type": "number"
+   },
+   "literal": "1E-2",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1E-2\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 0.01}"
+  },
+  {
+   "schema_key": "number",
+   "schema": {
+    "type": "number"
+   },
+   "literal": "-2.5e+3",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n-2.5e+3\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": -2500.0}"
+  },
+  {
+   "schema_key": "number",
+   "schema": {
+    "type": "number"
+   },
+   "literal": " 42 ",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n 42 \n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 42.0}"
+  },
+  {
+   "schema_key": "number",
+   "schema": {
+    "type": "number"
+   },
+   "literal": "\n42\n",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n\n42\n\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 42.0}"
+  },
+  {
+   "schema_key": "number",
+   "schema": {
+    "type": "number"
+   },
+   "literal": "1_000",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1_000\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 1000.0}"
+  },
+  {
+   "schema_key": "number",
+   "schema": {
+    "type": "number"
+   },
+   "literal": "١٢",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n١٢\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 12.0}"
+  },
+  {
+   "schema_key": "number",
+   "schema": {
+    "type": "number"
+   },
+   "literal": "abc",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\nabc\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"abc\"}"
+  },
+  {
+   "schema_key": "number",
+   "schema": {
+    "type": "number"
+   },
+   "literal": "",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"\"}"
+  },
+  {
+   "schema_key": "number",
+   "schema": {
+    "type": "number"
+   },
+   "literal": "null",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\nnull\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": null}"
+  },
+  {
+   "schema_key": "number",
+   "schema": {
+    "type": "number"
+   },
+   "literal": "NaN",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\nNaN\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": NaN}"
+  },
+  {
+   "schema_key": "number",
+   "schema": {
+    "type": "number"
+   },
+   "literal": "inf",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\ninf\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": Infinity}"
+  },
+  {
+   "schema_key": "number",
+   "schema": {
+    "type": "number"
+   },
+   "literal": "99999999999999999999",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n99999999999999999999\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 1e+20}"
+  },
+  {
+   "schema_key": "number",
+   "schema": {
+    "type": "number"
+   },
+   "literal": "0x10",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n0x10\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"0x10\"}"
+  },
+  {
+   "schema_key": "number",
+   "schema": {
+    "type": "number"
+   },
+   "literal": ".5",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n.5\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 0.5}"
+  },
+  {
+   "schema_key": "number",
+   "schema": {
+    "type": "number"
+   },
+   "literal": "5.",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n5.\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 5.0}"
+  },
+  {
+   "schema_key": "number",
+   "schema": {
+    "type": "number"
+   },
+   "literal": "1 2",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1 2\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"1 2\"}"
+  },
+  {
+   "schema_key": "number_upper",
+   "schema": {
+    "type": "Number"
+   },
+   "literal": "10000",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n10000\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 10000.0}"
+  },
+  {
+   "schema_key": "number_upper",
+   "schema": {
+    "type": "Number"
+   },
+   "literal": "-5",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n-5\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": -5.0}"
+  },
+  {
+   "schema_key": "number_upper",
+   "schema": {
+    "type": "Number"
+   },
+   "literal": "+5",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n+5\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 5.0}"
+  },
+  {
+   "schema_key": "number_upper",
+   "schema": {
+    "type": "Number"
+   },
+   "literal": "0",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n0\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 0.0}"
+  },
+  {
+   "schema_key": "number_upper",
+   "schema": {
+    "type": "Number"
+   },
+   "literal": "-0",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n-0\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": -0.0}"
+  },
+  {
+   "schema_key": "number_upper",
+   "schema": {
+    "type": "Number"
+   },
+   "literal": "007",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n007\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 7.0}"
+  },
+  {
+   "schema_key": "number_upper",
+   "schema": {
+    "type": "Number"
+   },
+   "literal": "1.5",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1.5\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 1.5}"
+  },
+  {
+   "schema_key": "number_upper",
+   "schema": {
+    "type": "Number"
+   },
+   "literal": "1.0",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1.0\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 1.0}"
+  },
+  {
+   "schema_key": "number_upper",
+   "schema": {
+    "type": "Number"
+   },
+   "literal": "-2.50",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n-2.50\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": -2.5}"
+  },
+  {
+   "schema_key": "number_upper",
+   "schema": {
+    "type": "Number"
+   },
+   "literal": "1e3",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1e3\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 1000.0}"
+  },
+  {
+   "schema_key": "number_upper",
+   "schema": {
+    "type": "Number"
+   },
+   "literal": "1E-2",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1E-2\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 0.01}"
+  },
+  {
+   "schema_key": "number_upper",
+   "schema": {
+    "type": "Number"
+   },
+   "literal": "-2.5e+3",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n-2.5e+3\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": -2500.0}"
+  },
+  {
+   "schema_key": "number_upper",
+   "schema": {
+    "type": "Number"
+   },
+   "literal": " 42 ",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n 42 \n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 42.0}"
+  },
+  {
+   "schema_key": "number_upper",
+   "schema": {
+    "type": "Number"
+   },
+   "literal": "\n42\n",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n\n42\n\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 42.0}"
+  },
+  {
+   "schema_key": "number_upper",
+   "schema": {
+    "type": "Number"
+   },
+   "literal": "1_000",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1_000\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 1000.0}"
+  },
+  {
+   "schema_key": "number_upper",
+   "schema": {
+    "type": "Number"
+   },
+   "literal": "١٢",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n١٢\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 12.0}"
+  },
+  {
+   "schema_key": "number_upper",
+   "schema": {
+    "type": "Number"
+   },
+   "literal": "abc",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\nabc\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"abc\"}"
+  },
+  {
+   "schema_key": "number_upper",
+   "schema": {
+    "type": "Number"
+   },
+   "literal": "",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"\"}"
+  },
+  {
+   "schema_key": "number_upper",
+   "schema": {
+    "type": "Number"
+   },
+   "literal": "null",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\nnull\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": null}"
+  },
+  {
+   "schema_key": "number_upper",
+   "schema": {
+    "type": "Number"
+   },
+   "literal": "NaN",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\nNaN\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": NaN}"
+  },
+  {
+   "schema_key": "number_upper",
+   "schema": {
+    "type": "Number"
+   },
+   "literal": "inf",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\ninf\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": Infinity}"
+  },
+  {
+   "schema_key": "number_upper",
+   "schema": {
+    "type": "Number"
+   },
+   "literal": "99999999999999999999",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n99999999999999999999\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 1e+20}"
+  },
+  {
+   "schema_key": "number_upper",
+   "schema": {
+    "type": "Number"
+   },
+   "literal": "0x10",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n0x10\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"0x10\"}"
+  },
+  {
+   "schema_key": "number_upper",
+   "schema": {
+    "type": "Number"
+   },
+   "literal": ".5",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n.5\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 0.5}"
+  },
+  {
+   "schema_key": "number_upper",
+   "schema": {
+    "type": "Number"
+   },
+   "literal": "5.",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n5.\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 5.0}"
+  },
+  {
+   "schema_key": "number_upper",
+   "schema": {
+    "type": "Number"
+   },
+   "literal": "1 2",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1 2\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"1 2\"}"
+  },
+  {
+   "schema_key": "numeric",
+   "schema": {
+    "type": "numeric"
+   },
+   "literal": "10000",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n10000\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 10000.0}"
+  },
+  {
+   "schema_key": "numeric",
+   "schema": {
+    "type": "numeric"
+   },
+   "literal": "-5",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n-5\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": -5.0}"
+  },
+  {
+   "schema_key": "numeric",
+   "schema": {
+    "type": "numeric"
+   },
+   "literal": "+5",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n+5\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 5.0}"
+  },
+  {
+   "schema_key": "numeric",
+   "schema": {
+    "type": "numeric"
+   },
+   "literal": "0",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n0\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 0.0}"
+  },
+  {
+   "schema_key": "numeric",
+   "schema": {
+    "type": "numeric"
+   },
+   "literal": "-0",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n-0\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": -0.0}"
+  },
+  {
+   "schema_key": "numeric",
+   "schema": {
+    "type": "numeric"
+   },
+   "literal": "007",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n007\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 7.0}"
+  },
+  {
+   "schema_key": "numeric",
+   "schema": {
+    "type": "numeric"
+   },
+   "literal": "1.5",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1.5\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 1.5}"
+  },
+  {
+   "schema_key": "numeric",
+   "schema": {
+    "type": "numeric"
+   },
+   "literal": "1.0",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1.0\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 1.0}"
+  },
+  {
+   "schema_key": "numeric",
+   "schema": {
+    "type": "numeric"
+   },
+   "literal": "-2.50",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n-2.50\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": -2.5}"
+  },
+  {
+   "schema_key": "numeric",
+   "schema": {
+    "type": "numeric"
+   },
+   "literal": "1e3",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1e3\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 1000.0}"
+  },
+  {
+   "schema_key": "numeric",
+   "schema": {
+    "type": "numeric"
+   },
+   "literal": "1E-2",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1E-2\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 0.01}"
+  },
+  {
+   "schema_key": "numeric",
+   "schema": {
+    "type": "numeric"
+   },
+   "literal": "-2.5e+3",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n-2.5e+3\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": -2500.0}"
+  },
+  {
+   "schema_key": "numeric",
+   "schema": {
+    "type": "numeric"
+   },
+   "literal": " 42 ",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n 42 \n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 42.0}"
+  },
+  {
+   "schema_key": "numeric",
+   "schema": {
+    "type": "numeric"
+   },
+   "literal": "\n42\n",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n\n42\n\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 42.0}"
+  },
+  {
+   "schema_key": "numeric",
+   "schema": {
+    "type": "numeric"
+   },
+   "literal": "1_000",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1_000\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 1000.0}"
+  },
+  {
+   "schema_key": "numeric",
+   "schema": {
+    "type": "numeric"
+   },
+   "literal": "١٢",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n١٢\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 12.0}"
+  },
+  {
+   "schema_key": "numeric",
+   "schema": {
+    "type": "numeric"
+   },
+   "literal": "abc",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\nabc\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"abc\"}"
+  },
+  {
+   "schema_key": "numeric",
+   "schema": {
+    "type": "numeric"
+   },
+   "literal": "",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"\"}"
+  },
+  {
+   "schema_key": "numeric",
+   "schema": {
+    "type": "numeric"
+   },
+   "literal": "null",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\nnull\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": null}"
+  },
+  {
+   "schema_key": "numeric",
+   "schema": {
+    "type": "numeric"
+   },
+   "literal": "NaN",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\nNaN\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": NaN}"
+  },
+  {
+   "schema_key": "numeric",
+   "schema": {
+    "type": "numeric"
+   },
+   "literal": "inf",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\ninf\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": Infinity}"
+  },
+  {
+   "schema_key": "numeric",
+   "schema": {
+    "type": "numeric"
+   },
+   "literal": "99999999999999999999",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n99999999999999999999\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 1e+20}"
+  },
+  {
+   "schema_key": "numeric",
+   "schema": {
+    "type": "numeric"
+   },
+   "literal": "0x10",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n0x10\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"0x10\"}"
+  },
+  {
+   "schema_key": "numeric",
+   "schema": {
+    "type": "numeric"
+   },
+   "literal": ".5",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n.5\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 0.5}"
+  },
+  {
+   "schema_key": "numeric",
+   "schema": {
+    "type": "numeric"
+   },
+   "literal": "5.",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n5.\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 5.0}"
+  },
+  {
+   "schema_key": "numeric",
+   "schema": {
+    "type": "numeric"
+   },
+   "literal": "1 2",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1 2\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"1 2\"}"
+  },
+  {
+   "schema_key": "number_nullable",
+   "schema": {
+    "type": [
+     "number",
+     "null"
+    ]
+   },
+   "literal": "10000",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n10000\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 10000.0}"
+  },
+  {
+   "schema_key": "number_nullable",
+   "schema": {
+    "type": [
+     "number",
+     "null"
+    ]
+   },
+   "literal": "-5",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n-5\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": -5.0}"
+  },
+  {
+   "schema_key": "number_nullable",
+   "schema": {
+    "type": [
+     "number",
+     "null"
+    ]
+   },
+   "literal": "+5",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n+5\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 5.0}"
+  },
+  {
+   "schema_key": "number_nullable",
+   "schema": {
+    "type": [
+     "number",
+     "null"
+    ]
+   },
+   "literal": "0",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n0\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 0.0}"
+  },
+  {
+   "schema_key": "number_nullable",
+   "schema": {
+    "type": [
+     "number",
+     "null"
+    ]
+   },
+   "literal": "-0",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n-0\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": -0.0}"
+  },
+  {
+   "schema_key": "number_nullable",
+   "schema": {
+    "type": [
+     "number",
+     "null"
+    ]
+   },
+   "literal": "007",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n007\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 7.0}"
+  },
+  {
+   "schema_key": "number_nullable",
+   "schema": {
+    "type": [
+     "number",
+     "null"
+    ]
+   },
+   "literal": "1.5",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1.5\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 1.5}"
+  },
+  {
+   "schema_key": "number_nullable",
+   "schema": {
+    "type": [
+     "number",
+     "null"
+    ]
+   },
+   "literal": "1.0",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1.0\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 1.0}"
+  },
+  {
+   "schema_key": "number_nullable",
+   "schema": {
+    "type": [
+     "number",
+     "null"
+    ]
+   },
+   "literal": "-2.50",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n-2.50\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": -2.5}"
+  },
+  {
+   "schema_key": "number_nullable",
+   "schema": {
+    "type": [
+     "number",
+     "null"
+    ]
+   },
+   "literal": "1e3",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1e3\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 1000.0}"
+  },
+  {
+   "schema_key": "number_nullable",
+   "schema": {
+    "type": [
+     "number",
+     "null"
+    ]
+   },
+   "literal": "1E-2",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1E-2\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 0.01}"
+  },
+  {
+   "schema_key": "number_nullable",
+   "schema": {
+    "type": [
+     "number",
+     "null"
+    ]
+   },
+   "literal": "-2.5e+3",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n-2.5e+3\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": -2500.0}"
+  },
+  {
+   "schema_key": "number_nullable",
+   "schema": {
+    "type": [
+     "number",
+     "null"
+    ]
+   },
+   "literal": " 42 ",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n 42 \n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 42.0}"
+  },
+  {
+   "schema_key": "number_nullable",
+   "schema": {
+    "type": [
+     "number",
+     "null"
+    ]
+   },
+   "literal": "\n42\n",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n\n42\n\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 42.0}"
+  },
+  {
+   "schema_key": "number_nullable",
+   "schema": {
+    "type": [
+     "number",
+     "null"
+    ]
+   },
+   "literal": "1_000",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1_000\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 1000.0}"
+  },
+  {
+   "schema_key": "number_nullable",
+   "schema": {
+    "type": [
+     "number",
+     "null"
+    ]
+   },
+   "literal": "١٢",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n١٢\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 12.0}"
+  },
+  {
+   "schema_key": "number_nullable",
+   "schema": {
+    "type": [
+     "number",
+     "null"
+    ]
+   },
+   "literal": "abc",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\nabc\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"abc\"}"
+  },
+  {
+   "schema_key": "number_nullable",
+   "schema": {
+    "type": [
+     "number",
+     "null"
+    ]
+   },
+   "literal": "",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"\"}"
+  },
+  {
+   "schema_key": "number_nullable",
+   "schema": {
+    "type": [
+     "number",
+     "null"
+    ]
+   },
+   "literal": "null",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\nnull\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": null}"
+  },
+  {
+   "schema_key": "number_nullable",
+   "schema": {
+    "type": [
+     "number",
+     "null"
+    ]
+   },
+   "literal": "NaN",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\nNaN\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": NaN}"
+  },
+  {
+   "schema_key": "number_nullable",
+   "schema": {
+    "type": [
+     "number",
+     "null"
+    ]
+   },
+   "literal": "inf",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\ninf\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": Infinity}"
+  },
+  {
+   "schema_key": "number_nullable",
+   "schema": {
+    "type": [
+     "number",
+     "null"
+    ]
+   },
+   "literal": "99999999999999999999",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n99999999999999999999\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 1e+20}"
+  },
+  {
+   "schema_key": "number_nullable",
+   "schema": {
+    "type": [
+     "number",
+     "null"
+    ]
+   },
+   "literal": "0x10",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n0x10\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"0x10\"}"
+  },
+  {
+   "schema_key": "number_nullable",
+   "schema": {
+    "type": [
+     "number",
+     "null"
+    ]
+   },
+   "literal": ".5",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n.5\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 0.5}"
+  },
+  {
+   "schema_key": "number_nullable",
+   "schema": {
+    "type": [
+     "number",
+     "null"
+    ]
+   },
+   "literal": "5.",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n5.\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 5.0}"
+  },
+  {
+   "schema_key": "number_nullable",
+   "schema": {
+    "type": [
+     "number",
+     "null"
+    ]
+   },
+   "literal": "1 2",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1 2\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"1 2\"}"
+  },
+  {
+   "schema_key": "number_anyof",
+   "schema": {
+    "anyOf": [
+     {
+      "type": "null"
+     },
+     {
+      "type": "number"
+     }
+    ]
+   },
+   "literal": "10000",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n10000\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 10000.0}"
+  },
+  {
+   "schema_key": "number_anyof",
+   "schema": {
+    "anyOf": [
+     {
+      "type": "null"
+     },
+     {
+      "type": "number"
+     }
+    ]
+   },
+   "literal": "-5",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n-5\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": -5.0}"
+  },
+  {
+   "schema_key": "number_anyof",
+   "schema": {
+    "anyOf": [
+     {
+      "type": "null"
+     },
+     {
+      "type": "number"
+     }
+    ]
+   },
+   "literal": "+5",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n+5\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 5.0}"
+  },
+  {
+   "schema_key": "number_anyof",
+   "schema": {
+    "anyOf": [
+     {
+      "type": "null"
+     },
+     {
+      "type": "number"
+     }
+    ]
+   },
+   "literal": "0",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n0\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 0.0}"
+  },
+  {
+   "schema_key": "number_anyof",
+   "schema": {
+    "anyOf": [
+     {
+      "type": "null"
+     },
+     {
+      "type": "number"
+     }
+    ]
+   },
+   "literal": "-0",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n-0\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": -0.0}"
+  },
+  {
+   "schema_key": "number_anyof",
+   "schema": {
+    "anyOf": [
+     {
+      "type": "null"
+     },
+     {
+      "type": "number"
+     }
+    ]
+   },
+   "literal": "007",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n007\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 7.0}"
+  },
+  {
+   "schema_key": "number_anyof",
+   "schema": {
+    "anyOf": [
+     {
+      "type": "null"
+     },
+     {
+      "type": "number"
+     }
+    ]
+   },
+   "literal": "1.5",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1.5\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 1.5}"
+  },
+  {
+   "schema_key": "number_anyof",
+   "schema": {
+    "anyOf": [
+     {
+      "type": "null"
+     },
+     {
+      "type": "number"
+     }
+    ]
+   },
+   "literal": "1.0",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1.0\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 1.0}"
+  },
+  {
+   "schema_key": "number_anyof",
+   "schema": {
+    "anyOf": [
+     {
+      "type": "null"
+     },
+     {
+      "type": "number"
+     }
+    ]
+   },
+   "literal": "-2.50",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n-2.50\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": -2.5}"
+  },
+  {
+   "schema_key": "number_anyof",
+   "schema": {
+    "anyOf": [
+     {
+      "type": "null"
+     },
+     {
+      "type": "number"
+     }
+    ]
+   },
+   "literal": "1e3",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1e3\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 1000.0}"
+  },
+  {
+   "schema_key": "number_anyof",
+   "schema": {
+    "anyOf": [
+     {
+      "type": "null"
+     },
+     {
+      "type": "number"
+     }
+    ]
+   },
+   "literal": "1E-2",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1E-2\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 0.01}"
+  },
+  {
+   "schema_key": "number_anyof",
+   "schema": {
+    "anyOf": [
+     {
+      "type": "null"
+     },
+     {
+      "type": "number"
+     }
+    ]
+   },
+   "literal": "-2.5e+3",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n-2.5e+3\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": -2500.0}"
+  },
+  {
+   "schema_key": "number_anyof",
+   "schema": {
+    "anyOf": [
+     {
+      "type": "null"
+     },
+     {
+      "type": "number"
+     }
+    ]
+   },
+   "literal": " 42 ",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n 42 \n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 42.0}"
+  },
+  {
+   "schema_key": "number_anyof",
+   "schema": {
+    "anyOf": [
+     {
+      "type": "null"
+     },
+     {
+      "type": "number"
+     }
+    ]
+   },
+   "literal": "\n42\n",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n\n42\n\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 42.0}"
+  },
+  {
+   "schema_key": "number_anyof",
+   "schema": {
+    "anyOf": [
+     {
+      "type": "null"
+     },
+     {
+      "type": "number"
+     }
+    ]
+   },
+   "literal": "1_000",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1_000\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 1000.0}"
+  },
+  {
+   "schema_key": "number_anyof",
+   "schema": {
+    "anyOf": [
+     {
+      "type": "null"
+     },
+     {
+      "type": "number"
+     }
+    ]
+   },
+   "literal": "١٢",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n١٢\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 12.0}"
+  },
+  {
+   "schema_key": "number_anyof",
+   "schema": {
+    "anyOf": [
+     {
+      "type": "null"
+     },
+     {
+      "type": "number"
+     }
+    ]
+   },
+   "literal": "abc",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\nabc\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"abc\"}"
+  },
+  {
+   "schema_key": "number_anyof",
+   "schema": {
+    "anyOf": [
+     {
+      "type": "null"
+     },
+     {
+      "type": "number"
+     }
+    ]
+   },
+   "literal": "",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"\"}"
+  },
+  {
+   "schema_key": "number_anyof",
+   "schema": {
+    "anyOf": [
+     {
+      "type": "null"
+     },
+     {
+      "type": "number"
+     }
+    ]
+   },
+   "literal": "null",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\nnull\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": null}"
+  },
+  {
+   "schema_key": "number_anyof",
+   "schema": {
+    "anyOf": [
+     {
+      "type": "null"
+     },
+     {
+      "type": "number"
+     }
+    ]
+   },
+   "literal": "NaN",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\nNaN\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": NaN}"
+  },
+  {
+   "schema_key": "number_anyof",
+   "schema": {
+    "anyOf": [
+     {
+      "type": "null"
+     },
+     {
+      "type": "number"
+     }
+    ]
+   },
+   "literal": "inf",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\ninf\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": Infinity}"
+  },
+  {
+   "schema_key": "number_anyof",
+   "schema": {
+    "anyOf": [
+     {
+      "type": "null"
+     },
+     {
+      "type": "number"
+     }
+    ]
+   },
+   "literal": "99999999999999999999",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n99999999999999999999\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 1e+20}"
+  },
+  {
+   "schema_key": "number_anyof",
+   "schema": {
+    "anyOf": [
+     {
+      "type": "null"
+     },
+     {
+      "type": "number"
+     }
+    ]
+   },
+   "literal": "0x10",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n0x10\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"0x10\"}"
+  },
+  {
+   "schema_key": "number_anyof",
+   "schema": {
+    "anyOf": [
+     {
+      "type": "null"
+     },
+     {
+      "type": "number"
+     }
+    ]
+   },
+   "literal": ".5",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n.5\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 0.5}"
+  },
+  {
+   "schema_key": "number_anyof",
+   "schema": {
+    "anyOf": [
+     {
+      "type": "null"
+     },
+     {
+      "type": "number"
+     }
+    ]
+   },
+   "literal": "5.",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n5.\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 5.0}"
+  },
+  {
+   "schema_key": "number_anyof",
+   "schema": {
+    "anyOf": [
+     {
+      "type": "null"
+     },
+     {
+      "type": "number"
+     }
+    ]
+   },
+   "literal": "1 2",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1 2\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"1 2\"}"
+  },
+  {
+   "schema_key": "integer",
+   "schema": {
+    "type": "integer"
+   },
+   "literal": "10000",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n10000\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 10000}"
+  },
+  {
+   "schema_key": "integer",
+   "schema": {
+    "type": "integer"
+   },
+   "literal": "-5",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n-5\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": -5}"
+  },
+  {
+   "schema_key": "integer",
+   "schema": {
+    "type": "integer"
+   },
+   "literal": "+5",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n+5\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 5}"
+  },
+  {
+   "schema_key": "integer",
+   "schema": {
+    "type": "integer"
+   },
+   "literal": "0",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n0\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 0}"
+  },
+  {
+   "schema_key": "integer",
+   "schema": {
+    "type": "integer"
+   },
+   "literal": "-0",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n-0\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 0}"
+  },
+  {
+   "schema_key": "integer",
+   "schema": {
+    "type": "integer"
+   },
+   "literal": "007",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n007\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 7}"
+  },
+  {
+   "schema_key": "integer",
+   "schema": {
+    "type": "integer"
+   },
+   "literal": "1.5",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1.5\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"1.5\"}"
+  },
+  {
+   "schema_key": "integer",
+   "schema": {
+    "type": "integer"
+   },
+   "literal": "1.0",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1.0\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"1.0\"}"
+  },
+  {
+   "schema_key": "integer",
+   "schema": {
+    "type": "integer"
+   },
+   "literal": "-2.50",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n-2.50\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"-2.50\"}"
+  },
+  {
+   "schema_key": "integer",
+   "schema": {
+    "type": "integer"
+   },
+   "literal": "1e3",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1e3\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"1e3\"}"
+  },
+  {
+   "schema_key": "integer",
+   "schema": {
+    "type": "integer"
+   },
+   "literal": "1E-2",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1E-2\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"1E-2\"}"
+  },
+  {
+   "schema_key": "integer",
+   "schema": {
+    "type": "integer"
+   },
+   "literal": "-2.5e+3",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n-2.5e+3\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"-2.5e+3\"}"
+  },
+  {
+   "schema_key": "integer",
+   "schema": {
+    "type": "integer"
+   },
+   "literal": " 42 ",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n 42 \n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 42}"
+  },
+  {
+   "schema_key": "integer",
+   "schema": {
+    "type": "integer"
+   },
+   "literal": "\n42\n",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n\n42\n\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 42}"
+  },
+  {
+   "schema_key": "integer",
+   "schema": {
+    "type": "integer"
+   },
+   "literal": "1_000",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1_000\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 1000}"
+  },
+  {
+   "schema_key": "integer",
+   "schema": {
+    "type": "integer"
+   },
+   "literal": "١٢",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n١٢\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 12}"
+  },
+  {
+   "schema_key": "integer",
+   "schema": {
+    "type": "integer"
+   },
+   "literal": "abc",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\nabc\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"abc\"}"
+  },
+  {
+   "schema_key": "integer",
+   "schema": {
+    "type": "integer"
+   },
+   "literal": "",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"\"}"
+  },
+  {
+   "schema_key": "integer",
+   "schema": {
+    "type": "integer"
+   },
+   "literal": "null",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\nnull\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": null}"
+  },
+  {
+   "schema_key": "integer",
+   "schema": {
+    "type": "integer"
+   },
+   "literal": "NaN",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\nNaN\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"NaN\"}"
+  },
+  {
+   "schema_key": "integer",
+   "schema": {
+    "type": "integer"
+   },
+   "literal": "inf",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\ninf\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"inf\"}"
+  },
+  {
+   "schema_key": "integer",
+   "schema": {
+    "type": "integer"
+   },
+   "literal": "99999999999999999999",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n99999999999999999999\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 99999999999999999999}"
+  },
+  {
+   "schema_key": "integer",
+   "schema": {
+    "type": "integer"
+   },
+   "literal": "0x10",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n0x10\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"0x10\"}"
+  },
+  {
+   "schema_key": "integer",
+   "schema": {
+    "type": "integer"
+   },
+   "literal": ".5",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n.5\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \".5\"}"
+  },
+  {
+   "schema_key": "integer",
+   "schema": {
+    "type": "integer"
+   },
+   "literal": "5.",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n5.\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"5.\"}"
+  },
+  {
+   "schema_key": "integer",
+   "schema": {
+    "type": "integer"
+   },
+   "literal": "1 2",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1 2\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"1 2\"}"
+  },
+  {
+   "schema_key": "float",
+   "schema": {
+    "type": "float"
+   },
+   "literal": "10000",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n10000\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 10000.0}"
+  },
+  {
+   "schema_key": "float",
+   "schema": {
+    "type": "float"
+   },
+   "literal": "-5",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n-5\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": -5.0}"
+  },
+  {
+   "schema_key": "float",
+   "schema": {
+    "type": "float"
+   },
+   "literal": "+5",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n+5\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 5.0}"
+  },
+  {
+   "schema_key": "float",
+   "schema": {
+    "type": "float"
+   },
+   "literal": "0",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n0\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 0.0}"
+  },
+  {
+   "schema_key": "float",
+   "schema": {
+    "type": "float"
+   },
+   "literal": "-0",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n-0\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": -0.0}"
+  },
+  {
+   "schema_key": "float",
+   "schema": {
+    "type": "float"
+   },
+   "literal": "007",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n007\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 7.0}"
+  },
+  {
+   "schema_key": "float",
+   "schema": {
+    "type": "float"
+   },
+   "literal": "1.5",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1.5\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 1.5}"
+  },
+  {
+   "schema_key": "float",
+   "schema": {
+    "type": "float"
+   },
+   "literal": "1.0",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1.0\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 1.0}"
+  },
+  {
+   "schema_key": "float",
+   "schema": {
+    "type": "float"
+   },
+   "literal": "-2.50",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n-2.50\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": -2.5}"
+  },
+  {
+   "schema_key": "float",
+   "schema": {
+    "type": "float"
+   },
+   "literal": "1e3",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1e3\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 1000.0}"
+  },
+  {
+   "schema_key": "float",
+   "schema": {
+    "type": "float"
+   },
+   "literal": "1E-2",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1E-2\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 0.01}"
+  },
+  {
+   "schema_key": "float",
+   "schema": {
+    "type": "float"
+   },
+   "literal": "-2.5e+3",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n-2.5e+3\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": -2500.0}"
+  },
+  {
+   "schema_key": "float",
+   "schema": {
+    "type": "float"
+   },
+   "literal": " 42 ",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n 42 \n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 42.0}"
+  },
+  {
+   "schema_key": "float",
+   "schema": {
+    "type": "float"
+   },
+   "literal": "\n42\n",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n\n42\n\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 42.0}"
+  },
+  {
+   "schema_key": "float",
+   "schema": {
+    "type": "float"
+   },
+   "literal": "1_000",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1_000\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 1000.0}"
+  },
+  {
+   "schema_key": "float",
+   "schema": {
+    "type": "float"
+   },
+   "literal": "١٢",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n١٢\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 12.0}"
+  },
+  {
+   "schema_key": "float",
+   "schema": {
+    "type": "float"
+   },
+   "literal": "abc",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\nabc\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"abc\"}"
+  },
+  {
+   "schema_key": "float",
+   "schema": {
+    "type": "float"
+   },
+   "literal": "",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"\"}"
+  },
+  {
+   "schema_key": "float",
+   "schema": {
+    "type": "float"
+   },
+   "literal": "null",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\nnull\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": null}"
+  },
+  {
+   "schema_key": "float",
+   "schema": {
+    "type": "float"
+   },
+   "literal": "NaN",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\nNaN\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": NaN}"
+  },
+  {
+   "schema_key": "float",
+   "schema": {
+    "type": "float"
+   },
+   "literal": "inf",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\ninf\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": Infinity}"
+  },
+  {
+   "schema_key": "float",
+   "schema": {
+    "type": "float"
+   },
+   "literal": "99999999999999999999",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n99999999999999999999\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 1e+20}"
+  },
+  {
+   "schema_key": "float",
+   "schema": {
+    "type": "float"
+   },
+   "literal": "0x10",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n0x10\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"0x10\"}"
+  },
+  {
+   "schema_key": "float",
+   "schema": {
+    "type": "float"
+   },
+   "literal": ".5",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n.5\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 0.5}"
+  },
+  {
+   "schema_key": "float",
+   "schema": {
+    "type": "float"
+   },
+   "literal": "5.",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n5.\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 5.0}"
+  },
+  {
+   "schema_key": "float",
+   "schema": {
+    "type": "float"
+   },
+   "literal": "1 2",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1 2\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"1 2\"}"
+  },
+  {
+   "schema_key": "double",
+   "schema": {
+    "type": "double"
+   },
+   "literal": "10000",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n10000\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 10000.0}"
+  },
+  {
+   "schema_key": "double",
+   "schema": {
+    "type": "double"
+   },
+   "literal": "-5",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n-5\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": -5.0}"
+  },
+  {
+   "schema_key": "double",
+   "schema": {
+    "type": "double"
+   },
+   "literal": "+5",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n+5\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 5.0}"
+  },
+  {
+   "schema_key": "double",
+   "schema": {
+    "type": "double"
+   },
+   "literal": "0",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n0\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 0.0}"
+  },
+  {
+   "schema_key": "double",
+   "schema": {
+    "type": "double"
+   },
+   "literal": "-0",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n-0\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": -0.0}"
+  },
+  {
+   "schema_key": "double",
+   "schema": {
+    "type": "double"
+   },
+   "literal": "007",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n007\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 7.0}"
+  },
+  {
+   "schema_key": "double",
+   "schema": {
+    "type": "double"
+   },
+   "literal": "1.5",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1.5\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 1.5}"
+  },
+  {
+   "schema_key": "double",
+   "schema": {
+    "type": "double"
+   },
+   "literal": "1.0",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1.0\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 1.0}"
+  },
+  {
+   "schema_key": "double",
+   "schema": {
+    "type": "double"
+   },
+   "literal": "-2.50",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n-2.50\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": -2.5}"
+  },
+  {
+   "schema_key": "double",
+   "schema": {
+    "type": "double"
+   },
+   "literal": "1e3",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1e3\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 1000.0}"
+  },
+  {
+   "schema_key": "double",
+   "schema": {
+    "type": "double"
+   },
+   "literal": "1E-2",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1E-2\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 0.01}"
+  },
+  {
+   "schema_key": "double",
+   "schema": {
+    "type": "double"
+   },
+   "literal": "-2.5e+3",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n-2.5e+3\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": -2500.0}"
+  },
+  {
+   "schema_key": "double",
+   "schema": {
+    "type": "double"
+   },
+   "literal": " 42 ",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n 42 \n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 42.0}"
+  },
+  {
+   "schema_key": "double",
+   "schema": {
+    "type": "double"
+   },
+   "literal": "\n42\n",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n\n42\n\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 42.0}"
+  },
+  {
+   "schema_key": "double",
+   "schema": {
+    "type": "double"
+   },
+   "literal": "1_000",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1_000\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 1000.0}"
+  },
+  {
+   "schema_key": "double",
+   "schema": {
+    "type": "double"
+   },
+   "literal": "١٢",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n١٢\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 12.0}"
+  },
+  {
+   "schema_key": "double",
+   "schema": {
+    "type": "double"
+   },
+   "literal": "abc",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\nabc\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"abc\"}"
+  },
+  {
+   "schema_key": "double",
+   "schema": {
+    "type": "double"
+   },
+   "literal": "",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"\"}"
+  },
+  {
+   "schema_key": "double",
+   "schema": {
+    "type": "double"
+   },
+   "literal": "null",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\nnull\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": null}"
+  },
+  {
+   "schema_key": "double",
+   "schema": {
+    "type": "double"
+   },
+   "literal": "NaN",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\nNaN\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": NaN}"
+  },
+  {
+   "schema_key": "double",
+   "schema": {
+    "type": "double"
+   },
+   "literal": "inf",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\ninf\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": Infinity}"
+  },
+  {
+   "schema_key": "double",
+   "schema": {
+    "type": "double"
+   },
+   "literal": "99999999999999999999",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n99999999999999999999\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 1e+20}"
+  },
+  {
+   "schema_key": "double",
+   "schema": {
+    "type": "double"
+   },
+   "literal": "0x10",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n0x10\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"0x10\"}"
+  },
+  {
+   "schema_key": "double",
+   "schema": {
+    "type": "double"
+   },
+   "literal": ".5",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n.5\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 0.5}"
+  },
+  {
+   "schema_key": "double",
+   "schema": {
+    "type": "double"
+   },
+   "literal": "5.",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n5.\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": 5.0}"
+  },
+  {
+   "schema_key": "double",
+   "schema": {
+    "type": "double"
+   },
+   "literal": "1 2",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1 2\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"1 2\"}"
+  },
+  {
+   "schema_key": "string",
+   "schema": {
+    "type": "string"
+   },
+   "literal": "10000",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n10000\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"10000\"}"
+  },
+  {
+   "schema_key": "string",
+   "schema": {
+    "type": "string"
+   },
+   "literal": "-5",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n-5\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"-5\"}"
+  },
+  {
+   "schema_key": "string",
+   "schema": {
+    "type": "string"
+   },
+   "literal": "+5",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n+5\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"+5\"}"
+  },
+  {
+   "schema_key": "string",
+   "schema": {
+    "type": "string"
+   },
+   "literal": "0",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n0\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"0\"}"
+  },
+  {
+   "schema_key": "string",
+   "schema": {
+    "type": "string"
+   },
+   "literal": "-0",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n-0\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"-0\"}"
+  },
+  {
+   "schema_key": "string",
+   "schema": {
+    "type": "string"
+   },
+   "literal": "007",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n007\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"007\"}"
+  },
+  {
+   "schema_key": "string",
+   "schema": {
+    "type": "string"
+   },
+   "literal": "1.5",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1.5\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"1.5\"}"
+  },
+  {
+   "schema_key": "string",
+   "schema": {
+    "type": "string"
+   },
+   "literal": "1.0",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1.0\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"1.0\"}"
+  },
+  {
+   "schema_key": "string",
+   "schema": {
+    "type": "string"
+   },
+   "literal": "-2.50",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n-2.50\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"-2.50\"}"
+  },
+  {
+   "schema_key": "string",
+   "schema": {
+    "type": "string"
+   },
+   "literal": "1e3",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1e3\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"1e3\"}"
+  },
+  {
+   "schema_key": "string",
+   "schema": {
+    "type": "string"
+   },
+   "literal": "1E-2",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1E-2\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"1E-2\"}"
+  },
+  {
+   "schema_key": "string",
+   "schema": {
+    "type": "string"
+   },
+   "literal": "-2.5e+3",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n-2.5e+3\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"-2.5e+3\"}"
+  },
+  {
+   "schema_key": "string",
+   "schema": {
+    "type": "string"
+   },
+   "literal": " 42 ",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n 42 \n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \" 42 \"}"
+  },
+  {
+   "schema_key": "string",
+   "schema": {
+    "type": "string"
+   },
+   "literal": "\n42\n",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n\n42\n\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"\\n42\\n\"}"
+  },
+  {
+   "schema_key": "string",
+   "schema": {
+    "type": "string"
+   },
+   "literal": "1_000",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1_000\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"1_000\"}"
+  },
+  {
+   "schema_key": "string",
+   "schema": {
+    "type": "string"
+   },
+   "literal": "١٢",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n١٢\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"١٢\"}"
+  },
+  {
+   "schema_key": "string",
+   "schema": {
+    "type": "string"
+   },
+   "literal": "abc",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\nabc\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"abc\"}"
+  },
+  {
+   "schema_key": "string",
+   "schema": {
+    "type": "string"
+   },
+   "literal": "",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"\"}"
+  },
+  {
+   "schema_key": "string",
+   "schema": {
+    "type": "string"
+   },
+   "literal": "null",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\nnull\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": null}"
+  },
+  {
+   "schema_key": "string",
+   "schema": {
+    "type": "string"
+   },
+   "literal": "NaN",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\nNaN\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"NaN\"}"
+  },
+  {
+   "schema_key": "string",
+   "schema": {
+    "type": "string"
+   },
+   "literal": "inf",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\ninf\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"inf\"}"
+  },
+  {
+   "schema_key": "string",
+   "schema": {
+    "type": "string"
+   },
+   "literal": "99999999999999999999",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n99999999999999999999\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"99999999999999999999\"}"
+  },
+  {
+   "schema_key": "string",
+   "schema": {
+    "type": "string"
+   },
+   "literal": "0x10",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n0x10\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"0x10\"}"
+  },
+  {
+   "schema_key": "string",
+   "schema": {
+    "type": "string"
+   },
+   "literal": ".5",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n.5\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \".5\"}"
+  },
+  {
+   "schema_key": "string",
+   "schema": {
+    "type": "string"
+   },
+   "literal": "5.",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n5.\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"5.\"}"
+  },
+  {
+   "schema_key": "string",
+   "schema": {
+    "type": "string"
+   },
+   "literal": "1 2",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1 2\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"1 2\"}"
+  },
+  {
+   "schema_key": "boolean",
+   "schema": {
+    "type": "boolean"
+   },
+   "literal": "10000",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n10000\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": false}"
+  },
+  {
+   "schema_key": "boolean",
+   "schema": {
+    "type": "boolean"
+   },
+   "literal": "-5",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n-5\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": false}"
+  },
+  {
+   "schema_key": "boolean",
+   "schema": {
+    "type": "boolean"
+   },
+   "literal": "+5",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n+5\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": false}"
+  },
+  {
+   "schema_key": "boolean",
+   "schema": {
+    "type": "boolean"
+   },
+   "literal": "0",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n0\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": false}"
+  },
+  {
+   "schema_key": "boolean",
+   "schema": {
+    "type": "boolean"
+   },
+   "literal": "-0",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n-0\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": false}"
+  },
+  {
+   "schema_key": "boolean",
+   "schema": {
+    "type": "boolean"
+   },
+   "literal": "007",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n007\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": false}"
+  },
+  {
+   "schema_key": "boolean",
+   "schema": {
+    "type": "boolean"
+   },
+   "literal": "1.5",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1.5\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": false}"
+  },
+  {
+   "schema_key": "boolean",
+   "schema": {
+    "type": "boolean"
+   },
+   "literal": "1.0",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1.0\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": false}"
+  },
+  {
+   "schema_key": "boolean",
+   "schema": {
+    "type": "boolean"
+   },
+   "literal": "-2.50",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n-2.50\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": false}"
+  },
+  {
+   "schema_key": "boolean",
+   "schema": {
+    "type": "boolean"
+   },
+   "literal": "1e3",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1e3\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": false}"
+  },
+  {
+   "schema_key": "boolean",
+   "schema": {
+    "type": "boolean"
+   },
+   "literal": "1E-2",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1E-2\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": false}"
+  },
+  {
+   "schema_key": "boolean",
+   "schema": {
+    "type": "boolean"
+   },
+   "literal": "-2.5e+3",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n-2.5e+3\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": false}"
+  },
+  {
+   "schema_key": "boolean",
+   "schema": {
+    "type": "boolean"
+   },
+   "literal": " 42 ",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n 42 \n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": false}"
+  },
+  {
+   "schema_key": "boolean",
+   "schema": {
+    "type": "boolean"
+   },
+   "literal": "\n42\n",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n\n42\n\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": false}"
+  },
+  {
+   "schema_key": "boolean",
+   "schema": {
+    "type": "boolean"
+   },
+   "literal": "1_000",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1_000\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": false}"
+  },
+  {
+   "schema_key": "boolean",
+   "schema": {
+    "type": "boolean"
+   },
+   "literal": "١٢",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n١٢\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": false}"
+  },
+  {
+   "schema_key": "boolean",
+   "schema": {
+    "type": "boolean"
+   },
+   "literal": "abc",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\nabc\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": false}"
+  },
+  {
+   "schema_key": "boolean",
+   "schema": {
+    "type": "boolean"
+   },
+   "literal": "",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": false}"
+  },
+  {
+   "schema_key": "boolean",
+   "schema": {
+    "type": "boolean"
+   },
+   "literal": "null",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\nnull\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": null}"
+  },
+  {
+   "schema_key": "boolean",
+   "schema": {
+    "type": "boolean"
+   },
+   "literal": "NaN",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\nNaN\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": false}"
+  },
+  {
+   "schema_key": "boolean",
+   "schema": {
+    "type": "boolean"
+   },
+   "literal": "inf",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\ninf\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": false}"
+  },
+  {
+   "schema_key": "boolean",
+   "schema": {
+    "type": "boolean"
+   },
+   "literal": "99999999999999999999",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n99999999999999999999\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": false}"
+  },
+  {
+   "schema_key": "boolean",
+   "schema": {
+    "type": "boolean"
+   },
+   "literal": "0x10",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n0x10\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": false}"
+  },
+  {
+   "schema_key": "boolean",
+   "schema": {
+    "type": "boolean"
+   },
+   "literal": ".5",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n.5\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": false}"
+  },
+  {
+   "schema_key": "boolean",
+   "schema": {
+    "type": "boolean"
+   },
+   "literal": "5.",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n5.\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": false}"
+  },
+  {
+   "schema_key": "boolean",
+   "schema": {
+    "type": "boolean"
+   },
+   "literal": "1 2",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1 2\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": false}"
+  },
+  {
+   "schema_key": "untyped",
+   "schema": {},
+   "literal": "10000",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n10000\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"10000\"}"
+  },
+  {
+   "schema_key": "untyped",
+   "schema": {},
+   "literal": "-5",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n-5\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"-5\"}"
+  },
+  {
+   "schema_key": "untyped",
+   "schema": {},
+   "literal": "+5",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n+5\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"+5\"}"
+  },
+  {
+   "schema_key": "untyped",
+   "schema": {},
+   "literal": "0",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n0\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"0\"}"
+  },
+  {
+   "schema_key": "untyped",
+   "schema": {},
+   "literal": "-0",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n-0\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"-0\"}"
+  },
+  {
+   "schema_key": "untyped",
+   "schema": {},
+   "literal": "007",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n007\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"007\"}"
+  },
+  {
+   "schema_key": "untyped",
+   "schema": {},
+   "literal": "1.5",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1.5\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"1.5\"}"
+  },
+  {
+   "schema_key": "untyped",
+   "schema": {},
+   "literal": "1.0",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1.0\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"1.0\"}"
+  },
+  {
+   "schema_key": "untyped",
+   "schema": {},
+   "literal": "-2.50",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n-2.50\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"-2.50\"}"
+  },
+  {
+   "schema_key": "untyped",
+   "schema": {},
+   "literal": "1e3",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1e3\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"1e3\"}"
+  },
+  {
+   "schema_key": "untyped",
+   "schema": {},
+   "literal": "1E-2",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1E-2\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"1E-2\"}"
+  },
+  {
+   "schema_key": "untyped",
+   "schema": {},
+   "literal": "-2.5e+3",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n-2.5e+3\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"-2.5e+3\"}"
+  },
+  {
+   "schema_key": "untyped",
+   "schema": {},
+   "literal": " 42 ",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n 42 \n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \" 42 \"}"
+  },
+  {
+   "schema_key": "untyped",
+   "schema": {},
+   "literal": "\n42\n",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n\n42\n\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"\\n42\\n\"}"
+  },
+  {
+   "schema_key": "untyped",
+   "schema": {},
+   "literal": "1_000",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1_000\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"1_000\"}"
+  },
+  {
+   "schema_key": "untyped",
+   "schema": {},
+   "literal": "١٢",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n١٢\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"١٢\"}"
+  },
+  {
+   "schema_key": "untyped",
+   "schema": {},
+   "literal": "abc",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\nabc\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"abc\"}"
+  },
+  {
+   "schema_key": "untyped",
+   "schema": {},
+   "literal": "",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"\"}"
+  },
+  {
+   "schema_key": "untyped",
+   "schema": {},
+   "literal": "null",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\nnull\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": null}"
+  },
+  {
+   "schema_key": "untyped",
+   "schema": {},
+   "literal": "NaN",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\nNaN\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"NaN\"}"
+  },
+  {
+   "schema_key": "untyped",
+   "schema": {},
+   "literal": "inf",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\ninf\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"inf\"}"
+  },
+  {
+   "schema_key": "untyped",
+   "schema": {},
+   "literal": "99999999999999999999",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n99999999999999999999\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"99999999999999999999\"}"
+  },
+  {
+   "schema_key": "untyped",
+   "schema": {},
+   "literal": "0x10",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n0x10\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"0x10\"}"
+  },
+  {
+   "schema_key": "untyped",
+   "schema": {},
+   "literal": ".5",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n.5\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \".5\"}"
+  },
+  {
+   "schema_key": "untyped",
+   "schema": {},
+   "literal": "5.",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n5.\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"5.\"}"
+  },
+  {
+   "schema_key": "untyped",
+   "schema": {},
+   "literal": "1 2",
+   "wire": "<tool_call>\n<function=f>\n<parameter=v>\n1 2\n</parameter>\n</function>\n</tool_call>",
+   "tools_called": true,
+   "arguments": "{\"v\": \"1 2\"}"
+  }
+ ]
+}

@@ -601,7 +601,7 @@ def _attach_and_configure(base_url, model, profile, args) -> int:
     """After the (spawned or reused) server is healthy, print + apply config.
 
     Uses the same setup-plan machinery as ``rapid-mlx agents --setup`` for
-    the first-class profiles (claude-code / continue / deepseek-harness) and
+    the first-class profiles (``FIRST_CLASS_SETUP_AGENTS``) and
     the generic writer otherwise. Never kills the server. Returns nonzero for
     a genuine setup/render failure; callers decide whether they own the server.
     """
@@ -632,7 +632,9 @@ def _attach_and_configure(base_url, model, profile, args) -> int:
         print("  Nothing was written.")
         return 0
 
-    is_first_class = profile.name in {"claude-code", "continue", "deepseek-harness"}
+    from rapid_mlx.agents.setup import FIRST_CLASS_SETUP_AGENTS
+
+    is_first_class = profile.name in FIRST_CLASS_SETUP_AGENTS
     if cfg and getattr(cfg, "type", None) == "env" and not is_first_class:
         from rapid_mlx.agents.adapter import setup_agent_config
 

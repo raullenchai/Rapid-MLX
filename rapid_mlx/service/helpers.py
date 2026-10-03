@@ -5067,7 +5067,9 @@ def get_model_max_context(engine) -> int:
                 "error": {
                     "message": (
                         f"--context-length {requested} exceeds this model's "
-                        f"declared {native}-token context window."
+                        f"declared {native}-token context window. Restart the "
+                        f"server without --context-length, or pass a value of "
+                        f"{native} tokens or less."
                     ),
                     "type": "invalid_request_error",
                     "code": "context_length_exceeded",
@@ -5204,15 +5206,27 @@ def enforce_context_length(
         detail = (
             f"This server's maximum admitted prompt length is "
             f"{operational_cap} tokens. However, your prompt contains "
-            f"{int(prompt_tokens)} tokens. Please reduce the length of the prompt."
+            f"{int(prompt_tokens)} tokens. Please reduce the length of the "
+            "prompt; the limit is this server's --max-prompt-tokens flag, not "
+            "the model's context window."
         )
         reject_reason = "operational_cap"
     else:
+        # The lead sentence stays byte-identical to origin/main (and to the
+        # OpenAI wording): clients such as LiteLLM string-match "This
+        # model's maximum context length is" to classify a context-window
+        # overflow. The operator-flag attribution is appended instead.
         detail = (
             f"This model's maximum context length is {max_context} tokens. "
             f"However, your prompt contains {int(prompt_tokens)} tokens, leaving "
             "no room for generation. Please reduce the length of the messages."
         )
+        requested = get_config().context_length
+        if requested is not None and int(requested) == max_context:
+            detail += (
+                f" This {max_context}-token window is set by the server's "
+                "--context-length flag, not by the model."
+            )
         reject_reason = "prompt_over_window"
     from rapid_mlx.telemetry.inference import (
         emit_capability_rejected,

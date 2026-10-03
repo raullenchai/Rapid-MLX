@@ -44,7 +44,10 @@ streaming:
 
 testing:
   binary: opencode
-  query_cmd: null  # opencode is interactive — no single-query mode
+  # `opencode run '<prompt>'` is the headless one-shot mode (verified
+  # 2026-10-02, opencode 1.18.34: T1–T6 + follow-up pass). `--continue`
+  # appends to the last session in the cwd.
+  query_cmd: "opencode run '{query}'"
   query_timeout: 120
   install_cmd: "brew install sst/tap/opencode  # or: npm install -g opencode-ai"
 
@@ -54,5 +57,5 @@ capabilities:
 
 known_issues:
   - "Config schema may need updating across OpenCode versions — if this template doesn't load, run `opencode --help` and check `~/.config/opencode/opencode.json` against the docs at opencode.ai."
-  - "OpenCode is interactive-only (no headless query mode); --test in rapid-mlx agents will skip the query check."
   - "First run of OpenCode may prompt for an Anthropic API key — choose 'skip' since rapid-mlx is providing the model via the openai-compat provider."
+  - "Follow-ups in headless mode: `opencode run --continue '<query>'` reuses the last session in the cwd (verified)."

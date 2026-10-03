@@ -180,7 +180,7 @@ sudo rapid-mlx service uninstall         # bootout + remove plist
 rapid-mlx service uninstall --dry-run    # print the removal steps first
 ```
 
-A full appliance acceptance test is [`scripts/headless_service_smoke.sh`](../scripts/headless_service_smoke.sh),
+A full appliance acceptance test is [`scripts/headless_service_smoke.sh`](../../scripts/headless_service_smoke.sh),
 which checks registration, process owner, liveness, readiness, model
 inventory, and a real one-token completion. Run it after any reboot test.
 

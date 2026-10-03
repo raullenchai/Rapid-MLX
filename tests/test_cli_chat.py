@@ -1863,6 +1863,61 @@ def test_chat_command_sigterm_handler_installed_before_spawn(monkeypatch):
     )
 
 
+def test_chat_model_switch_refuses_draft_before_download(monkeypatch, capsys):
+    """The in-process /model path must run the draft gate before its own
+    prefetch and leave the current server alive."""
+    spawned: list[object] = []
+    downloaded: list[str] = []
+
+    class _FakeProc:
+        _rapid_mlx_log = None
+        _rapid_mlx_log_path = None
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            pass
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            pass
+
+    def _fake_spawn(
+        model, log_path, served_name=None, *, register_in=None, log_handle=None
+    ):
+        proc = _FakeProc()
+        spawned.append(proc)
+        if register_in is not None:
+            register_in.append(proc)
+        if log_handle is not None:
+            log_handle.release()
+        return proc, f"http://127.0.0.1:{port}"
+
+    monkeypatch.setattr(cli, "_spawn_chat_server", _fake_spawn)
+    monkeypatch.setattr(
+        cli, "_ensure_model_downloaded", lambda model: downloaded.append(model)
+    )
+    monkeypatch.setattr(cli, "_wait_for_chat_server", lambda *_a, **_kw: True)
+
+    with _fake_server([_delta("ack")]) as (fake_port, _payloads):
+        port = fake_port
+        inputs = iter(["/model qwen3.6-35b-mtp-4bit", "exit"])
+        monkeypatch.setattr("builtins.input", lambda _p="": next(inputs))
+        ns = _ns_for_chat(fake_port, model="mlx-community/Qwen3.5-4B-4bit")
+        ns.base_url = None
+        ns.port = None
+        cli.chat_command(ns)
+
+    output = capsys.readouterr().out
+    assert "draft checkpoint" in output
+    assert "previous server still running" in output
+    assert downloaded == ["mlx-community/Qwen3.5-4B-4bit"]
+    assert len(spawned) == 1
+
+
 def test_chat_command_switch_model_rollback_on_wait_failure(monkeypatch, capsys):
     """When the candidate server fails the readiness wait, ``_switch_model``
     must (1) tear down the candidate proc, (2) keep the old proc as the

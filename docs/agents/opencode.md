@@ -32,6 +32,9 @@ rapid-mlx agents opencode --setup    # writes ~/.config/opencode/opencode.json
 
 # 4. Run OpenCode
 opencode
+
+# or one headless task (verified: 1.18.34)
+opencode run "summarize this workspace"
 ```
 
 ## Manual config
@@ -114,8 +117,10 @@ rapid-mlx serve gpt-oss-20b --port 8000        # ~11 GB (MXFP4-Q8)
 - **Config template doesn't load** — the OpenCode config schema shifts
   across versions. Run `opencode --help` and check
   `~/.config/opencode/opencode.json` against the docs at opencode.ai.
-- **OpenCode is interactive-only** — there's no headless one-shot query
-  mode, so `rapid-mlx agents opencode --test` skips the query check.
+- **OpenCode is interactive-only** — no, it isn't: `opencode run '<prompt>'`
+  is the headless one-shot mode (verified against 1.18.34, T1–T6), and
+  `opencode run --continue '<prompt>'` appends to the last session in the
+  cwd. `rapid-mlx agents opencode --test` drives it through that path.
 
 ## See also
 

@@ -117,6 +117,14 @@ request reaches whatever alias you started `rapid-mlx serve` with.
   matrix cell walks to the first `text` block.
 - **Client rejects `not-needed` as an API key** — use any non-empty string
   (`sk-local`, `rapid-mlx`).
+- **Every turn re-prefills the whole session (slow first token on each tool
+  round)** — Claude Code 2.1.287 and later append a
+  `<total_tokens>N tokens left</total_tokens>` system message to every
+  request. Older rapid-mlx versions put it at the front of the prompt, so the
+  prefix cache missed on every turn (#4036). Upgrade: the server now drops
+  that counter. If other mid-conversation reminders still cause misses, see
+  `rapid-mlx serve --relocate-mid-conversation-system` and its trade-off in
+  `rapid-mlx serve --help`.
 
 ## See also
 

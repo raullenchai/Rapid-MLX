@@ -132,10 +132,16 @@ def test_release_gate_redirects_and_guards_dsh_home(smoke_src: str) -> None:
 def test_release_gate_fingerprints_the_real_dsh_credential_store(
     smoke_src: str,
 ) -> None:
-    """Both files ``--setup`` can write must be fingerprinted, not just one."""
+    """Every file ``--setup`` can write must be fingerprinted, not just one."""
     fingerprint = re.search(r"_real_fingerprint\(\) \{.*?\n\}", smoke_src, re.DOTALL)
     assert fingerprint, "_real_fingerprint is gone"
     body = fingerprint.group(0)
+    # 0.2.x patch-layer file (#4040) AND the 0.1.x legacy file, plus the
+    # credential sentinel written beside either.
+    assert ".dsh/cordis.patch.yml" in body, (
+        "the dsh >= 0.2 config --setup writes is not fingerprinted, so a "
+        "redirect failure could rewrite it unnoticed"
+    )
     assert ".dsh/settings.yaml" in body
     assert ".dsh/.credentials.yaml" in body, (
         "the credential file --setup writes is not fingerprinted, so a "

@@ -1807,8 +1807,9 @@ def _check_alias_min_memory(user_typed: str) -> None:
         print(
             f"\n  Error: '{user_typed}' requires at least {floor_gb:.0f} GB "
             f"of unified memory; this Mac reports {total_ram_gb:.1f} GB.\n"
-            "  Rapid-MLX is refusing the load because this qualified runtime "
-            "peaks near 218 GB and an undersized host may become unresponsive.\n",
+            "  Rapid-MLX is refusing the load because this checkpoint is not "
+            "qualified below its memory floor and an undersized host may "
+            "become unresponsive.\n",
             file=sys.stderr,
         )
         raise SystemExit(1)
@@ -2413,7 +2414,7 @@ def _fail_hub_resolution(exc: BaseException, model_id: str, rendered: str) -> No
     if marker_reason is not None:
         print(format_startup_failure_marker(marker_reason), file=sys.stderr)
     emit_model_pull_failed(exc, model_ref=model_id, source="hf")
-    emit_model_serve_failed(exc, alias_or_path=model_id)
+    emit_model_serve_failed(exc, alias_or_path=model_id, failure_stage="resolve")
     failed("resolve")
     raise SystemExit(1)
 
@@ -4357,9 +4358,14 @@ def _serve_will_run_on_mllm_lane(args) -> bool:
     A multimodal alias whose LANGUAGE backbone is hybrid/linear-attention
     (Qwen3.6 GatedDeltaNet) auto-downgrades to the text-only mlx-lm lane and
     never touches mlx-vlm, so it must NOT be pushed into a ~1 GB ``[vision]``
-    install. A genuine VLM (non-hybrid backbone, e.g. qwen3-vl) stays on the
-    MLLM lane and still needs it. ``--mllm`` / ``--no-mllm`` are honoured via
-    ``resolve_serving_lane``'s explicit-flag short-circuits.
+    install. A genuine VLM whose backbone the text lane cannot load (Bonsai 2's
+    ``prism_hadamard_qwen35``) stays on the MLLM lane and still needs it; one
+    whose backbone mlx-lm loads (gemma4, qwen3_vl, …) degrades to the text
+    lane on a base wheel instead. ``--mllm`` / ``--no-mllm`` are honoured via
+    ``resolve_serving_lane``'s explicit-flag short-circuits, and a requested
+    speculative decoder / MTP short-circuits before the degrade probe (the
+    decoder is honoured by the text lane, whose routing the resolver already
+    decided — the degrade never answers those requests).
 
     The probe reads the cached checkpoint config offline (no network, no
     weight load). ``is_mllm_model`` promotes a checkpoint only on positive
@@ -4414,11 +4420,31 @@ def _serve_will_run_on_mllm_lane(args) -> bool:
         # verdict (#3113: no weights cached yet) may fall back to the
         # curated alias profile.
         return False
-    return _alias_needs_vision_runtime_without_weights(
+    if requested_spec_decode not in (None, "none"):
+        # A requested speculative decoder (or MTP via the flag shorthands) is
+        # routed to the text lane by ``resolve_serving_lane`` on its own —
+        # the decoder is only honoured there. The degrade below decides the
+        # PLAIN automatic path and must never answer a spec-decode request:
+        # short-circuit before consulting it so the predicate cannot flip a
+        # spec-decode serve's lane in either direction.
+        return False
+    if not _alias_needs_vision_runtime_without_weights(
         args.model,
         force_text=force_text,
         requested_spec_decode=requested_spec_decode,
-    )
+    ):
+        return False
+    # A fresh install whose checkpoint will land on the vision lane once its
+    # weights arrive still boots text-only from the base wheel when the
+    # vision runtime is ABSENT and the backbone is text-lane loadable — the
+    # same degrade the engine resolves with after the pull. Anything else
+    # (broken runtime, unloadable backbone, no config) keeps the guard.
+    from .api.utils import checkpoint_serves_text_without_vision
+    from .model_aliases import resolve_profile
+
+    profile = resolve_profile(args.model)
+    degrade_model = profile.hf_path if profile is not None else args.model
+    return not checkpoint_serves_text_without_vision(degrade_model)
 
 
 def _alias_modality(model_name: str) -> str | None:
@@ -4430,8 +4456,15 @@ def _alias_modality(model_name: str) -> str | None:
 
 
 def _alias_text_degrades_without_vision(profile, *, args=None) -> bool:
-    """Whether an absent vision extra leaves this catalog alias text-capable."""
-    if profile is None or profile.modality != "text" or profile.is_text_only:
+    """Whether an absent vision extra leaves this checkpoint text-capable.
+
+    ``profile`` is the catalog alias profile; ``None`` means ``serve`` was
+    given a direct Hugging Face repo id (or local path), which degrades only
+    on the resolver's own positive evidence for ``args.model``.
+    """
+    if profile is None:
+        return args is not None and _direct_ref_text_degrades_without_vision(args)
+    if profile.modality != "text" or profile.is_text_only:
         return False
     from .models.mllm import VisionRuntimeStatus, vision_runtime_status
 
@@ -4447,7 +4480,10 @@ def _alias_text_degrades_without_vision(profile, *, args=None) -> bool:
             return False
     if vision_runtime_status()[0] is not VisionRuntimeStatus.ABSENT:
         return False
-    from .api.utils import resolve_serving_lane_decision
+    from .api.utils import (
+        checkpoint_serves_text_without_vision,
+        resolve_serving_lane_decision,
+    )
 
     if args is not None:
         # The serve guard owns the cold-cache metadata prefetch. Run that same
@@ -4464,7 +4500,53 @@ def _alias_text_degrades_without_vision(profile, *, args=None) -> bool:
             getattr(args, "spec_decode", "none") if args is not None else "none"
         ),
     )
-    return decision.auto_text_fallback
+    if decision.auto_text_fallback:
+        return True
+    if decision.is_mllm:
+        # Warm evidence still routes the vision lane while the runtime is
+        # ABSENT — only possible when the backbone is NOT text-lane loadable
+        # (the resolver owns that contract). The guard's own error is the
+        # message; never print a degrade warning against a lane that runs.
+        return False
+    # No positive lane evidence yet: a fresh install probes "text_checkpoint"
+    # on an empty cache. Decide from the SAME profile + config chain the boot
+    # guard uses — if the checkpoint would land on the vision lane once its
+    # weights arrive and the backbone is text-lane loadable, the serve
+    # degrades to text-only instead of failing.
+    return _alias_needs_vision_runtime_without_weights(
+        model_name,
+        force_text=bool(args is not None and getattr(args, "no_mllm", False)),
+        requested_spec_decode=(
+            getattr(args, "spec_decode", "none") if args is not None else "none"
+        ),
+    ) and checkpoint_serves_text_without_vision(model_name)
+
+
+def _direct_ref_text_degrades_without_vision(args) -> bool:
+    """Degrade verdict for a ``serve`` ref with no catalog alias profile.
+
+    Without a curated profile there is no pre-weights fallback chain: the
+    warning fires only when the (cache-only) resolver itself routes
+    ``args.model`` to the text lane with the absent-runtime degrade — the
+    same decision the boot guard and the engine act on.
+    """
+    requested_spec_decode = getattr(args, "spec_decode", "none") or "none"
+    if (
+        getattr(args, "mllm", False)
+        or getattr(args, "no_mllm", False)
+        or requested_spec_decode not in (None, "none")
+        or getattr(args, "enable_mtp", False)
+        or getattr(args, "force_spec_decode", False)
+    ):
+        return False
+    from .models.mllm import VisionRuntimeStatus, vision_runtime_status
+
+    if vision_runtime_status()[0] is not VisionRuntimeStatus.ABSENT:
+        return False
+    from .api.utils import resolve_serving_lane_decision
+
+    decision = resolve_serving_lane_decision(args.model)
+    return decision.auto_text_fallback and decision.reason == "vision_runtime_absent"
 
 
 def _warn_vision_text_only_degrade(profile, *, args=None) -> bool:
@@ -4477,8 +4559,8 @@ def _warn_vision_text_only_degrade(profile, *, args=None) -> bool:
         return False
     print(
         "warning: vision runtime absent; serving this text-capable checkpoint "
-        "text-only. Enable image input with: "
-        + optional_extra_repair_command("vision"),
+        "text-only (image and video input unavailable). Enable the vision "
+        "runtime with: " + optional_extra_repair_command("vision"),
         file=sys.stderr,
     )
     return True
@@ -5120,42 +5202,6 @@ def serve_command(args):
     _preflight_native_mtp_or_exit(args)
     _companion_dspark_pair = _preflight_companion_dspark_or_exit(args)
 
-    # R-10 (PyPI 0.8.6 dogfood): same boot-guard shape for vision /
-    # multimodal aliases. ``mlx-vlm`` lives behind the ``[vision]``
-    # extra, but ``rapid-mlx serve ui-tars-1.5-7b-4bit`` on a fresh
-    # ``pip install rapid-mlx`` previously fell into the engine load
-    # path BEFORE the missing-dep error surfaced (deep ImportError
-    # after weight download + alias resolution). Probe here so the
-    # operator sees an actionable hint before the long download starts.
-    #
-    # 0.10.16 dogfood follow-up (④): consult the SAME resolved-lane signal
-    # the engine uses (#1178 ``resolve_serving_lane`` + ``_auto_text_
-    # fallback``) instead of the raw ``is_mllm_model`` classification. A
-    # multimodal alias whose LANGUAGE backbone is hybrid/linear-attention
-    # (Qwen3.6 GatedDeltaNet) auto-downgrades to the text-only mlx-lm lane
-    # and NEVER touches mlx-vlm — forcing a base-wheel user into a ~1 GB
-    # ``[vision]`` install for a model that then serves text-only was the
-    # dogfood pain point. ``_serve_will_run_on_mllm_lane`` is True only when
-    # the model will actually run on the MLLM lane, so:
-    #   * genuine VLM (qwen3-vl, non-hybrid backbone) → still requires it,
-    #   * hybrid-backbone VLM (qwen3.6) → boots text-only from the base wheel,
-    #   * ``--mllm`` force-on / ``--no-mllm`` escape hatch → honoured by
-    #     ``resolve_serving_lane``, matching the engine-side semantics.
-    # An uncached checkpoint (config not yet materialized) probes "not
-    # hybrid" and keeps the SAFE ``[vision]``-required default; the guard's
-    # message points at ``--no-mllm`` for a text-capable backbone.
-    _warn_vision_text_only_degrade(_serve_profile, args=args)
-    if _serve_will_run_on_mllm_lane(args):
-        from .models.mllm import require_mlx_vlm_or_exit
-
-        _run_optional_runtime_guard(
-            require_mlx_vlm_or_exit,
-            args.model,
-            alias_or_path=getattr(args, "_original_alias", None) or args.model,
-            assume_yes=bool(getattr(args, "yes", False)),
-            text_diffusion=_alias_modality(args.model) == "text-diffusion",
-        )
-
     # R6-H4 (Eva 0.8.7 dogfood): same boot-guard shape for audio aliases.
     # ``mlx-audio`` lives behind the ``[audio]`` extra; pre-fix
     # ``rapid-mlx serve kokoro`` (or whisper/parakeet/chatterbox/...) on
@@ -5289,6 +5335,79 @@ def serve_command(args):
         )
         _serve_audio_mode(args, audio_entry)
         return
+
+    # R-10 (PyPI 0.8.6 dogfood): same boot-guard shape for vision /
+    # multimodal aliases. ``mlx-vlm`` lives behind the ``[vision]``
+    # extra, but ``rapid-mlx serve ui-tars-1.5-7b-4bit`` on a fresh
+    # ``pip install rapid-mlx`` previously fell into the engine load
+    # path BEFORE the missing-dep error surfaced (deep ImportError
+    # after weight download + alias resolution). Probe here so the
+    # operator sees an actionable hint before the long download starts.
+    #
+    # 0.10.16 dogfood follow-up (④): consult the SAME resolved-lane signal
+    # the engine uses (#1178 ``resolve_serving_lane`` + ``_auto_text_
+    # fallback``) instead of the raw ``is_mllm_model`` classification. A
+    # multimodal alias whose LANGUAGE backbone is hybrid/linear-attention
+    # (Qwen3.6 GatedDeltaNet) auto-downgrades to the text-only mlx-lm lane
+    # and NEVER touches mlx-vlm — forcing a base-wheel user into a ~1 GB
+    # ``[vision]`` install for a model that then serves text-only was the
+    # dogfood pain point. ``_serve_will_run_on_mllm_lane`` is True only when
+    # the model will actually run on the MLLM lane, so:
+    #   * genuine VLM (qwen3-vl, non-hybrid backbone) → still requires it,
+    #   * hybrid-backbone VLM (qwen3.6) → boots text-only from the base wheel,
+    #   * ``--mllm`` force-on / ``--no-mllm`` escape hatch → honoured by
+    #     ``resolve_serving_lane``, matching the engine-side semantics.
+    # An uncached checkpoint (config not yet materialized) probes "not
+    # hybrid" and keeps the SAFE ``[vision]``-required default; the guard's
+    # message points at ``--no-mllm`` for a text-capable backbone. For the
+    # degrade probes below (CACHE-ONLY per the resolver's offline contract)
+    # the boot guard materializes config.json ONCE, under the shared Hub
+    # deadline, so a fresh install classifies instead of failing closed —
+    # and repeated probes never refetch. Skipped when a degrade could not
+    # be consulted anyway (explicit --mllm / --no-mllm / spec-decode).
+    from .api.utils import _prefetch_config_for_degrade_probe
+    from .models.mllm import VisionRuntimeStatus, vision_runtime_status
+
+    requested_spec_decode = getattr(args, "spec_decode", "none") or "none"
+    catalog_degrade_candidate = _serve_profile is None or (
+        _serve_profile.modality == "text"
+        and _serve_profile.supports_image_input
+        and not _serve_profile.is_text_only
+    )
+    if (
+        catalog_degrade_candidate
+        and vision_runtime_status()[0] is VisionRuntimeStatus.ABSENT
+        and not getattr(args, "mllm", False)
+        and not getattr(args, "no_mllm", False)
+        and requested_spec_decode in (None, "none")
+        and not getattr(args, "enable_mtp", False)
+        and not getattr(args, "force_spec_decode", False)
+    ):
+        # A vision-capable catalog alias probes its profile's hf_path; an
+        # unknown direct Hugging Face repo id probes ``args.model`` itself so
+        # config evidence can classify it. Pure-text/non-text catalog entries
+        # never need this VLM-only prefetch. Local paths, warm config caches,
+        # and Hub offline mode are no-ops inside the helper.
+        _prefetch_config_for_degrade_probe(
+            (
+                _serve_profile.hf_path
+                or getattr(args, "_original_alias", None)
+                or args.model
+            )
+            if _serve_profile is not None
+            else args.model
+        )
+    _warn_vision_text_only_degrade(_serve_profile, args=args)
+    if _serve_will_run_on_mllm_lane(args):
+        from .models.mllm import require_mlx_vlm_or_exit
+
+        _run_optional_runtime_guard(
+            require_mlx_vlm_or_exit,
+            args.model,
+            alias_or_path=getattr(args, "_original_alias", None) or args.model,
+            assume_yes=bool(getattr(args, "yes", False)),
+            text_diffusion=_alias_modality(args.model) == "text-diffusion",
+        )
 
     # Interactive auto-upgrade prompt — when serve runs interactively and a
     # newer release is available, ask once before booting the model. Honors
@@ -7007,6 +7126,7 @@ def serve_command(args):
             engine=getattr(server, "_engine", None),
             alias_or_path=getattr(args, "_original_alias", None) or args.model,
             auto_selected=bool(getattr(args, "_telemetry_auto_selected", False)),
+            failure_stage="prepare",
         )
         _print_model_load_error(args, e)
         sys.exit(1)
@@ -7873,6 +7993,7 @@ def bench_command(args):
                 e,
                 alias_or_path=getattr(args, "_original_alias", None) or args.model,
                 auto_selected=bool(getattr(args, "_telemetry_auto_selected", False)),
+                failure_stage="prepare",
             )
             _print_model_load_error(args, e)
             sys.exit(1)
@@ -9136,6 +9257,9 @@ def models_command(args):
 
     if getattr(args, "cached", False):
         _print_cached_models()
+        from rapid_mlx.byom.imports import print_imports_section
+
+        print_imports_section()
         return
 
     all_profiles = list_profiles()
@@ -10363,6 +10487,11 @@ def rm_command(args):
     ctrl-D) also cancels rather than being treated as accept-by-default.
     ``-y/--yes`` skips the prompt for scripts.
     """
+    from rapid_mlx.byom.imports import remove_import
+
+    if remove_import(args.model, assume_yes=getattr(args, "yes", False)):
+        return
+
     from huggingface_hub import scan_cache_dir
 
     repo_id = args.model
@@ -10412,6 +10541,13 @@ def alias_command(args) -> None:
     reserved = user_alias_reserved_names()
     try:
         if args.alias_action == "set":
+            from rapid_mlx.byom.imports import imported_model_path
+
+            if imported_model_path(args.name) is not None:
+                raise UserAliasError(
+                    f"'{args.name}' is an imported model (rapid-mlx import); "
+                    "pick another alias name."
+                )
             set_user_alias(args.name, args.target, builtins, reserved)
             print(f"  User alias: {args.name} -> {args.target}")
         elif args.alias_action == "remove":
@@ -11882,6 +12018,25 @@ def chat_command(args):
         resolved = resolve_model(new_alias) or new_alias
         print(f"  {DIM}Preparing {new_alias} → {resolved} ...{RESET}")
 
+        # Reject draft-only checkpoints before the confirm/download path. The
+        # top-level main() gate covers the initial chat model, but /model is a
+        # fresh in-process resolution. Keep an existing local resolution
+        # authoritative (including RAPID_MLX_EXTRA_MODEL_ROOTS), matching the
+        # initial-command contract.
+        if not os.path.exists(resolved):
+            from rapid_mlx.model_aliases import (
+                DraftModelNotServableError,
+                raise_if_draft_only_model,
+            )
+
+            try:
+                raise_if_draft_only_model(new_alias)
+                raise_if_draft_only_model(resolved)
+            except DraftModelNotServableError as exc:
+                print(f"  {RED}Model switch aborted:{RESET} {exc}")
+                print(f"  {DIM}(previous server still running){RESET}\n")
+                return
+
         # 1a. Gate before download: the main() entry-point gate only
         #     fires on the CLI invocation, so an uncached /model swap
         #     would otherwise start a 40+ GB pull with no prompt.
@@ -12678,12 +12833,14 @@ def agents_command(args):
             # User specified model — look up *that* model's context window
             context_length = fetch_context_window(base_url, model_id)
 
-        # Claude Code, Continue and DSH have first-class setup flows. They
+        # Claude Code, Continue, DSH and pi have first-class setup flows. They
         # preview an exact diff, require consent, back up existing config,
         # write atomically, and verify the server afterwards. The generic
         # profile writer below still lacks the diff/consent/backup half, but
         # it does honour --dry-run, so a preview never writes on either path.
-        if profile.name in {"claude-code", "continue", "deepseek-harness"}:
+        from rapid_mlx.agents.setup import FIRST_CLASS_SETUP_AGENTS
+
+        if profile.name in FIRST_CLASS_SETUP_AGENTS:
             from rapid_mlx.agents.setup import (
                 apply_setup_plan,
                 build_setup_plan,
@@ -13664,7 +13821,9 @@ def main():
             if getattr(args, "command", None) == "serve":
                 from rapid_mlx.telemetry.model_events import emit_model_serve_failed
 
-                emit_model_serve_failed(exc, alias_or_path=args.model)
+                emit_model_serve_failed(
+                    exc, alias_or_path=args.model, failure_stage="resolve"
+                )
             message = local_model_failure_message(
                 args.model, exc, include_supplied_path=True
             )
@@ -13739,6 +13898,56 @@ def main():
                     print(f"  Alias: {args.model} → {_audio_hf_id}")
                     args._original_alias = args.model
                     args.model = _audio_hf_id
+        if getattr(args, "command", None) in (
+            "serve",
+            "bench",
+            "chat",
+            "run",
+        ) and not (
+            getattr(args, "base_url", None)
+            or (
+                getattr(args, "command", None) in ("bench", "chat", "run")
+                and getattr(args, "port", None) is not None
+            )
+        ):
+            # A draft-only checkpoint cannot be a primary model: gate it at
+            # resolve with the precise remedy instead of a mid-load
+            # "unsupported architecture" crash after the download. Runs for
+            # local serve/bench/chat/run only — ``pull`` must stay able to
+            # pre-warm the sidecar, and attached clients target a remote
+            # server whose model is not meant to be local (codex #2357-P1).
+            from rapid_mlx.model_aliases import (
+                DraftModelNotServableError,
+                raise_if_draft_only_model,
+            )
+
+            try:
+                # Check what the user typed AND what it resolved to: a user
+                # alias (``my-draft -> qwen3.6-35b-mtp-4bit``) reaches the
+                # draft only through its resolved HF path. Once resolution
+                # produced an existing local path, however, that directory is
+                # the source of truth even if its external-catalog name happens
+                # to match a draft alias.
+                if not os.path.exists(args.model):
+                    raise_if_draft_only_model(
+                        getattr(args, "_original_alias", None) or args.model
+                    )
+                    raise_if_draft_only_model(args.model)
+            except DraftModelNotServableError as exc:
+                from rapid_mlx.telemetry.model_events import (
+                    emit_model_serve_failed,
+                )
+
+                emit_model_serve_failed(
+                    exc,
+                    alias_or_path=(
+                        getattr(args, "_original_alias", None) or args.model
+                    ),
+                    failure_stage="resolve",
+                )
+                print(f"\n  Error: {exc}", file=sys.stderr)
+                raise SystemExit(1) from None
+
     # Bring-your-own-model preflight: an uncataloged repo or local path that
     # provably cannot run here (GGUF/.bin-only, unsupported architecture, too
     # big for this Mac) stops BEFORE the size gate and any download. Silent for
@@ -13925,6 +14134,10 @@ def main():
         pull_command(args)
     elif args.command == "rm":
         rm_command(args)
+    elif args.command == "import":
+        from rapid_mlx.byom.imports import import_command
+
+        import_command(args, spinner_factory=_StatusSpinner)
     elif args.command == "alias":
         alias_command(args)
     elif args.command == "ps":

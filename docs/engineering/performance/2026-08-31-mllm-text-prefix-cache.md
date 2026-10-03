@@ -86,4 +86,3 @@ cross-version comparison.
   and 3.
 - After the three 27B turns, `/metrics` reported 2 hits, 1 miss, and 5,422
   tokens saved.
-

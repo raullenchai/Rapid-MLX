@@ -75,6 +75,7 @@
     "doctor": "Check environment health (Python, packages, HF cache, network, ...)",
     "feedback": "Tell us what you want from Rapid-MLX (opens the community Discord)",
     "help": "Show help for a subcommand",
+    "import": "Convert a bf16/fp16 safetensors model to quantized MLX (explicit, cancel-safe)",
     "info": "Show the per-model profile for a model name or alias",
     "launch": "One-shot bootstrap: patch IDE/agent client config to use rapid-mlx",
     "ls": "List models in the local HuggingFace cache (alias for `models --cached`)",
@@ -2756,6 +2757,117 @@
      ],
      "mutually_exclusive": [],
      "prog": "rapid-mlx help"
+    },
+    "import": {
+     "actions": [
+      {
+       "class": "argparse._HelpAction",
+       "completer": null,
+       "const": null,
+       "default": "==SUPPRESS==",
+       "dest": "help",
+       "help": "show this help message and exit",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "-h",
+        "--help"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": null,
+       "dest": "source",
+       "help": "Hugging Face repo id (org/name) or local model directory",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [],
+       "type": null
+      },
+      {
+       "choices": [
+        2,
+        3,
+        4,
+        6,
+        8
+       ],
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": 4,
+       "dest": "quantize",
+       "help": "Quantization bits: 2, 3, 4, 6 or 8 (default: 4).",
+       "metavar": "BITS",
+       "nargs": null,
+       "option_strings": [
+        "--quantize"
+       ],
+       "required": false,
+       "type": "builtins.int"
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": null,
+       "dest": "name",
+       "help": "Name to serve it by (default: <source-name>-<bits>bit).",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--name"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreTrueAction",
+       "completer": null,
+       "const": true,
+       "default": false,
+       "dest": "force",
+       "help": "Replace an existing import of the same name from another source.",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "--force"
+       ],
+       "required": false,
+       "type": null
+      }
+     ],
+     "allow_abbrev": true,
+     "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
+     "defaults": {},
+     "description": null,
+     "epilog": null,
+     "formatter_class": "argparse.HelpFormatter",
+     "groups": [
+      {
+       "description": null,
+       "dests": [
+        "source"
+       ],
+       "title": "positional arguments"
+      },
+      {
+       "description": null,
+       "dests": [
+        "help",
+        "quantize",
+        "name",
+        "force"
+       ],
+       "title": "options"
+      }
+     ],
+     "mutually_exclusive": [],
+     "prog": "rapid-mlx import"
     },
     "info": {
      "actions": [
