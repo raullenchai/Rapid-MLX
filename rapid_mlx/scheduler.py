@@ -8987,6 +8987,13 @@ class Scheduler:
                     repetition_penalty=(
                         sp.repetition_penalty if sp.repetition_penalty != 1.0 else None
                     ),
+                    # ``repetition_penalty_range`` (SillyTavern); 0 = whole
+                    # context, because mlx-lm slices ``tokens[-size:]``.
+                    repetition_context_size=(
+                        20
+                        if sp.repetition_context_size is None
+                        else sp.repetition_context_size
+                    ),
                     presence_penalty=(
                         sp.presence_penalty if sp.presence_penalty != 0.0 else None
                     ),
@@ -8997,6 +9004,13 @@ class Scheduler:
                     frequency_context_size=4096,
                 )
                 request_processors.extend(penalty_processors)
+            # DRY (SillyTavern) reads this request's full prompt + committed
+            # output, not the KV-cache view. It has no MTP draft transaction,
+            # so it stays out of ``_mtp_safe_logits_processors`` below and a
+            # DRY request decodes without MTP (fail-closed handoff).
+            _dry = getattr(request, "dry_logits_processor", None)
+            if _dry is not None:
+                request_processors.append(_dry.bind(request))
             # Generation-time thinking-token budget (force-close </think>).
             # Appended LAST so its force-close mask (all but </think> -> -inf)
             # has final say over any penalty/grammar bias in the same step;

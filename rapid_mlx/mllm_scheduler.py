@@ -715,6 +715,7 @@ class MLLMScheduler:
             top_k=int(kwargs.pop("top_k", 0) or 0),
             min_p=float(kwargs.pop("min_p", 0.0) or 0.0),
             repetition_penalty=repetition_penalty,
+            repetition_context_size=kwargs.pop("repetition_context_size", None),
             presence_penalty=presence_penalty,
             frequency_penalty=frequency_penalty,
             ignore_eos=bool(kwargs.pop("ignore_eos", False)),
@@ -1037,6 +1038,9 @@ class MLLMScheduler:
                 # OpenAI-spec penalty passthrough (#512). Default neutral
                 # values are no-ops inside ``_maybe_apply_penalty_processors``.
                 repetition_penalty=request.sampling_params.repetition_penalty,
+                repetition_context_size=(
+                    request.sampling_params.repetition_context_size
+                ),
                 presence_penalty=request.sampling_params.presence_penalty,
                 frequency_penalty=request.sampling_params.frequency_penalty,
                 logits_processors=request.logits_processors,

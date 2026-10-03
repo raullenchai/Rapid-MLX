@@ -412,6 +412,8 @@ class MLLMBatchRequest:
     # neutral values that ``make_logits_processors`` treats as "disabled"
     # so the homogeneous-default fast path stays a no-op.
     repetition_penalty: float = 1.0
+    # ``None`` = mlx-lm's 20-token window; 0 = every generated token.
+    repetition_context_size: int | None = None
     presence_penalty: float = 0.0
     frequency_penalty: float = 0.0
     # Per-request decode processors (structured output, reasoning budget,
@@ -1104,10 +1106,12 @@ def _maybe_apply_penalty_processors(
     if rep == 1.0 and pres == 0.0 and freq == 0.0:
         return row_logits
     cached = req._cached_penalty_processors
-    key = (rep, pres, freq)
+    window = req.repetition_context_size
+    key = (rep, pres, freq, window)
     if cached is None or cached[0] != key:
         processors = make_logits_processors(
             repetition_penalty=rep if rep != 1.0 else None,
+            repetition_context_size=20 if window is None else window,
             presence_penalty=pres if pres != 0.0 else None,
             presence_context_size=4096,
             frequency_penalty=freq if freq != 0.0 else None,

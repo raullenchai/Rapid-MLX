@@ -279,6 +279,7 @@ def validate_http_request(
         "repetition_penalty": 1.0,
         "presence_penalty": 0.0,
         "frequency_penalty": 0.0,
+        "dry_multiplier": 0.0,
     }
     for name, neutral in neutral_penalties.items():
         value = getattr(request, name, None)
