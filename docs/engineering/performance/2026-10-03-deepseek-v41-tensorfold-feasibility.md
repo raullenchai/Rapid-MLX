@@ -1,0 +1,66 @@
+# DeepSeek V4.1 Flash and TensorFold MLX feasibility
+
+Date: 2026-10-03. Host: Mac Studio M3 Ultra, 256 GiB. This is a compatibility
+probe, not a throughput result.
+
+## Rapid baseline
+
+Rapid serves DeepSeek V4.1 Flash through the experimental
+`deepseek-v41-flash-reap-2bit` profile. Its immutable target is
+`rapid-mlx/DeepSeek-V4.1-Flash-REAP-2bit-MLX@a25fec277b9e7cedc0e9f3f15da874a5cf9d491b`;
+the DSpark sidecar is
+`rapid-mlx/DeepSeek-V4.1-Flash-DSpark-4d2e-MLX@9530d6d2bf59e0d05177bd538095d5704ded1488`.
+Both snapshots were already in the default Hugging Face cache. The native
+runtime uses a 40-layer, hidden-size-5120 target with affine 2-bit weights,
+Engram, staggered hyper-connections, and a fixed K4 DSpark verification path.
+The existing four-workload qualification reported 19.39 tokens/s versus 9.58
+tokens/s autoregressive; this was a *Rapid native* result, not TensorFold.
+
+## TensorFold compatibility probe
+
+The installed TensorFold distribution identifies as 0.5.0. Its `detect()`
+rejected the cached Rapid V4.1 target before loading any weights:
+
+```
+ValueError: TensorFold has no recipe for model_type 'deepseek_v41' yet
+```
+
+Reproduce without a model download or model load:
+
+```sh
+python - <<'PY'
+from pathlib import Path
+from tensorfold.families import detect
+snapshot = (Path.home() / '.cache/huggingface/hub/'
+            'models--rapid-mlx--DeepSeek-V4.1-Flash-REAP-2bit-MLX/'
+            'snapshots/a25fec277b9e7cedc0e9f3f15da874a5cf9d491b')
+print(detect(snapshot))
+PY
+```
+
+TensorFold upstream `609ca419abecebdc5a059498a613680bd3aa847f` exposes
+`deepseek_v4` for DeepSeek V4 Flash. That family expects 43 layers, hidden
+size 4096, 4-bit affine group-64 base weights, and mxfp4 routed experts. Its
+compression ratios and attention/cache semantics also differ from V4.1.
+Changing only the model type does not fix the weight and architecture mismatch.
+The upstream V4.1 contribution plan, issue #299, explicitly targets CUDA on
+two DGX Sparks. PR #300 introduces CUDA interfaces; it does not add a V4.1
+family or Metal kernels.
+
+The current Studio has 13.1 GiB swap in use and other large model processes.
+Under the large-model qualification policy, this invalidates a new 200+ GiB
+performance capture. No V4.1 TensorFold speed claim was made.
+
+## Engineering decision
+
+An honest MLX MVP needs a V4.1-specific TensorFold family or a focused port of
+its row-kernel/lane ideas into Rapid's existing V4.1 runtime. A V4 profile
+alias would load the wrong architecture and must not ship. The first real
+speed gate is a same-checkpoint, same-prompt, same-host comparison against
+Rapid's current K4 path, with serial and speculative output agreement, warmup,
+alternating run order, clean memory pressure, and separate prefill and decode
+measurements. Keep the V4.1 TensorFold profile out of the catalog until that
+gate passes.
+
+Upstream: https://github.com/ashhart/TensorFold/tree/609ca419abecebdc5a059498a613680bd3aa847f/src/tensorfold/families/deepseek_v4
+and https://github.com/ashhart/TensorFold/issues/299 .
