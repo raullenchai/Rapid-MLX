@@ -115,6 +115,58 @@ def test_dsh_first_class_setup_keeps_other_providers_in_the_shared_layer(
     assert list(dsh_home.glob("cordis.patch.yml.bak.*"))
 
 
+def test_dsh_setup_writes_through_a_symlinked_patch_file(tmp_path, monkeypatch):
+    dsh_home = tmp_path / "dsh"
+    dotfiles = tmp_path / "dotfiles"
+    dsh_home.mkdir()
+    dotfiles.mkdir()
+    real_target = dotfiles / "cordis.patch.yml"
+    real_target.write_text(DSH_EXISTING)
+    link = dsh_home / "cordis.patch.yml"
+    link.symlink_to(real_target)
+    monkeypatch.setenv("DSH_HOME", str(dsh_home))
+
+    plan = build_setup_plan("dsh", BASE_URL, MODEL, context_length=65536)
+    assert plan.path == real_target.resolve()
+    assert plan.credentials_path == dsh_home / ".credentials.yaml"
+    apply_setup_plan(plan)
+
+    assert link.is_symlink()
+    assert link.resolve() == real_target.resolve()
+    _assert_dsh_merge_kept_user_entries(yaml.safe_load(real_target.read_text()))
+    (backup,) = dotfiles.glob("cordis.patch.yml.bak.*")
+    assert backup.read_text() == DSH_EXISTING
+    assert (dsh_home / ".credentials.yaml").exists()
+    assert not (dotfiles / ".credentials.yaml").exists()
+
+
+def test_dsh_setup_writes_through_symlinked_credentials(tmp_path, monkeypatch):
+    dsh_home = tmp_path / "dsh"
+    secrets = tmp_path / "secrets"
+    dsh_home.mkdir()
+    secrets.mkdir()
+    (dsh_home / "cordis.patch.yml").write_text(DSH_EXISTING)
+    real_target = secrets / "dsh-credentials.yaml"
+    original = "OTHER_PROVIDER_KEY: keep-me\n"
+    real_target.write_text(original)
+    link = dsh_home / ".credentials.yaml"
+    link.symlink_to(real_target)
+    monkeypatch.setenv("DSH_HOME", str(dsh_home))
+
+    plan = build_setup_plan("dsh", BASE_URL, MODEL, context_length=65536)
+    assert plan.credentials_path == real_target.resolve()
+    apply_setup_plan(plan)
+
+    assert link.is_symlink()
+    assert link.resolve() == real_target.resolve()
+    assert yaml.safe_load(real_target.read_text()) == {
+        "OTHER_PROVIDER_KEY": "keep-me",
+        "RAPID_MLX_API_KEY": "not-needed",
+    }
+    (backup,) = secrets.glob("dsh-credentials.yaml.bak.*")
+    assert backup.read_text() == original
+
+
 def test_dsh_generic_writer_keeps_other_providers_in_the_shared_layer(
     tmp_path, monkeypatch
 ):

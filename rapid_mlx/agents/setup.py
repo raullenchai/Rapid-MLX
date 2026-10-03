@@ -238,11 +238,16 @@ def build_setup_plan(
             "continue", "Continue.dev", path, before, after, base_url, model
         )
     if agent in {"deepseek-harness", "dsh"}:
-        path = _dsh_patch_path()
+        # Resolve each managed file independently before backup + atomic
+        # replace so dotfile-managed symlinks survive.  Keep the logical DSH
+        # home for locating credentials: cordis.patch.yml may point into an
+        # unrelated repository whose parent is not DSH_HOME.
+        logical_path = _dsh_patch_path()
+        path = logical_path.resolve()
         before = _load_patch_layers(
             path, "deepseek-harness", emit_telemetry=emit_telemetry
         )
-        credentials_path = path.parent / ".credentials.yaml"
+        credentials_path = (logical_path.parent / ".credentials.yaml").resolve()
         credentials_before = _load_yaml_mapping(
             credentials_path,
             "deepseek-harness",
