@@ -183,17 +183,13 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 0
         if args.subcommand == "click":
-            if args.mouse_button != "left":
-                raise ComputerUseError(
-                    "invalid_argument",
-                    "right/middle clicks land in a follow-up revision; use left",
-                )
             result = backend.click(
                 args.app,
                 element_index=args.element_index,
                 x=args.x,
                 y=args.y,
                 click_count=args.click_count,
+                mouse_button=args.mouse_button,
                 window_id=args.window_id,
                 include_post_state=True,
             )
