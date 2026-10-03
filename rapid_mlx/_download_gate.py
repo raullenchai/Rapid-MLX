@@ -855,9 +855,11 @@ def _is_shared_cache_blob(path: str, repo_root: str) -> bool:
         real = os.path.realpath(path)
         # The second hop must land in the shared store itself, not chain
         # through another repository's blob links.
-        if os.path.realpath(second_hop) != real or os.path.realpath(
-            os.path.dirname(second_hop)
-        ) != os.path.dirname(real):
+        if (
+            os.path.islink(second_hop)
+            or os.path.realpath(second_hop) != real
+            or os.path.realpath(os.path.dirname(second_hop)) != os.path.dirname(real)
+        ):
             return False
         shared_stores = {
             os.path.realpath(os.path.join(os.path.dirname(root), "blobs"))

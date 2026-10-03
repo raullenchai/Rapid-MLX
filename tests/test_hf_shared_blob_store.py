@@ -187,6 +187,12 @@ def _rebind_weight(hub: Path, checkpoint: Path, how: str) -> None:
         owned = repo_root / "blobs" / _hex("chained")
         owned.symlink_to(foreign)
         weight.symlink_to(owned)
+    elif how == "second-hop-is-another-link":
+        hop = hub / "blobs" / digest[:2] / _hex("attack-hop")
+        hop.symlink_to(shared.name)
+        owned = repo_root / "blobs" / _hex("hop")
+        owned.symlink_to(hop)
+        weight.symlink_to(owned)
     elif how == "leaf-directly-into-shared-store":
         weight.symlink_to(shared)
     elif how == "malformed-shared-layout":
@@ -216,6 +222,7 @@ def _rebind_weight(hub: Path, checkpoint: Path, how: str) -> None:
         "leaf-into-foreign-blobs",
         "leaf-through-foreign-link",
         "owned-link-chains-through-foreign-link",
+        "second-hop-is-another-link",
         "leaf-directly-into-shared-store",
         "malformed-shared-layout",
         "owned-blob-name-not-a-digest",
