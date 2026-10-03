@@ -81,6 +81,9 @@ def _exception_text(exc: BaseException) -> str:
         return ""
 
 
+_PULL_PREFLIGHT_CLASSES = frozenset({"unsupported_format", "unsupported_architecture"})
+
+
 def pull_error_class(exc: BaseException) -> str:
     """Classify a pull exception without putting its message on the wire.
 
@@ -97,6 +100,15 @@ def pull_error_class(exc: BaseException) -> str:
     )
     from requests import exceptions as requests_exceptions
 
+    from rapid_mlx.byom.preflight import PreflightRejectedError
+
+    if isinstance(exc, PreflightRejectedError):
+        # The preflight only refuses a pull for these two closed reasons.
+        return (
+            exc.failure_class
+            if exc.failure_class in _PULL_PREFLIGHT_CLASSES
+            else "other"
+        )
     current: BaseException | None = exc
     seen: set[int] = set()
     for _ in range(_EXCEPTION_CHAIN_LIMIT):
@@ -163,6 +175,12 @@ def find_optional_runtime_missing(
 def serve_error_class(exc: BaseException, *, model_ref: object = None) -> str:
     """Reduce loader failures to the registry's closed serve categories."""
     try:
+        from rapid_mlx.byom.preflight import PreflightRejectedError
+
+        if isinstance(exc, PreflightRejectedError):
+            # Closed by construction: unsupported_format,
+            # unsupported_architecture or insufficient_memory.
+            return exc.failure_class
         if find_optional_runtime_missing(exc) is not None:
             return "missing_extra"
         from huggingface_hub.errors import HfHubHTTPError
