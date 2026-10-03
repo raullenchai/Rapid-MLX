@@ -455,6 +455,18 @@ def _merge_toml(existing_text: str, rendered: str) -> str:
     if "sandbox_mode" in existing:
         template["sandbox_mode"] = existing["sandbox_mode"]
     merged = _deep_merge(existing, template)
+    rendered_provider = template.get("model_providers", {}).get("rapid-mlx")
+    merged_provider = merged.get("model_providers", {}).get("rapid-mlx")
+    if (
+        isinstance(rendered_provider, dict)
+        and isinstance(merged_provider, dict)
+        and "env_key" not in rendered_provider
+        and merged_provider.get("env_key") == "RAPID_MLX_API_KEY"
+    ):
+        # This key is generated only for keyed Rapid servers. When setup
+        # switches to an unkeyed server, absent template fields alone cannot
+        # remove it through deep merge. Keep explicitly custom env keys.
+        merged_provider.pop("env_key")
     if merged == existing:
         return existing_text
     return tomli_w.dumps(merged)

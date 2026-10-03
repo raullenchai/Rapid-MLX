@@ -767,20 +767,34 @@ class TestTomlMerge:
         )
 
     def test_user_keys_inside_our_own_table_survive(self, tmp_path):
-        """``env_key`` is what the template's own comment tells users to add."""
+        """Explicitly custom authentication fields remain user-owned."""
         existing = tmp_path / "config.toml"
         existing.write_text(
             textwrap.dedent("""\
                 [model_providers.rapid-mlx]
                 name = "stale name"
                 base_url = "http://old:1234/v1"
-                env_key = "RAPID_MLX_API_KEY"
+                env_key = "CUSTOM_API_KEY"
             """)
         )
         parsed = tomllib.loads(_merge_file_config(existing, self.TEMPLATE, "toml"))
         provider = parsed["model_providers"]["rapid-mlx"]
-        assert provider["env_key"] == "RAPID_MLX_API_KEY"
+        assert provider["env_key"] == "CUSTOM_API_KEY"
         assert provider["base_url"] == "http://localhost:8000/v1"
+
+    def test_switching_to_unkeyed_server_removes_generated_env_key(self, tmp_path):
+        existing = tmp_path / "config.toml"
+        existing.write_text(
+            "[model_providers.rapid-mlx]\n"
+            'env_key = "RAPID_MLX_API_KEY"\n'
+            "request_timeout_ms = 12345\n"
+        )
+
+        parsed = tomllib.loads(_merge_file_config(existing, self.TEMPLATE, "toml"))
+
+        provider = parsed["model_providers"]["rapid-mlx"]
+        assert "env_key" not in provider
+        assert provider["request_timeout_ms"] == 12345
 
     def test_fresh_write_returns_template_verbatim(self, tmp_path):
         """No file yet → no round trip, so the template's comments survive."""

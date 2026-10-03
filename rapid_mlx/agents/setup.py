@@ -66,8 +66,13 @@ class SetupPlan:
             def hidden(data: dict[str, Any]) -> dict[str, Any]:
                 result = dict(data)
                 env = dict(result.get("env", {}))
-                for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
-                    if name in env and env[name]:
+                visible_fields = {
+                    "ANTHROPIC_BASE_URL",
+                    "ANTHROPIC_MODEL",
+                    "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
+                }
+                for name in env:
+                    if name not in visible_fields and env[name]:
                         env[name] = "<redacted>"
                 result["env"] = env
                 return result

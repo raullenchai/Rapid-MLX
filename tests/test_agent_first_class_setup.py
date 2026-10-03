@@ -54,6 +54,25 @@ def test_claude_plan_preserves_context_override_when_server_has_no_limit(setup_p
     assert plan.after["env"]["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "65536"
 
 
+def test_claude_preview_hides_unrelated_environment_credentials(setup_paths):
+    claude_path, _ = setup_paths
+    claude_path.parent.mkdir(parents=True)
+    credentials = {
+        "OPENAI_API_KEY": "private-openai-value",
+        "AWS_SECRET_ACCESS_KEY": "private-aws-value",
+        "CUSTOM_CREDENTIAL": "private-custom-value",
+    }
+    claude_path.write_text(json.dumps({"env": credentials}))
+
+    plan = build_setup_plan("claude-code", "http://localhost:8000/v1", "local-model")
+
+    preview = plan.diff()
+    for name, value in credentials.items():
+        assert value not in preview
+        assert plan.after["env"][name] == value
+    assert "http://localhost:8000" in preview
+
+
 def test_claude_cli_setup_fetches_live_context_for_local_model(
     setup_paths, monkeypatch, capsys
 ):
