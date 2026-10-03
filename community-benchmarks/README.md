@@ -10,7 +10,7 @@ There are two flows. Both are consent-gated, both talk HTTPS to rapidmlx.com, an
 | Record shape | Atomic `BenchmarkRun` (`proto/community-benchmark/v1`) | `schema.json` in this directory |
 | Runs locally first | Yes — every run is archived under `~/.rapid-mlx/benchmarks/`; no benchmark data leaves the Mac until you run `share` (the model itself may be downloaded from Hugging Face during `run`, as with any other load) | No — the run and the submission are one command |
 | Upload endpoint | `POST https://rapidmlx.com/api/benchmarks/atomic` | `POST https://rapidmlx.com/api/benchmarks` |
-| Where it shows up | "Community Benchmark beta" on <https://rapidmlx.com/leaderboard> and, when the server assigns an identity, your contributor page | The comparable board on the same page |
+| Where it shows up | The leaderboard at <https://rapidmlx.com/leaderboard> (your Mac's row) and, when the server assigns an identity, your contributor page | The read-only "Archive (old protocol)" on the same page — **deprecated**, accepted only during a grace period |
 
 The board's history (the `submissions/` directory here and `aggregated.json`) predates both HTTP flows: those rows arrived as pull requests. That path is gone; see [History](#history).
 
@@ -74,11 +74,11 @@ $ rapid-mlx bench qwen3.5-9b-4bit --submit
 
 Runs the same two-bucket workload (512/128 and 2048/512, 1 warmup + 5 rounds, greedy), pretty-prints the submission JSON, asks for `y/N`, saves a local copy, then POSTs it to `https://rapidmlx.com/api/benchmarks`. The payload is the shape in [`schema.json`](schema.json): `hardware`, `software`, `model`, `config`, `buckets.short` / `buckets.long` (median + raw rounds of `decode_tps`, `prefill_tps`, `ttft_ms`), `peak_ram_mb`, optional `--notes`. `--sampled` submits a second row at temp 0.7 / top_p 0.9. The hardware allowlist for this flow lives in `rapid_mlx/community_bench/hardware.py`.
 
-Rows accepted here feed the comparable board (`GET https://rapidmlx.com/api/benchmarks`). The checked-in aggregator groups by `(chip, model alias, rapid_mlx_version)` with median + IQR per metric; memory size is recorded on every row but is not part of that key.
+**Deprecated.** The CLI prints a notice pointing to `rapid-mlx benchmark run` + `share`. During a grace period rows are still accepted, and they land in the leaderboard's read-only archive (`GET https://rapidmlx.com/api/benchmarks`), not on the ranked board; after the grace period the endpoint answers `410` with an upgrade hint. The checked-in aggregator groups by `(chip, model alias, rapid_mlx_version)` with median + IQR per metric; memory size is recorded on every row but is not part of that key.
 
 ## Choosing between them
 
-Use `rapid-mlx benchmark` unless you specifically want a row on the legacy comparable board. The local-first flow measures image and video models, keeps every run on disk so you can inspect it before deciding, gives you a contributor page when the server assigns an identity, and (from the changes referenced above) records the quantization and the machine conditions the numbers were produced under.
+Use `rapid-mlx benchmark`: it is the only flow that feeds the leaderboard. The local-first flow measures image and video models, keeps every run on disk so you can inspect it before deciding, gives you a contributor page when the server assigns an identity, and (from the changes referenced above) records the quantization and the machine conditions the numbers were produced under.
 
 ## History
 
