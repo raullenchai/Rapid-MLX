@@ -2790,7 +2790,9 @@ class TestCheckpointMetadataFallback:
             ),
         )
 
-        config = detect_model_config("/tmp/models/Qwen3.8-27B-4bit/snapshots/revision")
+        config = detect_model_config(
+            "/tmp/models--community--Qwen3.8-27B-4bit/snapshots/abcdef1234567890"
+        )
 
         assert config is not None
         assert config.is_hybrid is True
@@ -2813,7 +2815,7 @@ class TestCheckpointMetadataFallback:
                 self._XML_TOOLS,
             ),
         )
-        flash = detect_model_config("/tmp/models/Qwen3.8-Flash-Next/snapshot")
+        flash = detect_model_config("/tmp/models/Qwen3.8-Flash-Next")
         assert flash is not None
         assert flash.is_hybrid is True
         assert flash.is_moe is True
@@ -2870,6 +2872,19 @@ class TestCheckpointMetadataFallback:
         assert config is not None
         assert config.tool_call_parser == "qwen3_coder_xml"
         assert config.reasoning_parser == "qwen3"
+
+    def test_qwen38_snapshot_parent_does_not_override_other_model(self, monkeypatch):
+        """An unrelated checkpoint under a snapshot directory keeps its parser."""
+        monkeypatch.setattr(
+            auto_config_mod,
+            "read_model_metadata",
+            lambda _name: self._metadata({"model_type": "llama"}, None),
+        )
+
+        config = detect_model_config("/tmp/Qwen3.8-tests/snapshot/Llama-model")
+
+        assert config is not None
+        assert config.tool_call_parser != "qwen3_coder_xml"
 
     def test_incomplete_template_is_not_advertised_as_native_tools(self, monkeypatch):
         # The template PARSES successfully (``{% endif %}`` is present), but the

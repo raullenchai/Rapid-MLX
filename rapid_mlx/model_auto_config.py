@@ -1375,26 +1375,7 @@ def detect_model_config(model_path: str) -> ModelConfig | None:
     # legacy generic Qwen3 regex can classify a local snapshot as a plain
     # attention Qwen3 model.  Known aliases returned above remain the SSOT;
     # this is only the direct-HF/local-path fallback.
-    qwen_pattern = r"qwen[._-]?3[._]8(?=$|[^0-9])"
-    qwen_name = name_segment
-    path_parts = model_path.rstrip("/").split("/")
-    if not re.search(qwen_pattern, qwen_name, re.I):
-        # A local snapshot path may end in /snapshot/<revision> even when
-        # <revision> is not SHA-shaped. Only inspect the immediate checkpoint
-        # directory before that suffix; an earlier ancestor named snapshots
-        # is just an ordinary storage directory.
-        for marker_index in range(len(path_parts) - 1, 0, -1):
-            if (
-                path_parts[marker_index] in {"snapshots", "snapshot"}
-                and len(path_parts) - marker_index <= 2
-            ):
-                candidate = _extract_model_name_segment(
-                    "/".join(path_parts[:marker_index]).lower()
-                )
-                if re.search(qwen_pattern, candidate, re.I):
-                    qwen_name = candidate
-                break
-    if re.search(qwen_pattern, qwen_name, re.I):
+    if re.search(r"qwen[._-]?3[._]8(?=$|[^0-9])", name_segment, re.I):
         if metadata_cfg is not None:
             # Metadata is authoritative for hybrid/MoE safety, but the
             # architecture-only result can have no parsers even when the
