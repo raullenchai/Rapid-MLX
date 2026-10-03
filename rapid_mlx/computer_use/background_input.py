@@ -303,6 +303,14 @@ def _load() -> dict | None:
         if hiservices is not None
         else None
     )
+    # AXUIElement -> CGWindowID (the yabai/cua mapping for key windows).
+    s["ax_window"] = (
+        _bind(
+            hiservices, "_AXUIElementGetWindow", [c_void_p, POINTER(c_uint32)], c_int32
+        )
+        if hiservices is not None
+        else None
+    )
     if s["process_for_pid"] is None and not (
         s["main_connection"] and s["window_owner"] and s["connection_psn"]
     ):
@@ -397,6 +405,23 @@ def _psn_for_window(wid: int, pid: int) -> _PSN | None:
     return None
 
 
+def ax_window_id(element: object) -> int | None:
+    """CGWindowID of an AXUIElement window, or None when it cannot be mapped."""
+    s = _syms()
+    if s is None or s.get("ax_window") is None or element is None:
+        return None
+    try:
+        import objc  # type: ignore[import-untyped]
+
+        ref = objc.pyobjc_id(element)
+    except Exception:  # noqa: BLE001 - not a bridged CF object
+        return None
+    wid = c_uint32(0)
+    if s["ax_window"](c_void_p(ref), byref(wid)) != 0 or not wid.value:
+        return None
+    return int(wid.value)
+
+
 def front_pid() -> int | None:
     """Pid of the process WindowServer considers frontmost (live, no run loop)."""
     s = _syms()
@@ -447,10 +472,14 @@ def _post_record(psn: _PSN, record: ctypes.Array) -> bool:
     )
 
 
-def activate_without_raise(target_pid: int, target_wid: int) -> bool:
+def activate_without_raise(
+    target_pid: int, target_wid: int, front_wid: int = 0
+) -> bool:
     """Make ``target_wid`` key for input WITHOUT raising it or moving Spaces.
 
-    Defocuses the current front process, then focuses the target window. The
+    Defocuses the current front process's key window ``front_wid`` (yabai's
+    recipe; cua's port stamps ``target_wid`` there, used when the front
+    window is unknown), then focuses the target window. The
     user's front app stays frontmost (NSWorkspace still reports it) but its key
     window stops receiving keys until
     :func:`restore_focus_after_without_raise` hands focus back.
@@ -461,7 +490,7 @@ def activate_without_raise(target_pid: int, target_wid: int) -> bool:
     target = _psn_for_window(target_wid, target_pid)
     if front is None or target is None:
         return False
-    defocused = _post_record(front, _focus_record(target_wid, 0x02))
+    defocused = _post_record(front, _focus_record(front_wid or target_wid, 0x02))
     focused = _post_record(target, _focus_record(target_wid, 0x01))
     return defocused and focused
 
@@ -557,6 +586,7 @@ def click(
     count: int = 1,
     flags: int = 0,
     window_origin: tuple[float, float] | None = None,
+    front_wid: int = 0,
 ) -> bool:
     """Deliver a pixel click at screen point ``(x, y)`` inside window ``wid``.
 
@@ -584,7 +614,7 @@ def click(
     if events is None:
         return False
     with _owned(events), _GESTURE_LOCK:
-        if not activate_without_raise(pid, wid):
+        if not activate_without_raise(pid, wid, front_wid):
             # Without key focus the stream could reach a different responder;
             # post nothing (any partial defocus is undone by the caller's
             # focus restoration).

@@ -196,7 +196,7 @@ def test_coordinate_click_routes_to_pid_without_topmost_check(monkeypatch, backg
     assert background[0] == (
         "click",
         (4, 101, 50.0, 60.0),
-        {"button": "left", "count": 1, "window_origin": (0.0, 0.0)},
+        {"button": "left", "count": 1, "window_origin": (0.0, 0.0), "front_wid": 555},
     )
     # The user's front window (pid 999) gets keyboard focus back.
     assert background[1] == ("restore", (999, 555, 4, 101), {})
@@ -518,7 +518,7 @@ def test_element_without_semantic_action_gets_routed_pixel_gesture(
     assert background[0] == (
         "click",
         (4, 101, 9.0, 8.0),
-        {"button": "right", "count": 1, "window_origin": (0.0, 0.0)},
+        {"button": "right", "count": 1, "window_origin": (0.0, 0.0), "front_wid": 555},
     )
     assert result["button"] == "right"
     assert result["element_index"] == 0
@@ -620,7 +620,11 @@ def test_scroll_routes_wheel_to_pid(monkeypatch, background):
         (
             "scroll",
             (4, 101, 200.0, 150.0),
-            {"lines_y": -10, "lines_x": 0, "window_origin": (0.0, 0.0)},
+            {
+                "lines_y": -10,
+                "lines_x": 0,
+                "window_origin": (0.0, 0.0),
+            },
         )
     ]
     assert result["mode"] == "SkyLight-scroll"
@@ -800,19 +804,53 @@ def test_key_and_text_allocation_failure_posts_nothing(monkeypatch):
     assert posted == []
 
 
-def test_frontmost_window_belongs_to_front_app(monkeypatch):
-    import Quartz
-
+def test_frontmost_window_is_front_apps_ax_key_window(monkeypatch):
+    # The key window comes from AXFocusedWindow, not CG z-order (which skips
+    # floating panels and does not identify the key window).
     monkeypatch.setattr(background_input, "front_pid", lambda: 77)
-    monkeypatch.setattr(
-        Quartz,
-        "CGWindowListCopyWindowInfo",
-        lambda *a: [
-            {"kCGWindowLayer": 0, "kCGWindowOwnerPID": 12, "kCGWindowNumber": 5},
-            {"kCGWindowLayer": 0, "kCGWindowOwnerPID": 77, "kCGWindowNumber": 9},
-        ],
-    )
+    monkeypatch.setattr(backend, "_key_window_id", lambda pid: {77: 9}.get(pid))
     assert backend._frontmost_window() == (77, 9)
     monkeypatch.setattr(background_input, "front_pid", lambda: 88)
-    # Front app without a visible window: restore by activating that app.
+    # Unmappable key window: restore by activating that app, never a guess.
     assert backend._frontmost_window() == (88, 0)
+
+
+def test_restore_skips_when_user_picked_another_window_of_their_app(monkeypatch):
+    monkeypatch.setattr(background_input, "front_pid", lambda: 999)
+    monkeypatch.setattr(backend, "_key_window_id", lambda pid: 777)
+    monkeypatch.setattr(
+        background_input,
+        "restore_focus_after_without_raise",
+        lambda *a: pytest.fail("must not refocus the stale window"),
+    )
+    assert backend._restore_user_focus((999, 555), 4, 101) is None
+
+
+def test_defocus_record_names_the_front_window(monkeypatch):
+    posted = []
+    monkeypatch.setattr(background_input, "_syms", lambda: {"ok": True})
+    monkeypatch.setattr(background_input, "_front_psn", lambda: "front")
+    monkeypatch.setattr(background_input, "_psn_for_window", lambda wid, pid: "target")
+    monkeypatch.setattr(
+        background_input,
+        "_post_record",
+        lambda psn, rec: (
+            posted.append(
+                (psn, int.from_bytes(bytes(rec[0x3C:0x40]), "little"), rec[0x8A])
+            )
+            or True
+        ),
+    )
+    assert background_input.activate_without_raise(4, 101, front_wid=555)
+    assert posted == [("front", 555, 0x02), ("target", 101, 0x01)]
+    posted.clear()
+    # Unknown front window: cua's recipe (target id in the defocus record).
+    assert background_input.activate_without_raise(4, 101)
+    assert posted[0] == ("front", 101, 0x02)
+
+
+@pytest.mark.parametrize("count", [0, 4, 1.9, "2", True, None])
+def test_click_count_rejects_non_integral_values(count):
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend.click("App", x=1, y=1, click_count=count)
+    assert exc.value.code == "invalid_argument"

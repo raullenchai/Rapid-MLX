@@ -1111,8 +1111,10 @@ def _target_ids(snapshot: dict) -> tuple[int, int]:
 def _frontmost_window() -> tuple[int, int] | None:
     """(pid, CGWindowID) of the user's key window.
 
-    Falls back to ``(front app pid, 0)`` when no normal window is on screen,
-    so focus can still be handed back by re-activating that app.
+    The key window is the front app's ``AXFocusedWindow`` (CG z-order does
+    not identify it and skips floating panels). Falls back to
+    ``(front app pid, 0)`` when it cannot be mapped, so focus is handed back
+    by re-activating that app rather than to a guessed window.
     """
     front = background_input.front_pid()
     if front is None:
@@ -1125,32 +1127,15 @@ def _frontmost_window() -> tuple[int, int] | None:
             front = None
     if front is None:
         return None
-    window = _frontmost_layer0_window(front)
-    return window if window is not None else (front, 0)
+    return front, _key_window_id(front) or 0
 
 
-def _frontmost_layer0_window(pid: int) -> tuple[int, int] | None:
-    """The front-most visible normal window owned by ``pid`` (z-order)."""
-    from Quartz import (
-        CGWindowListCopyWindowInfo,
-        kCGNullWindowID,
-        kCGWindowListExcludeDesktopElements,
-        kCGWindowListOptionOnScreenOnly,
-    )
-
-    windows = CGWindowListCopyWindowInfo(
-        kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
-        kCGNullWindowID,
-    )
-    for window in windows or []:
-        if window.get("kCGWindowLayer") != 0:
-            continue
-        if float(window.get("kCGWindowAlpha", 1)) <= 0:
-            continue
-        owner, number = window.get("kCGWindowOwnerPID"), window.get("kCGWindowNumber")
-        if owner is not None and number is not None and int(owner) == pid:
-            return int(owner), int(number)
-    return None
+def _key_window_id(pid: int) -> int | None:
+    """CGWindowID of ``pid``'s focused window, or None when unreadable."""
+    if ax_driver.AS is None:
+        return None
+    app_element = ax_driver.AXUIElementCreateApplication(pid)
+    return background_input.ax_window_id(ax_driver._get(app_element, "AXFocusedWindow"))
 
 
 def _restore_user_focus(
@@ -1171,6 +1156,11 @@ def _restore_user_focus(
         # The user switched to a third app during the gesture: their new
         # choice wins; restoring the stale capture would steal it back.
         return None
+    if current == previous_pid and previous_wid:
+        key = _key_window_id(previous_pid)
+        if key is not None and key not in (previous_wid, window_id):
+            # The user picked another window of their app mid-gesture.
+            return None
     other_app = previous_pid != pid
     if other_app and background_input.front_process_matches(pid, window_id):
         # The target activated itself in response to the click (some apps do
@@ -1244,6 +1234,7 @@ def _pixel_click(
                     button=button,
                     count=count,
                     window_origin=_window_origin(window),
+                    front_wid=previous[1],
                 ):
                     raise ComputerUseError(
                         "action_failed", "background click could not be synthesized"
@@ -1881,7 +1872,7 @@ def click(
         raise ComputerUseError(
             "invalid_argument", f"unsupported mouse button {mouse_button!r}"
         )
-    if not 1 <= int(click_count) <= 3:
+    if isinstance(click_count, bool) or click_count not in (1, 2, 3):
         raise ComputerUseError("invalid_argument", "click_count must be 1, 2 or 3")
     click_count = int(click_count)
     if element_index is not None:
