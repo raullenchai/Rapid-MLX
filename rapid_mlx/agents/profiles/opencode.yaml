@@ -21,7 +21,7 @@ config:
           "name": "Rapid-MLX",
           "options": {
             "baseURL": "{base_url}",
-            "apiKey": "not-needed"
+            "apiKey": "{rapid_api_key}"
           },
           "models": {
             "{model_id}": {}
