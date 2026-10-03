@@ -5558,7 +5558,7 @@ def test_anchor_editable_focus_drift_keeps_occlusion_fail_closed(monkeypatch):
             attr, False
         ),
     )
-    monkeypatch.setattr(backend.ax_driver, "_action_names", lambda el: [])
+    monkeypatch.setattr(backend.ax_driver, "_action_names_or_none", lambda el: [])
     monkeypatch.setattr(
         backend,
         "_validate_snapshot_window",

@@ -95,7 +95,7 @@ def _ancestors(monkeypatch, chain):
         lambda el, attr: {"AXParent": parents, "AXRole": roles}.get(attr, {}).get(el),
     )
     monkeypatch.setattr(
-        backend.ax_driver, "_action_names", lambda el: actions.get(el, [])
+        backend.ax_driver, "_action_names_or_none", lambda el: actions.get(el, [])
     )
 
 
@@ -131,6 +131,8 @@ def test_focus_only_pixel_focuses_text_input_with_safe_ancestors(monkeypatch):
         ("AXTextField", [("AXGroup", [])]),  # chain ends before a boundary
         ("AXTextField", [(None, []), ("AXWindow", [])]),  # unreadable role
         ("AXTextField", [("AXWebArea", ["AXPress"])]),  # pressable boundary
+        ("AXTextField", [("AXGroup", None), ("AXWindow", [])]),  # action read failed
+        ("AXTextField", [("AXWindow", None)]),  # boundary action read failed
     ],
 )
 def test_focus_only_refuses_unsafe_pixel_focus(monkeypatch, role, chain):

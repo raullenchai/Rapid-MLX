@@ -1993,8 +1993,10 @@ def _pixel_focus_is_safe(entry: dict, live: object | None) -> bool:
         role = ax_driver._get(node, "AXRole")
         if not role:
             return False
-        actions = set(ax_driver._action_names(node) or [])
-        if role in COMMIT_ON_CLICK_ROLES or actions & _COMMIT_ACTIONS:
+        names = ax_driver._action_names_or_none(node)
+        if names is None:
+            return False  # an unreadable action list may hide AXPress
+        if role in COMMIT_ON_CLICK_ROLES or set(names) & _COMMIT_ACTIONS:
             return False
         if role in {"AXWindow", "AXWebArea", "AXApplication"}:
             return True

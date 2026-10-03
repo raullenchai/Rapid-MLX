@@ -194,6 +194,14 @@ def _action_names(element: object) -> list[str]:
     return list(names) if err == kAXErrorSuccess and names else []
 
 
+def _action_names_or_none(element: object) -> list[str] | None:
+    """Like ``_action_names`` but ``None`` when the query itself failed."""
+    err, names = AXUIElementCopyActionNames(element, None)
+    if err != kAXErrorSuccess:
+        return None
+    return list(names or [])
+
+
 def _priority_children(element: object) -> list[object]:
     """Return stable, bounded region ordering with navigation before tables."""
 
