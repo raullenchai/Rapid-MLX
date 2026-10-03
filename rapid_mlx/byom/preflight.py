@@ -697,29 +697,55 @@ def _is_catalog_or_registry_model(name: str) -> bool:
     return resolve_profile(name) is not None or resolve_audio_alias(name) is not None
 
 
-def preflight_target(args: Any) -> tuple[str, bool] | None:
-    """``(ref, is_local)`` when the preflight applies to these args."""
+def _target_status(args: Any) -> tuple[str | None, tuple[str, bool] | None]:
+    """``(unchecked outcome, target)`` for these args.
+
+    ``target`` is ``(ref, is_local)`` when the preflight applies. Otherwise
+    the outcome names why a bring-your-own model was NOT checked (a
+    ``byom_preflight`` telemetry value: ``skipped`` / ``no_verdict`` /
+    ``cached``), or is ``None`` for catalog models and selector pulls.
+    """
     command = getattr(args, "command", None)
     model = getattr(args, "model", None)
     if command not in ("serve", "pull") or not isinstance(model, str) or not model:
-        return None
-    if getattr(args, "no_preflight", False):
-        return None
+        return None, None
+    skipped = bool(getattr(args, "no_preflight", False))
     if command == "pull" and (
         getattr(args, "bits", None) is not None
         or getattr(args, "format", None) is not None
     ):
-        return None
+        return None, None
     if os.path.exists(model):
-        return model, True
+        return ("skipped", None) if skipped else (None, (model, True))
     if "/" not in model or _is_catalog_or_registry_model(model):
-        return None
+        return None, None
+    if skipped:
+        return "skipped", None
     from rapid_mlx._download_gate import is_repo_cached
     from rapid_mlx.model_metadata import hub_offline_mode_active
 
-    if hub_offline_mode_active() or is_repo_cached(model):
-        return None
-    return model, False
+    if hub_offline_mode_active():
+        return "no_verdict", None
+    if is_repo_cached(model):
+        return "cached", None
+    return None, (model, False)
+
+
+def preflight_target(args: Any) -> tuple[str, bool] | None:
+    """``(ref, is_local)`` when the preflight applies to these args."""
+    return _target_status(args)[1]
+
+
+def _funnel() -> Any:
+    from rapid_mlx.telemetry import byom_funnel
+
+    return byom_funnel
+
+
+def _suggestion_kind(hints: list[str], found_build: bool) -> str:
+    if found_build:
+        return "mlx_build"
+    return "catalog" if hints else "none"
 
 
 def _emit_rejection(args: Any, exc: PreflightRejectedError) -> None:
@@ -743,14 +769,21 @@ def run_cli_preflight(args: Any, *, spinner_factory: Callable[[str], Any]) -> No
     and whenever metadata cannot be read. On an interactive terminal a passing
     check prints a short summary before the download starts.
     """
+    funnel = _funnel()
+    funnel.begin((getattr(args, "_original_alias", None), getattr(args, "model", None)))
     if args.command == "pull" and gguf_format_requested(getattr(args, "format", None)):
         print(f"\n  Error: {GGUF_FORMAT_MESSAGE}", file=sys.stderr)
+        funnel.set_preflight("refused")
         _emit_rejection(args, PreflightRejectedError(UNSUPPORTED_FORMAT))
         raise SystemExit(1)
-    target = preflight_target(args)
+    unchecked, target = _target_status(args)
     if target is None:
+        if unchecked is not None:
+            funnel.set_preflight(unchecked)
         return
     ref, is_local = target
+    # Until a verdict lands, an interrupted or unreadable check is no verdict.
+    funnel.set_preflight("no_verdict")
     if is_local:
         inspection = inspect_local(ref)
     else:
@@ -784,6 +817,7 @@ def run_cli_preflight(args: Any, *, spinner_factory: Callable[[str], Any]) -> No
     if verdict.failure is not None:
         from rapid_mlx.byom.alternatives import suggest
 
+        suggested: list[str] = []
         with spinner_factory("Looking for a model that runs here …"):
             hints, found_build = suggest(
                 inspection,
@@ -791,6 +825,7 @@ def run_cli_preflight(args: Any, *, spinner_factory: Callable[[str], Any]) -> No
                 command=args.command,
                 supported=supported,
                 ram_bytes=verdict.ram_bytes or physical_ram_bytes(),
+                targets=suggested,
             )
         print("", file=sys.stderr)
         lines = render_failure(inspection, verdict, search_hint=not found_build)
@@ -802,9 +837,15 @@ def run_cli_preflight(args: Any, *, spinner_factory: Callable[[str], Any]) -> No
         )
         from rapid_mlx.byom.support_request import offer
 
-        offer(args, inspection, verdict, _cli_version())
+        outcome = offer(args, inspection, verdict, _cli_version())
+        funnel.note_refusal(
+            suggestion=_suggestion_kind(hints, found_build),
+            support_request=outcome,
+            suggested_refs=suggested,
+        )
         _emit_rejection(args, PreflightRejectedError(verdict.failure))
         raise SystemExit(1)
+    funnel.set_preflight("passed")
     if not is_local and sys.stdout.isatty():
         print()
         for line in render_pass(inspection, verdict):
