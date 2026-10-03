@@ -145,7 +145,8 @@ def test_scroll_ticks_split_into_bounded_notches():
         (None, "auto"),
         ("BACKGROUND", "background"),
         ("foreground", "foreground"),
-        ("x", "auto"),
+        ("forground", "foreground"),  # a typo never opts into the SPI
+        ("", "auto"),
     ],
 )
 def test_delivery_mode_parsing(monkeypatch, value, expected):
@@ -718,3 +719,68 @@ def test_live_background_click_types_into_calculator_without_stealing_focus():
         )
     finally:
         subprocess.run(["pkill", "-x", "Calculator"])
+
+
+# --- pr_validate codex round 5 -------------------------------------------------
+
+
+def test_forced_background_without_skylight_refuses_hid(monkeypatch):
+    monkeypatch.setenv(background_input.DELIVERY_ENV, "background")
+    monkeypatch.setattr(background_input, "skylight_available", lambda: False)
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend._background_delivery(_snapshot())
+    assert exc.value.code == "action_failed"
+    # Finder is foreground by design, even when background is forced.
+    assert backend._background_delivery(_snapshot(bundle_id="com.apple.finder")) is (
+        False
+    )
+
+
+def test_click_allocation_failure_posts_nothing(monkeypatch):
+    _fake_syms(monkeypatch)
+    posted, released, made = [], [], iter(range(1, 100))
+    syms = background_input._syms()
+    syms["sl_post"] = lambda *a: posted.append(a)
+    syms["release"] = lambda ev: released.append(ev)
+    # The fourth event of the plan cannot be created.
+    syms["mouse_event"] = lambda *a: (lambda n: 0 if n == 4 else n)(next(made))
+    activated = []
+    monkeypatch.setattr(
+        background_input, "activate_without_raise", lambda *a: activated.append(a)
+    )
+    assert background_input.click(4, 101, 5.0, 5.0) is False
+    assert posted == [] and activated == []
+    assert released == [1, 2, 3]
+
+
+def test_key_and_text_allocation_failure_posts_nothing(monkeypatch):
+    _fake_syms(monkeypatch)
+    syms = background_input._syms()
+    posted = []
+    syms["sl_post"] = lambda *a: posted.append(a)
+    syms["auth_factory"] = None
+    made = iter(range(1, 100))
+    syms["key_event"] = lambda *a: (lambda n: 0 if n == 2 else n)(next(made))
+    assert background_input.press_key(4, 51) is False
+    made = iter(range(1, 100))
+    syms["key_event"] = lambda *a: (lambda n: 0 if n == 5 else n)(next(made))
+    assert background_input.type_text(4, "abc") is False
+    assert posted == []
+
+
+def test_frontmost_window_belongs_to_front_app(monkeypatch):
+    import Quartz
+
+    monkeypatch.setattr(background_input, "front_pid", lambda: 77)
+    monkeypatch.setattr(
+        Quartz,
+        "CGWindowListCopyWindowInfo",
+        lambda *a: [
+            {"kCGWindowLayer": 0, "kCGWindowOwnerPID": 12, "kCGWindowNumber": 5},
+            {"kCGWindowLayer": 0, "kCGWindowOwnerPID": 77, "kCGWindowNumber": 9},
+        ],
+    )
+    assert backend._frontmost_window() == (77, 9)
+    monkeypatch.setattr(background_input, "front_pid", lambda: 88)
+    # Front app without a visible window: restore by activating that app.
+    assert backend._frontmost_window() == (88, 0)

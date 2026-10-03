@@ -166,8 +166,10 @@ def scroll_ticks(lines: int) -> list[int]:
 
 def delivery_mode() -> str:
     """Configured delivery mode: ``auto`` (default), ``background`` or ``foreground``."""
-    mode = os.environ.get(DELIVERY_ENV, "auto").strip().lower()
-    return mode if mode in _DELIVERY_MODES else "auto"
+    mode = os.environ.get(DELIVERY_ENV, "auto").strip().lower() or "auto"
+    # A typo must not opt into the private-SPI route: unknown values keep the
+    # historical foreground behaviour.
+    return mode if mode in _DELIVERY_MODES else "foreground"
 
 
 def background_enabled() -> bool:
@@ -295,6 +297,11 @@ def _load() -> dict | None:
         if hiservices is not None
         else None
     )
+    s["pid_for_psn"] = (
+        _bind(hiservices, "GetProcessPID", [POINTER(_PSN), POINTER(c_int32)], c_int32)
+        if hiservices is not None
+        else None
+    )
     if s["process_for_pid"] is None and not (
         s["main_connection"] and s["window_owner"] and s["connection_psn"]
     ):
@@ -387,6 +394,18 @@ def _psn_for_window(wid: int, pid: int) -> _PSN | None:
     ):
         return psn
     return None
+
+
+def front_pid() -> int | None:
+    """Pid of the process WindowServer considers frontmost (live, no run loop)."""
+    s = _syms()
+    front = _front_psn()
+    if front is None or s.get("pid_for_psn") is None:
+        return None
+    pid = c_int32()
+    if s["pid_for_psn"](byref(front), byref(pid)) != 0 or pid.value <= 0:
+        return None
+    return int(pid.value)
 
 
 def _front_psn() -> _PSN | None:
@@ -498,6 +517,24 @@ def _window_point(
     return float(x) - float(origin[0]), float(y) - float(origin[1])
 
 
+def _allocate(count: int, create) -> list[int] | None:
+    """Create every event of a gesture before posting any of them.
+
+    A gesture that dies halfway would leave a button or key logically held
+    and invite a duplicating retry, so allocation failure posts nothing.
+    """
+    events: list[int] = []
+    for index in range(count):
+        ev = create(index)
+        if not ev:
+            release = _syms()["release"]
+            for made in events:
+                release(made)
+            return None
+        events.append(ev)
+    return events
+
+
 def click(
     pid: int,
     wid: int,
@@ -523,23 +560,28 @@ def click(
     if s is None or not wid:
         return False
     plan = click_plan(x, y, button=button, count=count)
+    events = _allocate(
+        len(plan),
+        lambda i: s["mouse_event"](
+            s["source"],
+            plan[i].event_type,
+            _CGPoint(plan[i].x, plan[i].y),
+            plan[i].button_number,
+        ),
+    )
+    if events is None:
+        return False
     with _GESTURE_LOCK:
         if not activate_without_raise(pid, wid):
             # Without key focus the stream could reach a different responder;
             # post nothing (any partial defocus is undone by the caller's
             # focus restoration).
+            for ev in events:
+                s["release"](ev)
             return False
         time.sleep(0.05)
         group = time.time_ns() & 0x7FFFFFFF
-        for step in plan:
-            ev = s["mouse_event"](
-                s["source"],
-                step.event_type,
-                _CGPoint(step.x, step.y),
-                step.button_number,
-            )
-            if not ev:
-                return False
+        for step, ev in zip(plan, events, strict=True):
             try:
                 local = (
                     None
@@ -589,12 +631,23 @@ def scroll(
     ticks_x += [0] * (width - len(ticks_x))
     local = _window_point(x, y, window_origin)
     wx, wy = local if local is not None else (x, y)
+    ticks = list(zip(ticks_y, ticks_x, strict=True))
+    events = _allocate(
+        width + 1,
+        lambda i: (
+            s["mouse_event"](s["source"], _MOUSE_MOVED, _CGPoint(x, y), 0)
+            if i == 0
+            else s["scroll_event"](
+                s["source"], _SCROLL_UNIT_LINE, 2, ticks[i - 1][0], ticks[i - 1][1], 0
+            )
+        ),
+    )
+    if events is None:
+        return False
     with _GESTURE_LOCK:
         group = time.time_ns() & 0x7FFFFFFF
         primer = MouseStep(_MOUSE_MOVED, x, y, 2, 0, 0, 0.012)
-        ev = s["mouse_event"](s["source"], _MOUSE_MOVED, _CGPoint(x, y), 0)
-        if not ev:
-            return False
+        ev = events[0]
         try:
             _stamp_mouse(ev, pid, wid, primer, group, local)
             s["sl_post"](int(pid), ev)
@@ -602,10 +655,7 @@ def scroll(
         finally:
             s["release"](ev)
         time.sleep(primer.delay_after_s)
-        for dy, dx in zip(ticks_y, ticks_x, strict=True):
-            ev = s["scroll_event"](s["source"], _SCROLL_UNIT_LINE, 2, dy, dx, 0)
-            if not ev:
-                return False
+        for ev in events[1:]:
             try:
                 s["set_location"](ev, _CGPoint(x, y))
                 s["set_window_location"](ev, float(wx), float(wy))
@@ -686,11 +736,11 @@ def press_key(
     s = _syms()
     if s is None:
         return False
+    events = _allocate(2, lambda i: s["key_event"](s["source"], int(keycode), i == 0))
+    if events is None:
+        return False
     with _GESTURE_LOCK:
-        for down in (True, False):
-            ev = s["key_event"](s["source"], int(keycode), down)
-            if not ev:
-                return False
+        for ev in events:
             try:
                 # HIDSystemState sources inherit physically held modifiers;
                 # always overwrite, including with 0.
@@ -713,14 +763,17 @@ def type_text(pid: int, text: str) -> bool:
     s = _syms()
     if s is None:
         return False
+    chars = list(text)
+    events = _allocate(
+        2 * len(chars), lambda i: s["key_event"](s["source"], 0, i % 2 == 0)
+    )
+    if events is None:
+        return False
     with _GESTURE_LOCK:
-        for ch in text:
+        for index, ch in enumerate(chars):
             units = ch.encode("utf-16-le")
             buf = (c_uint16 * (len(units) // 2)).from_buffer_copy(units)
-            for down in (True, False):
-                ev = s["key_event"](s["source"], 0, down)
-                if not ev:
-                    return False
+            for ev in events[2 * index : 2 * index + 2]:
                 try:
                     s["set_unicode"](ev, len(buf), buf)
                     s["set_flags"](ev, 0)

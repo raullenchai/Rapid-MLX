@@ -1076,13 +1076,28 @@ def _route_for_mode(mode: str) -> str:
     return ROUTE_ACCESSIBILITY
 
 
+def _require_background_if_forced() -> None:
+    if (
+        background_input.delivery_mode() == "background"
+        and not background_input.skylight_available()
+    ):
+        raise ComputerUseError(
+            "action_failed",
+            f"{background_input.DELIVERY_ENV}=background but the SkyLight "
+            "input route is unavailable; refusing to fall back to global HID",
+        )
+
+
 def _background_delivery(snapshot: dict) -> bool:
     """Whether synthetic input for this snapshot goes to its exact pid/window.
 
     Finder's inline-rename editor rebinds focus asynchronously and its safety
     checks are built around foreground activation, so it keeps the HID route.
     """
-    return background_input.background_enabled() and not is_finder_snapshot(snapshot)
+    if is_finder_snapshot(snapshot):
+        return False
+    _require_background_if_forced()
+    return background_input.background_enabled()
 
 
 def _target_ids(snapshot: dict) -> tuple[int, int]:
@@ -1099,19 +1114,23 @@ def _frontmost_window() -> tuple[int, int] | None:
     Falls back to ``(front app pid, 0)`` when no normal window is on screen,
     so focus can still be handed back by re-activating that app.
     """
-    window = _frontmost_layer0_window()
-    if window is not None:
-        return window
-    try:
-        from AppKit import NSWorkspace
+    front = background_input.front_pid()
+    if front is None:
+        try:
+            from AppKit import NSWorkspace
 
-        front = NSWorkspace.sharedWorkspace().frontmostApplication()
-        return (int(front.processIdentifier()), 0) if front is not None else None
-    except Exception:  # noqa: BLE001 - no front app to restore to
+            app = NSWorkspace.sharedWorkspace().frontmostApplication()
+            front = int(app.processIdentifier()) if app is not None else None
+        except Exception:  # noqa: BLE001 - no front app to restore to
+            front = None
+    if front is None:
         return None
+    window = _frontmost_layer0_window(front)
+    return window if window is not None else (front, 0)
 
 
-def _frontmost_layer0_window() -> tuple[int, int] | None:
+def _frontmost_layer0_window(pid: int) -> tuple[int, int] | None:
+    """The front-most visible normal window owned by ``pid`` (z-order)."""
     from Quartz import (
         CGWindowListCopyWindowInfo,
         kCGNullWindowID,
@@ -1128,9 +1147,9 @@ def _frontmost_layer0_window() -> tuple[int, int] | None:
             continue
         if float(window.get("kCGWindowAlpha", 1)) <= 0:
             continue
-        pid, number = window.get("kCGWindowOwnerPID"), window.get("kCGWindowNumber")
-        if pid is not None and number is not None:
-            return int(pid), int(number)
+        owner, number = window.get("kCGWindowOwnerPID"), window.get("kCGWindowNumber")
+        if owner is not None and number is not None and int(owner) == pid:
+            return int(owner), int(number)
     return None
 
 
