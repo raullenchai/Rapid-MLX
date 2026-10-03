@@ -1,6 +1,8 @@
 """Observation without focus theft, plus the hands safety fixes that ride with it."""
 
+import sys
 import time
+import types
 
 import pytest
 
@@ -29,6 +31,15 @@ def _snapshot(element: dict) -> dict:
     }
 
 
+def _fake_application_services(monkeypatch, perform):
+    """Stand-in for the PyObjC module so these tests also run off macOS."""
+    module = types.ModuleType("ApplicationServices")
+    module.AXUIElementPerformAction = perform
+    module.kAXErrorSuccess = 0
+    monkeypatch.setitem(sys.modules, "ApplicationServices", module)
+    return module
+
+
 @pytest.fixture
 def no_input(monkeypatch):
     """Fail on any delivered press or pixel click."""
@@ -37,11 +48,8 @@ def no_input(monkeypatch):
         "_pixel_click",
         lambda *a, **k: pytest.fail("focus_only must not click this control"),
     )
-    import ApplicationServices as AS  # noqa: N813, N817
-
-    monkeypatch.setattr(
-        AS,
-        "AXUIElementPerformAction",
+    _fake_application_services(
+        monkeypatch,
         lambda *a: pytest.fail("focus_only must never perform an AX action"),
     )
     monkeypatch.setattr(backend, "_live_element", lambda *a, **k: "live")
@@ -118,12 +126,8 @@ def test_plain_click_keeps_semantic_press(monkeypatch):
     snapshot = _snapshot({"role": "AXButton", "label": "OK", "actions": ["AXPress"]})
     pressed = []
     monkeypatch.setattr(backend, "_live_element", lambda *a, **k: "live")
-    import ApplicationServices as AS  # noqa: N813, N817
-
-    monkeypatch.setattr(
-        AS,
-        "AXUIElementPerformAction",
-        lambda el, action: pressed.append(action) or AS.kAXErrorSuccess,
+    _fake_application_services(
+        monkeypatch, lambda el, action: pressed.append(action) or 0
     )
     result = backend.click("App", 0, expected_snapshot=snapshot)
     assert pressed == ["AXPress"]
@@ -329,3 +333,65 @@ def test_borrow_foreground_revalidates_identity_while_polling(monkeypatch):
     with pytest.raises(errors.ComputerUseError) as exc:
         backend._borrow_foreground(snapshot)
     assert exc.value.code == "target_drift"
+
+
+# --- coverage of the identity and focus edges -------------------------------------
+
+
+def test_same_process_refuses_an_exited_app(monkeypatch):
+    monkeypatch.setattr(backend.ax_driver, "_application_for_pid", lambda pid: None)
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend._same_process({"pid": 4})
+    assert exc.value.code == "target_drift"
+
+
+def test_borrow_foreground_skips_an_already_active_target(monkeypatch):
+    running = _Running(active=True)
+    snapshot = _borrow_setup(monkeypatch, running)
+    backend._borrow_foreground(snapshot)
+    assert running.activations == 0
+
+
+def test_borrow_foreground_types_activation_errors(monkeypatch):
+    running = _Running()
+
+    def refuse(_options):
+        raise RuntimeError("activation refused")
+
+    running.activateWithOptions_ = refuse
+    snapshot = _borrow_setup(monkeypatch, running)
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend._borrow_foreground(snapshot)
+    assert exc.value.code == "action_failed"
+
+
+def test_borrow_foreground_times_out_when_target_stays_inactive(monkeypatch):
+    running = _Running()
+    running.activateWithOptions_ = lambda _options: True  # never becomes active
+    snapshot = _borrow_setup(monkeypatch, running)
+    clock = iter(range(0, 100))
+    monkeypatch.setattr(backend.time, "monotonic", lambda: float(next(clock)))
+    monkeypatch.setattr(backend.time, "sleep", lambda *_: None)
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend._borrow_foreground(snapshot)
+    assert exc.value.code == "target_drift"
+
+
+def test_focus_without_commit_edges(monkeypatch):
+    snapshot = _snapshot({"role": "AXButton"})
+    assert backend._focus_without_commit(snapshot, None) is None
+    monkeypatch.setattr(backend, "_focused_ax_element", lambda app: "live")
+    assert backend._focus_without_commit(snapshot, "live") == "AXFocusVerified"
+
+
+def test_focus_only_on_already_focused_field_skips_activation(monkeypatch, no_input):
+    snapshot = _snapshot({"role": "AXTextField", "label": "Name", "actions": []})
+    monkeypatch.setattr(backend, "_focused_ax_element", lambda app: "live")
+    monkeypatch.setattr(backend, "_background_delivery", lambda snap: True)
+    checks = []
+    monkeypatch.setattr(
+        backend, "_validate_focused_window", lambda *a, **k: checks.append(k)
+    )
+    result = backend.click("App", 0, expected_snapshot=snapshot, focus_only=True)
+    assert result["mode"] == "AXFocusVerified"
+    assert checks == [{"require_active_app": False}]
