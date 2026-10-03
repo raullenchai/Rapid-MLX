@@ -420,3 +420,26 @@ def test_draft_gate_never_refuses_an_existing_local_path(monkeypatch, tmp_path):
     assert draft_only_conflict("qwen3.6-35b-mtp-4bit") is None
     # A draft with no local twin is still refused.
     assert draft_only_conflict("mlx-community/Qwen3.6-35B-A3B-MTP-4bit") is not None
+
+
+def test_cli_serve_draft_gate_terminates_server_start_at_resolve(monkeypatch):
+    """The gate's SystemExit is caught by main()'s start-failure guard, which
+    ends server_start_state at the current boundary — still ``resolve`` here
+    (``preflight`` is only selected right before serve_command)."""
+    import sys
+
+    from rapid_mlx import cli
+    from rapid_mlx.telemetry import server_start
+
+    stages = []
+    monkeypatch.setattr(server_start, "failed", lambda stage, **_: stages.append(stage))
+    monkeypatch.setattr(
+        "rapid_mlx.telemetry.model_events.emit_model_serve_failed",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(sys, "argv", ["rapid-mlx", "serve", "qwen3.6-35b-mtp-4bit"])
+
+    with pytest.raises(SystemExit):
+        cli.main()
+
+    assert stages == ["resolve"]
