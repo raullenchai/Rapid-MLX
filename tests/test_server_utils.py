@@ -1264,6 +1264,7 @@ class TestGenerationOutputFieldOrder:
             # ``matched_stop``. Keep it at the tail for the same positional
             # compatibility guarantee.
             "spec_decode_metrics",
+            "timing_metrics",
         ], (
             f"new GenerationOutput fields must be APPENDED in order "
             f"(raw_text → reasoning_text → tool_calls → cached_tokens "

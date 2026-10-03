@@ -2147,6 +2147,7 @@ async def test_buffered_chat_stream_matches_normal_state_machine_sdk_shape():
             prompt_tokens=4,
             completion_tokens=5,
             cached_tokens=3,
+            timing_metrics={"time_to_first_token_ms": 250.0, "mean_itl_ms": 20.0},
             spec_decode_metrics={"verify_calls": 2},
             finished=True,
             finish_reason="tool_calls",
@@ -2198,7 +2199,9 @@ async def test_buffered_chat_stream_matches_normal_state_machine_sdk_shape():
             prompt_tokens_details=PromptTokensDetails(cached_tokens=3),
         ),
         metrics=PerRequestMetrics(
-            speculative_decoding=SpeculativeDecodingMetrics(verify_calls=2)
+            time_to_first_token_ms=250.0,
+            mean_itl_ms=20.0,
+            speculative_decoding=SpeculativeDecodingMetrics(verify_calls=2),
         ),
     )
 
@@ -2262,6 +2265,7 @@ async def test_buffered_responses_stream_matches_normal_state_machine_sdk_shape(
             prompt_tokens=4,
             completion_tokens=5,
             cached_tokens=3,
+            timing_metrics={"time_to_first_token_ms": 250.0, "mean_itl_ms": 20.0},
             spec_decode_metrics={"verify_calls": 2},
             finished=True,
             finish_reason="tool_calls",

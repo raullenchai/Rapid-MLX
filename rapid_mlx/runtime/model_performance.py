@@ -172,6 +172,27 @@ class ModelPerformanceLedger:
             return None
         return (request.num_output_tokens - 1) / decode_seconds
 
+    @staticmethod
+    def timing_metrics_for_request(
+        request: Request, last_token_time: float
+    ) -> dict[str, float] | None:
+        """Freeze scheduler TTFT and mean inter-token latency, in milliseconds.
+
+        Use the last engine token's observation time, not serialization time.
+        Counts include engine-generated stop/reasoning tokens, as usage does.
+        """
+        first = request.first_token_time
+        if first is None or request.num_output_tokens == 0:
+            return None
+        ttft = first - request.arrival_time
+        if not math.isfinite(ttft) or ttft < 0:
+            return None
+        metrics = {"time_to_first_token_ms": ttft * 1000.0}
+        window = last_token_time - first
+        if request.num_output_tokens >= 2 and math.isfinite(window) and window > 0:
+            metrics["mean_itl_ms"] = window * 1000.0 / (request.num_output_tokens - 1)
+        return metrics
+
     def ttft_for_request(self, request: Request) -> float | None:
         if request.first_token_time is None or request.num_output_tokens == 0:
             return None

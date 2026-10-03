@@ -6916,6 +6916,13 @@ async def _stream_buffered_chat_response(
     terminal.finish_reason = choice.finish_reason
     terminal.prompt_tokens = response.usage.prompt_tokens
     terminal.completion_tokens = response.usage.completion_tokens
+    if response.metrics is not None:
+        terminal.timing_metrics = (
+            response.metrics.model_dump(
+                exclude_none=True, exclude={"speculative_decoding"}
+            )
+            or None
+        )
     if response.usage.prompt_tokens_details is not None:
         terminal.cached_tokens = response.usage.prompt_tokens_details.cached_tokens
     if (

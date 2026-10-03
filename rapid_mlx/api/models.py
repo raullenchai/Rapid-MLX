@@ -2235,6 +2235,10 @@ class PerRequestMetrics(BaseModel):
     """Optional engine metrics carried only on a terminal response."""
 
     speculative_decoding: SpeculativeDecodingMetrics | None = None
+    time_to_first_token_ms: float | None = Field(
+        default=None, ge=0, allow_inf_nan=False
+    )
+    mean_itl_ms: float | None = Field(default=None, gt=0, allow_inf_nan=False)
 
 
 class Usage(BaseModel):

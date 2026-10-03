@@ -2561,6 +2561,11 @@ async def _stream_buffered_responses_response(
     terminal.completion_tokens = int(usage.get("output_tokens") or 0)
     input_details = usage.get("input_tokens_details") or {}
     terminal.cached_tokens = int(input_details.get("cached_tokens") or 0)
+    terminal.timing_metrics = {
+        key: value
+        for key, value in (response.get("metrics") or {}).items()
+        if key in ("time_to_first_token_ms", "mean_itl_ms")
+    } or None
     metrics = (response.get("metrics") or {}).get("speculative_decoding")
     if isinstance(metrics, dict):
         terminal.spec_decode_metrics = metrics
@@ -3851,7 +3856,9 @@ async def _stream_responses(
                 last_finish_reason = _frx
             chunk_is_terminal = bool(getattr(output, "finished", False) or _frx)
             if chunk_is_terminal:
-                last_response_metrics = _build_response_metrics(output)
+                last_response_metrics = _build_response_metrics(
+                    output, include_timing=not nonprogress_retry
+                )
 
             terminal_reasoning_text = getattr(output, "reasoning_text", "")
             if terminal_reasoning_text:
@@ -4522,7 +4529,18 @@ async def _stream_responses(
             if incomplete_details is not None:
                 payload["incomplete_details"] = incomplete_details
             if last_response_metrics is not None:
-                payload["metrics"] = last_response_metrics.model_dump(exclude_none=True)
+                # Route validation can fail after a successful engine generation.
+                # Keep speculative counters, but do not report successful timing.
+                excluded = (
+                    {"time_to_first_token_ms", "mean_itl_ms"}
+                    if status in {"failed", "cancelled"}
+                    else set()
+                )
+                metrics = last_response_metrics.model_dump(
+                    exclude_none=True, exclude=excluded
+                )
+                if metrics:
+                    payload["metrics"] = metrics
             return payload
 
         def _build_reasoning_done_payload() -> dict:

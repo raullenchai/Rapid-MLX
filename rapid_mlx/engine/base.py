@@ -101,6 +101,8 @@ class GenerationOutput:
     # on the terminal output when MTP actually verified at least one draft.
     # Appended last to preserve positional compatibility.
     spec_decode_metrics: dict[str, int | list[int]] | None = None
+    # Frozen scheduler timings for a successful terminal text generation.
+    timing_metrics: dict[str, float] | None = None
 
 
 def _callable_accepts_kwarg(func: Any, name: str, inspect_mod: Any) -> bool:
