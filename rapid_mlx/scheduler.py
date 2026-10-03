@@ -9718,10 +9718,13 @@ class Scheduler:
                     )
                 # #4092: surface PFlash compression on the terminal output so
                 # the API layer can tell the client its prompt was shortened.
-                if _pflash_compressed(request):
+                pflash_metadata = request.pflash_metadata
+                if pflash_metadata is not None and pflash_metadata.get(
+                    "compressed", False
+                ):
                     output.prompt_compression = {
-                        "original_tokens": request.pflash_metadata["original_tokens"],
-                        "kept_tokens": request.pflash_metadata["kept_tokens"],
+                        "original_tokens": pflash_metadata["original_tokens"],
+                        "kept_tokens": pflash_metadata["kept_tokens"],
                     }
                 if repetition_error is not None:
                     output.error = repetition_error
