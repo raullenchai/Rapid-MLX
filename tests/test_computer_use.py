@@ -5550,7 +5550,15 @@ def test_anchor_editable_focus_drift_keeps_occlusion_fail_closed(monkeypatch):
     )
     monkeypatch.setattr(backend, "_live_element", lambda *a, **k: object())
     monkeypatch.setattr(backend, "_focused_ax_element", lambda *a, **k: object())
-    monkeypatch.setattr(backend.ax_driver, "_get", lambda *a, **k: False)
+    # A readable, safe chain up to the window so the pixel path is reached.
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_get",
+        lambda el, attr, *a, **k: {"AXParent": "window", "AXRole": "AXWindow"}.get(
+            attr, False
+        ),
+    )
+    monkeypatch.setattr(backend.ax_driver, "_action_names", lambda el: [])
     monkeypatch.setattr(
         backend,
         "_validate_snapshot_window",

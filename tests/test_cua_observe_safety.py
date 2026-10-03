@@ -128,6 +128,9 @@ def test_focus_only_pixel_focuses_text_input_with_safe_ancestors(monkeypatch):
         ("AXTextField", [("AXGroup", ["AXPress"]), ("AXWebArea", [])]),
         ("AXTextField", [("AXLink", []), ("AXWindow", [])]),
         ("AXTextField", [("AXGroup", [])] * 70),  # over-deep chain is unsafe
+        ("AXTextField", [("AXGroup", [])]),  # chain ends before a boundary
+        ("AXTextField", [(None, []), ("AXWindow", [])]),  # unreadable role
+        ("AXTextField", [("AXWebArea", ["AXPress"])]),  # pressable boundary
     ],
 )
 def test_focus_only_refuses_unsafe_pixel_focus(monkeypatch, role, chain):
@@ -351,3 +354,30 @@ def test_ax_driver_cli_maps_late_app_exit(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["ax_driver", "--app", "A", "--press", "t000"])
     with pytest.raises(SystemExit, match="app not found"):
         ax_driver.main()
+
+
+def test_borrow_foreground_refuses_recycled_pid_already_active(monkeypatch):
+    running = _Running(active=True)
+    snapshot = _borrow_setup(monkeypatch, running, start=2.0)
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend._borrow_foreground(snapshot)
+    assert exc.value.code == "target_drift"
+
+
+def test_borrow_foreground_revalidates_identity_while_polling(monkeypatch):
+    running = _Running()
+    snapshot = _borrow_setup(monkeypatch, running)
+    starts = iter([1.0, 2.0])
+    monkeypatch.setattr(
+        backend,
+        "_resolved_app_info",
+        lambda r: {
+            "pid": 4,
+            "bundleId": "com.example.app",
+            "name": "App",
+            "processStartTime": next(starts),
+        },
+    )
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend._borrow_foreground(snapshot)
+    assert exc.value.code == "target_drift"

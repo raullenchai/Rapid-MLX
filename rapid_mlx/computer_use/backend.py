@@ -1298,6 +1298,23 @@ def _pixel_click(
     }
 
 
+def _same_process(expected: dict):
+    """The running app for ``expected``'s pid, only if it is still that process.
+
+    A pid can be recycled after the observed process exits, so the full
+    identity (bundle, name, launch time) is checked on every lookup.
+    """
+    running = ax_driver._application_for_pid(int(expected["pid"]))
+    if running is None:
+        raise ComputerUseError("target_drift", "selected app exited")
+    info = _resolved_app_info(running)
+    for key in ("pid", "bundleId", "name", "processStartTime"):
+        wanted = expected.get(key)
+        if wanted is not None and info.get(key) != wanted:
+            raise ComputerUseError("target_drift", "selected app identity changed")
+    return running
+
+
 def _borrow_foreground(snapshot: dict) -> None:
     """Activate exactly the snapshot's process for a foreground-only step.
 
@@ -1309,16 +1326,9 @@ def _borrow_foreground(snapshot: dict) -> None:
     if observation_activates(snapshot.get("app")):
         return  # the observation already activated it (historical path)
     expected = snapshot.get("app") or {}
-    running = ax_driver._application_for_pid(int(expected["pid"]))
-    if running is None:
-        raise ComputerUseError("target_drift", "selected app exited")
+    running = _same_process(expected)
     if bool(running.isActive()):
         return
-    info = _resolved_app_info(running)
-    for key in ("pid", "bundleId", "name", "processStartTime"):
-        wanted = expected.get(key)
-        if wanted is not None and info.get(key) != wanted:
-            raise ComputerUseError("target_drift", "selected app identity changed")
     try:
         running.activateWithOptions_(1 << 1)
     except Exception as exc:  # noqa: BLE001 - surfaced as a typed failure
@@ -1327,8 +1337,8 @@ def _borrow_foreground(snapshot: dict) -> None:
     while time.monotonic() < deadline:
         # Re-resolve each poll: without an NSRunLoop in this process a held
         # NSRunningApplication never refreshes its isActive property.
-        current = ax_driver._application_for_pid(int(expected["pid"]))
-        if current is not None and bool(current.isActive()):
+        current = _same_process(expected)
+        if bool(current.isActive()):
             time.sleep(0.15)  # let AppKit settle key/main window
             return
         time.sleep(0.05)
@@ -1975,23 +1985,24 @@ def _pixel_focus_is_safe(entry: dict, live: object | None) -> bool:
     seen: set[int] = set()
     node = ax_driver._get(live, "AXParent")
     for _ in range(64):
-        if not node:
-            return True
-        if id(node) in seen:
+        # _get returns None on any AX error, so a chain that ends before an
+        # explicit boundary is unreadable, not proven safe.
+        if not node or id(node) in seen:
             return False
         seen.add(id(node))
         role = ax_driver._get(node, "AXRole")
+        if not role:
+            return False
+        actions = set(ax_driver._action_names(node) or [])
+        if role in COMMIT_ON_CLICK_ROLES or actions & _COMMIT_ACTIONS:
+            return False
         if role in {"AXWindow", "AXWebArea", "AXApplication"}:
             return True
-        actions = set(ax_driver._action_names(node) or [])
-        if role in COMMIT_ON_CLICK_ROLES or actions & {
-            "AXPress",
-            "AXConfirm",
-            "AXOpen",
-        }:
-            return False
         node = ax_driver._get(node, "AXParent")
     return False
+
+
+_COMMIT_ACTIONS = frozenset({"AXPress", "AXConfirm", "AXOpen"})
 
 
 def _focus_without_commit(snapshot: dict, live: object | None) -> str | None:
