@@ -303,6 +303,62 @@ def test_cli_bench_draft_alias_fails_fast_with_resolve_telemetry(monkeypatch, ca
     assert emitted[0][2].get("failure_stage") == "resolve"
 
 
+@pytest.mark.parametrize("command", ["chat", "run"])
+def test_cli_local_chat_and_run_refuse_draft_before_dispatch(
+    command, monkeypatch, capsys
+):
+    """The REPL prefetches before its child ``serve`` starts, so the parent
+    entry point must reject a draft before chat_command can download it."""
+    import sys
+
+    from rapid_mlx import cli
+
+    monkeypatch.setattr(sys, "argv", ["rapid-mlx", command, "qwen3.6-35b-mtp-4bit"])
+    monkeypatch.setattr(
+        cli,
+        "_ensure_model_downloaded",
+        lambda *_a, **_kw: pytest.fail("draft checkpoint must not be downloaded"),
+    )
+    monkeypatch.setattr(
+        cli,
+        "chat_command",
+        lambda _args: pytest.fail("draft checkpoint must not reach chat dispatch"),
+    )
+
+    with pytest.raises(SystemExit) as caught:
+        cli.main()
+
+    assert caught.value.code == 1
+    assert "draft checkpoint" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "command,attachment",
+    [
+        ("chat", ["--base-url", "http://127.0.0.1:8123"]),
+        ("run", ["--port", "8123"]),
+    ],
+)
+def test_cli_attached_chat_and_run_do_not_apply_local_draft_gate(
+    command, attachment, monkeypatch
+):
+    import sys
+
+    from rapid_mlx import cli
+
+    reached = []
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["rapid-mlx", command, "qwen3.6-35b-mtp-4bit", *attachment],
+    )
+    monkeypatch.setattr(cli, "chat_command", lambda args: reached.append(args.model))
+
+    cli.main()
+
+    assert reached == ["mlx-community/Qwen3.6-35B-A3B-MTP-4bit"]
+
+
 def test_cli_pull_keeps_draft_sidecar_warmable(monkeypatch):
     """pull stays storage-only: pre-warming the sidecar must keep working."""
     import sys
@@ -420,6 +476,41 @@ def test_draft_gate_never_refuses_an_existing_local_path(monkeypatch, tmp_path):
     assert draft_only_conflict("qwen3.6-35b-mtp-4bit") is None
     # A draft with no local twin is still refused.
     assert draft_only_conflict("mlx-community/Qwen3.6-35B-A3B-MTP-4bit") is not None
+
+
+def test_cli_serve_external_root_model_named_like_draft_uses_local_path(
+    monkeypatch, tmp_path
+):
+    """A complete external-root model wins during resolution even when its
+    displayed name matches a catalog draft alias."""
+    import sys
+
+    from rapid_mlx import cli
+
+    root = tmp_path / "models"
+    model = root / "qwen3.6-35b-mtp-4bit"
+    model.mkdir(parents=True)
+    (model / "config.json").write_text("{}")
+    (model / "model.safetensors").write_bytes(b"weights")
+    monkeypatch.setenv("RAPID_MLX_EXTRA_MODEL_ROOTS", str(root))
+    monkeypatch.setattr(
+        "rapid_mlx.model_aliases._managed_hub_model_is_runnable", lambda _name: False
+    )
+    monkeypatch.setattr(sys, "argv", ["rapid-mlx", "serve", "qwen3.6-35b-mtp-4bit"])
+    reached = []
+    monkeypatch.setattr(
+        cli,
+        "serve_command",
+        lambda args: reached.append(
+            (args.model, getattr(args, "_original_alias", None))
+        ),
+    )
+
+    cli.main()
+
+    assert reached == [
+        (os.path.realpath(model), "qwen3.6-35b-mtp-4bit"),
+    ]
 
 
 def test_cli_serve_draft_gate_terminates_server_start_at_resolve(monkeypatch):

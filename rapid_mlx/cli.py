@@ -12059,6 +12059,25 @@ def chat_command(args):
         resolved = resolve_model(new_alias) or new_alias
         print(f"  {DIM}Preparing {new_alias} → {resolved} ...{RESET}")
 
+        # Reject draft-only checkpoints before the confirm/download path. The
+        # top-level main() gate covers the initial chat model, but /model is a
+        # fresh in-process resolution. Keep an existing local resolution
+        # authoritative (including RAPID_MLX_EXTRA_MODEL_ROOTS), matching the
+        # initial-command contract.
+        if not os.path.exists(resolved):
+            from rapid_mlx.model_aliases import (
+                DraftModelNotServableError,
+                raise_if_draft_only_model,
+            )
+
+            try:
+                raise_if_draft_only_model(new_alias)
+                raise_if_draft_only_model(resolved)
+            except DraftModelNotServableError as exc:
+                print(f"  {RED}Model switch aborted:{RESET} {exc}")
+                print(f"  {DIM}(previous server still running){RESET}\n")
+                return
+
         # 1a. Gate before download: the main() entry-point gate only
         #     fires on the CLI invocation, so an uncached /model swap
         #     would otherwise start a 40+ GB pull with no prompt.
@@ -16313,19 +16332,24 @@ def main():
                     print(f"  Alias: {args.model} → {_audio_hf_id}")
                     args._original_alias = args.model
                     args.model = _audio_hf_id
-        if getattr(args, "command", None) in ("serve", "bench") and not (
+        if getattr(args, "command", None) in (
+            "serve",
+            "bench",
+            "chat",
+            "run",
+        ) and not (
             getattr(args, "base_url", None)
             or (
-                getattr(args, "command", None) == "bench"
+                getattr(args, "command", None) in ("bench", "chat", "run")
                 and getattr(args, "port", None) is not None
             )
         ):
             # A draft-only checkpoint cannot be a primary model: gate it at
             # resolve with the precise remedy instead of a mid-load
             # "unsupported architecture" crash after the download. Runs for
-            # local serve/bench only — ``pull`` must stay able to pre-warm
-            # the sidecar, and an attached bench targets a remote server
-            # whose model is not meant to be local (codex #2357-P1).
+            # local serve/bench/chat/run only — ``pull`` must stay able to
+            # pre-warm the sidecar, and attached clients target a remote
+            # server whose model is not meant to be local (codex #2357-P1).
             from rapid_mlx.model_aliases import (
                 DraftModelNotServableError,
                 raise_if_draft_only_model,
@@ -16334,13 +16358,15 @@ def main():
             try:
                 # Check what the user typed AND what it resolved to: a user
                 # alias (``my-draft -> qwen3.6-35b-mtp-4bit``) reaches the
-                # draft only through its resolved HF path. A typed ref that
-                # is an existing local path short-circuits both (the
-                # resolver keeps it verbatim, so both checks see the path).
-                raise_if_draft_only_model(
-                    getattr(args, "_original_alias", None) or args.model
-                )
-                raise_if_draft_only_model(args.model)
+                # draft only through its resolved HF path. Once resolution
+                # produced an existing local path, however, that directory is
+                # the source of truth even if its external-catalog name happens
+                # to match a draft alias.
+                if not os.path.exists(args.model):
+                    raise_if_draft_only_model(
+                        getattr(args, "_original_alias", None) or args.model
+                    )
+                    raise_if_draft_only_model(args.model)
             except DraftModelNotServableError as exc:
                 from rapid_mlx.telemetry.model_events import (
                     emit_model_serve_failed,
