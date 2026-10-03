@@ -362,7 +362,7 @@ binary auto-routing decision has a force-on and force-off pair.
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--pflash` | PFlash long-prompt prefill compression: `off`, `auto` (only prompts of at least `--pflash-threshold` tokens), `always` (every eligible prompt whose keep budget leaves room for middle blocks, roughly 11.5K tokens and up at the default ratio) | `auto` for verified aliases (Qwen3.5 / Qwen3.6 family), `off` otherwise |
+| `--pflash` | PFlash long-prompt prefill compression: `off`, `auto` (only prompts of at least `--pflash-threshold` tokens), `always` (every eligible prompt whose keep budget leaves room for middle blocks, roughly 11.5K tokens and up at the default ratio) | `auto` for verified aliases (Qwen3.5 / Qwen3.6 family, `bonsai-27b-2bit`), `off` otherwise |
 | `--pflash-threshold` | Minimum prompt tokens before `--pflash auto` compresses | 32768 |
 | `--pflash-keep-ratio` | Fraction of prompt tokens to keep when compressing; unset resolves a per-alias override if pinned, else 0.20 | None (per-alias or 0.20) |
 | `--pflash-min-keep-tokens` | Minimum tokens to keep when compressing | 2048 |
@@ -378,8 +378,9 @@ the last `--pflash-tail-tokens`, and the middle blocks that score highest
 against the end of the prompt, until it reaches `--pflash-keep-ratio` of the
 original. The rest of the middle is dropped, so the model does not see it. A
 compressed request also skips the prefix cache, so a later turn of the same
-conversation prefills from scratch. Requests with tools or a
-`response_format` are never compressed.
+conversation prefills from scratch. Prompts with tool definitions are
+skipped unless you pass `--pflash-include-tools`, and Chat Completions
+requests with a `response_format` are skipped too.
 
 On verified aliases, the default `auto` mode leaves prompts under 32768 tokens
 alone. Long chat sessions, RAG prompts and document Q&A below that size reach

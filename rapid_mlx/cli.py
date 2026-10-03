@@ -2847,7 +2847,8 @@ def _add_pflash_args(parser) -> None:
         help="Enable PFlash long-prompt prefill compression "
         "(off, auto, always). Compression is lossy: it drops most of the "
         "middle of the prompt. Default: 'auto' for verified aliases "
-        "(Qwen3.5 / Qwen3.6 family), which compresses only prompts of at "
+        "(Qwen3.5 / Qwen3.6 family, bonsai-27b-2bit), which compresses only "
+        "prompts of at "
         "least --pflash-threshold tokens; 'off' for everything else.",
     )
     parser.add_argument(

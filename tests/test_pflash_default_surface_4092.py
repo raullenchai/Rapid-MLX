@@ -33,7 +33,6 @@ from rapid_mlx.config import reset_config
 from rapid_mlx.engine.base import GenerationOutput
 from rapid_mlx.output_router import Channel
 from rapid_mlx.pflash import (
-    PFlashConfig,
     compress_tokens,
     resolve_pflash_config,
     resolve_pflash_mode_default,
@@ -87,14 +86,16 @@ class TestVerifiedDefaultIsThresholdGated:
         assert result.reason == "threshold"
         assert result.kept_tokens == n_tokens
 
-    def test_prompt_at_threshold_still_compresses_by_default(self):
-        # The validated #649 win (>= 32K cold prefill) is kept by default.
+    @pytest.mark.parametrize("n_tokens", [32_768, 40_000])
+    def test_prompt_at_or_above_threshold_still_compresses_by_default(self, n_tokens):
+        # The validated #649 win (>= 32K cold prefill) is kept by default;
+        # "at least --pflash-threshold" includes the boundary itself.
         config = resolve_pflash_config(_cli_ns(), model_name="qwen3.6-27b-4bit")
 
-        result = compress_tokens(list(range(40_000)), config)
+        result = compress_tokens(list(range(n_tokens)), config)
 
         assert result.compressed is True
-        assert result.kept_tokens < 40_000
+        assert result.kept_tokens < n_tokens
 
     def test_explicit_always_still_compresses_ordinary_long_prompt(self):
         config = resolve_pflash_config(
@@ -177,7 +178,10 @@ class TestPromptCompressionMetrics:
                 GenerationOutput(text="plain"),
                 GenerationOutput(
                     text="b",
-                    prompt_compression={"original_tokens": 50_000, "kept_tokens": 10_000},
+                    prompt_compression={
+                        "original_tokens": 50_000,
+                        "kept_tokens": 10_000,
+                    },
                 ),
             ]
         )
@@ -313,7 +317,7 @@ def _client(engine: _Engine) -> TestClient:
 
 
 _MESSAGES = [{"role": "user", "content": "hello"}]
-_NON_STREAM = {
+_ROUTES = {
     "chat": (
         "/v1/chat/completions",
         {"model": "test-model", "messages": _MESSAGES, "max_tokens": 8},
@@ -331,16 +335,34 @@ _NON_STREAM = {
         {"model": "test-model", "messages": _MESSAGES, "max_tokens": 8},
     ),
 }
+_STREAM_BODY = {
+    "chat": {"stream": True, "stream_options": {"include_usage": True}},
+    "completions": {"stream": True},
+    "responses": {"stream": True},
+    "anthropic": {"stream": True},
+}
+# Every route, non-streaming and streaming: (fixture key, path, body).
+_CASES = {
+    **{name: (path, body) for name, (path, body) in _ROUTES.items()},
+    **{
+        f"{name}_stream": (path, {**body, **_STREAM_BODY[name]})
+        for name, (path, body) in _ROUTES.items()
+    },
+}
 
 
 def _normalize(body: str) -> str:
-    """Blank out per-response ids and timestamps (same rules as the capture)."""
+    """Blank out per-response ids, timestamps and SSE keepalive comments (the
+    same rules the origin/main capture applied)."""
+    body = re.sub(r"^: keepalive\n\n", "", body, flags=re.M)
     body = re.sub(
         r'"(id|created|created_at|item_id|response_id)":\s*("[^"]*"|\d+)',
         r'"\1":"X"',
         body,
     )
-    body = re.sub(r"(chatcmpl|cmpl|resp|msg|rs|fc|call|item)_[A-Za-z0-9]+", r"\1_X", body)
+    body = re.sub(
+        r"(chatcmpl|cmpl|resp|msg|rs|fc|call|item)_[A-Za-z0-9]+", r"\1_X", body
+    )
     return re.sub(r'"(created|created_at)":\s*\d+', r'"\1":0', body)
 
 
@@ -350,10 +372,10 @@ def restore_config():
     reset_config()
 
 
-@pytest.mark.parametrize("route", sorted(_NON_STREAM))
-def test_uncompressed_response_is_byte_identical_to_main(route, restore_config):
-    golden = json.loads(_GOLDEN.read_text())[route]
-    path, body = _NON_STREAM[route]
+@pytest.mark.parametrize("case", sorted(_CASES))
+def test_uncompressed_response_is_byte_identical_to_main(case, restore_config):
+    golden = json.loads(_GOLDEN.read_text())[case]
+    path, body = _CASES[case]
 
     response = _client(_Engine()).post(path, json=body)
 
@@ -367,9 +389,9 @@ def test_uncompressed_response_is_byte_identical_to_main(route, restore_config):
     assert _normalize(response.text) == golden["body"]
 
 
-@pytest.mark.parametrize("route", sorted(_NON_STREAM))
+@pytest.mark.parametrize("route", sorted(_ROUTES))
 def test_compressed_non_stream_response_announces_compression(route, restore_config):
-    path, body = _NON_STREAM[route]
+    path, body = _ROUTES[route]
 
     response = _client(_Engine(_COMPRESSION)).post(path, json=body)
 
@@ -386,22 +408,40 @@ def test_compressed_non_stream_response_announces_compression(route, restore_con
         assert payload["metrics"] == {"prompt_compression": _COMPRESSION}
 
 
-def test_compressed_chat_stream_reports_on_terminal_chunk_only(restore_config):
-    path, body = _NON_STREAM["chat"]
+def _sse_payloads(text: str) -> list[dict]:
+    return [
+        json.loads(line.removeprefix("data:").strip())
+        for line in text.splitlines()
+        if line.startswith("data:") and line.strip() != "data: [DONE]"
+    ]
 
-    response = _client(_Engine(_COMPRESSION)).post(
-        path, json={**body, "stream": True}
-    )
+
+def _find_metrics(node) -> list[dict]:
+    """Every ``metrics`` object anywhere in one SSE payload."""
+    if isinstance(node, dict):
+        found = [node["metrics"]] if "metrics" in node else []
+        for value in node.values():
+            found.extend(_find_metrics(value))
+        return found
+    if isinstance(node, list):
+        return [m for item in node for m in _find_metrics(item)]
+    return []
+
+
+@pytest.mark.parametrize("route", ["chat", "completions", "responses"])
+def test_compressed_stream_reports_once_on_terminal_event(route, restore_config):
+    path, body = _CASES[f"{route}_stream"]
+
+    response = _client(_Engine(_COMPRESSION)).post(path, json=body)
 
     assert response.status_code == 200
     # Streaming headers leave before the scheduler decides; no header.
     assert PROMPT_COMPRESSED_HEADER not in response.headers
-    chunks = [
-        json.loads(line.removeprefix("data:").strip())
-        for line in response.text.splitlines()
-        if line.startswith("data:") and line.strip() != "data: [DONE]"
-    ]
-    with_metrics = [c for c in chunks if "metrics" in c]
-    assert len(with_metrics) == 1
-    assert with_metrics[0]["choices"][0]["finish_reason"] == "stop"
-    assert with_metrics[0]["metrics"] == {"prompt_compression": _COMPRESSION}
+    payloads = _sse_payloads(response.text)
+    carrying = [p for p in payloads if _find_metrics(p)]
+    assert len(carrying) == 1, carrying
+    assert _find_metrics(carrying[0]) == [{"prompt_compression": _COMPRESSION}]
+    if route == "responses":
+        assert carrying[0]["type"] == "response.completed"
+    else:
+        assert carrying[0]["choices"][0]["finish_reason"] == "stop"
