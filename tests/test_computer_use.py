@@ -1486,7 +1486,7 @@ def test_cli_dispatches_every_command(monkeypatch, capsys, tmp_path):
     }
 
 
-def test_cli_stdin_empty_and_mouse_button_guards(monkeypatch, capsys):
+def test_cli_stdin_empty_guards(monkeypatch, capsys):
     from rapid_mlx.computer_use import cli
 
     monkeypatch.setattr(sys, "stdin", types.SimpleNamespace(read=lambda: "stdin-value"))
@@ -1502,12 +1502,25 @@ def test_cli_stdin_empty_and_mouse_button_guards(monkeypatch, capsys):
     for command in (
         ["set-value", "--app", "A", "--element-index", "1"],
         ["type-text", "--app", "A"],
-        ["click", "--app", "A", "--x", "1", "--y", "2", "--mouse-button", "right"],
     ):
         assert cli.main(command) == 1
         assert (
             json.loads(capsys.readouterr().out)["error"]["code"] == "invalid_argument"
         )
+
+
+@pytest.mark.parametrize("button", ["left", "right", "middle"])
+def test_cli_click_forwards_mouse_button(monkeypatch, capsys, button):
+    from rapid_mlx.computer_use import cli
+
+    calls = []
+    monkeypatch.setattr(
+        backend, "click", lambda *a, **k: calls.append(k) or {"mode": "click"}
+    )
+    command = ["click", "--app", "A", "--x", "1", "--y", "2"]
+    assert cli.main([*command, "--mouse-button", button]) == 0
+    capsys.readouterr()
+    assert calls[0]["mouse_button"] == button
 
 
 def test_snapshot_payload_encodes_png():
