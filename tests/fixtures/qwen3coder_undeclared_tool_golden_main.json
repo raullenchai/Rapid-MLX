@@ -1,0 +1,1352 @@
+{
+ "_comment": "qwen3_coder_xml output on origin/main 9221ff773 for calls to undeclared tools (issue #4038): 'main_non_stream' / 'main_stream' (StreamingPostProcessor incl. finalize, keyed by delta size; 0 = the whole text as one delta) are captured from origin/main and must not change unless the case is 'changed_by_4038'. 'stream_overrides' pins the few streaming results of unchanged cases that differ from origin/main. Regenerate main_* only from origin/main.",
+ "requests": {
+  "tools": {
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "write_file",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "path": {
+         "type": "string"
+        },
+        "content": {
+         "type": "string"
+        }
+       }
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "tree",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "path": {
+         "type": "string"
+        }
+       }
+      }
+     }
+    }
+   ]
+  },
+  "tools_auto": {
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "write_file",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "path": {
+         "type": "string"
+        },
+        "content": {
+         "type": "string"
+        }
+       }
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "tree",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "path": {
+         "type": "string"
+        }
+       }
+      }
+     }
+    }
+   ],
+   "tool_choice": "auto"
+  },
+  "tool_choice_none": {
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "write_file",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "path": {
+         "type": "string"
+        },
+        "content": {
+         "type": "string"
+        }
+       }
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "tree",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "path": {
+         "type": "string"
+        }
+       }
+      }
+     }
+    }
+   ],
+   "tool_choice": "none"
+  },
+  "named_write_file": {
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "write_file",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "path": {
+         "type": "string"
+        },
+        "content": {
+         "type": "string"
+        }
+       }
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "tree",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "path": {
+         "type": "string"
+        }
+       }
+      }
+     }
+    }
+   ],
+   "tool_choice": {
+    "type": "function",
+    "function": {
+     "name": "write_file"
+    }
+   }
+  },
+  "no_tools": null
+ },
+ "sizes": [
+  0,
+  1,
+  2,
+  3,
+  5,
+  8,
+  13,
+  10000
+ ],
+ "cases": [
+  {
+   "name": "goose_e3_lone_undeclared",
+   "request": "tools",
+   "text": "Now I'll read the README file to find information about what the wordutil package does.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>",
+   "changed_by_4038": true,
+   "main_non_stream": {
+    "calls": [],
+    "content": "Now I'll read the README file to find information about what the wordutil package does.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>"
+   },
+   "main_stream": {
+    "0": {
+     "calls": [],
+     "content": "Now I'll read the README file to find information about what the wordutil package does.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>"
+    },
+    "1": {
+     "calls": [],
+     "content": "Now I'll read the README file to find information about what the wordutil package does.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function></tool_call>"
+    },
+    "2": {
+     "calls": [],
+     "content": "Now I'll read the README file to find information about what the wordutil package does.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function></tool_call>"
+    },
+    "3": {
+     "calls": [],
+     "content": "Now I'll read the README file to find information about what the wordutil package does.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>"
+    },
+    "5": {
+     "calls": [],
+     "content": "Now I'll read the README file to find information about what the wordutil package does.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>"
+    },
+    "8": {
+     "calls": [],
+     "content": "Now I'll read the README file to find information about what the wordutil package does.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>"
+    },
+    "13": {
+     "calls": [],
+     "content": "Now I'll read the README file to find information about what the wordutil package does.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>"
+    },
+    "10000": {
+     "calls": [],
+     "content": "Now I'll read the README file to find information about what the wordutil package does.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>"
+    }
+   },
+   "expected": {
+    "calls": [],
+    "content": "Now I'll read the README file to find information about what the wordutil package does.\n"
+   }
+  },
+  {
+   "name": "lone_undeclared_only",
+   "request": "tools",
+   "text": "<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>",
+   "changed_by_4038": true,
+   "main_non_stream": {
+    "calls": [],
+    "content": "<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>"
+   },
+   "main_stream": {
+    "0": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>"
+    },
+    "1": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function></tool_call>"
+    },
+    "2": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function></tool_call>"
+    },
+    "3": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>"
+    },
+    "5": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>"
+    },
+    "8": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>"
+    },
+    "13": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>"
+    },
+    "10000": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>"
+    }
+   },
+   "expected": {
+    "calls": [],
+    "content": ""
+   }
+  },
+  {
+   "name": "lone_undeclared_zero_arg",
+   "request": "tools",
+   "text": "<tool_call>\n<function=read>\n</function>\n</tool_call>",
+   "changed_by_4038": true,
+   "main_non_stream": {
+    "calls": [],
+    "content": "<tool_call>\n<function=read>\n</function>\n</tool_call>"
+   },
+   "main_stream": {
+    "0": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n</function>\n</tool_call>"
+    },
+    "1": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n</function></tool_call>"
+    },
+    "2": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n</function></tool_call>"
+    },
+    "3": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n</function>\n</tool_call>"
+    },
+    "5": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n</function>\n</tool_call>"
+    },
+    "8": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n</function>\n</tool_call>"
+    },
+    "13": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n</function>\n</tool_call>"
+    },
+    "10000": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n</function>\n</tool_call>"
+    }
+   },
+   "expected": {
+    "calls": [],
+    "content": ""
+   }
+  },
+  {
+   "name": "lone_undeclared_then_text",
+   "request": "tools",
+   "text": "<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>\nDone.",
+   "changed_by_4038": true,
+   "main_non_stream": {
+    "calls": [],
+    "content": "<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>\nDone."
+   },
+   "main_stream": {
+    "0": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>\nDone."
+    },
+    "1": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function></tool_call>Done."
+    },
+    "2": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function></tool_call>\nDone."
+    },
+    "3": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>\nDone."
+    },
+    "5": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>\nDone."
+    },
+    "8": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>\nDone."
+    },
+    "13": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>\nDone."
+    },
+    "10000": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>\nDone."
+    }
+   },
+   "expected": {
+    "calls": [],
+    "content": "\nDone."
+   }
+  },
+  {
+   "name": "lone_undeclared_then_declared",
+   "request": "tools_auto",
+   "text": "Reading.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=tree>\n<parameter=path>\n.\n</parameter>\n</function>\n</tool_call>",
+   "changed_by_4038": true,
+   "main_non_stream": {
+    "calls": [
+     [
+      "tree",
+      {
+       "path": "."
+      }
+     ]
+    ],
+    "content": "Reading.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>\n"
+   },
+   "main_stream": {
+    "0": {
+     "calls": [
+      [
+       "tree",
+       {
+        "path": "."
+       }
+      ]
+     ],
+     "content": "Reading.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=tree>\n<parameter=path>\n.\n</parameter>\n</function>\n</tool_call>"
+    },
+    "1": {
+     "calls": [
+      [
+       "tree",
+       {
+        "path": "."
+       }
+      ]
+     ],
+     "content": "Reading.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function></tool_call><tool_call>\n<function=tree>\n<parameter=path>\n.\n</parameter>\n</function></tool_call>"
+    },
+    "2": {
+     "calls": [
+      [
+       "tree",
+       {
+        "path": "."
+       }
+      ]
+     ],
+     "content": "Reading.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function></tool_call><tool_call>\n<function=tree>\n<parameter=path>\n.\n</parameter>\n</function></tool_call>"
+    },
+    "3": {
+     "calls": [
+      [
+       "tree",
+       {
+        "path": "."
+       }
+      ]
+     ],
+     "content": "Reading.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call><tool_call>\n<function=tree>\n<parameter=path>\n.\n</parameter>\n</function></tool_call>"
+    },
+    "5": {
+     "calls": [
+      [
+       "tree",
+       {
+        "path": "."
+       }
+      ]
+     ],
+     "content": "Reading.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call><tool_call>\n<function=tree>\n<parameter=path>\n.\n</parameter>\n</function></tool_call>"
+    },
+    "8": {
+     "calls": [
+      [
+       "tree",
+       {
+        "path": "."
+       }
+      ]
+     ],
+     "content": "Reading.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call><tool_call>\n<function=tree>\n<parameter=path>\n.\n</parameter>\n</function>\n</tool_call>"
+    },
+    "13": {
+     "calls": [
+      [
+       "tree",
+       {
+        "path": "."
+       }
+      ]
+     ],
+     "content": "Reading.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call><tool_call>\n<function=tree>\n<parameter=path>\n.\n</parameter>\n</function>\n</tool_call>"
+    },
+    "10000": {
+     "calls": [
+      [
+       "tree",
+       {
+        "path": "."
+       }
+      ]
+     ],
+     "content": "Reading.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call><tool_call>\n<function=tree>\n<parameter=path>\n.\n</parameter>\n</function>\n</tool_call>"
+    }
+   },
+   "expected": {
+    "calls": [
+     [
+      "tree",
+      {
+       "path": "."
+      }
+     ]
+    ],
+    "content": "Reading.\n\n"
+   }
+  },
+  {
+   "name": "two_lone_undeclared",
+   "request": "tools",
+   "text": "<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=cat>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>",
+   "changed_by_4038": true,
+   "main_non_stream": {
+    "calls": [],
+    "content": "<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=cat>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>"
+   },
+   "main_stream": {
+    "0": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=cat>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>"
+    },
+    "1": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function></tool_call><tool_call>\n<function=cat>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function></tool_call>"
+    },
+    "2": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function></tool_call><tool_call>\n<function=cat>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>"
+    },
+    "3": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call><tool_call>\n<function=cat>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function></tool_call>"
+    },
+    "5": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call><tool_call>\n<function=cat>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>"
+    },
+    "8": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call><tool_call>\n<function=cat>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>"
+    },
+    "13": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call><tool_call>\n<function=cat>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>"
+    },
+    "10000": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call><tool_call>\n<function=cat>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>"
+    }
+   },
+   "expected": {
+    "calls": [],
+    "content": "\n"
+   }
+  },
+  {
+   "name": "lone_undeclared_in_code_fence",
+   "request": "tools",
+   "text": "Example:\n```\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>\n```\n",
+   "changed_by_4038": true,
+   "main_non_stream": {
+    "calls": [],
+    "content": "Example:\n```\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>\n```\n"
+   },
+   "main_stream": {
+    "0": {
+     "calls": [],
+     "content": "Example:\n```\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>\n```\n"
+    },
+    "1": {
+     "calls": [],
+     "content": "Example:\n```\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function></tool_call>```\n"
+    },
+    "2": {
+     "calls": [],
+     "content": "Example:\n```\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function></tool_call>\n```\n"
+    },
+    "3": {
+     "calls": [],
+     "content": "Example:\n```\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>\n```\n"
+    },
+    "5": {
+     "calls": [],
+     "content": "Example:\n```\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>\n```\n"
+    },
+    "8": {
+     "calls": [],
+     "content": "Example:\n```\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>\n```\n"
+    },
+    "13": {
+     "calls": [],
+     "content": "Example:\n```\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>\n```\n"
+    },
+    "10000": {
+     "calls": [],
+     "content": "Example:\n```\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>\n```\n"
+    }
+   },
+   "expected": {
+    "calls": [],
+    "content": "Example:\n```\n\n```\n"
+   }
+  },
+  {
+   "name": "named_choice_other_declared_tool",
+   "request": "named_write_file",
+   "text": "<tool_call>\n<function=tree>\n<parameter=path>\n.\n</parameter>\n</function>\n</tool_call>",
+   "changed_by_4038": true,
+   "main_non_stream": {
+    "calls": [],
+    "content": "<tool_call>\n<function=tree>\n<parameter=path>\n.\n</parameter>\n</function>\n</tool_call>"
+   },
+   "main_stream": {
+    "0": {
+     "calls": [],
+     "content": "<tool_call>\n<function=tree>\n<parameter=path>\n.\n</parameter>\n</function>\n</tool_call>"
+    },
+    "1": {
+     "calls": [],
+     "content": "<tool_call>\n<function=tree>\n<parameter=path>\n.\n</parameter>\n</function></tool_call>"
+    },
+    "2": {
+     "calls": [],
+     "content": "<tool_call>\n<function=tree>\n<parameter=path>\n.\n</parameter>\n</function></tool_call>"
+    },
+    "3": {
+     "calls": [],
+     "content": "<tool_call>\n<function=tree>\n<parameter=path>\n.\n</parameter>\n</function></tool_call>"
+    },
+    "5": {
+     "calls": [],
+     "content": "<tool_call>\n<function=tree>\n<parameter=path>\n.\n</parameter>\n</function></tool_call>"
+    },
+    "8": {
+     "calls": [],
+     "content": "<tool_call>\n<function=tree>\n<parameter=path>\n.\n</parameter>\n</function>\n</tool_call>"
+    },
+    "13": {
+     "calls": [],
+     "content": "<tool_call>\n<function=tree>\n<parameter=path>\n.\n</parameter>\n</function>\n</tool_call>"
+    },
+    "10000": {
+     "calls": [],
+     "content": "<tool_call>\n<function=tree>\n<parameter=path>\n.\n</parameter>\n</function>\n</tool_call>"
+    }
+   },
+   "expected": {
+    "calls": [],
+    "content": ""
+   }
+  },
+  {
+   "name": "declared_then_lone_undeclared",
+   "request": "tools",
+   "text": "<tool_call>\n<function=tree>\n<parameter=path>\n.\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>",
+   "changed_by_4038": false,
+   "main_non_stream": {
+    "calls": [
+     [
+      "tree",
+      {
+       "path": "."
+      }
+     ]
+    ],
+    "content": "\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>"
+   },
+   "main_stream": {
+    "0": {
+     "calls": [
+      [
+       "tree",
+       {
+        "path": "."
+       }
+      ]
+     ],
+     "content": ""
+    },
+    "1": {
+     "calls": [
+      [
+       "tree",
+       {
+        "path": "."
+       }
+      ]
+     ],
+     "content": ""
+    },
+    "2": {
+     "calls": [
+      [
+       "tree",
+       {
+        "path": "."
+       }
+      ]
+     ],
+     "content": ""
+    },
+    "3": {
+     "calls": [
+      [
+       "tree",
+       {
+        "path": "."
+       }
+      ]
+     ],
+     "content": ""
+    },
+    "5": {
+     "calls": [
+      [
+       "tree",
+       {
+        "path": "."
+       }
+      ]
+     ],
+     "content": ""
+    },
+    "8": {
+     "calls": [
+      [
+       "tree",
+       {
+        "path": "."
+       }
+      ]
+     ],
+     "content": ""
+    },
+    "13": {
+     "calls": [
+      [
+       "tree",
+       {
+        "path": "."
+       }
+      ]
+     ],
+     "content": ""
+    },
+    "10000": {
+     "calls": [
+      [
+       "tree",
+       {
+        "path": "."
+       }
+      ]
+     ],
+     "content": ""
+    }
+   }
+  },
+  {
+   "name": "bare_undeclared_zero_arg_prose",
+   "request": "tools",
+   "text": "Docs: <function=read></function> is the wire form.",
+   "changed_by_4038": false,
+   "main_non_stream": {
+    "calls": [],
+    "content": "Docs: <function=read></function> is the wire form."
+   },
+   "main_stream": {
+    "0": {
+     "calls": [],
+     "content": "Docs: <function=read></function> is the wire form."
+    },
+    "1": {
+     "calls": [],
+     "content": "Docs: <function=read></function>is the wire form."
+    },
+    "2": {
+     "calls": [],
+     "content": "Docs: <function=read></function> is the wire form."
+    },
+    "3": {
+     "calls": [],
+     "content": "Docs: <function=read></function> is the wire form."
+    },
+    "5": {
+     "calls": [],
+     "content": "Docs: <function=read></function> is the wire form."
+    },
+    "8": {
+     "calls": [],
+     "content": "Docs: <function=read></function> is the wire form."
+    },
+    "13": {
+     "calls": [],
+     "content": "Docs: <function=read></function> is the wire form."
+    },
+    "10000": {
+     "calls": [],
+     "content": "Docs: <function=read></function> is the wire form."
+    }
+   }
+  },
+  {
+   "name": "bare_undeclared_with_params",
+   "request": "tools",
+   "text": "<function=read>\n<parameter=path>\nx\n</parameter>\n</function>",
+   "changed_by_4038": false,
+   "main_non_stream": {
+    "calls": [],
+    "content": "<function=read>\n<parameter=path>\nx\n</parameter>\n</function>"
+   },
+   "main_stream": {
+    "0": {
+     "calls": [],
+     "content": "<function=read>\n<parameter=path>\nx\n</parameter>\n</function>"
+    },
+    "1": {
+     "calls": [],
+     "content": "<function=read>\n<parameter=path>\nx\n</parameter>\n</function>"
+    },
+    "2": {
+     "calls": [],
+     "content": "<function=read>\n<parameter=path>\nx\n</parameter>\n</function>"
+    },
+    "3": {
+     "calls": [],
+     "content": "<function=read>\n<parameter=path>\nx\n</parameter>\n</function>"
+    },
+    "5": {
+     "calls": [],
+     "content": "<function=read>\n<parameter=path>\nx\n</parameter>\n</function>"
+    },
+    "8": {
+     "calls": [],
+     "content": "<function=read>\n<parameter=path>\nx\n</parameter>\n</function>"
+    },
+    "13": {
+     "calls": [],
+     "content": "<function=read>\n<parameter=path>\nx\n</parameter>\n</function>"
+    },
+    "10000": {
+     "calls": [],
+     "content": "<function=read>\n<parameter=path>\nx\n</parameter>\n</function>"
+    }
+   }
+  },
+  {
+   "name": "shared_wrapper_rejected_sibling",
+   "request": "tools",
+   "text": "<tool_call><function=read></function><function=write_file><parameter=path>a.md</parameter><parameter=content>hi</parameter></function></tool_call>",
+   "changed_by_4038": false,
+   "main_non_stream": {
+    "calls": [
+     [
+      "write_file",
+      {
+       "path": "a.md",
+       "content": "hi"
+      }
+     ]
+    ],
+    "content": "<tool_call><function=read></function></tool_call>"
+   },
+   "main_stream": {
+    "0": {
+     "calls": [
+      [
+       "write_file",
+       {
+        "path": "a.md",
+        "content": "hi"
+       }
+      ]
+     ],
+     "content": "<tool_call><function=read></function><function=write_file><parameter=path>a.md</parameter><parameter=content>hi</parameter></function></tool_call>"
+    },
+    "1": {
+     "calls": [
+      [
+       "write_file",
+       {
+        "path": "a.md",
+        "content": "hi"
+       }
+      ]
+     ],
+     "content": "<tool_call><function=read></function><function=write_file><parameter=path>a.md</parameter><parameter=content>hi</parameter></function></tool_call>"
+    },
+    "2": {
+     "calls": [
+      [
+       "write_file",
+       {
+        "path": "a.md",
+        "content": "hi"
+       }
+      ]
+     ],
+     "content": "<tool_call><function=read></function><function=write_file><parameter=path>a.md</parameter><parameter=content>hi</parameter></function></tool_call>"
+    },
+    "3": {
+     "calls": [
+      [
+       "write_file",
+       {
+        "path": "a.md",
+        "content": "hi"
+       }
+      ]
+     ],
+     "content": "<tool_call><function=read></function><function=write_file><parameter=path>a.md</parameter><parameter=content>hi</parameter></function></tool_call>"
+    },
+    "5": {
+     "calls": [
+      [
+       "write_file",
+       {
+        "path": "a.md",
+        "content": "hi"
+       }
+      ]
+     ],
+     "content": "<tool_call><function=read></function><function=write_file><parameter=path>a.md</parameter><parameter=content>hi</parameter></function></tool_call>"
+    },
+    "8": {
+     "calls": [
+      [
+       "write_file",
+       {
+        "path": "a.md",
+        "content": "hi"
+       }
+      ]
+     ],
+     "content": "<tool_call><function=read></function><function=write_file><parameter=path>a.md</parameter><parameter=content>hi</parameter></function></tool_call>"
+    },
+    "13": {
+     "calls": [
+      [
+       "write_file",
+       {
+        "path": "a.md",
+        "content": "hi"
+       }
+      ]
+     ],
+     "content": "<tool_call><function=read></function><function=write_file><parameter=path>a.md</parameter><parameter=content>hi</parameter></function></tool_call>"
+    },
+    "10000": {
+     "calls": [
+      [
+       "write_file",
+       {
+        "path": "a.md",
+        "content": "hi"
+       }
+      ]
+     ],
+     "content": "<tool_call><function=read></function><function=write_file><parameter=path>a.md</parameter><parameter=content>hi</parameter></function></tool_call>"
+    }
+   },
+   "stream_overrides": {
+    "0": {
+     "calls": [
+      [
+       "write_file",
+       {
+        "path": "a.md",
+        "content": "hi"
+       }
+      ]
+     ],
+     "content": "<tool_call><function=read></function>"
+    },
+    "13": {
+     "calls": [
+      [
+       "write_file",
+       {
+        "path": "a.md",
+        "content": "hi"
+       }
+      ]
+     ],
+     "content": "<tool_call><function=read></function>"
+    },
+    "10000": {
+     "calls": [
+      [
+       "write_file",
+       {
+        "path": "a.md",
+        "content": "hi"
+       }
+      ]
+     ],
+     "content": "<tool_call><function=read></function>"
+    }
+   }
+  },
+  {
+   "name": "shared_wrapper_two_undeclared",
+   "request": "tools",
+   "text": "<tool_call>\n<function=read>\n</function>\n<function=cat>\n</function>\n</tool_call>",
+   "changed_by_4038": false,
+   "main_non_stream": {
+    "calls": [],
+    "content": "<tool_call>\n<function=read>\n</function>\n<function=cat>\n</function>\n</tool_call>"
+   },
+   "main_stream": {
+    "0": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n</function>\n<function=cat>\n</function>\n</tool_call>"
+    },
+    "1": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n</function><function=cat>\n</function></tool_call>"
+    },
+    "2": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n</function>\n<function=cat>\n</function>\n</tool_call>"
+    },
+    "3": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n</function>\n<function=cat>\n</function>\n</tool_call>"
+    },
+    "5": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n</function>\n<function=cat>\n</function></tool_call>"
+    },
+    "8": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n</function>\n<function=cat>\n</function>\n</tool_call>"
+    },
+    "13": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n</function>\n<function=cat>\n</function>\n</tool_call>"
+    },
+    "10000": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n</function>\n<function=cat>\n</function>\n</tool_call>"
+    }
+   },
+   "stream_overrides": {
+    "1": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n</function>\n<function=cat>\n</function></tool_call>"
+    }
+   }
+  },
+  {
+   "name": "text_inside_wrapper_after_function",
+   "request": "tools",
+   "text": "<tool_call>\n<function=read>\n</function>\noops\n</tool_call>",
+   "changed_by_4038": false,
+   "main_non_stream": {
+    "calls": [],
+    "content": "<tool_call>\n<function=read>\n</function>\noops\n</tool_call>"
+   },
+   "main_stream": {
+    "0": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n</function>\noops\n</tool_call>"
+    },
+    "1": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n</function>oops\n</tool_call>"
+    },
+    "2": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n</function>\noops\n</tool_call>"
+    },
+    "3": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n</function>\noops\n</tool_call>"
+    },
+    "5": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n</function>\noops\n</tool_call>"
+    },
+    "8": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n</function>\noops\n</tool_call>"
+    },
+    "13": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n</function>\noops\n</tool_call>"
+    },
+    "10000": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n</function>\noops\n</tool_call>"
+    }
+   },
+   "stream_overrides": {
+    "1": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n</function>\noops\n</tool_call>"
+    }
+   }
+  },
+  {
+   "name": "truncated_lone_undeclared",
+   "request": "tools",
+   "text": "Reading.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n",
+   "changed_by_4038": false,
+   "main_non_stream": {
+    "calls": [],
+    "content": "Reading.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n"
+   },
+   "main_stream": {
+    "0": {
+     "calls": [],
+     "content": "Reading.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n"
+    },
+    "1": {
+     "calls": [],
+     "content": "Reading.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n"
+    },
+    "2": {
+     "calls": [],
+     "content": "Reading.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n"
+    },
+    "3": {
+     "calls": [],
+     "content": "Reading.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n"
+    },
+    "5": {
+     "calls": [],
+     "content": "Reading.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n"
+    },
+    "8": {
+     "calls": [],
+     "content": "Reading.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n"
+    },
+    "13": {
+     "calls": [],
+     "content": "Reading.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n"
+    },
+    "10000": {
+     "calls": [],
+     "content": "Reading.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n"
+    }
+   }
+  },
+  {
+   "name": "missing_function_close",
+   "request": "tools",
+   "text": "<tool_call>\n<function=read>\n<parameter=path>\nx\n</parameter>\n</tool_call>",
+   "changed_by_4038": false,
+   "main_non_stream": {
+    "calls": [],
+    "content": "<tool_call>\n<function=read>\n<parameter=path>\nx\n</parameter>\n</tool_call>"
+   },
+   "main_stream": {
+    "0": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n<parameter=path>\nx\n</parameter>\n</tool_call>"
+    },
+    "1": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n<parameter=path>\nx\n</parameter>\n</tool_call>"
+    },
+    "2": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n<parameter=path>\nx\n</parameter>\n</tool_call>"
+    },
+    "3": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n<parameter=path>\nx\n</parameter>\n</tool_call>"
+    },
+    "5": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n<parameter=path>\nx\n</parameter>\n</tool_call>"
+    },
+    "8": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n<parameter=path>\nx\n</parameter>\n</tool_call>"
+    },
+    "13": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n<parameter=path>\nx\n</parameter>\n</tool_call>"
+    },
+    "10000": {
+     "calls": [],
+     "content": "<tool_call>\n<function=read>\n<parameter=path>\nx\n</parameter>\n</tool_call>"
+    }
+   }
+  },
+  {
+   "name": "tool_choice_none_lone_block",
+   "request": "tool_choice_none",
+   "text": "Reading.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>",
+   "changed_by_4038": false,
+   "main_non_stream": {
+    "calls": [],
+    "content": "Reading.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>"
+   },
+   "main_stream": {
+    "0": {
+     "calls": [],
+     "content": "Reading.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>"
+    },
+    "1": {
+     "calls": [],
+     "content": "Reading.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>"
+    },
+    "2": {
+     "calls": [],
+     "content": "Reading.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>"
+    },
+    "3": {
+     "calls": [],
+     "content": "Reading.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>"
+    },
+    "5": {
+     "calls": [],
+     "content": "Reading.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>"
+    },
+    "8": {
+     "calls": [],
+     "content": "Reading.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>"
+    },
+    "13": {
+     "calls": [],
+     "content": "Reading.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>"
+    },
+    "10000": {
+     "calls": [],
+     "content": "Reading.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>"
+    }
+   }
+  },
+  {
+   "name": "no_tools_lone_block",
+   "request": "no_tools",
+   "text": "Reading.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>",
+   "changed_by_4038": false,
+   "main_non_stream": {
+    "calls": [],
+    "content": "Reading.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>"
+   },
+   "main_stream": {
+    "0": {
+     "calls": [],
+     "content": "Reading.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>"
+    },
+    "1": {
+     "calls": [],
+     "content": "Reading.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>"
+    },
+    "2": {
+     "calls": [],
+     "content": "Reading.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>"
+    },
+    "3": {
+     "calls": [],
+     "content": "Reading.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>"
+    },
+    "5": {
+     "calls": [],
+     "content": "Reading.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>"
+    },
+    "8": {
+     "calls": [],
+     "content": "Reading.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>"
+    },
+    "13": {
+     "calls": [],
+     "content": "Reading.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>"
+    },
+    "10000": {
+     "calls": [],
+     "content": "Reading.\n<tool_call>\n<function=read>\n<parameter=path>\n/work/fixture/README.md\n</parameter>\n</function>\n</tool_call>"
+    }
+   }
+  },
+  {
+   "name": "declared_lone_block",
+   "request": "tools",
+   "text": "Listing.\n<tool_call>\n<function=tree>\n<parameter=path>\n.\n</parameter>\n</function>\n</tool_call>",
+   "changed_by_4038": false,
+   "main_non_stream": {
+    "calls": [
+     [
+      "tree",
+      {
+       "path": "."
+      }
+     ]
+    ],
+    "content": "Listing.\n"
+   },
+   "main_stream": {
+    "0": {
+     "calls": [
+      [
+       "tree",
+       {
+        "path": "."
+       }
+      ]
+     ],
+     "content": "Listing.\n"
+    },
+    "1": {
+     "calls": [
+      [
+       "tree",
+       {
+        "path": "."
+       }
+      ]
+     ],
+     "content": "Listing.\n"
+    },
+    "2": {
+     "calls": [
+      [
+       "tree",
+       {
+        "path": "."
+       }
+      ]
+     ],
+     "content": "Listing.\n"
+    },
+    "3": {
+     "calls": [
+      [
+       "tree",
+       {
+        "path": "."
+       }
+      ]
+     ],
+     "content": "Listing.\n"
+    },
+    "5": {
+     "calls": [
+      [
+       "tree",
+       {
+        "path": "."
+       }
+      ]
+     ],
+     "content": "Listing.\n"
+    },
+    "8": {
+     "calls": [
+      [
+       "tree",
+       {
+        "path": "."
+       }
+      ]
+     ],
+     "content": "Listing.\n"
+    },
+    "13": {
+     "calls": [
+      [
+       "tree",
+       {
+        "path": "."
+       }
+      ]
+     ],
+     "content": "Listing.\n"
+    },
+    "10000": {
+     "calls": [
+      [
+       "tree",
+       {
+        "path": "."
+       }
+      ]
+     ],
+     "content": "Listing.\n"
+    }
+   }
+  }
+ ]
+}
