@@ -888,3 +888,96 @@ def test_click_count_rejects_non_integral_values(count):
     with pytest.raises(errors.ComputerUseError) as exc:
         backend.click("App", x=1, y=1, click_count=count)
     assert exc.value.code == "invalid_argument"
+
+
+def test_focus_failure_rolls_back_the_defocus(monkeypatch):
+    posted = []
+    monkeypatch.setattr(background_input, "_syms", lambda: {"ok": True})
+    monkeypatch.setattr(background_input, "_front_psn", lambda: "front")
+    monkeypatch.setattr(background_input, "_psn_for_window", lambda wid, pid: "target")
+
+    def post(psn, rec):
+        posted.append((psn, rec[0x8A]))
+        return psn == "front"
+
+    monkeypatch.setattr(background_input, "_post_record", post)
+    assert background_input.activate_without_raise(4, 101, front_wid=555) is False
+    assert posted == [("front", 0x02), ("target", 0x01), ("front", 0x01)]
+
+
+def test_defocus_failure_posts_no_focus(monkeypatch):
+    posted = []
+    monkeypatch.setattr(background_input, "_syms", lambda: {"ok": True})
+    monkeypatch.setattr(background_input, "_front_psn", lambda: "front")
+    monkeypatch.setattr(background_input, "_psn_for_window", lambda wid, pid: "target")
+    monkeypatch.setattr(
+        background_input, "_post_record", lambda psn, rec: posted.append(psn) and False
+    )
+    assert background_input.activate_without_raise(4, 101, front_wid=555) is False
+    assert posted == ["front"]
+
+
+def _interrupt_after(n):
+    """sl_post stub raising KeyboardInterrupt on the n-th post (1-based)."""
+    posted = []
+
+    def post(pid, ev):
+        posted.append(ev)
+        if len(posted) == n:
+            raise KeyboardInterrupt
+
+    return posted, post
+
+
+@pytest.mark.parametrize("button", ["left", "right"])
+def test_interrupted_click_still_posts_the_up(monkeypatch, button):
+    _fake_syms(monkeypatch)
+    syms = background_input._syms()
+    made = iter(range(1, 100))
+    syms["mouse_event"] = lambda *a: next(made)
+    plan = background_input.click_plan(5.0, 5.0, button=button)
+    down = next(
+        i
+        for i, st in enumerate(plan)
+        if st.event_type == background_input._EVENT_TYPES[button][0]
+    )
+    posted, syms["sl_post"] = _interrupt_after(down + 1)
+    with pytest.raises(KeyboardInterrupt):
+        background_input.click(4, 101, 5.0, 5.0, button=button)
+    up_type = background_input._EVENT_TYPES[button][1]
+    up = next(j for j in range(down + 1, len(plan)) if plan[j].event_type == up_type)
+    assert posted[-1] == up + 1  # events are numbered from 1
+
+
+def test_interrupted_key_press_still_posts_the_up(monkeypatch):
+    _fake_syms(monkeypatch)
+    syms = background_input._syms()
+    made = iter(range(1, 100))
+    syms["key_event"] = lambda *a: next(made)
+    monkeypatch.setattr(
+        background_input,
+        "_post_key_event",
+        lambda pid, ev, **k: syms["sl_post"](pid, ev),
+    )
+    posted, syms["sl_post"] = _interrupt_after(1)
+    monkeypatch.setattr(background_input.time, "sleep", lambda *_: None)
+    with pytest.raises(KeyboardInterrupt):
+        background_input.press_key(4, 36)
+    assert posted == [1, 2]
+
+
+def test_interrupted_typing_releases_the_held_character(monkeypatch):
+    _fake_syms(monkeypatch)
+    syms = background_input._syms()
+    made = iter(range(1, 100))
+    syms["key_event"] = lambda *a: next(made)
+    syms["set_unicode"] = lambda *a: None
+    monkeypatch.setattr(
+        background_input,
+        "_post_key_event",
+        lambda pid, ev, **k: syms["sl_post"](pid, ev),
+    )
+    posted, syms["sl_post"] = _interrupt_after(3)  # down of the 2nd character
+    with pytest.raises(KeyboardInterrupt):
+        background_input.type_text(4, "abc")
+    assert posted == [1, 2, 3, 4]

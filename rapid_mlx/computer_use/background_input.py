@@ -489,9 +489,14 @@ def activate_without_raise(
     target = _psn_for_window(target_wid, target_pid)
     if front is None or target is None:
         return False
-    defocused = _post_record(front, _focus_record(front_wid or target_wid, 0x02))
-    focused = _post_record(target, _focus_record(target_wid, 0x01))
-    return defocused and focused
+    front_record_wid = front_wid or target_wid
+    if not _post_record(front, _focus_record(front_record_wid, 0x02)):
+        return False
+    if not _post_record(target, _focus_record(target_wid, 0x01)):
+        # Never leave the user's window defocused with nothing focused.
+        _post_record(front, _focus_record(front_record_wid, 0x01))
+        return False
+    return True
 
 
 def restore_focus_after_without_raise(
@@ -620,22 +625,52 @@ def click(
             return False
         time.sleep(0.05)
         group = time.time_ns() & 0x7FFFFFFF
-        for step, ev in zip(plan, events, strict=True):
+        down_type, up_type = _EVENT_TYPES[button]
+
+        def post(index: int) -> None:
+            step = plan[index]
             local = (
                 None
                 if button == "left"
                 else _window_point(step.x, step.y, window_origin)
             )
-            _stamp_mouse(ev, pid, wid, step, group, local)
+            _stamp_mouse(events[index], pid, wid, step, group, local)
             if flags and step.phase == 3:
-                s["set_flags"](ev, int(flags))
+                s["set_flags"](events[index], int(flags))
             # One route only: cua also posts CGEventPostToPid here, but
             # apps that accept both (Chrome, TextEdit — measured) then see
             # every down/up twice (two context menus, a double scroll).
-            s["sl_post"](int(pid), ev)
-            if step.delay_after_s:
-                time.sleep(step.delay_after_s)
+            s["sl_post"](int(pid), events[index])
+
+        owed: int | None = None  # index of the up a posted down still needs
+        try:
+            for index, step in enumerate(plan):
+                if step.event_type == down_type:
+                    # Owed before posting: an interrupt can land after the
+                    # down reached the target; a stray up is harmless.
+                    owed = next(
+                        j
+                        for j in range(index + 1, len(plan))
+                        if plan[j].event_type == up_type
+                    )
+                post(index)
+                if index == owed:
+                    owed = None
+                if step.delay_after_s:
+                    time.sleep(step.delay_after_s)
+        except BaseException:
+            # A down without its up leaves the target tracking a press.
+            if owed is not None:
+                _best_effort(post, owed)
+            raise
     return True
+
+
+def _best_effort(fn, *args) -> None:
+    try:
+        fn(*args)
+    except Exception:  # noqa: BLE001 - cleanup must not mask the real error
+        pass
 
 
 def scroll(
@@ -766,13 +801,23 @@ def press_key(
     events = _allocate(2, lambda i: s["key_event"](s["source"], int(keycode), i == 0))
     if events is None:
         return False
+
+    def post(ev: int) -> None:
+        # HIDSystemState sources inherit physically held modifiers;
+        # always overwrite, including with 0.
+        s["set_flags"](ev, int(flags))
+        _post_key_event(pid, ev, authenticated=not menu_shortcut)
+
     with _owned(events), _GESTURE_LOCK:
-        for ev in events:
-            # HIDSystemState sources inherit physically held modifiers;
-            # always overwrite, including with 0.
-            s["set_flags"](ev, int(flags))
-            _post_key_event(pid, ev, authenticated=not menu_shortcut)
+        down, up = events
+        try:
+            post(down)
             time.sleep(_KEY_GAP_S)
+            post(up)
+        except BaseException:
+            _best_effort(post, up)  # never leave the key held down
+            raise
+        time.sleep(_KEY_GAP_S)
     return True
 
 
@@ -793,13 +838,23 @@ def type_text(pid: int, text: str) -> bool:
     )
     if events is None:
         return False
+
+    def post(ev: int, buf) -> None:
+        s["set_unicode"](ev, len(buf), buf)
+        s["set_flags"](ev, 0)
+        _post_key_event(pid, ev, authenticated=True)
+
     with _owned(events), _GESTURE_LOCK:
         for index, ch in enumerate(chars):
             units = ch.encode("utf-16-le")
             buf = (c_uint16 * (len(units) // 2)).from_buffer_copy(units)
-            for ev in events[2 * index : 2 * index + 2]:
-                s["set_unicode"](ev, len(buf), buf)
-                s["set_flags"](ev, 0)
-                _post_key_event(pid, ev, authenticated=True)
+            down, up = events[2 * index : 2 * index + 2]
+            try:
+                post(down, buf)
                 time.sleep(_KEY_GAP_S)
+                post(up, buf)
+            except BaseException:
+                _best_effort(post, up, buf)  # never leave a key held down
+                raise
+            time.sleep(_KEY_GAP_S)
     return True
