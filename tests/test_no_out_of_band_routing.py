@@ -150,6 +150,10 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # Explicit opt-in for returning CUA screenshots to an authenticated
         # client. This is a privacy boundary, not model or parser routing.
         "RAPID_MLX_CUA_EXPOSE_SCREENSHOTS",
+        # CUA input transport (pid-routed background events vs global HID).
+        # It picks how an already-approved GUI action is delivered on the
+        # local Mac; it does not select a model, parser, tier, or engine route.
+        "RAPID_MLX_CUA_INPUT_DELIVERY",
         # MLLM media policy controls. These constrain which already-selected
         # request media sources may be read; they do not select a model,
         # parser, tier, or engine route.

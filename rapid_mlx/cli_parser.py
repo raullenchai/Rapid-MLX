@@ -276,10 +276,10 @@ def _add_system_one_parser(
         "model",
         nargs="?",
         default="convaiinnovations/laya",
-        help="Laya model id/path, or the public name for a CLM head",
+        help="Laya model id/path, CLM public name, or clef/clef-flash",
     )
     system_one_parser.add_argument(
-        "--backend", choices=("auto", "laya", "clm"), default="auto"
+        "--backend", choices=("auto", "laya", "clm", "clef"), default="auto"
     )
     system_one_parser.add_argument("--host", default="127.0.0.1")
     system_one_parser.add_argument("--port", type=_port_arg, default=None)
@@ -294,7 +294,7 @@ def _add_system_one_parser(
         "--device",
         choices=("gpu", "cpu"),
         default="gpu",
-        help="MLX device for the selected System One backend",
+        help="MLX device for Laya/CLM; Metal/MPS device for Clef",
     )
     system_one_parser.add_argument(
         "--dtype",

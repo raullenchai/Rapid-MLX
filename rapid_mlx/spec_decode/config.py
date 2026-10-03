@@ -32,9 +32,10 @@ class SpeculativeConfig:
     # Select an alternate execution backend only when the operator explicitly
     # asks for it. ``None`` preserves the standard scheduler-owned MTP path.
     backend: str | None = None
-    # ``None`` means artifact-qualified auto selection.  Preserve the
-    # distinction between an omitted key and an explicit ``false`` so users
-    # retain a stable ordinary-MTP opt-out after a target is promoted.
+    # ``None`` (omitted) serves ordinary MTP: a lone request uses the singleton
+    # verifier and concurrent requests batch through ordinary decode; verified
+    # artifacts additionally keep their qualified BF16 cache contract.  Only an
+    # explicit ``true`` selects the continuous self-MTP cohort.
     continuous_batching: bool | None = None
     allow_dynamic_membership: bool = False
     max_suffix_len: int | None = None

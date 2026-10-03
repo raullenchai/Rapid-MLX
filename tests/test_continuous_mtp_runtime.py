@@ -345,3 +345,65 @@ def test_future_fixed_capability_addition_remains_fail_closed(
             _InjectedTextModel(),
             array_ops=_ArrayOpsStub(),
         )
+
+
+class _SplitHeadTextModel(_InjectedTextModel):
+    def mtp_hidden_forward(self, hidden, token_ids, mtp_cache):
+        self.calls.append(("draft-hidden", hidden, token_ids, mtp_cache))
+        return "head-hidden"
+
+    def mtp_logits(self, mtp_hidden):
+        self.calls.append(("draft-logits", mtp_hidden))
+        return "selected-logits"
+
+
+def test_assembler_wires_optional_split_head_seam(ragged_install_stub):
+    inner = _SplitHeadTextModel()
+    runtime = runtime_module.assemble_continuous_self_mtp_runtime(
+        _OuterModel(inner), array_ops=_ArrayOpsStub()
+    )
+
+    forwards = runtime.forwards
+    assert forwards.split_draft is True
+    assert forwards.draft_hidden("h", "ids", "cache") == "head-hidden"
+    assert forwards.draft_logits("head-hidden") == "selected-logits"
+    assert inner.calls[-2:] == [
+        ("draft-hidden", "h", "ids", "cache"),
+        ("draft-logits", "head-hidden"),
+    ]
+
+
+def test_assembler_without_split_head_keeps_the_composed_draft(ragged_install_stub):
+    runtime = runtime_module.assemble_continuous_self_mtp_runtime(
+        _OuterModel(_InjectedTextModel()), array_ops=_ArrayOpsStub()
+    )
+
+    assert runtime.forwards.split_draft is False
+    with pytest.raises(ContinuousSelfMTPUnsupportedError, match="split MTP seam"):
+        runtime.forwards.draft_hidden("h", "ids", "cache")
+    with pytest.raises(ContinuousSelfMTPUnsupportedError, match="split MTP seam"):
+        runtime.forwards.draft_logits("h")
+
+
+def test_split_head_seam_must_be_complete_and_callable():
+    from rapid_mlx.spec_decode.mtp.continuous_engine import RapidForwardSeams
+
+    def call(*_args, **_kwargs):
+        return None
+
+    with pytest.raises(TypeError, match="supplied together"):
+        RapidForwardSeams(call, call, mtp_hidden=call)
+    with pytest.raises(TypeError, match="must be callable"):
+        RapidForwardSeams(call, call, mtp_hidden="nope", mtp_logits=call)
+
+
+class _PartialSplitTextModel(_InjectedTextModel):
+    def mtp_hidden_forward(self, hidden, token_ids, mtp_cache):
+        return hidden
+
+
+def test_assembler_refuses_a_partial_split_head_seam(ragged_install_stub):
+    with pytest.raises(ContinuousSelfMTPUnsupportedError, match="partial"):
+        runtime_module.assemble_continuous_self_mtp_runtime(
+            _OuterModel(_PartialSplitTextModel()), array_ops=_ArrayOpsStub()
+        )

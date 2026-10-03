@@ -8008,7 +8008,7 @@
        "const": null,
        "default": "convaiinnovations/laya",
        "dest": "model",
-       "help": "Laya model id/path, or the public name for a CLM head",
+       "help": "Laya model id/path, CLM public name, or clef/clef-flash",
        "metavar": null,
        "nargs": "?",
        "option_strings": [],
@@ -8018,7 +8018,8 @@
        "choices": [
         "auto",
         "laya",
-        "clm"
+        "clm",
+        "clef"
        ],
        "class": "argparse._StoreAction",
        "completer": null,
@@ -8110,7 +8111,7 @@
        "const": null,
        "default": "gpu",
        "dest": "device",
-       "help": "MLX device for the selected System One backend",
+       "help": "MLX device for Laya/CLM; Metal/MPS device for Clef",
        "metavar": null,
        "nargs": null,
        "option_strings": [

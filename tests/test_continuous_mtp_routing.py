@@ -1040,7 +1040,12 @@ def test_cli_resolves_artifact_auto_policy_before_default_off_scheduler_by_ast()
     cli_source = (ROOT / "rapid_mlx" / "cli.py").read_text(encoding="utf-8")
     scheduler_source = (ROOT / "rapid_mlx" / "scheduler.py").read_text(encoding="utf-8")
     assert 'continuous_tier == "verified"' in cli_source
-    assert "if config.continuous_batching is None" in cli_source
+    assert "config.continuous_batching is None" in cli_source
+    # The cohort itself is an explicit opt-in; verified artifacts select only
+    # their unquantized cache contract automatically.
+    assert "args.mtp_continuous_batching = config.continuous_batching is True" in (
+        cli_source
+    )
     assert (
         'mtp_continuous_batching=getattr(args, "mtp_continuous_batching", False)'
         in cli_source

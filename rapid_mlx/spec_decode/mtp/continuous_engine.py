@@ -84,10 +84,25 @@ class RapidForwardSeams:
 
     model_forward: Callable[..., Any]
     mtp_forward: Callable[..., Any]
+    # Optional split of ``mtp_forward`` into the head body and the shared
+    # vocabulary projection.  A recursive first draft over ``pending + cur``
+    # needs logits at one position per row; projecting only those rows avoids
+    # a full-vocabulary matmul over every padded pending position.
+    mtp_hidden: Callable[..., Any] | None = None
+    mtp_logits: Callable[..., Any] | None = None
 
     def __post_init__(self) -> None:
         if not callable(self.model_forward) or not callable(self.mtp_forward):
             raise TypeError("Rapid forward seams must be callable")
+        optional = (self.mtp_hidden, self.mtp_logits)
+        if any(value is not None and not callable(value) for value in optional):
+            raise TypeError("Rapid split MTP seams must be callable")
+        if (self.mtp_hidden is None) != (self.mtp_logits is None):
+            raise TypeError("Rapid split MTP seams must be supplied together")
+
+    @property
+    def split_draft(self) -> bool:
+        return self.mtp_hidden is not None and self.mtp_logits is not None
 
     def target(
         self,
@@ -114,6 +129,18 @@ class RapidForwardSeams:
             cache,
             return_hidden=True,
         )
+
+    def draft_hidden(self, hidden: Any, token_ids: Any, cache: Any) -> Any:
+        """Run the MTP head without the vocabulary projection."""
+        if self.mtp_hidden is None:
+            raise ContinuousSelfMTPUnsupportedError("split MTP seam is unavailable")
+        return self.mtp_hidden(hidden, token_ids, cache)
+
+    def draft_logits(self, mtp_hidden: Any) -> Any:
+        """Project MTP head output through the shared vocabulary head."""
+        if self.mtp_logits is None:
+            raise ContinuousSelfMTPUnsupportedError("split MTP seam is unavailable")
+        return self.mtp_logits(mtp_hidden)
 
 
 @dataclass(frozen=True)
