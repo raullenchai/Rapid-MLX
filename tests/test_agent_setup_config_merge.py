@@ -260,6 +260,22 @@ class TestMergeOnWrite:
         with pytest.raises(_MergeParseError, match="disagree on shape|not a YAML"):
             _merge_file_config(existing, template, "yaml")
 
+    def test_patch_layer_list_rejects_a_mapping_template(self, tmp_path):
+        """A patch-layer LIST beside a mapping template is a conflict (#4040)."""
+        existing = tmp_path / "cordis.patch.yml"
+        existing.write_text("- id: llm-pi-ai\n  config: {}\n")
+        with pytest.raises(
+            _MergeParseError, match="patch-layer list but the rendered template"
+        ):
+            _merge_file_config(existing, "providers: {}\n", "yaml")
+
+    def test_patch_layer_merge_rejects_a_scalar_existing_document(self, tmp_path):
+        """A YAML scalar is neither a mapping nor a layer list — refuse."""
+        existing = tmp_path / "cordis.patch.yml"
+        existing.write_text("just-a-string\n")
+        with pytest.raises(_MergeParseError, match="not a YAML mapping"):
+            _merge_file_config(existing, "providers: {}\n", "yaml")
+
     def test_yaml_merge_preserves_user_keys(self, tmp_path):
         """Existing YAML keys not in the template are preserved."""
         existing = tmp_path / "config.yaml"
