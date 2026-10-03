@@ -60,6 +60,6 @@ def decode_videos(values: list[list[str]]):
 
     if len(values) > 2 or sum(map(len, values)) > 32:
         raise ValueError("Clef accepts at most 2 videos and 32 frames total")
-    if any(not frames for frames in values):
-        raise ValueError("Clef videos must contain at least one frame")
+    if any(len(frames) < 2 for frames in values):
+        raise ValueError("Clef videos must contain at least two frames")
     return [[np.asarray(_decode_image(frame)) for frame in frames] for frames in values]

@@ -77,7 +77,7 @@ name or the corresponding `Cloudflare/...` identifier.
 For media, send `images` as PNG/JPEG/WebP base64 data URLs. Send `videos` as
 arrays of frame data URLs. Remote URLs and filesystem paths are rejected;
 each image is capped at 4 MiB and 16 MP, with at most eight images or 32
-video frames per request. Example:
+video frames per request, with at least two frames in each video. Example:
 
 ```json
 {

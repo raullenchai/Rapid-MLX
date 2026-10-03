@@ -115,8 +115,10 @@ def test_clef_backend_loads_pinned_checkpoint_without_remote_code(monkeypatch):
 def test_clef_media_decodes_locally_and_rejects_urls():
     image = decode_images([_png_data_url()])[0]
     assert image.size == (2, 2)
-    video = decode_videos([[_png_data_url()]])
+    video = decode_videos([[_png_data_url(), _png_data_url()]])
     assert video[0][0].shape == (2, 2, 3)
+    with pytest.raises(ValueError, match="at least two frames"):
+        decode_videos([[_png_data_url()]])
     try:
         decode_images(["https://example.com/receipt.png"])
     except ValueError as exc:

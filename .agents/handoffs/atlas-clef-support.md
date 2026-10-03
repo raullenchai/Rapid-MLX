@@ -17,22 +17,22 @@
 - The new tests exercise the route contract, media bounds, pinned checkpoint
   selection, and a genuine forward pass through the official joint head on a
   tiny CPU backbone. The wheel contains the vendored source, license, and notice.
-- Studio hardware is an M3 Ultra Mac Studio with Metal support, but this
-  execution session reports `torch.backends.mps.is_available() == False` and
-  MLX raises `No Metal device available`. The pinned Clef snapshots are not in
-  the required default Hugging Face cache, which this session cannot write.
+- An earlier sandboxed session could not access Metal or the Hugging Face
+  cache. A later unrestricted session on the same M3 Ultra confirmed MPS and
+  loaded the real pinned 9B checkpoint. Text, image, video-frame, and rank
+  requests all returned 200; see
+  `docs/engineering/performance/2026-10-03-clef-flash-m3-ultra-dogfood.md`
+  for inputs, outputs, timings, and memory.
 - Local Clef tests pass (7/7); repository Ruff lint/format and the pinned
   shrink-only mypy budget pass after CI fixes. The optional Torch tests skip
   in the default test matrix when the `[clef]` extra is absent.
 
-## Remaining validation
+## Remaining qualification
 
-- Run `rapid-mlx system-one clef-flash` on a Mac with Metal access and a
-  writable default Hugging Face cache. This sandbox has no Metal device and
-  cannot write the required default cache, so no full-weight inference was
-  claimed. The 9B Flash snapshot is about 19.1 GB on Hugging Face.
-- Send one text `noul`/`choice`/`score` request, one PNG data URL request,
-  and one frame-array video request; compare probabilities with Cloudflare's
-  reference script on the same checkpoint. Record memory, load time, and
-  latency before declaring Mac production support. Then repeat with 27B only
-  if Flash is sound.
+- The 27B Clef checkpoint has not been downloaded or run. Cloudflare only
+  validated its reference runtime on H200; one successful M3 Ultra run is not
+  a Mac hardware qualification matrix.
+- Synthetic video color frames work, but a two-frame order-reversal probe
+  was ambiguous. Real video decision quality and concurrency remain unmeasured.
+- The PR remains draft until its changed-lines coverage gate is addressed;
+  the pinned vendor source is currently counted as uncovered by that gate.
