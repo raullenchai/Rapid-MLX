@@ -16693,15 +16693,19 @@ def main():
         _interactive = sys.stdin.isatty()
         if not _auto_yes and _interactive:
             from rapid_mlx._download_gate import (
+                CacheProbeTimeoutError,
                 confirm_or_abort,
                 estimate_download_size_bytes,
-                is_repo_cached,
+                require_repo_cache_probe,
             )
 
-            if (
-                not is_repo_cached(args.model)
-                and _offline_complete_cached_snapshot(args.model) is None
-            ):
+            try:
+                _repo_cached = require_repo_cache_probe(args.model)
+            except CacheProbeTimeoutError as exc:
+                print(f"\n  Error: {exc.user_message()}", file=sys.stderr)
+                raise SystemExit(2) from None
+
+            if not _repo_cached and _offline_complete_cached_snapshot(args.model) is None:
                 # Offline + uncached (#2357): short-circuit BEFORE the size
                 # estimate + ``confirm_or_abort``. ``estimate_repo_size_bytes``
                 # makes a silent HF ``model_info`` round-trip that returns None

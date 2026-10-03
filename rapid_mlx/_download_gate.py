@@ -43,7 +43,9 @@ Design choices:
 from __future__ import annotations
 
 import os
+import platform
 import re
+import subprocess
 import sys
 import threading
 
@@ -100,6 +102,35 @@ _HF_API_TIMEOUT_SECONDS: float = 5.0
 # them, and measurably does not: a client built with a 2s timeout still hung
 # past 12s on a blackholed route when the call passed ``timeout=None``.
 _HF_RESOLVE_TIMEOUT_SECONDS: float = 30.0
+
+# A cache may live on a removable macOS volume even though callers address it
+# through ``~/.cache/huggingface``. When the launching app lacks Files &
+# Folders permission for that volume, opening even the 40-byte ``refs/main``
+# file can block inside the kernel instead of returning EACCES. Keep the normal
+# in-process fast path for internal storage; use a killable helper for
+# external-volume refs so startup always has a deadline.
+_EXTERNAL_REF_READ_TIMEOUT_SECONDS: float = 2.0
+_MAX_REF_BYTES: int = 256
+
+
+class CacheProbeTimeoutError(RuntimeError):
+    """The process could not read an external Hugging Face cache promptly."""
+
+    def __init__(self, path: str, timeout: float):
+        self.path = path
+        self.timeout = timeout
+        super().__init__(
+            f"could not read Hugging Face cache metadata at {path!r} "
+            f"within {timeout:g}s"
+        )
+
+    def user_message(self) -> str:
+        return (
+            "Rapid-MLX cannot read the Hugging Face cache on the external "
+            f"volume ({self.path}). Grant this terminal or app access to that "
+            "volume in System Settings → Privacy & Security → Files & Folders, "
+            "then retry."
+        )
 
 
 def _format_size(num_bytes: int) -> str:
@@ -854,7 +885,52 @@ def _root_model_files_all_non_empty(snap_dir: str) -> bool:
     return True
 
 
-def _resolved_snapshot_sha(repo_root: str) -> str | None:
+def _is_macos_external_path(path: str) -> bool:
+    """Return whether ``path`` resolves below macOS' external mount root."""
+
+    if platform.system() != "Darwin":
+        return False
+    try:
+        return os.path.commonpath((os.path.realpath(path), "/Volumes")) == "/Volumes"
+    except (OSError, ValueError):
+        return False
+
+
+def _read_ref_text(path: str, *, raise_on_timeout: bool) -> str | None:
+    """Read a small HF ref, bounding macOS external-volume permission stalls."""
+
+    if not _is_macos_external_path(path):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                return fh.read(_MAX_REF_BYTES)
+        except OSError:
+            return None
+
+    try:
+        result = subprocess.run(
+            ("/usr/bin/head", "-c", str(_MAX_REF_BYTES), path),
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=_EXTERNAL_REF_READ_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        if raise_on_timeout:
+            raise CacheProbeTimeoutError(
+                os.path.realpath(path), _EXTERNAL_REF_READ_TIMEOUT_SECONDS
+            ) from exc
+        return None
+    except OSError:
+        return None
+
+    if result.returncode != 0:
+        return None
+    return result.stdout
+
+
+def _resolved_snapshot_sha(
+    repo_root: str, *, raise_on_timeout: bool = False
+) -> str | None:
     """Read the sha that ``snapshot_download(repo_id)`` would resolve to.
 
     ``snapshot_download`` with no explicit revision asks the HF API for
@@ -877,16 +953,16 @@ def _resolved_snapshot_sha(repo_root: str) -> str | None:
     """
     main_ref = os.path.join(repo_root, "refs", "main")
     try:
-        if not os.path.isfile(main_ref):
+        text = _read_ref_text(main_ref, raise_on_timeout=raise_on_timeout)
+        if text is None:
             return None
-        with open(main_ref) as fh:
-            sha = fh.read().strip()
+        sha = text.strip()
         return sha or None
     except OSError:
         return None
 
 
-def is_repo_cached(repo_id: str) -> bool:
+def _is_repo_cached(repo_id: str, *, raise_on_probe_timeout: bool) -> bool:
     """True if ``repo_id`` has a usable model snapshot in the HF cache.
 
     Codex review round 1 caught that an earlier "config.json exists →
@@ -926,7 +1002,9 @@ def is_repo_cached(repo_id: str) -> bool:
         # snapshot ``snapshot_download(repo_id)`` will actually use".
         # Without ``refs/main``, we don't know which sha will resolve,
         # so we must re-prompt and let the next run populate refs/.
-        resolved_sha = _resolved_snapshot_sha(repo_root)
+        resolved_sha = _resolved_snapshot_sha(
+            repo_root, raise_on_timeout=raise_on_probe_timeout
+        )
         if resolved_sha is None:
             return False
         snap_dir = os.path.join(snap_root, resolved_sha)
@@ -939,9 +1017,23 @@ def is_repo_cached(repo_id: str) -> bool:
         # the gate re-prompts on every single serve.
         snap_dir = _descend_to_checkpoint(snap_dir, repo_id)
         return _snapshot_is_complete(snap_dir)
+    except CacheProbeTimeoutError:
+        raise
     except Exception:
         pass
     return False
+
+
+def is_repo_cached(repo_id: str) -> bool:
+    """Best-effort cache check that preserves the historical bool contract."""
+
+    return _is_repo_cached(repo_id, raise_on_probe_timeout=False)
+
+
+def require_repo_cache_probe(repo_id: str) -> bool:
+    """Check the cache and surface a blocked external-volume probe to callers."""
+
+    return _is_repo_cached(repo_id, raise_on_probe_timeout=True)
 
 
 def _snapshot_is_complete_whisper_model(repo_id: str) -> bool:
