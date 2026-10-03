@@ -303,10 +303,17 @@ def _same_window(lhs: dict, rhs: dict) -> bool:
     )
 
 
+def _pid_app_element(app_info: dict) -> object:
+    try:
+        return ax_driver._app_element(
+            app_info["name"], expected_pid=int(app_info["pid"])
+        )
+    except ax_driver.AppNotFoundError as exc:
+        raise ComputerUseError("target_drift", "selected app exited") from exc
+
+
 def _focused_ax_window(app_info: dict) -> object | None:
-    app_element = ax_driver._app_element(
-        app_info["name"], expected_pid=int(app_info["pid"])
-    )
+    app_element = _pid_app_element(app_info)
     app_windows = ax_driver._as_list(ax_driver._get(app_element, "AXWindows"))
     focused = ax_driver._get(app_element, "AXFocusedWindow")
     if focused is None:
@@ -340,9 +347,7 @@ def _focused_ax_window(app_info: dict) -> object | None:
 def _focused_ax_element(app_info: dict) -> object | None:
     """Return the exact focused control for the PID-bound app."""
 
-    app_element = ax_driver._app_element(
-        app_info["name"], expected_pid=int(app_info["pid"])
-    )
+    app_element = _pid_app_element(app_info)
     return ax_driver._get(app_element, "AXFocusedUIElement")
 
 
@@ -809,7 +814,7 @@ def _collect_with_timeout(
                 retry_web_content=retry_web_content,
                 partial_out=partial_targets,
             )
-        except SystemExit as exc:
+        except ax_driver.AppNotFoundError as exc:
             outcome["error"] = ComputerUseError("app_not_found", str(exc))
         except Exception as exc:  # noqa: BLE001 - surfaced below
             outcome["error"] = exc
@@ -1293,6 +1298,21 @@ def _pixel_click(
     }
 
 
+def observation_activates(app_info: dict | None) -> bool:
+    """Whether observing ``app_info`` must activate it first.
+
+    With background delivery every action the agent loop can plan (clicks,
+    scrolls, fills, Enter/Tab/Escape/arrows/Space) is routed to the exact
+    pid/window, so observation leaves the user's front app alone. Activation
+    stays for foreground delivery, Finder (its rename flow is built around
+    activation) and an app whose identity is not yet known.
+    """
+    bundle = str((app_info or {}).get("bundleId") or "").casefold()
+    if not bundle or bundle == "com.apple.finder":
+        return True
+    return not background_input.background_enabled()
+
+
 def _keyboard_background(snapshot: dict, modifiers: int = 0) -> bool:
     """Whether a key/text dispatch can go to the target pid in the background.
 
@@ -1355,8 +1375,8 @@ def _validate_focused_window(
         )
     focused = _focused_ax_window(snapshot["app"])
     if focused is None and allow_exact_main_window:
-        app_element = ax_driver._app_element(
-            snapshot["app"]["name"], expected_pid=expected_pid
+        app_element = _pid_app_element(
+            {"name": snapshot["app"]["name"], "pid": expected_pid}
         )
         main = ax_driver._get(app_element, "AXMainWindow")
         windows = ax_driver._as_list(ax_driver._get(app_element, "AXWindows"))
@@ -1573,9 +1593,7 @@ def _save_menu_candidate(snapshot: dict) -> tuple[object, tuple[str, ...], objec
     _validate_snapshot_window(snapshot)
     _validate_focused_window(snapshot)
     app_info = snapshot["app"]
-    app_element = ax_driver._app_element(
-        str(app_info["name"]), expected_pid=int(app_info["pid"])
-    )
+    app_element = _pid_app_element(app_info)
     focused = _focused_ax_window(app_info)
     document = ax_driver._get(focused, "AXDocument") if focused is not None else None
     if not isinstance(document, str) or not document.strip():
@@ -1886,6 +1904,43 @@ def save_document(
     )
 
 
+# Roles whose click is itself a commit (pressing, toggling, following, opening
+# a menu). Focusing one of these for a key press must not click it.
+COMMIT_ON_CLICK_ROLES = {
+    "AXButton",
+    "AXCheckBox",
+    "AXDisclosureTriangle",
+    "AXLink",
+    "AXMenuBarItem",
+    "AXMenuButton",
+    "AXMenuItem",
+    "AXPopUpButton",
+    "AXRadioButton",
+    "AXSwitch",
+}
+COMMIT_ACTIONS = {"AXPress", "AXConfirm", "AXOpen", "AXPick"}
+
+
+def _click_commits(entry: dict) -> bool:
+    actions = set(entry.get("actions") or [])
+    return entry.get("role") in COMMIT_ON_CLICK_ROLES or bool(actions & COMMIT_ACTIONS)
+
+
+def _focus_without_commit(snapshot: dict, live: object | None) -> str | None:
+    """Give ``live`` keyboard focus via AXFocused; the mode name, or None."""
+    if live is None:
+        return None
+    focused = _focused_ax_element(snapshot["app"])
+    if focused is not None and live == focused:
+        return "AXFocusVerified"
+    err = ax_driver.AXUIElementSetAttributeValue(live, "AXFocused", True)
+    if err != ax_driver.kAXErrorSuccess:
+        return None
+    time.sleep(0.05)
+    focused = _focused_ax_element(snapshot["app"])
+    return "AXFocused" if focused is not None and live == focused else None
+
+
 def click(
     app: str,
     element_index: int | None = None,
@@ -1920,18 +1975,18 @@ def click(
         # the cursor. Only advertised actions are attempted -- an unadvertised
         # action fails with kAXErrorActionUnsupported or silently no-ops.
         semantic = None
-        if mouse_button == "left" and click_count == 1 and "AXPress" in actions:
+        if focus_only:
+            # Focusing must never commit: an AXPress here would press a button
+            # under a plan that only asked for a key (bypassing click consent).
+            pass
+        elif mouse_button == "left" and click_count == 1 and "AXPress" in actions:
             semantic = "AXPress"
         elif mouse_button == "left" and click_count == 2 and "AXOpen" in actions:
             semantic = "AXOpen"
         elif mouse_button == "right" and click_count == 1 and "AXShowMenu" in actions:
             semantic = "AXShowMenu"
         live = None
-        if (
-            semantic is not None
-            or is_transient
-            or (focus_only and entry.get("role") in FILL_ROLES)
-        ):
+        if semantic is not None or is_transient or focus_only:
             # Menus and popovers can be owned by the selected app/window while
             # appearing outside the window's content bounds. Revalidate the
             # exact window and AX target identity, then prefer the semantic
@@ -1967,6 +2022,23 @@ def click(
                 verification="exact Accessibility element remained focused",
                 include_post_state=include_post_state,
             )
+        if focus_only and entry.get("role") not in FILL_ROLES:
+            focused = _focus_without_commit(snapshot, live)
+            if focused is not None:
+                return _finish_action(
+                    app,
+                    snapshot,
+                    {"mode": focused, "element_index": element_index},
+                    verified=True,
+                    verification="exact Accessibility element holds keyboard focus",
+                    include_post_state=include_post_state,
+                )
+            if _click_commits(entry):
+                raise ComputerUseError(
+                    "synthetic_input_blocked",
+                    "cannot focus this control without pressing it; "
+                    "plan a click (consent-gated) instead",
+                )
         if is_transient:
             raise ComputerUseError(
                 "synthetic_input_blocked",
@@ -2833,9 +2905,7 @@ def _clear_finder_rename_binding(snapshot: dict) -> None:
 def _finder_rename_menu_item(snapshot: dict) -> object:
     """Return Finder's one enabled native Rename menu command."""
     app_info = snapshot["app"]
-    app_element = ax_driver._app_element(
-        str(app_info["name"]), expected_pid=int(app_info["pid"])
-    )
+    app_element = _pid_app_element(app_info)
     menu_bar = ax_driver._get(app_element, "AXMenuBar")
     matches: list[object] = []
     seen = 0

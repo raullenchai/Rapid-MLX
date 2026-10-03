@@ -360,6 +360,15 @@ def _running_applications(application_services: Any | None = None) -> list[Any]:
     return applications
 
 
+class AppNotFoundError(LookupError):
+    """No running process matches the requested app (it may have exited).
+
+    A ``LookupError`` rather than ``SystemExit``: this module also runs inside
+    the long-lived server, where a ``BaseException`` would sail past every
+    ``except Exception`` and take down the worker or event loop.
+    """
+
+
 def _app_element(app_name: str, expected_pid: int | None = None) -> object:
     if AS is None:
         raise RuntimeError("computer-use actions require macOS with PyObjC installed")
@@ -406,7 +415,7 @@ def _app_element(app_name: str, expected_pid: int | None = None) -> object:
         if len(matches) == 1 or _as_list(_get(element, "AXWindows")):
             return element
     suffix = f" with pid {expected_pid}" if expected_pid is not None else ""
-    raise SystemExit(f"app not found: {app_name!r}{suffix}")
+    raise AppNotFoundError(f"app not found: {app_name!r}{suffix}")
 
 
 def collect(
@@ -611,7 +620,10 @@ def main() -> None:
 
     MAX_NODES = args.max_nodes
 
-    targets = collect(args.app)
+    try:
+        targets = collect(args.app)
+    except AppNotFoundError as exc:
+        raise SystemExit(str(exc)) from exc
     if args.dump:
         payload = [{k: v for k, v in t.items() if k != "element"} for t in targets]
         text = json.dumps(payload, ensure_ascii=False, indent=1)

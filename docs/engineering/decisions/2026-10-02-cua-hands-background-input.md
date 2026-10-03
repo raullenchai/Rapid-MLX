@@ -144,13 +144,24 @@ RAPID_MLX_LIVE_GUI=1 pytest tests/test_computer_use_background.py -q -k live
    click, scroll, text and keys; the semantic-first click ladder;
    `route`/`effect` in results; focus restoration.
 2. **Observe without stealing focus.** The loop observes with
-   `activate=False`. Foreground-only routes (Cmd chords, Finder rename,
-   synthetic fill, save) activate explicitly and narrowly. Safety fixes:
-   - `focus_only` must not AXPress buttons;
-   - secure-field detection must use `subrole`;
-   - the `bundle_id`/`bundleId` identity typo;
-   - `SystemExit` escaping `_app_element`;
-   - backend calls off the event loop (`asyncio.to_thread`).
+   `activate=False` whenever background delivery serves the target
+   (`observation_activates`): the planner's key vocabulary has no Cmd chords,
+   so nothing it can plan needs the foreground. Finder, foreground delivery
+   and an unknown identity keep activating. Measured: TextEdit observed in
+   0.56 s with the user's app still front, versus 1.06 s and a stolen focus
+   when activating. Safety fixes:
+   - `focus_only` (focusing before Tab/arrow/Escape) no longer AXPresses or
+     clicks commit controls. It sets `AXFocused` and refuses when that fails.
+     The old path pressed the button under a key plan, bypassing click
+     consent;
+   - sign-in detection reads `subrole` (password fields are `AXTextField` +
+     `AXSecureTextField`);
+   - the loop's window identity read `bundle_id`, which never exists;
+   - `_app_element` raises `AppNotFoundError` (a `LookupError`) instead of
+     `SystemExit`, which escaped every `except Exception` in the server.
+   Moving backend calls off the event loop moves to PR 3. The loop's gate and
+   stop-event plumbing is bound to the server loop, so it needs its own
+   design.
 3. **Robust observation and identity.**
    - Visit-budgeted walk;
    - `AXUIElementSetMessagingTimeout`;

@@ -2619,7 +2619,9 @@ def test_collect_watchdog_translates_missing_pid_to_typed_error(monkeypatch):
     monkeypatch.setattr(
         backend.ax_driver,
         "collect",
-        lambda *a, **k: (_ for _ in ()).throw(SystemExit("pid missing")),
+        lambda *a, **k: (_ for _ in ()).throw(
+            backend.ax_driver.AppNotFoundError("pid missing")
+        ),
     )
     with pytest.raises(errors.ComputerUseError) as excinfo:
         backend._collect_with_timeout("A", expected_pid=42, timeout_s=1)
@@ -6176,7 +6178,7 @@ def test_ax_driver_app_collect_retries_and_press(monkeypatch):
         ax_driver._MANUAL_ACCESSIBILITY,
         ax_driver._ENHANCED_UI,
     ]
-    with pytest.raises(SystemExit, match="not found"):
+    with pytest.raises(ax_driver.AppNotFoundError, match="not found"):
         ax_driver._app_element("missing")
     monkeypatch.setattr(ax_driver, "AS", None)
     with pytest.raises(RuntimeError, match="macOS"):
@@ -6614,11 +6616,11 @@ def test_ax_selector_rejects_stale_pid_and_unrelated_name(monkeypatch):
     unrelated_name = _RunningApp("Other App", pid=42)
     monkeypatch.setattr(ax_driver, "AS", object())
     monkeypatch.setattr(ax_driver, "_application_for_pid", lambda pid: mismatched_pid)
-    with pytest.raises(SystemExit, match="not found"):
+    with pytest.raises(ax_driver.AppNotFoundError, match="not found"):
         ax_driver._app_element("Target App", expected_pid=42)
 
     monkeypatch.setattr(ax_driver, "_running_applications", lambda: [unrelated_name])
-    with pytest.raises(SystemExit, match="not found"):
+    with pytest.raises(ax_driver.AppNotFoundError, match="not found"):
         ax_driver._app_element("Target App")
 
 
@@ -6645,7 +6647,7 @@ def test_ax_running_apps_filters_terminated_cached_entry(monkeypatch):
 def test_ax_selector_ignores_unresolved_expected_pid(monkeypatch):
     monkeypatch.setattr(ax_driver, "AS", object())
     monkeypatch.setattr(ax_driver, "_application_for_pid", lambda pid: None)
-    with pytest.raises(SystemExit, match="not found"):
+    with pytest.raises(ax_driver.AppNotFoundError, match="not found"):
         ax_driver._app_element("Target App", expected_pid=42)
 
 
