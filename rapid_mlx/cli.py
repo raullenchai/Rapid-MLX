@@ -3110,6 +3110,7 @@ def _normalize_speculative_config_or_exit(args):
             "mtp_disable_auto_k": False,
             "mtp_backend": None,
             "mtp_continuous_batching": False,
+            "mtp_unquantized_cache": False,
             "mtp_allow_dynamic_membership": False,
             "suffix_decoding": False,
         }
@@ -3403,6 +3404,8 @@ def _normalize_speculative_config_or_exit(args):
 
     if raw_config is None:
         _fill_runtime_defaults(overwrite=False)
+        # A derived MTP cache policy never outlives the MTP selection.
+        args.mtp_unquantized_cache = False
         args._speculative_config = None
         _fill_suffix_defaults()
         return
@@ -3493,17 +3496,24 @@ def _normalize_speculative_config_or_exit(args):
         continuous_tier = _alias_continuous_mtp_tier(getattr(args, "model", None))
         args.mtp_continuous_batching_tier = continuous_tier
         continuous_was_explicit = config.continuous_batching is not None
-        args.mtp_continuous_batching = (
-            continuous_tier == "verified"
-            if config.continuous_batching is None
-            else config.continuous_batching
+        # Concurrent requests batch through the ordinary decode path: the
+        # singleton verifier keeps MTP for a lone request and yields to
+        # waiting requests at a token boundary.  Measured on an M4 Pro, a
+        # batched MTP verify of K+1 rows per lane costs more than the drafts
+        # save once two or more lanes share the forward (quantized matmuls
+        # cost ~linearly per row up to the 32-row tile), so the continuous
+        # cohort is an explicit opt-in rather than the verified default.
+        args.mtp_continuous_batching = config.continuous_batching is True
+        # The verified artifacts keep the unquantized BF16 cache contract
+        # their qualification measured, independent of the batching route.
+        args.mtp_unquantized_cache = args.mtp_continuous_batching or (
+            config.continuous_batching is None and continuous_tier == "verified"
         )
         # K=0 is a same-generator serial validation baseline, not a positive
-        # speculative depth. A qualified alias would otherwise inherit its
-        # continuous-MTP default when the JSON omits ``continuous_batching``
-        # and silently stop being the requested baseline.
+        # speculative depth, and keeps the ordinary cache defaults.
         if config.num_speculative_tokens == 0:
             args.mtp_continuous_batching = False
+            args.mtp_unquantized_cache = False
         args.mtp_allow_dynamic_membership = config.allow_dynamic_membership
         if (
             continuous_was_explicit
@@ -4994,8 +5004,8 @@ def _resolve_turboquant_with_mtp_policy(
     """Resolve TurboQuant after applying the speculative cache contract."""
     if (
         getattr(args, "mtp_continuous_batching", False)
-        and getattr(args, "kv_cache_turboquant", None) is None
-    ):
+        or getattr(args, "mtp_unquantized_cache", False)
+    ) and getattr(args, "kv_cache_turboquant", None) is None:
         # Alias metadata is an automatic default, not operator intent.
         return None
     from .turboquant import resolve_turboquant_mode_default
@@ -6745,7 +6755,9 @@ def serve_command(args):
         )
 
         hf_cfg, alias_meta = _gather_kv_cache_dtype_inputs(args.model)
-        _continuous_mtp = getattr(args, "mtp_continuous_batching", False)
+        _continuous_mtp = getattr(args, "mtp_continuous_batching", False) or getattr(
+            args, "mtp_unquantized_cache", False
+        )
         try:
             kv_cache_decision = resolve_kv_cache_dtype(
                 args.kv_cache_dtype,
@@ -6764,9 +6776,9 @@ def serve_command(args):
             sys.exit(2)
         if _continuous_mtp and args.reasoning:
             logging.getLogger(__name__).info(
-                "Continuous MTP cache policy: keeping BF16 KV cache; the "
-                "reasoning profile's int8 memory optimization is not "
-                "compatible with transactional trim/restore."
+                "MTP cache policy: keeping BF16 KV cache; the reasoning "
+                "profile's int8 memory optimization is not applied to the "
+                "artifact's qualified MTP cache contract."
             )
         log_kv_cache_decision(kv_cache_decision, model_name=args.model)
         quant, bits = dtype_to_quantization_bits(kv_cache_decision.dtype)
