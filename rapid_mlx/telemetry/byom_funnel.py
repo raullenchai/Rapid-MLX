@@ -60,6 +60,7 @@ _SUGGESTION_MAX_KEYS = 32
 _lock = threading.Lock()
 _refs: frozenset[str] = frozenset()
 _context: dict[str, object] = {}
+_consumed = [False]
 _clock = time.time
 
 
@@ -150,18 +151,24 @@ def _mutate_ledger(change: Callable[[dict[str, float], float], bool]) -> bool:
         os.close(dir_fd)
 
 
-def _consume_suggestion(refs: Iterable[str]) -> bool:
+def _suggested(refs: Iterable[str], *, consume: bool) -> bool:
+    """Whether a fresh ledger entry matches ``refs``; ``consume`` removes it."""
     digests = {_digest(ref) for ref in refs}
     if not digests or not _ledger_path().exists():
         return False
 
     def change(recent: dict[str, float], now: float) -> bool:
         hit = [key for key in digests if key in recent]
-        for key in hit:
-            del recent[key]
+        if consume:
+            for key in hit:
+                del recent[key]
         return bool(hit)
 
     return _mutate_ledger(change)
+
+
+def _consume_suggestion(refs: Iterable[str]) -> bool:
+    return _suggested(refs, consume=True)
 
 
 def _record_suggestions(refs: Iterable[object]) -> None:
@@ -187,10 +194,18 @@ def begin(refs: Iterable[object]) -> None:
     global _refs
     try:
         normalized = frozenset(n for n in map(_norm, refs) if n is not None)
-        via = bool(normalized) and _upload_allowed() and _consume_suggestion(normalized)
+        # Peek only: the entry is consumed by the first lifecycle event that
+        # reports it, so a run that emits nothing (a cached pull, an aborted
+        # confirmation) leaves the suggestion for the next attempt.
+        via = (
+            bool(normalized)
+            and _upload_allowed()
+            and _suggested(normalized, consume=False)
+        )
         with _lock:
             _refs = normalized
             _context.clear()
+            _consumed[0] = False
             if via:
                 _context["via_suggestion"] = True
     except Exception:
@@ -241,6 +256,12 @@ def props_for(model_ref: object, *, failed: bool) -> dict[str, object]:
             if norm is None or norm not in _refs:
                 return {}
             context = dict(_context)
+            consume = context.get("via_suggestion") is True and not _consumed[0]
+            if consume:
+                _consumed[0] = True
+            refs = _refs
+        if consume:
+            _consume_suggestion(refs)
         props: dict[str, object] = {}
         preflight = context.get("preflight")
         if preflight in PREFLIGHT_OUTCOMES:
@@ -261,3 +282,4 @@ def _reset_for_tests() -> None:
     with _lock:
         _refs = frozenset()
         _context.clear()
+        _consumed[0] = False

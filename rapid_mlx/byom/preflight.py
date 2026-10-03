@@ -724,10 +724,10 @@ def _target_status(args: Any) -> tuple[str | None, tuple[str, bool] | None]:
     from rapid_mlx._download_gate import is_repo_cached
     from rapid_mlx.model_metadata import hub_offline_mode_active
 
-    if hub_offline_mode_active():
-        return "no_verdict", None
     if is_repo_cached(model):
         return "cached", None
+    if hub_offline_mode_active():
+        return "no_verdict", None
     return None, (model, False)
 
 
@@ -806,13 +806,16 @@ def run_cli_preflight(args: Any, *, spinner_factory: Callable[[str], Any]) -> No
         # The Hub's config summary omits fields that route a model to other
         # loaders; confirm against the real config.json before refusing.
         full = _fetch_hub_config(ref, inspection.revision)
-        if (
-            full is None
-            or architecture_supported(
+        confirmed = (
+            None
+            if full is None
+            else architecture_supported(
                 full, supported, chat_template=inspection.has_chat_template
             )
-            is not False
-        ):
+        )
+        if confirmed is not False:
+            if confirmed is True:
+                funnel.set_preflight("passed")
             return
     if verdict.failure is not None:
         from rapid_mlx.byom.alternatives import suggest

@@ -46,6 +46,7 @@ from rapid_mlx.byom import preflight as pf
 MANIFEST = "rapid-mlx-import.json"
 GROUP_SIZE = 64
 SUPPORTED_BITS = (2, 3, 4, 6, 8)
+_REPO_ID_RE = re.compile(r"[A-Za-z0-9._-]{1,96}/[A-Za-z0-9._-]{1,96}")
 _NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 _SOURCE_PATTERNS = [
     "*.json",
@@ -677,7 +678,11 @@ def import_command(args: Any, *, spinner_factory: Callable[[str], Any]) -> None:
             raise ImportRefusedError(
                 f"Could not read {source}'s metadata (check the name, your "
                 "network, or `huggingface-cli login` for gated repos).",
-                error_class="metadata_unavailable",
+                # A non-local ref that is not even org/name shaped can never
+                # resolve; only the telemetry class tells the two apart.
+                error_class="metadata_unavailable"
+                if is_local or _REPO_ID_RE.fullmatch(source)
+                else "invalid_ref",
             )
         plan = plan_import(
             source,

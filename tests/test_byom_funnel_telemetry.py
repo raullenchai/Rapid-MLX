@@ -583,3 +583,50 @@ def test_run_worker_failures_are_typed(monkeypatch):
     with pytest.raises(im.ImportRefusedError) as exc:
         im._run_worker("smoke", "/out")
     assert exc.value.error_class == "smoke_failed"
+
+
+def test_a_run_that_emits_nothing_keeps_the_suggestion():
+    byom_funnel.begin(["bad/gguf"])
+    byom_funnel.note_refusal(
+        suggestion="catalog", support_request="declined", suggested_refs=["q-4bit"]
+    )
+    byom_funnel.begin(["q-4bit"])  # e.g. a cached pull: no lifecycle event
+    assert len(json.loads(_ledger().read_text())) == 1
+    byom_funnel.begin(["q-4bit"])
+    assert byom_funnel.props_for("q-4bit", failed=True) == {"via_suggestion": True}
+    # Consumed once; later events of the same run still report it.
+    assert byom_funnel.props_for("q-4bit", failed=False) == {"via_suggestion": True}
+    assert json.loads(_ledger().read_text()) == {}
+
+
+def test_full_config_confirmation_counts_as_passed(hook):
+    config = {
+        "model_type": "mystery",
+        "architectures": ["MysteryForCausalLM"],
+        "tokenizer_config": {"chat_template": "{{ x }}"},
+    }
+    info = _info({"model.safetensors": GIB}, config=config)
+    hook(info, full_config=None)
+    assert byom_funnel.props_for("o/r", failed=False) == {"preflight": "no_verdict"}
+    hook(info, full_config={**config, "model_type": "qwen3"})
+    assert byom_funnel.props_for("o/r", failed=False) == {"preflight": "passed"}
+
+
+def test_cached_wins_over_offline(hook, monkeypatch):
+    from rapid_mlx import _download_gate
+
+    monkeypatch.setattr(_download_gate, "is_repo_cached", lambda name: True)
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    hook(None)
+    assert byom_funnel.props_for("o/r", failed=False) == {"preflight": "cached"}
+
+
+def test_unreadable_import_source_classes(run_import, import_events, tmp_path):
+    run_import.state["insp"] = None
+    for source in ("foo/bar/baz", "o/My-FT-bf16"):
+        with pytest.raises(SystemExit):
+            run_import(source)
+    assert [event[1] for event in import_events] == [
+        "invalid_ref",
+        "metadata_unavailable",
+    ]
