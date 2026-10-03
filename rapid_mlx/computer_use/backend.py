@@ -1335,6 +1335,9 @@ def _borrow_foreground(snapshot: dict) -> None:
     running = _same_process(expected)
     if bool(running.isActive()):
         return
+    # A stale or closed window must not cost the user their foreground: check
+    # the exact observed window before activating (callers re-validate after).
+    _validate_snapshot_window(snapshot, require_topmost=False)
     try:
         accepted = bool(running.activateWithOptions_(1 << 1))
     except Exception as exc:  # noqa: BLE001 - surfaced as a typed failure

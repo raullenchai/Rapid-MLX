@@ -241,6 +241,9 @@ def _borrow_setup(monkeypatch, running, start=1.0):
             "processStartTime": start,
         },
     )
+    monkeypatch.setattr(
+        backend, "_validate_snapshot_window", lambda snap, **kw: snap["window"]
+    )
     snapshot = _snapshot({"role": "AXTextField"})
     snapshot["app"]["processStartTime"] = 1.0
     return snapshot
@@ -251,6 +254,21 @@ def test_borrow_foreground_activates_exact_process(monkeypatch):
     snapshot = _borrow_setup(monkeypatch, running)
     backend._borrow_foreground(snapshot)
     assert running.activations == 1
+
+
+def test_borrow_foreground_never_activates_for_a_stale_window(monkeypatch):
+    running = _Running()
+    snapshot = _borrow_setup(monkeypatch, running)
+
+    def stale(snap, **kw):
+        assert kw == {"require_topmost": False}
+        raise errors.ComputerUseError("target_drift", "window closed")
+
+    monkeypatch.setattr(backend, "_validate_snapshot_window", stale)
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend._borrow_foreground(snapshot)
+    assert exc.value.code == "target_drift"
+    assert running.activations == 0
 
 
 def test_borrow_foreground_refuses_recycled_pid(monkeypatch):
