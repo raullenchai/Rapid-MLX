@@ -9,7 +9,15 @@ import types
 
 import pytest
 
-from rapid_mlx.computer_use import ax_driver, backend, errors
+from rapid_mlx.computer_use import ax_driver, backend, background_input, errors
+
+
+@pytest.fixture(autouse=True)
+def _foreground_input_delivery(monkeypatch):
+    # These tests pin the global-HID contract; on a Mac with SkyLight the
+    # default "auto" mode would route through background delivery instead.
+    # Background routing has its own tests in test_computer_use_background.py.
+    monkeypatch.setenv(background_input.DELIVERY_ENV, "foreground")
 
 
 def _window(window_id=101, index=0, x=0, y=0, width=100, height=100):
@@ -1013,7 +1021,7 @@ def test_hotkey_and_scroll_activate_target_before_posting(monkeypatch):
     monkeypatch.setattr(
         backend,
         "_prepare_synthetic_action",
-        lambda app, window_id: calls.append(app) or snapshot,
+        lambda app, window_id, **_kwargs: calls.append(app) or snapshot,
     )
     monkeypatch.setattr(backend, "get_app_state", lambda *a, **k: snapshot)
     monkeypatch.setattr(
@@ -1478,7 +1486,7 @@ def test_cli_dispatches_every_command(monkeypatch, capsys, tmp_path):
     }
 
 
-def test_cli_stdin_empty_and_mouse_button_guards(monkeypatch, capsys):
+def test_cli_stdin_empty_guards(monkeypatch, capsys):
     from rapid_mlx.computer_use import cli
 
     monkeypatch.setattr(sys, "stdin", types.SimpleNamespace(read=lambda: "stdin-value"))
@@ -1494,12 +1502,25 @@ def test_cli_stdin_empty_and_mouse_button_guards(monkeypatch, capsys):
     for command in (
         ["set-value", "--app", "A", "--element-index", "1"],
         ["type-text", "--app", "A"],
-        ["click", "--app", "A", "--x", "1", "--y", "2", "--mouse-button", "right"],
     ):
         assert cli.main(command) == 1
         assert (
             json.loads(capsys.readouterr().out)["error"]["code"] == "invalid_argument"
         )
+
+
+@pytest.mark.parametrize("button", ["left", "right", "middle"])
+def test_cli_click_forwards_mouse_button(monkeypatch, capsys, button):
+    from rapid_mlx.computer_use import cli
+
+    calls = []
+    monkeypatch.setattr(
+        backend, "click", lambda *a, **k: calls.append(k) or {"mode": "click"}
+    )
+    command = ["click", "--app", "A", "--x", "1", "--y", "2"]
+    assert cli.main([*command, "--mouse-button", button]) == 0
+    capsys.readouterr()
+    assert calls[0]["mouse_button"] == button
 
 
 def test_snapshot_payload_encodes_png():

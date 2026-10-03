@@ -1,0 +1,909 @@
+"""Non-intrusive ("background") synthetic input for the computer-use layer.
+
+Semantic Accessibility actions (``AXPress``, AX value writes) already leave the
+user's cursor and frontmost app alone. Everything else -- pixel clicks on
+content without an AX tree, wheel scrolls, keystrokes -- historically went
+through the global HID tap (``CGEventPost(kCGHIDEventTap, ...)``), which warps
+the cursor, requires the target to be frontmost and fights the user for input.
+
+This module routes those events to *one window of one process* instead, so the
+agent can operate a window while the user keeps working elsewhere:
+
+* mouse events are posted with the private ``SLEventPostToPid`` (which tickles
+  the WindowServer activity monitor that the public ``CGEventPostToPid`` skips)
+  after stamping the private CGEvent routing fields (target pid, window number)
+  and making the target AppKit-active *without raising it*;
+* keyboard events carry an ``SLSEventAuthenticationMessage`` (macOS 15+) so
+  Chromium/Electron accept them as live input; menu key equivalents are posted
+  without it because only the IOHIDPostEvent path reaches ``NSMenu``.
+
+The recipes are ported from trycua/cua (MIT)
+``libs/cua-driver/rust/crates/platform-macos/src/input/{skylight,mouse,keyboard}.rs``;
+the focus-without-raise record originates in yabai (MIT). SIP may stay
+enabled: the SPIs are reached by ``dlopen`` of the system PrivateFramework.
+TCC Accessibility grants must be attributed to the hosting signed bundle.
+
+Everything degrades gracefully: if a required symbol does not resolve,
+``skylight_available()`` is ``False`` and callers keep the HID path. Event
+*plans* are pure functions so they are unit-testable on any platform.
+"""
+
+from __future__ import annotations
+
+import ctypes
+import os
+import threading
+import time
+from contextlib import contextmanager
+from ctypes import (
+    CFUNCTYPE,
+    POINTER,
+    Structure,
+    byref,
+    c_bool,
+    c_char_p,
+    c_double,
+    c_int32,
+    c_int64,
+    c_long,
+    c_size_t,
+    c_uint8,
+    c_uint16,
+    c_uint32,
+    c_uint64,
+    c_void_p,
+)
+from dataclasses import dataclass
+from typing import Any
+
+__all__ = [
+    "DELIVERY_ENV",
+    "MouseStep",
+    "activate_without_raise",
+    "background_enabled",
+    "click",
+    "click_plan",
+    "delivery_mode",
+    "front_process_matches",
+    "keyboard_auth_available",
+    "press_key",
+    "restore_focus_after_without_raise",
+    "scroll",
+    "scroll_ticks",
+    "skylight_available",
+    "type_text",
+]
+
+DELIVERY_ENV = "RAPID_MLX_CUA_INPUT_DELIVERY"
+_DELIVERY_MODES = ("auto", "background", "foreground")
+
+# --- CGEvent constants -------------------------------------------------------
+_K_HID_SYSTEM_STATE = 1  # kCGEventSourceStateHIDSystemState
+_MOUSE_MOVED = 5
+_EVENT_TYPES = {
+    "left": (1, 2),  # kCGEventLeftMouseDown / Up
+    "right": (3, 4),  # kCGEventRightMouseDown / Up
+    "middle": (25, 26),  # kCGEventOtherMouseDown / Up
+}
+_BUTTON_NUMBER = {"left": 0, "right": 1, "middle": 2}
+_SCROLL_UNIT_LINE = 1
+_MAX_LINES_PER_TICK = 10
+
+# Raw CGEvent field indexes (see cua-driver mouse.rs for provenance).
+_F_PHASE = 0  # kCGMouseEventNumber, reused as gesture phase marker
+_F_CLICK_STATE = 1  # kCGMouseEventClickState
+_F_BUTTON = 3  # kCGMouseEventButtonNumber
+_F_SUBTYPE = 7  # kCGMouseEventSubtype (3 = NSEventSubtypeTouch)
+_F_TARGET_PID = 40  # kCGEventTargetUnixProcessID; Chromium's synthetic filter
+_F_WINDOW = 51  # windowNumber
+_F_CLICK_GROUP = 58  # gesture coalescing id
+_F_WINDOW_UNDER = 91  # kCGMouseEventWindowUnderMousePointer
+_F_WINDOW_HANDLER = 92  # ...ThatCanHandleThisEvent
+
+_KEY_GAP_S = 0.008
+
+
+@dataclass(frozen=True)
+class MouseStep:
+    """One event of a planned background mouse gesture."""
+
+    event_type: int
+    x: float
+    y: float
+    phase: int
+    click_state: int
+    button_number: int
+    delay_after_s: float
+
+
+def click_plan(
+    x: float, y: float, *, button: str = "left", count: int = 1
+) -> list[MouseStep]:
+    """Pure event plan for a background click (no OS calls).
+
+    Left clicks use cua's Chromium-safe recipe: a stamped ``mouseMoved``
+    primer, an off-screen ``(-1, -1)`` down/up that satisfies Chromium's
+    user-activation gate without hitting any DOM node, then the real
+    down/up pair(s) with clickState 1..N. Right/middle clicks keep the primer
+    but skip the decoy, and stamp the matching button number -- a right-down
+    stamped as button 0 is delivered as a left click.
+    """
+    if button not in _EVENT_TYPES:
+        raise ValueError(f"unsupported mouse button {button!r}")
+    count = max(1, min(int(count), 3))
+    down, up = _EVENT_TYPES[button]
+    number = _BUTTON_NUMBER[button]
+    steps = [MouseStep(_MOUSE_MOVED, x, y, 2, 0, 0, 0.015)]
+    if button == "left":
+        steps += [
+            MouseStep(down, -1.0, -1.0, 1, 1, 0, 0.001),
+            MouseStep(up, -1.0, -1.0, 2, 1, 0, 0.100),
+        ]
+    for index in range(1, count + 1):
+        steps.append(MouseStep(down, x, y, 3, index, number, 0.028))
+        steps.append(
+            MouseStep(up, x, y, 3, index, number, 0.080 if index < count else 0.0)
+        )
+    return steps
+
+
+def scroll_ticks(lines: int) -> list[int]:
+    """Split a signed line delta into per-notch wheel deltas (pure).
+
+    Discrete notches let renderers animate instead of coalescing one jump and
+    keep each event inside the ±10-line range apps handle reliably.
+    """
+    lines = int(lines)
+    if lines == 0:
+        return []
+    sign = 1 if lines > 0 else -1
+    remaining = abs(lines)
+    ticks = []
+    while remaining > 0:
+        step = min(_MAX_LINES_PER_TICK, remaining)
+        ticks.append(sign * step)
+        remaining -= step
+    return ticks
+
+
+def delivery_mode() -> str:
+    """Configured delivery mode: ``auto`` (default), ``background`` or ``foreground``."""
+    mode = os.environ.get(DELIVERY_ENV, "auto").strip().lower() or "auto"
+    # A typo must not opt into the private-SPI route: unknown values keep the
+    # historical foreground behaviour.
+    return mode if mode in _DELIVERY_MODES else "foreground"
+
+
+def background_enabled() -> bool:
+    """True when synthetic input should be routed to the target process."""
+    return delivery_mode() != "foreground" and skylight_available()
+
+
+# --- symbol loading ----------------------------------------------------------
+
+
+class _CGPoint(Structure):
+    _fields_ = [("x", c_double), ("y", c_double)]
+
+
+class _PSN(Structure):  # ProcessSerialNumber: two UInt32
+    _fields_ = [("hi", c_uint32), ("lo", c_uint32)]
+
+
+def _bind(lib, name: str, argtypes: list, restype) -> Any:
+    fn = getattr(lib, name, None)
+    if fn is None:
+        return None
+    fn.argtypes = argtypes
+    fn.restype = restype
+    return fn
+
+
+def _load() -> dict | None:
+    """Resolve the CoreGraphics + SkyLight symbols we need; None if unavailable."""
+    try:
+        cg = ctypes.CDLL(
+            "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics"
+        )
+        sky = ctypes.CDLL(
+            "/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight"
+        )
+        cf = ctypes.CDLL(
+            "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
+        )
+    except OSError:
+        return None
+    try:
+        libsystem = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
+    except OSError:
+        libsystem = None
+    try:
+        hiservices = ctypes.CDLL(
+            "/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices"
+        )
+    except OSError:
+        hiservices = None
+    try:
+        objc = ctypes.CDLL("/usr/lib/libobjc.A.dylib")
+    except OSError:
+        objc = None
+
+    s: dict = {}
+    required = {
+        "source_create": _bind(cg, "CGEventSourceCreate", [c_uint32], c_void_p),
+        "mouse_event": _bind(
+            cg,
+            "CGEventCreateMouseEvent",
+            [c_void_p, c_uint32, _CGPoint, c_uint32],
+            c_void_p,
+        ),
+        "key_event": _bind(
+            cg, "CGEventCreateKeyboardEvent", [c_void_p, c_uint16, c_bool], c_void_p
+        ),
+        "set_unicode": _bind(
+            cg,
+            "CGEventKeyboardSetUnicodeString",
+            [c_void_p, c_long, POINTER(c_uint16)],
+            None,
+        ),
+        "set_location": _bind(cg, "CGEventSetLocation", [c_void_p, _CGPoint], None),
+        "set_flags": _bind(cg, "CGEventSetFlags", [c_void_p, c_uint64], None),
+        "event_type": _bind(cg, "CGEventGetType", [c_void_p], c_uint32),
+        "release": _bind(cf, "CFRelease", [c_void_p], None),
+        "malloc_size": _bind(libsystem, "malloc_size", [c_void_p], c_size_t),
+        "malloc_zone_from_ptr": _bind(
+            libsystem, "malloc_zone_from_ptr", [c_void_p], c_void_p
+        ),
+        "sl_post": _bind(sky, "SLEventPostToPid", [c_int32, c_void_p], None),
+        "set_field": _bind(
+            sky, "SLEventSetIntegerValueField", [c_void_p, c_uint32, c_int64], None
+        ),
+        "post_record": _bind(
+            sky, "SLPSPostEventRecordTo", [c_void_p, c_void_p], c_int32
+        ),
+        "front_process": _bind(sky, "_SLPSGetFrontProcess", [POINTER(_PSN)], c_int32),
+    }
+    if any(value is None for value in required.values()):
+        return None
+    s.update(required)
+
+    # The scroll constructor is variadic; bind the 2-wheel form explicitly.
+    scroll_ctor = getattr(cg, "CGEventCreateScrollWheelEvent2", None)
+    if scroll_ctor is not None:
+        scroll_ctor.argtypes = [c_void_p, c_uint32, c_uint32, c_int32, c_int32, c_int32]
+        scroll_ctor.restype = c_void_p
+    s["scroll_event"] = scroll_ctor
+
+    # CGEventSetWindowLocation is a private export; it may live in either lib.
+    set_win_loc = getattr(cg, "CGEventSetWindowLocation", None) or getattr(
+        sky, "CGEventSetWindowLocation", None
+    )
+    if set_win_loc is None:
+        return None
+    set_win_loc.argtypes = [c_void_p, c_double, c_double]
+    set_win_loc.restype = None
+    s["set_window_location"] = set_win_loc
+
+    # Window-owner PSN lookup (modern) with GetProcessForPID fallback.
+    s["main_connection"] = _bind(sky, "CGSMainConnectionID", [], c_uint32) or _bind(
+        sky, "SLSMainConnectionID", [], c_uint32
+    )
+    s["window_owner"] = _bind(
+        sky, "SLSGetWindowOwner", [c_uint32, c_uint32, POINTER(c_uint32)], c_int32
+    )
+    s["connection_psn"] = _bind(
+        sky, "SLSGetConnectionPSN", [c_uint32, POINTER(_PSN)], c_int32
+    )
+    s["process_for_pid"] = (
+        _bind(hiservices, "GetProcessForPID", [c_int32, POINTER(_PSN)], c_int32)
+        if hiservices is not None
+        else None
+    )
+    s["pid_for_psn"] = (
+        _bind(hiservices, "GetProcessPID", [POINTER(_PSN), POINTER(c_int32)], c_int32)
+        if hiservices is not None
+        else None
+    )
+    # AXUIElement -> CGWindowID (the yabai/cua mapping for key windows).
+    s["ax_window"] = (
+        _bind(
+            hiservices, "_AXUIElementGetWindow", [c_void_p, POINTER(c_uint32)], c_int32
+        )
+        if hiservices is not None
+        else None
+    )
+    if s["process_for_pid"] is None and not (
+        s["main_connection"] and s["window_owner"] and s["connection_psn"]
+    ):
+        return None
+
+    # Keyboard auth envelope (optional; absent before macOS 15).
+    s["set_auth"] = _bind(
+        sky, "SLEventSetAuthenticationMessage", [c_void_p, c_void_p], None
+    )
+    s["auth_factory"] = None
+    if objc is not None and s["set_auth"] is not None:
+        get_class = _bind(objc, "objc_getClass", [c_char_p], c_void_p)
+        register = _bind(objc, "sel_registerName", [c_char_p], c_void_p)
+        responds = _bind(objc, "class_respondsToSelector", [c_void_p, c_void_p], c_bool)
+        metaclass_of = _bind(objc, "object_getClass", [c_void_p], c_void_p)
+        send = getattr(objc, "objc_msgSend", None)
+        if get_class and register and responds and metaclass_of and send is not None:
+            cls = get_class(b"SLSEventAuthenticationMessage")
+            sel = register(b"messageWithEventRecord:pid:version:")
+            # The factory is a CLASS method, so probe the metaclass. Probing the
+            # class object (as the upstream port does) checks instance methods
+            # and is false on macOS 26, silently dropping the envelope. The
+            # selector is absent before macOS 15; then keys post unenveloped.
+            send_addr = ctypes.cast(send, c_void_p).value
+            if cls and sel and send_addr and responds(metaclass_of(cls), sel):
+                factory = CFUNCTYPE(
+                    c_void_p, c_void_p, c_void_p, c_void_p, c_int32, c_uint32
+                )(send_addr)
+                s["auth_factory"] = (factory, cls, sel)
+
+    source = s["source_create"](_K_HID_SYSTEM_STATE)
+    if not source:
+        return None
+    s["source"] = source
+    return s
+
+
+_SYMS: dict | None = None
+_LOADED = False
+_LOAD_LOCK = threading.Lock()
+# One gesture at a time: interleaved primers/decoys from two callers would
+# corrupt each other's click-state and focus records. Reentrant so a caller
+# can hold it across a whole focus transaction (capture -> gesture -> restore).
+GESTURE_LOCK = threading.RLock()
+_GESTURE_LOCK = GESTURE_LOCK
+
+
+def _syms() -> dict | None:
+    global _SYMS, _LOADED
+    if not _LOADED:
+        with _LOAD_LOCK:
+            if not _LOADED:
+                try:
+                    _SYMS = _load()
+                except Exception:  # noqa: BLE001 - any binding failure means unavailable
+                    _SYMS = None
+                _LOADED = True
+    return _SYMS
+
+
+def skylight_available() -> bool:
+    """True when the private SkyLight post path resolved and can be used."""
+    return _syms() is not None
+
+
+def keyboard_auth_available() -> bool:
+    """True when keyboard events can carry the Chromium auth envelope (macOS 15+)."""
+    s = _syms()
+    return bool(s and s["auth_factory"])
+
+
+# --- process / focus plumbing ------------------------------------------------
+
+
+def _psn_for_window(wid: int, pid: int) -> _PSN | None:
+    s = _syms()
+    if s is None:
+        return None
+    psn = _PSN()
+    if wid and s["main_connection"] and s["window_owner"] and s["connection_psn"]:
+        owner = c_uint32(0)
+        if (
+            s["window_owner"](s["main_connection"](), int(wid), byref(owner)) == 0
+            and owner.value
+            and s["connection_psn"](owner.value, byref(psn)) == 0
+        ):
+            return psn
+    if (
+        s["process_for_pid"] is not None
+        and s["process_for_pid"](int(pid), byref(psn)) == 0
+    ):
+        return psn
+    return None
+
+
+def ax_window_id(element: object) -> int | None:
+    """CGWindowID of an AXUIElement window, or None when it cannot be mapped."""
+    s = _syms()
+    if s is None or s.get("ax_window") is None or element is None:
+        return None
+    try:
+        import objc  # type: ignore[import-untyped]
+
+        ref = objc.pyobjc_id(element)
+    except Exception:  # noqa: BLE001 - not a bridged CF object
+        return None
+    wid = c_uint32(0)
+    if s["ax_window"](c_void_p(ref), byref(wid)) != 0 or not wid.value:
+        return None
+    return int(wid.value)
+
+
+def _live() -> dict[str, Any]:
+    """The bound symbols, for helpers only reached after availability checks."""
+    s = _syms()
+    if s is None:
+        raise RuntimeError("SkyLight input SPI is unavailable")
+    return s
+
+
+def front_pid() -> int | None:
+    """Pid of the process WindowServer considers frontmost (live, no run loop)."""
+    front = _front_psn()
+    if front is None:
+        return None
+    s = _live()
+    if s.get("pid_for_psn") is None:
+        return None
+    pid = c_int32()
+    if s["pid_for_psn"](byref(front), byref(pid)) != 0 or pid.value <= 0:
+        return None
+    return int(pid.value)
+
+
+def _front_psn() -> _PSN | None:
+    s = _syms()
+    if s is None:
+        return None
+    psn = _PSN()
+    return psn if s["front_process"](byref(psn)) == 0 else None
+
+
+def front_process_matches(pid: int, wid: int) -> bool | None:
+    """Whether WindowServer considers ``pid`` (owner of ``wid``) frontmost."""
+    front = _front_psn()
+    target = _psn_for_window(wid, pid)
+    if front is None or target is None:
+        return None
+    return (front.hi, front.lo) == (target.hi, target.lo)
+
+
+def _focus_record(wid: int, direction: int) -> ctypes.Array:
+    """248-byte focus (0x01) / defocus (0x02) record for ``SLPSPostEventRecordTo``."""
+    buf = (c_uint8 * 0xF8)()
+    buf[0x04] = 0xF8
+    buf[0x08] = 0x0D
+    for offset, byte in enumerate(int(wid).to_bytes(4, "little")):
+        buf[0x3C + offset] = byte
+    buf[0x8A] = direction
+    return buf
+
+
+def _post_record(psn: _PSN, record: ctypes.Array) -> bool:
+    s = _live()
+    return bool(
+        s["post_record"](
+            ctypes.cast(byref(psn), c_void_p), ctypes.cast(record, c_void_p)
+        )
+        == 0
+    )
+
+
+def activate_without_raise(
+    target_pid: int, target_wid: int, front_wid: int = 0
+) -> bool:
+    """Make ``target_wid`` key for input WITHOUT raising it or moving Spaces.
+
+    Defocuses the current front process's key window ``front_wid`` (yabai's
+    recipe; cua's port stamps ``target_wid`` there, used when the front
+    window is unknown), then focuses the target window. The
+    user's front app stays frontmost (NSWorkspace still reports it) but its key
+    window stops receiving keys until
+    :func:`restore_focus_after_without_raise` hands focus back.
+    """
+    if _syms() is None or not target_wid:
+        return False
+    front = _front_psn()
+    target = _psn_for_window(target_wid, target_pid)
+    if front is None or target is None:
+        return False
+    front_record_wid = front_wid or target_wid
+    if not _post_record(front, _focus_record(front_record_wid, 0x02)):
+        return False
+    if not _post_record(target, _focus_record(target_wid, 0x01)):
+        # Never leave the user's window defocused with nothing focused.
+        _post_record(front, _focus_record(front_record_wid, 0x01))
+        return False
+    return True
+
+
+def restore_focus_after_without_raise(
+    previous_pid: int, previous_wid: int, target_pid: int, target_wid: int
+) -> bool:
+    """Reverse :func:`activate_without_raise` once a background gesture is done."""
+    if _syms() is None or not previous_wid or not target_wid:
+        return False
+    previous = _psn_for_window(previous_wid, previous_pid)
+    target = _psn_for_window(target_wid, target_pid)
+    if previous is None or target is None:
+        return False
+    defocused = _post_record(target, _focus_record(target_wid, 0x02))
+    focused = _post_record(previous, _focus_record(previous_wid, 0x01))
+    return defocused and focused
+
+
+# --- mouse -------------------------------------------------------------------
+
+
+def _stamp_mouse(
+    ev: int,
+    pid: int,
+    wid: int,
+    step: MouseStep,
+    group: int,
+    window_point: tuple[float, float] | None = None,
+) -> None:
+    s = _live()
+    set_field = s["set_field"]
+    set_field(ev, _F_PHASE, step.phase)
+    set_field(ev, _F_CLICK_STATE, step.click_state)
+    set_field(ev, _F_BUTTON, step.button_number)
+    set_field(ev, _F_SUBTYPE, 3)
+    set_field(ev, _F_TARGET_PID, int(pid))
+    set_field(ev, _F_WINDOW, int(wid))
+    set_field(ev, _F_WINDOW_UNDER, int(wid))
+    set_field(ev, _F_WINDOW_HANDLER, int(wid))
+    set_field(ev, _F_CLICK_GROUP, group)
+    # The left-click recipe stamps the screen point (cua's Chromium route);
+    # right/middle/scroll stamp the window-local point, as cua's
+    # *_with_window_local primitives do, so the hit-test uses it directly.
+    wx, wy = window_point if window_point is not None else (step.x, step.y)
+    s["set_window_location"](ev, float(wx), float(wy))
+
+
+def _window_point(
+    x: float, y: float, origin: tuple[float, float] | None
+) -> tuple[float, float] | None:
+    if origin is None:
+        return None
+    return float(x) - float(origin[0]), float(y) - float(origin[1])
+
+
+@contextmanager
+def _owned(events: list[int]):
+    """Release every event of a gesture on any exit, including exceptions."""
+    try:
+        yield events
+    finally:
+        release = _live()["release"]
+        for ev in events:
+            release(ev)
+
+
+def _allocate(count: int, create) -> list[int] | None:
+    """Create every event of a gesture before posting any of them.
+
+    A gesture that dies halfway would leave a button or key logically held
+    and invite a duplicating retry, so allocation failure posts nothing.
+    """
+    events: list[int] = []
+    try:
+        for index in range(count):
+            ev = create(index)
+            if not ev:
+                break
+            events.append(ev)
+        else:
+            return events
+    except BaseException:
+        _release_all(events)
+        raise
+    _release_all(events)
+    return None
+
+
+def _release_all(events: list[int]) -> None:
+    release = _live()["release"]
+    for made in events:
+        release(made)
+
+
+def click(
+    pid: int,
+    wid: int,
+    x: float,
+    y: float,
+    *,
+    button: str = "left",
+    count: int = 1,
+    flags: int = 0,
+    window_origin: tuple[float, float] | None = None,
+    front_wid: int = 0,
+) -> bool:
+    """Deliver a pixel click at screen point ``(x, y)`` inside window ``wid``.
+
+    The target is made AppKit-active without being raised, the planned event
+    stream is posted to the process, and nothing touches the hardware cursor.
+    Returns False (posting nothing) when the SPI is unavailable. Focus is NOT
+    restored here; callers decide (see ``restore_focus_after_without_raise``)
+    and should hold :data:`GESTURE_LOCK` across the whole transaction.
+    ``window_origin`` is the window's top-left in screen points; non-left
+    buttons stamp the window-local point derived from it.
+    """
+    s = _syms()
+    if s is None or not wid:
+        return False
+    plan = click_plan(x, y, button=button, count=count)
+    events = _allocate(
+        len(plan),
+        lambda i: s["mouse_event"](
+            s["source"],
+            plan[i].event_type,
+            _CGPoint(plan[i].x, plan[i].y),
+            plan[i].button_number,
+        ),
+    )
+    if events is None:
+        return False
+    with _owned(events), _GESTURE_LOCK:
+        if not activate_without_raise(pid, wid, front_wid):
+            # Without key focus the stream could reach a different responder;
+            # post nothing (any partial defocus is undone by the caller's
+            # focus restoration).
+            return False
+        time.sleep(0.05)
+        group = time.time_ns() & 0x7FFFFFFF
+        down_type, up_type = _EVENT_TYPES[button]
+
+        def post(index: int) -> None:
+            step = plan[index]
+            local = (
+                None
+                if button == "left"
+                else _window_point(step.x, step.y, window_origin)
+            )
+            _stamp_mouse(events[index], pid, wid, step, group, local)
+            if flags and step.phase == 3:
+                s["set_flags"](events[index], int(flags))
+            # One route only: cua also posts CGEventPostToPid here, but
+            # apps that accept both (Chrome, TextEdit — measured) then see
+            # every down/up twice (two context menus, a double scroll).
+            s["sl_post"](int(pid), events[index])
+
+        owed: int | None = None  # index of the up a posted down still needs
+        try:
+            for index, step in enumerate(plan):
+                if step.event_type == down_type:
+                    # Owed before posting: an interrupt can land after the
+                    # down reached the target; a stray up is harmless.
+                    owed = next(
+                        j
+                        for j in range(index + 1, len(plan))
+                        if plan[j].event_type == up_type
+                    )
+                post(index)
+                if index == owed:
+                    owed = None
+                if step.delay_after_s:
+                    time.sleep(step.delay_after_s)
+        except BaseException:
+            # A down without its up leaves the target tracking a press.
+            if owed is not None:
+                _best_effort(post, owed)
+            raise
+    return True
+
+
+def _best_effort(fn, *args) -> None:
+    try:
+        fn(*args)
+    except Exception:  # noqa: BLE001 - cleanup must not mask the real error
+        pass
+
+
+def scroll(
+    pid: int,
+    wid: int,
+    x: float,
+    y: float,
+    *,
+    lines_y: int = 0,
+    lines_x: int = 0,
+    window_origin: tuple[float, float] | None = None,
+) -> bool:
+    """Wheel-scroll the element under screen point ``(x, y)`` of window ``wid``.
+
+    A real wheel event is hit-tested at the point, so nested ``overflow:auto``
+    regions that never take keyboard focus scroll too. Positive ``lines_y``
+    reveals content above; negative reveals content below.
+    """
+    s = _syms()
+    if s is None or not wid or s["scroll_event"] is None:
+        return False
+    ticks_y = scroll_ticks(lines_y)
+    ticks_x = scroll_ticks(lines_x)
+    width = max(len(ticks_y), len(ticks_x))
+    if width == 0:
+        return True
+    ticks_y += [0] * (width - len(ticks_y))
+    ticks_x += [0] * (width - len(ticks_x))
+    local = _window_point(x, y, window_origin)
+    wx, wy = local if local is not None else (x, y)
+    ticks = list(zip(ticks_y, ticks_x, strict=True))
+    events = _allocate(
+        width + 1,
+        lambda i: (
+            s["mouse_event"](s["source"], _MOUSE_MOVED, _CGPoint(x, y), 0)
+            if i == 0
+            else s["scroll_event"](
+                s["source"], _SCROLL_UNIT_LINE, 2, ticks[i - 1][0], ticks[i - 1][1], 0
+            )
+        ),
+    )
+    if events is None:
+        return False
+    with _owned(events), _GESTURE_LOCK:
+        group = time.time_ns() & 0x7FFFFFFF
+        primer = MouseStep(_MOUSE_MOVED, x, y, 2, 0, 0, 0.012)
+        ev = events[0]
+        _stamp_mouse(ev, pid, wid, primer, group, local)
+        s["sl_post"](int(pid), ev)
+        time.sleep(primer.delay_after_s)
+        for ev in events[1:]:
+            s["set_location"](ev, _CGPoint(x, y))
+            s["set_window_location"](ev, float(wx), float(wy))
+            s["set_field"](ev, _F_TARGET_PID, int(pid))
+            s["set_field"](ev, _F_WINDOW, int(wid))
+            s["set_field"](ev, _F_WINDOW_UNDER, int(wid))
+            s["set_field"](ev, _F_WINDOW_HANDLER, int(wid))
+            # SkyLight alone scrolls both Chromium and AppKit scrollers;
+            # adding the public route doubles the distance (measured).
+            s["sl_post"](int(pid), ev)
+            time.sleep(0.03)
+    return True
+
+
+# --- keyboard ----------------------------------------------------------------
+
+
+# sizeof(SLSEventRecord) is 248 on macOS 26 (SLEventGetEventRecord asserts it;
+# the copy matches the embedded record byte for byte). Smaller blocks are not
+# records.
+_MIN_RECORD_BYTES = 0xF8
+
+
+def _event_record(ev: int) -> int | None:
+    """Pointer to the ``SLSEventRecord`` embedded in a ``CGEventRef``, or None.
+
+    ``__CGEvent`` is ``{CFRuntimeBase(16), uint32, pad, SLSEventRecord *}``.
+    cua probes offsets 24, 32 and 16 and takes the first non-null word, which
+    is unsafe: on macOS 26 the event object is 32 bytes (offset 32 is out of
+    bounds) and offset 16 holds a non-pointer. Only accept a word that lies
+    inside the event allocation and points at a live malloc block of record
+    size whose header is a record's: ``u32 @4`` is the record length 0xF8
+    (the same header yabai writes into its focus records) and ``u32 @8`` is
+    this event's own ``CGEventType`` (measured on macOS 26 for key down/up,
+    mouse move and mouse down). Otherwise the caller posts without the
+    envelope rather than hand an unrelated allocation to the auth factory.
+
+    ``malloc_zone_from_ptr`` is safe on arbitrary addresses (NULL when no zone
+    owns them), so ``malloc_size`` is only ever asked about real heap blocks.
+    The exported ``SLEventGetEventRecord`` copy accessor is not used: it
+    aborts the process when the caller's size disagrees with the OS's.
+    """
+    s = _live()
+    zone_of, malloc_size = s.get("malloc_zone_from_ptr"), s.get("malloc_size")
+    if zone_of is None or malloc_size is None or not zone_of(int(ev)):
+        return None
+    event_bytes = malloc_size(int(ev))
+    for offset in (24, 32, 16):
+        if offset + 8 > event_bytes:
+            continue
+        value = c_void_p.from_address(int(ev) + offset).value
+        if (
+            value
+            and zone_of(value)
+            and malloc_size(value) >= _MIN_RECORD_BYTES
+            and _record_header_matches(value, ev)
+        ):
+            return value
+    return None
+
+
+def _record_header_matches(record: int, ev: int) -> bool:
+    event_type = _live().get("event_type")
+    if event_type is None:
+        return False
+    length = c_uint32.from_address(record + 4).value
+    kind = c_uint32.from_address(record + 8).value
+    return length == _MIN_RECORD_BYTES and kind == int(event_type(ev))
+
+
+def _post_key_event(pid: int, ev: int, *, authenticated: bool) -> None:
+    s = _live()
+    if authenticated and s["auth_factory"] is not None:
+        factory, cls, sel = s["auth_factory"]
+        record = _event_record(ev)
+        if record:
+            message = factory(cls, sel, record, int(pid), 0)
+            if message:
+                s["set_auth"](ev, message)
+    s["sl_post"](int(pid), ev)
+
+
+def press_key(
+    pid: int, keycode: int, flags: int = 0, *, menu_shortcut: bool = False
+) -> bool:
+    """Press and release ``keycode`` with exactly ``flags`` held, to ``pid``.
+
+    Keys reach the process's key window/first responder without activating it.
+    ``menu_shortcut=True`` omits the auth envelope: with it, SkyLight takes a
+    direct mach path that bypasses ``NSApplication.sendEvent:`` so NSMenu key
+    equivalents (Cmd+S, Cmd+N, ...) never fire.
+    """
+    s = _syms()
+    if s is None:
+        return False
+    events = _allocate(2, lambda i: s["key_event"](s["source"], int(keycode), i == 0))
+    if events is None:
+        return False
+
+    def post(ev: int) -> None:
+        # HIDSystemState sources inherit physically held modifiers;
+        # always overwrite, including with 0.
+        s["set_flags"](ev, int(flags))
+        _post_key_event(pid, ev, authenticated=not menu_shortcut)
+
+    with _owned(events), _GESTURE_LOCK:
+        down, up = events
+        try:
+            post(down)
+            time.sleep(_KEY_GAP_S)
+            post(up)
+        except BaseException:
+            _best_effort(post, up)  # never leave the key held down
+            raise
+        time.sleep(_KEY_GAP_S)
+    return True
+
+
+# Every character costs two native events allocated up front (all-or-nothing);
+# bound it so caller-supplied text cannot exhaust memory. Long values belong
+# to AXSetValue fills, not synthetic typing.
+MAX_TYPE_TEXT_CHARS = 10_000
+
+
+def type_text(pid: int, text: str) -> bool:
+    """Type ``text`` literally into ``pid``'s focused element.
+
+    One keycode-0 event pair per Unicode scalar carrying the character, so the
+    active keyboard layout and IME are bypassed (CJK and emoji arrive
+    literally). Flags are forced to zero on every event, otherwise Chromium
+    reads an uppercase character as Shift and leaks it into the next one.
+    """
+    s = _syms()
+    if s is None:
+        return False
+    chars = list(text)
+    if len(chars) > MAX_TYPE_TEXT_CHARS:
+        return False
+    events = _allocate(
+        2 * len(chars), lambda i: s["key_event"](s["source"], 0, i % 2 == 0)
+    )
+    if events is None:
+        return False
+
+    def post(ev: int, buf) -> None:
+        s["set_unicode"](ev, len(buf), buf)
+        s["set_flags"](ev, 0)
+        _post_key_event(pid, ev, authenticated=True)
+
+    with _owned(events), _GESTURE_LOCK:
+        for index, ch in enumerate(chars):
+            units = ch.encode("utf-16-le")
+            buf = (c_uint16 * (len(units) // 2)).from_buffer_copy(units)
+            down, up = events[2 * index : 2 * index + 2]
+            try:
+                post(down, buf)
+                time.sleep(_KEY_GAP_S)
+                post(up, buf)
+            except BaseException:
+                _best_effort(post, up, buf)  # never leave a key held down
+                raise
+            time.sleep(_KEY_GAP_S)
+    return True
