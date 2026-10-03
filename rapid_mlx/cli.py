@@ -4579,9 +4579,14 @@ def _serve_will_run_on_mllm_lane(args) -> bool:
     A multimodal alias whose LANGUAGE backbone is hybrid/linear-attention
     (Qwen3.6 GatedDeltaNet) auto-downgrades to the text-only mlx-lm lane and
     never touches mlx-vlm, so it must NOT be pushed into a ~1 GB ``[vision]``
-    install. A genuine VLM (non-hybrid backbone, e.g. qwen3-vl) stays on the
-    MLLM lane and still needs it. ``--mllm`` / ``--no-mllm`` are honoured via
-    ``resolve_serving_lane``'s explicit-flag short-circuits.
+    install. A genuine VLM whose backbone the text lane cannot load (Bonsai 2's
+    ``prism_hadamard_qwen35``) stays on the MLLM lane and still needs it; one
+    whose backbone mlx-lm loads (gemma4, qwen3_vl, …) degrades to the text
+    lane on a base wheel instead. ``--mllm`` / ``--no-mllm`` are honoured via
+    ``resolve_serving_lane``'s explicit-flag short-circuits, and a requested
+    speculative decoder / MTP short-circuits before the degrade probe (the
+    decoder is honoured by the text lane, whose routing the resolver already
+    decided — the degrade never answers those requests).
 
     The probe reads the cached checkpoint config offline (no network, no
     weight load). ``is_mllm_model`` promotes a checkpoint only on positive
@@ -4636,11 +4641,31 @@ def _serve_will_run_on_mllm_lane(args) -> bool:
         # verdict (#3113: no weights cached yet) may fall back to the
         # curated alias profile.
         return False
-    return _alias_needs_vision_runtime_without_weights(
+    if requested_spec_decode not in (None, "none"):
+        # A requested speculative decoder (or MTP via the flag shorthands) is
+        # routed to the text lane by ``resolve_serving_lane`` on its own —
+        # the decoder is only honoured there. The degrade below decides the
+        # PLAIN automatic path and must never answer a spec-decode request:
+        # short-circuit before consulting it so the predicate cannot flip a
+        # spec-decode serve's lane in either direction.
+        return False
+    if not _alias_needs_vision_runtime_without_weights(
         args.model,
         force_text=force_text,
         requested_spec_decode=requested_spec_decode,
-    )
+    ):
+        return False
+    # A fresh install whose checkpoint will land on the vision lane once its
+    # weights arrive still boots text-only from the base wheel when the
+    # vision runtime is ABSENT and the backbone is text-lane loadable — the
+    # same degrade the engine resolves with after the pull. Anything else
+    # (broken runtime, unloadable backbone, no config) keeps the guard.
+    from .api.utils import checkpoint_serves_text_without_vision
+    from .model_aliases import resolve_profile
+
+    profile = resolve_profile(args.model)
+    degrade_model = profile.hf_path if profile is not None else args.model
+    return not checkpoint_serves_text_without_vision(degrade_model)
 
 
 def _alias_modality(model_name: str) -> str | None:
@@ -4652,8 +4677,15 @@ def _alias_modality(model_name: str) -> str | None:
 
 
 def _alias_text_degrades_without_vision(profile, *, args=None) -> bool:
-    """Whether an absent vision extra leaves this catalog alias text-capable."""
-    if profile is None or profile.modality != "text" or profile.is_text_only:
+    """Whether an absent vision extra leaves this checkpoint text-capable.
+
+    ``profile`` is the catalog alias profile; ``None`` means ``serve`` was
+    given a direct Hugging Face repo id (or local path), which degrades only
+    on the resolver's own positive evidence for ``args.model``.
+    """
+    if profile is None:
+        return args is not None and _direct_ref_text_degrades_without_vision(args)
+    if profile.modality != "text" or profile.is_text_only:
         return False
     from .models.mllm import VisionRuntimeStatus, vision_runtime_status
 
@@ -4669,7 +4701,10 @@ def _alias_text_degrades_without_vision(profile, *, args=None) -> bool:
             return False
     if vision_runtime_status()[0] is not VisionRuntimeStatus.ABSENT:
         return False
-    from .api.utils import resolve_serving_lane_decision
+    from .api.utils import (
+        checkpoint_serves_text_without_vision,
+        resolve_serving_lane_decision,
+    )
 
     if args is not None:
         # The serve guard owns the cold-cache metadata prefetch. Run that same
@@ -4686,7 +4721,53 @@ def _alias_text_degrades_without_vision(profile, *, args=None) -> bool:
             getattr(args, "spec_decode", "none") if args is not None else "none"
         ),
     )
-    return decision.auto_text_fallback
+    if decision.auto_text_fallback:
+        return True
+    if decision.is_mllm:
+        # Warm evidence still routes the vision lane while the runtime is
+        # ABSENT — only possible when the backbone is NOT text-lane loadable
+        # (the resolver owns that contract). The guard's own error is the
+        # message; never print a degrade warning against a lane that runs.
+        return False
+    # No positive lane evidence yet: a fresh install probes "text_checkpoint"
+    # on an empty cache. Decide from the SAME profile + config chain the boot
+    # guard uses — if the checkpoint would land on the vision lane once its
+    # weights arrive and the backbone is text-lane loadable, the serve
+    # degrades to text-only instead of failing.
+    return _alias_needs_vision_runtime_without_weights(
+        model_name,
+        force_text=bool(args is not None and getattr(args, "no_mllm", False)),
+        requested_spec_decode=(
+            getattr(args, "spec_decode", "none") if args is not None else "none"
+        ),
+    ) and checkpoint_serves_text_without_vision(model_name)
+
+
+def _direct_ref_text_degrades_without_vision(args) -> bool:
+    """Degrade verdict for a ``serve`` ref with no catalog alias profile.
+
+    Without a curated profile there is no pre-weights fallback chain: the
+    warning fires only when the (cache-only) resolver itself routes
+    ``args.model`` to the text lane with the absent-runtime degrade — the
+    same decision the boot guard and the engine act on.
+    """
+    requested_spec_decode = getattr(args, "spec_decode", "none") or "none"
+    if (
+        getattr(args, "mllm", False)
+        or getattr(args, "no_mllm", False)
+        or requested_spec_decode not in (None, "none")
+        or getattr(args, "enable_mtp", False)
+        or getattr(args, "force_spec_decode", False)
+    ):
+        return False
+    from .models.mllm import VisionRuntimeStatus, vision_runtime_status
+
+    if vision_runtime_status()[0] is not VisionRuntimeStatus.ABSENT:
+        return False
+    from .api.utils import resolve_serving_lane_decision
+
+    decision = resolve_serving_lane_decision(args.model)
+    return decision.auto_text_fallback and decision.reason == "vision_runtime_absent"
 
 
 def _warn_vision_text_only_degrade(profile, *, args=None) -> bool:
@@ -4699,8 +4780,8 @@ def _warn_vision_text_only_degrade(profile, *, args=None) -> bool:
         return False
     print(
         "warning: vision runtime absent; serving this text-capable checkpoint "
-        "text-only. Enable image input with: "
-        + optional_extra_repair_command("vision"),
+        "text-only (image and video input unavailable). Enable the vision "
+        "runtime with: " + optional_extra_repair_command("vision"),
         file=sys.stderr,
     )
     return True
@@ -5365,7 +5446,37 @@ def serve_command(args):
     #     ``resolve_serving_lane``, matching the engine-side semantics.
     # An uncached checkpoint (config not yet materialized) probes "not
     # hybrid" and keeps the SAFE ``[vision]``-required default; the guard's
-    # message points at ``--no-mllm`` for a text-capable backbone.
+    # message points at ``--no-mllm`` for a text-capable backbone. For the
+    # degrade probes below (CACHE-ONLY per the resolver's offline contract)
+    # the boot guard materializes config.json ONCE, under the shared Hub
+    # deadline, so a fresh install classifies instead of failing closed —
+    # and repeated probes never refetch. Skipped when a degrade could not
+    # be consulted anyway (explicit --mllm / --no-mllm / spec-decode).
+    from .api.utils import _prefetch_config_for_degrade_probe
+    from .models.mllm import VisionRuntimeStatus, vision_runtime_status
+
+    requested_spec_decode = getattr(args, "spec_decode", "none") or "none"
+    if (
+        vision_runtime_status()[0] is VisionRuntimeStatus.ABSENT
+        and not getattr(args, "mllm", False)
+        and not getattr(args, "no_mllm", False)
+        and requested_spec_decode in (None, "none")
+        and not getattr(args, "enable_mtp", False)
+        and not getattr(args, "force_spec_decode", False)
+    ):
+        # A catalog alias probes its profile's hf_path; a direct Hugging Face
+        # repo id (no alias profile) probes ``args.model`` itself — the SAME
+        # ref the guard's resolver reads below. Local paths and Hub offline
+        # mode are no-ops inside the helper.
+        _prefetch_config_for_degrade_probe(
+            (
+                _serve_profile.hf_path
+                or getattr(args, "_original_alias", None)
+                or args.model
+            )
+            if _serve_profile is not None
+            else args.model
+        )
     _warn_vision_text_only_degrade(_serve_profile, args=args)
     if _serve_will_run_on_mllm_lane(args):
         from .models.mllm import require_mlx_vlm_or_exit
