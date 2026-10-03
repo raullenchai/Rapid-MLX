@@ -384,28 +384,17 @@ _PATCHED_RUNNER_TESTS = (
 )
 
 
-def test_opencode_e2e_child_cannot_escape_the_throwaway_home_via_xdg(
-    tmp_path, monkeypatch
-):
+def _run_harness(profile_name, isolated_home, model_id=MODEL, *, setup_fails=False):
+    """Drive AgentTestRunner.run() with every API/e2e probe mocked out.
+
+    Returns the ``_test_e2e_chat`` mock so a test can read the argv template
+    and child environment the real client would have been launched with.
+    """
     from contextlib import ExitStack
 
-    real = tmp_path / "operator"
-    for key, rel in (
-        ("XDG_CONFIG_HOME", ".config"),
-        ("XDG_DATA_HOME", ".local/share"),
-        ("XDG_STATE_HOME", ".local/state"),
-        ("XDG_CACHE_HOME", ".cache"),
-    ):
-        monkeypatch.setenv(key, str(real / rel))
-    monkeypatch.setenv("OPENCODE_CONFIG", str(real / "custom-opencode.json"))
-    monkeypatch.setenv("OPENCODE_CONFIG_DIR", str(real / "opencode-dir"))
-
-    isolated_home = tmp_path / "isolated-opencode-home"
-    isolated_home.mkdir()
     temporary_home = SimpleNamespace(name=str(isolated_home), cleanup=lambda: None)
-    profile = get_profile("opencode")
+    profile = get_profile(profile_name)
     assert profile is not None
-
     with ExitStack() as stack:
         stack.enter_context(
             patch(
@@ -413,17 +402,19 @@ def test_opencode_e2e_child_cannot_escape_the_throwaway_home_via_xdg(
                 return_value=temporary_home,
             )
         )
-        for name, value in (
-            ("AgentTestRunner._server_available", True),
-            ("AgentTestRunner._agent_binary_available", True),
-            ("fetch_context_window", 65536),
+        for target, value in (
+            ("rapid_mlx.agents.testing.AgentTestRunner._server_available", True),
+            ("rapid_mlx.agents.testing.AgentTestRunner._agent_binary_available", True),
+            ("rapid_mlx.agents.adapter.fetch_context_window", 65536),
         ):
-            target = (
-                "rapid_mlx.agents.adapter." + name
-                if name == "fetch_context_window"
-                else "rapid_mlx.agents.testing." + name
-            )
             stack.enter_context(patch(target, return_value=value))
+        if setup_fails:
+            stack.enter_context(
+                patch(
+                    "rapid_mlx.agents.adapter.setup_agent_config",
+                    side_effect=RuntimeError("boom"),
+                )
+            )
         for name in _PATCHED_RUNNER_TESTS:
             stack.enter_context(patch("rapid_mlx.agents.testing." + name))
         plain_chat = stack.enter_context(
@@ -434,9 +425,35 @@ def test_opencode_e2e_child_cannot_escape_the_throwaway_home_via_xdg(
 
         plain_chat.return_value = TestResult("plain_chat", TestStatus.PASS)
         e2e_chat.return_value = TestResult("e2e_chat", TestStatus.PASS)
-        AgentTestRunner(profile, base_url=BASE_URL, model_id=MODEL).run()
+        AgentTestRunner(profile, base_url=BASE_URL, model_id=model_id).run()
+    return e2e_chat
 
-    env = e2e_chat.call_args.kwargs["env_overrides"]
+
+@pytest.fixture
+def operator_env(tmp_path, monkeypatch):
+    """A realistic operator shell: XDG dirs and OpenCode overrides exported."""
+    real = tmp_path / "operator"
+    for key, rel in (
+        ("XDG_CONFIG_HOME", ".config"),
+        ("XDG_DATA_HOME", ".local/share"),
+        ("XDG_STATE_HOME", ".local/state"),
+        ("XDG_CACHE_HOME", ".cache"),
+    ):
+        monkeypatch.setenv(key, str(real / rel))
+    monkeypatch.setenv("OPENCODE_CONFIG", str(real / "custom-opencode.json"))
+    monkeypatch.setenv("OPENCODE_CONFIG_DIR", str(real / "opencode-dir"))
+    monkeypatch.setenv(
+        "OPENCODE_CONFIG_CONTENT", '{"model": "anthropic/claude-remote"}'
+    )
+    return real
+
+
+def test_opencode_e2e_child_cannot_escape_the_throwaway_home(tmp_path, operator_env):
+    isolated_home = tmp_path / "isolated-opencode-home"
+    isolated_home.mkdir()
+
+    env = _run_harness("opencode", isolated_home).call_args.kwargs["env_overrides"]
+
     assert env["HOME"] == str(isolated_home)
     assert env["XDG_CONFIG_HOME"] == str(isolated_home / ".config")
     assert env["XDG_DATA_HOME"] == str(isolated_home / ".local/share")
@@ -445,10 +462,69 @@ def test_opencode_e2e_child_cannot_escape_the_throwaway_home_via_xdg(
     generated = isolated_home / ".config" / "opencode" / "opencode.json"
     assert env["OPENCODE_CONFIG"] == str(generated)
     assert env["OPENCODE_CONFIG_DIR"] == str(generated.parent)
-    # The child reads exactly the config this sweep generated...
-    assert json.loads(generated.read_text())["provider"]["rapid-mlx"]
-    # ...and nothing was written to the operator's real XDG tree.
-    assert not real.exists()
+    # The inline config outranks the file config: it carries ours, not the
+    # operator's remote model.
+    assert env["OPENCODE_CONFIG_CONTENT"] == generated.read_text()
+    assert json.loads(env["OPENCODE_CONFIG_CONTENT"])["provider"]["rapid-mlx"]
+    assert env["OPENCODE_DISABLE_PROJECT_CONFIG"] == "1"
+    # Nothing was written to the operator's real XDG tree.
+    assert not operator_env.exists()
+
+
+def test_opencode_inline_config_is_neutralised_when_setup_refresh_fails(
+    tmp_path, operator_env
+):
+    isolated_home = tmp_path / "isolated-opencode-home"
+    isolated_home.mkdir()
+
+    env = _run_harness("opencode", isolated_home, setup_fails=True).call_args.kwargs[
+        "env_overrides"
+    ]
+
+    assert env["OPENCODE_CONFIG_CONTENT"] == "{}"
+
+
+def test_pi_e2e_pins_the_local_provider_and_model(tmp_path, monkeypatch):
+    # An operator with a remote provider authenticated: without the pin pi
+    # may pick it and send the test prompt to a paid account.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-operator-real")
+    isolated_home = tmp_path / "isolated-pi-home"
+    isolated_home.mkdir()
+
+    e2e_chat = _run_harness("pi", isolated_home, model_id="odd model'id")
+
+    query_cmd = e2e_chat.call_args.args[1]
+    import shlex
+
+    argv = shlex.split(query_cmd)
+    assert argv[argv.index("--provider") + 1] == "rapid-mlx"
+    assert argv[argv.index("--model") + 1] == "odd model'id"
+    assert "{model_id}" not in query_cmd
+    env = e2e_chat.call_args.kwargs["env_overrides"]
+    assert env["PI_TELEMETRY"] == "0"
+    assert env["PI_OFFLINE"] == "1"
+
+
+def test_pi_setup_writes_through_a_symlinked_models_json(pi_dir, tmp_path):
+    dotfiles = tmp_path / "dotfiles"
+    dotfiles.mkdir()
+    real_target = dotfiles / "pi-models.json"
+    original = json.dumps(PI_EXISTING)
+    real_target.write_text(original)
+    pi_dir.mkdir()
+    link = pi_dir / "models.json"
+    link.symlink_to(real_target)
+
+    plan = build_setup_plan("pi", BASE_URL, MODEL, context_length=65536)
+    apply_setup_plan(plan)
+
+    # The link survives and still points at the managed file, which now
+    # carries the merged config; the backup sits beside the real target.
+    assert link.is_symlink()
+    assert link.resolve() == real_target.resolve()
+    _assert_pi_merge_kept_user_entries(json.loads(real_target.read_text()))
+    (backup,) = dotfiles.glob("pi-models.json.bak.*")
+    assert backup.read_text() == original
 
 
 def test_merge_yaml_null_document_and_invalid_template_edges():

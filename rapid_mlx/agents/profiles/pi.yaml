@@ -59,9 +59,12 @@ streaming:
 testing:
   binary: pi
   # --print = one-shot non-interactive; --no-session = don't persist a
-  # session. With only the rapid-mlx provider authenticated, pi selects it
-  # without --provider/--model flags (verified).
-  query_cmd: "pi --print --no-session '{query}'"
+  # session. --provider/--model pin the local route: the test child inherits
+  # the operator's environment, and with any other provider authenticated
+  # (e.g. an exported ANTHROPIC_API_KEY) pi may otherwise pick it and send the
+  # test prompt to a paid remote account. {model_id} is filled by the test
+  # runner (shell-quoted).
+  query_cmd: "pi --print --no-session --provider rapid-mlx --model {model_id} '{query}'"
   query_timeout: 120
   install_cmd: "npm install -g @earendil-works/pi-coding-agent"
 

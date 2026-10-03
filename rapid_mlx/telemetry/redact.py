@@ -217,9 +217,11 @@ _CALLER_AGENT_MARKERS: tuple[tuple[str, str], ...] = (
 # real leading product token also beats an SDK marker later in the UA.
 _CALLER_AGENT_PREFIXES: tuple[tuple[str, str], ...] = (
     ("pi (", "pi"),
-    # Codex's originator token: codex_exec/… (exec mode), codex_cli_rs/…
-    # (interactive TUI) and its other codex_<surface>/… originators.
-    ("codex_", "codex"),
+    # codex_exec/… (exec mode, captured) and codex_cli_rs/… (interactive
+    # TUI). Enumerated: a bare ``codex_`` prefix would also claim unrelated
+    # ``codex_proxy/…``-style products.
+    ("codex_exec/", "codex"),
+    ("codex_cli_rs/", "codex"),
     ("opencode/", "opencode"),
     ("qwencode/", "qwen-code"),
     ("deepseek-harness/", "deepseek-harness"),

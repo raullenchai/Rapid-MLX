@@ -355,8 +355,8 @@ def test_normalize_caller_agent_buckets_known(ua, expected):
             "codex_exec/0.160.0 (Mac OS 26.5.1; arm64) unknown (codex_exec; 0.160.0)",
             "codex",
         ),
-        # The interactive TUI is expected to send codex_cli_rs/…; the leading
-        # codex_ prefix covers both product tokens.
+        # The interactive TUI is expected to send codex_cli_rs/…; both
+        # product tokens are enumerated prefix rules.
         ("codex_cli_rs/0.160.0 (Mac OS 26.5.1; arm64)", "codex"),
         (
             "opencode/1.18.34 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14",
@@ -400,6 +400,8 @@ def test_normalize_caller_agent_leaves_unattributable_uas_as_other(ua):
         "proxy (+https://github.com/anomalyco/opencode/)",
         "notqwencode/1",
         "my_codex_exec_wrapper/1",
+        "codex_proxy/1.0",
+        "codex_unrelated-product/2",
         "relay/1.0 (+https://github.com/deepseek-ai/deepseek-harness)",
     ],
 )

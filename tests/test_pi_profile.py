@@ -122,7 +122,9 @@ def test_pi_profile_has_runnable_headless_query():
     profile = get_profile("pi")
     assert profile is not None
     assert profile.testing.binary == "pi"
-    assert profile.testing.query_cmd == "pi --print --no-session '{query}'"
+    assert profile.testing.query_cmd == (
+        "pi --print --no-session --provider rapid-mlx --model {model_id} '{query}'"
+    )
     assert (
         profile.testing.install_cmd == "npm install -g @earendil-works/pi-coding-agent"
     )

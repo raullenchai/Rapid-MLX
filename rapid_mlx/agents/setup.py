@@ -176,10 +176,14 @@ def _pi_models_path() -> Path:
 
     Resolved through the same helper the generic writer uses, so the
     relocation contract lives in one place (the profile's ``home_env``).
+    The path is fully resolved: a ``models.json`` symlinked into a dotfiles
+    repo is read, backed up and atomically replaced at its real target, so
+    the rename never swaps the link itself for a disconnected file (the
+    generic writer resolves symlinks the same way).
     """
     from rapid_mlx.agents.adapter import _resolve_config_path
 
-    return _resolve_config_path(_pi_profile().get_config_for_version(None))
+    return _resolve_config_path(_pi_profile().get_config_for_version(None)).resolve()
 
 
 def _atomic_write_secure_text(path: Path, text: str) -> None:
