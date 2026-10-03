@@ -7292,14 +7292,13 @@ def serve_command(args):
     _hard_exit_after_serve()
 
 
-def _print_bench_submit_deprecation(args) -> None:
-    """Point ``bench --submit`` users at the community benchmark.
+def _refuse_bench_submit(args) -> NoReturn:
+    """``bench --submit`` no longer uploads anything.
 
-    The legacy board (``bench --submit``, ``/api/benchmarks``) is being folded
-    into the community leaderboard, which only ranks ``benchmark run`` +
-    ``benchmark share`` results. The legacy upload keeps working for a grace
-    period (its rows land in the leaderboard's archive section), so this is a
-    notice on stderr, never a refusal, and stdout stays machine-readable.
+    The legacy board (``/api/benchmarks``) is closed; its old runs are folded
+    into the community leaderboard, which only takes ``benchmark run`` +
+    ``benchmark share`` results. Like other unsupported flag uses, this is a
+    usage error (exit 2) on stderr, before any benchmark work or network call.
     """
     # main() rewrites a catalog alias into its HF path and keeps what the
     # user typed in _original_alias; `benchmark run` takes the alias.
@@ -7309,14 +7308,15 @@ def _print_bench_submit_deprecation(args) -> None:
         or "<alias>"
     )
     print(
-        "Note: `rapid-mlx bench --submit` is deprecated. Its results go to the "
-        "leaderboard's archive (old protocol), not the ranked community board.\n"
-        "Use the community benchmark instead:\n"
+        "`rapid-mlx bench --submit` no longer submits results; nothing was run "
+        "or sent.\n"
+        "Share a benchmark with the community benchmark instead:\n"
         f"  rapid-mlx benchmark run {model}\n"
         "  rapid-mlx benchmark share <run-id>\n"
-        "See https://rapidmlx.com/leaderboard",
+        "Results appear on https://rapidmlx.com/leaderboard",
         file=sys.stderr,
     )
+    raise SystemExit(2)
 
 
 def _run_tier_submit_flow(args) -> int:
@@ -7920,10 +7920,10 @@ def bench_command(args):
     import asyncio
     import time
 
-    # First thing, before the compat shim and the staleness check, so the
-    # migration path is the first line a --submit user sees.
+    # First thing, before the compat shim, the staleness check and any
+    # benchmark or network work.
     if getattr(args, "submit", False):
-        _print_bench_submit_deprecation(args)
+        _refuse_bench_submit(args)
 
     # Install the MLX hardware-compat shim BEFORE `from mlx_lm import load`.
     # `mlx_lm/__init__.py` re-exports from `mlx_lm.generate`, which captures
@@ -15189,17 +15189,9 @@ Examples:
         "--submit",
         action="store_true",
         help=(
-            "Deprecated: use `rapid-mlx benchmark run` + `rapid-mlx benchmark "
-            "share` instead. "
-            "Run the standardized B=1 community benchmark and submit it to "
-            "the community board at rapidmlx.com. Asks for consent first; "
-            "declining writes and sends nothing. After consent a local copy "
-            "is saved before the upload where the filesystem allows it, so "
-            "a failed send is usually recoverable; if the copy cannot be "
-            "written you are warned before anything is sent. "
-            "Locks every comparability knob; "
-            "ignores the freeform --num-prompts / --max-tokens / "
-            "--max-num-seqs args."
+            "Removed: exits with an error pointing to `rapid-mlx benchmark "
+            "run` + `rapid-mlx benchmark share`, which replace it. Nothing is "
+            "run or uploaded."
         ),
     )
     bench_parser.add_argument(
