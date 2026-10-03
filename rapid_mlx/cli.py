@@ -13139,6 +13139,22 @@ def agents_command(args):
             print()
             return
 
+        # Generic file writers do not have the first-class plan's post-write
+        # verifier. Refuse before mutation when the endpoint is unavailable so
+        # a failed setup cannot leave a new `model = default` config behind.
+        # --no-check remains the explicit offline-config escape hatch, and a
+        # dry run remains side-effect-free preview even without a live server.
+        if not args.dry_run and not args.no_check:
+            from rapid_mlx.agents.setup import verify_server
+
+            try:
+                advertised = verify_server(base_url, model_id, agent=profile.name)
+            except RuntimeError as exc:
+                print(f"\n  {profile.display_name} setup failed: {exc}\n")
+                sys.exit(1)
+            if model_id == "default":
+                model_id = advertised
+
         summary = setup_agent_config(
             profile,
             base_url,

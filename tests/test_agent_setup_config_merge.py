@@ -873,6 +873,22 @@ class TestTomlMerge:
 
 
 class TestIdempotentSetupSummary:
+    @staticmethod
+    def _generic_setup_args(**overrides):
+        values = dict(
+            agent_name="opencode",
+            base_url="http://localhost:8000/v1",
+            test=False,
+            setup=True,
+            model="my-model",
+            agent_version=None,
+            dry_run=False,
+            yes=True,
+            no_check=False,
+        )
+        values.update(overrides)
+        return SimpleNamespace(**values)
+
     def test_repeated_json_setup_reports_no_file_changes(self, tmp_path):
         profile = AgentProfile(
             name="opencode",
@@ -906,20 +922,57 @@ class TestIdempotentSetupSummary:
             ),
         )
 
-        cli.agents_command(
-            SimpleNamespace(
-                agent_name="opencode",
-                base_url="http://localhost:8000/v1",
-                test=False,
-                setup=True,
-                model="my-model",
-                agent_version=None,
-                dry_run=False,
-                yes=True,
-                no_check=True,
-            )
-        )
+        cli.agents_command(self._generic_setup_args(no_check=True))
 
         output = capsys.readouterr().out
         assert "OpenCode is already configured." in output
         assert "OpenCode configured!" not in output
+
+    def test_cli_refuses_generic_write_when_server_is_unavailable(
+        self, monkeypatch, capsys
+    ):
+        from rapid_mlx import cli
+        from rapid_mlx.agents import adapter, setup
+
+        profile = AgentProfile(name="opencode", display_name="OpenCode")
+        monkeypatch.setattr("rapid_mlx.agents.get_profile", lambda _name: profile)
+        monkeypatch.setattr(
+            setup,
+            "verify_server",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                RuntimeError("server is not ready")
+            ),
+        )
+        monkeypatch.setattr(
+            adapter,
+            "setup_agent_config",
+            lambda *_args, **_kwargs: pytest.fail("must not write config"),
+        )
+
+        with pytest.raises(SystemExit) as raised:
+            cli.agents_command(self._generic_setup_args())
+
+        assert raised.value.code == 1
+        assert "setup failed: server is not ready" in capsys.readouterr().out
+
+    def test_cli_no_check_keeps_generic_offline_setup_escape_hatch(self, monkeypatch):
+        from rapid_mlx import cli
+        from rapid_mlx.agents import adapter, setup
+
+        profile = AgentProfile(name="opencode", display_name="OpenCode")
+        monkeypatch.setattr("rapid_mlx.agents.get_profile", lambda _name: profile)
+        monkeypatch.setattr(
+            setup,
+            "verify_server",
+            lambda *_args, **_kwargs: pytest.fail("--no-check must skip verification"),
+        )
+        calls = []
+        monkeypatch.setattr(
+            adapter,
+            "setup_agent_config",
+            lambda *_args, **_kwargs: calls.append(True) or "Wrote config",
+        )
+
+        cli.agents_command(self._generic_setup_args(no_check=True))
+
+        assert calls == [True]
