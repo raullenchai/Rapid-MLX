@@ -1377,7 +1377,7 @@ def _install_continuous_mtp_router(
         if list(getattr(gb, "uids", ()) or ()) != [owner]:
             return
         processors = getattr(gb, "logits_processors", None)
-        probe = (
+        probe: tuple[Any, ...] = (
             owner,
             [[0]],
             1,
@@ -6599,7 +6599,7 @@ class Scheduler:
     def _mtp_draft_kv_bytes_per_token(self) -> int:
         cached = getattr(self, "_mtp_draft_kv_per_token_cache", None)
         if cached is not None:
-            return cached
+            return int(cached)
         total = 0
         model = getattr(self, "model", None)
         for owner in (getattr(model, "language_model", None), model):
