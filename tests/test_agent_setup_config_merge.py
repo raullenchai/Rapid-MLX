@@ -234,6 +234,32 @@ class TestMergeOnWrite:
         assert result["tools"] == ["terminal", "file", "image", "web"]
         assert "my_custom_tool" not in result["tools"]
 
+    def test_yaml_patch_layer_list_merges_by_id(self, tmp_path):
+        """dsh >= 0.2 patch layers are a top-level LIST of {id, config}.
+
+        Template entries replace same-id entries; layers the user added
+        survive in place. A list beside a mapping is a conflict, not a
+        merge (issue #4040).
+        """
+        existing = tmp_path / "cordis.patch.yml"
+        existing.write_text(
+            "- id: my-own-layer\n"
+            "  config: []\n"
+            "- id: llm-pi-ai\n"
+            "  config: {stale: true}\n"
+        )
+        template = "- id: llm-pi-ai\n  config: {fresh: true}\n"
+        merged = yaml.safe_load(_merge_file_config(existing, template, "yaml"))
+        assert merged == [
+            {"id": "my-own-layer", "config": []},
+            {"id": "llm-pi-ai", "config": {"fresh": True}},
+        ]
+
+        # Shape conflicts must fail loudly, never silently overwrite.
+        existing.write_text("providers: {}\n")
+        with pytest.raises(_MergeParseError, match="disagree on shape|not a YAML"):
+            _merge_file_config(existing, template, "yaml")
+
     def test_yaml_merge_preserves_user_keys(self, tmp_path):
         """Existing YAML keys not in the template are preserved."""
         existing = tmp_path / "config.yaml"

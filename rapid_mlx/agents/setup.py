@@ -110,6 +110,47 @@ def _load_yaml_mapping(
     return value
 
 
+def _load_patch_layers(
+    path: Path, agent: str | None = None, *, emit_telemetry: bool = True
+) -> list[Any]:
+    """Load a Cordis patch-layer file — a top-level YAML list of ``{id, config}``.
+
+    dsh's own parser rejects anything else ("must be a top-level YAML array of
+    loader patch entries"), so a stray mapping is reported as invalid config
+    rather than silently swallowed into an empty merge.
+    """
+    import yaml
+
+    if not path.exists() or not path.read_text(encoding="utf-8").strip():
+        return []
+    try:
+        value = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError:
+        if emit_telemetry:
+            track_agent_configure_failed("config_invalid", agent)
+        raise
+    if not isinstance(value, list):
+        if emit_telemetry:
+            track_agent_configure_failed("config_invalid", agent)
+        raise ValueError(f"{path} must contain a YAML list of patch layers")
+    return value
+
+
+def _merge_patch_layers(existing: list[Any], incoming: list[Any]) -> list[Any]:
+    """Merge Cordis patch layers by entry ``id``.
+
+    Our layers replace same-id entries; anything else the user keeps in the
+    file survives untouched, in place, ahead of the (re)written layers.
+    """
+    incoming_ids = {layer.get("id") for layer in incoming if isinstance(layer, dict)}
+    kept = [
+        layer
+        for layer in existing
+        if not (isinstance(layer, dict) and layer.get("id") in incoming_ids)
+    ]
+    return [*kept, *incoming]
+
+
 def _merge_dict(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
     merged = dict(base)
     for key, value in patch.items():
@@ -120,10 +161,21 @@ def _merge_dict(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
-def _dsh_settings_path() -> Path:
+def _dsh_patch_path() -> Path:
+    """dsh's home-level Cordis patch layer: ``$DSH_HOME/cordis.patch.yml``.
+
+    dsh 0.2 composes each profile boot from patch layers: bundle patches, the
+    per-profile ``cordis.patch.yml``, the home-level
+    ``$DSH_HOME/cordis.patch.yml`` (machine-local preferences that apply to
+    every profile, verified in @deepseek-ai/dsh-app-boot's
+    ``readProfilePatches``), then ``--patch`` overlays. Writing there means a
+    plain ``dsh --profile headless '<task>'`` picks the provider up with no
+    extra flags. dsh 0.1.x instead read ``$DSH_HOME/settings.yaml``, which
+    0.2.x ignores — that move is exactly what issue #4040 tracks.
+    """
     configured = os.environ.get("DSH_HOME", "").strip()
     root = Path(configured).expanduser() if configured else Path.home() / ".dsh"
-    return root / "settings.yaml"
+    return root / "cordis.patch.yml"
 
 
 def _atomic_write_secure_text(path: Path, text: str) -> None:
@@ -173,8 +225,8 @@ def build_setup_plan(
             "continue", "Continue.dev", path, before, after, base_url, model
         )
     if agent in {"deepseek-harness", "dsh"}:
-        path = _dsh_settings_path()
-        before = _load_yaml_mapping(
+        path = _dsh_patch_path()
+        before = _load_patch_layers(
             path, "deepseek-harness", emit_telemetry=emit_telemetry
         )
         credentials_path = path.parent / ".credentials.yaml"
@@ -215,23 +267,34 @@ def build_setup_plan(
                 else False
             ),
         }
-        patch = {
-            "llm-pi-ai": {
-                "providers": {
-                    "rapid-mlx": {
-                        "displayName": "Rapid-MLX Local",
-                        "apiKeyEnv": "RAPID_MLX_API_KEY",
-                        "api": "openai-completions",
-                        "baseURL": base_url.rstrip("/"),
-                        "defaultContextWindow": context,
-                        "defaultMaxTokens": 8192,
-                        "compat": {"supportsReasoningEffort": reasoning_capable},
-                        "models": [model_entry],
+        # Cordis patch layers, in dsh's composition order. The verified dsh
+        # 0.2 contract (issues #4040, harness-lab 2026-10-02): the same
+        # provider block the old settings.yaml carried, expressed as a
+        # top-level patch-layer list — a mapping there fails dsh's parser
+        # ("must be a top-level YAML array of loader patch entries").
+        patch: list[dict[str, Any]] = [
+            {
+                "id": "llm-pi-ai",
+                "config": {
+                    "providers": {
+                        "rapid-mlx": {
+                            "displayName": "Rapid-MLX Local",
+                            "apiKeyEnv": "RAPID_MLX_API_KEY",
+                            "api": "openai-completions",
+                            "baseURL": base_url.rstrip("/"),
+                            "defaultContextWindow": context,
+                            "defaultMaxTokens": 8192,
+                            "compat": {"supportsReasoningEffort": reasoning_capable},
+                            "models": [model_entry],
+                        }
                     }
-                }
+                },
             },
-            "agent-default-model": {"provider": "rapid-mlx", "model": model},
-        }
+            {
+                "id": "agent-default-model",
+                "config": {"provider": "rapid-mlx", "model": model},
+            },
+        ]
         credentials_after = dict(credentials_before)
         credentials_after.setdefault("RAPID_MLX_API_KEY", "not-needed")
         return SetupPlan(
@@ -239,7 +302,7 @@ def build_setup_plan(
             "DeepSeek Harness",
             path,
             before,
-            _merge_dict(before, patch),
+            _merge_patch_layers(before, patch),
             base_url,
             model,
             "yaml",
@@ -257,11 +320,14 @@ def build_setup_plan(
 def apply_setup_plan(plan: SetupPlan) -> Path:
     """Back up the existing config and atomically apply an unchanged plan."""
     # Re-read to prevent overwriting an edit made between preview and consent.
-    current = (
-        _load_yaml_mapping(plan.path, plan.agent)
-        if plan.format == "yaml"
-        else launch_common.load_json_lenient(plan.path)
-    )
+    # The shape check on ``after`` picks the loader: a patch-layer plan (dsh)
+    # re-reads a top-level list, everything else a mapping / JSON object.
+    if plan.format == "yaml" and isinstance(plan.after, list):
+        current: Any = _load_patch_layers(plan.path, plan.agent)
+    elif plan.format == "yaml":
+        current = _load_yaml_mapping(plan.path, plan.agent)
+    else:
+        current = launch_common.load_json_lenient(plan.path)
     if current != plan.before:
         track_agent_configure_failed("config_changed", plan.agent)
         raise RuntimeError(f"{plan.path} changed after preview; re-run --setup")

@@ -84,6 +84,7 @@ config, plus an honest test-backed [support matrix](../agents/matrix.md):
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | CLI | `rapid-mlx agents claude-code --setup` | Compatible | Safe diff/confirm/backup flow; uses Anthropic `/v1/messages` |
 | [Cursor](https://cursor.com) | IDE | `RAPID_MLX_API_KEY=your-secret rapid-mlx launch cursor --server-url https://your-public-host` | Not compatible locally | BYOK requests pass through Cursor's servers; public HTTPS and server auth are required |
 | [Continue.dev](https://continue.dev) | IDE Extension | `rapid-mlx agents continue --setup` | Compatible | Safe diff/confirm/backup flow; VS Code / JetBrains |
+| [pi](https://github.com/earendil-works/pi) | CLI | `rapid-mlx agents pi --setup` | Verified | `~/.pi/agent/models.json`; `pi --print --no-session '<task>'` headless |
 | [pi](https://shittycodingagent.ai) | TUI | `OPENAI_BASE_URL=http://localhost:8000/v1` | Community-reported | Works with Qwen3.5/Qwen3.6 models |
 
 Rapid-MLX rejects explicit local/private Cursor addresses, but it does not use
@@ -219,6 +220,7 @@ Currently supported profiles (in `rapid_mlx/agents/profiles/`):
 | `kilo-code` | Kilo Code | JSON config | Yes (`test_agents_matrix.py`) |
 | `langchain` | LangChain | Env vars | Yes (`test_langchain.py`) |
 | `opencode` | OpenCode | JSON config | Yes (`test_agents_matrix.py`) |
+| `pi` | Pi Coding Agent | JSON config | Unit tests (`test_pi_profile.py`) |
 | `openhands` | OpenHands | Env vars | Yes (`test_openhands.sh`) |
 | `pydanticai` | PydanticAI | Env vars | Yes (`test_pydantic_ai_full.py`) |
 | `qwen-code` | Qwen Code | JSON config | Yes (`test_agents_matrix.py`) |

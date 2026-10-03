@@ -462,12 +462,32 @@ def _merge_yaml(
         raise _MergeParseError(f"invalid YAML: {exc}") from exc
     if existing is None:
         return rendered
-    if not isinstance(existing, dict):
-        raise _MergeParseError("existing config is not a YAML mapping")
     try:
         template = yaml.safe_load(rendered)
     except Exception as exc:
         raise _MergeParseError(f"rendered template is not valid YAML: {exc}") from exc
+    if not isinstance(existing, dict):
+        if isinstance(existing, list):
+            # Cordis patch layers (dsh >= 0.2) are a top-level LIST of
+            # ``{id, config}`` entries, not a mapping. Merge by entry id:
+            # template entries replace same-id entries, everything else
+            # survives in place. A list existing beside a mapping template
+            # (or vice versa) is a real conflict, not a merge.
+            if not isinstance(template, list):
+                raise _MergeParseError(
+                    "existing config is a patch-layer list but the rendered "
+                    "template is a YAML mapping"
+                )
+            template_ids = {
+                layer.get("id") for layer in template if isinstance(layer, dict)
+            }
+            merged_layers = [
+                layer
+                for layer in existing
+                if not (isinstance(layer, dict) and layer.get("id") in template_ids)
+            ] + list(template)
+            return yaml.dump(merged_layers, default_flow_style=False, sort_keys=False)
+        raise _MergeParseError("existing config is not a YAML mapping")
     if not isinstance(template, dict):
         raise _MergeParseError("rendered template is not a YAML mapping")
     merged = _deep_merge(existing, template, _supported_toolsets=supported_toolsets)
