@@ -36,14 +36,13 @@ config:
     [model_providers.rapid-mlx]
     name = "Rapid-MLX (local)"
     base_url = "{base_url}"
+    {codex_auth_line}
     # Auth: rapid-mlx requires a bearer whenever it was started with
     # `--api-key` or with `RAPID_MLX_API_KEY` set. That is ALWAYS true of
     # the Rapid-MLX desktop app, which mints a fresh key per launch — an
-    # unauthenticated request there gets 401, not a response. In that
-    # case add:
-    #     env_key = "RAPID_MLX_API_KEY"
-    # and `export RAPID_MLX_API_KEY=<your-key>` in the shell you run
-    # Codex from.
+    # unauthenticated request there gets 401, not a response. Setup adds
+    # `env_key` when RAPID_MLX_API_KEY is exported. Keep it exported in
+    # the shell you run Codex from.
     #
     # Leave `env_key` out ONLY for a bare `rapid-mlx serve` with no key
     # set. Codex hard-errors — "Missing environment variable: `NAME`" —

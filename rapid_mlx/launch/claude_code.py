@@ -97,6 +97,8 @@ def write_or_patch_config(
     model: str,
     api_key: str = "sk-noop",
     config_path: Path | None = None,
+    *,
+    context_length: int | None = None,
 ) -> Path:
     """Patch ``~/.claude/settings.json`` to route at the local
     rapid-mlx Anthropic-compatible endpoint.
@@ -128,7 +130,9 @@ def write_or_patch_config(
     existing = _common.load_json_lenient(path)
     _common.backup_existing(path)
 
-    existing = patched_config(existing, server_url, model, api_key)
+    existing = patched_config(
+        existing, server_url, model, api_key, context_length=context_length
+    )
 
     _common.atomic_write_json(path, existing)
     return path

@@ -53,8 +53,34 @@ class SetupPlan:
         )
 
     def diff(self) -> str:
-        before = _serialize(self.before, self.format)
-        after = _serialize(self.after, self.format)
+        before_data = self.before
+        after_data = self.after
+        secret_changed = False
+        if (
+            self.agent == "claude-code"
+            and isinstance(self.before, dict)
+            and isinstance(self.after, dict)
+        ):
+            # A keyed local server needs the real bearer in Claude's settings,
+            # but the setup preview must never print it or an existing token.
+            def hidden(data: dict[str, Any]) -> dict[str, Any]:
+                result = dict(data)
+                env = dict(result.get("env", {}))
+                for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
+                    if name in env and env[name]:
+                        env[name] = "<redacted>"
+                result["env"] = env
+                return result
+
+            before_data = hidden(self.before)
+            after_data = hidden(self.after)
+            secret_changed = any(
+                self.before.get("env", {}).get(name)
+                != self.after.get("env", {}).get(name)
+                for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
+            )
+        before = _serialize(before_data, self.format)
+        after = _serialize(after_data, self.format)
         primary = "\n".join(
             difflib.unified_diff(
                 before.splitlines(),
@@ -64,6 +90,15 @@ class SetupPlan:
                 lineterm="",
             )
         )
+        if secret_changed:
+            primary = "\n".join(
+                part
+                for part in (
+                    primary,
+                    "  Claude credentials will be updated (values hidden).",
+                )
+                if part
+            )
         if self.credentials_path is None or self.credentials_after is None:
             return primary
         # DSH's credential store may contain real keys for unrelated remote
@@ -224,7 +259,11 @@ def build_setup_plan(
         loaded: dict[str, Any] = launch_common.load_json_lenient(path)
         before: dict[str, Any] | list[Any] = loaded
         after: dict[str, Any] | list[Any] = claude_code.patched_config(
-            loaded, base_url, model, context_length=context_length
+            loaded,
+            base_url,
+            model,
+            api_key=os.environ.get("RAPID_MLX_API_KEY") or "sk-noop",
+            context_length=context_length,
         )
         return SetupPlan(
             "claude-code", "Claude Code", path, before, after, base_url, model
@@ -419,9 +458,20 @@ def verify_server(
             if response.status != 200:
                 track_agent_configure_failed("server_not_ready", agent)
                 raise RuntimeError(f"health returned HTTP {response.status}")
-        with urllib.request.urlopen(f"{root}/v1/models", timeout=timeout) as response:
+        from rapid_mlx.http_auth import rapid_mlx_auth_headers
+
+        request = urllib.request.Request(
+            f"{root}/v1/models", headers=rapid_mlx_auth_headers()
+        )
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             payload = json.loads(response.read())
-    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+    except (
+        urllib.error.URLError,
+        TimeoutError,
+        OSError,
+        ValueError,
+        json.JSONDecodeError,
+    ) as exc:
         track_agent_configure_failed("server_not_ready", agent)
         raise RuntimeError(f"server is not ready at {root}: {exc}") from exc
     models = payload.get("data", []) if isinstance(payload, dict) else []

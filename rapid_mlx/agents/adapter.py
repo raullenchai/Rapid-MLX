@@ -555,9 +555,12 @@ def _fetch_models(base_url: str) -> list[dict]:
     import json
     import urllib.request
 
+    from rapid_mlx.http_auth import rapid_mlx_auth_headers
+
     try:
         url = base_url.rstrip("/") + "/models"
-        with urllib.request.urlopen(url, timeout=2) as resp:
+        request = urllib.request.Request(url, headers=rapid_mlx_auth_headers())
+        with urllib.request.urlopen(request, timeout=2) as resp:
             body = json.loads(resp.read())
             entries = body.get("data") if isinstance(body, dict) else None
             if not isinstance(entries, list):

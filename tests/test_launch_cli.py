@@ -183,6 +183,20 @@ class TestClaudeCode:
         assert data["env"]["ANTHROPIC_MODEL"] == "qwen3.5-9b-4bit"
         assert data["env"]["ANTHROPIC_API_KEY"] == "sk-noop"
 
+    def test_launch_writes_live_claude_context(self, fake_home, monkeypatch):
+        from rapid_mlx.agents import adapter
+
+        (fake_home / ".claude").mkdir()
+        monkeypatch.setattr(adapter, "fetch_context_window", lambda *_args: 131072)
+        monkeypatch.setattr(
+            "rapid_mlx.run.cli._cached_context_window", lambda _model: None
+        )
+
+        launch_cli.launch_command(_make_args(client="claude-code", model="local-model"))
+
+        data = json.loads(claude_code.current_config_path().read_text())
+        assert data["env"]["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "131072"
+
     def test_write_preserves_existing_env_and_other_keys(self, fake_home):
         cfg = claude_code.current_config_path()
         assert cfg is not None

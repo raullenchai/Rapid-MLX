@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
+from urllib.request import Request
 
 import pytest
 
@@ -127,8 +130,9 @@ def test_verify_server_checks_health_and_models(monkeypatch):
     urls: list[str] = []
 
     def fake_open(url, timeout):
-        urls.append(url)
-        if url.endswith("/health"):
+        actual_url = url.full_url if isinstance(url, Request) else url
+        urls.append(actual_url)
+        if actual_url.endswith("/health"):
             return Response()
         return Response(json.dumps({"data": [{"id": "served-model"}]}).encode())
 
@@ -141,6 +145,62 @@ def test_verify_server_checks_health_and_models(monkeypatch):
         "http://localhost:8000/health",
         "http://localhost:8000/v1/models",
     ]
+
+
+def test_keyed_model_probe_uses_exported_server_key(monkeypatch):
+    from rapid_mlx.agents.adapter import _detect_running_model
+
+    key = "test-agent-key"
+    monkeypatch.setenv("RAPID_MLX_API_KEY", key)
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/health":
+                self.send_response(200)
+                self.end_headers()
+                return
+            if (
+                self.path == "/v1/models"
+                and self.headers.get("Authorization") == f"Bearer {key}"
+            ):
+                body = json.dumps(
+                    {"data": [{"id": "local-model", "context_window": 131072}]}
+                ).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            self.send_response(401)
+            self.end_headers()
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://127.0.0.1:{server.server_port}/v1"
+        assert verify_server(base_url, "local-model", agent="codex") == "local-model"
+        assert _detect_running_model(base_url) == ("local-model", 131072)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_verify_server_reports_malformed_url_as_setup_failure():
+    with pytest.raises(RuntimeError, match="server is not ready"):
+        verify_server("localhost:8000/v1", "default", agent="codex")
+
+
+def test_claude_plan_uses_keyed_server_credential(setup_paths, monkeypatch):
+    monkeypatch.setenv("RAPID_MLX_API_KEY", "test-agent-key")
+    plan = build_setup_plan("claude-code", "http://localhost:8000/v1", "local-model")
+    assert plan.after["env"]["ANTHROPIC_API_KEY"] == "test-agent-key"
+    assert "test-agent-key" not in plan.diff()
+    assert "values hidden" in plan.diff()
 
 
 def test_dsh_plan_and_profile_template_agree_on_the_provider_contract(monkeypatch):
