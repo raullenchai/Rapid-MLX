@@ -36,7 +36,10 @@ class SpeculativeConfig:
     # distinction between an omitted key and an explicit ``false`` so users
     # retain a stable ordinary-MTP opt-out after a target is promoted.
     continuous_batching: bool | None = None
-    allow_dynamic_membership: bool = False
+    # ``None`` follows the resolved continuous route: a cohort that is
+    # continuous admits and releases lanes between transactions.  An explicit
+    # ``false`` keeps the fixed-cohort milestone as a stable opt-out.
+    allow_dynamic_membership: bool | None = None
     max_suffix_len: int | None = None
     min_confidence: float | None = None
     min_draft_len: int | None = None
@@ -189,12 +192,9 @@ def parse_speculative_config(value: str | None) -> SpeculativeConfig | None:
         continuous_batching=_optional_bool(
             payload.get("continuous_batching"), "continuous_batching"
         ),
-        allow_dynamic_membership=(
-            _optional_bool(
-                payload.get("allow_dynamic_membership"),
-                "allow_dynamic_membership",
-            )
-            or False
+        allow_dynamic_membership=_optional_bool(
+            payload.get("allow_dynamic_membership"),
+            "allow_dynamic_membership",
         ),
         max_suffix_len=_positive_int(payload.get("max_suffix_len"), "max_suffix_len"),
         min_confidence=_confidence(payload.get("min_confidence"), "min_confidence"),

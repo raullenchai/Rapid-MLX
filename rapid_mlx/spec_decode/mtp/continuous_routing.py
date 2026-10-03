@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import enum
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any
 
@@ -75,6 +75,10 @@ class ContinuousMTPRequestMetadata:
     cache_windowed: bool = False
     terminal: bool = False
     apc_hit: ContinuousMTPAPCHit | None = None
+    # A target cache that already holds this request's prefix.  The lane then
+    # prefills only ``prompt_tokens`` (the unprocessed remainder) on top of it,
+    # with a fresh draft cache.  Opaque to the planner.
+    prompt_cache: Any = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.uid, int) or isinstance(self.uid, bool):
@@ -438,7 +442,7 @@ def _planned_lane(
     prepared = None
     resume_at = None
     prompt = request.prompt_tokens
-    target_cache = None
+    target_cache = request.prompt_cache
     mtp_cache = None
     if restore is not None and restore.eligible:
         assert request.apc_hit is not None and restore.resume_at is not None

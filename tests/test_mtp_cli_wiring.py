@@ -3030,7 +3030,8 @@ def test_scheduler_installs_continuous_router_before_vendored_fallback(monkeypat
 @pytest.mark.parametrize(
     ("cap", "metal", "resident", "expected"),
     [
-        (0, 10, 20, 0),
+        # No cap configured: headroom is unknowable, not zero.
+        (0, 10, 20, None),
         (100, 40, 60, 40),
         (100, 140, 60, 0),
     ],
