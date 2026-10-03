@@ -874,6 +874,16 @@ class TestTomlMerge:
 
 class TestIdempotentSetupSummary:
     @staticmethod
+    def _generic_file_profile():
+        return AgentProfile(
+            name="opencode",
+            display_name="OpenCode",
+            config=AgentConfigSpec(
+                type="json", path="/tmp/opencode.json", template="{}"
+            ),
+        )
+
+    @staticmethod
     def _generic_setup_args(**overrides):
         values = dict(
             agent_name="opencode",
@@ -912,7 +922,7 @@ class TestIdempotentSetupSummary:
         from rapid_mlx import cli
         from rapid_mlx.agents import adapter
 
-        profile = AgentProfile(name="opencode", display_name="OpenCode")
+        profile = self._generic_file_profile()
         monkeypatch.setattr("rapid_mlx.agents.get_profile", lambda _name: profile)
         monkeypatch.setattr(
             adapter,
@@ -934,7 +944,7 @@ class TestIdempotentSetupSummary:
         from rapid_mlx import cli
         from rapid_mlx.agents import adapter, setup
 
-        profile = AgentProfile(name="opencode", display_name="OpenCode")
+        profile = self._generic_file_profile()
         monkeypatch.setattr("rapid_mlx.agents.get_profile", lambda _name: profile)
         monkeypatch.setattr(
             setup,
@@ -959,7 +969,7 @@ class TestIdempotentSetupSummary:
         from rapid_mlx import cli
         from rapid_mlx.agents import adapter, setup
 
-        profile = AgentProfile(name="opencode", display_name="OpenCode")
+        profile = self._generic_file_profile()
         monkeypatch.setattr("rapid_mlx.agents.get_profile", lambda _name: profile)
         monkeypatch.setattr(
             setup,
@@ -974,5 +984,29 @@ class TestIdempotentSetupSummary:
         )
 
         cli.agents_command(self._generic_setup_args(no_check=True))
+
+        assert calls == [True]
+
+    def test_cli_env_instructions_do_not_require_a_live_server(self, monkeypatch):
+        from rapid_mlx import cli
+        from rapid_mlx.agents import adapter, setup
+
+        profile = AgentProfile(name="langchain", display_name="LangChain")
+        monkeypatch.setattr("rapid_mlx.agents.get_profile", lambda _name: profile)
+        monkeypatch.setattr(
+            setup,
+            "verify_server",
+            lambda *_args, **_kwargs: pytest.fail("env instructions do not mutate"),
+        )
+        calls = []
+        monkeypatch.setattr(
+            adapter,
+            "setup_agent_config",
+            lambda *_args, **_kwargs: calls.append(True) or "Run these exports",
+        )
+
+        cli.agents_command(
+            self._generic_setup_args(agent_name="langchain", model="my-model")
+        )
 
         assert calls == [True]

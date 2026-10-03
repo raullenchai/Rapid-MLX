@@ -13144,7 +13144,7 @@ def agents_command(args):
         # a failed setup cannot leave a new `model = default` config behind.
         # --no-check remains the explicit offline-config escape hatch, and a
         # dry run remains side-effect-free preview even without a live server.
-        if not args.dry_run and not args.no_check:
+        if cfg.type != "env" and not args.dry_run and not args.no_check:
             from rapid_mlx.agents.setup import verify_server
 
             try:
