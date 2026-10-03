@@ -139,6 +139,10 @@ def _convert_param_value(
         except (ValueError, TypeError):
             return param_value
     elif param_type.startswith(("num", "float", "double")):
+        # A ``number`` schema admits integers; keep ``10000`` as an int so
+        # strictly typed callers (e.g. Rust ``usize``) accept it.
+        if re.fullmatch(r"-?\d+", keyword):
+            return int(keyword)
         try:
             return float(keyword)
         except (ValueError, TypeError):
