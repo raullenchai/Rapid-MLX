@@ -41,6 +41,11 @@ from .abstract_tool_parser import (
 
 logger = logging.getLogger(__name__)
 
+# A JSON-style integer literal: optional sign, ASCII digits, no fraction and
+# no exponent. Under a ``number`` schema such a literal is an integer (issue
+# #4037); anything else keeps the historical ``float()`` conversion.
+_INTEGER_LITERAL_RE = re.compile(r"[+-]?[0-9]+")
+
 
 def _generate_tool_id() -> str:
     return f"call_{uuid.uuid4().hex[:8]}"
@@ -139,6 +144,16 @@ def _convert_param_value(
         except (ValueError, TypeError):
             return param_value
     elif param_type.startswith(("num", "float", "double")):
+        # ``number`` follows JSON number semantics (issue #4037): ``10000``
+        # stays ``10000``. Forcing ``10000.0`` made strictly typed clients
+        # reject the call (Codex: "invalid type: floating point `10000.0`,
+        # expected usize"). ``float``/``double`` schemas still ask for a float.
+        if param_type.startswith("num") and _INTEGER_LITERAL_RE.fullmatch(keyword):
+            try:
+                return int(keyword)
+            except ValueError:
+                # Past Python's int-string digit limit: keep float() as before.
+                pass
         try:
             return float(keyword)
         except (ValueError, TypeError):
