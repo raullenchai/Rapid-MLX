@@ -190,3 +190,139 @@ def test_loop_observes_without_activation_on_background_route(
     assert ("activate" in seen[0]) is enabled
     if enabled:
         assert seen[0]["activate"] is False
+
+
+# --- codex round 1 on PR 2 ------------------------------------------------------
+
+
+def test_focus_only_refuses_child_of_commit_control(monkeypatch, no_input):
+    snapshot = _snapshot({"role": "AXStaticText", "label": "Delete", "actions": []})
+    parents = {"live": "button", "button": "window"}
+    roles = {"button": "AXButton", "window": "AXWindow"}
+
+    def get(element, attr):
+        if attr == "AXParent":
+            return parents.get(element)
+        if attr == "AXRole":
+            return roles.get(element)
+        return None
+
+    monkeypatch.setattr(backend.ax_driver, "_get", get)
+    monkeypatch.setattr(backend, "_focused_ax_element", lambda app: None)
+    monkeypatch.setattr(
+        backend.ax_driver, "AXUIElementSetAttributeValue", lambda *a: -25205
+    )
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend.click("App", 0, expected_snapshot=snapshot, focus_only=True)
+    assert exc.value.code == "synthetic_input_blocked"
+
+
+def test_fill_role_inside_link_is_not_pixel_focused(monkeypatch, no_input):
+    snapshot = _snapshot({"role": "AXTextField", "label": "q", "actions": ["AXPress"]})
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_get",
+        lambda el, attr: {
+            "AXParent": {"live": "link"},
+            "AXRole": {"link": "AXLink"},
+        }.get(attr, {}).get(el),
+    )
+    monkeypatch.setattr(backend, "_focused_ax_element", lambda app: None)
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend.click("App", 0, expected_snapshot=snapshot, focus_only=True)
+    assert exc.value.code == "synthetic_input_blocked"
+
+
+class _Running:
+    def __init__(self, active=False, start=1.0):
+        self.active = active
+        self.start = start
+        self.activations = 0
+
+    def isActive(self):  # noqa: N802 - mirrors NSRunningApplication
+        return self.active
+
+    def activateWithOptions_(self, _options):  # noqa: N802
+        self.activations += 1
+        self.active = True
+        return True
+
+
+def _borrow_setup(monkeypatch, running, start=1.0):
+    monkeypatch.setattr(background_input, "background_enabled", lambda: True)
+    monkeypatch.setattr(backend.ax_driver, "_application_for_pid", lambda pid: running)
+    monkeypatch.setattr(
+        backend,
+        "_resolved_app_info",
+        lambda r: {
+            "pid": 4,
+            "bundleId": "com.example.app",
+            "name": "App",
+            "processStartTime": start,
+        },
+    )
+    snapshot = _snapshot({"role": "AXTextField"})
+    snapshot["app"]["processStartTime"] = 1.0
+    return snapshot
+
+
+def test_borrow_foreground_activates_exact_process(monkeypatch):
+    running = _Running()
+    snapshot = _borrow_setup(monkeypatch, running)
+    backend._borrow_foreground(snapshot)
+    assert running.activations == 1
+
+
+def test_borrow_foreground_refuses_recycled_pid(monkeypatch):
+    running = _Running()
+    snapshot = _borrow_setup(monkeypatch, running, start=2.0)
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend._borrow_foreground(snapshot)
+    assert exc.value.code == "target_drift"
+    assert running.activations == 0
+
+
+def test_borrow_foreground_is_noop_on_foreground_route(monkeypatch):
+    monkeypatch.setattr(background_input, "background_enabled", lambda: False)
+    monkeypatch.setattr(
+        backend.ax_driver,
+        "_application_for_pid",
+        lambda pid: pytest.fail("foreground route already activated on observe"),
+    )
+    backend._borrow_foreground(_snapshot({"role": "AXTextField"}))
+
+
+def test_save_and_synthetic_fill_borrow_foreground_first(monkeypatch):
+    order = []
+    monkeypatch.setattr(
+        backend, "_borrow_foreground", lambda snap: order.append("borrow")
+    )
+
+    def stop(*_a, **_k):
+        order.append("validate")
+        raise errors.ComputerUseError("target_drift", "stop")
+
+    monkeypatch.setattr(backend, "_validate_snapshot_window", stop)
+    snapshot = _snapshot({"role": "AXTextField"})
+    for call in (
+        lambda: backend._save_menu_candidate(snapshot),
+        lambda: backend._synthetic_fill(snapshot, 0, "x"),
+    ):
+        order.clear()
+        with pytest.raises(errors.ComputerUseError):
+            call()
+        assert order == ["borrow", "validate"]
+
+
+def test_ax_driver_cli_maps_late_app_exit(monkeypatch):
+    import sys
+
+    monkeypatch.setattr(ax_driver, "collect", lambda app: [{"target_id": "t000"}])
+
+    def gone(*_a):
+        raise ax_driver.AppNotFoundError("app not found: 'A'")
+
+    monkeypatch.setattr(ax_driver, "press", gone)
+    monkeypatch.setattr(sys, "argv", ["ax_driver", "--app", "A", "--press", "t000"])
+    with pytest.raises(SystemExit, match="app not found"):
+        ax_driver.main()

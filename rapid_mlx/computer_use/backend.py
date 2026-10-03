@@ -1298,6 +1298,43 @@ def _pixel_click(
     }
 
 
+def _borrow_foreground(snapshot: dict) -> None:
+    """Activate exactly the snapshot's process for a foreground-only step.
+
+    Background observation leaves the target inactive, so paths that still
+    need AppKit activation (Save via the menu bar, TextEdit document binding,
+    the Cmd+A synthetic-typing fallback) activate it here, narrowly and only
+    after the process identity matches the observation.
+    """
+    if observation_activates(snapshot.get("app")):
+        return  # the observation already activated it (historical path)
+    expected = snapshot.get("app") or {}
+    running = ax_driver._application_for_pid(int(expected["pid"]))
+    if running is None:
+        raise ComputerUseError("target_drift", "selected app exited")
+    if bool(running.isActive()):
+        return
+    info = _resolved_app_info(running)
+    for key in ("pid", "bundleId", "name", "processStartTime"):
+        wanted = expected.get(key)
+        if wanted is not None and info.get(key) != wanted:
+            raise ComputerUseError("target_drift", "selected app identity changed")
+    try:
+        running.activateWithOptions_(1 << 1)
+    except Exception as exc:  # noqa: BLE001 - surfaced as a typed failure
+        raise ComputerUseError("action_failed", "could not activate target") from exc
+    deadline = time.monotonic() + 1.5
+    while time.monotonic() < deadline:
+        # Re-resolve each poll: without an NSRunLoop in this process a held
+        # NSRunningApplication never refreshes its isActive property.
+        current = ax_driver._application_for_pid(int(expected["pid"]))
+        if current is not None and bool(current.isActive()):
+            time.sleep(0.15)  # let AppKit settle key/main window
+            return
+        time.sleep(0.05)
+    raise ComputerUseError("target_drift", "target did not become active")
+
+
 def observation_activates(app_info: dict | None) -> bool:
     """Whether observing ``app_info`` must activate it first.
 
@@ -1590,6 +1627,7 @@ def _save_menu_candidate(snapshot: dict) -> tuple[object, tuple[str, ...], objec
     process and is re-resolved before dispatch.
     """
 
+    _borrow_foreground(snapshot)
     _validate_snapshot_window(snapshot)
     _validate_focused_window(snapshot)
     app_info = snapshot["app"]
@@ -1672,6 +1710,7 @@ def inspect_autosaving_document(app: str, snapshot: dict) -> dict:
         raise ComputerUseError(
             "invalid_argument", "autosaving document inspection requires TextEdit"
         )
+    _borrow_foreground(snapshot)
     expected_window = _validate_snapshot_window(snapshot)
     _validate_focused_window(snapshot, expected_window)
     focused = _focused_ax_window(snapshot["app"])
@@ -1921,9 +1960,29 @@ COMMIT_ON_CLICK_ROLES = {
 COMMIT_ACTIONS = {"AXPress", "AXConfirm", "AXOpen", "AXPick"}
 
 
-def _click_commits(entry: dict) -> bool:
+def _click_commits(entry: dict, live: object | None = None) -> bool:
+    """Whether a pixel click on ``entry`` would commit something.
+
+    The click lands on whatever control contains the point, so a static-text
+    child of a button or link commits too: walk the live AX ancestors (by
+    role only; Chromium advertises AXPress on nearly every web node).
+    """
     actions = set(entry.get("actions") or [])
-    return entry.get("role") in COMMIT_ON_CLICK_ROLES or bool(actions & COMMIT_ACTIONS)
+    if entry.get("role") in COMMIT_ON_CLICK_ROLES:
+        return True
+    if entry.get("role") not in FILL_ROLES and actions & COMMIT_ACTIONS:
+        return True
+    node = ax_driver._get(live, "AXParent") if live is not None else None
+    for _ in range(8):
+        if not node:
+            break
+        role = ax_driver._get(node, "AXRole")
+        if role in {"AXWindow", "AXWebArea", "AXApplication"}:
+            break
+        if role in COMMIT_ON_CLICK_ROLES:
+            return True
+        node = ax_driver._get(node, "AXParent")
+    return False
 
 
 def _focus_without_commit(snapshot: dict, live: object | None) -> str | None:
@@ -2013,7 +2072,12 @@ def click(
             and live == _focused_ax_element(snapshot["app"])
         ):
             expected_window = snapshot.get("transient_window") if is_transient else None
-            _validate_focused_window(snapshot, expected_window)
+            if _background_delivery(snapshot):
+                _validate_focused_window(
+                    snapshot, expected_window, require_active_app=False
+                )
+            else:
+                _validate_focused_window(snapshot, expected_window)
             return _finish_action(
                 app,
                 snapshot,
@@ -2022,8 +2086,12 @@ def click(
                 verification="exact Accessibility element remained focused",
                 include_post_state=include_post_state,
             )
-        if focus_only and entry.get("role") not in FILL_ROLES:
-            focused = _focus_without_commit(snapshot, live)
+        if focus_only:
+            focused = (
+                _focus_without_commit(snapshot, live)
+                if entry.get("role") not in FILL_ROLES
+                else None
+            )
             if focused is not None:
                 return _finish_action(
                     app,
@@ -2033,7 +2101,7 @@ def click(
                     verification="exact Accessibility element holds keyboard focus",
                     include_post_state=include_post_state,
                 )
-            if _click_commits(entry):
+            if _click_commits(entry, live):
                 raise ComputerUseError(
                     "synthetic_input_blocked",
                     "cannot focus this control without pressing it; "
@@ -2180,6 +2248,8 @@ def set_value(
 def _synthetic_fill(snapshot: dict, element_index: int, value: str) -> dict:
     entry = _element(snapshot, element_index)
     center = entry["center"]
+    # Cmd+A is a menu key equivalent: this fallback is foreground-only.
+    _borrow_foreground(snapshot)
     _validate_snapshot_window(snapshot, point=(float(center[0]), float(center[1])))
     ax_driver._cg_click(float(center[0]), float(center[1]))
     time.sleep(0.3)

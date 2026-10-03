@@ -621,9 +621,13 @@ def main() -> None:
     MAX_NODES = args.max_nodes
 
     try:
-        targets = collect(args.app)
+        _cli(args)
     except AppNotFoundError as exc:
         raise SystemExit(str(exc)) from exc
+
+
+def _cli(args: argparse.Namespace) -> None:
+    targets = collect(args.app)
     if args.dump:
         payload = [{k: v for k, v in t.items() if k != "element"} for t in targets]
         text = json.dumps(payload, ensure_ascii=False, indent=1)
