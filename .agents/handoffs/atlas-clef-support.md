@@ -23,7 +23,7 @@
   and rank requests all returned 200; see
   `docs/engineering/performance/2026-10-03-clef-family-m3-ultra-dogfood.md`
   for inputs, outputs, timings, and memory.
-- Local Clef tests pass (16/16); repository Ruff lint/format and the pinned
+- Local Clef tests pass (18/18); repository Ruff lint/format and the pinned
   shrink-only mypy budget pass after CI fixes. The optional Torch tests skip
   in the default test matrix when the `[clef]` extra is absent.
 - Independent adversarial review found that the per-frame pixel cap allowed
@@ -31,6 +31,13 @@
   pixel budget across every image and video frame in one request, checked
   before RGB expansion. The guide states both this budget and the existing
   8 MiB whole-request body limit. Unit and route tests cover mixed media.
+- A second PR validation review found two more blockers: rounded probabilities
+  could misorder close candidates in `/v1/rank`, and the runtime accepted
+  Transformers versions excluded by the `[clef]` extra. The rank path now
+  orders raw joint-head probabilities, and the runtime enforces the same
+  Transformers specifier as packaging. A MIME declaration mismatch was also
+  rejected. Both pinned full-weight checkpoints returned HTTP 200 for the new
+  rank path on the M3 Ultra; the duplicate-charge action ranked first.
 
 ## Remaining qualification
 

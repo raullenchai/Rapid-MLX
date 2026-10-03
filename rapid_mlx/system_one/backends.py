@@ -126,7 +126,7 @@ class ClefBackend:
     def __init__(self, model: str, *, device: str = "gpu") -> None:
         import importlib.metadata
 
-        from packaging.version import Version
+        from packaging.specifiers import SpecifierSet
 
         selected = model.rsplit("/", 1)[-1].lower()
         if selected not in self._MODELS or model not in {
@@ -136,16 +136,19 @@ class ClefBackend:
             raise ValueError(f"unknown Clef model {model!r}; choose clef or clef-flash")
         if device not in {"gpu", "cpu"}:
             raise ValueError("Clef device must be 'gpu' or 'cpu'")
-        for package, minimum in (("torch", "2.11"), ("transformers", "5.10.2")):
+        for package, constraint in (
+            ("torch", ">=2.11.0"),
+            ("transformers", ">=5.10.2,!=5.13.0,<5.16"),
+        ):
             try:
                 installed = importlib.metadata.version(package)
             except importlib.metadata.PackageNotFoundError as exc:
                 raise RuntimeError(
                     "Clef requires the optional runtime: pip install 'rapid-mlx[clef]'"
                 ) from exc
-            if Version(installed) < Version(minimum):
+            if installed not in SpecifierSet(constraint):
                 raise RuntimeError(
-                    f"Clef requires {package}>={minimum}, found {installed}; "
+                    f"Clef requires {package}{constraint}, found {installed}; "
                     "install 'rapid-mlx[clef]'"
                 )
 
@@ -217,13 +220,45 @@ class ClefBackend:
         model: str,
         temperature: float,
     ) -> list[dict]:
+        if model not in (self.default_model, self.repo_id):
+            raise KeyError(f"unknown model {model!r}; available: {self.default_model}")
+        if temperature != 1.0:
+            raise ValueError(
+                "Clef uses checkpoint calibration and requires temperature=1"
+            )
         request = Question(
             type="choice",
             instructions=question or "Choose the best answer.",
             criteria={str(index): value for index, value in enumerate(answers)},
         )
-        result = self.answer(context, {"rank": request}, model, temperature)
-        probabilities = result["answers"]["rank"]["probabilities"]
+        # The official SystemOne response rounds option probabilities to four
+        # decimals. Rank from the raw head scores so near-ties keep their true
+        # order instead of falling back to candidate insertion order.
+        import torch
+
+        from rapid_mlx.clef.vendor.joint_schema_model import (
+            collate_records,
+            encode_record,
+        )
+
+        encoded = encode_record(
+            self._processor.tokenizer,
+            {
+                "model": self.default_model,
+                "state": context,
+                "questions": {"rank": request.model_dump(exclude_none=True)},
+            },
+            processor=self._processor,
+        )
+        device = next(self._model.parameters()).device
+        with self._lock, torch.inference_mode():
+            logits = self._model(
+                collate_records(
+                    [encoded], self._processor.tokenizer.pad_token_id, device
+                )
+            )[0][0]
+            scores = logits.float().softmax(-1).tolist()
+        probabilities = dict(zip(encoded.questions[0].option_ids, scores))
         ordered = sorted(probabilities.items(), key=lambda item: -item[1])
         return [
             {"rank": rank + 1, "candidate": answers[int(index)], "prob": probability}

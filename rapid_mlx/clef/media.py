@@ -42,8 +42,10 @@ def _decode_image(value: str, pixel_budget: list[int]):
                     raise ValueError("Clef image exceeds the 16 MP pixel limit")
                 if pixels > pixel_budget[0]:
                     raise ValueError("Clef media exceeds the 16 MP total pixel limit")
-                if opened.format.lower() not in {"png", "jpeg", "webp"}:
-                    raise ValueError("Clef image format does not match the allowlist")
+                if opened.format.lower() != mime.split("/", 1)[1]:
+                    raise ValueError(
+                        "Clef image format does not match the data URL MIME"
+                    )
                 pixel_budget[0] -= pixels
                 return opened.convert("RGB")
     except (

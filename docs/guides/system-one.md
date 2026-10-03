@@ -68,8 +68,9 @@ rapid-mlx system-one clef --port 8700
 
 The first start downloads pinned Cloudflare weights into the normal Hugging
 Face cache. `--device cpu` is available for diagnosis. Cloudflare validated
-its reference runtime on an H200; Mac Metal throughput and output parity need
-to be measured before treating this backend as production qualified. A Clef
+its reference runtime on an H200. Both checkpoints have been dogfooded on one
+M3 Ultra Mac with Metal; see the [local measurements](../engineering/performance/2026-10-03-clef-family-m3-ultra-dogfood.md).
+Other Mac sizes and sustained concurrent traffic remain unqualified. A Clef
 request accepts `state`, `questions`, and optional `images` or `videos`; the
 same `/v1/rank` endpoint ranks free-form candidates. `model` may be the short
 name or the corresponding `Cloudflare/...` identifier.

@@ -231,6 +231,26 @@ def test_clef_backend_rejects_bad_setup(monkeypatch):
         ClefBackend("clef-flash", device="gpu")
 
 
+@pytest.mark.parametrize("version", ["5.13.0", "5.16.0"])
+def test_clef_backend_rejects_unsupported_transformers(monkeypatch, version):
+    import importlib.metadata
+
+    original_version = importlib.metadata.version
+    monkeypatch.setattr(
+        importlib.metadata,
+        "version",
+        lambda package: (
+            "2.14.1"
+            if package == "torch"
+            else version
+            if package == "transformers"
+            else original_version(package)
+        ),
+    )
+    with pytest.raises(RuntimeError, match="transformers>=5.10.2,!=5.13.0,<5.16"):
+        ClefBackend("clef-flash", device="cpu")
+
+
 def test_clef_media_decodes_locally_and_rejects_urls():
     image = decode_images([_png_data_url()])[0]
     assert image.size == (2, 2)
@@ -289,6 +309,14 @@ def test_clef_media_rejects_invalid_and_oversized_inputs(monkeypatch):
             "format does not match",
         )
     )
+    jpeg = io.BytesIO()
+    Image.new("RGB", (2, 2)).save(jpeg, format="JPEG")
+    cases.append(
+        (
+            "data:image/png;base64," + base64.b64encode(jpeg.getvalue()).decode(),
+            "format does not match",
+        )
+    )
     for value, message in cases:
         with pytest.raises(ValueError, match=message):
             decode_images([value])
@@ -342,18 +370,39 @@ def test_clef_rejects_wrong_model_or_temperature_without_inference():
 
 
 def test_clef_rank_and_model_catalog(monkeypatch):
+    torch = pytest.importorskip("torch")
+    from rapid_mlx.clef.vendor import joint_schema_model
+
     backend = object.__new__(ClefBackend)
     backend.default_model = "clef-flash"
     backend.repo_id = "Cloudflare/clef-flash"
+    backend._processor = SimpleNamespace(tokenizer=SimpleNamespace(pad_token_id=0))
+    backend._lock = threading.Lock()
+
+    class CloseScoresModel:
+        def parameters(self):
+            yield torch.nn.Parameter(torch.zeros(1))
+
+        def __call__(self, _batch):
+            return [[torch.tensor([0.0, 0.00004])]]
+
+    backend._model = CloseScoresModel()
     monkeypatch.setattr(
-        backend,
-        "answer",
-        lambda *_args: {"answers": {"rank": {"probabilities": {"0": 0.2, "1": 0.8}}}},
+        joint_schema_model,
+        "encode_record",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            questions=[SimpleNamespace(option_ids=("0", "1"))]
+        ),
     )
-    assert backend.rank("context", None, ["wrong", "right"], "clef-flash", 1.0) == [
-        {"rank": 1, "candidate": "right", "prob": 0.8},
-        {"rank": 2, "candidate": "wrong", "prob": 0.2},
-    ]
+    monkeypatch.setattr(joint_schema_model, "collate_records", lambda *_args: {})
+    ranked = backend.rank("context", None, ["wrong", "right"], "clef-flash", 1.0)
+    assert [item["candidate"] for item in ranked] == ["right", "wrong"]
+    assert ranked[0]["prob"] > ranked[1]["prob"]
+    assert [round(item["prob"], 4) for item in ranked] == [0.5, 0.5]
+    with pytest.raises(KeyError, match="unknown model"):
+        backend.rank("context", None, ["wrong", "right"], "other", 1.0)
+    with pytest.raises(ValueError, match="temperature=1"):
+        backend.rank("context", None, ["wrong", "right"], "clef-flash", 0.5)
     assert backend.models()[0]["hf_id"] == "Cloudflare/clef-flash"
 
 
