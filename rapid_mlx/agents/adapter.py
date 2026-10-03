@@ -290,6 +290,7 @@ def setup_agent_config(
             raise
 
         catalog_changed = False
+        catalog_path = None
         if profile.name == "codex" and isinstance(rendered, str):
             import json
 
@@ -349,6 +350,12 @@ def setup_agent_config(
                 f"Cannot write config to {config_path} ({exc}). Check file permissions."
             )
 
+        if not config_changed and not catalog_changed:
+            return f"Already configured at {config_path}; no file changes needed"
+        if not config_changed and catalog_path is not None:
+            return (
+                f"Updated Codex model catalog at {catalog_path}; config already current"
+            )
         if merged_text == rendered:
             summary = f"Wrote config to {config_path}"
         else:
@@ -358,7 +365,7 @@ def setup_agent_config(
                 # every key but drops comments, and a user who hand-wrote
                 # notes into ~/.codex/config.toml should hear that from us
                 # rather than discover it.
-                summary += "; comments were not"
+                summary += "; comments were not preserved"
         if config_changed or catalog_changed:
             track_agent_configured(profile.name)
         return summary
@@ -441,7 +448,15 @@ def _merge_toml(existing_text: str, rendered: str) -> str:
         template = tomllib.loads(rendered)
     except Exception as exc:
         raise _MergeParseError(f"rendered template is not valid TOML: {exc}") from exc
+    # A fresh Rapid config needs workspace write access to be useful for coding,
+    # but an operator's explicit sandbox choice is a security preference rather
+    # than endpoint metadata. Keep it authoritative when refreshing the model
+    # and provider fields.
+    if "sandbox_mode" in existing:
+        template["sandbox_mode"] = existing["sandbox_mode"]
     merged = _deep_merge(existing, template)
+    if merged == existing:
+        return existing_text
     return tomli_w.dumps(merged)
 
 
@@ -519,6 +534,8 @@ def _merge_json(existing_text: str, rendered: str) -> str:
     if not isinstance(template, dict):
         raise _MergeParseError("rendered template is not a JSON object")
     merged = _deep_merge(existing, template)
+    if merged == existing:
+        return existing_text
     return json.dumps(merged, indent=2, ensure_ascii=False) + "\n"
 
 

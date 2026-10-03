@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -27,13 +28,54 @@ def test_claude_plan_is_side_effect_free_and_uses_bare_base(setup_paths):
     claude_path.write_text('{"permissions":{"allow":["Read"]}}')
 
     plan = build_setup_plan(
-        "claude-code", "http://localhost:8000/v1", "qwen3.6-35b-4bit"
+        "claude-code",
+        "http://localhost:8000/v1",
+        "qwen3.6-35b-4bit",
+        context_length=131072,
     )
 
     assert json.loads(claude_path.read_text()) == {"permissions": {"allow": ["Read"]}}
     assert plan.after["permissions"] == {"allow": ["Read"]}
     assert plan.after["env"]["ANTHROPIC_BASE_URL"] == "http://localhost:8000"
+    assert plan.after["env"]["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "131072"
     assert "ANTHROPIC_API_KEY" in plan.diff()
+
+
+def test_claude_plan_preserves_context_override_when_server_has_no_limit(setup_paths):
+    claude_path, _ = setup_paths
+    claude_path.parent.mkdir(parents=True)
+    claude_path.write_text('{"env":{"CLAUDE_CODE_MAX_CONTEXT_TOKENS":"65536"}}')
+
+    plan = build_setup_plan("claude-code", "http://localhost:8000/v1", "local-model")
+
+    assert plan.after["env"]["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "65536"
+
+
+def test_claude_cli_setup_fetches_live_context_for_local_model(
+    setup_paths, monkeypatch, capsys
+):
+    from rapid_mlx import cli
+
+    monkeypatch.setattr(
+        "rapid_mlx.agents.adapter._detect_running_model",
+        lambda _url: ("local-model", 131072),
+    )
+
+    cli.agents_command(
+        SimpleNamespace(
+            agent_name="claude-code",
+            base_url="http://localhost:8000/v1",
+            test=False,
+            setup=True,
+            model=None,
+            agent_version=None,
+            dry_run=True,
+            yes=False,
+            no_check=True,
+        )
+    )
+
+    assert '"CLAUDE_CODE_MAX_CONTEXT_TOKENS": "131072"' in capsys.readouterr().out
 
 
 def test_continue_apply_preserves_models_and_creates_backup(setup_paths):

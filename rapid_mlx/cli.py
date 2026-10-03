@@ -13043,7 +13043,12 @@ def agents_command(args):
         model_id = args.model or "default"
         context_length = None
         cfg = profile.get_config_for_version(args.agent_version)
-        needs_ctx = cfg.template and "{context_length}" in cfg.template
+        needs_ctx = bool(cfg.template and "{context_length}" in cfg.template)
+        # Claude Code does not expose the context window in its static profile
+        # template, but its first-class settings plan uses the live value to
+        # avoid an unknown-local-model fallback warning.
+        if profile.name == "claude-code":
+            needs_ctx = True
 
         if model_id == "default":
             detected_model, detected_ctx = _detect_running_model(base_url)
@@ -13151,7 +13156,10 @@ def agents_command(args):
             print(f"\n  {summary}")
             print("\n  Dry run only; nothing was written.\n")
             return
-        print(f"\n  {profile.display_name} configured!")
+        if summary.startswith("Already configured"):
+            print(f"\n  {profile.display_name} is already configured.")
+        else:
+            print(f"\n  {profile.display_name} configured!")
         print(f"  {summary}")
         print()
         return

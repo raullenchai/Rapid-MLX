@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import subprocess
 import textwrap
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -739,6 +740,15 @@ class TestTomlMerge:
         assert parsed["approval_policy"] == "on-request"
         assert parsed["sandbox_mode"] == "workspace-write"
 
+    def test_explicit_read_only_sandbox_survives_template_default(self, tmp_path):
+        existing = tmp_path / "config.toml"
+        existing.write_text('sandbox_mode = "read-only"\n')
+        template = 'sandbox_mode = "workspace-write"\nmodel = "my-model"\n'
+
+        parsed = tomllib.loads(_merge_file_config(existing, template, "toml"))
+
+        assert parsed["sandbox_mode"] == "read-only"
+
     def test_user_tables_survive(self, tmp_path):
         """The blast radius that made this a data-loss bug rather than a nit."""
         parsed = self._merged(tmp_path)
@@ -821,4 +831,95 @@ class TestTomlMerge:
         assert parsed["model_provider"] == "rapid-mlx"
         # And the operator is told which of the two things happened.
         assert "Merged config into" in summary
-        assert "comments were not" in summary
+        assert "comments were not preserved" in summary
+
+    def test_real_codex_profile_gives_fresh_setup_workspace_write(
+        self, tmp_path, monkeypatch
+    ):
+        from rapid_mlx.agents import get_profile
+
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        profile = get_profile("codex")
+        assert profile is not None
+
+        setup_agent_config(
+            profile,
+            base_url="http://localhost:8000/v1",
+            model_id="my-model",
+            context_length=32768,
+        )
+
+        parsed = tomllib.loads((tmp_path / "config.toml").read_text())
+        assert parsed["sandbox_mode"] == "workspace-write"
+
+    def test_repeated_codex_setup_reports_no_file_changes(self, tmp_path, monkeypatch):
+        from rapid_mlx.agents import get_profile
+
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        profile = get_profile("codex")
+        assert profile is not None
+        kwargs = {
+            "base_url": "http://localhost:8000/v1",
+            "model_id": "my-model",
+            "context_length": 32768,
+        }
+
+        setup_agent_config(profile, **kwargs)
+        summary = setup_agent_config(profile, **kwargs)
+
+        assert summary == (
+            f"Already configured at {tmp_path / 'config.toml'}; no file changes needed"
+        )
+
+
+class TestIdempotentSetupSummary:
+    def test_repeated_json_setup_reports_no_file_changes(self, tmp_path):
+        profile = AgentProfile(
+            name="opencode",
+            display_name="OpenCode",
+            config=AgentConfigSpec(
+                type="json",
+                path=str(tmp_path / "opencode.json"),
+                template='{"model": "{model_id}", "baseURL": "{base_url}"}\n',
+            ),
+        )
+
+        setup_agent_config(profile, "http://localhost:8000/v1", "my-model")
+        summary = setup_agent_config(profile, "http://localhost:8000/v1", "my-model")
+
+        assert summary == (
+            f"Already configured at {tmp_path / 'opencode.json'}; "
+            "no file changes needed"
+        )
+
+    def test_cli_does_not_claim_repeated_setup_wrote_config(self, monkeypatch, capsys):
+        from rapid_mlx import cli
+        from rapid_mlx.agents import adapter
+
+        profile = AgentProfile(name="opencode", display_name="OpenCode")
+        monkeypatch.setattr("rapid_mlx.agents.get_profile", lambda _name: profile)
+        monkeypatch.setattr(
+            adapter,
+            "setup_agent_config",
+            lambda *_args, **_kwargs: (
+                "Already configured at /tmp/opencode.json; no file changes needed"
+            ),
+        )
+
+        cli.agents_command(
+            SimpleNamespace(
+                agent_name="opencode",
+                base_url="http://localhost:8000/v1",
+                test=False,
+                setup=True,
+                model="my-model",
+                agent_version=None,
+                dry_run=False,
+                yes=True,
+                no_check=True,
+            )
+        )
+
+        output = capsys.readouterr().out
+        assert "OpenCode is already configured." in output
+        assert "OpenCode configured!" not in output

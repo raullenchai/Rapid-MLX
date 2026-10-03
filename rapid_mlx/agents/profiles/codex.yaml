@@ -27,6 +27,11 @@ config:
     # the first turn otherwise uses flagship fallback metadata before the
     # Rapid-MLX /models request completes.
     model_catalog_json = "{model_catalog_path}"
+    # Fresh Codex installs otherwise default non-interactive runs to read-only,
+    # which lets the agent inspect a repository but prevents it from making the
+    # edits the user asked for. Existing explicit sandbox choices are preserved
+    # by the TOML merge path.
+    sandbox_mode = "workspace-write"
 
     [model_providers.rapid-mlx]
     name = "Rapid-MLX (local)"

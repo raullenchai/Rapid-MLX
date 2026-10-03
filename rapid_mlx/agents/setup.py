@@ -224,7 +224,7 @@ def build_setup_plan(
         loaded: dict[str, Any] = launch_common.load_json_lenient(path)
         before: dict[str, Any] | list[Any] = loaded
         after: dict[str, Any] | list[Any] = claude_code.patched_config(
-            loaded, base_url, model
+            loaded, base_url, model, context_length=context_length
         )
         return SetupPlan(
             "claude-code", "Claude Code", path, before, after, base_url, model

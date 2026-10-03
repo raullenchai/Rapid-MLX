@@ -116,6 +116,8 @@ def write_or_patch_config(
       the default model id; the rapid-mlx server accepts any
       ``claude-*`` model name and routes to the actually-loaded engine,
       so this is informational rather than enforced).
+    * ``env.CLAUDE_CODE_MAX_CONTEXT_TOKENS`` → the server-reported context
+      limit when setup has one, avoiding a guessed fallback for local model ids.
 
     All other keys (``permissions``, ``apiKeyHelper``, ``mcp_servers``,
     custom shortcuts) round-trip untouched.
@@ -137,6 +139,8 @@ def patched_config(
     server_url: str,
     model: str,
     api_key: str = "sk-noop",
+    *,
+    context_length: int | None = None,
 ) -> dict[str, Any]:
     """Return the Claude settings we would write, without touching disk."""
     existing = dict(existing)
@@ -155,6 +159,15 @@ def patched_config(
     env["ANTHROPIC_API_KEY"] = api_key
     env["ANTHROPIC_AUTH_TOKEN"] = ""
     env["ANTHROPIC_MODEL"] = model
+    # Claude Code cannot look up arbitrary local model ids in its bundled
+    # catalog. Supplying the server-reported limit prevents its first-run
+    # unknown-model warning from falling back to a guessed context window.
+    if (
+        isinstance(context_length, int)
+        and not isinstance(context_length, bool)
+        and context_length > 0
+    ):
+        env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(context_length)
     existing["env"] = env
 
     return existing
