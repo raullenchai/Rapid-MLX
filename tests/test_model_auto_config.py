@@ -2854,7 +2854,8 @@ class TestCheckpointMetadataFallback:
         config = detect_model_config("/tmp/Qwen3.8-tests/Llama-model")
 
         assert config is not None
-        assert config.tool_call_parser != "qwen3_coder_xml"
+        assert config.tool_call_parser == "llama"
+        assert config.reasoning_parser is None
 
     def test_qwen38_checkpoint_inside_directory_named_snapshots(self, monkeypatch):
         """A storage parent called snapshots must not hide the checkpoint name."""
@@ -2884,7 +2885,25 @@ class TestCheckpointMetadataFallback:
         config = detect_model_config("/tmp/Qwen3.8-tests/snapshot/Llama-model")
 
         assert config is not None
-        assert config.tool_call_parser != "qwen3_coder_xml"
+        assert config.tool_call_parser == "llama"
+        assert config.reasoning_parser is None
+
+    def test_qwen38_parent_keeps_dense_qwen35_safety_pin(self, monkeypatch):
+        monkeypatch.setattr(
+            auto_config_mod,
+            "read_model_metadata",
+            lambda _name: self._metadata(
+                {"model_type": "qwen3_5", "layer_types": ["linear_attention"]},
+                None,
+            ),
+        )
+
+        config = detect_model_config("/tmp/Qwen3.8-tests/Qwen3.5-4B")
+
+        assert config is not None
+        assert config.is_hybrid is False
+        assert config.is_hybrid_explicit is True
+        assert config.tool_call_parser == "hermes"
 
     def test_incomplete_template_is_not_advertised_as_native_tools(self, monkeypatch):
         # The template PARSES successfully (``{% endif %}`` is present), but the

@@ -1207,7 +1207,13 @@ def _detect_metadata_config(
     # avoid the legacy scheduler wedge.  Qwen3.8's official aliases and MTP
     # path use the SSM-safe engine and must retain the truthful architecture
     # classification even when served from a local snapshot path.
-    is_qwen38 = bool(re.search(r"qwen[._-]?3[._]8", model_path, re.IGNORECASE))
+    is_qwen38 = bool(
+        re.search(
+            r"qwen[._-]?3[._]8(?=$|[^0-9])",
+            _extract_model_name_segment(model_path),
+            re.IGNORECASE,
+        )
+    )
 
     if "qwen4_exp" in model_types:
         settings.update(
@@ -1432,7 +1438,10 @@ def detect_model_config(model_path: str) -> ModelConfig | None:
         return cfg
 
     for pattern, config in _MODEL_PATTERNS:
-        if not pattern.search(model_path):
+        # Qwen family markers belong to the checkpoint name; an organization
+        # or storage parent can mention Qwen without changing the checkpoint.
+        match_path = name_segment if pattern.pattern.startswith("qwen") else model_path
+        if not pattern.search(match_path):
             continue
         if config is _R1_DISTILL_FAMILY_SENTINEL:
             if not re.search(r"deepseek.*r1.*distill", name_segment, re.I):
