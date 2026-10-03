@@ -10,10 +10,11 @@ import warnings
 
 _MAX_IMAGE_BYTES = 4 * 1024 * 1024
 _MAX_PIXELS = 16_777_216
+_MAX_TOTAL_PIXELS = 16_777_216
 _ALLOWED_MIME = {"image/png", "image/jpeg", "image/webp"}
 
 
-def _decode_image(value: str):
+def _decode_image(value: str, pixel_budget: list[int]):
     from PIL import Image
 
     if not isinstance(value, str) or not value.startswith("data:"):
@@ -36,10 +37,14 @@ def _decode_image(value: str):
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)
             with Image.open(io.BytesIO(raw)) as opened:
-                if opened.width * opened.height > _MAX_PIXELS:
+                pixels = opened.width * opened.height
+                if pixels > _MAX_PIXELS:
                     raise ValueError("Clef image exceeds the 16 MP pixel limit")
+                if pixels > pixel_budget[0]:
+                    raise ValueError("Clef media exceeds the 16 MP total pixel limit")
                 if opened.format.lower() not in {"png", "jpeg", "webp"}:
                     raise ValueError("Clef image format does not match the allowlist")
+                pixel_budget[0] -= pixels
                 return opened.convert("RGB")
     except (
         OSError,
@@ -49,17 +54,32 @@ def _decode_image(value: str):
         raise ValueError("invalid or oversized Clef image") from exc
 
 
-def decode_images(values: list[str]):
-    if len(values) > 8:
+def decode_media(images: list[str] | None, videos: list[list[str]] | None):
+    """Decode media under one pixel budget shared by images and video frames."""
+    images = images or []
+    videos = videos or []
+    if len(images) > 8:
         raise ValueError("Clef accepts at most 8 images")
-    return [_decode_image(value) for value in values]
+    if len(videos) > 2 or sum(map(len, videos)) > 32:
+        raise ValueError("Clef accepts at most 2 videos and 32 frames total")
+    if any(len(frames) < 2 for frames in videos):
+        raise ValueError("Clef videos must contain at least two frames")
+    pixel_budget = [_MAX_TOTAL_PIXELS]
+    decoded_images = [_decode_image(value, pixel_budget) for value in images]
+    decoded_videos = []
+    if videos:
+        import numpy as np
+
+        decoded_videos = [
+            [np.asarray(_decode_image(frame, pixel_budget)) for frame in frames]
+            for frames in videos
+        ]
+    return decoded_images, decoded_videos
+
+
+def decode_images(values: list[str]):
+    return decode_media(values, None)[0]
 
 
 def decode_videos(values: list[list[str]]):
-    import numpy as np
-
-    if len(values) > 2 or sum(map(len, values)) > 32:
-        raise ValueError("Clef accepts at most 2 videos and 32 frames total")
-    if any(len(frames) < 2 for frames in values):
-        raise ValueError("Clef videos must contain at least two frames")
-    return [[np.asarray(_decode_image(frame)) for frame in frames] for frames in values]
+    return decode_media(None, values)[1]

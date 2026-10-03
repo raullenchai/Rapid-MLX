@@ -23,15 +23,20 @@
   and rank requests all returned 200; see
   `docs/engineering/performance/2026-10-03-clef-family-m3-ultra-dogfood.md`
   for inputs, outputs, timings, and memory.
-- Local Clef tests pass (7/7); repository Ruff lint/format and the pinned
+- Local Clef tests pass (16/16); repository Ruff lint/format and the pinned
   shrink-only mypy budget pass after CI fixes. The optional Torch tests skip
   in the default test matrix when the `[clef]` extra is absent.
+- Independent adversarial review found that the per-frame pixel cap allowed
+  excessive aggregate decoded memory. The backend now shares a 16 MP decoded
+  pixel budget across every image and video frame in one request, checked
+  before RGB expansion. The guide states both this budget and the existing
+  8 MiB whole-request body limit. Unit and route tests cover mixed media.
 
 ## Remaining qualification
 
 - Both model sizes now work on M3 Ultra, but this is not a Mac hardware
-  qualification matrix. Real video decision quality and concurrency remain
-  unmeasured.
+  qualification matrix. Broader real-video decision quality and sustained
+  concurrent traffic remain unmeasured.
 - The pinned vendor source now has an exact SHA-256 test and is omitted from
   changed-lines coverage. Rapid-owned Clef code reaches 100% local diff
   coverage; the updated Apple CI coverage gate has not completed yet.

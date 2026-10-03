@@ -16,7 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from rapid_mlx.clef.media import decode_images, decode_videos
+from rapid_mlx.clef.media import decode_images, decode_media, decode_videos
 from rapid_mlx.cli import _resolve_system_one_backend, build_parser
 from rapid_mlx.system_one.backends import ClefBackend
 from rapid_mlx.system_one.schema import Question, SystemOneRequest
@@ -153,6 +153,19 @@ def test_clef_uses_official_joint_head_result(monkeypatch):
     assert video_response.status_code == 200
     assert observed["request"]["videos"][0][0].shape == (2, 2, 3)
 
+    monkeypatch.setattr("rapid_mlx.clef.media._MAX_TOTAL_PIXELS", 8)
+    mixed_response = client.post(
+        "/v1/systemone",
+        json={
+            "state": "Review image and frames",
+            "images": [_png_data_url()],
+            "videos": [[_png_data_url(), _png_data_url()]],
+            "questions": {"approve": {"type": "noul"}},
+        },
+    )
+    assert mixed_response.status_code == 422
+    assert "total pixel limit" in mixed_response.text
+
 
 @pytest.mark.parametrize("device,expected_device", [("cpu", "cpu"), ("gpu", "mps")])
 def test_clef_backend_loads_pinned_checkpoint_without_remote_code(
@@ -231,6 +244,19 @@ def test_clef_media_decodes_locally_and_rejects_urls():
         assert "data URL" in str(exc)
     else:
         raise AssertionError("remote media URL was accepted")
+
+
+def test_clef_media_has_one_decoded_pixel_budget_for_images_and_video(monkeypatch):
+    png = _png_data_url()
+    monkeypatch.setattr("rapid_mlx.clef.media._MAX_TOTAL_PIXELS", 8)
+    assert len(decode_images([png, png])) == 2
+    assert len(decode_videos([[png, png]])) == 1
+    with pytest.raises(ValueError, match="total pixel limit"):
+        decode_images([png, png, png])
+    with pytest.raises(ValueError, match="total pixel limit"):
+        decode_videos([[png, png, png]])
+    with pytest.raises(ValueError, match="total pixel limit"):
+        decode_media([png], [[png, png]])
 
 
 def test_clef_media_rejects_invalid_and_oversized_inputs(monkeypatch):

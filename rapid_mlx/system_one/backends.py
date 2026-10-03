@@ -187,7 +187,7 @@ class ClefBackend:
                 "Clef uses checkpoint calibration and requires temperature=1"
             )
 
-        from rapid_mlx.clef.media import decode_images, decode_videos
+        from rapid_mlx.clef.media import decode_media
         from rapid_mlx.clef.vendor.joint_schema_model import systemone
 
         request = {
@@ -198,10 +198,12 @@ class ClefBackend:
                 for key, value in questions.items()
             },
         }
-        if images:
-            request["images"] = decode_images(images)
-        if videos:
-            request["videos"] = decode_videos(videos)
+        if images or videos:
+            decoded_images, decoded_videos = decode_media(images, videos)
+            if decoded_images:
+                request["images"] = decoded_images
+            if decoded_videos:
+                request["videos"] = decoded_videos
         with self._lock:
             result = systemone(self._model, self._processor, request)
         result["usage"]["billing_units"] = len(questions)
