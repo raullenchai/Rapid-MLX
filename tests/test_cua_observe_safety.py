@@ -103,6 +103,17 @@ def test_focus_only_never_pixel_clicks_when_axfocused_fails(monkeypatch, role):
     assert exc.value.code == "synthetic_input_blocked"
 
 
+def test_focus_only_rejects_coordinate_click(monkeypatch):
+    monkeypatch.setattr(
+        backend, "_pixel_click", lambda *a, **k: pytest.fail("must not click")
+    )
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend.click(
+            "App", x=10, y=20, expected_snapshot=_snapshot({}), focus_only=True
+        )
+    assert exc.value.code == "invalid_argument"
+
+
 def test_plain_click_keeps_semantic_press(monkeypatch):
     snapshot = _snapshot({"role": "AXButton", "label": "OK", "actions": ["AXPress"]})
     pressed = []

@@ -2110,6 +2110,12 @@ def click(
             verification="synthetic click emitted; outcome not asserted",
             include_post_state=include_post_state,
         )
+    if focus_only:
+        # Focus without commit needs an exact AX element; a bare point can
+        # only be clicked.
+        raise ComputerUseError(
+            "invalid_argument", "focus_only requires an element index, not x/y"
+        )
     if x is None or y is None:
         raise ComputerUseError(
             "invalid_argument", "click requires --element-index or both --x and --y"
