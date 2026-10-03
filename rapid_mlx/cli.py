@@ -16705,7 +16705,10 @@ def main():
                 print(f"\n  Error: {exc.user_message()}", file=sys.stderr)
                 raise SystemExit(2) from None
 
-            if not _repo_cached and _offline_complete_cached_snapshot(args.model) is None:
+            if (
+                not _repo_cached
+                and _offline_complete_cached_snapshot(args.model) is None
+            ):
                 # Offline + uncached (#2357): short-circuit BEFORE the size
                 # estimate + ``confirm_or_abort``. ``estimate_repo_size_bytes``
                 # makes a silent HF ``model_info`` round-trip that returns None
