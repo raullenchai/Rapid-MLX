@@ -116,6 +116,8 @@ _MAX_REF_BYTES: int = 256
 class ExternalCacheProbeError(RuntimeError):
     """An external Hugging Face cache could not be read during startup."""
 
+    path: str
+
     def user_message(self) -> str:
         return (
             "Rapid-MLX cannot read the Hugging Face cache on the external "
