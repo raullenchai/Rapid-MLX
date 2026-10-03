@@ -2841,6 +2841,19 @@ class TestCheckpointMetadataFallback:
         assert config.tool_call_parser == "qwen3_coder_xml"
         assert config.reasoning_parser == "qwen3"
 
+    def test_qwen38_parent_directory_does_not_override_other_model(self, monkeypatch):
+        """Only the checkpoint name, not its parent, may select Qwen parsers."""
+        monkeypatch.setattr(
+            auto_config_mod,
+            "read_model_metadata",
+            lambda _name: self._metadata({"model_type": "llama"}, None),
+        )
+
+        config = detect_model_config("/tmp/Qwen3.8-tests/Llama-model")
+
+        assert config is not None
+        assert config.tool_call_parser != "qwen3_coder_xml"
+
     def test_incomplete_template_is_not_advertised_as_native_tools(self, monkeypatch):
         # The template PARSES successfully (``{% endif %}`` is present), but the
         # XML tool contract is genuinely INCOMPLETE: it opens
