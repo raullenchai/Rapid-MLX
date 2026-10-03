@@ -247,6 +247,7 @@ def _load() -> dict | None:
         ),
         "set_location": _bind(cg, "CGEventSetLocation", [c_void_p, _CGPoint], None),
         "set_flags": _bind(cg, "CGEventSetFlags", [c_void_p, c_uint64], None),
+        "event_type": _bind(cg, "CGEventGetType", [c_void_p], c_uint32),
         "release": _bind(cf, "CFRelease", [c_void_p], None),
         "malloc_size": _bind(libsystem, "malloc_size", [c_void_p], c_size_t),
         "malloc_zone_from_ptr": _bind(
@@ -762,7 +763,11 @@ def _event_record(ev: int) -> int | None:
     is unsafe: on macOS 26 the event object is 32 bytes (offset 32 is out of
     bounds) and offset 16 holds a non-pointer. Only accept a word that lies
     inside the event allocation and points at a live malloc block of record
-    size; otherwise the caller posts without the envelope.
+    size whose header is a record's: ``u32 @4`` is the record length 0xF8
+    (the same header yabai writes into its focus records) and ``u32 @8`` is
+    this event's own ``CGEventType`` (measured on macOS 26 for key down/up,
+    mouse move and mouse down). Otherwise the caller posts without the
+    envelope rather than hand an unrelated allocation to the auth factory.
 
     ``malloc_zone_from_ptr`` is safe on arbitrary addresses (NULL when no zone
     owns them), so ``malloc_size`` is only ever asked about real heap blocks.
@@ -778,9 +783,23 @@ def _event_record(ev: int) -> int | None:
         if offset + 8 > event_bytes:
             continue
         value = c_void_p.from_address(int(ev) + offset).value
-        if value and zone_of(value) and malloc_size(value) >= _MIN_RECORD_BYTES:
+        if (
+            value
+            and zone_of(value)
+            and malloc_size(value) >= _MIN_RECORD_BYTES
+            and _record_header_matches(value, ev)
+        ):
             return value
     return None
+
+
+def _record_header_matches(record: int, ev: int) -> bool:
+    event_type = _syms().get("event_type")
+    if event_type is None:
+        return False
+    length = c_uint32.from_address(record + 4).value
+    kind = c_uint32.from_address(record + 8).value
+    return length == _MIN_RECORD_BYTES and kind == int(event_type(ev))
 
 
 def _post_key_event(pid: int, ev: int, *, authenticated: bool) -> None:

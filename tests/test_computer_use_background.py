@@ -300,10 +300,14 @@ def test_scroll_fails_when_primer_cannot_be_created(monkeypatch):
 def test_event_record_rejects_out_of_bounds_and_non_heap_words(monkeypatch):
     import ctypes
 
+    record = (ctypes.c_uint8 * 256)()
+    record[4] = 0xF8  # record length
+    record[8] = 10  # kCGEventKeyDown
+    rec = ctypes.addressof(record)
     event = (ctypes.c_uint64 * 4)()  # a 32-byte event: offsets 0..24 only
     event[2] = 0xADE49453  # offset 16: junk, not a malloc block
-    event[3] = 0x1000  # offset 24: candidate record pointer
-    sizes = {ctypes.addressof(event): 32, 0x1000: 256}
+    event[3] = rec  # offset 24: candidate record pointer
+    sizes = {ctypes.addressof(event): 32, rec: 256}
 
     def malloc_size(ptr):
         assert ptr in sizes, "malloc_size must only see zone-owned pointers"
@@ -312,13 +316,36 @@ def test_event_record_rejects_out_of_bounds_and_non_heap_words(monkeypatch):
     syms = {
         "malloc_size": malloc_size,
         "malloc_zone_from_ptr": lambda ptr: 1 if ptr in sizes else None,
+        "event_type": lambda ev: 10,
     }
     monkeypatch.setattr(background_input, "_syms", lambda: syms)
-    assert background_input._event_record(ctypes.addressof(event)) == 0x1000
-    sizes[0x1000] = 16  # too small to be a record
+    assert background_input._event_record(ctypes.addressof(event)) == rec
+    syms["event_type"] = lambda ev: 11  # header type is not this event's
+    assert background_input._event_record(ctypes.addressof(event)) is None
+    syms["event_type"] = lambda ev: 10
+    record[4] = 0x10  # header length is not a record's
+    assert background_input._event_record(ctypes.addressof(event)) is None
+    record[4] = 0xF8
+    sizes[rec] = 16  # too small to be a record
     assert background_input._event_record(ctypes.addressof(event)) is None
     syms["malloc_zone_from_ptr"] = None
     assert background_input._event_record(ctypes.addressof(event)) is None
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="needs CoreGraphics")
+def test_event_record_found_on_real_events():
+    if not background_input.skylight_available():
+        pytest.skip("SkyLight SPI unavailable on this host")
+    s = background_input._syms()
+    for ev in (
+        s["key_event"](s["source"], 36, True),
+        s["key_event"](s["source"], 36, False),
+        s["mouse_event"](s["source"], 1, background_input._CGPoint(1, 1), 0),
+    ):
+        try:
+            assert background_input._event_record(ev) is not None
+        finally:
+            s["release"](ev)
 
 
 def test_restore_skips_when_user_moved_to_third_app(monkeypatch):
@@ -737,14 +764,23 @@ def test_live_background_click_types_into_calculator_without_stealing_focus():
         AS.AXUIElementPerformAction(button("All Clear"), "AXPress")
         time.sleep(0.3)
         for digit in "73":
-            assert background_input.click(pid, wid, *center(button(digit)))
+            # One production transaction per click: focus is handed back
+            # before the next click, and checked every time.
+            with background_input.GESTURE_LOCK:
+                try:
+                    assert background_input.click(
+                        pid, wid, *center(button(digit)), front_wid=previous[1]
+                    )
+                    time.sleep(0.05)
+                finally:
+                    restored = backend._restore_user_focus(previous, pid, wid)
+            assert restored is not False
             time.sleep(0.25)
-        restored = backend._restore_user_focus(previous, pid, wid)
-        assert restored is not False
+            assert workspace.frontmostApplication().processIdentifier() == front_before
+            if previous[1]:
+                # Keyboard focus is back on the user's window, not Calculator.
+                assert backend._key_window_id(previous[0]) == previous[1]
         time.sleep(0.4)
-        if previous and previous[1]:
-            # Keyboard focus is back on the user's own window, not Calculator.
-            assert backend._key_window_id(previous[0]) == previous[1]
         shown = []
         find(
             app,
