@@ -193,7 +193,7 @@ def test_coordinate_click_routes_to_pid_without_topmost_check(monkeypatch, backg
     assert background[0] == (
         "click",
         (4, 101, 50.0, 60.0),
-        {"button": "left", "count": 1},
+        {"button": "left", "count": 1, "window_origin": (0.0, 0.0)},
     )
     # The user's front window (pid 999) gets keyboard focus back.
     assert background[1] == ("restore", (999, 555, 4, 101), {})
@@ -212,6 +212,88 @@ def test_no_focus_restore_when_target_is_already_front(monkeypatch, background):
     result = backend.click("App", x=5, y=5, expected_snapshot=snapshot)
     assert [call[0] for call in background] == ["click"]
     assert result["focus_restored"] is None
+
+
+def test_focus_restored_to_other_window_of_same_app(monkeypatch, background):
+    # The user edits window 555 of the same app while the agent clicks 101:
+    # focus-without-raise made 101 key, so 555 must get focus back.
+    snapshot = _snapshot()
+    monkeypatch.setattr(backend, "_frontmost_window", lambda: (4, 555))
+    monkeypatch.setattr(
+        backend, "_validate_snapshot_window", lambda snap, **k: snap["window"]
+    )
+    result = backend.click("App", x=5, y=5, expected_snapshot=snapshot)
+    assert background[1] == ("restore", (4, 555, 4, 101), {})
+    assert result["focus_restored"] is True
+
+
+def test_focus_restored_even_when_click_synthesis_fails(monkeypatch, background):
+    snapshot = _snapshot()
+    monkeypatch.setattr(
+        backend, "_validate_snapshot_window", lambda snap, **k: snap["window"]
+    )
+
+    def explode(*_a, **_k):
+        raise OSError("SPI failed after focusing the target")
+
+    monkeypatch.setattr(background_input, "click", explode)
+    with pytest.raises(OSError):
+        backend.click("App", x=5, y=5, expected_snapshot=snapshot)
+    assert background == [("restore", (999, 555, 4, 101), {})]
+
+
+def test_focus_restore_runs_inside_the_gesture_transaction(monkeypatch, background):
+    snapshot = _snapshot()
+    monkeypatch.setattr(
+        backend, "_validate_snapshot_window", lambda snap, **k: snap["window"]
+    )
+    owned = []
+    monkeypatch.setattr(
+        background_input,
+        "restore_focus_after_without_raise",
+        lambda *a: owned.append(background_input.GESTURE_LOCK._is_owned()) or True,
+    )
+    backend.click("App", x=5, y=5, expected_snapshot=snapshot)
+    assert owned == [True]
+
+
+def _fake_syms(monkeypatch):
+    log = []
+    syms = {
+        "source": 1,
+        "mouse_event": lambda *a: 7,
+        "scroll_event": lambda *a: 8,
+        "set_field": lambda *a: None,
+        "set_flags": lambda *a: None,
+        "set_location": lambda *a: None,
+        "set_window_location": lambda ev, x, y: log.append((ev, x, y)),
+        "sl_post": lambda *a: None,
+        "public_post": lambda *a: None,
+        "release": lambda *a: None,
+    }
+    monkeypatch.setattr(background_input, "_syms", lambda: syms)
+    monkeypatch.setattr(background_input, "activate_without_raise", lambda *a: True)
+    monkeypatch.setattr(background_input.time, "sleep", lambda *_: None)
+    return log
+
+
+def test_right_click_and_scroll_stamp_window_local_point(monkeypatch):
+    log = _fake_syms(monkeypatch)
+    assert background_input.click(
+        4, 101, 550.0, 300.0, button="right", window_origin=(500.0, 200.0)
+    )
+    assert {(x, y) for _, x, y in log} == {(50.0, 100.0)}
+    log.clear()
+    assert background_input.scroll(
+        4, 101, 550.0, 300.0, lines_y=-3, window_origin=(500.0, 200.0)
+    )
+    assert {(x, y) for _, x, y in log} == {(50.0, 100.0)}
+
+
+def test_left_click_keeps_screen_point_recipe(monkeypatch):
+    log = _fake_syms(monkeypatch)
+    assert background_input.click(4, 101, 550.0, 300.0, window_origin=(500.0, 200.0))
+    assert {(x, y) for _, x, y in log} == {(550.0, 300.0), (-1.0, -1.0)}
 
 
 def test_foreground_mode_keeps_global_hid_and_topmost_check(monkeypatch):
@@ -299,7 +381,7 @@ def test_element_without_semantic_action_gets_routed_pixel_gesture(
     assert background[0] == (
         "click",
         (4, 101, 9.0, 8.0),
-        {"button": "right", "count": 1},
+        {"button": "right", "count": 1, "window_origin": (0.0, 0.0)},
     )
     assert result["button"] == "right"
     assert result["element_index"] == 0
@@ -398,11 +480,16 @@ def test_scroll_routes_wheel_to_pid(monkeypatch, background):
     )
     result = backend.scroll("App", "down", expected_snapshot=snapshot)
     assert background == [
-        ("scroll", (4, 101, 200.0, 150.0), {"lines_y": -10, "lines_x": 0})
+        (
+            "scroll",
+            (4, 101, 200.0, 150.0),
+            {"lines_y": -10, "lines_x": 0, "window_origin": (0.0, 0.0)},
+        )
     ]
     assert result["mode"] == "SkyLight-scroll"
     backend.scroll("App", "left", pages=0.5, expected_snapshot=snapshot)
-    assert background[-1][2] == {"lines_y": 0, "lines_x": 5}
+    assert background[-1][2]["lines_x"] == 5
+    assert background[-1][2]["lines_y"] == 0
 
 
 @pytest.mark.parametrize(

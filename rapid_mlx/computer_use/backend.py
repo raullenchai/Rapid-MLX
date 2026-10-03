@@ -1123,11 +1123,13 @@ def _restore_user_focus(
     """Hand keyboard focus back to the user's window after a background click.
 
     Returns None when there was nothing to restore (the target already was the
-    user's front window), otherwise whether restoration was accepted.
+    user's front window), otherwise whether restoration was accepted. A
+    different window of the same app is restored too: focus-without-raise made
+    the target window key, and the user's typing must not follow it.
     """
-    if previous is None or previous[0] == pid:
+    if previous is None or tuple(previous) == (pid, window_id):
         return None
-    if background_input.front_process_matches(pid, window_id):
+    if previous[0] != pid and background_input.front_process_matches(pid, window_id):
         # The target activated itself in response to the click (some apps do
         # on mouseDown); re-activate the user's app rather than leave it behind.
         running = ax_driver._application_for_pid(previous[0])
@@ -1140,6 +1142,13 @@ def _restore_user_focus(
     return background_input.restore_focus_after_without_raise(
         previous[0], previous[1], pid, window_id
     )
+
+
+def _window_origin(window: dict) -> tuple[float, float] | None:
+    left, top = window.get("x"), window.get("y")
+    if isinstance(left, (int, float)) and isinstance(top, (int, float)):
+        return float(left), float(top)
+    return None
 
 
 def _pixel_click(
@@ -1158,18 +1167,33 @@ def _pixel_click(
     topmost at the point. There is no silent fallback between the two.
     """
     if _background_delivery(snapshot):
-        _validate_snapshot_window(snapshot, point=(x, y), require_topmost=False)
+        window = _validate_snapshot_window(
+            snapshot, point=(x, y), require_topmost=False
+        )
         pid, window_id = _target_ids(snapshot)
-        previous = _frontmost_window()
-        if not background_input.click(
-            pid, window_id, float(x), float(y), button=button, count=count
-        ):
-            raise ComputerUseError(
-                "action_failed", "background click could not be synthesized"
-            )
-        # Let the target consume the stream before focus moves back.
-        time.sleep(0.05)
-        restored = _restore_user_focus(previous, pid, window_id)
+        # One transaction under the gesture lock: concurrent clicks must not
+        # restore focus in the middle of each other's streams, and focus is
+        # handed back even when synthesis fails after the target was focused.
+        with background_input.GESTURE_LOCK:
+            previous = _frontmost_window()
+            restored = None
+            try:
+                if not background_input.click(
+                    pid,
+                    window_id,
+                    float(x),
+                    float(y),
+                    button=button,
+                    count=count,
+                    window_origin=_window_origin(window),
+                ):
+                    raise ComputerUseError(
+                        "action_failed", "background click could not be synthesized"
+                    )
+                # Let the target consume the stream before focus moves back.
+                time.sleep(0.05)
+            finally:
+                restored = _restore_user_focus(previous, pid, window_id)
         return {
             "mode": "SkyLight-click",
             "route": ROUTE_PID,
@@ -3176,7 +3200,7 @@ def scroll(
         # A wheel event routed to the exact window is hit-tested at the point,
         # so neither focus nor occlusion matters (and nested scrollers that
         # never take keyboard focus still scroll).
-        _validate_snapshot_window(snapshot, point=point, require_topmost=False)
+        window = _validate_snapshot_window(snapshot, point=point, require_topmost=False)
         pid, cg_window_id = _target_ids(snapshot)
         vertical = direction in {"up", "down"}
         if not background_input.scroll(
@@ -3186,6 +3210,7 @@ def scroll(
             float(point[1]),
             lines_y=delta if vertical else 0,
             lines_x=0 if vertical else delta,
+            window_origin=_window_origin(window),
         ):
             raise ComputerUseError(
                 "action_failed", "background scroll could not be synthesized"

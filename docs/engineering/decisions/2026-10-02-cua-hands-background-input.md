@@ -55,9 +55,9 @@ through it whenever it is available.
 | Gesture | Background route | Notes |
 |---|---|---|
 | Left click | focus-without-raise record → stamped `mouseMoved` primer → `(-1,-1)` decoy down/up → target down/up via `SLEventPostToPid` | Stamped fields: f40 target pid, f51/f91/f92 window, f58 click group |
-| Right / middle click | primer → down/up with the matching button number, posted via SkyLight **and** `CGEventPostToPid` | Right-down stamped as button 0 arrives as a left click |
+| Right / middle click | primer → down/up with the matching button number, posted via SkyLight **and** `CGEventPostToPid` | Right-down stamped as button 0 arrives as a left click; window-local point stamped |
 | Double click | clickState 1 → 2 pairs | `AXOpen` first when the element advertises it |
-| Wheel scroll | primer + ≤10-line notches, both posts | Hit-tested at the point, so nested scrollers work |
+| Wheel scroll | primer + ≤10-line notches, both posts | Window-local point stamped (a screen point does nothing once the window is off the origin — measured); nested scrollers work |
 | Text | keycode-0 + `CGEventKeyboardSetUnicodeString` per scalar, flags forced to 0 | Bypasses layout and IME; CJK and emoji arrive literally |
 | Keys / non-Cmd chords | keycode + exact flags to the pid, with `SLSEventAuthenticationMessage` | Envelope only on macOS 15+ |
 | Cmd chords | **foreground (HID)** | See "Measured limits" |
@@ -80,7 +80,10 @@ Validation is per route:
 - **Foreground:** keeps every historical check and call shape.
 
 Focus: after a background click, `_restore_user_focus` hands keyboard focus
-back to the user's front window. It uses the reverse focus record, or
+back to the user's front window, including another window of the same app.
+Capture, gesture and restoration form one transaction under the reentrant
+`GESTURE_LOCK`, and restoration runs in a `finally` so a failed synthesis
+never leaves the user's focus displaced. It uses the reverse focus record, or
 re-activates the user's app if the target activated itself on click.
 
 Results now carry:

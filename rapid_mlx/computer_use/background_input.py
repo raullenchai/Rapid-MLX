@@ -326,8 +326,10 @@ _SYMS: dict | None = None
 _LOADED = False
 _LOAD_LOCK = threading.Lock()
 # One gesture at a time: interleaved primers/decoys from two callers would
-# corrupt each other's click-state and focus records.
-_GESTURE_LOCK = threading.Lock()
+# corrupt each other's click-state and focus records. Reentrant so a caller
+# can hold it across a whole focus transaction (capture -> gesture -> restore).
+GESTURE_LOCK = threading.RLock()
+_GESTURE_LOCK = GESTURE_LOCK
 
 
 def _syms() -> dict | None:
@@ -453,7 +455,14 @@ def restore_focus_after_without_raise(
 # --- mouse -------------------------------------------------------------------
 
 
-def _stamp_mouse(ev: int, pid: int, wid: int, step: MouseStep, group: int) -> None:
+def _stamp_mouse(
+    ev: int,
+    pid: int,
+    wid: int,
+    step: MouseStep,
+    group: int,
+    window_point: tuple[float, float] | None = None,
+) -> None:
     s = _syms()
     set_field = s["set_field"]
     set_field(ev, _F_PHASE, step.phase)
@@ -465,9 +474,19 @@ def _stamp_mouse(ev: int, pid: int, wid: int, step: MouseStep, group: int) -> No
     set_field(ev, _F_WINDOW_UNDER, int(wid))
     set_field(ev, _F_WINDOW_HANDLER, int(wid))
     set_field(ev, _F_CLICK_GROUP, group)
-    # Screen-space point: WindowServer derives the receiving window's local
-    # point during routing (cua skylight.rs::set_window_location).
-    s["set_window_location"](ev, float(step.x), float(step.y))
+    # The left-click recipe stamps the screen point (cua's Chromium route);
+    # right/middle/scroll stamp the window-local point, as cua's
+    # *_with_window_local primitives do, so the hit-test uses it directly.
+    wx, wy = window_point if window_point is not None else (step.x, step.y)
+    s["set_window_location"](ev, float(wx), float(wy))
+
+
+def _window_point(
+    x: float, y: float, origin: tuple[float, float] | None
+) -> tuple[float, float] | None:
+    if origin is None:
+        return None
+    return float(x) - float(origin[0]), float(y) - float(origin[1])
 
 
 def click(
@@ -479,13 +498,17 @@ def click(
     button: str = "left",
     count: int = 1,
     flags: int = 0,
+    window_origin: tuple[float, float] | None = None,
 ) -> bool:
     """Deliver a pixel click at screen point ``(x, y)`` inside window ``wid``.
 
     The target is made AppKit-active without being raised, the planned event
     stream is posted to the process, and nothing touches the hardware cursor.
     Returns False (posting nothing) when the SPI is unavailable. Focus is NOT
-    restored here; callers decide (see ``restore_focus_after_without_raise``).
+    restored here; callers decide (see ``restore_focus_after_without_raise``)
+    and should hold :data:`GESTURE_LOCK` across the whole transaction.
+    ``window_origin`` is the window's top-left in screen points; non-left
+    buttons stamp the window-local point derived from it.
     """
     s = _syms()
     if s is None or not wid:
@@ -505,7 +528,12 @@ def click(
             if not ev:
                 return False
             try:
-                _stamp_mouse(ev, pid, wid, step, group)
+                local = (
+                    None
+                    if button == "left"
+                    else _window_point(step.x, step.y, window_origin)
+                )
+                _stamp_mouse(ev, pid, wid, step, group, local)
                 if flags and step.phase == 3:
                     s["set_flags"](ev, int(flags))
                 s["sl_post"](int(pid), ev)
@@ -528,6 +556,7 @@ def scroll(
     *,
     lines_y: int = 0,
     lines_x: int = 0,
+    window_origin: tuple[float, float] | None = None,
 ) -> bool:
     """Wheel-scroll the element under screen point ``(x, y)`` of window ``wid``.
 
@@ -545,13 +574,15 @@ def scroll(
         return True
     ticks_y += [0] * (width - len(ticks_y))
     ticks_x += [0] * (width - len(ticks_x))
+    local = _window_point(x, y, window_origin)
+    wx, wy = local if local is not None else (x, y)
     with _GESTURE_LOCK:
         group = time.time_ns() & 0x7FFFFFFF
         primer = MouseStep(_MOUSE_MOVED, x, y, 2, 0, 0, 0.012)
         ev = s["mouse_event"](s["source"], _MOUSE_MOVED, _CGPoint(x, y), 0)
         if ev:
             try:
-                _stamp_mouse(ev, pid, wid, primer, group)
+                _stamp_mouse(ev, pid, wid, primer, group, local)
                 s["sl_post"](int(pid), ev)
                 s["public_post"](int(pid), ev)
             finally:
@@ -563,7 +594,7 @@ def scroll(
                 return False
             try:
                 s["set_location"](ev, _CGPoint(x, y))
-                s["set_window_location"](ev, float(x), float(y))
+                s["set_window_location"](ev, float(wx), float(wy))
                 s["set_field"](ev, _F_TARGET_PID, int(pid))
                 s["set_field"](ev, _F_WINDOW, int(wid))
                 s["set_field"](ev, _F_WINDOW_UNDER, int(wid))
