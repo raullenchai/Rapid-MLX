@@ -94,6 +94,7 @@ def test_clef_cli_starts_selected_backend(monkeypatch):
 
 def test_clef_uses_official_joint_head_result(monkeypatch):
     pytest.importorskip("torch")
+    from rapid_mlx.clef import media as clef_media
     from rapid_mlx.clef.vendor import joint_schema_model
 
     backend = object.__new__(ClefBackend)
@@ -103,6 +104,14 @@ def test_clef_uses_official_joint_head_result(monkeypatch):
     backend._processor = object()
     backend._lock = threading.Lock()
     observed = {}
+
+    original_decode_media = clef_media.decode_media
+
+    def guarded_decode_media(images, videos):
+        assert backend._lock.locked(), "media decoded before model lock"
+        return original_decode_media(images, videos)
+
+    monkeypatch.setattr(clef_media, "decode_media", guarded_decode_media)
 
     def fake_systemone(model, processor, request):
         observed.update(model=model, processor=processor, request=request)

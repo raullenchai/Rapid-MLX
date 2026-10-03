@@ -201,13 +201,15 @@ class ClefBackend:
                 for key, value in questions.items()
             },
         }
-        if images or videos:
-            decoded_images, decoded_videos = decode_media(images, videos)
-            if decoded_images:
-                request["images"] = decoded_images
-            if decoded_videos:
-                request["videos"] = decoded_videos
         with self._lock:
+            # Decode only after acquiring the model lock. Otherwise every
+            # queued request can hold an expanded RGB copy while it waits.
+            if images or videos:
+                decoded_images, decoded_videos = decode_media(images, videos)
+                if decoded_images:
+                    request["images"] = decoded_images
+                if decoded_videos:
+                    request["videos"] = decoded_videos
             result = systemone(self._model, self._processor, request)
         result["usage"]["billing_units"] = len(questions)
         return dict(result)

@@ -38,6 +38,10 @@
   Transformers specifier as packaging. A MIME declaration mismatch was also
   rejected. Both pinned full-weight checkpoints returned HTTP 200 for the new
   rank path on the M3 Ultra; the duplicate-charge action ranked first.
+- A further validation review found that requests could decode media while
+  waiting for the serialized model lock. Decoding now occurs inside that lock,
+  so only the active inference retains expanded media. The route test asserts
+  this locking invariant; Clef plus System One server tests pass (34/34).
 
 ## Remaining qualification
 
