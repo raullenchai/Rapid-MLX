@@ -1377,16 +1377,28 @@ def detect_model_config(model_path: str) -> ModelConfig | None:
     # this is only the direct-HF/local-path fallback.
     if re.search(r"qwen[._-]?3[._]8(?=$|[^0-9])", model_path, re.I):
         if metadata_cfg is not None:
+            # Metadata is authoritative for hybrid/MoE safety, but the
+            # architecture-only result can have no parsers even when the
+            # checkpoint's Qwen template emits <think> and nested XML calls.
+            # Keep experimental non-Qwen architectures on their own metadata
+            # policy (for example Flash-Next's qwen4_exp checkpoint).
+            if metadata_cfg.experimental:
+                return metadata_cfg
+            resolved = replace(
+                metadata_cfg,
+                tool_call_parser="qwen3_coder_xml",
+                reasoning_parser="qwen3",
+            )
             _log_resolution_once(
                 model_path,
                 "Auto-detected checkpoint metadata for "
-                f"'{model_path}' → tool_call_parser={metadata_cfg.tool_call_parser}, "
-                f"reasoning_parser={metadata_cfg.reasoning_parser}, "
-                f"is_hybrid={metadata_cfg.is_hybrid}",
+                f"'{model_path}' → tool_call_parser={resolved.tool_call_parser}, "
+                f"reasoning_parser={resolved.reasoning_parser}, "
+                f"is_hybrid={resolved.is_hybrid}",
             )
-            return metadata_cfg
+            return resolved
         return ModelConfig(
-            tool_call_parser="hermes",
+            tool_call_parser="qwen3_coder_xml",
             reasoning_parser="qwen3",
             is_hybrid=True,
             is_hybrid_explicit=True,

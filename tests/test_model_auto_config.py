@@ -2796,6 +2796,8 @@ class TestCheckpointMetadataFallback:
         assert config.is_hybrid is True
         assert config.is_hybrid_explicit is True
         assert config.supports_spec_decode is False
+        assert config.tool_call_parser == "qwen3_coder_xml"
+        assert config.reasoning_parser == "qwen3"
 
         monkeypatch.setattr(
             auto_config_mod,
@@ -2818,6 +2820,26 @@ class TestCheckpointMetadataFallback:
         assert flash.experimental is True
         assert "experimental" in format_profile_summary("local-flash-next", flash)
         assert "⚠ experimental" in format_profile_table("local-flash-next", flash)
+
+    def test_qwen38_community_repack_keeps_parsers_with_architecture_only_metadata(
+        self, monkeypatch
+    ):
+        """A cached checkpoint's hybrid metadata must not erase Qwen wire parsers."""
+        monkeypatch.setattr(
+            auto_config_mod,
+            "read_model_metadata",
+            lambda _name: self._metadata(
+                {"model_type": "qwen3_5", "layer_types": ["linear_attention"]},
+                None,
+            ),
+        )
+
+        config = detect_model_config("Foresee/Qwen3.8-9B-heretic-uncensored-4bit-MTPLX")
+
+        assert config is not None
+        assert config.is_hybrid is True
+        assert config.tool_call_parser == "qwen3_coder_xml"
+        assert config.reasoning_parser == "qwen3"
 
     def test_incomplete_template_is_not_advertised_as_native_tools(self, monkeypatch):
         # The template PARSES successfully (``{% endif %}`` is present), but the
