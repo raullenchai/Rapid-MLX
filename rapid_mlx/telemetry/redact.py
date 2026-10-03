@@ -144,19 +144,28 @@ def normalize_model_path(path: str) -> str:
 # HTTP-client fallbacks so e.g. an agent that rides ``python-httpx`` still
 # resolves to the agent, not ``python-httpx``.
 #
-# Task C (instrumentation-release) audit: candidate product UAs (kimi, codex,
-# opencode, gemini-cli, zed) were evaluated and intentionally NOT added — none
-# is provable, i.e. none sets a recognizable ``User-Agent`` substring; codex /
-# opencode (verified against the installed binaries) carry no product UA and
-# ride the underlying SDK (openai-rust, undici, ...) which the allowlist below
-# already buckets. Adding a marker here without a verified substring would be
-# body-based guessing, which the ``no caller free-text`` red-line forbids.
+# Prefix markers (``_CALLER_AGENT_PREFIXES``) exist for UAs where a substring
+# would over-match: pi sends ``pi (darwin 25.5.0; arm64)`` and a plain
+# ``"pi"`` substring would classify every ``api ...`` / "pip ..." UA as pi,
+# so the UA must START with ``"pi ("``.
+#
+# Verified against real captures (harness-lab 2026-10-02, ua-map.md):
+# codex 0.160.0 sends ``codex_exec/0.160.0 (Mac OS 26.5.1; arm64) unknown
+# (codex_exec; 0.160.0)`` and opencode 1.18.34 sends ``opencode/1.18.34
+# ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14`` — an earlier audit
+# recorded these two as carrying no product UA, which is out of date; both
+# now lead with a product token (the ``codex_`` marker also covers the
+# interactive TUI's ``codex_cli_rs/…``). qwen-code 0.24.7 sends
+# ``QwenCode/0.24.7 (darwin; arm64)`` and dsh 0.2.0-rc.2 sends
+# ``deepseek-harness/0.2.0-rc.2 (+https://github.com/deepseek-ai/...)``.
+#
 # Documented limitation: an agent that passes openai-python (or another SDK)
 # UA through verbatim is indistinguishable at the UA layer and correctly stays
 # bucketed to that SDK — we never fabricate product attribution from the body.
-# The attribution fix for those agents is the /v1/messages (anthropic.py) +
-# /v1/completions wiring (task C), which surfaces the ALREADY-listed markers
-# (claude-code, anthropic-sdk, openai-python, ...) instead of ``other``.
+# The cline CLI (3.x) is in the same boat from the other side: it sends only
+# ``ai-sdk/openai-compatible/… runtime/bun/…`` with NO product token, so it
+# stays ``other`` (the ``cline`` marker above catches other cline surfaces
+# that do name themselves). goose sends no UA at all and stays ``unknown``.
 _CALLER_AGENT_MARKERS: tuple[tuple[str, str], ...] = (
     ("claude-code", "claude-code"),
     ("claudecode", "claude-code"),
@@ -165,6 +174,12 @@ _CALLER_AGENT_MARKERS: tuple[tuple[str, str], ...] = (
     ("aider", "aider"),
     ("cline", "cline"),
     ("continue", "continue"),
+    # Agent harnesses verified against their real 2026-10-02 UAs — see the
+    # block comment above for the exact strings and the cline/goose limits.
+    ("codex_", "codex"),
+    ("opencode/", "opencode"),
+    ("qwencode", "qwen-code"),
+    ("deepseek-harness", "deepseek-harness"),
     ("openai-python", "openai-python"),
     ("openai/python", "openai-python"),
     ("openai-node", "openai-node"),
@@ -197,6 +212,12 @@ _CALLER_AGENT_MARKERS: tuple[tuple[str, str], ...] = (
 )
 
 
+# Prefix markers — the UA must START with the token, never contain it. The
+# only entry is pi: its UA is ``pi (<os> <ver>; <arch>)`` and a substring
+# "pi" or even "pi (" would also match ``api (…)``-style tokens.
+_CALLER_AGENT_PREFIXES: tuple[tuple[str, str], ...] = (("pi (", "pi"),)
+
+
 def normalize_caller_agent(
     user_agent: str | None, client_header: str | None = None
 ) -> str:
@@ -223,6 +244,9 @@ def normalize_caller_agent(
     if not user_agent or not isinstance(user_agent, str):
         return "unknown"
     ua = user_agent.lower()
+    for prefix, label in _CALLER_AGENT_PREFIXES:
+        if ua.startswith(prefix):
+            return label
     for marker, label in _CALLER_AGENT_MARKERS:
         if marker in ua:
             return label

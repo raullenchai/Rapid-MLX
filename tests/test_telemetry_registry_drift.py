@@ -405,11 +405,15 @@ def test_agent_enum_matches_the_shipped_agent_profiles(registry):
 
 def test_caller_enum_matches_the_user_agent_marker_table(registry):
     from rapid_mlx.client_header import RAPID_CLIENT_LABELS
-    from rapid_mlx.telemetry.redact import _CALLER_AGENT_MARKERS
+    from rapid_mlx.telemetry.redact import (
+        _CALLER_AGENT_MARKERS,
+        _CALLER_AGENT_PREFIXES,
+    )
 
     declared = set(registry["enums"]["caller"]["values"]) - {"other", "unknown"}
     assert declared == {
         *(label for _, label in _CALLER_AGENT_MARKERS),
+        *(label for _, label in _CALLER_AGENT_PREFIXES),
         *RAPID_CLIENT_LABELS,
     }
 

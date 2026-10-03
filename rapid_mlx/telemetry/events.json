@@ -106,13 +106,16 @@
     },
     "caller": {
       "_about": [
-        "The label half of telemetry/redact.py _CALLER_AGENT_MARKERS, de-duped,",
-        "plus RAPID_CLIENT_LABELS and the two escape hatches returned by",
-        "normalize_caller_agent(). X-Rapid-Client identifies which first-party",
-        "Rapid surface drove the request; raw headers never leave the machine."
+        "The label half of telemetry/redact.py _CALLER_AGENT_MARKERS and",
+        "_CALLER_AGENT_PREFIXES, de-duped, plus RAPID_CLIENT_LABELS and the two",
+        "escape hatches returned by normalize_caller_agent(). X-Rapid-Client",
+        "identifies which first-party Rapid surface drove the request; raw",
+        "headers never leave the machine. 'pi' is a prefix label: its UA starts",
+        "with 'pi (' — a plain substring would also match 'api (...)' tokens."
       ],
       "values": [
         "claude-code", "cursor", "aider", "cline", "continue",
+        "codex", "opencode", "pi", "qwen-code", "deepseek-harness",
         "openai-python", "openai-node", "anthropic-sdk", "litellm",
         "langchain", "llamaindex", "ollama",
         "python-httpx", "python-requests", "python-aiohttp", "node-fetch",
