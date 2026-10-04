@@ -798,3 +798,19 @@ def test_cli_command_prefers_the_sibling_entry_point(monkeypatch, tmp_path):
     assert fd._cli_command() == [str(script)]
     script.chmod(0o644)
     assert fd._cli_command() == [str(tmp_path / "python"), "-m", "rapid_mlx.cli"]
+
+
+def test_run_bare_chat_runs_in_process_and_exits_0(monkeypatch, capsys):
+    monkeypatch.setattr(fd, "interactive_terminal", lambda: True)
+    monkeypatch.setattr(fd, "gather_state", lambda _v: _state())
+    monkeypatch.setattr(fd, "run_interactive", fd.plan_chat)
+    calls: list[list[str]] = []
+    code = fd.run_bare(
+        version="9.9.9",
+        top_level_flags=[],
+        dispatch=calls.append,
+        serve=lambda _argv: pytest.fail("chat must not spawn a server child"),
+    )
+    assert code == 0
+    assert calls == [["--no-banner", "chat", "qwen3.5-4b-4bit"]]
+    assert "→ rapid-mlx chat qwen3.5-4b-4bit" in capsys.readouterr().out
