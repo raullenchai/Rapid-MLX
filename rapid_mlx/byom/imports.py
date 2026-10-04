@@ -398,9 +398,10 @@ def _same_filesystem(a: Path, b: Path) -> bool:
 class _StepTracker:
     """Telemetry class for an exception that escapes ``execute`` untyped.
 
-    Only the source download can raise something other than
-    :class:`ImportRefusedError` (Hub/network errors keep their traceback); the
-    worker steps already raise typed refusals.
+    The download (Hub/network errors) and launching a worker (an ``OSError``
+    from ``subprocess``) can raise something other than
+    :class:`ImportRefusedError`; those keep their traceback, and this names the
+    step they escaped from. Typed refusals carry their own class.
     """
 
     current = "other"
@@ -535,7 +536,7 @@ def execute(
         try:
             _steps.current = "download_failed"
             source_path = plan.source if plan.is_local else download(plan)
-            _steps.current = "other"
+            _steps.current = "convert_failed"
             out = tmp / "model"
             with spinner_factory("Quantizing … · Ctrl-C safe"):
                 run_worker(
@@ -545,8 +546,10 @@ def execute(
                     str(plan.bits),
                     str(GROUP_SIZE),
                 )
+            _steps.current = "smoke_failed"
             with spinner_factory("Smoke test …"):
                 run_worker("smoke", str(out))
+            _steps.current = "other"
             manifest = {
                 "key": plan.key,
                 "source": plan.source,

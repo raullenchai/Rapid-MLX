@@ -587,7 +587,21 @@ def test_execute_tags_a_download_failure(tmp_path, monkeypatch):
             run_worker=worker,
         )
     assert exc.value.error_class == "convert_failed"
-    assert im._steps.current == "other"
+    assert im._steps.current == "convert_failed"
+
+    def launch_fails_at_smoke(step, *rest):
+        if step == "smoke":
+            raise OSError("cannot spawn")
+
+    with pytest.raises(OSError):
+        im.execute(
+            _plan(),
+            force=False,
+            spinner_factory=lambda label: nullcontext(),
+            download=lambda plan: str(tmp_path),
+            run_worker=launch_fails_at_smoke,
+        )
+    assert im._steps.current == "smoke_failed"
 
 
 def test_run_worker_failures_are_typed(monkeypatch):
