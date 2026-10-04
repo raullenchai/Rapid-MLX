@@ -13625,6 +13625,7 @@ def telemetry_command(args) -> None:
                 ("consent file", result.consent_file),
                 ("consent lock", result.consent_lock),
                 ("client ID", result.client_id),
+                ("BYOM suggestion ledger", result.byom_suggestion_ledger),
             )
             problems = [
                 f"{label} ({'/'.join(item.error_types)})"

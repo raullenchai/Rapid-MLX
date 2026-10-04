@@ -433,6 +433,23 @@ def test_reset_reports_marker_failure_separately(monkeypatch, capsys):
     assert "activation marker(s) (PermissionError) remained" in capsys.readouterr().out
 
 
+def test_reset_reports_byom_suggestion_ledger_failure(monkeypatch, capsys):
+    result = state.ResetStateResult(
+        consent_file=state.ResetItemResult(False, True),
+        consent_lock=state.ResetItemResult(False, True),
+        client_id=state.ResetItemResult(True, True),
+        byom_suggestion_ledger=state.ResetItemResult(True, False, ("PermissionError",)),
+    )
+    monkeypatch.setattr(state, "reset_state", lambda: result)
+
+    with pytest.raises(SystemExit, match="1"):
+        cli.telemetry_command(_args("reset"))
+
+    assert (
+        "BYOM suggestion ledger (PermissionError) remained" in capsys.readouterr().out
+    )
+
+
 def test_reset_reports_marker_scan_and_id_rotation_failures(monkeypatch, capsys):
     result = state.ResetStateResult(
         consent_file=state.ResetItemResult(False, True),
