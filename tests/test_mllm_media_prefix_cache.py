@@ -145,7 +145,6 @@ class _NoRopeModel:
         self.config = type("Config", (), {"model_type": "qwen3_5_moe"})()
 
     def __call__(self, ids, cache=None, pixel_values=None, rope_deltas=None):
-        forwarded = {"rope_deltas": rope_deltas}
         start = int(ids[0, 0]) if ids.size else -1
         self.calls.append((start, start + int(ids.shape[1]), pixel_values is not None))
         return _Output(mx.zeros((1, int(ids.shape[1]), self.vocab)))
@@ -189,7 +188,7 @@ class _PositionOverrideModel(_RecordingModel):
         self.embed_calls: list[int] = []
 
     def __call__(self, ids, cache=None, pixel_values=None, **kwargs):
-        rope_deltas = kwargs.pop("rope_deltas", None)
+        kwargs.pop("rope_deltas", None)
         start = int(ids[0, 0]) if ids.size else -1
         self.calls.append((start, start + int(ids.shape[1]), pixel_values is not None))
         feats = self.get_input_embeddings(ids, pixel_values)
@@ -213,7 +212,7 @@ class _TalkerOverrideModel(_PositionOverrideModel):
     never engage even though the position-override probe matches."""
 
     def __call__(self, ids, cache=None, pixel_values=None, **kwargs):
-        rope_deltas = kwargs.pop("rope_deltas", None)
+        kwargs.pop("rope_deltas", None)
         start = int(ids[0, 0]) if ids.size else -1
         self.calls.append((start, start + int(ids.shape[1]), pixel_values is not None))
         feats = self.get_input_embeddings(ids, pixel_values)
@@ -1653,7 +1652,6 @@ class TestClearPrefixCache:
         # counters zero with the text counters, keeping the stats shape
         # consistent. ``reset_stats=False`` preserves lifetime totals.
         gen = _stub_generator()
-        req = _make_request()
         gen._media_boundary_hits = 5
         gen._media_boundary_misses = 3
         gen._media_boundary_stores = 2

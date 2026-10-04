@@ -429,7 +429,6 @@ def test_stage_durations_same_stage_adjacent_starts_only() -> None:
         {"stage": 1, "observed_elapsed_s": 10.0},
         {"stage": 2, "observed_elapsed_s": 30.0},
     ]
-    complete = {"observed_elapsed_s": 90.0}
     # Same-stage adjacent starts plus the stage_end boundary for the final
     # step; without a boundary event the final step is omitted.
     assert MODULE._stage_duration_samples(step_events, {}) == {"1": [10.0]}

@@ -96,7 +96,7 @@ def configure_command(args) -> int:
         )
         return 1
     try:
-        account = _account(user)
+        _account(user)  # the configured service account must still exist
         atomic_write_definition(pending, rendered)
     except (OSError, ServiceConfigError) as exc:
         print(f"error: could not stage {pending}: {exc}", file=sys.stderr)
@@ -171,7 +171,7 @@ def apply_command(args) -> int:
         return 1
 
     try:
-        account = _account(user)
+        _account(user)  # the configured service account must still exist
     except ServiceConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

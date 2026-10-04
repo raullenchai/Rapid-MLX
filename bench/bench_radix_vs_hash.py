@@ -144,7 +144,7 @@ def _run_workload(
     started = time.perf_counter()
     total_requests = 0
 
-    for turn in range(turns):
+    for _turn in range(turns):
         for tid in range(len(tenant_msgs)):
             new_msg = [
                 10_000 + tid * 1_000 + rng.randint(0, 999)

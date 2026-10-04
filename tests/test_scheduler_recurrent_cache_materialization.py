@@ -779,7 +779,7 @@ def test_collector_scalar_logprobs_and_raising_token_buffer(monkeypatch):
     # One step: valid outputs (scalar logprobs + valid buffer tokens) are
     # realized, and the raising surface feeds the escalation counter (to 1,
     # below the limit so no raise).
-    result = scheduler._materialize_active_recurrent_cache()
+    scheduler._materialize_active_recurrent_cache()
     assert scheduler._recurrent_output_chain_failures == 1
 
     # The cache-state barrier fired ([[head]]), and the collected outputs were

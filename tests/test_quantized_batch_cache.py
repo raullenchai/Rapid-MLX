@@ -179,7 +179,6 @@ def test_make_mask_matches_batchkvcache():
 
 
 def test_prepare_left_padding_matches():
-    B = 2
     q = QuantizedBatchKVCache([0, 0], GS, BITS)
     b = BatchKVCache([0, 0])
     q.prepare(left_padding=[3, 1])

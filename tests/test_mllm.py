@@ -85,7 +85,7 @@ def test_video_path(tmp_path, monkeypatch):
         out = cv2.VideoWriter(str(path), fourcc, 30.0, (320, 240))
 
         # Create 30 frames (1 second)
-        for i in range(30):
+        for _i in range(30):
             frame = np.zeros((240, 320, 3), dtype=np.uint8)
             frame[:] = (255, 0, 0)  # Blue in BGR
             out.write(frame)
