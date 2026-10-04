@@ -104,6 +104,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Keep affine Engram tables on SSD during 256 GiB qualification.",
     )
+    parser.add_argument(
+        "--experimental-engram-page-read-ahead",
+        action="store_true",
+        help="Prototype parallel cold-page reads for SSD-backed Engram tables.",
+    )
     parser.add_argument("--collect-target-margins", action="store_true")
     parser.add_argument("--skip-ar", action="store_true")
     return parser.parse_args()
@@ -117,7 +122,12 @@ def _validate_inputs(args) -> None:
 
 
 def _prepare_target(
-    target: Path, overlay: Path, eval_interval: int, *, engram_ssd_offload: bool = False
+    target: Path,
+    overlay: Path,
+    eval_interval: int,
+    *,
+    engram_ssd_offload: bool = False,
+    engram_page_read_ahead: bool = False,
 ):
     model, _ = load(
         str(target.resolve()),
@@ -126,6 +136,19 @@ def _prepare_target(
     )
     model.eval_interval = eval_interval
     model._dspark_overlay_path = str(overlay.resolve())
+    if engram_page_read_ahead:
+        from rapid_mlx.models.deepseek_v41_native.engram import (
+            DiskQuantizedEngramEmbedding,
+        )
+
+        enabled = 0
+        for layer in model.layers:
+            embedding = getattr(getattr(layer, "engram", None), "embed", None)
+            if isinstance(embedding, DiskQuantizedEngramEmbedding):
+                embedding.read_ahead = True
+                enabled += 1
+        if not enabled:
+            raise RuntimeError("parallel Engram pages need --engram-ssd-offload")
     # AR and speculative decoding must use the same target kernels. Installing
     # direct down-QMV after the reference run would inflate the measured K4
     # speedup and compare outputs from different numerical implementations.
@@ -143,6 +166,7 @@ def main() -> None:
         args.overlay,
         args.eval_interval,
         engram_ssd_offload=args.engram_ssd_offload,
+        engram_page_read_ahead=args.experimental_engram_page_read_ahead,
     )
     tokenizer = PreTrainedTokenizerFast(
         tokenizer_file=str(args.target.resolve() / "tokenizer.json")

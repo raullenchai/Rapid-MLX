@@ -30,3 +30,11 @@ Only productize after a positive whole-model speed result.
 ashhart/TensorFold #369-#372, based on 0.6.5. Inspect #372 as the complete
 stack. The oQ4e checkpoint still needs >256 GiB, and no same-checkpoint Rapid
 comparison exists. Upstream has not merged the stack.
+
+2026-10-04 MVP update: ported TensorFold #372's concurrent Engram page-read
+idea to Rapid's existing 2-bit mmap table, default off. Added a standalone
+cached-shard I/O probe and a qualification-suite flag. Real shard row reads
+improved from 3.621/3.156 s to 0.366/0.362 s in two alternating pairs;
+identical-index arrays matched, and 54 focused tests pass. This is I/O-stage
+evidence only. Full-model paired prefill/decode remains outstanding until the
+Studio has clean memory pressure and zero used swap.

@@ -99,6 +99,54 @@ def test_disk_engram_prefetch_matches_requested_rows(tmp_path, monkeypatch):
     assert disk.cache_hits == 2
 
 
+def test_disk_engram_parallel_page_read_ahead_preserves_real_rows(tmp_path, monkeypatch):
+    rows, dim = 4096, 256
+    logical = mx.random.normal((rows, dim), key=mx.random.key(42))
+    weight, scales, biases = mx.quantize(logical, group_size=64, bits=2)
+    path = tmp_path / "engram.safetensors"
+    mx.save_safetensors(
+        str(path),
+        {
+            "weight": weight,
+            "scales": scales.astype(mx.bfloat16),
+            "biases": biases.astype(mx.bfloat16),
+        },
+    )
+    disk = DiskQuantizedEngramEmbedding(
+        path,
+        weight_key="weight",
+        scales_key="scales",
+        biases_key="biases",
+        num_embeddings=rows,
+        dim=dim,
+        group_size=64,
+        bits=2,
+        cache_rows=0,
+    )
+    selected = np.random.default_rng(42).integers(0, rows, size=256)
+    expected = disk._raw_rows(selected)
+    disk.read_ahead = True
+    actual = disk._raw_rows(selected)
+    assert all(np.array_equal(a, b) for a, b in zip(actual, expected))
+    assert disk._io_executor is not None
+    import os
+
+    reads = 0
+    original_pread = os.pread
+
+    def counted_pread(*args):
+        nonlocal reads
+        reads += 1
+        return original_pread(*args)
+
+    monkeypatch.setattr(os, "pread", counted_pread)
+    repeated = disk._raw_rows(selected)
+    assert all(np.array_equal(a, b) for a, b in zip(repeated, expected))
+    assert reads == 0
+    disk.close()
+    assert disk._io_executor is None
+
+
 def test_disk_engram_prefetch_mismatch_falls_back_to_requested_rows(tmp_path):
     resident, disk, _keys, _path = _modules(tmp_path)
     disk.prefetch(mx.array([1, 3], mx.int32))

@@ -69,6 +69,35 @@ on their oQ4e checkpoint, not a comparison with Rapid's REAP 2-bit checkpoint.
 The first PR's checklist still leaves real-checkpoint resumed-prompt and cold
 prefill tool checks open. A separate CUDA V4.1 family is open as draft #342.
 
+## Read-ahead MVP: 2026-10-04
+
+Rapid already starts Engram table reads on a background worker before the
+corresponding model layer runs. TensorFold #372 adds another step for long
+prompts: it reads selected mmap pages concurrently before gathering the rows.
+The experimental Rapid port applies that idea to the existing affine 2-bit
+disk table, preserving the current checkpoint and tensor layout. It is off by
+default. The qualification suite enables it with
+`--engram-ssd-offload --experimental-engram-page-read-ahead`.
+
+The standalone I/O probe used the pinned cached REAP 2-bit target, layer 1's
+actual Engram shard, 12,288 uniformly selected rows per trial, two alternating
+serial/parallel pairs, and no model load. Run it with:
+
+```sh
+python scripts/benchmark_deepseek_v41_engram_pages.py \
+  --snapshot <cached-target-snapshot> --layer 1 --rows 12288 --repeats 2
+```
+
+Serial selected-row reads took 3.621 and 3.156 seconds; parallel reads took
+0.366 and 0.362 seconds. The median ratio is 9.3x **for file I/O only**.
+Both modes returned 983,040 bytes of rows per trial; a separate identical-index
+check found all three packed arrays equal. On a repeated warm lookup, the
+parallel path takes about 0.005 seconds because already-prefetched pages are
+skipped. The focused Engram and native-load suites pass (54 tests). This does
+not establish a model-level prefill or decode gain. The Studio still has over
+13 GiB swap in use and other large model processes, so a 200+ GiB model run
+would violate the existing clean-memory qualification gate.
+
 The current Studio has 13.1 GiB swap in use and other large model processes.
 Under the large-model qualification policy, this invalidates a new 200+ GiB
 performance capture. No V4.1 TensorFold speed claim was made.

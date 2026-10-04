@@ -27,7 +27,9 @@ from __future__ import annotations
 import json
 import math
 import mmap
+import os
 import struct
+import time
 from collections import OrderedDict
 from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
 from pathlib import Path
@@ -41,6 +43,9 @@ from .config import ModelArgs
 from .dequant import dequant_fp8_rows
 
 _MAX_SAFETENSORS_HEADER_SIZE = 100_000_000
+_READ_AHEAD_MIN_ROWS = 128
+_READ_AHEAD_WORKERS = 16
+_READ_AHEAD_RESET_SECONDS = 600
 
 
 def _isprime(n: int) -> bool:
@@ -276,6 +281,7 @@ class DiskQuantizedEngramEmbedding(nn.Module):
         group_size: int,
         bits: int,
         cache_rows: int = 16384,
+        read_ahead: bool = False,
     ):
         super().__init__()
         if bits not in (2, 3, 4, 6, 8):
@@ -284,11 +290,13 @@ class DiskQuantizedEngramEmbedding(nn.Module):
             raise ValueError("Engram cache_rows cannot be negative")
         self.group_size, self.bits = group_size, bits
         self.cache_rows = cache_rows
+        self.read_ahead = read_ahead
         self.cache_hits = 0
         self.cache_misses = 0
         self._lock = RLock()
         self._closed = False
         self._executor: ThreadPoolExecutor | None = None
+        self._io_executor: ThreadPoolExecutor | None = None
         self._pending: tuple[np.ndarray, Future] | None = None
         self._cache: OrderedDict[int, tuple[np.ndarray, np.ndarray, np.ndarray]] = (
             OrderedDict()
@@ -313,6 +321,10 @@ class DiskQuantizedEngramEmbedding(nn.Module):
             self._data_start = 8 + header_length
             self._validate_header_ranges(header, file_size - self._data_start)
             self._mapping = mmap.mmap(self._file.fileno(), 0, access=mmap.ACCESS_READ)
+            self._seen_pages = np.zeros(
+                (file_size + mmap.PAGESIZE - 1) // mmap.PAGESIZE, dtype=np.uint8
+            )
+            self._seen_pages_reset = time.monotonic()
             if hasattr(self._mapping, "madvise"):
                 self._mapping.madvise(mmap.MADV_RANDOM)
             self._weight = self._tensor_view(
@@ -336,6 +348,14 @@ class DiskQuantizedEngramEmbedding(nn.Module):
                 dtype="BF16",
                 numpy_dtype=np.dtype("<u2"),
                 shape=quant_shape,
+            )
+            self._row_specs = tuple(
+                (
+                    self._data_start + header[key]["data_offsets"][0],
+                    (header[key]["data_offsets"][1] - header[key]["data_offsets"][0])
+                    // num_embeddings,
+                )
+                for key in (weight_key, scales_key, biases_key)
             )
             self._executor = ThreadPoolExecutor(
                 max_workers=1, thread_name_prefix="deepseek-v41-engram"
@@ -423,12 +443,47 @@ class DiskQuantizedEngramEmbedding(nn.Module):
         return self._weight, self._scales, self._biases
 
     def _raw_rows(self, flat: np.ndarray):
+        if self.read_ahead and flat.size >= _READ_AHEAD_MIN_ROWS:
+            self._read_ahead_pages(flat)
         weight, scales, biases = self._views()
         return (
             np.array(weight[flat], copy=True),
             np.array(scales[flat], copy=True),
             np.array(biases[flat], copy=True),
         )
+
+    def _read_ahead_pages(self, flat: np.ndarray) -> None:
+        """Warm selected file pages in parallel before NumPy gathers them."""
+        page_size = mmap.PAGESIZE
+        pages = []
+        for start, row_bytes in self._row_specs:
+            offsets = start + flat * row_bytes
+            pages.extend((offsets // page_size, (offsets + row_bytes - 1) // page_size))
+        unique = np.unique(np.concatenate(pages))
+        now = time.monotonic()
+        if now - self._seen_pages_reset > _READ_AHEAD_RESET_SECONDS:
+            self._seen_pages.fill(0)
+            self._seen_pages_reset = now
+        fresh = unique[self._seen_pages[unique] == 0]
+        if fresh.size < _READ_AHEAD_WORKERS:
+            return
+        if self._io_executor is None:
+            self._io_executor = ThreadPoolExecutor(
+                max_workers=_READ_AHEAD_WORKERS,
+                thread_name_prefix="deepseek-v41-engram-pages",
+            )
+        fd = self._file.fileno()
+
+        def warm(group: np.ndarray) -> None:
+            for page in group:
+                os.pread(fd, page_size, int(page) * page_size)
+
+        list(
+            self._io_executor.map(
+                warm, np.array_split(fresh, _READ_AHEAD_WORKERS)
+            )
+        )
+        self._seen_pages[fresh] = 1
 
     def _gather_rows(self, flat: np.ndarray):
         with self._lock:
@@ -524,6 +579,9 @@ class DiskQuantizedEngramEmbedding(nn.Module):
         executor, self._executor = self._executor, None
         if executor is not None:
             executor.shutdown(wait=True, cancel_futures=True)
+        io_executor, self._io_executor = self._io_executor, None
+        if io_executor is not None:
+            io_executor.shutdown(wait=True, cancel_futures=True)
         with self._lock:
             self._cache.clear()
             self._weight = self._scales = self._biases = None

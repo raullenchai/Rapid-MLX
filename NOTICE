@@ -163,6 +163,12 @@ The optional TensorFold GLM-5.3-Flash profile uses TensorFold 0.6.0 under
 Apache-2.0 and the separately distributed Vontra/GLM-5.3-Flash-MLX-4bit-MTP
 checkpoint. Rapid-MLX does not distribute those weights.
 
+The experimental DeepSeek V4.1 Engram page read-ahead in
+`rapid_mlx/models/deepseek_v41_native/engram.py` follows the concurrent
+selected-page read technique in TensorFold PR #372 (Apache-2.0), which credits
+the oMLX storage pattern. It does not include TensorFold's model family or
+weights.
+
 The macOS desktop application enumerates the components it ships in
 apps/rapid-mac/THIRD_PARTY.md, and reproduces their license texts inside the
 application bundle.
