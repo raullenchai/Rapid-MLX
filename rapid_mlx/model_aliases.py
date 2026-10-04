@@ -56,16 +56,15 @@ VALID_SUFFIX_TIERS: frozenset[str] = frozenset({"unknown", "neutral", "good", "a
 # (#287) is a per-model decision: the bench evidence showed 3.87x-8.5x
 # TTFT speedups with 100% needle recall on the Qwen3.5 / Qwen3.6 family
 # at keep_ratio=0.20, but we have no evidence for other families. To
-# avoid a silent quality regression on an unbenched arch, an alias must
-# be explicitly tagged ``"verified"`` before the engine defaults
-# ``--pflash`` to ``always`` for it; everything else stays ``"unknown"``
-# and the engine keeps PFlash off (preserving v0.7.x behaviour). Any
-# explicit ``--pflash {off,auto,always}`` flag on the CLI still wins
-# over the tier-based default.
+# record that evidence, an alias is tagged ``"verified"``; everything else
+# stays ``"unknown"``. Since #4092 PFlash is off by default for EVERY
+# alias (it is lossy), so the tier no longer enables compression on its
+# own: it marks aliases where an explicit ``--pflash auto|always`` opt-in
+# is bench-backed, and gates the ``pflash_keep_ratio`` pin below.
 #
-# - ``unknown``:  not benched / no decision (default, engine keeps PFlash off)
-# - ``verified``: bench-validated speedup + recall on this alias; engine
-#                 defaults PFlash to ``always`` unless the user overrides
+# - ``unknown``:  not benched / no decision (default)
+# - ``verified``: bench-validated speedup + recall on this alias; PFlash
+#                 still defaults to off, opt in with ``--pflash auto|always``
 #
 # The recall validation is AT the keep_ratio the alias will actually run:
 # by default 0.20, or the per-alias ``pflash_keep_ratio`` override when set.

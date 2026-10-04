@@ -424,6 +424,7 @@ class _TextScheduler:
             finish_reason="stop",
             cached_tokens=1,
             matched_stop="END",
+            prompt_compression={"original_tokens": 9, "kept_tokens": 3},
         )
 
     async def add_request(self, **kwargs):
@@ -443,6 +444,7 @@ class _TextScheduler:
             logprobs=[{"token": "text-result"}],
             cached_tokens=1,
             matched_stop="END",
+            prompt_compression={"original_tokens": 9, "kept_tokens": 3},
         )
 
     def abort_request(self, _request_id) -> None:
@@ -637,6 +639,11 @@ async def test_engine_dispatch_preserves_shared_request_semantics(
     result = outputs[-1]
     assert result.finish_reason == "stop"
     assert result.matched_stop == "END"
+    # #4092: PFlash only runs on the text scheduler; its terminal
+    # compression block must survive both text-lane engine paths.
+    assert result.prompt_compression == (
+        None if is_mllm else {"original_tokens": 9, "kept_tokens": 3}
+    )
     if not stream:
         assert result.raw_text.startswith("<tool-prefix>")
     if stream:

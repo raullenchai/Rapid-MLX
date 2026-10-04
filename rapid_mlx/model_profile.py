@@ -267,11 +267,11 @@ class ModelProfile:
     # PFlash long-prompt compression eligibility (#287). Default
     # ``"unknown"`` keeps the engine's PFlash mode at ``"off"`` so a
     # brand-new alias never silently enables compression on an
-    # unbenched architecture. ``"verified"`` flips the engine's default
-    # to ``"always"`` — used only for aliases where we've measured both
-    # the TTFT speedup AND the needle-recall floor (Qwen3.5 / Qwen3.6
-    # families per #287). Explicit CLI ``--pflash {off,auto,always}``
-    # still wins; this only changes the no-flag default.
+    # unbenched architecture. ``"verified"`` marks aliases where we've
+    # measured both the TTFT speedup AND the needle-recall floor (Qwen3.5 /
+    # Qwen3.6 families per #287), so an explicit ``--pflash auto|always``
+    # opt-in is bench-backed. PFlash stays off by default for every alias
+    # (#4092).
     pflash_tier: str = "unknown"
     # Per-alias PFlash keep_ratio override (#287 follow-up). ``None`` means
     # "use the engine default 0.20". Set to a float in (0, 1] when an alias
