@@ -13,6 +13,7 @@ import json
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import PurePosixPath
+from typing import Literal
 
 
 @dataclass(frozen=True)
@@ -27,6 +28,31 @@ class Lanes:
             "desktop": str(self.desktop).lower(),
             "docs_only": str(self.docs_only).lower(),
         }
+
+
+LinuxMatrixMode = Literal["py311", "full"]
+
+
+@dataclass(frozen=True)
+class ValidationPolicy:
+    """Lane selection plus the Linux interpreter breadth for this diff."""
+
+    lanes: Lanes
+    linux_matrix_mode: LinuxMatrixMode
+    linux_matrix_reason: str
+
+    def as_outputs(self) -> dict[str, str]:
+        outputs = self.lanes.as_outputs()
+        outputs.update(
+            {
+                "linux_matrix_mode": self.linux_matrix_mode,
+                "linux_matrix_reason": self.linux_matrix_reason,
+                "test_matrix": json.dumps(
+                    linux_test_matrix(self.linux_matrix_mode), separators=(",", ":")
+                ),
+            }
+        )
+        return outputs
 
 
 _ENGINE_ROOTS = {
@@ -77,9 +103,101 @@ _DOC_FILES = {
     "LICENSE",
 }
 
+# Start with an exact allowlist of leaf metadata whose changes do not alter the
+# shared CLI, API, engine, runtime, dependency, collection, authentication, or
+# download control planes. A directory allowlist is deliberately avoided:
+# telemetry/model_id.py, for example, participates in authenticated Hub access.
+# Everything outside this set keeps the full supported-Python matrix. The merge
+# candidate also forces the full matrix regardless of this result.
+_PY311_ENGINE_PATHS = {
+    "rapid_mlx/telemetry/events.json",
+    "rapid_mlx/telemetry/registry.py",
+}
+
+# A filename heuristic cannot reliably tell whether a test is cheap or whether
+# it protects a critical product surface (for example, "dflash", "toolchoice",
+# and "wheel" are all critical without saying "kernel", "tool", or
+# "packaging"). Keep this first slice exact and grow it only with reviewed path
+# contracts.
+_PY311_TEST_PATHS = {
+    "tests/test_telemetry_registry.py",
+    "tests/test_telemetry_registry_drift.py",
+}
+_FULL_MATRIX_REASONS = {
+    ".github": "ci-control",
+    "config": "dependency-or-policy",
+    "scripts": "ci-or-build-control",
+    "videox_fun_mlx": "shared-runtime",
+}
+_FULL_MATRIX_FILES = _ENGINE_FILES | {
+    ".mergify.yml",
+    ".coveragerc",
+}
+
+
+def linux_test_matrix(mode: LinuxMatrixMode) -> dict[str, list[dict[str, object]]]:
+    """Return an explicit matrix so route changes cannot alter shard count."""
+    versions = ("3.11",) if mode == "py311" else ("3.10", "3.11", "3.12")
+    return {
+        "include": [
+            {"python-version": version, "shard": shard}
+            for version in versions
+            for shard in (1, 2, 3)
+        ]
+    }
+
+
+def _normalized_paths(paths: Iterable[str]) -> set[str]:
+    return {path.strip().removeprefix("./") for path in paths if path.strip()}
+
+
+def _is_py311_test_path(path: str) -> bool:
+    return path in _PY311_TEST_PATHS
+
+
+def _linux_matrix_decision(
+    paths: set[str], lanes: Lanes
+) -> tuple[LinuxMatrixMode, str]:
+    if not paths:
+        return "full", "missing-diff"
+    if not lanes.engine:
+        # The engine matrix is skipped. Keeping the dormant value full makes a
+        # future classifier/condition regression fail safe.
+        return "full", "no-engine-lane"
+
+    parsed_paths = [(path, PurePosixPath(path)) for path in sorted(paths)]
+    if any(
+        not pure.parts or pure.is_absolute() or ".." in pure.parts
+        for _path, pure in parsed_paths
+    ):
+        return "full", "invalid-path"
+
+    product_paths = [
+        path
+        for path, pure in parsed_paths
+        if not (pure.parts[:1] == ("docs",) or path in _DOC_FILES)
+    ]
+    for path in product_paths:
+        pure = PurePosixPath(path)
+        if path in _FULL_MATRIX_FILES:
+            return "full", "dependency-or-policy"
+        root = pure.parts[0]
+        if root in _FULL_MATRIX_REASONS:
+            return "full", _FULL_MATRIX_REASONS[root]
+        if _is_py311_test_path(path):
+            continue
+        if root == "tests":
+            return "full", "test-support-or-fixture"
+        if path in _PY311_ENGINE_PATHS:
+            continue
+        # Desktop and unknown paths are deliberately not neutral in a mixed
+        # diff. Cross-lane and shared/core changes retain compatibility breadth.
+        return "full", "shared-core-or-unmapped"
+    return "py311", "leaf-engine-only"
+
 
 def classify(paths: Iterable[str]) -> Lanes:
-    normalized = {path.strip().removeprefix("./") for path in paths if path.strip()}
+    normalized = _normalized_paths(paths)
     if not normalized:
         # A missing/invalid diff must never turn validation into a no-op.
         return Lanes(engine=True, desktop=True, docs_only=False)
@@ -120,17 +238,35 @@ def classify(paths: Iterable[str]) -> Lanes:
     return Lanes(engine=engine, desktop=desktop, docs_only=docs_only)
 
 
+def classify_policy(
+    paths: Iterable[str],
+    *,
+    force_full: bool = False,
+    force_reason: str = "promoted-head",
+) -> ValidationPolicy:
+    normalized = _normalized_paths(paths)
+    lanes = classify(normalized)
+    mode, reason = _linux_matrix_decision(normalized, lanes)
+    if force_full:
+        mode, reason = "full", force_reason
+    return ValidationPolicy(lanes, mode, reason)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("paths", nargs="*", help="Changed repository-relative paths")
     parser.add_argument("--paths-file", type=argparse.FileType("r"))
     parser.add_argument("--github-output", type=argparse.FileType("a"))
+    parser.add_argument("--force-full", action="store_true")
+    parser.add_argument("--force-reason", default="promoted-head")
     args = parser.parse_args()
 
     paths = list(args.paths)
     if args.paths_file:
         paths.extend(args.paths_file.read().splitlines())
-    outputs = classify(paths).as_outputs()
+    outputs = classify_policy(
+        paths, force_full=args.force_full, force_reason=args.force_reason
+    ).as_outputs()
 
     if args.github_output:
         for key, value in outputs.items():

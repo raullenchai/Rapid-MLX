@@ -111,6 +111,9 @@ jobs:
       docs_only: ${{ steps.policy.outputs.docs_only }}
       full_gate: ${{ steps.policy.outputs.full_gate }}
       l1_matrix: ${{ steps.policy.outputs.l1_matrix }}
+      linux_matrix_mode: ${{ steps.policy.outputs.linux_matrix_mode }}
+      linux_matrix_reason: ${{ steps.policy.outputs.linux_matrix_reason }}
+      test_matrix: ${{ steps.policy.outputs.test_matrix }}
       reuse_ci: ${{ needs.queue-tree-evidence.outputs.reuse_ci || 'false' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -134,9 +137,6 @@ jobs:
             # Disable rename folding so both the removed source path and the
             # new destination participate in classification.
             git diff --no-renames --name-only "$PR_BASE_SHA" "$GITHUB_SHA" > /tmp/changed-paths
-            python scripts/classify_ci_changes.py \
-              --paths-file /tmp/changed-paths \
-              --github-output "$GITHUB_OUTPUT"
             full_gate=false
             if [ "$HEAD_REPO" = "$REPO" ] && \
               { [[ "$HEAD_REF" == train/* ]] || \
@@ -145,8 +145,16 @@ jobs:
             fi
             echo "full_gate=$full_gate" >> "$GITHUB_OUTPUT"
             if [ "$full_gate" = true ]; then
+              python scripts/classify_ci_changes.py \
+                --paths-file /tmp/changed-paths \
+                --force-full \
+                --force-reason promoted-head \
+                --github-output "$GITHUB_OUTPUT"
               echo 'l1_matrix={"include":[{"model":"qwen3.5-4b-4bit","contract_only":"0"},{"model":"llama3-3b-4bit","contract_only":"0"},{"model":"gemma3-4b-qat-4bit","contract_only":"1"},{"model":"qwen3-4b-instruct-2507-4bit","contract_only":"1"},{"model":"qwen3-4b-thinking-2507-4bit","contract_only":"1"}]}' >> "$GITHUB_OUTPUT"
             else
+              python scripts/classify_ci_changes.py \
+                --paths-file /tmp/changed-paths \
+                --github-output "$GITHUB_OUTPUT"
               echo 'l1_matrix={"include":[{"model":"qwen3.5-4b-4bit","contract_only":"0"}]}' >> "$GITHUB_OUTPUT"
             fi
           else
@@ -158,9 +166,24 @@ jobs:
               echo 'desktop=true'
               echo 'docs_only=false'
               echo 'full_gate=true'
+              echo 'linux_matrix_mode=full'
+              echo 'linux_matrix_reason=non-pr-full'
+              echo 'test_matrix={"include":[{"python-version":"3.10","shard":1},{"python-version":"3.10","shard":2},{"python-version":"3.10","shard":3},{"python-version":"3.11","shard":1},{"python-version":"3.11","shard":2},{"python-version":"3.11","shard":3},{"python-version":"3.12","shard":1},{"python-version":"3.12","shard":2},{"python-version":"3.12","shard":3}]}'
               echo 'l1_matrix={"include":[{"model":"qwen3.5-4b-4bit","contract_only":"0"},{"model":"llama3-3b-4bit","contract_only":"0"},{"model":"gemma3-4b-qat-4bit","contract_only":"1"},{"model":"qwen3-4b-instruct-2507-4bit","contract_only":"1"},{"model":"qwen3-4b-thinking-2507-4bit","contract_only":"1"}]}'
             } >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Explain Linux matrix route
+        env:
+          MATRIX_MODE: ${{ steps.policy.outputs.linux_matrix_mode }}
+          MATRIX_REASON: ${{ steps.policy.outputs.linux_matrix_reason }}
+        run: |
+          echo "Linux matrix: ${MATRIX_MODE} (${MATRIX_REASON})"
+          {
+            echo '### Linux test matrix'
+            echo "- Mode: \`${MATRIX_MODE}\`"
+            echo "- Reason: \`${MATRIX_REASON}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   merge-lane-no-mac:
     needs: changes
@@ -424,9 +447,10 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
-        python-version: ["3.10", "3.11", "3.12"]
-        shard: [1, 2, 3]
+      # Ordinary leaf-only PRs run the complete three-shard suite on the
+      # coverage interpreter. Shared/core/unknown changes and every promoted
+      # integration candidate retain all supported Python versions.
+      matrix: ${{ fromJSON(needs.changes.outputs.test_matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
