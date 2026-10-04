@@ -260,7 +260,7 @@ def test_s_serves_on_a_free_port():
     assert plan.steps == [["serve", "qwen3.5-4b-4bit", "--port", "8002"]]
 
 
-def test_c_launches_then_serves_on_the_same_free_port():
+def test_c_pulls_serves_and_launches_only_once_ready():
     plan = fd.run_interactive(
         _state(agent="claude-code"),
         key_reader=_keys("c"),
@@ -269,15 +269,15 @@ def test_c_launches_then_serves_on_the_same_free_port():
     )
     assert plan.steps == [
         ["pull", "qwen3.5-4b-4bit"],
-        [
-            "launch",
-            "claude-code",
-            "--model",
-            "qwen3.5-4b-4bit",
-            "--server-url",
-            "http://127.0.0.1:8001",
-        ],
         ["serve", "qwen3.5-4b-4bit", "--port", "8001"],
+    ]
+    assert plan.after_ready == [
+        "launch",
+        "claude-code",
+        "--model",
+        "qwen3.5-4b-4bit",
+        "--server-url",
+        "http://127.0.0.1:8001",
     ]
     assert "Claude Code" in plan.note
 
@@ -495,22 +495,104 @@ def test_small_mac_screens_fit_the_row_budget(monkeypatch, ram_gb):
     assert len(fd.render_screen(state).split("\n")) <= 20
 
 
-def test_run_server_process_runs_a_fresh_child_and_restores_sigint(monkeypatch):
+class _FakeProc:
+    def __init__(self, *, alive_polls=10, code=0):
+        self._alive = alive_polls
+        self.code = code
+
+    def poll(self):
+        if self._alive > 0:
+            self._alive -= 1
+            return None
+        return self.code
+
+    def wait(self):
+        return self.code
+
+
+def test_run_server_process_child_keeps_default_sigint_and_parent_restores():
     import signal
 
     seen = {}
 
-    def fake_call(cmd):
+    def fake_popen(cmd):
         seen["cmd"] = cmd
-        seen["sigint"] = signal.getsignal(signal.SIGINT)
-        return 7
+        handler = signal.getsignal(signal.SIGINT)
+        # A Python handler (reset to default in the exec'd child), never
+        # SIG_IGN, which the child would inherit so Ctrl-C could not stop it.
+        seen["handler_is_ignore"] = handler is signal.SIG_IGN
+        seen["handler_callable"] = callable(handler)
+        handler(signal.SIGINT, None)  # the parent's own copy is swallowed
+        return _FakeProc(code=7)
 
     before = signal.getsignal(signal.SIGINT)
-    monkeypatch.setattr(fd.subprocess, "call", fake_call)
-    assert fd.run_server_process(["--no-banner", "serve", "m"]) == 7
+    assert fd.run_server_process(["--no-banner", "serve", "m"], popen=fake_popen) == 7
     assert seen["cmd"] == [*fd._cli_command(), "--no-banner", "serve", "m"]
-    assert seen["sigint"] is signal.SIG_IGN
+    assert seen["handler_is_ignore"] is False
+    assert seen["handler_callable"] is True
     assert signal.getsignal(signal.SIGINT) is before
+
+
+def test_run_server_process_runs_on_ready_only_when_ready(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(fd, "wait_until_ready", lambda port, proc: port == 8001)
+    code = fd.run_server_process(
+        ["serve"],
+        port=8001,
+        on_ready=lambda: calls.append("ready"),
+        popen=lambda cmd: _FakeProc(code=0),
+    )
+    assert code == 0
+    assert calls == ["ready"]
+    fd.run_server_process(
+        ["serve"],
+        port=9999,
+        on_ready=lambda: calls.append("never"),
+        popen=lambda cmd: _FakeProc(code=1),
+    )
+    assert calls == ["ready"]
+
+
+def test_wait_until_ready():
+    sleeps: list[float] = []
+    probes = iter([False, False, True])
+    assert fd.wait_until_ready(
+        8000, _FakeProc(), probe=lambda url: next(probes), sleep=sleeps.append
+    )
+    assert sleeps == [1.0, 1.0]
+    # The server exiting first means "not ready" (no launch).
+    assert not fd.wait_until_ready(
+        8000, _FakeProc(alive_polls=0), probe=lambda url: True, sleep=sleeps.append
+    )
+    # Timeout.
+    assert not fd.wait_until_ready(
+        8000, _FakeProc(), timeout_s=0, probe=lambda url: True, sleep=sleeps.append
+    )
+
+
+def test_ready_probe_against_a_real_loopback_server():
+    import http.server
+    import threading
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            self.send_response(200 if self.path == "/health/ready" else 503)
+            self.end_headers()
+
+        def log_message(self, *_args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        assert fd._ready_probe(f"http://127.0.0.1:{port}/health/ready") is True
+        assert fd._ready_probe(f"http://127.0.0.1:{port}/other") is False
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert fd._ready_probe(f"http://127.0.0.1:{port}/health/ready") is False
 
 
 # ======================================================================
@@ -625,35 +707,55 @@ def test_run_bare_tty_dispatches_each_step_with_flags(monkeypatch, capsys):
     monkeypatch.setattr(fd, "interactive_terminal", lambda: True)
     monkeypatch.setattr(fd, "gather_state", lambda _v: _state(agent="claude-code"))
     monkeypatch.setattr(
-        fd,
-        "run_interactive",
-        lambda state: fd.plan_connect(state, port=8001),
+        fd, "run_interactive", lambda state: fd.plan_connect(state, port=8001)
     )
     calls: list[list[str]] = []
-    served: list[list[str]] = []
+    served: list[tuple] = []
+
+    def fake_serve(argv, *, port, on_ready):
+        served.append((list(argv), port))
+        on_ready()
+        return 3
+
     code = fd.run_bare(
         version="9.9.9",
         top_level_flags=["--no-telemetry"],
         dispatch=calls.append,
-        serve=lambda argv: served.append(list(argv)) or 3,
+        serve=fake_serve,
     )
     assert code == 3  # the server child's exit status
-    assert calls[0] == ["--no-banner", "--no-telemetry", "pull", "qwen3.5-4b-4bit"]
-    assert calls[1][:3] == ["--no-banner", "--no-telemetry", "launch"]
     assert served == [
-        [
-            "--no-banner",
-            "--no-telemetry",
-            "serve",
-            "qwen3.5-4b-4bit",
-            "--port",
-            "8001",
-        ]
+        (
+            [
+                "--no-banner",
+                "--no-telemetry",
+                "serve",
+                "qwen3.5-4b-4bit",
+                "--port",
+                "8001",
+            ],
+            8001,
+        )
     ]
+    assert calls[0] == ["--no-banner", "--no-telemetry", "pull", "qwen3.5-4b-4bit"]
+    assert calls[1][:4] == ["--no-banner", "--no-telemetry", "launch", "claude-code"]
     out = capsys.readouterr().out
-    assert "→ rapid-mlx launch claude-code --model qwen3.5-4b-4bit" in out
+    assert "→ rapid-mlx pull qwen3.5-4b-4bit" in out
     assert "→ rapid-mlx serve qwen3.5-4b-4bit --port 8001" in out
-    assert out.index("serve qwen3.5-4b-4bit --port 8001") < out.index("Leave this")
+    assert "→ rapid-mlx launch claude-code --model qwen3.5-4b-4bit" in out
+    assert out.index("serve qwen3.5-4b-4bit") < out.index("launch claude-code")
+
+
+def test_failed_post_ready_step_keeps_the_server(capsys):
+    def failing(_argv):
+        raise SystemExit(2)
+
+    fd._run_after_ready(["launch", "x"], ["--no-banner", "launch", "x"], failing)
+    out = capsys.readouterr().out
+    assert "→ rapid-mlx launch x" in out
+    assert "failed (exit 2); the server keeps running" in out
+    fd._run_after_ready(["launch", "x"], ["launch", "x"], lambda _a: sys.exit(0))
+    assert "failed" not in capsys.readouterr().out
 
 
 def test_run_bare_tty_quit_runs_nothing(monkeypatch):

@@ -20,6 +20,7 @@ building the screen fails the caller falls back to the plain help.
 
 from __future__ import annotations
 
+import functools
 import os
 import socket
 import subprocess
@@ -389,6 +390,9 @@ class Plan:
 
     steps: list[list[str]]
     note: str | None = None
+    # Run once the final ``serve`` step answers /health/ready (``c``: the agent
+    # is pointed at the server only after it is really up).
+    after_ready: list[str] | None = None
 
 
 def plan_chat(state: FrontDoorState) -> Plan:
@@ -423,18 +427,20 @@ def plan_connect(state: FrontDoorState, *, port: int) -> Plan:
     ]
     if attach is not None:
         return Plan([launch])
-    # Download first (a no-op when cached), so a declined or failed download
-    # stops before the agent's configuration is touched.
+    # Download first (a no-op when cached), then start the server, and only
+    # once it answers /health/ready patch the agent's configuration. A
+    # declined download or a server that fails to start never touches it.
     return Plan(
         [
             ["pull", state.selected],
-            launch,
             ["serve", state.selected, "--port", str(use_port)],
         ],
         note=(
-            f"Leave this server running and open {agent_label(state.agent)} "
-            "in another terminal. Ctrl-C stops the server."
+            f"{agent_label(state.agent)} is configured once the server is "
+            "ready; keep this running and open it in another terminal. "
+            "Ctrl-C stops the server."
         ),
+        after_ready=launch,
     )
 
 
@@ -571,18 +577,66 @@ def _cli_command() -> list[str]:
     return [sys.executable, "-m", "rapid_mlx.cli"]
 
 
-def run_server_process(argv: Sequence[str]) -> int:
+def wait_until_ready(
+    port: int,
+    proc,
+    *,
+    timeout_s: float = 900.0,
+    probe: Callable[[str], bool] | None = None,
+    sleep: Callable[[float], None] | None = None,
+) -> bool:
+    """Poll ``/health/ready`` until 200 (True) or the server exits/times out."""
+    import time
+
+    check = probe or _ready_probe
+    pause = sleep or time.sleep
+    url = f"http://127.0.0.1:{port}/health/ready"
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            return False
+        if check(url):
+            return True
+        pause(1.0)
+    return False
+
+
+def _ready_probe(url: str) -> bool:
+    import urllib.error
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(url, timeout=2) as response:  # noqa: S310
+            return response.status == 200
+    except (urllib.error.URLError, OSError, ValueError):
+        return False
+
+
+def run_server_process(
+    argv: Sequence[str],
+    *,
+    port: int | None = None,
+    on_ready: Callable[[], None] | None = None,
+    popen: Callable[..., object] = subprocess.Popen,
+) -> int:
     """Run ``serve`` as a fresh foreground child and return its exit status.
 
     A server is long-lived and owns its own telemetry lifecycle (surface
     ``server``), so it must not share this short-lived CLI process. The child
-    keeps the terminal; Ctrl-C reaches it directly, and the parent only waits.
+    keeps the terminal and its default signal dispositions, so Ctrl-C reaches
+    it directly; the parent swallows its own copy while it waits (a handler,
+    not ``SIG_IGN``, because an ignored disposition would be inherited).
+    ``on_ready`` runs once the server answers ``/health/ready``.
     """
     import signal
 
-    previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    previous = signal.signal(signal.SIGINT, lambda *_args: None)
     try:
-        return subprocess.call([*_cli_command(), *argv])
+        proc = popen([*_cli_command(), *argv])
+        if on_ready is not None and port is not None:
+            if wait_until_ready(port, proc):
+                on_ready()
+        return proc.wait()
     finally:
         signal.signal(signal.SIGINT, previous)
 
@@ -592,7 +646,7 @@ def run_bare(
     version: str,
     top_level_flags: Sequence[str],
     dispatch: Callable[[list[str]], object],
-    serve: Callable[[Sequence[str]], int] = run_server_process,
+    serve: Callable[..., int] = run_server_process,
 ) -> int:
     """Entry point for bare ``rapid-mlx``. Returns the process exit status.
 
@@ -623,6 +677,27 @@ def run_bare(
             print(f"  {plan.note}")
         full = ["--no-banner", *top_level_flags, *argv]
         if argv[0] == "serve":
-            return serve(full)
+            if plan.after_ready is None:
+                return serve(full)
+            follow = ["--no-banner", *top_level_flags, *plan.after_ready]
+            return serve(
+                full,
+                port=int(argv[argv.index("--port") + 1]),
+                on_ready=functools.partial(
+                    _run_after_ready, plan.after_ready, follow, dispatch
+                ),
+            )
         dispatch(full)
     return 0
+
+
+def _run_after_ready(
+    shown: Sequence[str], argv: list[str], dispatch: Callable[[list[str]], object]
+) -> None:
+    """Run the post-ready step; a failure there must not stop the server."""
+    print(echo_command(shown))
+    try:
+        dispatch(argv)
+    except SystemExit as exc:
+        if exc.code not in (None, 0):
+            print(f"  That step failed (exit {exc.code}); the server keeps running.")
