@@ -141,7 +141,10 @@ def test_qwen36_35b_qualified_mtp_is_the_text_server_default() -> None:
     cli._normalize_speculative_config_or_exit(args)
 
     assert args.spec_decode == "mtp"
-    assert args.mtp_continuous_batching is True
+    # Concurrency batches through ordinary decode; the verified artifact
+    # keeps its unquantized cache contract.
+    assert args.mtp_continuous_batching is False
+    assert args.mtp_unquantized_cache is True
     assert args.mtp_sidecar == "mlx-community/Qwen3.6-35B-A3B-MTP-4bit"
 
 
@@ -163,6 +166,8 @@ def test_serve_rejects_continuous_mtp_cache_conflict_before_scheduler(
 
     args = _parsed_serve_args(
         "qwen3.5-9b-4bit",
+        "--speculative-config",
+        '{"method":"mtp","continuous_batching":true}',
         "--kv-cache-turboquant",
         "k8v4",
     )
@@ -193,7 +198,12 @@ def test_reasoning_continuous_mtp_logs_bf16_cache_policy(
     ):
         cli.serve_command(args)
 
-    assert "Continuous MTP cache policy: keeping BF16 KV cache" in caplog.text
+    assert "MTP cache policy: keeping BF16 KV cache" in caplog.text
+    # The verified artifact's cache contract wins over the reasoning profile's
+    # int8 default even though the continuous cohort is no longer selected.
+    assert args.mtp_continuous_batching is False
+    assert args.mtp_unquantized_cache is True
+    assert args.kv_cache_quantization is False
 
 
 def test_verified_tier_can_request_continuous_mtp_without_force() -> None:
@@ -276,7 +286,10 @@ def test_verified_alias_defaults_to_continuous_when_mtp_is_selected(
     args = _args(alias, '{"method":"mtp"}')
     _normalize_speculative_config_or_exit(args)
 
-    assert args.mtp_continuous_batching is True
+    # The continuous cohort is an explicit opt-in; the verified artifact keeps
+    # the unquantized cache contract its qualification measured.
+    assert args.mtp_continuous_batching is False
+    assert args.mtp_unquantized_cache is True
     assert args.mtp_continuous_batching_tier == "verified"
 
 
@@ -302,7 +315,8 @@ def test_legacy_enable_mtp_uses_the_same_verified_default() -> None:
 
     assert args.spec_decode == "mtp"
     assert args.enable_mtp is True
-    assert args.mtp_continuous_batching is True
+    assert args.mtp_continuous_batching is False
+    assert args.mtp_unquantized_cache is True
     assert args.mtp_continuous_batching_tier == "verified"
     assert args._speculative_config.method == "mtp"
 
@@ -326,7 +340,8 @@ def test_verified_alias_defaults_mtp_on_without_any_speculative_flag(
     _normalize_speculative_config_or_exit(args)
 
     assert args.spec_decode == "mtp"
-    assert args.mtp_continuous_batching is True
+    assert args.mtp_continuous_batching is False
+    assert args.mtp_unquantized_cache is True
     assert args.mtp_continuous_batching_tier == "verified"
     assert args._speculative_config.method == "mtp"
 
@@ -431,6 +446,43 @@ def test_continuous_mtp_suppresses_alias_turboquant_auto_default() -> None:
         )
         is None
     )
+
+
+def test_verified_mtp_cache_contract_suppresses_alias_turboquant_auto_default() -> None:
+    from rapid_mlx.cli import _resolve_turboquant_with_mtp_policy
+
+    args = SimpleNamespace(
+        mtp_continuous_batching=False,
+        mtp_unquantized_cache=True,
+        kv_cache_turboquant=None,
+        kv_cache_quantization=False,
+    )
+    detected = SimpleNamespace(turboquant_tier="k8v4_verified")
+
+    assert (
+        _resolve_turboquant_with_mtp_policy(
+            args,
+            model_name="qwen3.5-9b-4bit",
+            _detected_config=detected,
+        )
+        is None
+    )
+
+
+def test_explicit_ordinary_mtp_and_no_spec_drop_the_verified_cache_contract() -> None:
+    from rapid_mlx.cli import _normalize_speculative_config_or_exit
+
+    pinned = _args("qwen3.5-9b-4bit", '{"method":"mtp","continuous_batching":false}')
+    _normalize_speculative_config_or_exit(pinned)
+    assert pinned.mtp_continuous_batching is False
+    assert pinned.mtp_unquantized_cache is False
+
+    reused = _args("qwen3.5-9b-4bit", None)
+    reused.no_spec_decode = True
+    reused.mtp_unquantized_cache = True  # a stale derived flag
+    _normalize_speculative_config_or_exit(reused)
+    assert reused.spec_decode == "none"
+    assert reused.mtp_unquantized_cache is False
 
 
 def test_ordinary_mtp_keeps_alias_turboquant_auto_default(

@@ -315,7 +315,7 @@ def register(subparsers) -> None:
     # port validator so `launch --port 99999` argparse-rejects up front
     # instead of failing inside the detached child after the parent has
     # already written a PID and printed "Started".
-    from ..cli import _port_arg
+    from ..cli_parser import _port_arg
 
     p = subparsers.add_parser(
         "launch",

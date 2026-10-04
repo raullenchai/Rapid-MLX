@@ -8,8 +8,10 @@ Ship an explicit, greedy-only serial native-MTP backend for the exact
 `qwen3.6-35b-4bit` artifact pair. Keep it opt-in. Do not replace the standard
 server because the native serial path intentionally exposes fewer capabilities.
 
-The standard continuous-MTP server is separately qualified as the default
-text lane for this exact alias. It supports sampled generation, structured
+The standard continuous-MTP server is separately qualified for this exact
+alias (since 2026-10-02 an explicit opt-in; the default text lane batches
+concurrent requests through ordinary decode, see
+[MTP under concurrency on an M4 Pro](2026-10-02-mtp-concurrency-m4-pro.md)). It supports sampled generation, structured
 JSON, tools, cancellation, and concurrent scheduling. `--no-spec-decode`
 restores ordinary text decoding, while explicit `--mllm` selects the mutually
 exclusive vision lane.

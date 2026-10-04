@@ -1026,11 +1026,20 @@ async def _run_job(
             if isinstance(exc, VideoRuntimeError)
             else "Video generation failed; check the server logs for details."
         )
-        with _jobs_lock:
-            job.status = "failed"
-            job.error = {"code": "video_generation_failed", "message": message}
-            job.generation_finished = True
-        await asyncio.to_thread(shutil.rmtree, _jobs_root / job.id, ignore_errors=True)
+        try:
+            # Remove partial artifacts BEFORE publishing the terminal state: a
+            # client that observes ``failed`` must not still find them. The
+            # generation thread has already returned, so nothing else writes
+            # here; ``finally`` still publishes ``failed`` if cleanup is
+            # interrupted (e.g. shutdown cancels this task mid-rmtree).
+            await asyncio.to_thread(
+                shutil.rmtree, _jobs_root / job.id, ignore_errors=True
+            )
+        finally:
+            with _jobs_lock:
+                job.status = "failed"
+                job.error = {"code": "video_generation_failed", "message": message}
+                job.generation_finished = True
 
 
 @router.post("/v1/videos", dependencies=[Depends(verify_api_key)])
