@@ -4630,21 +4630,51 @@ def test_video_download_worker_reports_each_outcome(
         assert (status, payload) == ("error", "video artifact download failed")
 
 
-def test_video_download_worker_survives_a_torn_result_pipe(
-    monkeypatch: pytest.MonkeyPatch,
+def test_video_download_worker_preserves_artifact_after_delivered_success(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(
         local_runner,
         "_enter_worker_lifetime",
         lambda lifeline, *, cleanup_path=None: None,
     )
+    artifact = tmp_path / "artifact.mp4"
     monkeypatch.setattr(
         local_runner,
         "_download_video_artifact_unbounded",
-        lambda base_url, job_id, destination_path: (_ for _ in ()).throw(
-            RuntimeError("connection reset mid-stream")
+        lambda base_url, job_id, destination_path: Path(destination_path).write_bytes(
+            b"complete"
         ),
     )
+    receiver, sender = multiprocessing.Pipe(duplex=False)
+
+    local_runner._video_download_worker(
+        "http://local/v1", "job-1", str(artifact), sender, object()
+    )
+
+    assert receiver.recv() == ("ok", None)
+    assert artifact.read_bytes() == b"complete"
+
+
+@pytest.mark.parametrize("download_fails", [False, True])
+def test_video_download_worker_removes_orphan_after_torn_result_pipe(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, download_fails: bool
+) -> None:
+    monkeypatch.setattr(
+        local_runner,
+        "_enter_worker_lifetime",
+        lambda lifeline, *, cleanup_path=None: None,
+    )
+    artifact = tmp_path / "artifact.mp4"
+
+    def download(base_url: str, job_id: str, destination_path: str) -> None:
+        Path(destination_path).write_bytes(
+            b"partial" if download_fails else b"complete"
+        )
+        if download_fails:
+            raise RuntimeError("connection reset mid-stream")
+
+    monkeypatch.setattr(local_runner, "_download_video_artifact_unbounded", download)
 
     class TornSender:
         def __init__(self) -> None:
@@ -4658,9 +4688,10 @@ def test_video_download_worker_survives_a_torn_result_pipe(
 
     sender = TornSender()
     local_runner._video_download_worker(
-        "http://local/v1", "job-1", "artifact.mp4", sender, object()
+        "http://local/v1", "job-1", str(artifact), sender, object()
     )
     assert sender.closed is True
+    assert not artifact.exists()
 
 
 class _FakeWorkerConnection:
