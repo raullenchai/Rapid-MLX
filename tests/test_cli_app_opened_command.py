@@ -58,8 +58,9 @@ def test_top_level_flags_report_quietly_and_keep_stdout(
         cli.main()
     assert exc.value.code == 0
     assert calls == [(expected, True)]
-    out = capsys.readouterr().out
-    assert out.startswith("usage:" if expected == "help" else "rapid-mlx ")
+    captured = capsys.readouterr()
+    assert captured.out.startswith("usage:" if expected == "help" else "rapid-mlx ")
+    assert captured.err == ""
 
 
 def test_parse_errors_report_nothing(monkeypatch, capsys):
