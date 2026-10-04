@@ -268,6 +268,7 @@ def test_c_launches_then_serves_on_the_same_free_port():
         free_port=lambda: 8001,
     )
     assert plan.steps == [
+        ["pull", "qwen3.5-4b-4bit"],
         [
             "launch",
             "claude-code",
@@ -356,7 +357,30 @@ def test_ctrl_c_inside_picker_quits():
 def test_first_free_port():
     taken = {8000, 8001}
     assert fd.first_free_port(is_free=lambda p: p not in taken) == 8002
-    assert fd.first_free_port(span=2, is_free=lambda p: False) == 8000
+    assert fd.first_free_port(span=2, is_free=lambda p: False) is None
+
+
+@pytest.mark.parametrize("key", ["s", "c"])
+def test_no_free_port_keeps_the_menu_open(key):
+    shown: list[str] = []
+    plan = fd.run_interactive(
+        _state(agent="claude-code"),
+        key_reader=_keys(key, "q"),
+        out=shown.append,
+        free_port=lambda: None,
+    )
+    assert plan is None
+    assert any("No free port in 8000-8099" in line for line in shown)
+
+
+def test_renamed_server_is_shown_but_never_attached():
+    server = fd.ServerInfo(8000, "studio-assistant", attachable=False)
+    state = _state(server=server, agent="claude-code")
+    assert state.selected == "qwen3.5-4b-4bit"
+    assert state.attach_port is None
+    text = fd.render_screen(state)
+    assert "Server running on :8000 · studio-assistant" in text
+    assert "Enter  Start chatting with qwen3.5-4b-4bit" in text
 
 
 def test_port_is_free_detects_a_bound_port():
@@ -448,6 +472,47 @@ def test_styling_respects_no_color(monkeypatch):
     assert fd._styled_screen("a\nb") == "a\nb"
 
 
+def test_narrow_terminal_truncates_instead_of_wrapping(monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    text = fd._styled_screen(fd.render_screen(_state(agent="claude-code")), 40)
+    lines = text.split("\n")
+    assert max(len(line) for line in lines) == 40
+    assert len(lines) == len(fd.render_screen(_state(agent="claude-code")).split("\n"))
+    assert any(line.endswith("…") for line in lines)
+
+
+@pytest.mark.parametrize("ram_gb", [8.0, 16.0])
+def test_small_mac_screens_fit_the_row_budget(monkeypatch, ram_gb):
+    monkeypatch.setattr("rapid_mlx.cli._recipe_free_disk_gb", lambda: 0.0)
+    state = _state(
+        picks=fd._picks_for(ram_gb, []),
+        ram_gb=ram_gb,
+        agent="claude-code",
+        server=fd.ServerInfo(8000, "x"),
+        cached=["lfm2.5-1b-4bit"],
+        last_used="lfm2.5-1b-4bit",
+    )
+    assert len(fd.render_screen(state).split("\n")) <= 20
+
+
+def test_run_server_process_runs_a_fresh_child_and_restores_sigint(monkeypatch):
+    import signal
+
+    seen = {}
+
+    def fake_call(cmd):
+        seen["cmd"] = cmd
+        seen["sigint"] = signal.getsignal(signal.SIGINT)
+        return 7
+
+    before = signal.getsignal(signal.SIGINT)
+    monkeypatch.setattr(fd.subprocess, "call", fake_call)
+    assert fd.run_server_process(["--no-banner", "serve", "m"]) == 7
+    assert seen["cmd"] == [*fd._cli_command(), "--no-banner", "serve", "m"]
+    assert seen["sigint"] is signal.SIG_IGN
+    assert signal.getsignal(signal.SIGINT) is before
+
+
 # ======================================================================
 # Probes
 # ======================================================================
@@ -481,7 +546,11 @@ def test_running_server_picks_lowest_port_and_api_name(monkeypatch):
         (4, "7000", "(unknown)", "1m"),
     ]
     monkeypatch.setattr("rapid_mlx.cli._scan_running_servers", lambda: rows)
-    assert fd._running_server() == fd.ServerInfo(8001, "served-name")
+    assert fd._running_server() == fd.ServerInfo(8001, "served-name", False)
+    monkeypatch.setattr(
+        "rapid_mlx.cli._scan_running_servers", lambda: [(1, "8000", "m", "1m")]
+    )
+    assert fd._running_server() == fd.ServerInfo(8000, "m", True)
     monkeypatch.setattr("rapid_mlx.cli._scan_running_servers", lambda: [])
     assert fd._running_server() is None
 
@@ -561,18 +630,25 @@ def test_run_bare_tty_dispatches_each_step_with_flags(monkeypatch, capsys):
         lambda state: fd.plan_connect(state, port=8001),
     )
     calls: list[list[str]] = []
+    served: list[list[str]] = []
     code = fd.run_bare(
-        version="9.9.9", top_level_flags=["--no-telemetry"], dispatch=calls.append
+        version="9.9.9",
+        top_level_flags=["--no-telemetry"],
+        dispatch=calls.append,
+        serve=lambda argv: served.append(list(argv)) or 3,
     )
-    assert code == 0
-    assert calls[0][:3] == ["--no-banner", "--no-telemetry", "launch"]
-    assert calls[1] == [
-        "--no-banner",
-        "--no-telemetry",
-        "serve",
-        "qwen3.5-4b-4bit",
-        "--port",
-        "8001",
+    assert code == 3  # the server child's exit status
+    assert calls[0] == ["--no-banner", "--no-telemetry", "pull", "qwen3.5-4b-4bit"]
+    assert calls[1][:3] == ["--no-banner", "--no-telemetry", "launch"]
+    assert served == [
+        [
+            "--no-banner",
+            "--no-telemetry",
+            "serve",
+            "qwen3.5-4b-4bit",
+            "--port",
+            "8001",
+        ]
     ]
     out = capsys.readouterr().out
     assert "→ rapid-mlx launch claude-code --model qwen3.5-4b-4bit" in out
@@ -704,3 +780,21 @@ def test_attached_chat_does_not_record_last_model(monkeypatch, tmp_path):
     monkeypatch.setenv("RAPID_MLX_STATE_DIR", str(tmp_path))
     _run_chat_main(monkeypatch, ["chat", "qwen3.5-9b-4bit", "--port", "8123"])
     assert fr.last_used_model() is None
+
+
+def test_recipe_without_detectable_ram_asks_for_max_ram(monkeypatch):
+    # recipe_command was split around the shared _annotate_recipe_picks helper;
+    # its unknown-RAM refusal is unchanged.
+    monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: 0.0)
+    with pytest.raises(SystemExit, match="--max-ram"):
+        cli.recipe_command(SimpleNamespace(max_ram=None, json=False))
+
+
+def test_cli_command_prefers_the_sibling_entry_point(monkeypatch, tmp_path):
+    script = tmp_path / "rapid-mlx"
+    script.write_text("#!/bin/sh\n")
+    script.chmod(0o755)
+    monkeypatch.setattr(fd.sys, "executable", str(tmp_path / "python"))
+    assert fd._cli_command() == [str(script)]
+    script.chmod(0o644)
+    assert fd._cli_command() == [str(tmp_path / "python"), "-m", "rapid_mlx.cli"]

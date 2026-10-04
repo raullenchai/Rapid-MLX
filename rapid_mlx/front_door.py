@@ -56,6 +56,9 @@ _CLEAR_SCREEN = "\x1b[H\x1b[2J"
 class ServerInfo:
     port: int
     model: str
+    # False when the server renamed its API model (--served-model-name): the
+    # front door cannot name it to ``chat``/``launch``, so it only shows it.
+    attachable: bool = True
 
 
 @dataclass
@@ -73,7 +76,11 @@ class FrontDoorState:
     @property
     def attach_port(self) -> int | None:
         """Port of a running server already serving the selected model."""
-        if self.server is not None and self.server.model == self.selected:
+        if (
+            self.server is not None
+            and self.server.attachable
+            and self.server.model == self.selected
+        ):
             return self.server.port
         return None
 
@@ -115,7 +122,7 @@ def _running_server() -> ServerInfo | None:
         # the API identity is the leading token.
         name = str(model).split(" (", 1)[0]
         if name and name != "(unknown)":
-            servers.append(ServerInfo(port_num, name))
+            servers.append(ServerInfo(port_num, name, " (" not in str(model)))
     return min(servers, key=lambda s: s.port) if servers else None
 
 
@@ -163,7 +170,11 @@ def _can_chat(model: str) -> bool:
 
 def _default_model(state: FrontDoorState) -> str:
     """Server model → last used → cached policy pick → quick-start pick."""
-    if state.server is not None and _can_chat(state.server.model):
+    if (
+        state.server is not None
+        and state.server.attachable
+        and _can_chat(state.server.model)
+    ):
         return state.server.model
     if state.last_used and state.last_used in state.cached:
         return state.last_used
@@ -214,13 +225,15 @@ def first_free_port(
     span: int = _PORT_SEARCH_SPAN,
     *,
     is_free: Callable[[int], bool] | None = None,
-) -> int:
-    """First loopback port at or after ``start`` that accepts a bind."""
+) -> int | None:
+    """First loopback port at or after ``start`` that accepts a bind, or
+    ``None`` when the whole range is taken. (``serve`` still reports a clean
+    bind error if another process takes the port in between.)"""
     check = is_free or _port_is_free
     for port in range(start, start + span):
         if check(port):
             return port
-    return start
+    return None
 
 
 def _port_is_free(port: int) -> bool:
@@ -410,8 +423,14 @@ def plan_connect(state: FrontDoorState, *, port: int) -> Plan:
     ]
     if attach is not None:
         return Plan([launch])
+    # Download first (a no-op when cached), so a declined or failed download
+    # stops before the agent's configuration is touched.
     return Plan(
-        [launch, ["serve", state.selected, "--port", str(use_port)]],
+        [
+            ["pull", state.selected],
+            launch,
+            ["serve", state.selected, "--port", str(use_port)],
+        ],
         note=(
             f"Leave this server running and open {agent_label(state.agent)} "
             "in another terminal. Ctrl-C stops the server."
@@ -471,8 +490,17 @@ def _style(text: str, code: str) -> str:
     return f"\x1b[{code}m{text}\x1b[0m"
 
 
-def _styled_screen(text: str) -> str:
-    lines = text.split("\n")
+def _fit_width(line: str, columns: int) -> str:
+    return line if len(line) <= columns else line[: max(columns - 1, 1)] + "…"
+
+
+def _styled_screen(text: str, columns: int | None = None) -> str:
+    """Bold header; lines truncated (not wrapped) so the menu keeps its rows."""
+    if columns is None:
+        import shutil
+
+        columns = shutil.get_terminal_size((80, 24)).columns
+    lines = [_fit_width(line, columns) for line in text.split("\n")]
     lines[0] = _style(lines[0], "1")
     return "\n".join(lines)
 
@@ -500,7 +528,7 @@ def run_interactive(
     *,
     key_reader: Callable[[], str] = read_key,
     out: Callable[[str], None] = print,
-    free_port: Callable[[], int] = first_free_port,
+    free_port: Callable[[], int | None] = first_free_port,
 ) -> Plan | None:
     """Show the screen and wait for an action key. ``None`` means quit."""
     out(_styled_screen(render_screen(state)))
@@ -513,11 +541,20 @@ def run_interactive(
             return None
         if key == KEY_ENTER:
             return plan_chat(state)
-        if key == "s":
-            return plan_serve(state, port=free_port())
-        if key == "c" and state.agent is not None:
-            port = state.attach_port
-            return plan_connect(state, port=port if port is not None else free_port())
+        if key == "s" or (key == "c" and state.agent is not None):
+            port = state.attach_port if key == "c" else None
+            if port is None:
+                port = free_port()
+            if port is None:
+                out(
+                    f"No free port in {DEFAULT_PORT}-"
+                    f"{DEFAULT_PORT + _PORT_SEARCH_SPAN - 1}; stop a server "
+                    "(rapid-mlx ps) and try again."
+                )
+                continue
+            if key == "s":
+                return plan_serve(state, port=port)
+            return plan_connect(state, port=port)
         if key == "m":
             try:
                 choose_model(state, key_reader=key_reader, out=out)
@@ -526,11 +563,36 @@ def run_interactive(
             out(_CLEAR_SCREEN + _styled_screen(render_screen(state)))
 
 
+def _cli_command() -> list[str]:
+    """This install's own ``rapid-mlx`` entry point (never a PATH lookup)."""
+    script = os.path.join(os.path.dirname(sys.executable), "rapid-mlx")
+    if os.access(script, os.X_OK):
+        return [script]
+    return [sys.executable, "-m", "rapid_mlx.cli"]
+
+
+def run_server_process(argv: Sequence[str]) -> int:
+    """Run ``serve`` as a fresh foreground child and return its exit status.
+
+    A server is long-lived and owns its own telemetry lifecycle (surface
+    ``server``), so it must not share this short-lived CLI process. The child
+    keeps the terminal; Ctrl-C reaches it directly, and the parent only waits.
+    """
+    import signal
+
+    previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    try:
+        return subprocess.call([*_cli_command(), *argv])
+    finally:
+        signal.signal(signal.SIGINT, previous)
+
+
 def run_bare(
     *,
     version: str,
     top_level_flags: Sequence[str],
     dispatch: Callable[[list[str]], object],
+    serve: Callable[[Sequence[str]], int] = run_server_process,
 ) -> int:
     """Entry point for bare ``rapid-mlx``. Returns the process exit status.
 
@@ -559,5 +621,8 @@ def run_bare(
         print(echo_command(argv))
         if plan.note and index == len(plan.steps) - 1:
             print(f"  {plan.note}")
-        dispatch(["--no-banner", *top_level_flags, *argv])
+        full = ["--no-banner", *top_level_flags, *argv]
+        if argv[0] == "serve":
+            return serve(full)
+        dispatch(full)
     return 0
