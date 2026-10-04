@@ -379,15 +379,13 @@ _CASES = {
 
 def _normalize(body: str) -> str:
     """Blank out per-response ids, timestamps and SSE keepalive comments (the
-    same rules the origin/main capture applied)."""
+    same rules the origin/main capture applied). Only the VALUES of known id /
+    timestamp keys are rewritten, so model text is compared byte-for-byte."""
     body = re.sub(r"^: keepalive\n\n", "", body, flags=re.M)
     body = re.sub(
         r'"(id|created|created_at|item_id|response_id)":\s*("[^"]*"|\d+)',
         r'"\1":"X"',
         body,
-    )
-    body = re.sub(
-        r"(chatcmpl|cmpl|resp|msg|rs|fc|call|item)_[A-Za-z0-9]+", r"\1_X", body
     )
     return re.sub(r'"(created|created_at)":\s*\d+', r'"\1":0', body)
 
