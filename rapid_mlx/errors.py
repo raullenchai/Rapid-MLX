@@ -15,6 +15,14 @@ class BackpressureError(Exception):
     """
 
 
+class MetalMemoryBackpressureError(BackpressureError):
+    """Admission was rejected by the Metal memory cap (D-METAL-CAP).
+
+    A subclass so the HTTP layer can say "memory limit" instead of "max
+    concurrent requests" — the two have different remedies.
+    """
+
+
 class PagedCacheUnsupportedLayoutError(Exception):
     """Raised at startup when ``--use-paged-cache`` cannot serve the model.
 
