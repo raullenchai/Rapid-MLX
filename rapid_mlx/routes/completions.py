@@ -46,6 +46,7 @@ from ..service.helpers import (
     ensure_engine_ready,
     get_engine,
     get_usage,
+    prompt_compression_headers,
 )
 
 logger = logging.getLogger(__name__)
@@ -744,6 +745,8 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
         response = Response(
             content=comp_response.model_dump_json(exclude_none=True),
             media_type="application/json",
+            # #4092: announce a PFlash-compressed prompt.
+            headers=prompt_compression_headers(comp_response.metrics) or None,
         )
         from rapid_mlx.telemetry import inference as _telemetry_inference
 

@@ -175,18 +175,20 @@ def _add_pflash_args(parser) -> None:
     Used by both ``serve`` and ``bench`` so the flag surface stays in
     sync. The default for ``--pflash`` is intentionally ``None``
     (sentinel for "user passed nothing") so the per-alias resolver in
-    ``pflash.resolve_pflash_mode_default`` can switch the engine to
-    ``always`` for ``pflash_tier="verified"`` aliases (Qwen3.5 /
-    Qwen3.6 family per #287) without breaking the explicit-override
-    contract: passing ``--pflash off`` still wins.
+    ``pflash.resolve_pflash_mode_default`` decides the default — ``off``
+    for every alias since #4092, with an opt-in hint for
+    ``pflash_tier="verified"`` aliases — while an explicit flag always
+    wins.
     """
     parser.add_argument(
         "--pflash",
         choices=["off", "auto", "always"],
         default=None,
-        help="Enable PFlash long-prompt prefill compression "
-        "(off, auto, always). Default: 'always' for verified aliases "
-        "(Qwen3.5 / Qwen3.6 family per #287), 'off' for everything else.",
+        help="Opt in to PFlash long-prompt prefill compression "
+        "(off, auto, always). Default: off. Compression is lossy: it drops "
+        "most of the middle of the prompt for a faster cold prefill. 'auto' "
+        "compresses only prompts of at least --pflash-threshold tokens; "
+        "'always' compresses every eligible long prompt.",
     )
     parser.add_argument(
         "--pflash-threshold",

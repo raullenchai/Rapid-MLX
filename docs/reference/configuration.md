@@ -120,11 +120,15 @@ needed by the application; leave it unset for URL/base64-only deployments.
 
 ### PFlash Options
 
-PFlash long-prompt prefill compression. Defaults to `always` for verified
-aliases (Qwen3.5 / Qwen3.6 family) and `off` otherwise; tune with
-`--pflash off|auto|always`, `--pflash-threshold` (32768), and the
-`--pflash-*` keep/scoring knobs — see the
-[CLI reference](cli.md#pflash-long-prompt-compression) for the full table.
+PFlash long-prompt prefill compression is off by default for every model. It
+is lossy: a compressed prompt keeps its first and last tokens plus the
+highest-scoring middle blocks, about 20% of the prompt by default (50% on
+`bonsai-27b-2bit`), and skips the prefix cache. It is an opt-in for a faster
+cold prefill. `--pflash auto` compresses only prompts of at least
+`--pflash-threshold` tokens (32768). `--pflash always` compresses every
+eligible long prompt. Tune the trade-off with the `--pflash-*` keep/scoring
+knobs. The [CLI reference](cli.md#pflash-long-prompt-compression) has the full
+table and shows how a compressed response is marked.
 
 ### Tool Calling Options
 
@@ -329,7 +333,10 @@ you turn it on.
 > that way — a fresh process per checkpoint — when you read the ratio.
 
 For request-level diagnosis, successful MTP requests also include an
-experimental `metrics.speculative_decoding` object in the terminal response:
+experimental `metrics.speculative_decoding` object in the terminal response.
+A request whose prompt PFlash compressed carries `metrics.prompt_compression`
+in the same envelope. See
+[PFlash long-prompt compression](cli.md#pflash-long-prompt-compression).
 
 ```json
 {
@@ -349,8 +356,9 @@ The counters belong only to that HTTP request, so concurrent traffic cannot
 mix their values. Multi-prompt Completions sum the counters across their
 choices. They appear on non-streaming Chat Completions, Completions, and
 Responses payloads, or on the single terminal event for their streaming forms.
-The `metrics` field is omitted when MTP did not perform a verification round,
-including ordinary decoding and response-cache hits. The process-wide
+The `speculative_decoding` block is omitted when MTP did not perform a
+verification round, including ordinary decoding and response-cache hits. The
+whole `metrics` field is omitted when neither block applies. The process-wide
 `/metrics` series remain the right surface for service dashboards.
 
 #### MTP sidecar heads are not standalone models

@@ -362,7 +362,7 @@ binary auto-routing decision has a force-on and force-off pair.
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--pflash` | PFlash long-prompt prefill compression: `off`, `auto`, `always` | `always` for verified aliases (Qwen3.5 / Qwen3.6 family), `off` otherwise |
+| `--pflash` | PFlash long-prompt prefill compression: `off`, `auto` (only prompts of at least `--pflash-threshold` tokens), `always` (every eligible prompt whose keep budget leaves room for middle blocks, roughly 11.5K tokens and up at the default ratio) | `off` |
 | `--pflash-threshold` | Minimum prompt tokens before `--pflash auto` compresses | 32768 |
 | `--pflash-keep-ratio` | Fraction of prompt tokens to keep when compressing; unset resolves a per-alias override if pinned, else 0.20 | None (per-alias or 0.20) |
 | `--pflash-min-keep-tokens` | Minimum tokens to keep when compressing | 2048 |
@@ -372,6 +372,43 @@ binary auto-routing decision has a force-on and force-off pair.
 | `--pflash-query-window` | Trailing query window used to score middle blocks | 512 |
 | `--pflash-stride-blocks` | Keep every Nth middle block as an anchor during scoring (0 disables anchors) | 8 |
 | `--pflash-include-tools` | Allow compression on prompts with tool definitions (skipped by default for tool-call reliability) | off |
+
+PFlash is lossy. A compressed prompt keeps the first `--pflash-sink-tokens`,
+the last `--pflash-tail-tokens`, and the middle blocks that score highest
+against the end of the prompt, until it reaches `--pflash-keep-ratio` of the
+original. The rest of the middle is dropped, so the model does not see it. A
+compressed request also skips the prefix cache, so a later turn of the same
+conversation prefills from scratch. Prompts with tool definitions are
+skipped unless you pass `--pflash-include-tools`, and Chat Completions
+requests with a `response_format` are skipped too.
+
+PFlash is off by default for every model, so every prompt reaches the model in
+full. To opt in, pass `--pflash auto` to compress only prompts of at least
+`--pflash-threshold` tokens, or `--pflash always` to compress every eligible
+long prompt. In exchange you get a faster cold prefill: about 4x to 8x on the
+Qwen3.5 / Qwen3.6 family at 32K to 64K tokens with the default 0.20 keep ratio.
+You give up the dropped part of the middle and prefix-cache reuse for that
+request. Aliases tagged `pflash_tier: "verified"` (the Qwen3.5 / Qwen3.6
+family and `bonsai-27b-2bit`) were benchmarked for this trade-off, and
+`bonsai-27b-2bit` runs at its validated 0.50 keep ratio when you opt in. On
+startup, a verified alias logs how to opt in.
+
+When a request is compressed, the server marks it in three places:
+
+- Non-streaming responses on `/v1/chat/completions`, `/v1/completions`,
+  `/v1/responses` and `/v1/messages` carry the header
+  `X-Rapid-MLX-Prompt-Compressed: <kept>/<original>` (prompt tokens).
+- Chat Completions, Completions and Responses payloads carry
+  `"metrics": {"prompt_compression": {"original_tokens": N, "kept_tokens": M}}`
+  on the non-streaming body or on the terminal streaming event. Multi-prompt
+  Completions sum it over the compressed prompts. `usage.prompt_tokens` still
+  reports the original prompt size.
+- The server logs one INFO line per compressed request:
+  `[pflash] request=<id> compressed N -> M tokens ...`.
+
+Streaming `/v1/messages` responses have no compression signal apart from the
+log line, because the Anthropic event schema has no extension field. Response-cache
+hits do not repeat the header or the `metrics` block.
 
 #### MCP
 

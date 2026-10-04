@@ -121,6 +121,7 @@ from ..service.helpers import (
     maybe_apply_reasoning_effort,
     maybe_auto_disable_thinking_for_casual_chat,
     maybe_auto_disable_thinking_for_tools,
+    prompt_compression_headers,
     repair_messages_fit_context,
     served_chat_template,
 )
@@ -2437,6 +2438,8 @@ async def _non_stream(
     response = Response(
         content=responses_response.model_dump_json(exclude_none=True),
         media_type="application/json",
+        # #4092: announce a PFlash-compressed prompt.
+        headers=prompt_compression_headers(openai_response.metrics) or None,
     )
     from rapid_mlx.telemetry import inference as _telemetry_inference
     from rapid_mlx.telemetry.model_id import engine_telemetry_id
