@@ -13972,31 +13972,51 @@ def _start_v2_lifecycle(command: str | None) -> None:
 
 
 def _help_or_version_flag(raw_argv: list[str]) -> str | None:
-    """``help`` / ``version`` when argv asked for the -h / -V flag action."""
+    """``help`` / ``version`` for the -h / -V flag action argparse ran first."""
     head = raw_argv[: raw_argv.index("--")] if "--" in raw_argv else raw_argv
-    if "-h" in head or "--help" in head:
-        return "help"
-    if "-V" in head or "--version" in head:
-        return "version"
+    for token in head:
+        if token in ("-h", "--help"):
+            return "help"
+        if token in ("-V", "--version"):
+            return "version"
     return None
+
+
+def _argv_disables_telemetry(raw_argv: list[str]) -> bool:
+    """Whether argv opts out, including argparse's unique-prefix spellings
+    (``--no-t``). Over-matching only ever suppresses telemetry."""
+    return any(
+        len(token) > len("--no-") and "--no-telemetry".startswith(token)
+        for token in raw_argv
+    )
 
 
 def _start_quiet_lifecycle(command: str, *, no_telemetry: bool) -> None:
     """Lifecycle for entry points that must stay free of the disclosure.
 
     Bare ``rapid-mlx`` and the ``--help`` / ``--version`` flags never print
-    the telemetry notice (that stays with the first real command, unchanged).
-    They therefore report ``app_opened`` only when the notice was already
-    delivered on an earlier run; until then they send nothing.
+    the telemetry notice (that stays with the first real command, unchanged)
+    nor consent diagnostics. They therefore report ``app_opened`` only when
+    the notice was already delivered on an earlier run; until then they send
+    nothing.
     """
     try:
         from rapid_mlx.telemetry import consent_runtime
         from rapid_mlx.telemetry.state import set_cli_kill_switch
 
         set_cli_kill_switch(no_telemetry)
-        if consent_runtime.resolve().deliver_notice:
-            return
-        consent_runtime.startup()
+        # An unreadable consent record logs a warning while resolving; keep
+        # these output-clean paths byte-identical (the record then blocks
+        # uploads anyway, and the next real command surfaces it).
+        consent_logger = consent_runtime.logger
+        was_disabled = consent_logger.disabled
+        consent_logger.disabled = True
+        try:
+            if consent_runtime.resolve().deliver_notice:
+                return
+            consent_runtime.startup()
+        finally:
+            consent_logger.disabled = was_disabled
         _start_v2_lifecycle(command)
     except Exception:
         return
@@ -14083,7 +14103,9 @@ def main():
         # ``-h`` / ``--help`` / ``-V`` / ``--version`` exit 0 inside argparse.
         flag = _help_or_version_flag(sys.argv[1:]) if exc.code in (0, None) else None
         if flag is not None:
-            _start_quiet_lifecycle(flag, no_telemetry="--no-telemetry" in sys.argv[1:])
+            _start_quiet_lifecycle(
+                flag, no_telemetry=_argv_disables_telemetry(sys.argv[1:])
+            )
         raise
     if getattr(args, "disable_version_check", False):
         # The environment carries the opt-out to every server this command starts.

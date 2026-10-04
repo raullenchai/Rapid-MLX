@@ -27,6 +27,9 @@ from rapid_mlx.telemetry import consent_runtime
         (["-V"], "version"),
         (["chat"], None),
         (["share", "m", "--", "--help"], None),
+        # argparse runs the FIRST terminal action it meets.
+        (["--version", "--help"], "version"),
+        (["-h", "-V"], "help"),
     ],
 )
 def test_help_or_version_flag(argv, expected):
@@ -127,3 +130,47 @@ def test_quiet_lifecycle_prints_nothing_on_a_first_run(monkeypatch, capsys):
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == ""
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["--no-telemetry", "--help"], True),
+        (["--no-t", "--help"], True),
+        (["--no-tele", "-V"], True),
+        (["--no-", "--help"], False),
+        (["--no-banner", "--help"], False),
+        (["--help"], False),
+    ],
+)
+def test_argv_disables_telemetry_accepts_argparse_prefixes(argv, expected):
+    assert cli._argv_disables_telemetry(argv) is expected
+
+
+def test_abbreviated_opt_out_reaches_the_quiet_lifecycle(monkeypatch, capsys):
+    calls = _record_quiet(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["rapid-mlx", "--no-t", "--version"])
+    with pytest.raises(SystemExit):
+        cli.main()
+    assert calls == [("version", True)]
+    capsys.readouterr()
+
+
+def test_unreadable_consent_record_stays_silent(monkeypatch, capsys, caplog):
+    import logging
+
+    from rapid_mlx.telemetry import state
+
+    path = state.consent_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.mkdir()  # a directory where the record should be: unreadable
+    lifecycle: list[str] = []
+    monkeypatch.setattr(cli, "_start_v2_lifecycle", lifecycle.append)
+    with caplog.at_level(logging.DEBUG, logger=consent_runtime.logger.name):
+        cli._start_quiet_lifecycle("help", no_telemetry=False)
+    assert caplog.records == []
+    assert consent_runtime.logger.disabled is False
+    captured = capsys.readouterr()
+    assert (captured.out, captured.err) == ("", "")
+    # read_error blocks uploads; the lifecycle may start but sends nothing.
+    assert consent_runtime.upload_allowed() is False
