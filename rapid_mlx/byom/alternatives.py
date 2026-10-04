@@ -324,15 +324,17 @@ def suggest(
                 inspection, supported=supported, ram_bytes=ram_bytes
             )
             if builds:
+                lines = render_candidates(builds, command)
                 if targets is not None:
                     targets.extend(candidate.repo_id for candidate in builds)
-                return render_candidates(builds, command), True
+                return lines, True
         target = _target_bytes(inspection, verdict)
         alias = similar_catalog_model(target, ram_bytes)
     except Exception:
         return [], False
     if alias is None:
         return [], False
+    lines = render_catalog(alias, command, sized=target is not None)
     if targets is not None:
         targets.append(alias)
-    return render_catalog(alias, command, sized=target is not None), False
+    return lines, False

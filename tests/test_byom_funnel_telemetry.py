@@ -229,7 +229,10 @@ def test_suggestion_round_trip_is_one_shot_and_hashed():
     assert stat.S_IMODE(os.stat(_ledger()).st_mode) == 0o600
 
     byom_funnel.begin(["qwen3.5-4b", "mlx-community/Qwen3.5-4B-4bit"])
-    assert byom_funnel.props_for("qwen3.5-4b", failed=False) == {"via_suggestion": True}
+    props = byom_funnel.props_for("qwen3.5-4b", failed=False)
+    assert props == {"via_suggestion": True}
+    assert len(json.loads(_ledger().read_text())) == 2, "building props never consumes"
+    byom_funnel.note_emitted(props, True)
     assert len(json.loads(_ledger().read_text())) == 1
     # Consumed: the next run of the same model is not "via suggestion".
     byom_funnel.begin(["qwen3.5-4b"])
@@ -593,10 +596,57 @@ def test_a_run_that_emits_nothing_keeps_the_suggestion():
     byom_funnel.begin(["q-4bit"])  # e.g. a cached pull: no lifecycle event
     assert len(json.loads(_ledger().read_text())) == 1
     byom_funnel.begin(["q-4bit"])
-    assert byom_funnel.props_for("q-4bit", failed=True) == {"via_suggestion": True}
+    props = byom_funnel.props_for("q-4bit", failed=True)
+    assert props == {"via_suggestion": True}
+    # A rejected / unsent event never spends it.
+    byom_funnel.note_emitted(props, False)
+    byom_funnel.note_emitted(None, True)
+    byom_funnel.note_emitted({"preflight": "passed"}, True)
+    assert len(json.loads(_ledger().read_text())) == 1
+    byom_funnel.note_emitted(props, True)
+    assert json.loads(_ledger().read_text()) == {}
     # Consumed once; later events of the same run still report it.
     assert byom_funnel.props_for("q-4bit", failed=False) == {"via_suggestion": True}
-    assert json.loads(_ledger().read_text()) == {}
+    byom_funnel.note_emitted(props, True)
+
+
+def test_note_emitted_never_raises(monkeypatch):
+    monkeypatch.setattr(byom_funnel, "_consume_suggestion", lambda refs: 1 / 0)
+    byom_funnel.begin(["x"])
+    byom_funnel._context["via_suggestion"] = True
+    byom_funnel.note_emitted({"via_suggestion": True}, True)
+
+
+def _seed_suggestion(ref):
+    byom_funnel.begin(["bad/gguf"])
+    byom_funnel.note_refusal(
+        suggestion="catalog", support_request="declined", suggested_refs=[ref]
+    )
+    byom_funnel.begin([ref])
+
+
+def test_every_lifecycle_emitter_consumes_only_when_accepted(monkeypatch, telemetry_on):
+    # Opted out between preflight and emit: the event is refused, nothing spent.
+    _seed_suggestion("q-4bit")
+    monkeypatch.setattr(consent_runtime, "upload_allowed", lambda: False)
+    model_events.emit_model_pulled("q-4bit", "hf", GIB)
+    assert telemetry_on == []
+    assert len(json.loads(_ledger().read_text())) == 1
+    monkeypatch.setattr(consent_runtime, "upload_allowed", lambda: True)
+    for emit in (
+        lambda: model_events.emit_model_pulled("q-4bit", "hf", GIB),
+        lambda: model_events.emit_model_pull_failed(TimeoutError(), model_ref="q-4bit"),
+        lambda: model_events.emit_model_served(None, "q-4bit", False),
+        lambda: model_events.emit_model_serve_failed(
+            RuntimeError("x"), alias_or_path="q-4bit"
+        ),
+    ):
+        _seed_suggestion("q-4bit")
+        model_events._reset_for_tests()
+        telemetry_on.clear()
+        emit()
+        assert telemetry_on and telemetry_on[0][1]["via_suggestion"] is True
+        assert json.loads(_ledger().read_text()) == {}
 
 
 def test_full_config_confirmation_counts_as_passed(hook):

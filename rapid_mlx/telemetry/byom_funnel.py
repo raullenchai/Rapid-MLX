@@ -245,6 +245,28 @@ def note_refusal(
         return
 
 
+def note_emitted(props: object, accepted: object) -> None:
+    """Consume the matched suggestion once an event reporting it was queued.
+
+    Called by the lifecycle emitters with the props they sent and whether the
+    sender accepted the event, so an opt-out, a registry rejection or a failed
+    enqueue never spends the attribution. Never raises.
+    """
+    try:
+        if accepted is not True or not isinstance(props, dict):
+            return
+        if props.get("via_suggestion") is not True:
+            return
+        with _lock:
+            if _consumed[0] or _context.get("via_suggestion") is not True:
+                return
+            _consumed[0] = True
+            refs = _refs
+        _consume_suggestion(refs)
+    except Exception:
+        return
+
+
 _REFUSAL_ONLY = ("suggestion", "support_request")
 
 
@@ -256,12 +278,6 @@ def props_for(model_ref: object, *, failed: bool) -> dict[str, object]:
             if norm is None or norm not in _refs:
                 return {}
             context = dict(_context)
-            consume = context.get("via_suggestion") is True and not _consumed[0]
-            if consume:
-                _consumed[0] = True
-            refs = _refs
-        if consume:
-            _consume_suggestion(refs)
         props: dict[str, object] = {}
         preflight = context.get("preflight")
         if preflight in PREFLIGHT_OUTCOMES:

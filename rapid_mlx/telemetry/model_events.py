@@ -71,6 +71,16 @@ def _byom_props(model_ref: object, *, failed: bool) -> dict[str, object]:
     return props_for(model_ref, failed=failed)
 
 
+def _note_emitted(
+    props: dict[str, object], accepted: object, *, passthrough: bool = False
+) -> object:
+    """Let the BYOM funnel consume a suggestion only for an accepted event."""
+    from rapid_mlx.telemetry.byom_funnel import note_emitted
+
+    note_emitted(props, accepted)
+    return accepted if passthrough else None
+
+
 def size_bucket(size_bytes: int | None) -> str:
     """Map checkpoint bytes to the registry's closed GiB scale."""
     if (
@@ -404,7 +414,7 @@ def emit_model_pulled(
     if size_bytes is not None:
         props["size_bucket"] = size_bucket(size_bytes)
     props.update(_byom_props(model_ref, failed=False))
-    track("model_pulled", props)
+    _note_emitted(props, track("model_pulled", props))
 
 
 @_never_raise
@@ -428,7 +438,7 @@ def emit_model_pull_failed(
         props["size_bucket"] = size_bucket(size_bytes)
     if model_ref is not None:
         props.update(_byom_props(model_ref, failed=True))
-    track("model_pull_failed", props)
+    _note_emitted(props, track("model_pull_failed", props))
 
 
 def _import_props(source: object, bits: object) -> dict[str, object]:
@@ -519,6 +529,7 @@ def _record_model_served(
             props = _serve_props(engine, alias_or_path, auto_selected)
             nth = store.note_model_served(str(props["model"]))
             accepted = track.track("model_served", props, nth_model_served=nth or None)
+            _note_emitted(props, accepted)
     except Exception:
         pass
     finally:
@@ -889,7 +900,9 @@ def emit_model_serve_failed(
         key,
         # Consent may change after this decision, just as it may while an
         # already-queued event waits for the sender thread. Do not re-decide.
-        on_claim=lambda: track_module._enqueue_accepted(accepted),
+        on_claim=lambda: _note_emitted(
+            props, track_module._enqueue_accepted(accepted), passthrough=True
+        ),
     )
 
 
