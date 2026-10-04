@@ -61,6 +61,7 @@ async def test_lifespan_load_failure_emits_model_failure(monkeypatch):
                 "engine": engine,
                 "alias_or_path": "tmax-9b",
                 "auto_selected": True,
+                "failure_stage": "engine_start",
             },
         )
     ]

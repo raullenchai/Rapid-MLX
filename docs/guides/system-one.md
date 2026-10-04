@@ -51,6 +51,49 @@ The converter uses `torch.load(..., weights_only=True)` and writes
 files. Use the BF16 reference encoder for calibrated output. Quantized Qwen3
 backbones have not been qualified for ranking or probability parity.
 
+## Cloudflare Clef
+
+Clef is a joint-schema decision model. `clef-flash` uses a 9B Qwen3.5
+backbone; `clef` uses a 27B Qwen3.8 backbone. Both score every allowed option
+through Cloudflare's trained joint head in one forward pass. They do not
+generate chat text. Rapid uses the official Apache-2.0 head implementation
+with Torch on Apple Metal/MPS for this backend; Laya and CLM remain native MLX.
+
+```bash
+pip install 'rapid-mlx[clef]'
+rapid-mlx system-one clef-flash --port 8700
+# Larger model on a high-memory Mac:
+rapid-mlx system-one clef --port 8700
+```
+
+The first start downloads pinned Cloudflare weights into the normal Hugging
+Face cache. `--device cpu` is available for diagnosis. Cloudflare validated
+its reference runtime on an H200. Both checkpoints have been dogfooded on one
+M3 Ultra Mac with Metal; see the [local measurements](../engineering/performance/2026-10-03-clef-family-m3-ultra-dogfood.md).
+Other Mac sizes and sustained concurrent traffic remain unqualified. A Clef
+request accepts `state`, `questions`, and optional `images` or `videos`; the
+same `/v1/rank` endpoint ranks free-form candidates. `model` may be the short
+name or the corresponding `Cloudflare/...` identifier.
+
+For media, send `images` as PNG/JPEG/WebP base64 data URLs. Send `videos` as
+arrays of frame data URLs. Remote URLs and filesystem paths are rejected;
+each image is capped at 4 MiB and 16 MP, with at most eight images or 32
+video frames per request, with at least two frames in each video. All images
+and frames together are capped at 16 MP of decoded pixels. The complete JSON
+request also has an 8 MiB body limit, including base64 overhead; the per-item
+and item-count maxima cannot all be reached in one request. Requests over the
+body limit receive HTTP 413. Example:
+
+```json
+{
+  "state": {"task": "Review the attached receipt"},
+  "images": ["data:image/png;base64,<base64 bytes>"],
+  "questions": {
+    "legible": {"type": "noul", "instructions": "Is the total legible?"}
+  }
+}
+```
+
 ## Request examples
 
 ```bash
@@ -99,6 +142,9 @@ nesting-depth protection.
 
 - One service process hosts one decision backend.
 - Laya uses checkpoint calibration and accepts `temperature=1` only.
+- Clef also requires `temperature=1` for checkpoint calibration. Its input
+  encoder follows Cloudflare's 16,384-token default and may truncate a long
+  state to leave room for the schema.
 - CLM input is capped at 2,048 tokens by default, matching the upstream
   vLLM `truncate_prompt_tokens` behavior: longer inputs are left-truncated so
   the final 2,048 tokens reach last-token pooling. `--max-tokens` can lower or

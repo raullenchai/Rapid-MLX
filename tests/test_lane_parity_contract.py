@@ -512,15 +512,17 @@ def _engine(*, is_mllm: bool) -> tuple[BatchedEngine, Any]:
 
 
 def _request_semantics() -> tuple[dict[str, Any], tuple[object, object, object]]:
-    processors = (object(), object(), object())
+    processors = (object(), object(), object(), object())
     kwargs = {
         "repetition_penalty": 1.4,
+        "repetition_context_size": 64,
         "presence_penalty": 0.3,
         "frequency_penalty": -0.2,
         "reasoning_stop_scope": _STOP_SCOPE,
         "grammar_logits_processor": processors[0],
         "reasoning_budget_logits_processor": processors[1],
         "suppressed_tokens_logits_processor": processors[2],
+        "dry_logits_processor": processors[3],
         "top_k": 17,
         "min_p": 0.08,
         "seed": 42,
@@ -535,6 +537,7 @@ def _assert_shared_semantics(
         assert captured["logits_processors"] == list(processors)
         assert {key: captured[key] for key in _LANE_PARITY_SAMPLING_KEYS} == {
             "repetition_penalty": 1.4,
+            "repetition_context_size": 64,
             "presence_penalty": 0.3,
             "frequency_penalty": -0.2,
             "reasoning_stop_scope": _STOP_SCOPE,
@@ -549,6 +552,7 @@ def _assert_shared_semantics(
     params = captured["sampling_params"]
     assert {key: getattr(params, key) for key in _LANE_PARITY_SAMPLING_KEYS} == {
         "repetition_penalty": 1.4,
+        "repetition_context_size": 64,
         "presence_penalty": 0.3,
         "frequency_penalty": -0.2,
         "reasoning_stop_scope": _STOP_SCOPE,

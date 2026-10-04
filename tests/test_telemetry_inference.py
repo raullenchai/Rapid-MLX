@@ -495,6 +495,10 @@ for _ in range(16):
 
 
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="requires os.fork")
+# The test forks on purpose to verify post-fork state reset.
+@pytest.mark.filterwarnings(
+    "ignore:This process .* is multi-threaded, use of fork:DeprecationWarning"
+)
 def test_forked_child_starts_fresh_telemetry_worker(monkeypatch):
     from rapid_mlx.telemetry import inference
 
@@ -3195,7 +3199,7 @@ def test_worst_case_counter_cardinality_supports_28_complete_models():
         * len(enums["caller"]["values"])
         * (1 + len(enums["inference_error_class"]["values"]))
     )
-    assert keys_per_model == 8 * 27 * 11
+    assert keys_per_model == 8 * 32 * 11  # 32 callers after #4041 added 5 harnesses
     assert store.MAX_KEYS // keys_per_model == 28
 
 

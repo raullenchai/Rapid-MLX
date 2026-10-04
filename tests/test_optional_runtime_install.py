@@ -859,3 +859,66 @@ def test_broken_pip_runtime_uses_forced_reinstall_but_absent_does_not(
 
     assert "--upgrade --force-reinstall" in broken
     assert "--force-reinstall" not in absent
+
+
+@pytest.mark.parametrize("extra", ["video", "image"])
+def test_video_and_image_extras_offer_the_install_on_a_tty(monkeypatch, extra) -> None:
+    """The 0.15.2 vision prompt mechanism is extra-generic: a first start of
+    a video/image model with the extra missing asks before installing."""
+    stdin = _TTY("y\n")
+    stderr = _TTY()
+    order = _isolate_handler(monkeypatch, stdin=stdin, stderr=stderr)
+    _install_succeeds(monkeypatch, order)
+    monkeypatch.setattr(sys, "executable", "/tmp/rapid/bin/python")
+    monkeypatch.setattr(
+        sys,
+        "orig_argv",
+        ["/tmp/rapid/bin/python", "-m", "rapid_mlx.cli", "serve", "wan2.2-ti2v-5b-q8"],
+    )
+
+    with pytest.raises(_ExecCalled):
+        optional_runtime.handle_optional_runtime_missing(_failure(extra=extra))
+
+    prompt = stderr.getvalue()
+    assert f"Install rapid-mlx[{extra}] now?" in prompt
+    pip_argv = [
+        "/tmp/rapid/bin/python",
+        "-m",
+        "pip",
+        "install",
+        f"rapid-mlx[{extra}]=={rapid_mlx.__version__}",
+    ]
+    assert ("pip", pip_argv, False) in order
+    restart_argv = ["/tmp/rapid/bin/python", *sys.orig_argv[1:]]
+    assert ("execv", "/tmp/rapid/bin/python", restart_argv) in order
+
+
+@pytest.mark.parametrize("extra", ["video", "image"])
+def test_video_and_image_install_command_pins_the_extra_specifier(
+    monkeypatch, extra
+) -> None:
+    """--yes skips the prompt and installs the version-pinned extra."""
+    order = _isolate_handler(monkeypatch, stdin=_NotTTY(), stderr=_NotTTY())
+    _install_succeeds(monkeypatch, order)
+    monkeypatch.setattr(sys, "executable", "/tmp/rapid/bin/python")
+    monkeypatch.setattr(
+        sys,
+        "orig_argv",
+        ["/tmp/rapid/bin/python", "-m", "rapid_mlx.cli", "serve", "wan2.2-ti2v-5b-q8"],
+    )
+
+    with pytest.raises(_ExecCalled):
+        optional_runtime.handle_optional_runtime_missing(
+            _failure(extra=extra), assume_yes=True
+        )
+
+    pip_argv = [
+        "/tmp/rapid/bin/python",
+        "-m",
+        "pip",
+        "install",
+        f"rapid-mlx[{extra}]=={rapid_mlx.__version__}",
+    ]
+    assert ("pip", pip_argv, False) in order
+    restart_argv = ["/tmp/rapid/bin/python", *sys.orig_argv[1:]]
+    assert ("execv", "/tmp/rapid/bin/python", restart_argv) in order

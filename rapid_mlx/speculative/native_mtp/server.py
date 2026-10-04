@@ -29,7 +29,7 @@ def _validate_greedy_request(request: Any) -> None:
     repetition_penalty = getattr(request, "repetition_penalty", None)
     if repetition_penalty not in (None, 1, 1.0):
         unsupported["repetition_penalty"] = repetition_penalty
-    for name in ("presence_penalty", "frequency_penalty"):
+    for name in ("presence_penalty", "frequency_penalty", "dry_multiplier"):
         value = getattr(request, name, None)
         if value not in (None, 0, 0.0):
             unsupported[name] = value

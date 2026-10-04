@@ -162,6 +162,15 @@ def assemble_continuous_self_mtp_runtime(
             raise _unsupported("batched MTP forward must return hidden state")
         return batch_forward(hidden, token_ids, cache)
 
+    # The split head/projection seam is optional and purely a performance
+    # surface: both halves compose to exactly ``mtp_batch_forward``.
+    split_hidden = getattr(inner, "mtp_hidden_forward", None)
+    split_logits = getattr(inner, "mtp_logits", None)
+    if callable(split_hidden) != callable(split_logits):
+        raise _unsupported("split MTP seam is partial")
+    if not callable(split_hidden):
+        split_hidden = split_logits = None
+
     dynamic_membership = (
         allow_dynamic_membership and descriptor.get("dynamic_join") is True
     )
@@ -185,7 +194,12 @@ def assemble_continuous_self_mtp_runtime(
             architecture=family,
         ),
         capabilities=capabilities,
-        forwards=RapidForwardSeams(inner, mtp_forward),
+        forwards=RapidForwardSeams(
+            inner,
+            mtp_forward,
+            mtp_hidden=split_hidden,
+            mtp_logits=split_logits,
+        ),
         compute=RapidMLXSelfMTPBackend(
             target_cache_factory=lambda: _make_prompt_cache(inner),
             draft_cache_factory=make_mtp_cache,

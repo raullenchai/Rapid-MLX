@@ -889,7 +889,8 @@ struct SidebarView: View {
         let disabled = Self.residentUnloadDisabled(
             isOperating: server.isOperating || isUnloadingResidentModels,
             hasActiveModelWork: hasActiveModelWork,
-            hasActiveRequests: hasActiveRequests
+            hasActiveRequests: hasActiveRequests,
+            hasResidentLoadInFlight: !server.residentLoadsInFlight.isEmpty
         )
         let label = Self.residentUnloadLabel(
             modelCount: Self.residentWorkloadCount(snapshot),
@@ -982,9 +983,10 @@ struct SidebarView: View {
     nonisolated static func residentUnloadDisabled(
         isOperating: Bool,
         hasActiveModelWork: Bool,
-        hasActiveRequests: Bool
+        hasActiveRequests: Bool,
+        hasResidentLoadInFlight: Bool = false
     ) -> Bool {
-        isOperating || hasActiveModelWork || hasActiveRequests
+        isOperating || hasActiveModelWork || hasActiveRequests || hasResidentLoadInFlight
     }
 
     nonisolated static func residentUnloadHelp(

@@ -125,3 +125,10 @@ def test_validator_requires_the_full_continuous_mtp_surface():
         candidate = _Valid()
         setattr(candidate, attribute, None)
         assert qwen3_5_inject.validate_mtp_support(candidate) is False, attribute
+
+    # The optional split head/projection seam is valid only as a pair.
+    split = _Valid()
+    split.mtp_hidden_forward = lambda *args: args
+    assert qwen3_5_inject.validate_mtp_support(split) is False
+    split.mtp_logits = lambda hidden: hidden
+    assert qwen3_5_inject.validate_mtp_support(split) is True

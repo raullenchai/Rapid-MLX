@@ -13,7 +13,7 @@ class Question(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     type: Literal["noul", "choice", "score"]
-    instructions: Any
+    instructions: Any = None
     criteria: dict[str, Any] | list[Any] | None = None
 
     @model_validator(mode="after")
@@ -42,9 +42,20 @@ class SystemOneRequest(BaseModel):
     questions: dict[str, Question] = Field(min_length=1, max_length=64)
     model: str | None = None
     temperature: float = Field(default=1.0, ge=1e-6, le=100.0, allow_inf_nan=False)
+    images: list[str] | None = Field(default=None, max_length=8)
+    videos: list[list[str]] | None = Field(default=None, max_length=2)
 
     @model_validator(mode="after")
     def bounded_candidates(self) -> SystemOneRequest:
+        if self.videos and sum(len(frames) for frames in self.videos) > 32:
+            raise ValueError("videos support at most 32 frames total")
+        # Clef's source protocol permits omitted instructions and uses the
+        # question id as the instruction. Materialize that default here so
+        # existing Laya/CLM backends see the same non-empty field they did
+        # before this wire schema accepted omission.
+        for question_id, question in self.questions.items():
+            if question.instructions is None or question.instructions == "":
+                question.instructions = question_id
         # CLM encodes every candidate independently. Bound the aggregate, not
         # only each question, so a schema-valid request cannot multiply 64
         # individually-valid 255-option questions into 16k encoder passes.

@@ -360,6 +360,15 @@ def _running_applications(application_services: Any | None = None) -> list[Any]:
     return applications
 
 
+class AppNotFoundError(LookupError):
+    """No running process matches the requested app (it may have exited).
+
+    A ``LookupError`` rather than ``SystemExit``: this module also runs inside
+    the long-lived server, where a ``BaseException`` would sail past every
+    ``except Exception`` and take down the worker or event loop.
+    """
+
+
 def _app_element(app_name: str, expected_pid: int | None = None) -> object:
     if AS is None:
         raise RuntimeError("computer-use actions require macOS with PyObjC installed")
@@ -406,7 +415,7 @@ def _app_element(app_name: str, expected_pid: int | None = None) -> object:
         if len(matches) == 1 or _as_list(_get(element, "AXWindows")):
             return element
     suffix = f" with pid {expected_pid}" if expected_pid is not None else ""
-    raise SystemExit(f"app not found: {app_name!r}{suffix}")
+    raise AppNotFoundError(f"app not found: {app_name!r}{suffix}")
 
 
 def collect(
@@ -489,17 +498,34 @@ def collect(
     return targets
 
 
-def _cg_click(x: float, y: float, clicks: int = 1) -> None:
+# (down, up, CGMouseButton) per button; right/other values are the stable
+# kCGEventRightMouseDown/Up and kCGEventOtherMouseDown/Up enum constants.
+_HID_BUTTONS = {
+    "left": (kCGEventLeftMouseDown, kCGEventLeftMouseUp, 0),
+    "right": (3, 4, 1),
+    "middle": (25, 26, 2),
+}
+_K_CG_MOUSE_EVENT_BUTTON_NUMBER = 3
+
+
+def _cg_click(x: float, y: float, clicks: int = 1, button: str = "left") -> None:
+    down_type, up_type, button_number = _HID_BUTTONS[button]
     move = CGEventCreateMouseEvent(None, kCGEventMouseMoved, (x, y), 0)
     CGEventPost(kCGHIDEventTap, move)
     time.sleep(0.05)
-    down = CGEventCreateMouseEvent(None, kCGEventLeftMouseDown, (x, y), 0)
-    CGEventSetIntegerValueField(down, kCGMouseEventClickState, clicks)
-    up = CGEventCreateMouseEvent(None, kCGEventLeftMouseUp, (x, y), 0)
-    CGEventSetIntegerValueField(up, kCGMouseEventClickState, clicks)
-    CGEventPost(kCGHIDEventTap, down)
-    time.sleep(0.03)
-    CGEventPost(kCGHIDEventTap, up)
+    for click_state in range(1, max(1, clicks) + 1):
+        down = CGEventCreateMouseEvent(None, down_type, (x, y), button_number)
+        up = CGEventCreateMouseEvent(None, up_type, (x, y), button_number)
+        for event in (down, up):
+            CGEventSetIntegerValueField(event, kCGMouseEventClickState, click_state)
+            CGEventSetIntegerValueField(
+                event, _K_CG_MOUSE_EVENT_BUTTON_NUMBER, button_number
+            )
+        CGEventPost(kCGHIDEventTap, down)
+        time.sleep(0.03)
+        CGEventPost(kCGHIDEventTap, up)
+        if click_state < clicks:
+            time.sleep(0.08)
 
 
 def _press_key(keycode: int, modifiers: int = FLAG_NONE) -> None:
@@ -594,6 +620,13 @@ def main() -> None:
 
     MAX_NODES = args.max_nodes
 
+    try:
+        _cli(args)
+    except AppNotFoundError as exc:
+        raise SystemExit(str(exc)) from exc
+
+
+def _cli(args: argparse.Namespace) -> None:
     targets = collect(args.app)
     if args.dump:
         payload = [{k: v for k, v in t.items() if k != "element"} for t in targets]

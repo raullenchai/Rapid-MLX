@@ -349,6 +349,85 @@ def test_normalize_caller_agent_buckets_known(ua, expected):
 @pytest.mark.parametrize(
     "ua,expected",
     [
+        # Exact harness UAs captured by the 2026-10-02 harness-lab logging
+        # proxy (ua-map.md) — every one landed in `other` before #4041.
+        (
+            "codex_exec/0.160.0 (Mac OS 26.5.1; arm64) unknown (codex_exec; 0.160.0)",
+            "codex",
+        ),
+        # The interactive TUI is expected to send codex_cli_rs/…; both
+        # product tokens are enumerated prefix rules.
+        ("codex_cli_rs/0.160.0 (Mac OS 26.5.1; arm64)", "codex"),
+        (
+            "opencode/1.18.34 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14",
+            "opencode",
+        ),
+        ("pi (darwin 25.5.0; arm64)", "pi"),
+        ("QwenCode/0.24.7 (darwin; arm64)", "qwen-code"),
+        (
+            "deepseek-harness/0.2.0-rc.2 "
+            "(+https://github.com/deepseek-ai/deepseek-harness)",
+            "deepseek-harness",
+        ),
+    ],
+)
+def test_normalize_caller_agent_buckets_real_harness_user_agents(ua, expected):
+    assert normalize_caller_agent(ua) == expected
+
+
+@pytest.mark.parametrize(
+    "ua",
+    [
+        # pi is a PREFIX marker: 'pi (' must never match inside another token.
+        "myapi (darwin 25.5.0; arm64)",
+        "api/1.2 (something)",
+        "pip/24.0",
+        # cline CLI 3.x carries NO product token — the existing `cline`
+        # marker cannot fire without body-based guessing (#4041).
+        "ai-sdk/openai-compatible/3.0.37 ai-sdk/provider-utils/5.0.30 runtime/bun/1.4.2",
+    ],
+)
+def test_normalize_caller_agent_leaves_unattributable_uas_as_other(ua):
+    assert normalize_caller_agent(ua) == "other"
+
+
+@pytest.mark.parametrize(
+    "ua",
+    [
+        # The harness markers are LEADING-token rules (#4056 review): a
+        # wrapper or comment that merely mentions the product is not it.
+        "my-opencode/compatibility-test",
+        "proxy (+https://github.com/anomalyco/opencode/)",
+        "notqwencode/1",
+        "my_codex_exec_wrapper/1",
+        "codex_proxy/1.0",
+        "codex_unrelated-product/2",
+        "relay/1.0 (+https://github.com/deepseek-ai/deepseek-harness)",
+    ],
+)
+def test_normalize_caller_agent_harness_markers_need_a_leading_token(ua):
+    assert normalize_caller_agent(ua) == "other"
+
+
+def test_normalize_caller_agent_leading_harness_token_beats_later_markers():
+    # dsh's real UA embeds a URL; when another marker (here ``cline``)
+    # appears later in the UA, the leading product token must still win.
+    assert (
+        normalize_caller_agent(
+            "deepseek-harness/0.2.0-rc.2 (+https://github.com/cline/fork)"
+        )
+        == "deepseek-harness"
+    )
+
+
+def test_normalize_caller_agent_prefix_marker_is_case_insensitive():
+    # UA headers are lowercased before matching, like every other marker.
+    assert normalize_caller_agent("PI (Darwin 25.5.0; arm64)") == "pi"
+
+
+@pytest.mark.parametrize(
+    "ua,expected",
+    [
         # openai-node: ``${this.constructor.name}/JS ${VERSION}`` (4.95.1 core.js
         # getUserAgent; src/client.ts on 5.x). AzureOpenAI shares the suffix.
         ("OpenAI/JS 4.95.1", "openai-node"),

@@ -99,6 +99,51 @@ def to_anthropic_tool_use_id(openai_id: str | None) -> str:
     return f"toolu_{secrets.token_hex(12)}"
 
 
+# Claude Code >= 2.1.287 appends a content-free token-budget counter to
+# ``messages`` as a ``role="system"`` item on EVERY request (issue #4036)::
+#
+#     {"role": "system", "content": [{"type": "text",
+#      "text": "<total_tokens>14982239 tokens left</total_tokens>",
+#      "cache_control": {"type": "ephemeral"}}]}
+#
+# It is appended as the LAST message, and later requests keep it in the history
+# where it was, i.e. directly before that turn's assistant reply (the 0.15.4
+# server log shows each later turn diverging one counter-length past the
+# previous one). Trailing, ``--relocate-mid-conversation-system`` cannot
+# place it (no following user turn: the all-or-nothing rule hoists) and the
+# default hoist appends its per-request value to the leading system block. The
+# front of the prompt then differs on every turn and the hybrid prefix cache
+# misses every time: ~17.6k tokens re-prefilled, ~25 s TTFT per tool-loop turn
+# measured on qwen3.6-35b. It carries no instruction, only client bookkeeping
+# (same class as the ``x-anthropic-billing-header`` scrub below), so it is
+# dropped, but only in the exact shape Claude Code emits: a system message whose
+# whole content is the counter (a string, or one text block), sitting last or
+# directly before an assistant message. ``cache_control`` is not part of the
+# parsed block model, so it cannot be checked here.
+_TOKEN_BUDGET_COUNTER_RE = re.compile(
+    r"<total_tokens>\s*\d[\d,]*\s+tokens?\s+left\s*</total_tokens>"
+)
+
+
+def _is_token_budget_counter(messages: list[AnthropicMessage], index: int) -> bool:
+    """True when ``messages[index]`` is Claude Code's per-turn token counter."""
+    message = messages[index]
+    if message.role != "system":
+        return False
+    following = messages[index + 1] if index + 1 < len(messages) else None
+    if following is not None and following.role != "assistant":
+        return False
+    content = message.content
+    if isinstance(content, list):
+        if len(content) != 1:
+            return False
+        block = content[0]
+        if block.type != "text" or set(block.model_fields_set) != {"type", "text"}:
+            return False
+        content = block.text or ""
+    return _TOKEN_BUDGET_COUNTER_RE.fullmatch(content.strip()) is not None
+
+
 def _relocate_mid_system_enabled() -> bool:
     """Whether to fold a mid-conversation system message into the next user turn.
 
@@ -202,7 +247,12 @@ def anthropic_to_openai(
         messages.append(Message(role="system", content=system_text))
 
     # Convert each message
-    for msg in request.messages:
+    # Claude Code's per-request token counter is skipped (#4036): under either
+    # relocation setting it would land in the leading system block and change
+    # the front of the prompt on every turn.
+    for index, msg in enumerate(request.messages):
+        if _is_token_budget_counter(request.messages, index):
+            continue
         converted = _convert_message(msg)
         messages.extend(converted)
 
