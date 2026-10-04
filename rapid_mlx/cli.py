@@ -5729,8 +5729,7 @@ def serve_command(args):
     # after a multi-minute weight download. See #287.
     #
     # ``resolve_pflash_mode_default`` runs before ``config_from_args``
-    # so the per-alias default (``"always"`` for verified Qwen3.5 /
-    # Qwen3.6 aliases, ``"off"`` everywhere else) is materialized into
+    # so the default (``"off"`` for every alias since #4092) is materialized into
     # ``args.pflash``. The resolved value then flows through the same
     # validation path the user-explicit case takes.
     from .api.utils import resolve_serving_lane
@@ -5794,8 +5793,8 @@ def serve_command(args):
             force_text=getattr(args, "no_mllm", False),
             requested_spec_decode=_requested_spec_decode,
         )
-        # Resolve BOTH per-alias PFlash defaults (mode + keep_ratio, e.g.
-        # bonsai-27b-2bit → always @ 0.50) and build the config in one shared
+        # Resolve BOTH PFlash defaults (mode + per-alias keep_ratio, e.g.
+        # bonsai-27b-2bit explicit opt-in → 0.50) and build the config in one shared
         # helper; an explicit --pflash / --pflash-keep-ratio still wins inside.
         try:
             pflash_detection = {}
@@ -7951,9 +7950,9 @@ def bench_command(args):
     # Handle prefix cache flags
     enable_prefix_cache = args.enable_prefix_cache and not args.disable_prefix_cache
 
-    # PFlash for the bench command — same per-alias default as serve:
-    # verified Qwen3.5 / Qwen3.6 aliases switch to ``always``, everything
-    # else stays ``off``. Resolves before config_from_args so the
+    # PFlash for the bench command — same default as serve: ``off`` for
+    # every alias unless the user explicitly opts in. Resolves before
+    # config_from_args so the
     # validate path sees the final mode, then runs the MLLM-rejection
     # gate ``serve``/``server.py`` already enforce (codex r3 BLOCKING:
     # bench previously skipped this check, so ``rapid-mlx bench

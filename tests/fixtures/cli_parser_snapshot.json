@@ -1038,7 +1038,7 @@
        "const": null,
        "default": null,
        "dest": "pflash",
-       "help": "Enable PFlash long-prompt prefill compression (off, auto, always). Default: 'always' for verified aliases (Qwen3.5 / Qwen3.6 family per #287), 'off' for everything else.",
+       "help": "Opt in to PFlash long-prompt prefill compression (off, auto, always). Default: off. Compression is lossy: it drops most of the middle of the prompt for a faster cold prefill. 'auto' compresses only prompts of at least --pflash-threshold tokens; 'always' compresses every eligible long prompt.",
        "metavar": null,
        "nargs": null,
        "option_strings": [
@@ -5847,7 +5847,7 @@
        "const": null,
        "default": null,
        "dest": "pflash",
-       "help": "Enable PFlash long-prompt prefill compression (off, auto, always). Default: 'always' for verified aliases (Qwen3.5 / Qwen3.6 family per #287), 'off' for everything else.",
+       "help": "Opt in to PFlash long-prompt prefill compression (off, auto, always). Default: off. Compression is lossy: it drops most of the middle of the prompt for a faster cold prefill. 'auto' compresses only prompts of at least --pflash-threshold tokens; 'always' compresses every eligible long prompt.",
        "metavar": null,
        "nargs": null,
        "option_strings": [
