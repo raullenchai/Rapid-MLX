@@ -612,13 +612,17 @@ def test_full_config_confirmation_counts_as_passed(hook):
     assert byom_funnel.props_for("o/r", failed=False) == {"preflight": "passed"}
 
 
-def test_cached_wins_over_offline(hook, monkeypatch):
+def test_offline_never_probes_the_cache(hook, monkeypatch):
     from rapid_mlx import _download_gate
 
-    monkeypatch.setattr(_download_gate, "is_repo_cached", lambda name: True)
+    probed = []
+    monkeypatch.setattr(
+        _download_gate, "is_repo_cached", lambda name: probed.append(name) or True
+    )
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     hook(None)
-    assert byom_funnel.props_for("o/r", failed=False) == {"preflight": "cached"}
+    assert byom_funnel.props_for("o/r", failed=False) == {"preflight": "no_verdict"}
+    assert probed == []
 
 
 def test_unreadable_import_source_classes(run_import, import_events, tmp_path):

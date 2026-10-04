@@ -724,10 +724,12 @@ def _target_status(args: Any) -> tuple[str | None, tuple[str, bool] | None]:
     from rapid_mlx._download_gate import is_repo_cached
     from rapid_mlx.model_metadata import hub_offline_mode_active
 
-    if is_repo_cached(model):
-        return "cached", None
+    # Offline first, exactly like origin/main: offline mode never probes the
+    # cache, so an offline run is "no_verdict" even for a cached repo.
     if hub_offline_mode_active():
         return "no_verdict", None
+    if is_repo_cached(model):
+        return "cached", None
     return None, (model, False)
 
 
