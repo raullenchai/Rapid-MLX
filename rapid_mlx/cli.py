@@ -14008,13 +14008,14 @@ def _start_quiet_lifecycle(command: str, *, no_telemetry: bool) -> None:
         # An unreadable consent record logs a warning while resolving; keep
         # these output-clean paths byte-identical (the record then blocks
         # uploads anyway, and the next real command surfaces it).
+        import logging
         import threading
 
         caller = threading.get_ident()
 
-        def _quiet(record) -> bool:
+        def _quiet(record: logging.LogRecord) -> bool:
             # Drop only this thread's consent records, only for this call.
-            return record.thread != caller
+            return bool(record.thread != caller)
 
         consent_logger = consent_runtime.logger
         consent_logger.addFilter(_quiet)
