@@ -347,6 +347,8 @@ def test_textedit_plain_text_save_rejects_symlink_non_txt_and_oversize(
 @pytest.mark.parametrize(
     "value",
     ["x" * (backend.TEXTEDIT_SAVE_MAX_BYTES + 1), "bad-surrogate-\ud800"],
+    # The oversize input exceeds 1 MiB; never print it as a pytest node ID in CI.
+    ids=["oversize", "non-utf8"],
 )
 def test_textedit_ax_value_rejects_oversize_or_non_utf8(monkeypatch, value):
     monkeypatch.setattr(
