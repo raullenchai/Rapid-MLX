@@ -1,6 +1,6 @@
 # Rapid-MLX Desktop — Privacy Policy
 
-Last updated: 2026-09-28.
+Last updated: 2026-10-03.
 
 Rapid-MLX Desktop ("the App") is a local-first SwiftUI Mac client for the
 `rapid-mlx` inference server. We designed it so that your prompts,
@@ -42,6 +42,7 @@ counted as two installs. The current engine reports:
 * `app_opened` and `active_day`;
 * `model_pulled`, `model_pull_failed`, `model_served`, and
   `model_serve_failed`;
+* `model_imported` and `model_import_failed` (`rapid-mlx import`);
 * `capability_rejected` (closed `capability`, `model_type`, optional model and
   caller, plus a closed `reject_reason` only for structured-output/context
   rejections) and `inference_bucket_reached`;
@@ -118,6 +119,27 @@ service:
     prompt text, and installer output are never sent.
   * For a failed server bind, whether its port was explicitly selected. The
     port number itself is not sent.
+  * For a model that is not in the catalog, the closed outcome of the
+    pre-download check (`preflight`: `passed`, `refused`, `no_verdict`,
+    `skipped`, or `cached`). For a refusal only, which kind of alternative was
+    suggested (`suggestion`: `mlx_build`, `catalog`, or `none`) and the closed
+    outcome of the "Ask us to support it?" offer (`support_request`:
+    `not_eligible`, `non_interactive`, `declined`, `no_answer`, `sent`, `busy`,
+    or `unreachable`). The suggested model names and the repo id a user chooses
+    to send with a support request are never part of telemetry.
+  * `via_suggestion: true` when the model being pulled or served is one a
+    refusal on this Mac suggested in the last seven days. To recognise it,
+    `~/.rapid-mlx/state/byom-suggested-recent.json` keeps up to 32 one-way
+    SHA-256 digests of suggested model references and their timestamps on the
+    device, written only while telemetry uploads are allowed; the file itself
+    is never sent.
+  * For `rapid-mlx import`, the source model under the same model-identity
+    rules as above (never the import's own name), the requested quantization
+    width, and on failure one closed class (`invalid_ref`,
+    `metadata_unavailable`, `unsupported_format`, `already_quantized`,
+    `unsupported_architecture`, `name_conflict`, `insufficient_disk`,
+    `insufficient_memory`, `download_failed`, `convert_failed`, `smoke_failed`,
+    `interrupted`, or `other`). Messages and paths are never sent.
   * For a failed inference counted in `inference_bucket_reached`, a closed
     failure class (`error_class`: `insufficient_memory`, `engine_aborted`,
     `template_error`, `media_input_invalid`, `prompt_too_large`,

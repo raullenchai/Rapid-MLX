@@ -306,9 +306,14 @@ def suggest(
     command: str,
     supported: frozenset[str] | None,
     ram_bytes: int | None,
+    targets: list[str] | None = None,
 ) -> tuple[list[str], bool]:
     """Extra failure lines naming something that will run, and whether they
-    name an MLX build of the same model. Never raises."""
+    name an MLX build of the same model. Never raises.
+
+    ``targets``, when given, receives the model references the lines tell the
+    user to try (repo ids or a catalog alias), for local funnel telemetry.
+    """
     try:
         if (
             verdict.failure == pf.UNSUPPORTED_FORMAT
@@ -319,6 +324,8 @@ def suggest(
                 inspection, supported=supported, ram_bytes=ram_bytes
             )
             if builds:
+                if targets is not None:
+                    targets.extend(candidate.repo_id for candidate in builds)
                 return render_candidates(builds, command), True
         target = _target_bytes(inspection, verdict)
         alias = similar_catalog_model(target, ram_bytes)
@@ -326,4 +333,6 @@ def suggest(
         return [], False
     if alias is None:
         return [], False
+    if targets is not None:
+        targets.append(alias)
     return render_catalog(alias, command, sized=target is not None), False
