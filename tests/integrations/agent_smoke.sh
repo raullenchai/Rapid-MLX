@@ -66,9 +66,10 @@ SERVE_PID=""
 # config directory via these variables, and `agents <x> --setup` honours them,
 # so this gate never reads or writes the operator's real ~/.codex, ~/.hermes or
 # ~/.dsh. DSH_HOME matters more than the other two: `agents dsh --setup` also
-# writes a credential file (.credentials.yaml) beside settings.yaml, so an
-# un-redirected run would touch the operator's credential store, not just a
-# provider block.
+# writes a credential file (.credentials.yaml) beside the dsh config —
+# cordis.patch.yml on dsh >= 0.2 (rapid-mlx's current target, #4040),
+# settings.yaml on 0.1.x — so an un-redirected run would touch the operator's
+# credential store, not just a provider block.
 #
 # This replaces backup-then-restore as the PRIMARY protection. That approach
 # has two failure modes we actually hit: the restore never runs if the script
@@ -139,7 +140,7 @@ done
 unset _home_var _home_val _home_real
 CODEX_CFG="$CODEX_HOME/config.toml"
 HERMES_CFG="$HERMES_HOME/config.yaml"
-DSH_CFG="$DSH_HOME/settings.yaml"
+DSH_CFG="$DSH_HOME/cordis.patch.yml"   # dsh >= 0.2 patch-layer file (#4040)
 
 # Portable timeout: coreutils `timeout`, or `gtimeout`, else a bash fallback
 # (background the command, hard-kill after N seconds). macOS ships neither
@@ -1126,7 +1127,7 @@ run_aider() {
   echo "$r" > "$WORK/aider.result"
 }
 
-# ---- DeepSeek Harness (uses $DSH_HOME/settings.yaml rendered below) ------
+# ---- DeepSeek Harness (uses $DSH_HOME/cordis.patch.yml written by --setup) ------
 # RAPID_MLX_API_KEY is passed explicitly even though `--setup` also writes the
 # same sentinel into $DSH_HOME/.credentials.yaml: DSH's pi-ai transport insists
 # on RESOLVING a credential for the provider before it will dispatch, and the
@@ -1166,13 +1167,15 @@ run_dsh() {
 # Fingerprinting the real files and checking them afterwards catches that, and
 # anything else nobody has thought of yet.
 #
-# ~/.dsh contributes TWO paths, not one: `agents dsh --setup` writes the
-# provider block to settings.yaml AND a credential sentinel to
-# .credentials.yaml. Fingerprinting only the settings file would let a
-# redirect failure rewrite the operator's real credential store unnoticed.
+# ~/.dsh contributes THREE paths, not one: `agents dsh --setup` (>= 0.2, the
+# current target) writes the patch-layer list to cordis.patch.yml AND a
+# credential sentinel to .credentials.yaml, while operators still on 0.1.x
+# carry the legacy settings.yaml. Fingerprinting only one generation would let
+# a redirect failure rewrite the operator's real store unnoticed.
 _real_fingerprint() {
   for f in "$HOME/.codex/config.toml" "$HOME/.hermes/config.yaml" \
-           "$HOME/.dsh/settings.yaml" "$HOME/.dsh/.credentials.yaml"; do
+           "$HOME/.dsh/cordis.patch.yml" "$HOME/.dsh/settings.yaml" \
+           "$HOME/.dsh/.credentials.yaml"; do
     if [ -f "$f" ]; then shasum -a 256 "$f" 2>/dev/null; else echo "absent $f"; fi
   done
 }

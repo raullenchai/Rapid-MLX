@@ -545,9 +545,11 @@ class TestLaunchCommand:
         assert excinfo.value.code == 0
         targets = json.loads(capsys.readouterr().out)
         ids = [target["id"] for target in targets]
-        assert len(ids) == len(set(ids)) == 15
+        assert len(ids) == len(set(ids)) == 16
         assert "deepseek-harness" in ids
-        assert ids[:4] == ["cline", "claude-code", "continue-dev", "cursor"]
+        # The launch registry's four config writers lead in display order;
+        # pi is the highest-starred agents profile not already covered.
+        assert ids[:5] == ["cline", "claude-code", "continue-dev", "cursor", "pi"]
         assert {target["kind"] for target in targets} == {
             "config_writer",
             "adapter_profile",

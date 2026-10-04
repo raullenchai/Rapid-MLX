@@ -628,6 +628,7 @@ jobs:
             tests/test_mllm_legacy_generate_deprecation.py \
             tests/test_prism_hadamard_qwen35.py \
             tests/test_server.py \
+            tests/test_server_import_isolation.py \
             tests/test_paged_cache.py \
             tests/test_mllm_continuous_batching.py \
             tests/test_mllm_batch_generator.py \
@@ -638,9 +639,11 @@ jobs:
             tests/test_mlx_vlm_vendored_apc_support.py \
             tests/test_mlx_vlm_vendored_generate.py \
             tests/test_mlx_vlm_vendored_speculative.py \
+            tests/test_mlx_vlm_vendored_drafters.py \
             tests/test_bench_qwen36_mllm_singleton.py \
             tests/test_mllm_corrupt_image.py \
             tests/test_mllm_penalty_passthrough.py \
+            tests/test_sillytavern_samplers.py \
             tests/test_guided.py \
             tests/test_chat_streaming_guided.py \
             tests/test_chat_template_kwargs_passthrough.py \
@@ -725,6 +728,7 @@ jobs:
             tests/test_diffusion_engine.py \
             tests/test_legacy_prefix_cache_flag_warnings.py \
             tests/test_system_one_server.py \
+            tests/test_system_one_clef.py \
             tests/test_system_one_convert_clm.py \
             tests/test_module_import_smoke.py \
             tests/test_dflash_integration.py \

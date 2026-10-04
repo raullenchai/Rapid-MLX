@@ -53,6 +53,7 @@ AXApplication title="Rapid-MLX"
           AXButton id="ChatView.PersonalIntelligence.Toggle" desc="Personal Intelligence" value=text enabled=true
           AXPopUpButton id="ModelPickerBar.ModelMenu" desc="Model" help="Choose which model to run" value=text enabled=true
           AXButton id="ModelPickerBar.ModelInfo" desc="Show model details" help="Show model details" enabled=true
+          AXButton id="ChatView.Residency.Unload" desc="Unload model and free <size>" help="Unload model and free <size>" enabled=true
           AXButton id="ChatView.SendOrStopButton" desc="Send message" enabled=false
       AXButton id="ContentView.Settings" desc="Settings" help="Settings — ⌘," enabled=true
       AXButton id="ContentView.ToggleLogs" desc="Show logs" help="Show logs" enabled=true

@@ -849,7 +849,10 @@ def test_scheduler_config_rejects_legacy_enable_mtp_with_optimistic():
     """
     from rapid_mlx.scheduler import SchedulerConfig
 
-    with pytest.raises(ValueError, match="mtp_optimistic=True.*not supported"):
+    with (
+        pytest.warns(DeprecationWarning, match=r"enable_mtp=True\) is deprecated"),
+        pytest.raises(ValueError, match="mtp_optimistic=True.*not supported"),
+    ):
         SchedulerConfig(enable_mtp=True, mtp_optimistic=True)
 
 
@@ -1701,6 +1704,42 @@ def test_inject_mtp_support_attaches_four_surfaces():
     from rapid_mlx.spec_decode.mtp.prompt_lookup import MAX_COPY_DRAFT_TOKENS
 
     assert policy.max_tokens == MAX_COPY_DRAFT_TOKENS
+
+
+@pytest.mark.parametrize("tie_word_embeddings", [False, True])
+def test_split_mtp_head_composes_exactly_to_mtp_forward(tie_word_embeddings):
+    """``mtp_logits(mtp_hidden_forward(...))`` is ``mtp_forward`` verbatim.
+
+    The continuous batch backend projects only each row's drafting position
+    through the vocabulary head, so the split seam must be the same math as
+    the composed forward -- including the tied-embedding projection.
+    """
+    from mlx_lm.models.qwen3_5 import TextModel
+
+    from rapid_mlx.spec_decode.mtp.qwen3_5_inject import inject_mtp_support
+
+    try:
+        args = _tiny_text_model_args()
+        object.__setattr__(args, "tie_word_embeddings", tie_word_embeddings)
+        model = TextModel(args)
+    except (TypeError, AttributeError) as exc:
+        pytest.skip(f"Qwen3.5 TextModelArgs schema mismatch: {exc}")
+    assert inject_mtp_support(model, allow_random_init=True) is True
+
+    mx.random.seed(7)
+    hidden = mx.random.normal((2, 3, model.args.hidden_size)).astype(mx.bfloat16)
+    tokens = mx.array([[3, 5, 7], [11, 13, 17]], dtype=mx.uint32)
+    composed_logits, composed_hidden = model.mtp_forward(
+        hidden, tokens, model.make_mtp_cache(), return_hidden=True
+    )
+    split_hidden = model.mtp_hidden_forward(hidden, tokens, model.make_mtp_cache())
+    split_logits = model.mtp_logits(split_hidden)
+
+    assert mx.array_equal(split_hidden, composed_hidden).item()
+    assert mx.array_equal(split_logits, composed_logits).item()
+    # Projecting one selected position equals slicing the full projection.
+    last = model.mtp_logits(split_hidden[:, -1:])
+    assert mx.allclose(last, composed_logits[:, -1:], atol=1e-2).item()
 
 
 def test_inject_mtp_support_mirrors_batch_seam_to_outer_wrapper():

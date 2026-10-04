@@ -451,66 +451,42 @@ def test_tier_harness_submit_populates_harness_result_only():
 
 
 # --------------------------------------------------------------------- #
-# CLI surface: mutual-exclusive guard removed                            #
+# CLI surface: removed submit flow                                       #
 # --------------------------------------------------------------------- #
 
 
-def test_mutual_exclusive_guard_removed():
-    """``bench --tier all --submit`` MUST NOT hard-fail at parse time.
-
-    PR #2 left an exit-2 guard in ``bench_command`` with a comment
-    saying "PR #3 will unify them". PR #5 removes it. The guarantee
-    we're locking is that the dispatcher routes both flags into the
-    combined flow without the old error message ever printing.
-
-    We exercise this via ``main()`` (the real entry point) with a
-    stub ``bench_command`` so the parser path is unmodified — that's
-    the only way to catch a regression where someone re-introduces
-    the guard inside an argparse hook.
-    """
+def test_tier_submit_is_refused_before_dispatch(monkeypatch, capsys):
+    """``bench --tier all --submit`` stops before bench dispatch."""
     import sys as _sys
 
     from rapid_mlx import cli as _cli
 
-    captured = {}
-
     def _fake_bench_command(args):
-        captured["called"] = True
-        captured["tier"] = getattr(args, "tier", None)
-        captured["submit"] = getattr(args, "submit", False)
+        raise AssertionError("the removed submit flow must not reach dispatch")
 
-    old_bench = _cli.bench_command
-    old_argv = _sys.argv
-    _cli.bench_command = _fake_bench_command
-    _sys.argv = [
-        "rapid-mlx",
-        "bench",
-        "qwen3.5-9b-4bit",
-        "--tier",
-        "all",
-        "--submit",
-        "--notes",
-        "x",
-    ]
-    try:
-        # main() may sys.exit; capture it.
-        try:
-            _cli.main()
-        except SystemExit as e:
-            assert e.code in (None, 0), (
-                f"main() exited with non-success code {e.code} — "
-                "the mutual-exclusive guard appears to still be in place"
-            )
-    finally:
-        _cli.bench_command = old_bench
-        _sys.argv = old_argv
-
-    assert captured.get("called") is True, (
-        "main() must dispatch to bench_command when --tier and --submit "
-        "are both set (guard removal regression)"
+    monkeypatch.setattr(_cli, "bench_command", _fake_bench_command)
+    monkeypatch.setattr(
+        _sys,
+        "argv",
+        [
+            "rapid-mlx",
+            "bench",
+            "qwen3.5-9b-4bit",
+            "--tier",
+            "all",
+            "--submit",
+            "--notes",
+            "x",
+        ],
     )
-    assert captured["tier"] == "all"
-    assert captured["submit"] is True
+
+    with pytest.raises(SystemExit) as excinfo:
+        _cli.main()
+    assert excinfo.value.code == 2
+    assert (
+        "`rapid-mlx bench --submit` no longer submits results"
+        in capsys.readouterr().err
+    )
 
 
 def test_tier_submit_refuses_base_url(capsys):
@@ -703,30 +679,22 @@ def test_smoke_passes_when_only_reasoning_content_streams():
     assert "4" in r.payload["response_excerpt"]
 
 
-def test_tier_submit_routes_through_unified_flow(monkeypatch):
-    """``bench_command`` MUST route --tier+--submit to ``_run_tier_submit_flow``.
+def test_tier_submit_is_refused_before_any_flow(monkeypatch):
+    """``bench --tier X --submit`` no longer reaches ``_run_tier_submit_flow``.
 
-    We monkeypatch the combined flow to capture the call, then build a
-    minimal Namespace and invoke ``bench_command`` directly. Proves
-    the bench dispatcher takes the new combo branch BEFORE either the
-    bare ``_run_submit_flow`` or bare ``run_tier`` branches — order
-    matters because both single-flag paths would otherwise grab
-    half the work each and leave the user with a half-built payload.
+    ``--submit`` was removed (legacy board closed, 2026-10-02): bench_command
+    refuses it with exit 2 before either submit flow or the bare tier runner
+    can start. See tests/test_bench_submit_removed.py for the message.
     """
     import argparse
     import importlib
 
     cli = importlib.import_module("rapid_mlx.cli")
 
-    captured = {}
+    def _boom(args):
+        raise AssertionError("the combined submit flow must not run")
 
-    def _fake_combo(args):
-        captured["called"] = True
-        captured["tier"] = args.tier
-        captured["submit"] = args.submit
-        return 0
-
-    monkeypatch.setattr(cli, "_run_tier_submit_flow", _fake_combo)
+    monkeypatch.setattr(cli, "_run_tier_submit_flow", _boom)
 
     args = argparse.Namespace(
         model="qwen3.5-9b-4bit",
@@ -741,9 +709,4 @@ def test_tier_submit_routes_through_unified_flow(monkeypatch):
 
     with pytest.raises(SystemExit) as excinfo:
         cli.bench_command(args)
-    assert excinfo.value.code == 0
-    assert captured.get("called") is True, (
-        "bench_command MUST route --tier+--submit to the combined flow"
-    )
-    assert captured["tier"] == "all"
-    assert captured["submit"] is True
+    assert excinfo.value.code == 2

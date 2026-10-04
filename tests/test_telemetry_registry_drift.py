@@ -174,6 +174,7 @@ def test_count_bucket_scale_is_exact(registry):
 def test_serve_error_class_scale_is_exact(registry):
     assert registry["enums"]["serve_error_class"]["values"] == [
         "unsupported_architecture",
+        "unsupported_format",
         "insufficient_memory",
         "corrupt_weights",
         "download_failed",
@@ -183,6 +184,8 @@ def test_serve_error_class_scale_is_exact(registry):
         "tokenizer_load_failed",
         "incompatible_weights",
         "quantization_mismatch",
+        "invalid_model_ref",
+        "backend_load_failed",
         "other",
     ]
 
@@ -302,7 +305,17 @@ def test_failed_twins_exist_and_mirror_their_success_event(registry):
         identifying = {
             k: v
             for k, v in twin_props.items()
-            if k not in {"error_class", "extra", "extra_recovery"}
+            if k
+            not in {
+                "error_class",
+                # Failure-only diagnostic context; never part of the success
+                # identity. ``extra``/``extra_recovery`` describe a missing
+                # optional runtime, ``failure_stage`` the startup boundary
+                # (model_serve_failed only).
+                "extra",
+                "extra_recovery",
+                "failure_stage",
+            }
         }
         assert set(identifying) == set(success_props), (
             f"{name} identifying props differ from {declared}"
@@ -405,11 +418,15 @@ def test_agent_enum_matches_the_shipped_agent_profiles(registry):
 
 def test_caller_enum_matches_the_user_agent_marker_table(registry):
     from rapid_mlx.client_header import RAPID_CLIENT_LABELS
-    from rapid_mlx.telemetry.redact import _CALLER_AGENT_MARKERS
+    from rapid_mlx.telemetry.redact import (
+        _CALLER_AGENT_MARKERS,
+        _CALLER_AGENT_PREFIXES,
+    )
 
     declared = set(registry["enums"]["caller"]["values"]) - {"other", "unknown"}
     assert declared == {
         *(label for _, label in _CALLER_AGENT_MARKERS),
+        *(label for _, label in _CALLER_AGENT_PREFIXES),
         *RAPID_CLIENT_LABELS,
     }
 

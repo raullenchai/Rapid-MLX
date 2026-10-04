@@ -405,6 +405,7 @@ def handle_optional_runtime_missing(
         alias_or_path=alias_or_path,
         auto_selected=auto_selected,
         extra_recovery=extra_recovery,
+        failure_stage="preflight",
     )
     if accepted:
         _install_optional_extra(exc)

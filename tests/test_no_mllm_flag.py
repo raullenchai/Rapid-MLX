@@ -194,10 +194,16 @@ NON_ROUTING_FLAGS_ALLOWLIST: frozenset[str] = frozenset(
         # binary auto-detection that needs an AUTO_ROUTING_FLAG_PAIRS entry.
         "--no-download",
         "--no-setup",
+        # BYOM preflight opt-out on serve/pull: skips a metadata check before
+        # download; it never selects a lane or forwards a routing kwarg.
+        "--no-preflight",
         # CORS toggle.
         "--enable-cors",
         # Perf / UX toggles, not routing decisions.
         "--force-disk-check",  # forces eager disk-space check
+        # Vendored drafter split utility: forces a fresh checkpoint download;
+        # it does not choose a model architecture or serving runtime.
+        "--force-download",
         "--no-gc-control",  # disables Python GC tuning
         "--no-memory-aware-cache",  # disables memory-aware cache sizing
         # Privacy toggle.

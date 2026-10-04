@@ -276,7 +276,7 @@ def test_distinct_key_cap_holds_at_the_real_bound(fake_home):
     next new key is refused, and existing keys keep counting."""
     from rapid_mlx.telemetry import store
 
-    assert store.MAX_KEYS == 67_000
+    assert store.MAX_KEYS == 80_000
     assert store.record("seed") is not None
     with sqlite3.connect(store.db_path()) as connection:
         connection.executemany(

@@ -3,10 +3,15 @@ display_name: "DeepSeek Harness"
 repo: "deepseek-ai/deepseek-harness"
 stars: 1000
 
-# DSH reads machine-local provider configuration from $DSH_HOME/settings.yaml.
-# Its generic pi-ai adapter is the correct route for Rapid-MLX: using the
-# native deepseek-official adapter would require a fake API key and claim the
-# local endpoint has the official service's model/capacity contract.
+# dsh 0.2 composes every profile boot from Cordis patch layers: bundle
+# patches, the per-profile cordis.patch.yml, the home-level
+# $DSH_HOME/cordis.patch.yml (machine-local preferences that apply to every
+# profile), then --patch overlays. This template is that home-level layer —
+# a top-level YAML LIST of {id, config} entries, which is the only shape
+# dsh's patch parser accepts. Verified 2026-10-02 (harness-lab) against
+# dsh 0.2.0-rc.2: the same provider block passed T1 as a --patch overlay,
+# and the 0.2.0-rc.2 pi-ai schema (llm-pi-ai) accepts compat +
+# reasoningEfforts on model entries.
 #
 # NOTE: `agents dsh --setup` does NOT render this template — it goes through
 # the first-class plan/apply flow in ``rapid_mlx/agents/setup.py``, which also
@@ -19,33 +24,35 @@ stars: 1000
 # if only one side moves.
 config:
   type: yaml
-  path: "~/.dsh/settings.yaml"
+  path: "~/.dsh/cordis.patch.yml"
   home_env: DSH_HOME
   template: |
-    llm-pi-ai:
-      providers:
-        rapid-mlx:
-          displayName: "Rapid-MLX Local"
-          apiKeyEnv: RAPID_MLX_API_KEY
-          api: openai-completions
-          baseURL: "{base_url}"
-          defaultContextWindow: {context_length}
-          defaultMaxTokens: 8192
-          compat:
-            supportsReasoningEffort: true
-          models:
-            - id: "{model_id}"
-              name: "{model_id} (Rapid-MLX)"
-              contextWindow: {context_length}
-              maxTokens: 8192
-              reasoningEfforts:
-                off: none
-                low: low
-                medium: medium
-                high: high
-    agent-default-model:
-      provider: rapid-mlx
-      model: "{model_id}"
+    - id: llm-pi-ai
+      config:
+        providers:
+          rapid-mlx:
+            displayName: "Rapid-MLX Local"
+            apiKeyEnv: RAPID_MLX_API_KEY
+            api: openai-completions
+            baseURL: "{base_url}"
+            defaultContextWindow: {context_length}
+            defaultMaxTokens: 8192
+            compat:
+              supportsReasoningEffort: true
+            models:
+              - id: "{model_id}"
+                name: "{model_id} (Rapid-MLX)"
+                contextWindow: {context_length}
+                maxTokens: 8192
+                reasoningEfforts:
+                  off: none
+                  low: low
+                  medium: medium
+                  high: high
+    - id: agent-default-model
+      config:
+        provider: rapid-mlx
+        model: "{model_id}"
 
 models:
   recommended:
@@ -58,6 +65,8 @@ streaming:
 
 testing:
   binary: dsh
+  # No --patch flag needed: the home-level $DSH_HOME/cordis.patch.yml layer
+  # is auto-loaded for every profile.
   query_cmd: "dsh --profile headless '{query}'"
   query_timeout: 240
   install_cmd: "npm install -g @deepseek-ai/dsh"
@@ -67,7 +76,10 @@ capabilities:
   streaming: true
 
 known_issues:
+  - "Minimum supported version is dsh 0.2.0-rc.2 (npm `latest`): that is the release that reads $DSH_HOME/cordis.patch.yml. On 0.1.0-rc.7, `--profile headless` crashes after ~1s with `user patch-layer watching requires the Cordis HMR service` — a dsh bug, reproduced in an empty HOME."
+  - "dsh 0.2.x ignores the legacy ~/.dsh/settings.yaml that our pre-0.2 setup wrote; an old settings.yaml is dead weight and can be deleted after upgrading."
   - "DeepSeek Harness is currently a developer preview and may make compatibility-breaking configuration changes."
-  - "The current DSH release requires Node's Zstd stream API (Node 22.15+ works) but does not declare that minimum in its npm manifest (still true as of 0.1.0-rc.7)."
+  - "The current DSH release requires Node's Zstd stream API (Node 22.15+ works) but does not declare that minimum in its npm manifest."
   - "Use the generic openai-completions provider, not deepseek-official, for a local Rapid-MLX endpoint."
   - "dsh exits 0 even when a task fails outright (a bad provider prints NO_ADAPTER and still returns 0), so never treat its exit status as a pass signal — assert on the work it was supposed to do."
+  - "Alternative for one-off runs: save the setup's patch list anywhere and pass it explicitly — `dsh --profile headless --patch <file> '<task>'` (the lab-verified path)."

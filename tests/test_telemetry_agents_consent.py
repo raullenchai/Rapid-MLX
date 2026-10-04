@@ -509,7 +509,9 @@ def test_first_class_second_identical_setup_emits_nothing(
 def test_first_class_dry_run_failure_emits_nothing(
     loopback_telemetry, tmp_path, monkeypatch
 ):
-    (tmp_path / "settings.yaml").write_text("key: [unterminated\n", encoding="utf-8")
+    # dsh >= 0.2 reads $DSH_HOME/cordis.patch.yml (#4040) — corrupt that file;
+    # the loader must surface the YAMLError and emit no success telemetry.
+    (tmp_path / "cordis.patch.yml").write_text("key: [unterminated\n", encoding="utf-8")
     monkeypatch.setenv("DSH_HOME", str(tmp_path))
     monkeypatch.setattr(agent_adapter, "fetch_context_window", lambda *_args: 32768)
     monkeypatch.setattr(agent_adapter, "fetch_reasoning_support", lambda *_args: True)

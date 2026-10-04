@@ -158,6 +158,7 @@ _HARMONY_NO_THINKING_SUFFIX_TOKENS = (
 # update one contract instead of four independent generate/stream branches.
 _LANE_PARITY_SAMPLING_KEYS = (
     "repetition_penalty",
+    "repetition_context_size",
     "presence_penalty",
     "frequency_penalty",
     "reasoning_stop_scope",
@@ -167,6 +168,7 @@ _LANE_PARITY_PROCESSOR_KEYS = (
     "grammar_logits_processor",
     "reasoning_budget_logits_processor",
     "suppressed_tokens_logits_processor",
+    "dry_logits_processor",
 )
 
 
@@ -2950,6 +2952,7 @@ class BatchedEngine(BaseEngine):
             grammar_logits_processor,
             reasoning_budget_logits_processor,
             suppressed_tokens_logits_processor,
+            dry_logits_processor,
         ) = _pop_lane_parity_processors(kwargs)
         if output_router_seed is None and isinstance(prompt, str):
             # ``build_prompt(enable_thinking=False)`` is part of the public
@@ -2978,6 +2981,7 @@ class BatchedEngine(BaseEngine):
                 grammar_logits_processor=grammar_logits_processor,
                 reasoning_budget_logits_processor=reasoning_budget_logits_processor,
                 suppressed_tokens_logits_processor=suppressed_tokens_logits_processor,
+                dry_logits_processor=dry_logits_processor,
                 lifecycle_admission_token=admission_token,
                 on_request_committed=request_committed,
             )
@@ -3215,6 +3219,7 @@ class BatchedEngine(BaseEngine):
                 grammar_logits_processor,
                 reasoning_budget_logits_processor,
                 suppressed_tokens_logits_processor,
+                dry_logits_processor,
             ) = _pop_lane_parity_processors(kwargs)
             request_id = await self._engine.add_request(
                 request_id=request_id,
@@ -3226,6 +3231,7 @@ class BatchedEngine(BaseEngine):
                 grammar_logits_processor=grammar_logits_processor,
                 reasoning_budget_logits_processor=reasoning_budget_logits_processor,
                 suppressed_tokens_logits_processor=suppressed_tokens_logits_processor,
+                dry_logits_processor=dry_logits_processor,
                 lifecycle_admission_token=admission_token,
                 on_request_committed=commit_admission,
             )

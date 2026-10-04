@@ -8,6 +8,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
 import yaml
 
 from rapid_mlx.agents import get_profile, load_profiles
@@ -94,12 +95,18 @@ def test_dsh_setup_plan_is_side_effect_free_and_uses_real_capacity(
     tmp_path, monkeypatch
 ):
     dsh_home = tmp_path / "dsh"
-    settings = dsh_home / "settings.yaml"
+    patch_file = dsh_home / "cordis.patch.yml"
     dsh_home.mkdir()
-    settings.write_text(
-        "ui-theme:\n  theme: dark\nllm-pi-ai:\n  providers:\n    existing:\n      baseURL: https://example.test/v1\n"
+    patch_file.write_text(
+        "- id: user-custom-layer\n"
+        "  config: []\n"
+        "- id: llm-pi-ai\n"
+        "  config:\n"
+        "    providers:\n"
+        "      existing:\n"
+        "        baseURL: https://example.test/v1\n"
     )
-    original = settings.read_text()
+    original = patch_file.read_text()
     monkeypatch.setenv("DSH_HOME", str(dsh_home))
 
     plan = build_setup_plan(
@@ -109,15 +116,16 @@ def test_dsh_setup_plan_is_side_effect_free_and_uses_real_capacity(
         context_length=262144,
     )
 
-    assert settings.read_text() == original
-    assert plan.after["ui-theme"] == {"theme": "dark"}
-    assert "existing" in plan.after["llm-pi-ai"]["providers"]
-    rapid = plan.after["llm-pi-ai"]["providers"]["rapid-mlx"]
+    assert patch_file.read_text() == original
+    layers = {layer["id"]: layer["config"] for layer in plan.after}
+    # A layer the user wrote survives; ours replace same-id entries.
+    assert "user-custom-layer" in layers
+    rapid = layers["llm-pi-ai"]["providers"]["rapid-mlx"]
     assert rapid["baseURL"] == "http://127.0.0.1:8152/v1"
     assert rapid["apiKeyEnv"] == "RAPID_MLX_API_KEY"
     assert rapid["models"][0]["contextWindow"] == 262144
     assert rapid["models"][0]["reasoningEfforts"]["off"] == "none"
-    assert plan.after["agent-default-model"] == {
+    assert layers["agent-default-model"] == {
         "provider": "rapid-mlx",
         "model": "qwen3.5-9b-4bit",
     }
@@ -126,22 +134,23 @@ def test_dsh_setup_plan_is_side_effect_free_and_uses_real_capacity(
 
 def test_dsh_setup_apply_is_atomic_and_backed_up(tmp_path, monkeypatch):
     dsh_home = tmp_path / "dsh"
-    settings = dsh_home / "settings.yaml"
+    patch_file = dsh_home / "cordis.patch.yml"
     dsh_home.mkdir()
-    settings.write_text("ui-theme:\n  theme: dark\n")
+    patch_file.write_text("- id: agent-default-model\n  config: {}\n")
     monkeypatch.setenv("DSH_HOME", str(dsh_home))
 
     plan = build_setup_plan("dsh", "http://127.0.0.1:8152/v1", "qwen3.5-9b-4bit", 65536)
     apply_setup_plan(plan)
 
-    written = yaml.safe_load(settings.read_text())
-    assert written["ui-theme"] == {"theme": "dark"}
-    assert written["agent-default-model"]["provider"] == "rapid-mlx"
+    written = yaml.safe_load(patch_file.read_text())
+    assert isinstance(written, list), "dsh patch layers must be a top-level list"
+    layers = {layer["id"]: layer["config"] for layer in written}
+    assert layers["agent-default-model"]["provider"] == "rapid-mlx"
     assert (
-        written["llm-pi-ai"]["providers"]["rapid-mlx"]["models"][0]["contextWindow"]
+        layers["llm-pi-ai"]["providers"]["rapid-mlx"]["models"][0]["contextWindow"]
         == 65536
     )
-    assert len(list(dsh_home.glob("settings.yaml.bak.*"))) == 1
+    assert len(list(dsh_home.glob("cordis.patch.yml.bak.*"))) == 1
     credentials = dsh_home / ".credentials.yaml"
     assert yaml.safe_load(credentials.read_text()) == {
         "RAPID_MLX_API_KEY": "not-needed"
@@ -149,10 +158,10 @@ def test_dsh_setup_apply_is_atomic_and_backed_up(tmp_path, monkeypatch):
     assert stat.S_IMODE(credentials.stat().st_mode) == 0o600
 
 
-def test_dsh_setup_repairs_missing_credentials_when_settings_match(
+def test_dsh_setup_repairs_missing_credentials_when_patch_matches(
     tmp_path, monkeypatch
 ):
-    """A settings-only prior setup must not make credential repair a no-op."""
+    """A patch-only prior setup must not make credential repair a no-op."""
     monkeypatch.setenv("DSH_HOME", str(tmp_path))
     initial = build_setup_plan(
         "deepseek-harness",
@@ -205,17 +214,19 @@ def test_dsh_setup_preserves_and_redacts_existing_credentials(tmp_path, monkeypa
 def test_dsh_setup_refuses_concurrent_change(tmp_path, monkeypatch):
     dsh_home = tmp_path / "dsh"
     dsh_home.mkdir()
-    settings = dsh_home / "settings.yaml"
-    settings.write_text("ui-theme:\n  theme: dark\n")
+    patch_file = dsh_home / "cordis.patch.yml"
+    patch_file.write_text("- id: agent-default-model\n  config: {}\n")
     monkeypatch.setenv("DSH_HOME", str(dsh_home))
     plan = build_setup_plan("dsh", "http://127.0.0.1:8152/v1", "model")
-    settings.write_text("ui-theme:\n  theme: light\n")
+    patch_file.write_text("- id: agent-default-model\n  config: {changed: true}\n")
 
     import pytest
 
     with pytest.raises(RuntimeError, match="changed after preview"):
         apply_setup_plan(plan)
-    assert yaml.safe_load(settings.read_text()) == {"ui-theme": {"theme": "light"}}
+    assert yaml.safe_load(patch_file.read_text()) == [
+        {"id": "agent-default-model", "config": {"changed": True}}
+    ]
 
 
 def test_dsh_test_runner_supplies_only_dummy_loopback_credential(monkeypatch):
@@ -348,12 +359,17 @@ def _serving(entries: list[dict]):
         thread.join(timeout=5)
 
 
+def _dsh_layers(plan) -> dict:
+    """The planned patch layers keyed by id, for contract assertions."""
+    return {layer["id"]: layer["config"] for layer in plan.after}
+
+
 def _dsh_model_entry(plan) -> dict:
-    return plan.after["llm-pi-ai"]["providers"]["rapid-mlx"]["models"][0]
+    return _dsh_layers(plan)["llm-pi-ai"]["providers"]["rapid-mlx"]["models"][0]
 
 
 def _dsh_provider(plan) -> dict:
-    return plan.after["llm-pi-ai"]["providers"]["rapid-mlx"]
+    return _dsh_layers(plan)["llm-pi-ai"]["providers"]["rapid-mlx"]
 
 
 def test_reasoning_support_is_three_state(tmp_path, monkeypatch):
@@ -434,8 +450,43 @@ def test_dsh_declined_reasoning_survives_yaml_round_trip(tmp_path, monkeypatch):
         supports_reasoning=False,
     )
     apply_setup_plan(plan)
-    written = yaml.safe_load((tmp_path / "settings.yaml").read_text())
-    entry = written["llm-pi-ai"]["providers"]["rapid-mlx"]["models"][0]
+    written = yaml.safe_load((tmp_path / "cordis.patch.yml").read_text())
+    layers = {layer["id"]: layer["config"] for layer in written}
+    entry = layers["llm-pi-ai"]["providers"]["rapid-mlx"]["models"][0]
     assert entry["reasoningEfforts"] is False
-    raw = (tmp_path / "settings.yaml").read_text()
+    raw = (tmp_path / "cordis.patch.yml").read_text()
     assert "reasoningEfforts: false" in raw, raw
+
+
+def test_dsh_patch_loader_surfaces_yaml_errors_with_telemetry(tmp_path, monkeypatch):
+    """A corrupt cordis.patch.yml raises YAMLError and reports config_invalid."""
+    from rapid_mlx.agents import setup
+    from rapid_mlx.agents.setup import _load_patch_layers
+
+    patch_file = tmp_path / "cordis.patch.yml"
+    patch_file.write_text("key: [unterminated\n", encoding="utf-8")
+    failures = []
+    monkeypatch.setattr(
+        setup, "track_agent_configure_failed", lambda *args: failures.append(args)
+    )
+
+    with pytest.raises(yaml.YAMLError):
+        _load_patch_layers(patch_file, "deepseek-harness")
+    assert failures == [("config_invalid", "deepseek-harness")]
+
+
+def test_dsh_patch_loader_rejects_non_list_documents(tmp_path, monkeypatch):
+    """dsh's parser wants a top-level array; a mapping is invalid, not empty."""
+    from rapid_mlx.agents import setup
+    from rapid_mlx.agents.setup import _load_patch_layers
+
+    patch_file = tmp_path / "cordis.patch.yml"
+    patch_file.write_text("providers: {}\n", encoding="utf-8")
+    failures = []
+    monkeypatch.setattr(
+        setup, "track_agent_configure_failed", lambda *args: failures.append(args)
+    )
+
+    with pytest.raises(ValueError, match="must contain a YAML list"):
+        _load_patch_layers(patch_file, "deepseek-harness")
+    assert failures == [("config_invalid", "deepseek-harness")]
