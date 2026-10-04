@@ -51,8 +51,9 @@ def test_codex_recommended_models_are_known_aliases():
     )
 
 
-def test_codex_template_renders_to_valid_toml():
+def test_codex_template_renders_to_valid_toml(monkeypatch):
     """The substituted template must parse as TOML so Codex CLI accepts it."""
+    monkeypatch.delenv("RAPID_MLX_API_KEY", raising=False)
     profile = get_profile("codex")
     rendered = profile.render_config(
         base_url="http://localhost:8000/v1",
@@ -80,6 +81,24 @@ def test_codex_template_renders_to_valid_toml():
     assert "api_key" not in rmlx, (
         "Inline `api_key` is rejected by `codex --strict-config`. "
         'If you need to ship credentials, use `env_key = "VAR_NAME"`.'
+    )
+    assert "env_key" not in rmlx
+
+
+def test_keyed_server_profiles_reference_exported_key(monkeypatch):
+    import json
+
+    monkeypatch.setenv("RAPID_MLX_API_KEY", "test-agent-key")
+    codex = tomllib.loads(
+        get_profile("codex").render_config("http://localhost:8000/v1", "local-model")
+    )
+    opencode = json.loads(
+        get_profile("opencode").render_config("http://localhost:8000/v1", "local-model")
+    )
+
+    assert codex["model_providers"]["rapid-mlx"]["env_key"] == "RAPID_MLX_API_KEY"
+    assert opencode["provider"]["rapid-mlx"]["options"]["apiKey"] == (
+        "{env:RAPID_MLX_API_KEY}"
     )
 
 

@@ -185,7 +185,7 @@
        "const": true,
        "default": false,
        "dest": "no_check",
-       "help": "Skip the post-write server health and model check",
+       "help": "Skip the server health and model check (allow offline setup)",
        "metavar": null,
        "nargs": 0,
        "option_strings": [

@@ -12842,7 +12842,12 @@ def agents_command(args):
         model_id = args.model or "default"
         context_length = None
         cfg = profile.get_config_for_version(args.agent_version)
-        needs_ctx = cfg.template and "{context_length}" in cfg.template
+        needs_ctx = bool(cfg.template and "{context_length}" in cfg.template)
+        # Claude Code does not expose the context window in its static profile
+        # template, but its first-class settings plan uses the live value to
+        # avoid an unknown-local-model fallback warning.
+        if profile.name == "claude-code":
+            needs_ctx = True
 
         if model_id == "default":
             detected_model, detected_ctx = _detect_running_model(base_url)
@@ -12933,6 +12938,22 @@ def agents_command(args):
             print()
             return
 
+        # Generic file writers do not have the first-class plan's post-write
+        # verifier. Refuse before mutation when the endpoint is unavailable so
+        # a failed setup cannot leave a new `model = default` config behind.
+        # --no-check remains the explicit offline-config escape hatch, and a
+        # dry run remains side-effect-free preview even without a live server.
+        if cfg.type != "env" and not args.dry_run and not args.no_check:
+            from rapid_mlx.agents.setup import verify_server
+
+            try:
+                advertised = verify_server(base_url, model_id, agent=profile.name)
+            except RuntimeError as exc:
+                print(f"\n  {profile.display_name} setup failed: {exc}\n")
+                sys.exit(1)
+            if model_id == "default":
+                model_id = advertised
+
         summary = setup_agent_config(
             profile,
             base_url,
@@ -12950,7 +12971,10 @@ def agents_command(args):
             print(f"\n  {summary}")
             print("\n  Dry run only; nothing was written.\n")
             return
-        print(f"\n  {profile.display_name} configured!")
+        if summary.startswith("Already configured"):
+            print(f"\n  {profile.display_name} is already configured.")
+        else:
+            print(f"\n  {profile.display_name} configured!")
         print(f"  {summary}")
         print()
         return

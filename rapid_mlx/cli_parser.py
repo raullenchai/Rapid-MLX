@@ -2495,7 +2495,7 @@ def _add_agents_parser(
     agents_parser.add_argument(
         "--no-check",
         action="store_true",
-        help="Skip the post-write server health and model check",
+        help="Skip the server health and model check (allow offline setup)",
     )
     agents_parser.add_argument(
         "--test",
