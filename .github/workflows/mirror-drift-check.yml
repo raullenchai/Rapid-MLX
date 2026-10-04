@@ -4,6 +4,12 @@ on:
   schedule:
     - cron: "23 13 * * *"
   workflow_dispatch:
+    inputs:
+      purge_gemma_index:
+        description: Purge and verify the two fixed Gemma index URLs
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -13,7 +19,23 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  targeted-gemma-index-purge:
+    name: Targeted Gemma index CDN purge (not a full mirror audit)
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.purge_gemma_index }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with: { python-version: "3.12" }
+      - name: Purge and verify only the fixed Gemma index URLs
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+        run: python scripts/purge_gemma_index_cdn.py
+
   audit-used-models:
+    if: ${{ github.event_name == 'schedule' || !inputs.purge_gemma_index }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
