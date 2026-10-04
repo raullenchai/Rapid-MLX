@@ -2,8 +2,9 @@
 
 Three CLI surfaces share this module (wired in ``rapid_mlx/cli.py``):
 
-  * ``rapid-mlx`` (bare command) → a short welcome with one recommended
-    model and one command that reaches the first reply. Non-blocking, exits.
+  * ``rapid-mlx`` (bare command) → the interactive front door in
+    ``rapid_mlx/front_door.py``, which uses the probes here (cached aliases,
+    detected agents, last-used model).
   * ``rapid-mlx chat`` with no model → auto-select the known-good starter, so
     the user's only decision is typing ``chat`` (everything else is a default
     + override).
@@ -11,7 +12,7 @@ Three CLI surfaces share this module (wired in ``rapid_mlx/cli.py``):
 
 Design constraints (mirror ``rapid_mlx/telemetry/consent.py``):
 
-  * **TTY-guarded.** The nameplate and notices only render for an interactive
+  * **TTY-guarded.** The front door and notices only render for an interactive
     session; non-TTY (CI, pipes) keeps today's behavior with zero extra output.
     The callers own the TTY check; the pure helpers here never print.
   * **Fail-silent.** Every probe (cache scan, hardware detect, agent detect,
@@ -48,12 +49,6 @@ FIRST_RUN_MODEL_SIZE = "~3.1 GB"
 # ICP, so it leads. Others follow in a stable order.
 _AGENT_PREFERENCE = ("claude-code", "cline", "continue-dev")
 
-_IDENTITY = (
-    "Rapid-MLX — OpenAI- and Anthropic-compatible LLM server and Mac app for "
-    "Apple Silicon, built on MLX, focused on reliable tool calling for coding agents."
-)
-_DOCS_URL = "https://rapidmlx.com/docs/"
-
 
 def _state_dir() -> Path:
     """The ``~/.rapid-mlx/`` state dir (same one telemetry uses; see
@@ -74,13 +69,16 @@ def _state_dir() -> Path:
 # --------------------------------------------------------------------------
 # Starter model selection (P0-1) + cached-model display (P0-2)
 # --------------------------------------------------------------------------
-def cached_known_aliases() -> list[tuple[str, float]]:
+def cached_known_aliases(
+    cache_rows: list[tuple[str, int, float]] | None = None,
+) -> list[tuple[str, float]]:
     """``[(alias, mtime_epoch), ...]`` for cached models that map to a known
     alias, most-recently-modified first.
 
     Unmapped cache entries (a raw HF repo with no alias in ``aliases.json``)
     are omitted — an unknown profile is unsafe to auto-select as the chat
-    default. Returns ``[]`` on a cold cache or any scan error.
+    default. Returns ``[]`` on a cold cache or any scan error. ``cache_rows``
+    reuses a ``_scan_hf_cache_models()`` result the caller already holds.
     """
     try:
         # Lazy import: cli.py imports this module, so importing it back at
@@ -93,7 +91,9 @@ def cached_known_aliases() -> list[tuple[str, float]]:
             hf_to_alias.setdefault(profile.hf_path, alias)
 
         rows: list[tuple[str, float]] = []
-        for repo, _size, mtime in _scan_hf_cache_models():
+        if cache_rows is None:
+            cache_rows = _scan_hf_cache_models()
+        for repo, _size, mtime in cache_rows:
             alias = hf_to_alias.get(repo)
             if alias is not None and _cache_entry_is_runnable(repo):
                 rows.append((alias, mtime))
@@ -115,7 +115,7 @@ def select_chat_default() -> tuple[str, bool]:
     We deliberately do NOT auto-pick the most-recently-cached alias: it could
     be a non-chat checkpoint (embedding / transcription), and silently
     selecting a model the user never named invites surprise and a hard-to-read
-    failure. The bare-command nameplate still LISTS cached models so a
+    failure. The bare-command front door still LISTS cached models so a
     returning user can pick one explicitly.
     """
     cached_aliases = {alias for alias, _ in cached_known_aliases()}
@@ -123,7 +123,7 @@ def select_chat_default() -> tuple[str, bool]:
 
 
 # --------------------------------------------------------------------------
-# Agent detection (P0-2 nameplate + P0-3 tip)
+# Agent detection (front door + P0-3 tip)
 # --------------------------------------------------------------------------
 def _safe_detect(adapter: object) -> bool:
     try:
@@ -161,65 +161,48 @@ def preferred_agent() -> str | None:
 
 
 # --------------------------------------------------------------------------
-# Welcome (P0-2)
+# Last-used chat model (bare-command front door, returning users)
 # --------------------------------------------------------------------------
-def build_nameplate(version: str) -> str:
-    """Build the bare-command welcome text (no ANSI, no trailing newline).
+def _last_model_file() -> Path:
+    return _state_dir() / "last_chat_model"
 
-    Pure/deterministic given the machine state — the caller decides whether to
-    print it (TTY only). Every probe inside is fail-silent, so a broken cache
-    still yields a usable next command.
+
+def _is_chat_alias(name: str) -> bool:
+    """Whether ``name`` is a registered text-chat alias (fail-safe False)."""
+    try:
+        from rapid_mlx.model_aliases import list_profiles
+
+        profile = list_profiles().get(name)
+        return profile is not None and profile.modality == "text"
+    except Exception:
+        return False
+
+
+def record_last_model(name: str | None) -> None:
+    """Remember the alias of the model a local ``chat`` session started.
+
+    Only registered text aliases are stored (never a path or raw repo id), so
+    the front door can offer "continue with <alias>" without guessing whether
+    a cached checkpoint can chat. Fail-silent: an unwritable state dir only
+    loses the convenience.
     """
-    del version  # kept in the API so the CLI does not need a compatibility shim
-    from rapid_mlx.recommendations import (
-        physical_ram_gb,
-        recommendation_payload,
-        select_starter_model,
-    )
+    if not name or not _is_chat_alias(name):
+        return
+    try:
+        target = _last_model_file()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(name + "\n", encoding="utf-8")
+    except Exception:
+        return
 
-    cached = {alias for alias, _mtime in cached_known_aliases()}
-    ram_gb = physical_ram_gb()
-    payload = recommendation_payload(ram_gb, validate_catalog=False)
-    model = select_starter_model(ram_gb, cached, validate_catalog=False)
-    cached_badge = " (already cached)" if model in cached else ""
-    ram_label = (
-        f"{payload['physical_ram_gb']:g} GB RAM detected"
-        if ram_gb > 0
-        else "RAM detection unavailable"
-    )
-    agent = preferred_agent()
-    launch_target = agent if agent is not None else "--all"
-    detected_badge = "  # detected ✓" if agent is not None else ""
 
-    lines = [
-        _IDENTITY,
-        "",
-        f"{ram_label} · Recommended model: {model}{cached_badge}",
-        "",
-        "Next — start chatting (the server starts automatically):",
-        f"  rapid-mlx chat {model}",
-        "",
-        "Use it from your coding agent (separate stable server on :8000):",
-        f"  rapid-mlx serve {model} --port 8000",
-        f"  rapid-mlx launch {launch_target} --model {model}{detected_badge}",
-        "serve exits if :8000 is busy; use another port in both commands:",
-        f"  rapid-mlx serve {model} --port 8001",
-        (
-            f"  rapid-mlx launch {launch_target} --model {model} "
-            "--server-url http://127.0.0.1:8001"
-        ),
-        "",
-        "Useful commands:",
-        "  rapid-mlx chat <model>",
-        "  rapid-mlx pull <model>",
-        "  rapid-mlx models",
-        "  rapid-mlx doctor",
-        "",
-        "rapid-mlx --help for everything",
-        "",
-        f"Docs: {_DOCS_URL}",
-    ]
-    return "\n".join(lines)
+def last_used_model() -> str | None:
+    """The alias stored by :func:`record_last_model`, if still a chat alias."""
+    try:
+        name = _last_model_file().read_text(encoding="utf-8").strip()
+    except Exception:
+        return None
+    return name if _is_chat_alias(name) else None
 
 
 # --------------------------------------------------------------------------
