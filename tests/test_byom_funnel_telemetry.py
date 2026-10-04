@@ -27,14 +27,14 @@ from rapid_mlx.telemetry import (
 from rapid_mlx.telemetry import track as track_module
 from rapid_mlx.telemetry.build_gate import ReleaseStamp
 from rapid_mlx.telemetry.common_props import PlatformFacts
-from tests.test_byom_preflight import (  # noqa: F401 - fixtures
+from tests.test_byom_preflight import (
     GIB,
     MLX_CONFIG,
     _args,
     _info,
-    hook,
-    uncached,
 )
+
+pytest_plugins = ("tests.test_byom_preflight",)
 
 REAL_EMIT_REJECTION = pf._emit_rejection
 STAMP = ReleaseStamp(channel="stable", posthog_key="phc_" + "a" * 32)
