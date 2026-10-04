@@ -201,6 +201,9 @@ def begin(refs: Iterable[object]) -> None:
     Never raises.
     """
     global _refs, _match
+    # Clear first: a failure below must never leave the previous
+    # invocation's context attached to this one's events.
+    _clear()
     try:
         refs = list(refs)
         normalized = frozenset(n for n in map(_norm, refs) if n is not None)
@@ -308,10 +311,13 @@ def props_for(model_ref: object, *, failed: bool) -> dict[str, object]:
         return {}
 
 
-def _reset_for_tests() -> None:
+def _clear() -> None:
     global _refs, _match
     with _lock:
         _refs = frozenset()
         _match = frozenset()
         _context.clear()
         _consumed[0] = False
+
+
+_reset_for_tests = _clear

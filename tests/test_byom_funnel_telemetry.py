@@ -707,3 +707,12 @@ def test_unreadable_import_source_classes(run_import, import_events, tmp_path):
         "invalid_ref",
         "metadata_unavailable",
     ]
+
+
+def test_a_failed_begin_leaves_no_stale_context(monkeypatch):
+    byom_funnel.begin(["o/r"])
+    byom_funnel.set_preflight("passed")
+    monkeypatch.setattr(byom_funnel, "_norm", lambda ref: 1 / 0)
+    byom_funnel.begin(["o/r"])
+    monkeypatch.undo()
+    assert byom_funnel.props_for("o/r", failed=False) == {}
