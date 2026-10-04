@@ -385,11 +385,13 @@ def test_swift_validator_does_not_redeclare_the_enums():
     registry = json.loads(ENGINE_REGISTRY.read_text(encoding="utf-8"))
     # Compare against STRING LITERALS only: `continue` is a Swift keyword
     # and `other` reads as English, so a substring scan would false-alarm.
+    # The validator must dispatch on the schema's property KINDS
+    # (``case "version":``); only that syntactic use is exempt, so a value
+    # that is both a kind word and an enum value (the ``version`` subcommand
+    # in ``cli_command``) is still caught anywhere else in the file.
+    kinds = "|".join(sorted(reg._COMMON_ONLY_KINDS | reg._EVENT_KINDS))
+    source = re.sub(rf'\bcase\s+"(?:{kinds})"\s*:', "", source)
     literals = set(re.findall(r'"([^"\\\n]*)"', source))
-    # The validator must name the schema's property KINDS ("enum", "version",
-    # ...) to dispatch on them; a kind word that is also an enum value (the
-    # ``version`` subcommand in ``cli_command``) is vocabulary, not a copy.
-    literals -= reg._COMMON_ONLY_KINDS | reg._EVENT_KINDS
     for enum_name, values in (
         (name, body["values"]) for name, body in _specs(registry["enums"]).items()
     ):
