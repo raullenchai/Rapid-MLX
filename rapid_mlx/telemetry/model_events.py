@@ -406,7 +406,7 @@ def emit_model_pulled(
 
     if source not in ("mirror", "hf"):
         return
-    props = {
+    props: dict[str, object] = {
         "model": telemetry_model_id(model_ref),
         "model_type": model_type(model_ref),
         "source": source,
