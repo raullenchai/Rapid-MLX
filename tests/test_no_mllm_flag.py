@@ -251,6 +251,25 @@ def _pkg_root() -> pathlib.Path:
     ).resolve()
 
 
+# Entrypoints whose argparse surface lives in a companion module. The
+# routing-flag gates check the union, so the escape-hatch requirement still
+# holds for the entrypoint as a whole.
+ENTRYPOINT_ARGPARSE_FILES: dict[str, tuple[str, ...]] = {
+    "cli.py": ("cli.py", "cli_parser.py"),
+}
+
+
+def _entrypoint_argparse_sources(pkg_root: pathlib.Path, rel: str) -> tuple[str, ...]:
+    files = ENTRYPOINT_ARGPARSE_FILES.get(rel, (rel,))
+    return tuple((pkg_root / f).read_text() for f in files)
+
+
+def _entrypoint_registers_flag(sources: tuple[str, ...], flag: str) -> bool:
+    # Parse each file on its own: concatenated modules are not valid Python
+    # once either one has a ``from __future__`` import.
+    return any(_flag_in_add_argument_calls(src, flag) for src in sources)
+
+
 def test_force_text_overrides_auto_detection(monkeypatch):
     """When force_text=True, BatchedEngine._is_mllm is False even if
     is_mllm_model would return True. Verifies the probe is short-
@@ -1762,9 +1781,9 @@ def test_auto_routing_flags_have_force_on_and_force_off_pair():
     # A future pair could add a new entrypoint to `required_files`; the
     # prior dict-lookup would raise a bare KeyError, this loop now
     # raises a descriptive failure (or silently includes the new file).
-    sources_by_file: dict[str, str] = {}
+    sources_by_file: dict[str, tuple[str, ...]] = {}
 
-    def _read_required(fname: str) -> str:
+    def _read_required(fname: str) -> tuple[str, ...]:
         if fname not in sources_by_file:
             path = pkg_root / fname
             assert path.exists(), (
@@ -1772,21 +1791,21 @@ def test_auto_routing_flags_have_force_on_and_force_off_pair():
                 f"file does not exist at {path}. Fix the registry or "
                 "restore the entrypoint."
             )
-            sources_by_file[fname] = path.read_text()
+            sources_by_file[fname] = _entrypoint_argparse_sources(pkg_root, fname)
         return sources_by_file[fname]
 
     missing: list[str] = []
     for pair in AUTO_ROUTING_FLAG_PAIRS:
         for fname in pair.required_files:
             src = _read_required(fname)
-            if not _flag_in_add_argument_calls(src, pair.force_on):
+            if not _entrypoint_registers_flag(src, pair.force_on):
                 missing.append(
                     f"force-on flag {pair.force_on} not registered via "
                     f"add_argument() in {fname} ({pair.desc}) — every "
                     "entrypoint that takes a model name needs the same "
                     "routing escape hatches (SOP §10)."
                 )
-            if not _flag_in_add_argument_calls(src, pair.force_off):
+            if not _entrypoint_registers_flag(src, pair.force_off):
                 missing.append(
                     f"force-off flag {pair.force_off} not registered via "
                     f"add_argument() in {fname} ({pair.desc}) — every binary "
@@ -1883,9 +1902,9 @@ def test_load_model_callers_register_every_routing_flag():
     for rel in sorted(load_model_callers):
         if rel in LOAD_MODEL_ENTRYPOINT_EXEMPTIONS:
             continue
-        source = (pkg_root / rel).read_text()
+        source = _entrypoint_argparse_sources(pkg_root, rel)
         for pair in AUTO_ROUTING_FLAG_PAIRS:
-            if not _flag_in_add_argument_calls(source, pair.force_on):
+            if not _entrypoint_registers_flag(source, pair.force_on):
                 missing.append(
                     f"{rel} calls load_model() but does NOT register the "
                     f"`{pair.force_on}` flag (force-on of {pair.desc}). "
@@ -1894,7 +1913,7 @@ def test_load_model_callers_register_every_routing_flag():
                     "or add a one-line exemption in "
                     "LOAD_MODEL_ENTRYPOINT_EXEMPTIONS with a reason."
                 )
-            if not _flag_in_add_argument_calls(source, pair.force_off):
+            if not _entrypoint_registers_flag(source, pair.force_off):
                 missing.append(
                     f"{rel} calls load_model() but does NOT register the "
                     f"`{pair.force_off}` flag (force-off of {pair.desc}). "

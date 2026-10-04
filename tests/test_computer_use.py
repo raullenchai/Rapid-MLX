@@ -18,6 +18,9 @@ def _foreground_input_delivery(monkeypatch):
     # default "auto" mode would route through background delivery instead.
     # Background routing has its own tests in test_computer_use_background.py.
     monkeypatch.setenv(background_input.DELIVERY_ENV, "foreground")
+    # Activation of the exact process is covered in test_cua_observe_safety.py;
+    # these fakes model an app that is already frontmost.
+    monkeypatch.setattr(backend, "_borrow_foreground", lambda snapshot: None)
 
 
 def _window(window_id=101, index=0, x=0, y=0, width=100, height=100):
@@ -2619,7 +2622,9 @@ def test_collect_watchdog_translates_missing_pid_to_typed_error(monkeypatch):
     monkeypatch.setattr(
         backend.ax_driver,
         "collect",
-        lambda *a, **k: (_ for _ in ()).throw(SystemExit("pid missing")),
+        lambda *a, **k: (_ for _ in ()).throw(
+            backend.ax_driver.AppNotFoundError("pid missing")
+        ),
     )
     with pytest.raises(errors.ComputerUseError) as excinfo:
         backend._collect_with_timeout("A", expected_pid=42, timeout_s=1)
@@ -5550,6 +5555,9 @@ def test_anchor_editable_focus_drift_keeps_occlusion_fail_closed(monkeypatch):
     monkeypatch.setattr(backend, "_focused_ax_element", lambda *a, **k: object())
     monkeypatch.setattr(backend.ax_driver, "_get", lambda *a, **k: False)
     monkeypatch.setattr(
+        backend.ax_driver, "AXUIElementSetAttributeValue", lambda *a: -25205
+    )
+    monkeypatch.setattr(
         backend,
         "_validate_snapshot_window",
         lambda *a, **k: (_ for _ in ()).throw(
@@ -5565,7 +5573,9 @@ def test_anchor_editable_focus_drift_keeps_occlusion_fail_closed(monkeypatch):
     with pytest.raises(errors.ComputerUseError) as excinfo:
         backend.click("pid:4", 0, expected_snapshot=snapshot, focus_only=True)
 
-    assert excinfo.value.code == "target_occluded"
+    # focus_only never falls back to a pixel click, so focus drift is refused
+    # before occlusion is even consulted; either way nothing is dispatched.
+    assert excinfo.value.code == "synthetic_input_blocked"
 
 
 def test_set_value_and_synthetic_fill_paths(monkeypatch):
@@ -6176,7 +6186,7 @@ def test_ax_driver_app_collect_retries_and_press(monkeypatch):
         ax_driver._MANUAL_ACCESSIBILITY,
         ax_driver._ENHANCED_UI,
     ]
-    with pytest.raises(SystemExit, match="not found"):
+    with pytest.raises(ax_driver.AppNotFoundError, match="not found"):
         ax_driver._app_element("missing")
     monkeypatch.setattr(ax_driver, "AS", None)
     with pytest.raises(RuntimeError, match="macOS"):
@@ -6614,11 +6624,11 @@ def test_ax_selector_rejects_stale_pid_and_unrelated_name(monkeypatch):
     unrelated_name = _RunningApp("Other App", pid=42)
     monkeypatch.setattr(ax_driver, "AS", object())
     monkeypatch.setattr(ax_driver, "_application_for_pid", lambda pid: mismatched_pid)
-    with pytest.raises(SystemExit, match="not found"):
+    with pytest.raises(ax_driver.AppNotFoundError, match="not found"):
         ax_driver._app_element("Target App", expected_pid=42)
 
     monkeypatch.setattr(ax_driver, "_running_applications", lambda: [unrelated_name])
-    with pytest.raises(SystemExit, match="not found"):
+    with pytest.raises(ax_driver.AppNotFoundError, match="not found"):
         ax_driver._app_element("Target App")
 
 
@@ -6645,7 +6655,7 @@ def test_ax_running_apps_filters_terminated_cached_entry(monkeypatch):
 def test_ax_selector_ignores_unresolved_expected_pid(monkeypatch):
     monkeypatch.setattr(ax_driver, "AS", object())
     monkeypatch.setattr(ax_driver, "_application_for_pid", lambda pid: None)
-    with pytest.raises(SystemExit, match="not found"):
+    with pytest.raises(ax_driver.AppNotFoundError, match="not found"):
         ax_driver._app_element("Target App", expected_pid=42)
 
 

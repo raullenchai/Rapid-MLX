@@ -303,10 +303,17 @@ def _same_window(lhs: dict, rhs: dict) -> bool:
     )
 
 
+def _pid_app_element(app_info: dict) -> object:
+    try:
+        return ax_driver._app_element(
+            app_info["name"], expected_pid=int(app_info["pid"])
+        )
+    except ax_driver.AppNotFoundError as exc:
+        raise ComputerUseError("target_drift", "selected app exited") from exc
+
+
 def _focused_ax_window(app_info: dict) -> object | None:
-    app_element = ax_driver._app_element(
-        app_info["name"], expected_pid=int(app_info["pid"])
-    )
+    app_element = _pid_app_element(app_info)
     app_windows = ax_driver._as_list(ax_driver._get(app_element, "AXWindows"))
     focused = ax_driver._get(app_element, "AXFocusedWindow")
     if focused is None:
@@ -340,9 +347,7 @@ def _focused_ax_window(app_info: dict) -> object | None:
 def _focused_ax_element(app_info: dict) -> object | None:
     """Return the exact focused control for the PID-bound app."""
 
-    app_element = ax_driver._app_element(
-        app_info["name"], expected_pid=int(app_info["pid"])
-    )
+    app_element = _pid_app_element(app_info)
     return ax_driver._get(app_element, "AXFocusedUIElement")
 
 
@@ -809,7 +814,7 @@ def _collect_with_timeout(
                 retry_web_content=retry_web_content,
                 partial_out=partial_targets,
             )
-        except SystemExit as exc:
+        except ax_driver.AppNotFoundError as exc:
             outcome["error"] = ComputerUseError("app_not_found", str(exc))
         except Exception as exc:  # noqa: BLE001 - surfaced below
             outcome["error"] = exc
@@ -1293,6 +1298,79 @@ def _pixel_click(
     }
 
 
+def _same_process(expected: dict):
+    """The running app for ``expected``'s pid, only if it is still that process.
+
+    A pid can be recycled after the observed process exits, so the full
+    identity (bundle, name, launch time) is checked on every lookup.
+    """
+    if any(expected.get(key) is None for key in _PROCESS_IDENTITY):
+        # Without the launch time a recycled pid is indistinguishable.
+        raise ComputerUseError("target_drift", "selected app identity is incomplete")
+    running = ax_driver._application_for_pid(int(expected["pid"]))
+    if running is None:
+        raise ComputerUseError("target_drift", "selected app exited")
+    info = _resolved_app_info(running)
+    for key in (*_PROCESS_IDENTITY, "name"):
+        wanted = expected.get(key)
+        if wanted is not None and info.get(key) != wanted:
+            raise ComputerUseError("target_drift", "selected app identity changed")
+    return running
+
+
+_PROCESS_IDENTITY = ("pid", "bundleId", "processStartTime")
+
+
+def _borrow_foreground(snapshot: dict) -> None:
+    """Activate exactly the snapshot's process for a foreground-only step.
+
+    Background observation leaves the target inactive, so paths that still
+    need AppKit activation (Save via the menu bar, TextEdit document binding,
+    the Cmd+A synthetic-typing fallback) activate it here, narrowly and only
+    after the process identity matches the observation.
+    """
+    # Decide on the process's actual state, not the delivery policy: the user
+    # may have switched away since an activating observation.
+    expected = snapshot.get("app") or {}
+    running = _same_process(expected)
+    if bool(running.isActive()):
+        return
+    # A stale or closed window must not cost the user their foreground: check
+    # the exact observed window before activating (callers re-validate after).
+    _validate_snapshot_window(snapshot, require_topmost=False)
+    try:
+        accepted = bool(running.activateWithOptions_(1 << 1))
+    except Exception as exc:  # noqa: BLE001 - surfaced as a typed failure
+        raise ComputerUseError("action_failed", "could not activate target") from exc
+    if not accepted:
+        raise ComputerUseError("action_failed", "target refused activation")
+    deadline = time.monotonic() + 1.5
+    while time.monotonic() < deadline:
+        # Re-resolve each poll: without an NSRunLoop in this process a held
+        # NSRunningApplication never refreshes its isActive property.
+        current = _same_process(expected)
+        if bool(current.isActive()):
+            time.sleep(0.15)  # let AppKit settle key/main window
+            return
+        time.sleep(0.05)
+    raise ComputerUseError("target_drift", "target did not become active")
+
+
+def observation_activates(app_info: dict | None) -> bool:
+    """Whether observing ``app_info`` must activate it first.
+
+    With background delivery every action the agent loop can plan (clicks,
+    scrolls, fills, Enter/Tab/Escape/arrows/Space) is routed to the exact
+    pid/window, so observation leaves the user's front app alone. Activation
+    stays for foreground delivery, Finder (its rename flow is built around
+    activation) and an app whose identity is not yet known.
+    """
+    bundle = str((app_info or {}).get("bundleId") or "").casefold()
+    if not bundle or bundle == "com.apple.finder":
+        return True
+    return not background_input.background_enabled()
+
+
 def _keyboard_background(snapshot: dict, modifiers: int = 0) -> bool:
     """Whether a key/text dispatch can go to the target pid in the background.
 
@@ -1355,8 +1433,8 @@ def _validate_focused_window(
         )
     focused = _focused_ax_window(snapshot["app"])
     if focused is None and allow_exact_main_window:
-        app_element = ax_driver._app_element(
-            snapshot["app"]["name"], expected_pid=expected_pid
+        app_element = _pid_app_element(
+            {"name": snapshot["app"]["name"], "pid": expected_pid}
         )
         main = ax_driver._get(app_element, "AXMainWindow")
         windows = ax_driver._as_list(ax_driver._get(app_element, "AXWindows"))
@@ -1570,12 +1648,11 @@ def _save_menu_candidate(snapshot: dict) -> tuple[object, tuple[str, ...], objec
     process and is re-resolved before dispatch.
     """
 
+    _borrow_foreground(snapshot)
     _validate_snapshot_window(snapshot)
     _validate_focused_window(snapshot)
     app_info = snapshot["app"]
-    app_element = ax_driver._app_element(
-        str(app_info["name"]), expected_pid=int(app_info["pid"])
-    )
+    app_element = _pid_app_element(app_info)
     focused = _focused_ax_window(app_info)
     document = ax_driver._get(focused, "AXDocument") if focused is not None else None
     if not isinstance(document, str) or not document.strip():
@@ -1654,6 +1731,7 @@ def inspect_autosaving_document(app: str, snapshot: dict) -> dict:
         raise ComputerUseError(
             "invalid_argument", "autosaving document inspection requires TextEdit"
         )
+    _borrow_foreground(snapshot)
     expected_window = _validate_snapshot_window(snapshot)
     _validate_focused_window(snapshot, expected_window)
     focused = _focused_ax_window(snapshot["app"])
@@ -1886,6 +1964,37 @@ def save_document(
     )
 
 
+# Roles whose click is itself a commit (pressing, toggling, following, opening
+# a menu). Focusing one of these for a key press must not click it.
+COMMIT_ON_CLICK_ROLES = {
+    "AXButton",
+    "AXCheckBox",
+    "AXDisclosureTriangle",
+    "AXLink",
+    "AXMenuBarItem",
+    "AXMenuButton",
+    "AXMenuItem",
+    "AXPopUpButton",
+    "AXRadioButton",
+    "AXSwitch",
+}
+
+
+def _focus_without_commit(snapshot: dict, live: object | None) -> str | None:
+    """Give ``live`` keyboard focus via AXFocused; the mode name, or None."""
+    if live is None:
+        return None
+    focused = _focused_ax_element(snapshot["app"])
+    if focused is not None and live == focused:
+        return "AXFocusVerified"
+    err = ax_driver.AXUIElementSetAttributeValue(live, "AXFocused", True)
+    if err != ax_driver.kAXErrorSuccess:
+        return None
+    time.sleep(0.05)
+    focused = _focused_ax_element(snapshot["app"])
+    return "AXFocused" if focused is not None and live == focused else None
+
+
 def click(
     app: str,
     element_index: int | None = None,
@@ -1920,18 +2029,18 @@ def click(
         # the cursor. Only advertised actions are attempted -- an unadvertised
         # action fails with kAXErrorActionUnsupported or silently no-ops.
         semantic = None
-        if mouse_button == "left" and click_count == 1 and "AXPress" in actions:
+        if focus_only:
+            # Focusing must never commit: an AXPress here would press a button
+            # under a plan that only asked for a key (bypassing click consent).
+            pass
+        elif mouse_button == "left" and click_count == 1 and "AXPress" in actions:
             semantic = "AXPress"
         elif mouse_button == "left" and click_count == 2 and "AXOpen" in actions:
             semantic = "AXOpen"
         elif mouse_button == "right" and click_count == 1 and "AXShowMenu" in actions:
             semantic = "AXShowMenu"
         live = None
-        if (
-            semantic is not None
-            or is_transient
-            or (focus_only and entry.get("role") in FILL_ROLES)
-        ):
+        if semantic is not None or is_transient or focus_only:
             # Menus and popovers can be owned by the selected app/window while
             # appearing outside the window's content bounds. Revalidate the
             # exact window and AX target identity, then prefer the semantic
@@ -1958,7 +2067,12 @@ def click(
             and live == _focused_ax_element(snapshot["app"])
         ):
             expected_window = snapshot.get("transient_window") if is_transient else None
-            _validate_focused_window(snapshot, expected_window)
+            if _background_delivery(snapshot):
+                _validate_focused_window(
+                    snapshot, expected_window, require_active_app=False
+                )
+            else:
+                _validate_focused_window(snapshot, expected_window)
             return _finish_action(
                 app,
                 snapshot,
@@ -1966,6 +2080,25 @@ def click(
                 verified=True,
                 verification="exact Accessibility element remained focused",
                 include_post_state=include_post_state,
+            )
+        if focus_only:
+            focused = _focus_without_commit(snapshot, live)
+            if focused is not None:
+                return _finish_action(
+                    app,
+                    snapshot,
+                    {"mode": focused, "element_index": element_index},
+                    verified=True,
+                    verification="exact Accessibility element holds keyboard focus",
+                    include_post_state=include_post_state,
+                )
+            # A pixel click can never be proven non-committing (a web input
+            # may submit on click and still read as a plain AXTextField), so
+            # focus without AXFocused is the planner's consent-gated click.
+            raise ComputerUseError(
+                "synthetic_input_blocked",
+                "cannot focus this control without clicking it; "
+                "plan a click (consent-gated) instead",
             )
         if is_transient:
             raise ComputerUseError(
@@ -1987,6 +2120,12 @@ def click(
             verified=None,
             verification="synthetic click emitted; outcome not asserted",
             include_post_state=include_post_state,
+        )
+    if focus_only:
+        # Focus without commit needs an exact AX element; a bare point can
+        # only be clicked.
+        raise ComputerUseError(
+            "invalid_argument", "focus_only requires an element index, not x/y"
         )
     if x is None or y is None:
         raise ComputerUseError(
@@ -2108,6 +2247,8 @@ def set_value(
 def _synthetic_fill(snapshot: dict, element_index: int, value: str) -> dict:
     entry = _element(snapshot, element_index)
     center = entry["center"]
+    # Cmd+A is a menu key equivalent: this fallback is foreground-only.
+    _borrow_foreground(snapshot)
     _validate_snapshot_window(snapshot, point=(float(center[0]), float(center[1])))
     ax_driver._cg_click(float(center[0]), float(center[1]))
     time.sleep(0.3)
@@ -2833,9 +2974,7 @@ def _clear_finder_rename_binding(snapshot: dict) -> None:
 def _finder_rename_menu_item(snapshot: dict) -> object:
     """Return Finder's one enabled native Rename menu command."""
     app_info = snapshot["app"]
-    app_element = ax_driver._app_element(
-        str(app_info["name"]), expected_pid=int(app_info["pid"])
-    )
+    app_element = _pid_app_element(app_info)
     menu_bar = ax_driver._get(app_element, "AXMenuBar")
     matches: list[object] = []
     seen = 0
