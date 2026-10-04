@@ -1266,3 +1266,79 @@ class TestArchitectureAwareKVEstimate:
         ):
             dense_sched._enforce_metal_cap_at_admission(dense_req)
         assert dense_sched.num_metal_cap_violations == 1
+
+
+class TestAdmissionFallbackDebugLogging:
+    """Silent estimator fallbacks must be visible at DEBUG, once per key."""
+
+    def test_metal_probe_failure_logs_debug_once_with_traceback(self, caplog):
+        sched = _make_scheduler()
+        with (
+            patch(
+                "rapid_mlx.scheduler.mx.get_active_memory",
+                side_effect=RuntimeError("no metal"),
+            ),
+            caplog.at_level(logging.DEBUG, logger="rapid_mlx.scheduler"),
+        ):
+            assert sched._current_metal_active_bytes() == 0
+            assert sched._current_metal_active_bytes() == 0
+        records = [
+            r
+            for r in caplog.records
+            if "Metal active-memory probe failed" in r.getMessage()
+        ]
+        assert len(records) == 1
+        assert records[0].levelno == logging.DEBUG
+        assert records[0].exc_info is not None
+
+    def test_kv_dtype_inference_failure_logs_and_keeps_fp32_fallback(self, caplog):
+        class _ExplodingConfig:
+            @property
+            def dtype(self):
+                raise RuntimeError("broken config")
+
+        sched = _make_scheduler()
+        with caplog.at_level(logging.DEBUG, logger="rapid_mlx.scheduler"):
+            assert sched._infer_kv_dtype_bytes(_ExplodingConfig()) == 4
+        assert any(
+            "KV dtype inference" in r.getMessage() and r.exc_info is not None
+            for r in caplog.records
+        )
+
+    def test_phys_footprint_failure_falls_back_to_rss_and_logs(self, caplog):
+        import psutil
+
+        sched = _make_scheduler()
+        rss = SimpleNamespace(rss=123_456)
+        with (
+            patch(
+                "rapid_mlx.runtime.process_memory.get_phys_footprint",
+                side_effect=OSError("no footprint"),
+            ),
+            patch.object(
+                psutil, "Process", return_value=SimpleNamespace(memory_info=lambda: rss)
+            ),
+            caplog.at_level(logging.DEBUG, logger="rapid_mlx.scheduler"),
+        ):
+            assert sched._current_process_resident_bytes() == 123_456
+        assert any(
+            "phys_footprint probe failed" in r.getMessage() and r.exc_info
+            for r in caplog.records
+        )
+
+    def test_rss_failure_after_footprint_failure_returns_zero_and_logs(self, caplog):
+        import psutil
+
+        sched = _make_scheduler()
+        with (
+            patch(
+                "rapid_mlx.runtime.process_memory.get_phys_footprint",
+                side_effect=OSError("no footprint"),
+            ),
+            patch.object(psutil, "Process", side_effect=RuntimeError("no psutil")),
+            caplog.at_level(logging.DEBUG, logger="rapid_mlx.scheduler"),
+        ):
+            assert sched._current_process_resident_bytes() == 0
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("phys_footprint probe failed" in m for m in messages)
+        assert any("RSS probe failed" in m for m in messages)
