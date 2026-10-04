@@ -617,7 +617,7 @@ def _try_prose_recover_tool_call(text: str, tools: list[dict]) -> dict | None:
             found.setdefault(key, value)
         return found
 
-    for name_start, fn, name, required, allowed_keys in candidates:
+    for name_start, _fn, name, required, allowed_keys in candidates:
         # Search a BOUNDED window after the name mention, capped at
         # PROSE_WINDOW_BYTES. Forward-only scanning preserves the
         # "call X with args" ordering AND avoids dragging in

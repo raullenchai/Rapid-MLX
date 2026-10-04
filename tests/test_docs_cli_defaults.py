@@ -11,7 +11,7 @@ model-recommendation mirrors honest.
 Deliberately surgical: it pins the flags issue #2071 fixed, not a
 general docs-vs-argparse framework.
 
-The defaults are read from ``rapid_mlx/cli.py`` SOURCE via ``ast`` —
+The defaults are read from ``rapid_mlx/cli_parser.py`` SOURCE via ``ast`` —
 never by importing it. ``rapid_mlx.cli`` transitively imports mlx and
 probes the host at import time, which breaks collection on the Linux
 validation runner; source-level extraction runs identically everywhere
@@ -24,7 +24,8 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-CLI_SOURCE = REPO_ROOT / "rapid_mlx" / "cli.py"
+# Argparse construction lives in cli_parser.py (split out of cli.py).
+CLI_SOURCE = REPO_ROOT / "rapid_mlx" / "cli_parser.py"
 
 TIMEOUT_DOCS = [
     REPO_ROOT / "docs" / "guides" / "server.md",
@@ -122,7 +123,7 @@ def test_timeout_default_matches_serve_parser(doc: Path) -> None:
     for cell in cells:
         assert float(cell) == code_default, (
             f"{doc}: documents `--timeout` default {cell!r} but "
-            f"`rapid-mlx serve` uses {code_default} (rapid_mlx/cli.py)"
+            f"`rapid-mlx serve` uses {code_default} (rapid_mlx/cli_parser.py)"
         )
 
 
@@ -134,7 +135,7 @@ def test_bench_num_prompts_default_matches_parser() -> None:
     for cell in cells:
         assert int(cell) == code_default, (
             f"{CLI_REFERENCE}: documents bench `--num-prompts` default {cell!r} "
-            f"but `rapid-mlx bench` uses {code_default} (rapid_mlx/cli.py)"
+            f"but `rapid-mlx bench` uses {code_default} (rapid_mlx/cli_parser.py)"
         )
 
 
@@ -153,5 +154,5 @@ def test_bench_max_tokens_default_matches_parser() -> None:
     for cell in cells:
         assert int(cell) == code_default, (
             f"{CLI_REFERENCE}: documents bench `--max-tokens` default {cell!r} "
-            f"but `rapid-mlx bench` uses {code_default} (rapid_mlx/cli.py)"
+            f"but `rapid-mlx bench` uses {code_default} (rapid_mlx/cli_parser.py)"
         )

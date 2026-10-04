@@ -11,6 +11,7 @@ The scheduler follows vLLM's design with:
 - Continuous batching via BatchGenerator
 """
 
+import gc
 import inspect
 import logging
 import math
@@ -48,7 +49,11 @@ from ._sampler_fast_path import (  # noqa: E402
     make_fused_top_p_temp_sampler,
 )
 from ._seeded_sampler import make_seeded_sampler  # noqa: E402
-from .errors import BackpressureError, PagedCacheUnsupportedLayoutError  # noqa: E402
+from .errors import (  # noqa: E402
+    BackpressureError,
+    MetalMemoryBackpressureError,
+    PagedCacheUnsupportedLayoutError,
+)
 from .kv_estimation import (  # noqa: E402
     KVFootprintEstimate,
     _cfg_get,
@@ -6382,6 +6387,21 @@ class Scheduler:
             self._resolve_metal_cap_bytes(), self._current_metal_active_bytes()
         )
 
+    def _log_admission_fallback(self, key: str, message: str) -> None:
+        """Debug-log a memory-estimator fallback once per scheduler.
+
+        The admission estimators below degrade silently (0 bytes, RSS, an
+        fp32 dtype guess) so a rejected or over-admitted request would
+        otherwise be undiagnosable even at ``--log-level DEBUG``. Once per
+        key keeps per-step callers from flooding DEBUG output. Must be
+        called from inside the ``except`` block so ``exc_info`` is attached.
+        """
+        logged = self.__dict__.setdefault("_admission_fallbacks_logged", set())
+        if key in logged:
+            return
+        logged.add(key)
+        logger.debug(message, exc_info=True)
+
     def _current_metal_active_bytes(self) -> int:
         """Best-effort snapshot of MLX-reported Metal active memory.
 
@@ -6391,6 +6411,11 @@ class Scheduler:
         try:
             return int(mx.get_active_memory())
         except Exception:
+            self._log_admission_fallback(
+                "metal_active",
+                "Metal active-memory probe failed; admission treats MLX "
+                "active memory as 0 bytes",
+            )
             return 0
 
     def _current_process_resident_bytes(self) -> int:
@@ -6407,12 +6432,20 @@ class Scheduler:
             if footprint > 0:
                 return footprint
         except Exception:
-            pass
+            self._log_admission_fallback(
+                "phys_footprint",
+                "phys_footprint probe failed; falling back to RSS for "
+                "process memory pressure",
+            )
         try:
             import psutil
 
             return int(psutil.Process().memory_info().rss)
         except Exception:
+            self._log_admission_fallback(
+                "process_rss",
+                "RSS probe failed; admission treats process footprint as 0 bytes",
+            )
             return 0
 
     def _continuous_mtp_free_bytes(self) -> int:
@@ -6645,7 +6678,11 @@ class Scheduler:
                 if n > 0:
                     return n
         except Exception:
-            pass
+            self._log_admission_fallback(
+                "kv_dtype",
+                "KV dtype inference from the model config failed; assuming "
+                "fp32 (4 bytes) for KV admission estimates",
+            )
         # Default: assume the LARGEST plausible dtype (fp32 = 4) so we
         # over-estimate KV usage and err toward rejection rather than
         # admitting a request that exceeds the cap. Reached only when
@@ -7207,7 +7244,11 @@ class Scheduler:
             try:
                 mx.clear_cache()
             except Exception:
-                pass
+                self._log_admission_fallback(
+                    "preflight_clear_cache",
+                    "mx.clear_cache() failed during Metal admission preflight; "
+                    "re-reading active memory without releasing allocator cache",
+                )
             active = self._current_metal_active_bytes()
         if active + smallest_kv < cap:
             return
@@ -7331,6 +7372,22 @@ class Scheduler:
         if active < cap and (active + reserved_kv + projected_kv) < cap:
             return
 
+        # Over the cap: first return memory nothing references any more. A
+        # cache caught in a reference cycle stays resident until a full
+        # cyclic collection, which the server's raised GC thresholds make
+        # rare — #4108 wedged an idle server with an empty prefix cache at
+        # 37 GB this way. Collecting is non-destructive, so it runs before
+        # the warm prefix cache is evicted. It is limited to the cases where
+        # garbage can be the cause and the pause costs nobody much: active
+        # memory itself at the cap, or no request in flight. An ordinary
+        # projection/reservation rejection under load never pauses the
+        # step loop for a full collection.
+        if (active >= cap or not self.requests) and self._reclaim_unreachable_metal():
+            active = self._current_metal_active_bytes()
+            reserved_kv = self._sum_in_flight_kv_bytes()
+            if active < cap and (active + reserved_kv + projected_kv) < cap:
+                return
+
         # The memory-aware prefix cache holds finished requests' KV in Metal
         # memory. It is reclaimable by definition, so it must yield to a live
         # request instead of turning a warm cache into a 503 — this is what
@@ -7435,7 +7492,24 @@ class Scheduler:
                 "length or max_tokens, lower concurrency, or restart "
                 "with a higher --gpu-memory-utilization."
             )
-        raise BackpressureError(
+        if not self.requests and active >= cap:
+            # Nothing is in flight to drain, so "retry after in-flight
+            # requests drain" would never come true (#4108).
+            restart_advice = " Restart the server to release it."
+            if self._metal_cap_effective_utilization < MAX_UTILIZATION:
+                restart_advice = (
+                    " Restart the server to release it, or restart with a "
+                    "higher --gpu-memory-utilization."
+                )
+            raise MetalMemoryBackpressureError(
+                f"Metal memory in use is {active / 1e9:.1f} GB with no "
+                f"request running (reserved KV {reserved_kv / 1e9:.1f} GB + "
+                f"projected KV {projected_kv / 1e9:.1f} GB for this request), "
+                f"but the current limit is {cap / 1e9:.1f} GB (D-METAL-CAP). "
+                "Retrying will not help: the memory is held by the server, "
+                "not by other requests." + restart_advice
+            )
+        raise MetalMemoryBackpressureError(
             f"This request needs approximately "
             f"{(reserved_kv + projected_kv) / 1e9:.1f} GB of Metal memory "
             f"on top of {active / 1e9:.1f} GB already in use "
@@ -7443,6 +7517,44 @@ class Scheduler:
             f"{projected_kv / 1e9:.1f} GB), but the current limit is "
             f"{cap / 1e9:.1f} GB (D-METAL-CAP)." + raise_advice
         )
+
+    # #4108: minimum spacing between two over-cap garbage reclaims. The
+    # collector and the Metal allocator are process-wide, so the limiter is
+    # too (shared by every resident model's scheduler).
+    _METAL_GC_RECLAIM_INTERVAL_S = 1.0
+    _metal_gc_reclaim_lock = threading.Lock()
+    _last_metal_gc_reclaim_at = float("-inf")
+
+    def _reclaim_unreachable_metal(self) -> bool:
+        """Collect cyclic garbage and flush the allocator; True if active fell.
+
+        Rate-limited process-wide so a sustained over-cap admission storm pays
+        for at most one full collection per ``_METAL_GC_RECLAIM_INTERVAL_S``.
+        """
+        cls = type(self)
+        with cls._metal_gc_reclaim_lock:
+            now = time.monotonic()
+            if now - cls._last_metal_gc_reclaim_at < cls._METAL_GC_RECLAIM_INTERVAL_S:
+                return False
+            cls._last_metal_gc_reclaim_at = now
+        before = self._current_metal_active_bytes()
+        collected = gc.collect()
+        try:
+            mx.clear_cache()
+        except Exception:
+            pass
+        after = self._current_metal_active_bytes()
+        if after >= before:
+            return False
+        logger.warning(
+            "[D-METAL-CAP-gc-reclaim] released %.1f GB of unreachable Metal "
+            "memory (%d objects collected, %.0f ms) before admission; it was "
+            "held by garbage, not by live requests or the prefix cache",
+            (before - after) / 1e9,
+            collected,
+            (time.monotonic() - now) * 1000.0,
+        )
+        return True
 
     def _resolve_pressure_evict_fraction(self) -> float:
         """Return the clamped ``(0, 1]`` fraction used for pressure thresholds.

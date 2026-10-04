@@ -94,11 +94,6 @@ def verify(src: Path, out: Path) -> int:
         with st_safe_open(str(sp), framework="numpy") as sf:
             shp, dt = sf.get_slice(n).get_shape(), sf.get_slice(n).get_dtype()
         src_meta[n] = (list(shp), dt)
-        # dtype bytes
-        base = dt.upper().lstrip("F")
-        b = {"8": 1, "16": 2, "32": 4, "64": 8}.get(base, 4)
-        if dt.upper() == "BF16":
-            b = 2
     expected_output_keys = set(src_wm)
     for name, (shape, dtype) in src_meta.items():
         action, _, _ = classify_tensor(name, shape, dtype)

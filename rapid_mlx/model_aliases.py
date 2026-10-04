@@ -896,6 +896,57 @@ def resolve_subfolder(name: str) -> str | None:
     return profile.subfolder if profile is not None else None
 
 
+# Files whose presence makes a directory a model checkpoint the user may mean
+# to serve in place (text/vision ``config.json``, diffusers ``model_index.json``,
+# video ``split_model.json``, Mistral-native ``params.json``).
+_LOCAL_MODEL_MARKER_FILES = (
+    "config.json",
+    "model_index.json",
+    "split_model.json",
+    "params.json",
+)
+_LOCAL_MODEL_WEIGHT_SUFFIXES = (".safetensors", ".gguf", ".npz")
+
+
+def _is_explicit_path_spelling(name: str) -> bool:
+    """Whether ``name`` is spelled as a path rather than a bare token."""
+    separators = [os.sep, "/"] + ([os.altsep] if os.altsep else [])
+    return any(sep in name for sep in separators) or name.startswith(("~", "."))
+
+
+def _looks_like_local_model_dir(path: str) -> bool:
+    try:
+        names = os.listdir(path)
+    except OSError:
+        # Could not inspect it: keep the historical local-path precedence
+        # rather than silently swapping in (and downloading) the catalog model.
+        return True
+    return any(
+        name in _LOCAL_MODEL_MARKER_FILES or name.endswith(_LOCAL_MODEL_WEIGHT_SUFFIXES)
+        for name in names
+    )
+
+
+def local_dir_shadows_alias(name: object) -> bool:
+    """True when a bare catalog-alias token names a non-model local directory.
+
+    A local path keeps precedence over the catalog (#4097): an explicit path
+    (``./name``, ``~/m``, ``/abs``, ``org/repo``) always means the filesystem,
+    and so does a bare token whose directory actually holds a model. But a
+    stray folder that merely shares an alias's name — a bench output directory
+    named after the alias — must not hijack ``rapid-mlx serve <alias>`` into
+    a ``config.json not found`` failure; the catalog alias wins instead.
+    """
+    if not isinstance(name, str) or not name or _is_explicit_path_spelling(name):
+        return False
+    if not os.path.isdir(name) or _looks_like_local_model_dir(name):
+        return False
+    try:
+        return name in _load()
+    except Exception:  # noqa: BLE001 — the probe must never break resolution
+        return False
+
+
 class DraftModelNotServableError(ValueError):
     """Raised when a spec-decode draft checkpoint is served as a primary."""
 
@@ -916,7 +967,7 @@ def draft_only_conflict(model_ref: object) -> str | None:
     # ``resolve_model`` gives an existing local file/directory precedence over
     # every catalog spelling; a local model is whatever is on disk, never the
     # catalog checkpoint whose name it happens to share.
-    if os.path.exists(model_ref):
+    if os.path.exists(model_ref) and not local_dir_shadows_alias(model_ref):
         return None
     try:
         profiles = _load()
@@ -961,7 +1012,9 @@ def raise_if_draft_only_model(model_ref: object) -> None:
 def resolve_model(name: str) -> str:
     """Resolve a model alias to its full HuggingFace path.
 
-    If a local file/directory with the name exists, prefer that.
+    If a local file/directory with the name exists, prefer that — unless it
+    is a non-model directory merely sharing a catalog alias's bare name
+    (:func:`local_dir_shadows_alias`, #4097).
     If a configured external-model root contains the repo, serve it in place.
     If name is a curated Hugging Face path, return its catalog spelling so
     revision pins and lane-specific download checks see the same identity as
@@ -970,7 +1023,7 @@ def resolve_model(name: str) -> str:
     If name matches an alias, return the mapped HF path.
     Otherwise return unchanged.
     """
-    if os.path.exists(name):
+    if os.path.exists(name) and not local_dir_shadows_alias(name):
         return name
     if reason := _RETIRED_MODEL_ALIASES.get(name):
         raise RetiredModelAliasError(reason)

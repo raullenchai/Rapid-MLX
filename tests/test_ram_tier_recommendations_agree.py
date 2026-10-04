@@ -283,7 +283,7 @@ def test_readme_one_shot_commands_carry_the_exact_flags():
     """A README reader pastes the One-shot command verbatim. It must be the
     command the app runs — same flags, same order, nothing missing."""
     app = {alias: flags for _, alias, flags in _parse_app_tiers()}
-    for floor, alias, _rss, oneshot_flags in _readme_table_tiers():
+    for _floor, alias, _rss, oneshot_flags in _readme_table_tiers():
         assert alias in app, f"README recommends {alias}, which is not an app pick"
         assert oneshot_flags == app[alias], (
             f"README's one-shot command for {alias} has {oneshot_flags}, "

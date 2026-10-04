@@ -43,7 +43,9 @@ Design choices:
 from __future__ import annotations
 
 import os
+import platform
 import re
+import subprocess
 import sys
 import threading
 
@@ -100,6 +102,51 @@ _HF_API_TIMEOUT_SECONDS: float = 5.0
 # them, and measurably does not: a client built with a 2s timeout still hung
 # past 12s on a blackholed route when the call passed ``timeout=None``.
 _HF_RESOLVE_TIMEOUT_SECONDS: float = 30.0
+
+# A cache may live on a removable macOS volume even though callers address it
+# through ``~/.cache/huggingface``. When the launching app lacks Files &
+# Folders permission for that volume, opening even the 40-byte ``refs/main``
+# file can block inside the kernel instead of returning EACCES. Keep the normal
+# in-process fast path for internal storage; use a killable helper for
+# external-volume refs so startup always has a deadline.
+_EXTERNAL_REF_READ_TIMEOUT_SECONDS: float = 2.0
+_MAX_REF_BYTES: int = 256
+
+
+class ExternalCacheProbeError(RuntimeError):
+    """An external Hugging Face cache could not be read during startup."""
+
+    path: str
+
+    def user_message(self) -> str:
+        return (
+            "Rapid-MLX cannot read the Hugging Face cache on the external "
+            f"volume ({self.path}). Grant this terminal or app access to that "
+            "volume in System Settings → Privacy & Security → Files & Folders, "
+            "then retry."
+        )
+
+
+class CacheProbeTimeoutError(ExternalCacheProbeError):
+    """The process could not read an external cache before the deadline."""
+
+    def __init__(self, path: str, timeout: float):
+        self.path = path
+        self.timeout = timeout
+        super().__init__(
+            f"could not read Hugging Face cache metadata at {path!r} "
+            f"within {timeout:g}s"
+        )
+
+
+class CacheProbePermissionError(ExternalCacheProbeError):
+    """The macOS volume helper was explicitly denied access to a cache ref."""
+
+    def __init__(self, path: str):
+        self.path = path
+        super().__init__(
+            f"permission denied reading Hugging Face cache metadata at {path!r}"
+        )
 
 
 def _format_size(num_bytes: int) -> str:
@@ -791,6 +838,115 @@ def _snapshot_repo_root(snap_dir: str) -> str:
         current = parent
 
 
+# Hugging Face cache repository directory names (``models--org--name`` etc.).
+_HF_CACHE_REPO_DIR_RE = re.compile(r"(?:models|datasets|spaces)--.+")
+# Name of a per-repository blob: a git sha1 (small files) or an LFS sha256.
+_HF_REPO_BLOB_NAME_RE = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
+_HF_SHARED_BLOB_DIGEST_RE = re.compile(r"[0-9a-f]{64}")
+
+
+def _repo_blob_store_real(repo_root: str) -> str | None:
+    """Resolved ``<repo>/blobs`` directory, or ``None`` when it is rebound.
+
+    A blob store that resolves somewhere else (a volume the user moved it to,
+    a shared deduplicated store) is still this repository's store. What is
+    refused is a store that resolves into ANOTHER cache repository's tree —
+    that would let one repo's snapshot be satisfied by a different repo's
+    files.
+    """
+    repo_root_real = os.path.realpath(repo_root)
+    expected = os.path.join(repo_root_real, "blobs")
+    blobs_real = os.path.realpath(expected)
+    if blobs_real == expected:
+        return blobs_real
+    current = blobs_real
+    while True:
+        if _HF_CACHE_REPO_DIR_RE.fullmatch(os.path.basename(current)):
+            return None
+        parent = os.path.dirname(current)
+        if parent == current:
+            return blobs_real
+        current = parent
+
+
+def _is_shared_cache_blob(path: str, repo_root: str) -> bool:
+    """True for a snapshot leaf linked through this repo's blobs into the
+    Hub-wide deduplicated store.
+
+    Some HF cache installations deduplicate LFS blobs across repositories:
+    ``snapshot leaf -> <repo>/blobs/<etag> -> <hub>/blobs/<xx>/<sha256>``.
+    Require both hops and the shared store's exact digest layout so a crafted
+    snapshot cannot borrow an arbitrary file elsewhere on disk, nor go through
+    another repository's blob links (#3659, #4096).
+    """
+    try:
+        if not os.path.islink(path):
+            return False
+        owned_blobs = _repo_blob_store_real(repo_root)
+        if owned_blobs is None:
+            return False
+        # Relative links resolve against the link's REAL directory, exactly
+        # as the OS follows them (the repo root itself may be a symlink).
+        first_hop = os.path.normpath(
+            os.path.join(os.path.realpath(os.path.dirname(path)), os.readlink(path))
+        )
+        if os.path.realpath(
+            os.path.dirname(first_hop)
+        ) != owned_blobs or not _HF_REPO_BLOB_NAME_RE.fullmatch(
+            os.path.basename(first_hop)
+        ):
+            return False
+        if not os.path.islink(first_hop):
+            return False
+        second_hop = os.path.normpath(os.path.join(owned_blobs, os.readlink(first_hop)))
+        real = os.path.realpath(path)
+        # The second hop must land in the shared store itself, not chain
+        # through another repository's blob links.
+        if (
+            os.path.islink(second_hop)
+            or os.path.realpath(second_hop) != real
+            or os.path.realpath(os.path.dirname(second_hop)) != os.path.dirname(real)
+        ):
+            return False
+        shared_stores = {
+            os.path.realpath(os.path.join(os.path.dirname(root), "blobs"))
+            for root in (os.path.abspath(repo_root), os.path.realpath(repo_root))
+        }
+        for shared_blobs in shared_stores:
+            relative = os.path.relpath(real, shared_blobs).split(os.sep)
+            if (
+                len(relative) == 2
+                and _HF_SHARED_BLOB_DIGEST_RE.fullmatch(relative[1]) is not None
+                and relative[0] == relative[1][:2]
+            ):
+                return True
+        return False
+    except OSError:
+        return False
+
+
+def _is_repo_blob(path: str, repo_root: str) -> bool:
+    """True when ``path`` resolves to a blob this cache repository owns.
+
+    Accepts a leaf resolving inside the repo's own blob store (wherever that
+    store lives, unless it is rebound into another repository) and the
+    two-hop shared-store layout of :func:`_is_shared_cache_blob`.
+    """
+    blobs_real = _repo_blob_store_real(repo_root)
+    if blobs_real is not None:
+        real = os.path.realpath(path)
+        if blobs_real == os.path.join(os.path.realpath(repo_root), "blobs"):
+            if real.startswith(blobs_real + os.sep):
+                return True
+        # A relocated store vouches only for Hub-shaped entries: a
+        # digest-named blob directly inside it, never any file under it.
+        elif os.path.dirname(real) == blobs_real and _HF_REPO_BLOB_NAME_RE.fullmatch(
+            os.path.basename(real)
+        ):
+            return True
+    return _is_shared_cache_blob(path, repo_root)
+
+
 def _is_nonempty_snapshot_manifest_file(path: str, snap_dir: str) -> bool:
     """Accept a real snapshot file or its normal symlink into repo blobs."""
     try:
@@ -806,16 +962,16 @@ def _is_nonempty_snapshot_manifest_file(path: str, snap_dir: str) -> bool:
             expected_snapshot = os.path.join(repo_root_real, relative_snapshot)
             if snapshot_real != expected_snapshot:
                 return False
-        expected_blobs = os.path.join(repo_root_real, "blobs")
-        blobs_real = os.path.realpath(expected_blobs)
-        # The leaf may be a normal Hub symlink into ``blobs``; the blob-store
-        # anchor itself may not be rebound to another repository.
-        if blobs_real != expected_blobs:
-            return False
         target_real = os.path.realpath(path)
-        return target_real.startswith(snapshot_real + os.sep) or target_real.startswith(
-            blobs_real + os.sep
-        )
+        if target_real.startswith(snapshot_real + os.sep):
+            return True
+        # Local fixtures (no ``snapshots`` ancestor) have no blob store.
+        if os.path.abspath(repo_root) == os.path.abspath(snap_dir):
+            return False
+        # The leaf may be a normal Hub symlink into ``blobs`` — including a
+        # relocated or Hub-wide shared store (#4096) — but the blob store may
+        # not be rebound to another repository.
+        return _is_repo_blob(path, repo_root)
     except OSError:
         return False
 
@@ -854,7 +1010,58 @@ def _root_model_files_all_non_empty(snap_dir: str) -> bool:
     return True
 
 
-def _resolved_snapshot_sha(repo_root: str) -> str | None:
+def _is_macos_external_path(path: str) -> bool:
+    """Return whether ``path`` resolves below macOS' external mount root."""
+
+    if platform.system() != "Darwin":
+        return False
+    try:
+        return os.path.commonpath((os.path.realpath(path), "/Volumes")) == "/Volumes"
+    except (OSError, ValueError):
+        return False
+
+
+def _read_ref_text(path: str, *, raise_on_timeout: bool) -> str | None:
+    """Read a small HF ref, bounding macOS external-volume permission stalls."""
+
+    if not _is_macos_external_path(path):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                return fh.read(_MAX_REF_BYTES)
+        except OSError:
+            return None
+
+    try:
+        result = subprocess.run(
+            ("/usr/bin/head", "-c", str(_MAX_REF_BYTES), path),
+            capture_output=True,
+            check=False,
+            text=True,
+            env={**os.environ, "LC_ALL": "C"},
+            timeout=_EXTERNAL_REF_READ_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        if raise_on_timeout:
+            raise CacheProbeTimeoutError(
+                os.path.realpath(path), _EXTERNAL_REF_READ_TIMEOUT_SECONDS
+            ) from exc
+        return None
+    except OSError:
+        return None
+
+    if result.returncode != 0:
+        if raise_on_timeout and (
+            "Permission denied" in result.stderr
+            or "Operation not permitted" in result.stderr
+        ):
+            raise CacheProbePermissionError(os.path.realpath(path))
+        return None
+    return result.stdout
+
+
+def _resolved_snapshot_sha(
+    repo_root: str, *, raise_on_timeout: bool = False
+) -> str | None:
     """Read the sha that ``snapshot_download(repo_id)`` would resolve to.
 
     ``snapshot_download`` with no explicit revision asks the HF API for
@@ -877,16 +1084,16 @@ def _resolved_snapshot_sha(repo_root: str) -> str | None:
     """
     main_ref = os.path.join(repo_root, "refs", "main")
     try:
-        if not os.path.isfile(main_ref):
+        text = _read_ref_text(main_ref, raise_on_timeout=raise_on_timeout)
+        if text is None:
             return None
-        with open(main_ref) as fh:
-            sha = fh.read().strip()
+        sha = text.strip()
         return sha or None
     except OSError:
         return None
 
 
-def is_repo_cached(repo_id: str) -> bool:
+def _is_repo_cached(repo_id: str, *, raise_on_probe_timeout: bool) -> bool:
     """True if ``repo_id`` has a usable model snapshot in the HF cache.
 
     Codex review round 1 caught that an earlier "config.json exists →
@@ -926,7 +1133,9 @@ def is_repo_cached(repo_id: str) -> bool:
         # snapshot ``snapshot_download(repo_id)`` will actually use".
         # Without ``refs/main``, we don't know which sha will resolve,
         # so we must re-prompt and let the next run populate refs/.
-        resolved_sha = _resolved_snapshot_sha(repo_root)
+        resolved_sha = _resolved_snapshot_sha(
+            repo_root, raise_on_timeout=raise_on_probe_timeout
+        )
         if resolved_sha is None:
             return False
         snap_dir = os.path.join(snap_root, resolved_sha)
@@ -939,9 +1148,23 @@ def is_repo_cached(repo_id: str) -> bool:
         # the gate re-prompts on every single serve.
         snap_dir = _descend_to_checkpoint(snap_dir, repo_id)
         return _snapshot_is_complete(snap_dir)
+    except ExternalCacheProbeError:
+        raise
     except Exception:
         pass
     return False
+
+
+def is_repo_cached(repo_id: str) -> bool:
+    """Best-effort cache check that preserves the historical bool contract."""
+
+    return _is_repo_cached(repo_id, raise_on_probe_timeout=False)
+
+
+def require_repo_cache_probe(repo_id: str) -> bool:
+    """Check the cache and surface a blocked external-volume probe to callers."""
+
+    return _is_repo_cached(repo_id, raise_on_probe_timeout=True)
 
 
 def _snapshot_is_complete_whisper_model(repo_id: str) -> bool:
@@ -973,7 +1196,11 @@ def _snapshot_is_complete_whisper_model(repo_id: str) -> bool:
             # directory. Do not let an unrelated local file satisfy the cache
             # gate through a crafted symlink.
             real = os.path.realpath(path)
-            if real != repo_root_real and not real.startswith(repo_root_real + os.sep):
+            if (
+                real != repo_root_real
+                and not real.startswith(repo_root_real + os.sep)
+                and not _is_repo_blob(path, repo_root)
+            ):
                 return False
             if os.path.getsize(path) <= 0:
                 return False
@@ -1024,7 +1251,11 @@ def _snapshot_is_complete_audio_model(repo_id: str, family: str) -> bool:
             # directory. Do not let an unrelated local file satisfy the cache
             # gate through a crafted symlink.
             real = os.path.realpath(path)
-            if real != repo_root_real and not real.startswith(repo_root_real + os.sep):
+            if (
+                real != repo_root_real
+                and not real.startswith(repo_root_real + os.sep)
+                and not _is_repo_blob(path, repo_root)
+            ):
                 return False
             return os.path.getsize(path) > 0
 
@@ -1135,7 +1366,11 @@ def _snapshot_is_complete_split_model(repo_id: str) -> bool:
             # The file (via its blob symlink) must resolve inside this repo's
             # own cache dir — a symlink escaping elsewhere doesn't count.
             real = os.path.realpath(fpath)
-            if real != repo_root_real and not real.startswith(repo_root_real + os.sep):
+            if (
+                real != repo_root_real
+                and not real.startswith(repo_root_real + os.sep)
+                and not _is_repo_blob(fpath, repo_root)
+            ):
                 return False
             try:
                 if os.path.getsize(fpath) <= 0:
@@ -1291,7 +1526,7 @@ def _snapshot_is_complete_wan_model(repo_id: str) -> bool:
             # escaping to blobs (or a file) elsewhere in the cache is rejected,
             # and so is borrowing from a sibling snapshot whose files live under
             # the same repo root but not under ``blobs``.
-            return real.startswith(blobs_prefix)
+            return real.startswith(blobs_prefix) or _is_repo_blob(path, repo_root)
 
         if required_names:
             if not all(_on_repo(name) for name in required_names):
@@ -1503,16 +1738,21 @@ def pinned_image_snapshot(repo_id: str) -> str | None:
         from huggingface_hub.constants import HF_HUB_CACHE
     except ImportError:
         return None
-    repo_root = os.path.realpath(
-        os.path.join(HF_HUB_CACHE, f"models--{repo_id.replace('/', '--')}")
+    cache_repo_root = os.path.join(
+        HF_HUB_CACHE, f"models--{repo_id.replace('/', '--')}"
     )
+    repo_root = os.path.realpath(cache_repo_root)
     snapshot = os.path.join(repo_root, "snapshots", revision)
     if not os.path.isdir(snapshot):
         return None
     for relative in files:
         candidate = os.path.join(snapshot, *relative.split("/"))
         real = os.path.realpath(candidate)
-        if real != repo_root and not real.startswith(repo_root + os.sep):
+        if (
+            real != repo_root
+            and not real.startswith(repo_root + os.sep)
+            and not _is_repo_blob(candidate, cache_repo_root)
+        ):
             return None
         try:
             if not os.path.isfile(candidate) or os.path.getsize(candidate) <= 0:
@@ -1694,35 +1934,6 @@ def mflux_missing_weights(repo_id: str) -> list[str] | None:
     repo_root, snap_dir = resolved
 
     repo_root_real = os.path.realpath(repo_root)
-    owned_blobs = os.path.join(repo_root_real, "blobs")
-    shared_blobs = os.path.realpath(os.path.join(os.path.dirname(repo_root), "blobs"))
-
-    def _is_shared_cache_blob(path: str, real: str) -> bool:
-        # Some HF cache installations deduplicate blobs across repositories:
-        # snapshot -> this repo's blobs/<etag> -> hub/blobs/<prefix>/<digest>.
-        # Require both links and the shared store's exact digest layout so a
-        # crafted snapshot cannot borrow an arbitrary file elsewhere on disk.
-        if not os.path.islink(path):
-            return False
-        first_hop = os.path.abspath(
-            os.path.join(os.path.dirname(path), os.readlink(path))
-        )
-        if os.path.realpath(
-            os.path.dirname(first_hop)
-        ) != owned_blobs or not re.fullmatch(
-            r"(?:[0-9a-f]{40}|[0-9a-f]{64})", os.path.basename(first_hop)
-        ):
-            return False
-        second_hop = os.path.abspath(
-            os.path.join(os.path.dirname(first_hop), os.readlink(first_hop))
-        )
-        relative = os.path.relpath(real, shared_blobs).split(os.sep)
-        return (
-            os.path.realpath(second_hop) == real
-            and len(relative) == 2
-            and re.fullmatch(r"[0-9a-f]{64}", relative[1]) is not None
-            and relative[0] == relative[1][:2]
-        )
 
     def _is_nonempty_repo_file(path: str) -> bool:
         if not os.path.isfile(path):
@@ -1731,7 +1942,7 @@ def mflux_missing_weights(repo_id: str) -> list[str] | None:
         if (
             real != repo_root_real
             and not real.startswith(repo_root_real + os.sep)
-            and not _is_shared_cache_blob(path, real)
+            and not _is_repo_blob(path, repo_root)
         ):
             return False
         try:

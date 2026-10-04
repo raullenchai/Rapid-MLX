@@ -2790,12 +2790,16 @@ class TestCheckpointMetadataFallback:
             ),
         )
 
-        config = detect_model_config("/tmp/models/Qwen3.8-27B-4bit/snapshots/revision")
+        config = detect_model_config(
+            "/tmp/models--community--Qwen3.8-27B-4bit/snapshots/abcdef1234567890"
+        )
 
         assert config is not None
         assert config.is_hybrid is True
         assert config.is_hybrid_explicit is True
         assert config.supports_spec_decode is False
+        assert config.tool_call_parser == "qwen3_coder_xml"
+        assert config.reasoning_parser == "qwen3"
 
         monkeypatch.setattr(
             auto_config_mod,
@@ -2811,13 +2815,95 @@ class TestCheckpointMetadataFallback:
                 self._XML_TOOLS,
             ),
         )
-        flash = detect_model_config("/tmp/models/Qwen3.8-Flash-Next/snapshot")
+        flash = detect_model_config("/tmp/models/Qwen3.8-Flash-Next")
         assert flash is not None
         assert flash.is_hybrid is True
         assert flash.is_moe is True
         assert flash.experimental is True
         assert "experimental" in format_profile_summary("local-flash-next", flash)
         assert "⚠ experimental" in format_profile_table("local-flash-next", flash)
+
+    def test_qwen38_community_repack_keeps_parsers_with_architecture_only_metadata(
+        self, monkeypatch
+    ):
+        """A cached checkpoint's hybrid metadata must not erase Qwen wire parsers."""
+        monkeypatch.setattr(
+            auto_config_mod,
+            "read_model_metadata",
+            lambda _name: self._metadata(
+                {"model_type": "qwen3_5", "layer_types": ["linear_attention"]},
+                None,
+            ),
+        )
+
+        config = detect_model_config("Foresee/Qwen3.8-9B-heretic-uncensored-4bit-MTPLX")
+
+        assert config is not None
+        assert config.is_hybrid is True
+        assert config.tool_call_parser == "qwen3_coder_xml"
+        assert config.reasoning_parser == "qwen3"
+
+    def test_qwen38_parent_directory_does_not_override_other_model(self, monkeypatch):
+        """Only the checkpoint name, not its parent, may select Qwen parsers."""
+        monkeypatch.setattr(
+            auto_config_mod,
+            "read_model_metadata",
+            lambda _name: self._metadata({"model_type": "llama"}, None),
+        )
+
+        config = detect_model_config("/tmp/Qwen3.8-tests/Llama-model")
+
+        assert config is not None
+        assert config.tool_call_parser == "llama"
+        assert config.reasoning_parser is None
+
+    def test_qwen38_checkpoint_inside_directory_named_snapshots(self, monkeypatch):
+        """A storage parent called snapshots must not hide the checkpoint name."""
+        monkeypatch.setattr(
+            auto_config_mod,
+            "read_model_metadata",
+            lambda _name: self._metadata(
+                {"model_type": "qwen3_5", "layer_types": ["linear_attention"]},
+                None,
+            ),
+        )
+
+        config = detect_model_config("/mnt/snapshots/Qwen3.8-9B-heretic-4bit")
+
+        assert config is not None
+        assert config.tool_call_parser == "qwen3_coder_xml"
+        assert config.reasoning_parser == "qwen3"
+
+    def test_qwen38_snapshot_parent_does_not_override_other_model(self, monkeypatch):
+        """An unrelated checkpoint under a snapshot directory keeps its parser."""
+        monkeypatch.setattr(
+            auto_config_mod,
+            "read_model_metadata",
+            lambda _name: self._metadata({"model_type": "llama"}, None),
+        )
+
+        config = detect_model_config("/tmp/Qwen3.8-tests/snapshot/Llama-model")
+
+        assert config is not None
+        assert config.tool_call_parser == "llama"
+        assert config.reasoning_parser is None
+
+    def test_qwen38_parent_keeps_dense_qwen35_safety_pin(self, monkeypatch):
+        monkeypatch.setattr(
+            auto_config_mod,
+            "read_model_metadata",
+            lambda _name: self._metadata(
+                {"model_type": "qwen3_5", "layer_types": ["linear_attention"]},
+                None,
+            ),
+        )
+
+        config = detect_model_config("/tmp/Qwen3.8-tests/Qwen3.5-4B")
+
+        assert config is not None
+        assert config.is_hybrid is False
+        assert config.is_hybrid_explicit is True
+        assert config.tool_call_parser == "hermes"
 
     def test_incomplete_template_is_not_advertised_as_native_tools(self, monkeypatch):
         # The template PARSES successfully (``{% endif %}`` is present), but the

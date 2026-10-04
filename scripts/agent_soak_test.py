@@ -306,7 +306,7 @@ class SoakTestRunner:
     async def scenario_rapid_tool_calls(self):
         """10 rapid-fire tool call requests."""
         self.log("Rapid tool calls (10 sequential)...")
-        for i in range(10):
+        for _i in range(10):
             if self.remaining() <= 0:
                 break
             await self.nonstream_request(
@@ -385,7 +385,7 @@ class SoakTestRunner:
                     ) as resp,
                 ):
                     count = 0
-                    async for line in resp.aiter_lines():
+                    async for _line in resp.aiter_lines():
                         count += 1
                         if count >= 5:
                             break  # disconnect after 5 chunks
