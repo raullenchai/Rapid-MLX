@@ -13575,9 +13575,40 @@ def _start_v2_lifecycle(command: str | None) -> None:
         if telemetry_v2.set_surface_for_role(role) or role is ProcessRole.SIDECAR:
             return
 
-        telemetry_v2.start_lifecycle("server" if command == "serve" else "cli")
+        telemetry_v2.start_lifecycle("server" if command == "serve" else "cli", command)
     except Exception:
         # Telemetry cannot alter the host command's exit code or output.
+        return
+
+
+def _help_or_version_flag(raw_argv: list[str]) -> str | None:
+    """``help`` / ``version`` when argv asked for the -h / -V flag action."""
+    head = raw_argv[: raw_argv.index("--")] if "--" in raw_argv else raw_argv
+    if "-h" in head or "--help" in head:
+        return "help"
+    if "-V" in head or "--version" in head:
+        return "version"
+    return None
+
+
+def _start_quiet_lifecycle(command: str, *, no_telemetry: bool) -> None:
+    """Lifecycle for entry points that must stay free of the disclosure.
+
+    Bare ``rapid-mlx`` and the ``--help`` / ``--version`` flags never print
+    the telemetry notice (that stays with the first real command, unchanged).
+    They therefore report ``app_opened`` only when the notice was already
+    delivered on an earlier run; until then they send nothing.
+    """
+    try:
+        from rapid_mlx.telemetry import consent_runtime
+        from rapid_mlx.telemetry.state import set_cli_kill_switch
+
+        set_cli_kill_switch(no_telemetry)
+        if consent_runtime.resolve().deliver_notice:
+            return
+        consent_runtime.startup()
+        _start_v2_lifecycle(command)
+    except Exception:
         return
 
 
@@ -13656,7 +13687,14 @@ def main():
 
     # Systematic serve-flag passthrough for ``share`` via the standard ``--``
     # end-of-options separator — see ``_parse_args_with_share_passthrough``.
-    args = _parse_args_with_share_passthrough(parser, sys.argv[1:])
+    try:
+        args = _parse_args_with_share_passthrough(parser, sys.argv[1:])
+    except SystemExit as exc:
+        # ``-h`` / ``--help`` / ``-V`` / ``--version`` exit 0 inside argparse.
+        flag = _help_or_version_flag(sys.argv[1:]) if exc.code in (0, None) else None
+        if flag is not None:
+            _start_quiet_lifecycle(flag, no_telemetry="--no-telemetry" in sys.argv[1:])
+        raise
     # A missing required positional normally makes argparse print the entire
     # serve help (dozens of expert flags) before its one actionable error.
     # Keep the positional optional at parse time so this first-run mistake gets
@@ -13755,6 +13793,12 @@ def main():
                 lazy_load=bool(getattr(args, "lazy_load", False)),
             )
             attempted(selected_model, load_policy=policy)
+    else:
+        # Bare ``rapid-mlx``: report the launch without ever printing the
+        # disclosure from here (see ``_start_quiet_lifecycle``).
+        _start_quiet_lifecycle(
+            "bare", no_telemetry=bool(getattr(args, "no_telemetry", False))
+        )
 
     # First-run auto-select: ``chat`` / ``run`` invoked with no model arg.
     # Resolve the starter alias HERE — before the alias→path resolution below —

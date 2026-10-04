@@ -315,7 +315,18 @@ def _app_opened_install_scope() -> str:
     return hashlib.sha256(install_id.encode("utf-8")).hexdigest()
 
 
-def _emit_app_opened(surface: str) -> None:
+def _app_opened_props(command: str | None) -> dict[str, str]:
+    """Closed ``command`` prop for ``app_opened``; unknown names → ``other``."""
+    if command is None:
+        return {}
+    try:
+        values = registry.load_registry()["enums"]["cli_command"]["values"]
+    except Exception:
+        return {}
+    return {"command": command if command in values else "other"}
+
+
+def _emit_app_opened(surface: str, command: str | None = None) -> None:
     """Attempt ``app_opened`` once per process for an eligible process.
 
     At most one event per (surface, app_version) per install per ten-minute
@@ -340,7 +351,7 @@ def _emit_app_opened(surface: str) -> None:
     try:
         from rapid_mlx.telemetry import model_events
 
-        accepted = would_accept("app_opened", {})
+        accepted = would_accept("app_opened", _app_opened_props(command))
         if accepted is None:
             return
         model_events._claim_ledger_key(
@@ -358,8 +369,13 @@ def _emit_app_opened(surface: str) -> None:
         return
 
 
-def start_lifecycle(surface: str) -> None:
-    """Start one eligible process lifecycle without affecting its host."""
+def start_lifecycle(surface: str, command: str | None = None) -> None:
+    """Start one eligible process lifecycle without affecting its host.
+
+    ``command`` is the top-level CLI entry point (a registered subcommand
+    name, ``bare``, ``help`` or ``version``); it rides on ``app_opened`` as a
+    closed enum and never carries arguments.
+    """
     try:
         if surface not in ("cli", "server") or not _upload_allowed():
             return
@@ -368,7 +384,7 @@ def start_lifecycle(surface: str) -> None:
         from rapid_mlx.telemetry import posthog_sender
 
         posthog_sender.install_atexit()
-        _emit_app_opened(surface)
+        _emit_app_opened(surface, command)
     except Exception:
         return
 

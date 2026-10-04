@@ -82,6 +82,10 @@ service:
   * Rapid-MLX version, macOS version, CPU architecture, chip family, memory
     tier, and Python version.
   * Public model aliases, subcommand and feature/flag names (never values).
+  * For a CLI or server launch, the closed top-level command name (for
+    example `chat`, `serve`, `help`, or `bare` when no subcommand was given;
+    anything else is `other`). Never its arguments, flag values, model names
+    or paths.
   * Request endpoint, streaming/tool-use booleans, HTTP status, and coarse
     buckets for token counts, time to first token, and decode speed.
   * A rejected capability can include the privacy-safe served model identity

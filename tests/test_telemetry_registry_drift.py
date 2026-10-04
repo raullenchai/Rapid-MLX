@@ -386,6 +386,10 @@ def test_swift_validator_does_not_redeclare_the_enums():
     # Compare against STRING LITERALS only: `continue` is a Swift keyword
     # and `other` reads as English, so a substring scan would false-alarm.
     literals = set(re.findall(r'"([^"\\\n]*)"', source))
+    # The validator must name the schema's property KINDS ("enum", "version",
+    # ...) to dispatch on them; a kind word that is also an enum value (the
+    # ``version`` subcommand in ``cli_command``) is vocabulary, not a copy.
+    literals -= reg._COMMON_ONLY_KINDS | reg._EVENT_KINDS
     for enum_name, values in (
         (name, body["values"]) for name, body in _specs(registry["enums"]).items()
     ):
@@ -543,3 +547,16 @@ def test_quant_enum_and_the_normalizer_agree_exactly(registry):
     from rapid_mlx.telemetry.quant import canonical_quant_values
 
     assert canonical_quant_values() == set(registry["enums"]["quant"]["values"])
+
+
+def test_cli_command_enum_matches_the_registered_subcommands(registry):
+    import argparse
+
+    from rapid_mlx.cli_parser import build_parser
+
+    parser = build_parser()
+    subparsers = next(
+        a for a in parser._actions if isinstance(a, argparse._SubParsersAction)
+    )
+    declared = set(registry["enums"]["cli_command"]["values"]) - {"bare", "other"}
+    assert declared == set(subparsers.choices)
