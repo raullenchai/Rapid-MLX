@@ -46,7 +46,6 @@ from rapid_mlx.byom import preflight as pf
 MANIFEST = "rapid-mlx-import.json"
 GROUP_SIZE = 64
 SUPPORTED_BITS = (2, 3, 4, 6, 8)
-_REPO_ID_RE = re.compile(r"[A-Za-z0-9._-]{1,96}/[A-Za-z0-9._-]{1,96}")
 _NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 _SOURCE_PATTERNS = [
     "*.json",
@@ -649,6 +648,19 @@ def print_imports_section() -> None:
 # CLI
 
 
+def _valid_repo_id(source: str) -> bool:
+    """Whether the Hub could ever accept ``source`` as an ``org/name`` id."""
+    from huggingface_hub.utils import HFValidationError, validate_repo_id
+
+    if source.count("/") != 1:
+        return False
+    try:
+        validate_repo_id(source)
+    except HFValidationError:
+        return False
+    return True
+
+
 def _emit_failed(error_class: str, source: str, bits: int) -> None:
     from rapid_mlx.telemetry.model_events import emit_model_import_failed
 
@@ -681,7 +693,7 @@ def import_command(args: Any, *, spinner_factory: Callable[[str], Any]) -> None:
                 # A non-local ref that is not even org/name shaped can never
                 # resolve; only the telemetry class tells the two apart.
                 error_class="metadata_unavailable"
-                if is_local or _REPO_ID_RE.fullmatch(source)
+                if is_local or _valid_repo_id(source)
                 else "invalid_ref",
             )
         plan = plan_import(

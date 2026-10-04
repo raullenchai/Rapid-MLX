@@ -700,10 +700,12 @@ def test_offline_never_probes_the_cache(hook, monkeypatch):
 
 def test_unreadable_import_source_classes(run_import, import_events, tmp_path):
     run_import.state["insp"] = None
-    for source in ("foo/bar/baz", "o/My-FT-bf16"):
+    for source in ("foo/bar/baz", "../model", "o/--bad", "o/My-FT-bf16"):
         with pytest.raises(SystemExit):
             run_import(source)
     assert [event[1] for event in import_events] == [
+        "invalid_ref",
+        "invalid_ref",
         "invalid_ref",
         "metadata_unavailable",
     ]
