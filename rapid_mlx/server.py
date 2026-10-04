@@ -4280,9 +4280,9 @@ def main():
     from .pflash import validate_model_support as _server_pflash_validate
     from .scheduler import SchedulerConfig
 
-    # Per-alias PFlash default (#287): verified Qwen3.5 / Qwen3.6 aliases
-    # switch to ``auto`` when the user passes no ``--pflash`` flag; all
-    # other aliases keep the conservative ``off``. Explicit overrides win.
+    # PFlash default (#287, #4092): ``off`` for every alias when the user
+    # passes no ``--pflash`` flag; verified aliases only get an opt-in hint
+    # and their pinned keep ratio. Explicit overrides win.
     #
     # Resolve the FINAL serving lane once. PFlash defaulting and
     # ``validate_model_support`` must both see the effective lane, NOT the raw

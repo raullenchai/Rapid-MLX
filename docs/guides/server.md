@@ -88,7 +88,7 @@ flag visible in `rapid-mlx serve --help`, grouped by category — lives in the
 | `--resident-memory-limit-gb` | Process-wide resident model ceiling in GiB (multi-model serving); LRU idle unpinned models are evicted first; 0 disables (companion: `--resident-model-idle-ttl`) | 0 |
 | `--lazy-load` | Keep the endpoint online in `standby` until the configured primary receives its first text-generation request | False |
 | `--idle-unload-seconds` | Unload the configured primary after an idle interval, preserving its route and reloading on demand; 0 disables | 0 |
-| `--pflash` | Lossy PFlash long-prompt prefill compression (`off`, `auto`, `always`); tuning knobs in the [CLI reference](../reference/cli.md#pflash-long-prompt-compression) | `auto` (prompts of at least 32768 tokens) for verified aliases, `off` otherwise |
+| `--pflash` | Lossy PFlash long-prompt prefill compression (`off`, `auto`, `always`); tuning knobs in the [CLI reference](../reference/cli.md#pflash-long-prompt-compression) | `off` |
 
 For example, `rapid-mlx serve ling-3.0-tiny-4bit --context-length 65536`
 selects a 64K-token request window for Ling. The model's declared maximum

@@ -3,11 +3,12 @@
 
 Two halves:
 
-* Default policy — verified aliases default to ``--pflash auto`` (gated on
-  ``--pflash-threshold``, 32 768 tokens) instead of ``always``, which used to
-  compress every no-tools prompt above ~11.5K tokens (long chat-app sessions,
-  RAG, document Q&A) and drop ~80% of its middle. Explicit ``--pflash always``
-  keeps working.
+* Default policy — PFlash is off by default for every alias. Verified
+  aliases used to default to ``always``, which compressed every no-tools
+  prompt above ~11.5K tokens (long chat-app sessions, RAG, document Q&A) and
+  dropped ~80% of its middle. ``--pflash auto`` (gated on
+  ``--pflash-threshold``, 32 768 tokens) and ``--pflash always`` remain
+  explicit opt-ins.
 * Surfacing — when compression does happen, the response says so: a
   ``metrics.prompt_compression`` block on the terminal response/chunk of the
   OpenAI-shaped routes and an ``X-Rapid-MLX-Prompt-Compressed: <kept>/<total>``
@@ -71,33 +72,57 @@ def _cli_ns(**overrides) -> SimpleNamespace:
 # ---------------------------------------------------------------------------
 
 
-class TestVerifiedDefaultIsThresholdGated:
-    @pytest.mark.parametrize("n_tokens", [12_000, 20_000, 32_767])
-    def test_ordinary_long_chat_prompt_is_untouched_by_default(self, n_tokens):
-        # The #4092 regression: under the old ``always`` default each of these
-        # no-tools prompts kept only sink + tail + 20% and dropped the rest.
-        config = resolve_pflash_config(_cli_ns(), model_name="qwen3.6-27b-4bit")
-        assert config.mode == "auto"
-        assert config.threshold == 32_768
+_ALL_PROFILES_SAMPLE = [
+    "qwen3.6-27b-4bit",  # verified, 0.20
+    "qwen3.5-4b-4bit",  # verified, 0.20
+    "bonsai-27b-2bit",  # verified, pinned 0.50
+    "qwen3-0.6b-4bit",  # unknown tier
+    "some/unmapped-model-path",  # no alias
+]
+
+
+class TestDefaultIsOffForEveryAlias:
+    @pytest.mark.parametrize("model_name", _ALL_PROFILES_SAMPLE)
+    @pytest.mark.parametrize("n_tokens", [12_000, 20_000, 40_000, 100_000])
+    def test_no_flag_never_compresses(self, model_name, n_tokens):
+        # The #4092 regression: under the old verified-tier ``always``
+        # default, every no-tools prompt above ~11.5K tokens kept only
+        # sink + tail + 20% and dropped the rest. Owner decision: off by
+        # default for every alias, at every prompt size.
+        config = resolve_pflash_config(_cli_ns(), model_name=model_name)
+        assert config.mode == "off"
 
         result = compress_tokens(list(range(n_tokens)), config)
 
         assert result.compressed is False
-        assert result.reason == "threshold"
+        assert result.reason == "off"
         assert result.kept_tokens == n_tokens
 
-    @pytest.mark.parametrize("n_tokens", [32_768, 40_000])
-    def test_prompt_at_or_above_threshold_still_compresses_by_default(self, n_tokens):
-        # The validated #649 win (>= 32K cold prefill) is kept by default;
-        # "at least --pflash-threshold" includes the boundary itself.
-        config = resolve_pflash_config(_cli_ns(), model_name="qwen3.6-27b-4bit")
+    def test_every_verified_alias_defaults_off(self):
+        from rapid_mlx.model_aliases import list_profiles
+
+        verified = [
+            a for a, p in list_profiles().items() if p.pflash_tier == "verified"
+        ]
+        assert verified
+        for alias in verified:
+            assert resolve_pflash_mode_default(_cli_ns(), model_name=alias) == "off"
+
+    @pytest.mark.parametrize(
+        ("n_tokens", "compressed"),
+        [(20_000, False), (32_767, False), (32_768, True), (40_000, True)],
+    )
+    def test_opt_in_auto_is_threshold_gated(self, n_tokens, compressed):
+        config = resolve_pflash_config(
+            _cli_ns(pflash="auto"), model_name="qwen3.6-27b-4bit"
+        )
 
         result = compress_tokens(list(range(n_tokens)), config)
 
-        assert result.compressed is True
-        assert result.kept_tokens < n_tokens
+        assert config.mode == "auto"
+        assert result.compressed is compressed
 
-    def test_explicit_always_still_compresses_ordinary_long_prompt(self):
+    def test_opt_in_always_compresses_ordinary_long_prompt(self):
         config = resolve_pflash_config(
             _cli_ns(pflash="always"), model_name="qwen3.6-27b-4bit"
         )
@@ -107,13 +132,14 @@ class TestVerifiedDefaultIsThresholdGated:
         assert config.mode == "always"
         assert result.compressed is True
 
-    def test_default_log_names_auto_and_the_threshold(self, caplog):
+    def test_verified_default_log_explains_how_to_opt_in(self, caplog):
         with caplog.at_level(logging.INFO, logger="rapid_mlx.pflash"):
             mode = resolve_pflash_mode_default(
                 _cli_ns(pflash_threshold=50_000), model_name="qwen3.5-4b-4bit"
             )
-        assert mode == "auto"
+        assert mode == "off"
         message = " ".join(r.getMessage() for r in caplog.records)
+        assert "off by default" in message
         assert "--pflash auto" in message
         assert "50000 tokens" in message
         assert "--pflash always" in message

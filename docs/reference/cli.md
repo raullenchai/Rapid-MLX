@@ -362,7 +362,7 @@ binary auto-routing decision has a force-on and force-off pair.
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--pflash` | PFlash long-prompt prefill compression: `off`, `auto` (only prompts of at least `--pflash-threshold` tokens), `always` (every eligible prompt whose keep budget leaves room for middle blocks, roughly 11.5K tokens and up at the default ratio) | `auto` for verified aliases (Qwen3.5 / Qwen3.6 family, `bonsai-27b-2bit`), `off` otherwise |
+| `--pflash` | PFlash long-prompt prefill compression: `off`, `auto` (only prompts of at least `--pflash-threshold` tokens), `always` (every eligible prompt whose keep budget leaves room for middle blocks, roughly 11.5K tokens and up at the default ratio) | `off` |
 | `--pflash-threshold` | Minimum prompt tokens before `--pflash auto` compresses | 32768 |
 | `--pflash-keep-ratio` | Fraction of prompt tokens to keep when compressing; unset resolves a per-alias override if pinned, else 0.20 | None (per-alias or 0.20) |
 | `--pflash-min-keep-tokens` | Minimum tokens to keep when compressing | 2048 |
@@ -382,10 +382,16 @@ conversation prefills from scratch. Prompts with tool definitions are
 skipped unless you pass `--pflash-include-tools`, and Chat Completions
 requests with a `response_format` are skipped too.
 
-On verified aliases, the default `auto` mode leaves prompts under 32768 tokens
-alone. Long chat sessions, RAG prompts and document Q&A below that size reach
-the model in full. Use `--pflash always` to compress shorter prompts for a
-faster cold prefill, or `--pflash off` to never compress.
+PFlash is off by default for every model, so every prompt reaches the model in
+full. To opt in, pass `--pflash auto` to compress only prompts of at least
+`--pflash-threshold` tokens, or `--pflash always` to compress every eligible
+long prompt. In exchange you get a faster cold prefill: about 4x to 8x on the
+Qwen3.5 / Qwen3.6 family at 32K to 64K tokens with the default 0.20 keep ratio.
+You give up the dropped part of the middle and prefix-cache reuse for that
+request. Aliases tagged `pflash_tier: "verified"` (the Qwen3.5 / Qwen3.6
+family and `bonsai-27b-2bit`) were benchmarked for this trade-off, and
+`bonsai-27b-2bit` runs at its validated 0.50 keep ratio when you opt in. On
+startup, a verified alias logs how to opt in.
 
 When a request is compressed, the server marks it in three places:
 

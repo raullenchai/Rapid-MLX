@@ -120,13 +120,13 @@ needed by the application; leave it unset for URL/base64-only deployments.
 
 ### PFlash Options
 
-PFlash long-prompt prefill compression. It is lossy: a compressed prompt
-keeps its first and last tokens plus the highest-scoring middle blocks, about
-20% of the prompt by default (50% on `bonsai-27b-2bit`), and skips the prefix
-cache. Verified aliases (Qwen3.5 / Qwen3.6 family, `bonsai-27b-2bit`) default
-to `auto`, which compresses only prompts of at least `--pflash-threshold`
-tokens (32768). Every other alias defaults to
-`off`. Tune with `--pflash off|auto|always` and the `--pflash-*` keep/scoring
+PFlash long-prompt prefill compression is off by default for every model. It
+is lossy: a compressed prompt keeps its first and last tokens plus the
+highest-scoring middle blocks, about 20% of the prompt by default (50% on
+`bonsai-27b-2bit`), and skips the prefix cache. It is an opt-in for a faster
+cold prefill. `--pflash auto` compresses only prompts of at least
+`--pflash-threshold` tokens (32768). `--pflash always` compresses every
+eligible long prompt. Tune the trade-off with the `--pflash-*` keep/scoring
 knobs. The [CLI reference](cli.md#pflash-long-prompt-compression) has the full
 table and shows how a compressed response is marked.
 

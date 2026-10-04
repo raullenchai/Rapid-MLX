@@ -12,9 +12,9 @@ Original design + reference fork by @michaelasper on the
 
 This adaptation differs from the fork in three places:
 
-* It is disabled by default (``--pflash off``); aliases tagged
-  ``pflash_tier="verified"`` default to ``--pflash auto``, which only
-  compresses prompts at or above ``--pflash-threshold`` (#4092).
+* It is disabled by default (``--pflash off``) for every alias,
+  including ``pflash_tier="verified"`` ones (#4092); users opt in with
+  ``--pflash auto`` or ``--pflash always``.
 * The compressor's output bypasses the prefix cache entirely on the
   scheduler side — see ``scheduler.add_request`` — so a later
   uncompressed request that shares a sink-token prefix with a compressed
@@ -47,9 +47,8 @@ class PFlashConfig:
     retain a usable amount of body context, large 2 048-token tail
     because the user's actual query tends to live there. The fork's
     default was 0.10 but our bench evidence (TTFT 3.87x-8.5x, needle
-    recall 5/5) is all at 0.20 — the verified-tier default
-    (``auto`` at this threshold) must match the validated number, so we
-    use 0.20 here.
+    recall 5/5) is all at 0.20 — an opt-in on a verified alias must
+    match the validated number, so we use 0.20 here.
     """
 
     mode: PFlashMode = "off"
@@ -191,26 +190,26 @@ def resolve_pflash_mode_default(
     * Otherwise, look up the model's profile via ``detect_model_config``
       and switch on ``pflash_tier``:
 
-      - ``"verified"`` → ``"auto"`` (Qwen3.5 / Qwen3.6 family, bench
-        evidence in PR #649: 3.87x-8.5x TTFT speedup at keep_ratio=0.20
-        with 100% needle recall across tested cells) — UNLESS the model is
-        multimodal, see below. ``auto`` only compresses prompts at or above
-        ``--pflash-threshold`` (32 768 tokens, the validated #649 profile).
-        The default used to be ``"always"``, which compressed every no-tools
-        prompt above ~11.5K tokens and silently dropped ~80% of the middle
-        of ordinary long chats, RAG prompts and long-document Q&A (#4092).
-        Users who want that behaviour opt in with ``--pflash always``.
+      - ``"verified"`` → ``"off"`` too (#4092). PFlash is lossy: it drops
+        most of the middle of a long prompt and skips the prefix cache, so
+        no alias compresses unless the user opts in with ``--pflash auto``
+        (prompts of at least ``--pflash-threshold`` tokens) or
+        ``--pflash always``. The verified tier (Qwen3.5 / Qwen3.6 family,
+        PR #649: 3.87x-8.5x cold TTFT at keep_ratio=0.20 with 5/5 needle
+        recall where measured) now only changes the INFO hint below and,
+        via ``pflash_keep_ratio``, the ratio an opt-in runs at. Before
+        #4092 the verified default was ``"always"``, which silently
+        compressed every no-tools prompt above ~11.5K tokens.
       - anything else → ``"off"`` (today's behaviour preserved for every
         alias we haven't measured).
 
     ``is_multimodal`` — the SAME ``is_mllm`` verdict the caller passes to
-    :func:`validate_model_support` — suppresses the verified-tier
-    ``"always"`` promotion. PFlash cannot serve the MLLM/VLM lane
-    (``validate_model_support`` rejects it), so a verified alias that is
-    ALSO multimodal (a vision-config Qwen3.6-27B checkpoint is both) must
-    NOT auto-enable PFlash — otherwise the naive ``rapid-mlx serve
-    <flagship>`` command dies on ``--pflash is not supported for
-    multimodal models``, a flag the user never set (#352 dogfood P1-②).
+    :func:`validate_model_support` — swaps the verified-tier opt-in hint
+    for a "PFlash is unavailable" message. PFlash cannot serve the
+    MLLM/VLM lane (``validate_model_support`` rejects it), so advising
+    ``--pflash auto`` for a verified alias that is ALSO multimodal (a
+    vision-config Qwen3.6-27B checkpoint is both) would point the user at
+    a flag that fails at startup (#352 dogfood P1-②, #1178).
     An explicit ``--pflash always`` still wins via the early return above
     and, for the MLLM lane, errors loudly in ``validate_model_support`` —
     the user asked for it, so they get the actionable message. Defaults to
@@ -232,15 +231,12 @@ def resolve_pflash_mode_default(
     cfg = _detect_or(model_name, _detected_config)
     if cfg is not None and cfg.pflash_tier == "verified":
         # A multimodal (MLLM/VLM) model can NOT run PFlash — the MLLM lane
-        # is rejected outright by ``validate_model_support``. Auto-enabling
-        # the verified-tier default for such an alias makes the naive
-        # ``rapid-mlx serve <flagship>`` command die on a ``--pflash`` flag
-        # the user never set (a vision-config Qwen3.6-27B checkpoint is
-        # pflash_tier=verified AND multimodal — #352 dogfood P1-②). Leave
-        # PFlash off in that case. Note: this is intentionally scoped to
-        # MULTIMODAL, not hybrid — a hybrid MoE like Qwen3.5-35B-A3B still
-        # has full-attention layers with standard KV to compress and is a
-        # verified PFlash target.
+        # is rejected outright by ``validate_model_support`` (a
+        # vision-config Qwen3.6-27B checkpoint is pflash_tier=verified AND
+        # multimodal — #352 dogfood P1-②). Note: this is intentionally
+        # scoped to MULTIMODAL, not hybrid — a hybrid MoE like
+        # Qwen3.5-35B-A3B still has full-attention layers with standard KV
+        # to compress and is a verified PFlash target.
         if is_multimodal:
             # Do NOT advise ``--pflash always`` here: PFlash genuinely cannot
             # serve the MLLM/VLM lane, so forcing it on would only be rejected
@@ -255,26 +251,19 @@ def resolve_pflash_mode_default(
                 model_name,
             )
             return "off"
-        # Surface the alias-driven default at INFO so a developer running
-        # ``rapid-mlx bench qwen3.5-4b-4bit`` immediately sees which mode
-        # is being measured — the verified-tier policy is uniform across
-        # ``serve``/``bench`` by design (codex r4 BLOCKING on #649).
-        #
-        # ``auto``, not ``always`` (#4092): ``always`` compressed every
-        # no-tools prompt whose 0.20 keep budget exceeded sink+tail
-        # (~11.5K tokens), so long chat-app sessions, RAG and document
-        # Q&A silently lost most of their middle and bypassed the prefix
-        # cache. ``auto`` leaves everything below ``--pflash-threshold``
-        # (32 768 by default, the threshold #649 validated) untouched.
+        # #4092: off by default even for verified aliases (reliability over
+        # first-token speed). Say so at INFO so a developer running
+        # ``rapid-mlx bench qwen3.5-4b-4bit`` sees which mode is measured
+        # and how to opt in (codex r4 BLOCKING on #649 asked for the hint).
         logger.info(
-            "PFlash default: alias %r is pflash_tier=verified — "
-            "engine defaults to --pflash auto (compresses only prompts of "
-            "at least %d tokens). Pass --pflash off to disable or "
-            "--pflash always to compress every eligible long prompt.",
+            "PFlash default: alias %r is pflash_tier=verified, but PFlash is "
+            "off by default because it is lossy (drops most of the middle "
+            "of long prompts). Opt in with --pflash auto (prompts of at "
+            "least %d tokens) or --pflash always.",
             model_name,
             getattr(args, "pflash_threshold", PFlashConfig.threshold),
         )
-        return "auto"
+        return "off"
     return "off"
 
 
@@ -290,7 +279,7 @@ def resolve_pflash_keep_ratio_default(
     * Else if the model's alias profile pins a ``pflash_keep_ratio``, use it.
       This is how an alias verified at a NON-default ratio (e.g. a ternary
       arch whose mid-prompt recall only survives at 0.50) gets its safe
-      ratio applied whenever PFlash auto-enables — without it, a bare
+      ratio applied whenever the user opts in — without it, a bare
       ``pflash_tier=verified`` would run the lossy 0.20 default.
     * Else the engine default 0.20.
 
