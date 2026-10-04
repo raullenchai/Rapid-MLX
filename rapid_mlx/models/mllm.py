@@ -1518,7 +1518,7 @@ def save_frames_to_temp(frames: list[np.ndarray]) -> list[str]:
         raise ImportError("Pillow is required for frame processing")
 
     paths = []
-    for i, frame in enumerate(frames):
+    for _i, frame in enumerate(frames):
         img = Image.fromarray(frame)
         temp_file = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
         img.save(temp_file.name, "JPEG", quality=85)

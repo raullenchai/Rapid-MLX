@@ -579,7 +579,7 @@ class TestStreamForcedReasoningEndToEnd:
         """Replay a list of ``(text, finished)`` chunks through the
         processor and return the assembled event list."""
         out = []
-        for i, (text, finished) in enumerate(chunks):
+        for _i, (text, finished) in enumerate(chunks):
             evs = processor.process_chunk(
                 _make_output(
                     text=text,

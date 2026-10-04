@@ -43,6 +43,7 @@ def test_changed_lines_gate_unions_linux_and_apple_coverage() -> None:
     )
     assert "coverage-apple.data" in text
     assert "--cov=rapid_mlx" in apple["steps"][-2]["run"]
+    assert any("--cov=rapid_mlx" in step.get("run", "") for step in linux["steps"])
     assert set(gate["needs"]) == {
         "changes",
         "linux-coverage",

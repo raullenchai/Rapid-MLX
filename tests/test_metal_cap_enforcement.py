@@ -35,6 +35,7 @@ import logging
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from rapid_mlx.errors import MetalMemoryBackpressureError
 from rapid_mlx.request import Request, SamplingParams
 from rapid_mlx.scheduler import BackpressureError, Scheduler, SchedulerConfig
 
@@ -1266,3 +1267,255 @@ class TestArchitectureAwareKVEstimate:
         ):
             dense_sched._enforce_metal_cap_at_admission(dense_req)
         assert dense_sched.num_metal_cap_violations == 1
+
+
+class TestAdmissionFallbackDebugLogging:
+    """Silent estimator fallbacks must be visible at DEBUG, once per key."""
+
+    def test_metal_probe_failure_logs_debug_once_with_traceback(self, caplog):
+        sched = _make_scheduler()
+        with (
+            patch(
+                "rapid_mlx.scheduler.mx.get_active_memory",
+                side_effect=RuntimeError("no metal"),
+            ),
+            caplog.at_level(logging.DEBUG, logger="rapid_mlx.scheduler"),
+        ):
+            assert sched._current_metal_active_bytes() == 0
+            assert sched._current_metal_active_bytes() == 0
+        records = [
+            r
+            for r in caplog.records
+            if "Metal active-memory probe failed" in r.getMessage()
+        ]
+        assert len(records) == 1
+        assert records[0].levelno == logging.DEBUG
+        assert records[0].exc_info is not None
+
+    def test_kv_dtype_inference_failure_logs_and_keeps_fp32_fallback(self, caplog):
+        class _ExplodingConfig:
+            @property
+            def dtype(self):
+                raise RuntimeError("broken config")
+
+        sched = _make_scheduler()
+        with caplog.at_level(logging.DEBUG, logger="rapid_mlx.scheduler"):
+            assert sched._infer_kv_dtype_bytes(_ExplodingConfig()) == 4
+        assert any(
+            "KV dtype inference" in r.getMessage() and r.exc_info is not None
+            for r in caplog.records
+        )
+
+    def test_phys_footprint_failure_falls_back_to_rss_and_logs(self, caplog):
+        import psutil
+
+        sched = _make_scheduler()
+        rss = SimpleNamespace(rss=123_456)
+        with (
+            patch(
+                "rapid_mlx.runtime.process_memory.get_phys_footprint",
+                side_effect=OSError("no footprint"),
+            ),
+            patch.object(
+                psutil, "Process", return_value=SimpleNamespace(memory_info=lambda: rss)
+            ),
+            caplog.at_level(logging.DEBUG, logger="rapid_mlx.scheduler"),
+        ):
+            assert sched._current_process_resident_bytes() == 123_456
+        assert any(
+            "phys_footprint probe failed" in r.getMessage() and r.exc_info
+            for r in caplog.records
+        )
+
+    def test_rss_failure_after_footprint_failure_returns_zero_and_logs(self, caplog):
+        import psutil
+
+        sched = _make_scheduler()
+        with (
+            patch(
+                "rapid_mlx.runtime.process_memory.get_phys_footprint",
+                side_effect=OSError("no footprint"),
+            ),
+            patch.object(psutil, "Process", side_effect=RuntimeError("no psutil")),
+            caplog.at_level(logging.DEBUG, logger="rapid_mlx.scheduler"),
+        ):
+            assert sched._current_process_resident_bytes() == 0
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("phys_footprint probe failed" in m for m in messages)
+        assert any("RSS probe failed" in m for m in messages)
+
+
+class TestOverCapGarbageReclaim:
+    """#4108: an idle server whose Metal memory was pinned by cyclic garbage
+    (prefix cache empty, nothing running) rejected every request until
+    restart. Over the cap, admission now collects garbage first and
+    re-measures; a server that truly holds the memory says retrying cannot
+    help instead of claiming requests are in flight."""
+
+    CAP = 100 * 10**9
+
+    @pytest.fixture(autouse=True)
+    def _fresh_reclaim_limiter(self):
+        # The limiter is process-wide; give every test a clean slate.
+        Scheduler._last_metal_gc_reclaim_at = float("-inf")
+        yield
+        Scheduler._last_metal_gc_reclaim_at = float("-inf")
+
+    def test_projection_rejection_under_load_does_not_collect(self):
+        """A full collection pauses the step loop. Requests in flight with
+        active memory below the cap is ordinary load, not garbage: reject
+        without collecting."""
+        sched = _make_scheduler(gpu_memory_utilization=0.5)
+        sched.requests["other"] = _make_request(rid="other")
+        with (
+            patch.object(sched, "_resolve_metal_cap_bytes", return_value=self.CAP),
+            patch.object(sched, "_current_metal_active_bytes", return_value=60 * 10**9),
+            patch.object(sched, "_estimate_request_kv_bytes", return_value=50 * 10**9),
+            patch("rapid_mlx.scheduler.gc.collect") as collect,
+            pytest.raises(MetalMemoryBackpressureError),
+        ):
+            sched._enforce_metal_cap_at_admission(_make_request())
+        collect.assert_not_called()
+
+    def test_idle_projection_rejection_collects(self):
+        """Idle, a collection costs nobody anything and garbage may be what
+        pushes the projection over the cap."""
+        sched = _make_scheduler(gpu_memory_utilization=0.5)
+        readings = iter([60 * 10**9, 60 * 10**9, 20 * 10**9, 20 * 10**9])
+        with (
+            patch.object(sched, "_resolve_metal_cap_bytes", return_value=self.CAP),
+            patch.object(
+                sched, "_current_metal_active_bytes", side_effect=lambda: next(readings)
+            ),
+            patch.object(sched, "_estimate_request_kv_bytes", return_value=50 * 10**9),
+            patch("rapid_mlx.scheduler.gc.collect", return_value=1) as collect,
+            patch("rapid_mlx.scheduler.mx.clear_cache"),
+        ):
+            sched._enforce_metal_cap_at_admission(_make_request())
+        collect.assert_called_once()
+        assert sched.num_metal_cap_violations == 0
+
+    def test_limiter_is_shared_across_schedulers(self):
+        first = _make_scheduler(gpu_memory_utilization=0.5)
+        second = _make_scheduler(gpu_memory_utilization=0.5)
+        with (
+            patch.object(first, "_current_metal_active_bytes", return_value=1),
+            patch.object(second, "_current_metal_active_bytes", return_value=1),
+            patch("rapid_mlx.scheduler.gc.collect", return_value=0) as collect,
+            patch("rapid_mlx.scheduler.mx.clear_cache"),
+        ):
+            first._reclaim_unreachable_metal()
+            second._reclaim_unreachable_metal()
+        assert collect.call_count == 1
+
+    def test_admits_when_collection_frees_memory(self, caplog):
+        sched = _make_scheduler(gpu_memory_utilization=0.5)
+        # Over cap before the collection, well under after it.
+        readings = iter([120 * 10**9, 120 * 10**9, 40 * 10**9, 40 * 10**9])
+        with (
+            patch.object(sched, "_resolve_metal_cap_bytes", return_value=self.CAP),
+            patch.object(
+                sched, "_current_metal_active_bytes", side_effect=lambda: next(readings)
+            ),
+            patch("rapid_mlx.scheduler.gc.collect", return_value=7) as collect,
+            patch("rapid_mlx.scheduler.mx.clear_cache") as clear,
+            caplog.at_level(logging.WARNING, logger="rapid_mlx.scheduler"),
+        ):
+            sched._enforce_metal_cap_at_admission(_make_request())
+        collect.assert_called_once()
+        clear.assert_called_once()
+        assert sched.num_metal_cap_violations == 0
+        assert "[D-METAL-CAP-gc-reclaim] released 80.0 GB" in caplog.text
+
+    def test_collection_runs_before_prefix_cache_eviction(self):
+        """Collecting is non-destructive; the warm prefix cache must not be
+        evicted when garbage alone accounts for the overage."""
+        sched = _make_scheduler(gpu_memory_utilization=0.5)
+        sched.memory_aware_cache = MagicMock()
+        readings = iter([120 * 10**9, 120 * 10**9, 40 * 10**9, 40 * 10**9])
+        with (
+            patch.object(sched, "_resolve_metal_cap_bytes", return_value=self.CAP),
+            patch.object(
+                sched, "_current_metal_active_bytes", side_effect=lambda: next(readings)
+            ),
+            patch.object(sched, "_evict_one_prefix_cache_entry") as evict,
+            patch("rapid_mlx.scheduler.gc.collect", return_value=0),
+            patch("rapid_mlx.scheduler.mx.clear_cache"),
+        ):
+            sched._enforce_metal_cap_at_admission(_make_request())
+        evict.assert_not_called()
+
+    def test_reclaim_is_rate_limited(self):
+        sched = _make_scheduler(gpu_memory_utilization=0.5)
+        with (
+            patch.object(sched, "_current_metal_active_bytes", return_value=self.CAP),
+            patch("rapid_mlx.scheduler.gc.collect", return_value=0) as collect,
+            patch("rapid_mlx.scheduler.mx.clear_cache"),
+            patch("rapid_mlx.scheduler.time.monotonic", side_effect=[10.0, 10.5, 11.0]),
+        ):
+            assert sched._reclaim_unreachable_metal() is False
+            assert sched._reclaim_unreachable_metal() is False  # within 1 s
+            assert sched._reclaim_unreachable_metal() is False
+        assert collect.call_count == 2
+
+    def test_reclaim_tolerates_clear_cache_failure(self):
+        sched = _make_scheduler(gpu_memory_utilization=0.5)
+        readings = iter([50 * 10**9, 30 * 10**9])
+        with (
+            patch.object(
+                sched, "_current_metal_active_bytes", side_effect=lambda: next(readings)
+            ),
+            patch("rapid_mlx.scheduler.gc.collect", return_value=3),
+            patch("rapid_mlx.scheduler.mx.clear_cache", side_effect=RuntimeError("x")),
+        ):
+            assert sched._reclaim_unreachable_metal() is True
+
+    def test_idle_server_over_cap_says_retry_cannot_help(self):
+        sched = _make_scheduler(gpu_memory_utilization=0.5)
+        sched._metal_cap_effective_utilization = 0.5
+        assert not sched.requests
+        with (
+            patch.object(sched, "_resolve_metal_cap_bytes", return_value=self.CAP),
+            patch.object(
+                sched, "_current_metal_active_bytes", return_value=self.CAP + 1
+            ),
+            patch("rapid_mlx.scheduler.gc.collect", return_value=0),
+            pytest.raises(MetalMemoryBackpressureError) as info,
+        ):
+            sched._enforce_metal_cap_at_admission(_make_request())
+        message = str(info.value)
+        assert "with no request running" in message
+        assert "Retrying will not help" in message
+        assert "Retry after in-flight requests drain" not in message
+        assert "needs approximately" not in message
+        assert "--gpu-memory-utilization" in message
+        assert "D-METAL-CAP" in message and "reserved KV" in message
+
+    def test_idle_message_drops_utilization_advice_at_max(self):
+        sched = _make_scheduler(gpu_memory_utilization=1.0)
+        sched._metal_cap_effective_utilization = 1.0
+        with (
+            patch.object(sched, "_resolve_metal_cap_bytes", return_value=self.CAP),
+            patch.object(sched, "_current_metal_active_bytes", return_value=self.CAP),
+            patch("rapid_mlx.scheduler.gc.collect", return_value=0),
+            pytest.raises(MetalMemoryBackpressureError) as info,
+        ):
+            sched._enforce_metal_cap_at_admission(_make_request())
+        message = str(info.value)
+        assert "Restart the server to release it." in message
+        assert "--gpu-memory-utilization" not in message
+
+    def test_busy_server_keeps_drain_advice(self):
+        """With requests in flight, waiting for them to drain IS the remedy."""
+        sched = _make_scheduler(gpu_memory_utilization=0.5)
+        sched.requests["other"] = _make_request(rid="other")
+        with (
+            patch.object(sched, "_resolve_metal_cap_bytes", return_value=self.CAP),
+            patch.object(sched, "_current_metal_active_bytes", return_value=self.CAP),
+            patch("rapid_mlx.scheduler.gc.collect", return_value=0),
+            pytest.raises(MetalMemoryBackpressureError) as info,
+        ):
+            sched._enforce_metal_cap_at_admission(_make_request())
+        message = str(info.value)
+        assert "needs approximately" in message
+        assert "Retry after in-flight requests drain" in message

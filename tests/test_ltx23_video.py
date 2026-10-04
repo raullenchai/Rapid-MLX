@@ -991,6 +991,49 @@ async def test_failed_generation_removes_partial_artifacts(
 
 
 @pytest.mark.asyncio
+async def test_failed_status_is_published_only_after_artifact_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A client that observes ``failed`` must never still see partial files.
+
+    Slow cleanup makes the old order (publish ``failed``, then rmtree)
+    deterministically observable instead of a timing-dependent flake.
+    """
+
+    class FailingEngine:
+        model_name = "notapalindrome/ltx23-mlx-av-q4"
+
+        def generate(self, *, output_path: Path, **kwargs) -> None:
+            output_path.write_bytes(b"partial")
+            raise RuntimeError("boom")
+
+    real_rmtree = video.shutil.rmtree
+
+    def slow_rmtree(path, *args, **kwargs):
+        threading.Event().wait(0.3)
+        real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(video, "_video_engine", lambda: FailingEngine())
+    monkeypatch.setattr(video.shutil, "rmtree", slow_rmtree)
+    created = await video.create_video(
+        prompt="fail",
+        model="ltx-2.3-mlx-q4",
+        seconds="1",
+        size="512x512",
+        seed=4,
+        input_reference=None,
+    )
+    for _ in range(400):
+        current = await video.retrieve_video(created["id"])
+        if current["status"] == "failed":
+            assert not (video._jobs_root / created["id"]).exists()
+            break
+        await asyncio.sleep(0.005)
+    assert current["status"] == "failed"
+    await video.delete_video(created["id"])
+
+
+@pytest.mark.asyncio
 async def test_shutdown_is_bounded_and_stops_video_admission(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -722,7 +722,7 @@ class TestBlockAwareCacheEviction:
         # Index entries pointing at allocated blocks (ref_count == 1)
         # whose reference is held elsewhere (e.g. a fetch-held table).
         blocks = []
-        for i in range(4):
+        for _i in range(4):
             blk = paged.allocate_block()
             blk.cache_data = [MagicMock()]  # resident tensor
             blk.cache_class_name = "cache"
@@ -916,7 +916,7 @@ class TestBlockAwareCacheEviction:
         # Simulate two completed requests whose store_cache left both a
         # prefix-index entry AND a full-KV request-table entry resident.
         blocks = []
-        for i in range(4):
+        for _i in range(4):
             blk = paged.allocate_block()
             blk.cache_data = [MagicMock()]  # resident view
             blocks.append(blk)
@@ -968,7 +968,7 @@ class TestBlockAwareCacheEviction:
         bac = sched.block_aware_cache
         paged = bac.paged_cache
         blocks = []
-        for i in range(2):
+        for _i in range(2):
             blk = paged.allocate_block()
             blk.cache_data = [MagicMock()]
             blk.ref_count = 1

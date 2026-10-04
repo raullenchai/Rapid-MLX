@@ -885,6 +885,33 @@ class TestTomlMerge:
             f"Already configured at {tmp_path / 'config.toml'}; no file changes needed"
         )
 
+    def test_codex_setup_refreshes_stale_catalog_without_rewriting_config(
+        self, tmp_path, monkeypatch
+    ):
+        from rapid_mlx.agents import get_profile
+
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        profile = get_profile("codex")
+        assert profile is not None
+        kwargs = {
+            "base_url": "http://localhost:8000/v1",
+            "model_id": "my-model",
+            "context_length": 32768,
+        }
+        setup_agent_config(profile, **kwargs)
+        config_path = tmp_path / "config.toml"
+        catalog_path = tmp_path / "rapid-mlx-model-catalog.json"
+        config_before = config_path.read_bytes()
+        catalog_path.write_text('{"models": []}\n')
+
+        summary = setup_agent_config(profile, **kwargs)
+
+        assert summary == (
+            f"Updated Codex model catalog at {catalog_path}; config already current"
+        )
+        assert config_path.read_bytes() == config_before
+        assert json.loads(catalog_path.read_text())["models"][0]["slug"] == "my-model"
+
 
 class TestIdempotentSetupSummary:
     @staticmethod
@@ -978,6 +1005,62 @@ class TestIdempotentSetupSummary:
 
         assert raised.value.code == 1
         assert "setup failed: server is not ready" in capsys.readouterr().out
+
+    def test_cli_preflight_resolves_default_model_before_generic_write(
+        self, monkeypatch
+    ):
+        from rapid_mlx import cli
+        from rapid_mlx.agents import adapter, setup
+
+        profile = self._generic_file_profile()
+        monkeypatch.setattr("rapid_mlx.agents.get_profile", lambda _name: profile)
+        monkeypatch.setattr(adapter, "_detect_running_model", lambda _url: (None, None))
+        verified = []
+        monkeypatch.setattr(
+            setup,
+            "verify_server",
+            lambda base_url, model_id, *, agent: (
+                verified.append((base_url, model_id, agent)) or "served-model"
+            ),
+        )
+        configured = []
+        monkeypatch.setattr(
+            adapter,
+            "setup_agent_config",
+            lambda _profile, _base_url, model_id, **_kwargs: (
+                configured.append(model_id) or "Wrote config"
+            ),
+        )
+
+        cli.agents_command(self._generic_setup_args(model=None))
+
+        assert verified == [("http://localhost:8000/v1", "default", "opencode")]
+        assert configured == ["served-model"]
+
+    def test_cli_reports_config_write_failure_as_setup_failure(
+        self, monkeypatch, capsys
+    ):
+        from rapid_mlx import cli
+        from rapid_mlx.agents import adapter
+
+        profile = self._generic_file_profile()
+        monkeypatch.setattr("rapid_mlx.agents.get_profile", lambda _name: profile)
+        monkeypatch.setattr(
+            adapter,
+            "setup_agent_config",
+            lambda *_args, **_kwargs: (
+                "Cannot write config to /locked/config.json. Check file permissions."
+            ),
+        )
+
+        with pytest.raises(SystemExit) as raised:
+            cli.agents_command(self._generic_setup_args(no_check=True))
+
+        assert raised.value.code == 1
+        output = capsys.readouterr().out
+        assert "OpenCode setup failed." in output
+        assert "Cannot write config to /locked/config.json" in output
+        assert "OpenCode configured!" not in output
 
     def test_cli_no_check_keeps_generic_offline_setup_escape_hatch(self, monkeypatch):
         from rapid_mlx import cli
