@@ -40,6 +40,7 @@ from rapid_mlx.pflash import (
 )
 from rapid_mlx.service.helpers import (
     PROMPT_COMPRESSED_HEADER,
+    _aggregate_generation_attempts,
     _build_response_metrics,
     _merge_response_metrics,
     prompt_compression_headers,
@@ -182,6 +183,23 @@ class TestPromptCompressionMetrics:
         )
         assert _build_response_metrics(GenerationOutput(text="plain")) is None
 
+    @pytest.mark.parametrize(
+        "metadata",
+        [
+            {},
+            {"original_tokens": 40_000},
+            {"original_tokens": "40000", "kept_tokens": 8_000},
+            {"original_tokens": 40_000, "kept_tokens": -1},
+            {"original_tokens": 40_000, "kept_tokens": 40_000},
+            {"original_tokens": 40_000, "kept_tokens": 50_000},
+        ],
+    )
+    def test_malformed_dict_metadata_fails_closed(self, metadata):
+        assert (
+            _build_response_metrics(SimpleNamespace(prompt_compression=metadata))
+            is None
+        )
+
     def test_header_value_is_kept_over_total(self):
         metrics = _build_response_metrics(
             GenerationOutput(text="ok", prompt_compression=_COMPRESSION)
@@ -221,6 +239,28 @@ class TestPromptCompressionMetrics:
 
     def test_merge_without_any_metrics_stays_none(self):
         assert _merge_response_metrics([GenerationOutput(text="plain")]) is None
+
+    def test_schema_repair_attempts_sum_prompt_compression(self):
+        aggregated = _aggregate_generation_attempts(
+            GenerationOutput(
+                text="invalid",
+                prompt_tokens=40_000,
+                prompt_compression=_COMPRESSION,
+            ),
+            GenerationOutput(
+                text="repaired",
+                prompt_tokens=50_000,
+                prompt_compression={
+                    "original_tokens": 50_000,
+                    "kept_tokens": 10_000,
+                },
+            ),
+        )
+        assert aggregated.prompt_tokens == 90_000
+        assert aggregated.prompt_compression == {
+            "original_tokens": 90_000,
+            "kept_tokens": 18_000,
+        }
 
 
 # ---------------------------------------------------------------------------

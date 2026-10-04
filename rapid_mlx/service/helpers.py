@@ -2808,14 +2808,28 @@ PROMPT_COMPRESSED_HEADER = "X-Rapid-MLX-Prompt-Compressed"
 def _build_prompt_compression(output: Any) -> PromptCompressionMetrics | None:
     """Return the PFlash compression block when this request was compressed.
 
-    Fails closed on anything that is not the scheduler's plain dict (mock
-    outputs, engines that predate the field) so a non-schema attribute can
-    never leak onto the wire.
+    Fails closed on anything that is not the scheduler's plain, valid dict
+    (mock outputs, engines that predate the field, malformed adapters) so a
+    non-schema attribute can never break a completed response or leak onto
+    the wire.
     """
     raw = getattr(output, "prompt_compression", None)
     if not isinstance(raw, dict):
         return None
-    return PromptCompressionMetrics.model_validate(raw)
+    original_tokens = raw.get("original_tokens")
+    kept_tokens = raw.get("kept_tokens")
+    if (
+        type(original_tokens) is not int
+        or type(kept_tokens) is not int
+        or original_tokens <= 0
+        or kept_tokens < 0
+        or kept_tokens >= original_tokens
+    ):
+        return None
+    return PromptCompressionMetrics(
+        original_tokens=original_tokens,
+        kept_tokens=kept_tokens,
+    )
 
 
 def _build_response_metrics(output: Any) -> PerRequestMetrics | None:
@@ -2911,6 +2925,11 @@ def _aggregate_generation_attempts(
         spec_decode_metrics=(
             metrics.speculative_decoding.model_dump()
             if metrics is not None and metrics.speculative_decoding is not None
+            else None
+        ),
+        prompt_compression=(
+            metrics.prompt_compression.model_dump()
+            if metrics is not None and metrics.prompt_compression is not None
             else None
         ),
     )
