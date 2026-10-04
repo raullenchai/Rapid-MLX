@@ -1302,6 +1302,24 @@ class TestServeLogLevelFlags:
         with pytest.raises(SystemExit):
             build_parser().parse_args(["serve", "m", "--log-level", "TRACE"])
 
+    def test_cli_applies_warning_level_before_server_import(self, monkeypatch):
+        import logging
+
+        from rapid_mlx.cli import _configure_bootstrap_logging
+
+        root = logging.getLogger()
+        previous = root.level
+        configured = []
+        monkeypatch.setattr(
+            logging, "basicConfig", lambda **kwargs: configured.append(kwargs)
+        )
+        try:
+            _configure_bootstrap_logging("warning")
+            assert root.level == logging.WARNING
+            assert configured == [{"level": logging.WARNING}]
+        finally:
+            root.setLevel(previous)
+
     def test_module_server_has_log_level_flag(self):
         from pathlib import Path
 

@@ -161,6 +161,20 @@ def _track_telemetry_opted_in() -> None:
 # real installs get tab completion out of the box.
 
 
+def _configure_bootstrap_logging(log_level: str) -> None:
+    """Apply the serve log level before importing diagnostic-heavy modules."""
+
+    import logging
+
+    normalized = _log_level_choice(log_level)
+    level = getattr(logging, normalized, logging.INFO)
+    # Install a handler when this is a standalone CLI process. If an embedder
+    # already owns the handlers, basicConfig is deliberately a no-op while the
+    # explicit root level still honors the serve flag.
+    logging.basicConfig(level=level)
+    logging.getLogger().setLevel(level)
+
+
 def _auth_feature_str(argv_api_key: str | None) -> str | None:
     """Banner-side renderer for the ``auth: on`` feature line.
 
@@ -5630,6 +5644,12 @@ def serve_command(args):
                 file=sys.stderr,
             )
             sys.exit(1)
+
+    # Importing the unified server also imports scheduler modules that report
+    # optional kernel installation at INFO. Apply the parsed level first so a
+    # WARNING/ERROR serve does not leak those lines before configure_logging()
+    # gets a chance to run.
+    _configure_bootstrap_logging(args.log_level)
 
     # Import unified server
     from . import server
