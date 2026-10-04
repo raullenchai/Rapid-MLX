@@ -820,6 +820,14 @@ def test_failed_post_ready_step_keeps_the_server(capsys):
     fd._run_after_ready(["launch", "x"], ["launch", "x"], lambda _a: sys.exit(0))
     assert "failed" not in capsys.readouterr().out
 
+    def crashing(_argv):
+        raise RuntimeError("config dir read-only")
+
+    fd._run_after_ready(["launch", "x"], ["launch", "x"], crashing)
+    assert "failed (config dir read-only); the server keeps running" in (
+        capsys.readouterr().out
+    )
+
 
 def test_run_bare_tty_quit_runs_nothing(monkeypatch):
     monkeypatch.setattr(fd, "interactive_terminal", lambda: True)
@@ -905,6 +913,7 @@ def test_record_and_read_last_model(monkeypatch, tmp_path):
     assert fr.last_used_model() is None
     fr.record_last_model("qwen3.5-4b-4bit")
     assert fr.last_used_model() == "qwen3.5-4b-4bit"
+    assert [p.name for p in (tmp_path / "s").iterdir()] == ["last_chat_model"]
     # Paths, raw repo ids and non-chat aliases are never stored.
     for name in ("/tmp/model", "org/repo", "embeddinggemma-300m-8bit", None, ""):
         fr.record_last_model(name)

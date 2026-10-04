@@ -191,7 +191,10 @@ def record_last_model(name: str | None) -> None:
     try:
         target = _last_model_file()
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(name + "\n", encoding="utf-8")
+        # Write-then-rename so a concurrent reader never sees a partial file.
+        tmp = target.with_name(f"{target.name}.{os.getpid()}.tmp")
+        tmp.write_text(name + "\n", encoding="utf-8")
+        os.replace(tmp, target)
     except Exception:
         return
 

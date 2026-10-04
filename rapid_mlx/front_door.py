@@ -763,3 +763,5 @@ def _run_after_ready(
     except SystemExit as exc:
         if exc.code not in (None, 0):
             print(f"  That step failed (exit {exc.code}); the server keeps running.")
+    except Exception as exc:  # the foreground server must outlive a bad launch
+        print(f"  That step failed ({exc}); the server keeps running.")
