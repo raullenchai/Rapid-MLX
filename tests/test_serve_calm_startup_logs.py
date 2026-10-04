@@ -62,8 +62,6 @@ def test_post_ready_prefix_cache_load_lines_are_debug_not_info(monkeypatch, capl
     after the connect card and pushed it off the terminal. They are warm-start
     detail, so they move to DEBUG.
     """
-    from rapid_mlx.runtime import cache as cache_mod
-
     cache_mod = _stub_config_and_cache_dir(monkeypatch)
 
     with caplog.at_level(logging.INFO):
@@ -88,8 +86,6 @@ def test_post_ready_prefix_cache_load_lines_are_debug_not_info(monkeypatch, capl
 
 def test_post_ready_prefix_cache_no_entries_branch_is_debug(monkeypatch, caplog):
     """The ``No prefix cache entries found on disk`` branch is DEBUG too."""
-    from rapid_mlx.runtime import cache as cache_mod
-
     cache_mod = _stub_config_and_cache_dir(monkeypatch, entries=0)
 
     with caplog.at_level(logging.INFO):

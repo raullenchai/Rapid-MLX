@@ -96,11 +96,6 @@ class TestExplicitBaseWins:
         shas = _make_branched_repo(ctx.repo_root)
         ctx.base_override = "explicit-base-sha"
         ctx.head_sha = shas["head"]
-        meta = {
-            "baseRefOid": shas["base_tip"],
-            "headRefOid": shas["head"],
-            "baseRefName": "base",
-        }
 
         # Derivation must NOT be touched: git merge-base and gh compare both
         # fail loudly if invoked, proving --base short-circuits.

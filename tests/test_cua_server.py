@@ -1518,7 +1518,6 @@ def test_stalled_completion_disposition_never_counts_as_completed(client, monkey
 
 
 def test_create_rejects_bad_planner_and_concurrency(client):
-    test_client = client
     fresh = client.fresh_service
     bad = _post_run(client, planner="nope")
     assert bad.status_code == 400
