@@ -303,7 +303,7 @@ class TestDefaultTimeout:
 
     def test_cli_and_server_argparse_default_is_1800(self):
         """Codex R1 caught this: ServerConfig had been bumped to
-        1800 but BOTH CLI argparse (rapid_mlx/cli.py) AND server
+        1800 but BOTH CLI argparse (rapid_mlx/cli_parser.py) AND server
         argparse (rapid_mlx/server.py) still defaulted to 300, so
         ``rapid-mlx serve`` overwrote the config default at startup
         and users still got 5min.
@@ -315,7 +315,7 @@ class TestDefaultTimeout:
         """
         from pathlib import Path
 
-        import rapid_mlx.cli as cli_mod
+        import rapid_mlx.cli_parser as cli_mod
         import rapid_mlx.server as srv_mod
 
         for mod_label, mod in (("cli", cli_mod), ("server", srv_mod)):
