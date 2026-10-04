@@ -333,3 +333,30 @@ def test_suggest_without_anything_to_offer(monkeypatch):
 
     monkeypatch.setattr(alt, "_target_bytes", _boom)
     assert _suggest(insp, ram=None) == ([], False)
+
+
+def test_suggest_reports_the_suggested_targets(hub, monkeypatch):
+    hub["builds"] = [_model("mlx-community/Qwen3-0.6B-4bit")]
+    insp = _gguf_insp()
+    targets: list[str] = []
+    alt.suggest(
+        insp,
+        _verdict(insp),
+        command="serve",
+        supported=SUPPORTED,
+        ram_bytes=RAM,
+        targets=targets,
+    )
+    assert targets == ["mlx-community/Qwen3-0.6B-4bit"]
+    monkeypatch.setattr(alt, "similar_catalog_model", lambda target, ram: "q-4bit")
+    local = pf.Inspection(ref="/m", is_local=True, files=("x.gguf",))
+    targets.clear()
+    alt.suggest(
+        local,
+        _verdict(local),
+        command="pull",
+        supported=SUPPORTED,
+        ram_bytes=RAM,
+        targets=targets,
+    )
+    assert targets == ["q-4bit"]

@@ -98,6 +98,8 @@ def test_release_one_event_set_is_present():
             "model_pull_failed",
             "model_served",
             "model_serve_failed",
+            "model_imported",
+            "model_import_failed",
             "capability_rejected",
             "inference_bucket_reached",
             "agent_configured",

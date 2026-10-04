@@ -63,7 +63,14 @@ _GIB = 1 << 30
 
 
 class ImportRefusedError(Exception):
-    """A precondition failed; the message is shown to the user as-is."""
+    """A precondition failed; the message is shown to the user as-is.
+
+    ``error_class`` is the closed ``import_error_class`` telemetry value.
+    """
+
+    def __init__(self, message: str, *, error_class: str = "other") -> None:
+        super().__init__(message)
+        self.error_class = error_class
 
 
 def imports_root() -> Path:
@@ -217,32 +224,40 @@ def plan_import(
     if pf.classify_format(inspection.files) is not None:
         raise ImportRefusedError(
             f"{source} has no safetensors weights (GGUF or PyTorch .bin only); "
-            "import converts safetensors checkpoints."
+            "import converts safetensors checkpoints.",
+            error_class="unsupported_format",
         )
     config = inspection.config
     quant = config.get("quantization") or config.get("quantization_config")
     if quant:
         raise ImportRefusedError(
             f"{source} is already quantized; serve it directly: "
-            f"rapid-mlx serve {source}"
+            f"rapid-mlx serve {source}",
+            error_class="already_quantized",
         )
     model_type = config.get("model_type")
     if not isinstance(model_type, str) or not model_type:
-        raise ImportRefusedError(f"{source} has no config.json model_type to convert.")
+        raise ImportRefusedError(
+            f"{source} has no config.json model_type to convert.",
+            error_class="unsupported_architecture",
+        )
     if config.get("model_file") or config.get("auto_map"):
         raise ImportRefusedError(
             f"{source} ships its own model code (model_file/auto_map); import "
             "only converts architectures built into mlx-lm and never runs "
-            "repository code."
+            "repository code.",
+            error_class="unsupported_architecture",
         )
     if pf.architecture_supported(config, supported) is not True:
         raise ImportRefusedError(
             f"Architecture {model_type} has no mlx-lm converter in this install, "
-            "so it cannot be imported."
+            "so it cannot be imported.",
+            error_class="unsupported_architecture",
         )
     if inspection.weight_bytes <= 0:
         raise ImportRefusedError(
-            f"{source} has no model*.safetensors weights at its root."
+            f"{source} has no model*.safetensors weights at its root.",
+            error_class="unsupported_format",
         )
     dtype = (inspection.dtype or "bf16").lower().replace("bfloat16", "bf16")
     bytes_per_param = 4 if dtype in ("f32", "float32") else 2
@@ -254,7 +269,8 @@ def plan_import(
         revision = _local_revision(Path(source))
     elif not revision:
         raise ImportRefusedError(
-            f"Could not resolve {source}'s current revision; try again."
+            f"Could not resolve {source}'s current revision; try again.",
+            error_class="metadata_unavailable",
         )
     if name is None:
         name = _default_name(source, bits)
@@ -263,11 +279,13 @@ def plan_import(
             name = f"{name}-local"
     if not _valid_name(name):
         raise ImportRefusedError(
-            f"'{name}' is not a valid import name (letters, digits, '.', '_', '-')."
+            f"'{name}' is not a valid import name (letters, digits, '.', '_', '-').",
+            error_class="name_conflict",
         )
     if _name_is_taken(name):
         raise ImportRefusedError(
-            f"'{name}' is already a model alias; pick another --name."
+            f"'{name}' is already a model alias; pick another --name.",
+            error_class="name_conflict",
         )
     return Plan(
         source=source,
@@ -335,12 +353,14 @@ def check_resources(plan: Plan, ram_bytes: int | None) -> list[str]:
         elif free_cache < download_need:
             raise ImportRefusedError(
                 f"Downloading the source needs ~{pf._gb(download_need)} free in "
-                f"the Hugging Face cache; {pf._gb(free_cache)} is free."
+                f"the Hugging Face cache; {pf._gb(free_cache)} is free.",
+                error_class="insufficient_disk",
             )
     if free_out < output_need:
         raise ImportRefusedError(
             f"Import needs ~{pf._gb(output_need)} free disk; "
-            f"{pf._gb(free_out)} is free."
+            f"{pf._gb(free_out)} is free.",
+            error_class="insufficient_disk",
         )
     lines.append(
         f"Needs    ~{pf._gb(output_need)} free disk  (you have {pf._gb(free_out)})"
@@ -351,7 +371,8 @@ def check_resources(plan: Plan, ram_bytes: int | None) -> list[str]:
             raise ImportRefusedError(
                 f"The {plan.bits}-bit output (~{pf._gb(plan.output_bytes)}) would "
                 f"not leave enough memory to serve it on this "
-                f"{pf._gb(ram_bytes)} Mac. Try fewer bits (--quantize 3 or 2)."
+                f"{pf._gb(ram_bytes)} Mac. Try fewer bits (--quantize 3 or 2).",
+                error_class="insufficient_memory",
             )
         lines.append(
             f"Output   ~{pf._gb(plan.output_bytes)}, fits in {pf._gb(ram_bytes)} ✓"
@@ -374,6 +395,21 @@ def _same_filesystem(a: Path, b: Path) -> bool:
 # Execution
 
 
+class _StepTracker:
+    """Telemetry class for an exception that escapes ``execute`` untyped.
+
+    The download (Hub/network errors) and launching a worker (an ``OSError``
+    from ``subprocess``) can raise something other than
+    :class:`ImportRefusedError`; those keep their traceback, and this names the
+    step they escaped from. Typed refusals carry their own class.
+    """
+
+    current = "other"
+
+
+_steps = _StepTracker()
+
+
 class _Lock:
     """Per-name exclusive lock; released on exit even after a crash."""
 
@@ -391,7 +427,8 @@ class _Lock:
         except OSError:
             os.close(fd)
             raise ImportRefusedError(
-                "Another `rapid-mlx import` of this name is running."
+                "Another `rapid-mlx import` of this name is running.",
+                error_class="name_conflict",
             ) from None
         self._fd = fd
         return self
@@ -422,12 +459,15 @@ def _run_worker(*argv: str) -> None:
         )
     except subprocess.TimeoutExpired:
         raise ImportRefusedError(
-            f"{argv[0]} step did not finish within {SMOKE_TIMEOUT_SECONDS}s."
+            f"{argv[0]} step did not finish within {SMOKE_TIMEOUT_SECONDS}s.",
+            error_class=f"{argv[0]}_failed",
         ) from None
     if result.returncode != 0:
         lines = (result.stderr or "").strip().splitlines()[-_STDERR_TAIL_LINES:]
         detail = "\n    ".join(lines) if lines else "(no output)"
-        raise ImportRefusedError(f"{argv[0]} step failed:\n    {detail}")
+        raise ImportRefusedError(
+            f"{argv[0]} step failed:\n    {detail}", error_class=f"{argv[0]}_failed"
+        )
 
 
 def _download_source(plan: Plan) -> str:
@@ -477,7 +517,8 @@ def execute(
             raise ImportRefusedError(
                 f"An import named '{plan.name}' already exists from a different "
                 "source or recipe. Pass --name to pick another name, or --force "
-                "to replace it."
+                "to replace it.",
+                error_class="name_conflict",
             )
         # We hold the lock: any temp dir for this name is an abandoned run,
         # and a backup without a published import is a --force replacement
@@ -493,7 +534,9 @@ def execute(
             shutil.rmtree(stale, ignore_errors=True)
         tmp = Path(tempfile.mkdtemp(prefix=f".tmp-{plan.name}-", dir=root))
         try:
+            _steps.current = "download_failed"
             source_path = plan.source if plan.is_local else download(plan)
+            _steps.current = "convert_failed"
             out = tmp / "model"
             with spinner_factory("Quantizing … · Ctrl-C safe"):
                 run_worker(
@@ -503,8 +546,10 @@ def execute(
                     str(plan.bits),
                     str(GROUP_SIZE),
                 )
+            _steps.current = "smoke_failed"
             with spinner_factory("Smoke test …"):
                 run_worker("smoke", str(out))
+            _steps.current = "other"
             manifest = {
                 "key": plan.key,
                 "source": plan.source,
@@ -606,6 +651,25 @@ def print_imports_section() -> None:
 # CLI
 
 
+def _valid_repo_id(source: str) -> bool:
+    """Whether the Hub could ever accept ``source`` as an ``org/name`` id."""
+    from huggingface_hub.utils import HFValidationError, validate_repo_id
+
+    if source.count("/") != 1:
+        return False
+    try:
+        validate_repo_id(source)
+    except HFValidationError:
+        return False
+    return True
+
+
+def _emit_failed(error_class: str, source: str, bits: int) -> None:
+    from rapid_mlx.telemetry.model_events import emit_model_import_failed
+
+    emit_model_import_failed(error_class, source, bits)
+
+
 def import_command(args: Any, *, spinner_factory: Callable[[str], Any]) -> None:
     source = args.source
     bits = int(args.quantize)
@@ -616,7 +680,9 @@ def import_command(args: Any, *, spinner_factory: Callable[[str], Any]) -> None:
             "Face repo id (org/name).",
             file=sys.stderr,
         )
+        _emit_failed("invalid_ref", source, bits)
         raise SystemExit(2)
+    _steps.current = "other"
     try:
         if is_local:
             inspection = pf.inspect_local(source)
@@ -626,7 +692,12 @@ def import_command(args: Any, *, spinner_factory: Callable[[str], Any]) -> None:
         if inspection is None:
             raise ImportRefusedError(
                 f"Could not read {source}'s metadata (check the name, your "
-                "network, or `huggingface-cli login` for gated repos)."
+                "network, or `huggingface-cli login` for gated repos).",
+                # A non-local ref that is not even org/name shaped can never
+                # resolve; only the telemetry class tells the two apart.
+                error_class="metadata_unavailable"
+                if is_local or _valid_repo_id(source)
+                else "invalid_ref",
             )
         plan = plan_import(
             source,
@@ -642,11 +713,20 @@ def import_command(args: Any, *, spinner_factory: Callable[[str], Any]) -> None:
             print(f"  {line}")
         final, reused = execute(plan, force=args.force, spinner_factory=spinner_factory)
     except ImportRefusedError as exc:
+        _emit_failed(exc.error_class, source, bits)
         print(f"\n  ✗ {exc}\n", file=sys.stderr)
         raise SystemExit(1) from None
     except KeyboardInterrupt:
+        _emit_failed("interrupted", source, bits)
         print("\n  Cancelled. The import cache is unchanged.\n", file=sys.stderr)
         raise SystemExit(130) from None
+    except Exception:
+        _emit_failed(_steps.current, source, bits)
+        raise
+    if not reused:
+        from rapid_mlx.telemetry.model_events import emit_model_imported
+
+        emit_model_imported(source, bits)
     print("  ✓ Already imported" if reused else "  ✓ Smoke test passed")
     print(f"  rapid-mlx serve {plan.name}")
     print(f"  (stored at {final})\n")
