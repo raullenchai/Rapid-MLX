@@ -369,6 +369,7 @@ def test_cache_specs_capabilities_and_plan_descriptions(monkeypatch):
     )
     assert pageable.pageable and pageable.restorable
     assert composite.pageable and composite.restorable
+    assert not unsupported.pageable and not unsupported.restorable
     assert pageable.group_key[0] == "pageable"
 
     assert (

@@ -459,8 +459,6 @@ class TestBatchSamplerSelection:
                     streams[req.request_id].append(token)
             return streams
 
-        seeded_requests = [_make_request(0, seed=7), _make_request(1, seed=99)]
-
         # Fresh request objects per run: ``_cached_sampler`` carries the
         # RNG stream across steps, so reusing an object would continue the
         # stream instead of restarting it (that continuity is pinned by

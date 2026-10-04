@@ -1297,7 +1297,6 @@ async def import_cache(req: ImportRequest):
         # #1100 BLOCKING-5: report the bytes THIS import actually loaded, not
         # the manifest's full ``total_bytes`` (which overstates when entries
         # are skipped).
-        cache = _prefix_cache(engine)
 
         # Hydrate from disk. #1100 codex round 4 (#2/#3): the entries count AND
         # the loaded-byte total are computed in the SAME step-thread task and

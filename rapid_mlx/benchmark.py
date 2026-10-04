@@ -369,7 +369,7 @@ def benchmark_single_prompt(
         token_count = 0
 
         # Generate tokens using stream_generate
-        for response in stream_generate(
+        for _response in stream_generate(
             model,
             tokenizer,
             prompt,
@@ -521,7 +521,7 @@ def run_benchmark(
     # Warmup runs
     if warmup_runs > 0:
         print(f"Running {warmup_runs} warmup run(s)...")
-        for i in range(warmup_runs):
+        for _ in range(warmup_runs):
             benchmark_single_prompt(
                 model, tokenizer, "Hello, how are you?", max_tokens=20
             )
