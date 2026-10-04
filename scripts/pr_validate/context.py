@@ -34,6 +34,7 @@ HIGH_BLAST_PATHS = (
     "rapid_mlx/scheduler.py",
     "rapid_mlx/server.py",
     "rapid_mlx/cli.py",
+    "rapid_mlx/cli_parser.py",
     "rapid_mlx/engine_core.py",
     "rapid_mlx/memory_cache.py",
     "rapid_mlx/prefix_cache.py",
