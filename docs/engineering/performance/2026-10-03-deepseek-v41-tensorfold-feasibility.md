@@ -98,6 +98,31 @@ not establish a model-level prefill or decode gain. The Studio still has over
 13 GiB swap in use and other large model processes, so a 200+ GiB model run
 would violate the existing clean-memory qualification gate.
 
+## Whole-model dogfood gate prepared: 2026-10-04
+
+`scripts/dogfood_deepseek_v41_read_ahead.py` runs five real tasks through the
+pinned native model and DSpark sidecar: Python code, arithmetic explanation,
+strict JSON, Chinese transaction explanation, and a longer context retrieval.
+Each task is run once with serial Engram pages and once with the experimental
+parallel path; pair order alternates. It records reply text, token hash, task
+check, prompt/completion counts, time to first token, and total time. Token
+hashes must match within every pair. Prompt pairs reuse file pages, so their
+timings are for functional dogfood and must not be used as a cold-prefill speed
+claim. The script resolves snapshots from the default HF cache only.
+
+Run under the existing large-model lock when the Studio has at least 215 GiB
+available and zero used swap:
+
+```sh
+python scripts/large-model-run.py --working-set-gb 215 -- \
+  python scripts/dogfood_deepseek_v41_read_ahead.py
+```
+
+The 2026-10-04 preflight refused the run before loading weights: 168.54 GiB
+available and 13.1 GiB swap in use. Several unrelated CUA and model-server
+processes were active; they were left running. MZR-2 has only 48 GiB physical
+memory. The whole-model correctness and latency gate remains unexecuted.
+
 The current Studio has 13.1 GiB swap in use and other large model processes.
 Under the large-model qualification policy, this invalidates a new 200+ GiB
 performance capture. No V4.1 TensorFold speed claim was made.

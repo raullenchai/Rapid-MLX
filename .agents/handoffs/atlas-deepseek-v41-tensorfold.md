@@ -38,3 +38,10 @@ improved from 3.621/3.156 s to 0.366/0.362 s in two alternating pairs;
 identical-index arrays matched, and 54 focused tests pass. This is I/O-stage
 evidence only. Full-model paired prefill/decode remains outstanding until the
 Studio has clean memory pressure and zero used swap.
+
+2026-10-04 dogfood update: prepared five-task real-model runner with paired
+serial/parallel Engram modes, exact token comparison, task checks, and
+latencies. Its host gate refused before model load at 168.54 GiB available and
+13.1 GiB swap used; multiple unrelated model/CUA services were active. Run the
+documented large-model-lock command after a dedicated clean-memory window.
+MZR-2 has only 48 GiB and cannot host this checkpoint.
