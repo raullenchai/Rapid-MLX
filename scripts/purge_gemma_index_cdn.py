@@ -33,13 +33,46 @@ class OperationError(RuntimeError):
     """A fail-closed operational contract violation."""
 
 
+class RejectRedirects(urllib.request.HTTPRedirectHandler):
+    """Reject every redirect before an authenticated follow-up can be sent."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise OperationError(f"redirect refused for authenticated API request ({code})")
+
+
+class CanonicalIndexRedirect(urllib.request.HTTPRedirectHandler):
+    """Allow only the canonical public index redirect, with fresh safe headers."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if (
+            code != 302
+            or req.get_method() != "GET"
+            or req.full_url != PURGE_URLS[0]
+            or newurl != PURGE_URLS[1]
+            or req.get_header("Authorization") is not None
+        ):
+            raise OperationError(f"unexpected public index redirect ({code})")
+        return urllib.request.Request(
+            PURGE_URLS[1],
+            headers={"Accept": "application/json", "User-Agent": USER_AGENT},
+        )
+
+
+def _open(
+    request: urllib.request.Request,
+    redirect_handler: urllib.request.HTTPRedirectHandler,
+):
+    return urllib.request.build_opener(redirect_handler).open(request, timeout=TIMEOUT)
+
+
 def _request(
     request: urllib.request.Request,
+    redirect_handler: urllib.request.HTTPRedirectHandler,
     *,
     expected_status: int = 200,
 ) -> bytes:
     try:
-        with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+        with _open(request, redirect_handler) as response:
             body = response.read(EXPECTED_SIZE + 1)
             status = response.status
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
@@ -70,7 +103,7 @@ def _api_json(
             "User-Agent": USER_AGENT,
         },
     )
-    raw = _request(request)
+    raw = _request(request, RejectRedirects())
     try:
         body = json.loads(raw)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -107,7 +140,7 @@ def verify_public_bytes() -> None:
             url,
             headers={"Accept": "application/json", "User-Agent": USER_AGENT},
         )
-        body = _request(request)
+        body = _request(request, CanonicalIndexRedirect())
         if len(body) != EXPECTED_SIZE:
             raise OperationError(
                 f"canonical index at {url} is {len(body)} bytes; expected {EXPECTED_SIZE}"
