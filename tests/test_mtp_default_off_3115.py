@@ -100,7 +100,8 @@ def test_serve_9b_without_flags_still_auto_selects_mtp() -> None:
     cli._normalize_speculative_config_or_exit(args)
     assert args._speculative_config is not None
     assert args._speculative_config.method == "mtp"
-    assert args.mtp_continuous_batching is True
+    assert args.mtp_continuous_batching is False
+    assert args.mtp_unquantized_cache is True
 
 
 def test_glm53_without_flags_selects_native_mtp_pair(monkeypatch) -> None:
@@ -206,12 +207,23 @@ def test_explicit_mllm_rejects_explicit_speculative_config(capsys) -> None:
 
 
 def test_explicit_opt_in_runs_qualified_continuous_route() -> None:
-    args = _args("qwen3.5-4b-4bit", json.dumps({"method": "mtp"}))
+    args = _args(
+        "qwen3.5-4b-4bit", json.dumps({"method": "mtp", "continuous_batching": True})
+    )
     cli._normalize_speculative_config_or_exit(args)
     assert args._speculative_config.method == "mtp"
     assert args.spec_decode == "mtp"
     assert args.mtp_continuous_batching_tier == "verified"
     assert args.mtp_continuous_batching is True
+    assert args.mtp_unquantized_cache is True
+
+
+def test_explicit_mtp_opt_in_batches_concurrency_through_plain_decode() -> None:
+    args = _args("qwen3.5-4b-4bit", json.dumps({"method": "mtp"}))
+    cli._normalize_speculative_config_or_exit(args)
+    assert args.spec_decode == "mtp"
+    assert args.mtp_continuous_batching is False
+    assert args.mtp_unquantized_cache is True
 
 
 def test_default_helper_fails_closed(monkeypatch) -> None:

@@ -23,7 +23,10 @@ pytest.importorskip("mlx")
 pytestmark = pytest.mark.requires_mlx
 
 
+import copy
+import gc
 import importlib
+import weakref
 
 import mlx.core as mx
 from mlx_lm.models.cache import KVCache, RotatingKVCache
@@ -467,3 +470,85 @@ def test_extend_cache_layer_count_mismatch_raises():
     gen = importlib.import_module("mlx_lm.generate")
     with pytest.raises(ValueError, match="layer count mismatch"):
         gen._extend_cache([_filled_kv(), _filled_kv()], [_filled_kv()])
+
+
+# ------------------------------------------- #4108: no reference cycle
+
+
+def test_admitted_cache_freed_by_refcount_alone():
+    """#4108: a bound method stored in the instance dict made every admitted
+    cache a reference cycle, so a finished request's KV stayed resident until
+    a full cyclic collection (which the server's raised GC thresholds made
+    rare). Metal active memory grew request after request until admission
+    returned 503 for every request. The admitted cache must be freed the
+    moment the last strong reference goes, with the cyclic collector off."""
+    c = _passthrough(_filled_kv())
+    assert callable(c.filter) and callable(c.extract) and callable(c.extend)
+    ref = weakref.ref(c)
+    was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        del c
+        assert ref() is None
+    finally:
+        if was_enabled:
+            gc.enable()
+
+
+def test_admitted_cache_releases_metal_memory_without_gc():
+    """Real-array check of #4108: dropping an admitted cache returns its
+    Metal buffers immediately — no ``gc.collect()`` needed."""
+    gc.collect()
+    mx.clear_cache()
+    n_bytes = 1 * 8 * 2048 * 256 * 4  # one float32 K (and one V) buffer
+    keys = mx.zeros((1, 8, 2048, 256))
+    values = mx.zeros((1, 8, 2048, 256))
+    c = KVCache()
+    c.update_and_fetch(keys, values)
+    del keys, values
+    c = _passthrough(c)  # copy-on-admit: the admitted layer owns fresh buffers
+    mx.eval(c.keys, c.values)
+    held = mx.get_active_memory()
+    was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        del c
+        # Buffers return once the GPU stream that last used them completes.
+        mx.synchronize()
+        mx.clear_cache()
+        assert mx.get_active_memory() <= held - 2 * n_bytes
+    finally:
+        if was_enabled:
+            gc.enable()
+
+
+def test_deepcopy_rebinds_surface_to_the_copy():
+    """A deep copy's surface acts on the copy (bound-method semantics), so a
+    reset of the copy never touches the original."""
+    c = _passthrough(_filled_kv())
+    dup = copy.deepcopy(c)
+    dup.filter([])
+    assert dup.keys is None and dup.offset == 0
+    assert c.keys is not None and c.offset == 4
+    assert dup.extract  # surface present on the copy
+
+
+def test_surface_outliving_its_cache_raises():
+    c = _passthrough(_filled_kv())
+    surface = c.__dict__["filter"]
+    assert copy.copy(surface) is surface
+    del c
+    with pytest.raises(ReferenceError):
+        surface([0])
+    assert copy.deepcopy(surface) is surface
+
+
+def test_standalone_surface_deepcopy_owns_its_cache():
+    """Deep-copying a surface on its own (not as part of its cache) returns a
+    callable that keeps the copied cache alive and acts on the copy only."""
+    c = _passthrough(_filled_kv())
+    reset_copy = copy.deepcopy(c.__dict__["filter"])
+    reset_copy([])  # resets the copied cache, which must still be alive
+    assert reset_copy.__self__ is not c
+    assert reset_copy.__self__.keys is None
+    assert c.keys is not None and c.offset == 4

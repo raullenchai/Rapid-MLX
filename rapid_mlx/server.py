@@ -3657,7 +3657,7 @@ def _capture_start_failures(func):
 def _build_parser() -> argparse.ArgumentParser:
     """Build the parser for the standalone ``python -m rapid_mlx.server`` CLI."""
 
-    from .cli import _PortContextArgumentParser, positive_int
+    from .cli_parser import _PortContextArgumentParser, positive_int
 
     parser = _PortContextArgumentParser(
         description="Rapid-MLX OpenAI-compatible server for LLM and MLLM inference",
@@ -3702,7 +3702,7 @@ Examples:
             "8000-8009; an explicit port never falls back)"
         ),
     )
-    from .cli import _add_video_job_args as _add_video_job_args_to_server_parser
+    from .cli_parser import _add_video_job_args as _add_video_job_args_to_server_parser
 
     _add_video_job_args_to_server_parser(parser)
     parser.add_argument(
@@ -3788,7 +3788,7 @@ Examples:
     # unified ``rapid-mlx serve`` CLI exposes the same surface; we mirror
     # it here so the standalone ``python -m rapid_mlx.server`` path is
     # not a silent gap (SOP §10).
-    from .cli import _add_pflash_args as _add_pflash_args_to_server_parser
+    from .cli_parser import _add_pflash_args as _add_pflash_args_to_server_parser
 
     _add_pflash_args_to_server_parser(parser)
     import argparse as _ap

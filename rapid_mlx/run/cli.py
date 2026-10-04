@@ -43,7 +43,7 @@ if TYPE_CHECKING:  # pragma: no cover - import-time only
 def register(subparsers) -> None:
     """Register the ``start`` subparser (deferred-import from ``cli.py``)."""
     from rapid_mlx._completion import alias_completer  # noqa: PLC0415
-    from rapid_mlx.cli import _port_arg  # noqa: PLC0415
+    from rapid_mlx.cli_parser import _port_arg  # noqa: PLC0415
 
     parser = subparsers.add_parser(
         "start",

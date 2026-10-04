@@ -64,6 +64,7 @@ import copy
 import logging
 import threading
 import types
+import weakref
 from typing import Any
 
 from . import _mlx_compat as _mlx_compat
@@ -266,6 +267,57 @@ def _singleton_extend(self, other):
     )
 
 
+class _WeakBoundSurface:
+    """A batch-surface method bound to its cache through a weak reference.
+
+    ``types.MethodType(fn, cache_obj)`` stored in ``cache_obj.__dict__`` is a
+    reference cycle (cache -> __dict__ -> bound method -> cache). Plain
+    refcounting then never frees an admitted cache when its request
+    finishes; only the cyclic collector does, and the server raises the
+    collector thresholds so far that a long cache can survive into the old
+    generations and stay resident for the life of the process. Every B=1
+    request leaked its whole KV cache that way, until Metal active memory
+    reached the admission cap and every request got a 503 (#4108).
+
+    Holding the cache weakly breaks the cycle, so the cache is freed the
+    moment the batch and the request drop it. ``deepcopy`` rebinds to the
+    copy, like a bound method does; ``copy.copy`` shares the binding, like a
+    bound method does.
+    """
+
+    __slots__ = ("_fn", "_ref", "__weakref__")
+
+    def __init__(self, fn: Any, cache_obj: Any) -> None:
+        self._fn = fn
+        self._ref = weakref.ref(cache_obj)
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        cache_obj = self._ref()
+        if cache_obj is None:
+            raise ReferenceError(
+                f"singleton cache surface {self._fn.__name__} outlived its cache"
+            )
+        return self._fn(cache_obj, *args, **kwargs)
+
+    def __copy__(self) -> _WeakBoundSurface:
+        return self
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> Any:
+        cache_obj = self._ref()
+        if cache_obj is None:
+            return self
+        # Copied as part of its cache: the copy is already in ``memo`` and
+        # owns this surface, so bind weakly again. Copied on its own: nothing
+        # else keeps the copied cache alive, so the result must hold it — a
+        # plain bound method does, and it lives outside the cache's dict, so
+        # it is no cycle.
+        owned = id(cache_obj) in memo
+        cache_copy = copy.deepcopy(cache_obj, memo)
+        if owned:
+            return _WeakBoundSurface(self._fn, cache_copy)
+        return types.MethodType(self._fn, cache_copy)
+
+
 def _bind_singleton_surface(cache_obj: Any) -> None:
     """Attach the batch surface to THIS object only (never the class).
 
@@ -287,7 +339,9 @@ def _bind_singleton_surface(cache_obj: Any) -> None:
         ("extend", _singleton_extend),
     ):
         if not hasattr(type(cache_obj), name) and name not in cache_obj.__dict__:
-            setattr(cache_obj, name, types.MethodType(fn, cache_obj))
+            # Weakly bound: a bound method in the instance dict would make
+            # the cache a reference cycle that outlives its request (#4108).
+            setattr(cache_obj, name, _WeakBoundSurface(fn, cache_obj))
 
 
 _install_lock = threading.Lock()

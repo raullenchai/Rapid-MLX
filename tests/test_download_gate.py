@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import threading
 import time
 from types import SimpleNamespace
@@ -406,6 +407,147 @@ def _seed_refs_main(repo_root, sha: str) -> None:
     (refs / "main").write_text(sha)
 
 
+def test_macos_external_ref_classifier_uses_resolved_mount_boundary(monkeypatch):
+    """The bounded reader is selected from the resolved mount location."""
+    monkeypatch.setattr(gate.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(
+        gate.os.path,
+        "realpath",
+        lambda path: {
+            "/private/tmp/model-link": "/Volumes/Models/hub/refs/main",
+            "/Users/me/.cache/hub/refs/main": "/Users/me/.cache/hub/refs/main",
+        }[path],
+    )
+
+    assert gate._is_macos_external_path("/private/tmp/model-link") is True
+    assert gate._is_macos_external_path("/Users/me/.cache/hub/refs/main") is False
+
+
+def test_external_ref_classifier_skips_non_macos_hosts(monkeypatch):
+    """Linux cache probes keep using the ordinary in-process reader."""
+    monkeypatch.setattr(gate.platform, "system", lambda: "Linux")
+
+    assert gate._is_macos_external_path("/Volumes/Models/hub/refs/main") is False
+
+
+def test_macos_external_ref_classifier_fails_closed_on_resolution_error(monkeypatch):
+    """An unreadable path must not crash ordinary cache discovery."""
+    monkeypatch.setattr(gate.platform, "system", lambda: "Darwin")
+
+    def unavailable(_path):
+        raise OSError("volume unavailable")
+
+    monkeypatch.setattr(gate.os.path, "realpath", unavailable)
+
+    assert gate._is_macos_external_path("/Volumes/Models/hub/refs/main") is False
+
+
+def test_external_ref_read_has_a_hard_deadline(tmp_path, monkeypatch):
+    """A macOS volume permission stall must not freeze BYOM startup."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    _seed_refs_main(repo_root, "abc123")
+    monkeypatch.setattr(gate, "_is_macos_external_path", lambda _path: True)
+
+    def blocked(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired(cmd="head", timeout=2)
+
+    monkeypatch.setattr(gate.subprocess, "run", blocked)
+
+    with pytest.raises(gate.CacheProbeTimeoutError) as raised:
+        gate._resolved_snapshot_sha(str(repo_root), raise_on_timeout=True)
+
+    assert raised.value.path.endswith("refs/main")
+    assert "Files & Folders" in raised.value.user_message()
+
+
+def test_external_ref_timeout_degrades_to_cache_miss_by_default(tmp_path, monkeypatch):
+    """Non-CLI probes keep their historical best-effort false/None contract."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    _seed_refs_main(repo_root, "abc123")
+    monkeypatch.setattr(gate, "_is_macos_external_path", lambda _path: True)
+
+    def blocked(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired(cmd="head", timeout=2)
+
+    monkeypatch.setattr(gate.subprocess, "run", blocked)
+
+    assert gate._resolved_snapshot_sha(str(repo_root)) is None
+
+
+def test_external_ref_reader_unavailable_is_a_cache_miss(tmp_path, monkeypatch):
+    """A missing or unlaunchable system reader cannot make startup fail."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    _seed_refs_main(repo_root, "abc123")
+    monkeypatch.setattr(gate, "_is_macos_external_path", lambda _path: True)
+
+    def unavailable(*_args, **_kwargs):
+        raise OSError("head is unavailable")
+
+    monkeypatch.setattr(gate.subprocess, "run", unavailable)
+
+    assert gate._resolved_snapshot_sha(str(repo_root), raise_on_timeout=True) is None
+
+
+@pytest.mark.parametrize("error", ["Permission denied", "Operation not permitted"])
+def test_external_ref_permission_failure_is_actionable_only_in_strict_probe(
+    tmp_path, monkeypatch, error
+):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    _seed_refs_main(repo_root, "abc123")
+    monkeypatch.setattr(gate, "_is_macos_external_path", lambda _path: True)
+    monkeypatch.setattr(
+        gate.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=1, stdout="", stderr=f"head: refs/main: {error}"
+        ),
+    )
+
+    assert gate._resolved_snapshot_sha(str(repo_root)) is None
+    with pytest.raises(gate.CacheProbePermissionError) as raised:
+        gate._resolved_snapshot_sha(str(repo_root), raise_on_timeout=True)
+    assert "Files & Folders" in raised.value.user_message()
+
+
+def test_external_ref_absent_is_still_a_cache_miss(tmp_path, monkeypatch):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    monkeypatch.setattr(gate, "_is_macos_external_path", lambda _path: True)
+    monkeypatch.setattr(
+        gate.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=1, stdout="", stderr="head: refs/main: No such file or directory"
+        ),
+    )
+
+    assert gate._resolved_snapshot_sha(str(repo_root), raise_on_timeout=True) is None
+
+
+def test_external_ref_helper_reads_only_a_bounded_payload(tmp_path, monkeypatch):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    _seed_refs_main(repo_root, "abc123")
+    monkeypatch.setattr(gate, "_is_macos_external_path", lambda _path: True)
+    seen = {}
+
+    def completed(command, **kwargs):
+        seen["command"] = command
+        seen["kwargs"] = kwargs
+        return SimpleNamespace(returncode=0, stdout="abc123\n", stderr="")
+
+    monkeypatch.setattr(gate.subprocess, "run", completed)
+
+    assert gate._resolved_snapshot_sha(str(repo_root)) == "abc123"
+    assert seen["command"][:3] == ("/usr/bin/head", "-c", "256")
+    assert seen["kwargs"]["timeout"] == gate._EXTERNAL_REF_READ_TIMEOUT_SECONDS
+    assert seen["kwargs"]["env"]["LC_ALL"] == "C"
+
+
 def test_is_repo_cached_true_when_weight_file_present(tmp_path, monkeypatch):
     """At least one non-empty weight file in the snapshot tree → True."""
     cache_root = tmp_path / "hf-cache"
@@ -422,6 +564,27 @@ def test_is_repo_cached_true_when_weight_file_present(tmp_path, monkeypatch):
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
 
     assert gate.is_repo_cached("foo/cached") is True
+
+
+def test_strict_repo_probe_preserves_external_cache_errors(tmp_path, monkeypatch):
+    """The CLI preflight must receive the actionable external-volume failure."""
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / "models--foo--blocked"
+    (repo_root / "snapshots").mkdir(parents=True)
+    expected = gate.CacheProbeTimeoutError("/Volumes/Models/refs/main", 2)
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    def strict_resolve(_repo_root, *, raise_on_timeout):
+        assert raise_on_timeout is True
+        raise expected
+
+    monkeypatch.setattr(gate, "_resolved_snapshot_sha", strict_resolve)
+
+    with pytest.raises(gate.CacheProbeTimeoutError) as raised:
+        gate.require_repo_cache_probe("foo/blocked")
+
+    assert raised.value is expected
 
 
 def test_is_repo_cached_rejects_partial_numbered_shards_without_index(

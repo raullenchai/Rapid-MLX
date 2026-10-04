@@ -526,7 +526,6 @@ class K2HorizonToolParser(ToolParser):
             self._content_upto = end
             return {"content": addition} if addition else None
 
-        initial_upto = self._content_upto
         initial = current_text[self._content_upto : start]
         content_parts = [
             self._visible_post_tool_prefix(initial)
