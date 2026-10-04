@@ -60,59 +60,74 @@ def _keys(*keys):
     "ram_gb",
     sorted({float(t.floor_gb) for t in load_recommendation_tiers()} | {0.0, 12.0}),
 )
-def test_cold_default_is_always_one_of_recipes_picks(ram_gb, monkeypatch):
+def test_cold_default_is_quick_start_and_best_is_recipes_smart_pick(
+    ram_gb, monkeypatch
+):
     payload = recommendation_payload(ram_gb, validate_catalog=False)
     monkeypatch.setattr("rapid_mlx.cli._scan_hf_cache_models", lambda: [])
     monkeypatch.setattr("rapid_mlx.cli._recipe_free_disk_gb", lambda: None)
     picks = fd._picks_for(ram_gb, [])
     assert [p["alias"] for p in picks] == [p["alias"] for p in payload["picks"]]
     state = _state(picks=picks, ram_gb=ram_gb)
-    assert state.selected in {p["alias"] for p in payload["picks"]}
+    # Owner decision: a cold cache starts the same small model on every Mac,
+    # labelled "quick start"; "best for this Mac" is recipe's smart pick.
+    assert state.selected == fd.QUICK_START_MODEL
+    smart = next(p["alias"] for p in payload["picks"] if p["role"] == "smart")
+    assert fd.best_pick(state.picks)["alias"] == smart
+    text = fd.render_screen(state)
+    assert "quick start" in text
+    if smart != fd.QUICK_START_MODEL:
+        assert f"Best for this Mac: {smart}" in text
 
 
-def test_quick_start_prefers_no_caveat_then_smaller_download():
-    picks = [
-        _pick("big", "smart", size=9.0),
-        _pick("small-basic", "fast", size=1.0, caveat="Basic chat"),
-    ]
-    assert fd.quick_start_pick(picks)["alias"] == "big"
-    picks = [_pick("a", "smart", size=5.0), _pick("b", "fast", size=2.0)]
-    assert fd.quick_start_pick(picks)["alias"] == "b"
-    picks = [_pick("a", "smart", size=None), _pick("b", "fast", size=None)]
-    assert fd.quick_start_pick(picks)["alias"] == "b"  # tie → the fast pick
+def test_best_pick_is_the_smart_pick():
+    picks = [_pick("f", "fast"), _pick("s", "smart")]
+    assert fd.best_pick(picks)["alias"] == "s"
+    assert fd.best_pick([_pick("only", "fast")])["alias"] == "only"
 
 
-def test_18gb_cold_default_matches_recipe_fast_pick(monkeypatch):
+def test_quick_start_size_label(monkeypatch):
+    assert fd.quick_start_size_label() == "~3 GB"
+    monkeypatch.setattr("rapid_mlx.model_sizes.size_bytes", lambda _p: 9 * (1 << 30))
+    assert fd.quick_start_size_label() == "~9 GB"
+    monkeypatch.setattr("rapid_mlx.model_sizes.size_bytes", lambda _p: None)
+    assert fd.quick_start_size_label() == "~3 GB"
+    monkeypatch.setattr(
+        "rapid_mlx.model_aliases.resolve_profile",
+        lambda _a: (_ for _ in ()).throw(RuntimeError("catalog")),
+    )
+    assert fd.quick_start_size_label() == "~3 GB"
+
+
+def test_18gb_screen_labels_quick_start_and_best(monkeypatch):
     monkeypatch.setattr("rapid_mlx.cli._recipe_free_disk_gb", lambda: None)
     state = _state(picks=fd._picks_for(18.0, []))
     assert state.selected == "qwen3.5-4b-4bit"
-    roles = {p["alias"]: p["role"] for p in state.picks}
-    assert roles[state.selected] == "fast"
+    text = fd.render_screen(state)
+    assert "Ready to chat: qwen3.5-4b-4bit (quick start · ~3 GB download)" in text
+    assert "Best for this Mac: qwen3.5-9b-4bit (Smart, 5.6 GB) — press b" in text
 
 
-def test_default_priority_server_then_last_used_then_cached_then_cold():
+def test_default_priority_server_then_last_used_then_cached_recipe_then_quick():
     server = fd.ServerInfo(8000, "qwen3.5-9b-4bit")
     assert _state(server=server).selected == "qwen3.5-9b-4bit"
     # A non-chat server model is shown but never becomes the Enter default.
     emb = fd.ServerInfo(8000, "embeddinggemma-300m-8bit")
-    assert _state(server=emb).selected == "qwen3.5-4b-4bit"
+    assert _state(server=emb).selected == fd.QUICK_START_MODEL
     cached = ["lfm2.5-1b-4bit", "qwen3.5-9b-4bit"]
     assert _state(cached=cached, last_used="lfm2.5-1b-4bit").selected == (
         "lfm2.5-1b-4bit"
     )
-    # Last used but since deleted → fall back to a cached policy candidate.
-    assert _state(cached=["qwen3.5-9b-4bit"], last_used="gone").selected == (
-        "qwen3.5-9b-4bit"
-    )
-    assert _state(cached=["some-unlisted"]).selected == "qwen3.5-4b-4bit"
-
-
-def test_default_survives_candidate_lookup_failure(monkeypatch):
-    def boom(*_a, **_k):
-        raise RuntimeError("policy unreadable")
-
-    monkeypatch.setattr("rapid_mlx.recommendations.starter_model_candidates", boom)
-    assert _state(cached=["qwen3.5-9b-4bit"]).selected == "qwen3.5-4b-4bit"
+    # Last used since deleted → a cached recipe pick, best (smart) first.
+    both = ["qwen3.5-4b-4bit", "qwen3.5-9b-4bit"]
+    assert _state(cached=both, last_used="gone").selected == "qwen3.5-9b-4bit"
+    picks = [
+        _pick("qwen3.5-9b-4bit", "smart"),
+        _pick("qwen3.5-4b-4bit", "fast", cached=True),
+    ]
+    assert _state(picks=picks).selected == "qwen3.5-4b-4bit"
+    # A cached model outside this Mac's recipe picks is not auto-selected.
+    assert _state(cached=["lfm2.5-1b-4bit"]).selected == fd.QUICK_START_MODEL
 
 
 def test_can_chat(monkeypatch):
@@ -135,9 +150,10 @@ def test_first_run_screen_fits_and_names_every_action():
     assert len(lines) <= 20
     assert lines[0] == "rapid-mlx 9.9.9 · Apple M3 Pro · 18 GB"
     assert lines[1] == fd.PRODUCT_LINE
-    assert "▸ qwen3.5-4b-4bit   Fast · ~61 tok/s · 2.9 GB download" in text
-    assert "  qwen3.5-9b-4bit   Smart · ~36 tok/s · 5.6 GB download" in text
+    assert "Ready to chat: qwen3.5-4b-4bit (quick start · ~3 GB download)" in text
+    assert "Best for this Mac: qwen3.5-9b-4bit (Smart, 5.6 GB) — press b" in text
     assert "Enter  Start chatting with qwen3.5-4b-4bit" in text
+    assert "b      Chat with the best model for this Mac (qwen3.5-9b-4bit)" in text
     assert "c      Connect Claude Code (detected)" in text
     assert "s      Start the server" in text
     assert "m      Choose another model" in text
@@ -146,6 +162,41 @@ def test_first_run_screen_fits_and_names_every_action():
     assert "8001" not in text
     assert "busy" not in text
     assert max(len(line) for line in lines) <= 80
+
+
+def test_best_already_selected_hides_b_and_says_so():
+    state = _state(cached=["qwen3.5-9b-4bit"])
+    text = fd.render_screen(state)
+    assert "Ready to chat: qwen3.5-9b-4bit (downloaded) · best for this Mac" in text
+    assert "press b" not in text
+    assert "\n  b " not in text
+    # b still works (same model) even though it is not advertised.
+    plan = fd.run_interactive(state, key_reader=_keys("b"), out=str)
+    assert plan.steps == [["chat", "qwen3.5-9b-4bit"]]
+
+
+def test_quick_start_cached_and_best_facts():
+    picks = [
+        _pick("big", "smart", caveat="Not for coding", fit=False),
+        _pick("qwen3.5-4b-4bit", "fast", cached=True),
+    ]
+    text = fd.render_screen(_state(picks=picks))
+    assert "Ready to chat: qwen3.5-4b-4bit (quick start · downloaded)" in text
+    assert "Best for this Mac: big (Smart, Not for coding, 3.0 GB, not enough" in text
+    state = _state(cached=["qwen3.5-4b-4bit"], picks=[_pick("x", "smart")])
+    assert "(quick start · downloaded)" in fd.render_screen(state)
+    best_cached = [_pick("x", "smart", cached=True), _pick("y", "fast", size=None)]
+    assert fd._best_facts(best_cached[0]) == "Smart, downloaded"
+    assert fd._best_facts(best_cached[1]) == "Fast"
+
+
+def test_b_chats_with_the_best_pick_and_attaches_when_served():
+    plan = fd.run_interactive(_state(), key_reader=_keys("b"), out=str)
+    assert plan.steps == [["chat", "qwen3.5-9b-4bit"]]
+    state = _state(server=fd.ServerInfo(8123, "qwen3.5-9b-4bit"))
+    state.selected = fd.QUICK_START_MODEL
+    plan = fd.run_interactive(state, key_reader=_keys("b"), out=str)
+    assert plan.steps == [["chat", "qwen3.5-9b-4bit", "--port", "8123"]]
 
 
 def test_screen_without_agent_hides_c():
@@ -226,7 +277,9 @@ def test_non_tty_text_is_short_and_copy_pasteable():
     text = fd.render_non_tty("9.9.9", 18.0, picks)
     lines = text.split("\n")
     assert len(lines) <= 15
-    assert "Recommended for this Mac (18 GB): qwen3.5-4b-4bit (fast)" in text
+    assert "Quick start: qwen3.5-4b-4bit (~3 GB download)" in text
+    assert "Best for this Mac (18 GB): qwen3.5-9b-4bit" in text
+    assert "recipe picks: qwen3.5-9b-4bit (smart) · qwen3.5-4b-4bit (fast)" in text
     assert "  rapid-mlx pull qwen3.5-4b-4bit" in lines
     assert "  rapid-mlx serve qwen3.5-4b-4bit --port 8000" in lines
     assert "  rapid-mlx chat qwen3.5-4b-4bit" in lines
@@ -331,7 +384,17 @@ def test_m_picks_another_model_and_redraws():
     assert plan.steps == [["chat", "qwen3.5-9b-4bit"]]
     assert any("Choose a model" in s for s in shown)
     assert shown[-1].startswith(fd._CLEAR_SCREEN)
-    assert "▸ qwen3.5-9b-4bit" in shown[-1]
+    assert "Ready to chat: qwen3.5-9b-4bit · best for this Mac" in shown[-1]
+
+
+def test_picker_offers_quick_start_when_not_a_recipe_pick():
+    picks = [_pick("big-smart", "smart"), _pick("big-fast", "fast")]
+    state = _state(picks=picks)
+    aliases = [alias for alias, _ in fd.picker_entries(state)]
+    assert aliases == ["big-smart", "big-fast", fd.QUICK_START_MODEL]
+    assert fd.picker_entries(state)[-1][1].startswith("quick start · ~3 GB download")
+    unknown_ram = _state(picks=picks, ram_gb=0.0)
+    assert fd.picker_entries(unknown_ram)[-1][1] == "quick start · ~3 GB download"
 
 
 @pytest.mark.parametrize("back", [fd.KEY_QUIT, "q", fd.KEY_ENTER])

@@ -2,10 +2,12 @@
 
 * **TTY (stdin AND stdout are terminals, TERM is not ``dumb``, no ``CI``):**
   one screen of at most ~20 rows: header (version · chip · RAM), a one-line
-  product statement, the two "Recommended for this Mac" picks from the same
-  policy and numbers as ``rapid-mlx recipe``, and single-key actions. Enter
-  starts chatting; ``c`` connects a detected coding agent; ``s`` starts a
-  server; ``m`` picks another model; ``q``/Esc/Ctrl-C exits 0. Every action
+  product statement, the model Enter will chat with (on a cold cache the
+  ~3 GB "quick start" model on every Mac; a downloaded recipe pick for this
+  Mac wins when there is one) and, labelled separately, "Best for this Mac"
+  (``rapid-mlx recipe``'s smart pick, key ``b``). ``c`` connects a detected
+  coding agent; ``s`` starts a server; ``m`` picks another model;
+  ``q``/Esc/Ctrl-C exits 0. Every action
   echoes the exact command (``→ rapid-mlx chat <model>``) and then runs it
   in-process through the normal CLI path, so the second session needs no menu.
 * **Anything else (pipe, CI, ``TERM=dumb``):** a short, deterministic block
@@ -27,7 +29,15 @@ import subprocess
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from typing import Any
 
+from rapid_mlx.first_run import FIRST_RUN_MODEL
+
+# The quick-start model Enter downloads on a cold cache, on every Mac: small
+# (about 3 GB), tool-calling-reliable, and the same starter ``rapid-mlx chat``
+# picks with no model. It is labelled "quick start", distinct from the
+# "Best for this Mac" recipe pick, so the screen never contradicts recipe.
+QUICK_START_MODEL = FIRST_RUN_MODEL
 PRODUCT_LINE = "Local OpenAI- and Anthropic-compatible LLM server for Apple Silicon."
 DOCS_URL = "https://rapidmlx.com/docs/"
 DEFAULT_PORT = 8000
@@ -73,6 +83,7 @@ class FrontDoorState:
     server: ServerInfo | None = None
     agent: str | None = None
     selected: str = ""
+    quick_start_size: str = "~3 GB"
 
     @property
     def attach_port(self) -> int | None:
@@ -136,25 +147,27 @@ def _picks_for(ram_gb: float, cache_rows) -> list[dict]:
     return list(payload["picks"])
 
 
-def quick_start_pick(picks: Sequence[dict]) -> dict:
-    """The pick Enter starts on a cold cache.
+def quick_start_size_label(cache_rows=None) -> str:
+    """``~3 GB``-style one-time download size of the quick-start model."""
+    try:
+        from rapid_mlx.model_aliases import resolve_profile
+        from rapid_mlx.model_sizes import size_bytes
 
-    Both candidates are the policy's own picks for this RAM tier (the two
-    ``rapid-mlx recipe`` shows), so the screens never disagree. Prefer a pick
-    without a limitation caveat ("Basic chat", "Not for coding"), then the
-    smaller download (an already-downloaded pick counts as zero), so a
-    brand-new user reaches a first token quickly.
-    """
+        profile = resolve_profile(QUICK_START_MODEL)
+        size = size_bytes(profile.hf_path) if profile is not None else None
+    except Exception:
+        size = None
+    if not size:
+        return "~3 GB"
+    return f"~{max(1, round(size / float(1 << 30)))} GB"
 
-    def rank(pick: dict) -> tuple[bool, float, int]:
-        size = pick.get("download_size_gb")
-        return (
-            bool(pick.get("caveat")),
-            float("inf") if size is None else float(size),
-            0 if pick.get("role") == "fast" else 1,
-        )
 
-    return min(picks, key=rank)
+def best_pick(picks: Sequence[dict]) -> dict:
+    """ "Best for this Mac": the recipe tier's smart pick (recipe lists it first)."""
+    for pick in picks:
+        if pick.get("role") == "smart":
+            return pick
+    return picks[0]
 
 
 def _can_chat(model: str) -> bool:
@@ -170,7 +183,8 @@ def _can_chat(model: str) -> bool:
 
 
 def _default_model(state: FrontDoorState) -> str:
-    """Server model → last used → cached policy pick → quick-start pick."""
+    """Server model → last used → a cached recipe pick for this Mac (best
+    first) → the quick-start model."""
     if (
         state.server is not None
         and state.server.attachable
@@ -179,15 +193,11 @@ def _default_model(state: FrontDoorState) -> str:
         return state.server.model
     if state.last_used and state.last_used in state.cached:
         return state.last_used
-    try:
-        from rapid_mlx.recommendations import starter_model_candidates
-
-        for alias in starter_model_candidates(state.ram_gb, validate_catalog=False):
-            if alias in state.cached:
-                return alias
-    except Exception:
-        pass
-    return quick_start_pick(state.picks)["alias"]
+    best = best_pick(state.picks)
+    for pick in [best, *(p for p in state.picks if p is not best)]:
+        if pick.get("cached") or pick["alias"] in state.cached:
+            return str(pick["alias"])
+    return QUICK_START_MODEL
 
 
 def gather_state(version: str) -> FrontDoorState:
@@ -216,6 +226,7 @@ def gather_state(version: str) -> FrontDoorState:
         last_used=first_run.last_used_model(),
         server=_running_server(),
         agent=first_run.preferred_agent(),
+        quick_start_size=quick_start_size_label(),
     )
     state.selected = _default_model(state)
     return state
@@ -281,6 +292,27 @@ def agent_label(agent: str) -> str:
     return _AGENT_LABELS.get(agent, agent)
 
 
+def _quick_start_facts(state: FrontDoorState) -> str:
+    if QUICK_START_MODEL in state.cached or any(
+        p["alias"] == QUICK_START_MODEL and p.get("cached") for p in state.picks
+    ):
+        return "quick start · downloaded"
+    return f"quick start · {state.quick_start_size} download"
+
+
+def _best_facts(pick: dict) -> str:
+    facts = [_ROLE_LABELS.get(pick.get("role", ""), pick.get("role", ""))]
+    if pick.get("caveat"):
+        facts.append(pick["caveat"])
+    if pick.get("cached"):
+        facts.append("downloaded")
+    elif pick.get("download_size_gb") is not None:
+        facts.append(f"{pick['download_size_gb']:.1f} GB")
+    if pick.get("disk_fit") is False:
+        facts.append("not enough free disk")
+    return ", ".join(facts)
+
+
 def render_screen(state: FrontDoorState) -> str:
     """The front-door screen (no ANSI). At most ~20 rows."""
     lines = [_header(state), PRODUCT_LINE]
@@ -288,19 +320,34 @@ def render_screen(state: FrontDoorState) -> str:
         lines.append(f"Server running on :{state.server.port} · {state.server.model}")
     if state.last_used and state.last_used in state.cached:
         lines.append(f"Last used: {state.last_used}")
-    lines += ["", "Recommended for this Mac"]
-    width = max(len(p["alias"]) for p in state.picks) + 3
-    for pick in state.picks:
-        marker = "▸" if pick["alias"] == state.selected else " "
-        lines.append(f"{marker} {pick['alias']:<{width}}{_pick_facts(pick)}")
     lines.append("")
 
     model = state.selected
+    best = best_pick(state.picks)
+    if model == QUICK_START_MODEL:
+        target = f"{model} ({_quick_start_facts(state)})"
+    elif model in state.cached or (model == best["alias"] and best.get("cached")):
+        target = f"{model} (downloaded)"
+    else:
+        target = model
+    if model == best["alias"]:
+        target += " · best for this Mac"
+    lines.append(f"Ready to chat: {target}")
+    if best["alias"] != model:
+        lines.append(
+            f"Best for this Mac: {best['alias']} ({_best_facts(best)}) — press b"
+        )
+    lines.append("")
+
     port = state.attach_port
     if port is not None:
         lines.append(f"  Enter  Chat with {model} on :{port}")
     else:
         lines.append(f"  Enter  Start chatting with {model}")
+    if best["alias"] != model:
+        lines.append(
+            f"  b      Chat with the best model for this Mac ({best['alias']})"
+        )
     if state.agent is not None:
         name = agent_label(state.agent)
         if port is not None:
@@ -308,7 +355,7 @@ def render_screen(state: FrontDoorState) -> str:
         else:
             lines.append(f"  c      Connect {name} (detected): start a server for it")
     lines.append("  s      Start the server for your own tools (OpenAI/Anthropic API)")
-    lines.append("  m      Choose another model")
+    lines.append("  m      Choose another model (smart / fast / downloaded)")
     lines.append("  q      Quit")
     lines += ["", f"All commands: rapid-mlx --help · Docs: {DOCS_URL}"]
     return "\n".join(lines)
@@ -325,7 +372,9 @@ def picker_entries(state: FrontDoorState) -> list[tuple[str, str]]:
             fits = _fits_host(alias, state.ram_gb)
         except Exception:
             return ""
-        return {True: "fits this Mac", False: "too big for this Mac"}.get(fits, "")
+        if fits is None:
+            return ""
+        return "fits this Mac" if fits else "too big for this Mac"
 
     entries: list[tuple[str, str]] = []
     for pick in state.picks:
@@ -335,6 +384,13 @@ def picker_entries(state: FrontDoorState) -> list[tuple[str, str]]:
             facts.append(mark)
         entries.append((pick["alias"], " · ".join(facts)))
     seen = {alias for alias, _ in entries}
+    if QUICK_START_MODEL not in seen:
+        seen.add(QUICK_START_MODEL)
+        facts = [_quick_start_facts(state)]
+        mark = fit_mark(QUICK_START_MODEL)
+        if mark:
+            facts.append(mark)
+        entries.append((QUICK_START_MODEL, " · ".join(facts)))
     for alias in state.cached:
         if alias in seen or len(entries) >= _PICKER_LIMIT:
             continue
@@ -356,25 +412,25 @@ def render_picker(entries: Sequence[tuple[str, str]]) -> str:
     return "\n".join(lines)
 
 
-def render_non_tty(version: str, ram_gb: float, picks: Sequence[dict]) -> str:
+def render_non_tty(
+    version: str, ram_gb: float, picks: Sequence[dict], quick_size: str = "~3 GB"
+) -> str:
     """Deterministic text for a bare invocation without a terminal."""
-    default = quick_start_pick(picks)["alias"]
+    quick = QUICK_START_MODEL
+    best = best_pick(picks)
     ram = f" ({_gb(round(ram_gb, 1))} GB)" if ram_gb > 0 else ""
-    rec = " · ".join(
-        f"{p['alias']} ({p.get('role', '')})"
-        for p in sorted(picks, key=lambda p: p["alias"] != default)
-    )
+    recipe = " · ".join(f"{p['alias']} ({p.get('role', '')})" for p in picks)
     return "\n".join(
         [
             f"rapid-mlx {version}: no command given "
             "(the interactive start needs a terminal).",
-            f"Recommended for this Mac{ram}: {rec}",
+            f"Quick start: {quick} ({quick_size} download)",
+            f"Best for this Mac{ram}: {best['alias']} · recipe picks: {recipe}",
             "Non-interactive use:",
-            f"  rapid-mlx pull {default}",
-            f"  rapid-mlx serve {default} --port {DEFAULT_PORT}",
-            f"  rapid-mlx launch claude-code --model {default}"
-            "   # or: rapid-mlx agents",
-            f"  rapid-mlx chat {default}",
+            f"  rapid-mlx pull {quick}",
+            f"  rapid-mlx serve {quick} --port {DEFAULT_PORT}",
+            f"  rapid-mlx launch claude-code --model {quick}   # or: rapid-mlx agents",
+            f"  rapid-mlx chat {quick}",
             "All commands: rapid-mlx --help · "
             "Machine-readable picks: rapid-mlx recipe --json",
         ]
@@ -395,7 +451,9 @@ class Plan:
     after_ready: list[str] | None = None
 
 
-def plan_chat(state: FrontDoorState) -> Plan:
+def plan_chat(state: FrontDoorState, model: str | None = None) -> Plan:
+    if model is not None and model != state.selected:
+        state.selected = model
     port = state.attach_port
     argv = ["chat", state.selected]
     if port is not None:
@@ -547,6 +605,8 @@ def run_interactive(
             return None
         if key == KEY_ENTER:
             return plan_chat(state)
+        if key == "b":
+            return plan_chat(state, best_pick(state.picks)["alias"])
         if key == "s" or (key == "c" and state.agent is not None):
             port = state.attach_port if key == "c" else None
             if port is None:
@@ -607,7 +667,7 @@ def _ready_probe(url: str) -> bool:
 
     try:
         with urllib.request.urlopen(url, timeout=2) as response:  # noqa: S310
-            return response.status == 200
+            return bool(response.status == 200)
     except (urllib.error.URLError, OSError, ValueError):
         return False
 
@@ -617,7 +677,7 @@ def run_server_process(
     *,
     port: int | None = None,
     on_ready: Callable[[], None] | None = None,
-    popen: Callable[..., object] = subprocess.Popen,
+    popen: Callable[..., Any] = subprocess.Popen,
 ) -> int:
     """Run ``serve`` as a fresh foreground child and return its exit status.
 
@@ -636,7 +696,7 @@ def run_server_process(
         if on_ready is not None and port is not None:
             if wait_until_ready(port, proc):
                 on_ready()
-        return proc.wait()
+        return int(proc.wait())
     finally:
         signal.signal(signal.SIGINT, previous)
 
@@ -660,7 +720,9 @@ def run_bare(
             from rapid_mlx.recommendations import physical_ram_gb
 
             ram_gb = physical_ram_gb()
-            text = render_non_tty(version, ram_gb, _picks_for(ram_gb, []))
+            text = render_non_tty(
+                version, ram_gb, _picks_for(ram_gb, []), quick_start_size_label()
+            )
             print(text, file=sys.stderr)
             return 1
         state = gather_state(version)
