@@ -376,12 +376,35 @@ def test_pass_no_verdict_and_unchecked_outcomes(hook, monkeypatch, tmp_path):
     assert byom_funnel.props_for("qwen3.5-4b", failed=False) == {}
 
 
-def test_pull_format_gguf_is_a_refusal(hook, real_emit, telemetry_on):
+def test_pull_format_gguf_is_a_selector_pull(hook, real_emit, telemetry_on):
+    # Selector pulls carry no preflight outcome (events.json byom_preflight).
     with pytest.raises(SystemExit):
         hook(None, _args(command="pull", bits=None, format="gguf"))
     props = _payload(telemetry_on, "model_pull_failed")
-    assert props["preflight"] == "refused"
-    assert "suggestion" not in props
+    assert props["error_class"] == "unsupported_format"
+    assert "preflight" not in props and "suggestion" not in props
+
+
+def test_a_vanished_local_path_still_matches(tmp_path):
+    model = tmp_path / "model"
+    model.mkdir()
+    byom_funnel.begin([str(model)])
+    byom_funnel.set_preflight("passed")
+    model.rmdir()
+    assert byom_funnel.props_for(str(model), failed=True) == {"preflight": "passed"}
+
+
+def test_a_failed_consume_is_retried_by_the_next_event(monkeypatch):
+    _seed_suggestion("q-4bit")
+    real = byom_funnel._consume_suggestion
+    monkeypatch.setattr(byom_funnel, "_consume_suggestion", lambda refs: False)
+    props = byom_funnel.props_for("q-4bit", failed=False)
+    byom_funnel.note_emitted(props, True)
+    assert len(json.loads(_ledger().read_text())) == 1
+    monkeypatch.setattr(byom_funnel, "_consume_suggestion", real)
+    byom_funnel.note_emitted(props, True)
+    assert json.loads(_ledger().read_text()) == {}
+    byom_funnel.note_emitted(props, True)  # already consumed: a no-op
 
 
 def test_served_and_failed_serve_carry_the_context(telemetry_on):

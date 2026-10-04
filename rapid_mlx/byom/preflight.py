@@ -775,7 +775,6 @@ def run_cli_preflight(args: Any, *, spinner_factory: Callable[[str], Any]) -> No
     funnel.begin((getattr(args, "_original_alias", None), getattr(args, "model", None)))
     if args.command == "pull" and gguf_format_requested(getattr(args, "format", None)):
         print(f"\n  Error: {GGUF_FORMAT_MESSAGE}", file=sys.stderr)
-        funnel.set_preflight("refused")
         _emit_rejection(args, PreflightRejectedError(UNSUPPORTED_FORMAT))
         raise SystemExit(1)
     unchecked, target = _target_status(args)

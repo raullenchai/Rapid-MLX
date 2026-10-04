@@ -59,6 +59,9 @@ _SUGGESTION_MAX_KEYS = 32
 
 _lock = threading.Lock()
 _refs: frozenset[str] = frozenset()
+# _refs plus each reference's plain spelling, so a local path that vanished
+# (or was renamed) between preflight and the event still matches.
+_match: frozenset[str] = frozenset()
 _context: dict[str, object] = {}
 _consumed = [False]
 _clock = time.time
@@ -76,6 +79,12 @@ def _norm(ref: object) -> str | None:
     except Exception:
         pass
     return value.lower()
+
+
+def _plain(ref: object) -> str | None:
+    if not isinstance(ref, str) or not ref.strip():
+        return None
+    return ref.strip().lower()
 
 
 def _digest(ref: str) -> str:
@@ -191,9 +200,11 @@ def begin(refs: Iterable[object]) -> None:
     catalog or not, so a suggested catalog alias can be recognised too.
     Never raises.
     """
-    global _refs
+    global _refs, _match
     try:
+        refs = list(refs)
         normalized = frozenset(n for n in map(_norm, refs) if n is not None)
+        plain = frozenset(n for n in map(_plain, refs) if n is not None)
         # Peek only: the entry is consumed by the first lifecycle event that
         # reports it, so a run that emits nothing (a cached pull, an aborted
         # confirmation) leaves the suggestion for the next attempt.
@@ -204,6 +215,7 @@ def begin(refs: Iterable[object]) -> None:
         )
         with _lock:
             _refs = normalized
+            _match = normalized | plain
             _context.clear()
             _consumed[0] = False
             if via:
@@ -260,9 +272,12 @@ def note_emitted(props: object, accepted: object) -> None:
         with _lock:
             if _consumed[0] or _context.get("via_suggestion") is not True:
                 return
-            _consumed[0] = True
             refs = _refs
-        _consume_suggestion(refs)
+        # Marked only once the entry is really gone: lock contention or a
+        # failed write leaves it for the next accepted event to retry.
+        if _consume_suggestion(refs):
+            with _lock:
+                _consumed[0] = True
     except Exception:
         return
 
@@ -273,9 +288,9 @@ _REFUSAL_ONLY = ("suggestion", "support_request")
 def props_for(model_ref: object, *, failed: bool) -> dict[str, object]:
     """Funnel props for a lifecycle event about ``model_ref``; never raises."""
     try:
-        norm = _norm(model_ref)
+        forms = {_norm(model_ref), _plain(model_ref)} - {None}
         with _lock:
-            if norm is None or norm not in _refs:
+            if not forms & _match:
                 return {}
             context = dict(_context)
         props: dict[str, object] = {}
@@ -294,8 +309,9 @@ def props_for(model_ref: object, *, failed: bool) -> dict[str, object]:
 
 
 def _reset_for_tests() -> None:
-    global _refs
+    global _refs, _match
     with _lock:
         _refs = frozenset()
+        _match = frozenset()
         _context.clear()
         _consumed[0] = False
