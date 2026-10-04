@@ -170,7 +170,7 @@ def test_unreadable_consent_record_stays_silent(monkeypatch, capsys, caplog):
     with caplog.at_level(logging.DEBUG, logger=consent_runtime.logger.name):
         cli._start_quiet_lifecycle("help", no_telemetry=False)
     assert caplog.records == []
-    assert consent_runtime.logger.disabled is False
+    assert consent_runtime.logger.filters == []
     captured = capsys.readouterr()
     assert (captured.out, captured.err) == ("", "")
     # read_error blocks uploads; the lifecycle may start but sends nothing.
