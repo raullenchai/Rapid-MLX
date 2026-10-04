@@ -327,6 +327,46 @@ def test_reset_state_empty_home_creates_nothing(fake_home):
     assert result.consent_file.existed is False
     assert result.consent_lock.existed is False
     assert result.client_id.existed is False
+    assert result.byom_suggestion_ledger.existed is False
+
+
+def test_reset_state_removes_byom_suggestion_ledger(fake_home):
+    from rapid_mlx.telemetry import byom_funnel, state
+
+    ledger = byom_funnel._ledger_path()
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text('{"digest": 1}')
+
+    result = state.reset_state()
+
+    assert not ledger.exists()
+    assert result.byom_suggestion_ledger.existed is True
+    assert result.byom_suggestion_ledger.succeeded is True
+
+
+def test_reset_state_reports_byom_suggestion_ledger_unlink_error(
+    fake_home, monkeypatch
+):
+    from rapid_mlx.telemetry import byom_funnel, state
+
+    ledger = byom_funnel._ledger_path()
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text('{"digest": 1}')
+    real_unlink = type(ledger).unlink
+
+    def fail_ledger_unlink(path, *args, **kwargs):
+        if path == ledger:
+            raise PermissionError("denied")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(type(ledger), "unlink", fail_ledger_unlink)
+
+    result = state.reset_state()
+
+    assert result.incomplete
+    assert result.byom_suggestion_ledger.existed is True
+    assert result.byom_suggestion_ledger.succeeded is False
+    assert result.byom_suggestion_ledger.error_types == ("PermissionError",)
 
 
 def test_reset_state_reports_client_id_unlink_error(fake_home, monkeypatch):
