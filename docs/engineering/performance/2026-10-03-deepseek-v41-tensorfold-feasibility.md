@@ -46,13 +46,28 @@ Changing only the model type does not fix the weight and architecture mismatch.
 The upstream V4.1 contribution plan, issue #299, targets CUDA on two DGX
 Sparks. PR #300 introduces CUDA interfaces; it does not add a V4.1 family or
 Metal kernels. A later comment on issue #299 reports a **separate Mac MLX
-V4.1 prototype** on four unpublished branches. Its authors measured 35.1-38.1
+V4.1 prototype**. Its authors measured 35.1-38.1
 tokens/s on code and 26.3-28.0 tokens/s on prose with DSpark on an M3 Ultra
 512 GB host, using `Jundot/DeepSeek-V4.1-Flash-oQ4e-mtp`. They report 287 GiB
 resident weights and about 305 GiB peak RSS. This is real prototype evidence,
-but the code is not yet in public `main` or a V4.1 PR, and that checkpoint
+but the code was not in public `main` at this probe's date, and that checkpoint
 cannot fit this 256 GiB Studio. It is a different checkpoint from Rapid's
 REAP 2-bit target, so its speed numbers are not a same-weights comparison.
+
+## Update: 2026-10-04
+
+The Mac implementation is now public as four open, stacked TensorFold PRs:
+[#369](https://github.com/ashhart/TensorFold/pull/369) adds the serial MLX
+family, [#370](https://github.com/ashhart/TensorFold/pull/370) adds DSpark,
+[#371](https://github.com/ashhart/TensorFold/pull/371) adds exact decode-row
+kernels, and [#372](https://github.com/ashhart/TensorFold/pull/372) shares
+weight reads and reads Engram pages concurrently. None is merged into `main`.
+The latest PR reports upstream-tool greedy decode results on the 512 GiB M3
+Ultra of 29.1 tokens/s for code and 27.3 for chat; its cold Engram read-ahead
+probe reports 82 -> 244 prompt tokens/s. These are the authors' measurements
+on their oQ4e checkpoint, not a comparison with Rapid's REAP 2-bit checkpoint.
+The first PR's checklist still leaves real-checkpoint resumed-prompt and cold
+prefill tool checks open. A separate CUDA V4.1 family is open as draft #342.
 
 The current Studio has 13.1 GiB swap in use and other large model processes.
 Under the large-model qualification policy, this invalidates a new 200+ GiB
