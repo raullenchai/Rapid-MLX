@@ -13648,9 +13648,68 @@ def _start_v2_lifecycle(command: str | None) -> None:
         if telemetry_v2.set_surface_for_role(role) or role is ProcessRole.SIDECAR:
             return
 
-        telemetry_v2.start_lifecycle("server" if command == "serve" else "cli")
+        telemetry_v2.start_lifecycle("server" if command == "serve" else "cli", command)
     except Exception:
         # Telemetry cannot alter the host command's exit code or output.
+        return
+
+
+def _help_or_version_flag(raw_argv: list[str]) -> str | None:
+    """``help`` / ``version`` for the -h / -V flag action argparse ran first."""
+    head = raw_argv[: raw_argv.index("--")] if "--" in raw_argv else raw_argv
+    for token in head:
+        if token in ("-h", "--help"):
+            return "help"
+        if token in ("-V", "--version"):
+            return "version"
+    return None
+
+
+def _argv_disables_telemetry(raw_argv: list[str]) -> bool:
+    """Whether argv opts out, including argparse's unique-prefix spellings
+    (``--no-t``). Over-matching only ever suppresses telemetry."""
+    return any(
+        len(token) > len("--no-") and "--no-telemetry".startswith(token)
+        for token in raw_argv
+    )
+
+
+def _start_quiet_lifecycle(command: str, *, no_telemetry: bool) -> None:
+    """Lifecycle for entry points that must stay free of the disclosure.
+
+    Bare ``rapid-mlx`` and the ``--help`` / ``--version`` flags never print
+    the telemetry notice (that stays with the first real command, unchanged)
+    nor consent diagnostics. They therefore report ``app_opened`` only when
+    the notice was already delivered on an earlier run; until then they send
+    nothing.
+    """
+    try:
+        from rapid_mlx.telemetry import consent_runtime
+        from rapid_mlx.telemetry.state import set_cli_kill_switch
+
+        set_cli_kill_switch(no_telemetry)
+        # An unreadable consent record logs a warning while resolving; keep
+        # these output-clean paths byte-identical (the record then blocks
+        # uploads anyway, and the next real command surfaces it).
+        import logging
+        import threading
+
+        caller = threading.get_ident()
+
+        def _quiet(record: logging.LogRecord) -> bool:
+            # Drop only this thread's consent records, only for this call.
+            return bool(record.thread != caller)
+
+        consent_logger = consent_runtime.logger
+        consent_logger.addFilter(_quiet)
+        try:
+            if consent_runtime.resolve().deliver_notice:
+                return
+            consent_runtime.startup()
+        finally:
+            consent_logger.removeFilter(_quiet)
+        _start_v2_lifecycle(command)
+    except Exception:
         return
 
 
@@ -13729,7 +13788,16 @@ def main():
 
     # Systematic serve-flag passthrough for ``share`` via the standard ``--``
     # end-of-options separator — see ``_parse_args_with_share_passthrough``.
-    args = _parse_args_with_share_passthrough(parser, sys.argv[1:])
+    try:
+        args = _parse_args_with_share_passthrough(parser, sys.argv[1:])
+    except SystemExit as exc:
+        # ``-h`` / ``--help`` / ``-V`` / ``--version`` exit 0 inside argparse.
+        flag = _help_or_version_flag(sys.argv[1:]) if exc.code in (0, None) else None
+        if flag is not None:
+            _start_quiet_lifecycle(
+                flag, no_telemetry=_argv_disables_telemetry(sys.argv[1:])
+            )
+        raise
     # A missing required positional normally makes argparse print the entire
     # serve help (dozens of expert flags) before its one actionable error.
     # Keep the positional optional at parse time so this first-run mistake gets
@@ -13828,6 +13896,12 @@ def main():
                 lazy_load=bool(getattr(args, "lazy_load", False)),
             )
             attempted(selected_model, load_policy=policy)
+    else:
+        # Bare ``rapid-mlx``: report the launch without ever printing the
+        # disclosure from here (see ``_start_quiet_lifecycle``).
+        _start_quiet_lifecycle(
+            "bare", no_telemetry=bool(getattr(args, "no_telemetry", False))
+        )
 
     # First-run auto-select: ``chat`` / ``run`` invoked with no model arg.
     # Resolve the starter alias HERE — before the alias→path resolution below —
