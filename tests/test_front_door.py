@@ -916,3 +916,23 @@ def test_run_bare_chat_runs_in_process_and_exits_0(monkeypatch, capsys):
     assert code == 0
     assert calls == [["--no-banner", "chat", "qwen3.5-4b-4bit"]]
     assert "→ rapid-mlx chat qwen3.5-4b-4bit" in capsys.readouterr().out
+
+
+def test_run_bare_s_hands_the_terminal_to_a_server_child(monkeypatch, capsys):
+    monkeypatch.setattr(fd, "interactive_terminal", lambda: True)
+    monkeypatch.setattr(fd, "gather_state", lambda _v: _state())
+    monkeypatch.setattr(
+        fd, "run_interactive", lambda state: fd.plan_serve(state, port=8000)
+    )
+    served: list[list[str]] = []
+    code = fd.run_bare(
+        version="9.9.9",
+        top_level_flags=[],
+        dispatch=lambda _argv: pytest.fail("serve must not run in-process"),
+        serve=lambda argv: served.append(list(argv)) or 0,
+    )
+    assert code == 0
+    assert served == [["--no-banner", "serve", "qwen3.5-4b-4bit"]]
+    out = capsys.readouterr().out
+    assert "→ rapid-mlx serve qwen3.5-4b-4bit" in out
+    assert "http://127.0.0.1:8000/v1" in out
