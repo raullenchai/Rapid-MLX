@@ -51,9 +51,10 @@ def test_unknown_name_passes_through():
 
 
 def test_local_path_takes_priority_over_alias(tmp_path):
-    """A local directory matching an alias name should win."""
+    """A local model directory matching an alias name should win."""
     local_dir = tmp_path / "qwen3.5-9b-4bit"
     local_dir.mkdir()
+    (local_dir / "config.json").write_text("{}")
     old_cwd = os.getcwd()
     try:
         os.chdir(tmp_path)
@@ -471,6 +472,7 @@ def test_draft_gate_never_refuses_an_existing_local_path(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "mlx-community" / "Qwen3.6-27B-MTP-4bit").mkdir(parents=True)
     (tmp_path / "qwen3.6-35b-mtp-4bit").mkdir()
+    (tmp_path / "qwen3.6-35b-mtp-4bit" / "config.json").write_text("{}")
 
     assert draft_only_conflict("mlx-community/Qwen3.6-27B-MTP-4bit") is None
     assert draft_only_conflict("qwen3.6-35b-mtp-4bit") is None

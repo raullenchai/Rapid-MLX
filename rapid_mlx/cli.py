@@ -13878,6 +13878,13 @@ def main():
             print(f"\n  Error: {exc}", file=sys.stderr)
             raise SystemExit(1) from None
         if resolved != args.model:
+            from rapid_mlx.model_aliases import local_dir_shadows_alias
+
+            if local_dir_shadows_alias(args.model):
+                print(
+                    f"  Note: ./{args.model} is not a model folder; using the "
+                    f"catalog alias (pass ./{args.model} to force the local path)."
+                )
             print(f"  Alias: {args.model} → {resolved}")
             args._original_alias = args.model
             args.model = resolved
