@@ -716,7 +716,7 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 # Pinned Cloudflare reference source; Rapid-owned Clef adapter stays linted.
-"rapid_mlx/clef/vendor/joint_schema_model.py" = ["I"]
+"rapid_mlx/clef/vendor/joint_schema_model.py" = ["I", "B007"]
 # Vendored from ml-explore/mlx-lm PR #1192 (Blaizzy). Keep as-is so
 # upstream syncs remain a clean diff. Drop this once mlx-lm 0.32+
 # ships native deepseek_v4 support and we delete the vendored copy.

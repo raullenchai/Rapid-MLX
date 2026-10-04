@@ -424,7 +424,7 @@ class JointSchemaHead(torch.nn.Module):
             fields = self.field_norm(fields[0])
 
             record_logits: list[torch.Tensor] = []
-            for field, _question, lexical, routed in zip(
+            for field, question, lexical, routed in zip(
                 fields,
                 record.questions,
                 lexical_options,
