@@ -789,7 +789,7 @@ def test_install_method_detection_failure_disables_automatic_install(
     monkeypatch,
 ) -> None:
     stderr = _TTY()
-    order = _isolate_handler(monkeypatch, stdin=_TTY("y\n"), stderr=stderr)
+    _isolate_handler(monkeypatch, stdin=_TTY("y\n"), stderr=stderr)
     outcomes: list[str] = []
     monkeypatch.setattr(
         "rapid_mlx._version_check.detect_install_method",

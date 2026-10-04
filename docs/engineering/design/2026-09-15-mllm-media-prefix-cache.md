@@ -2,7 +2,7 @@
 
 Date: 2026-09-15 · Series: (1) media sampling parity (landed), (2) singleton no-rebatch (`perf/mllm-singleton-no-rebatch`, head `9d639eabc`), (3) this PR — `perf/mllm-media-prefix-cache` · Target lane: serialized hybrid MLLM (`MLLMBatchGenerator` under the structural B=1 policy) · Qualified checkpoint: Qwen3.6-35B-A3B-4bit, revision `38740b84…` (offline resolution).
 
-Authoritative spec: `vector-desk/.agents/handoffs/vector-mlx-vlm-runtime-independence.md` — "Media-aware full-prefix reuse ceiling", "Fable follow-up disposition", "Multi-turn media boundary spike", "PR ordering" (this PR is third, after singleton converged).
+Provenance: landed in #3505. The planning notes it grew from ("Media-aware full-prefix reuse ceiling", "Fable follow-up disposition", "Multi-turn media boundary spike", "PR ordering" — this PR is third, after singleton converged) lived in a local agent workspace that is not part of the repository; this document is the durable record of the decisions they reached.
 
 ## Problem
 
@@ -58,14 +58,14 @@ MRoPE bookkeeping (`_position_ids`, `_rope_deltas`) lives on the language module
 * on a resume hit, the entry's delta is installed around the suffix forward and the previous model fields are restored on every exit;
 * on a miss, error, or cancellation, the pre-existing model fields are restored unchanged — an aborted request never leaves its position state behind for the next request.
 
-**Invariant.** The serialized lane is structurally B=1 (`max_num_seqs` / `prefill_batch_size` / `completion_batch_size` == 1, plus the `_next()` no-active-batch admission rule the singleton PR relies on), and all MLX work runs on the single model-owning worker thread. Exactly one request can be between transaction-open and transaction-close, and the worker thread is the only writer of the model fields — the same atomicity argument the native-text wrapper documents. If any future change admits a second concurrent request on this lane, the media store/lookup path must refuse (fail closed) rather than share the transaction; eligibility re-asserts B=1 explicitly. Failure to restore model-global position state on all exit paths is a hard no-go (handoff gate).
+**Invariant.** The serialized lane is structurally B=1 (`max_num_seqs` / `prefill_batch_size` / `completion_batch_size` == 1, plus the `_next()` no-active-batch admission rule the singleton PR relies on), and all MLX work runs on the single model-owning worker thread. Exactly one request can be between transaction-open and transaction-close, and the worker thread is the only writer of the model fields — the same atomicity argument the native-text wrapper documents. If any future change admits a second concurrent request on this lane, the media store/lookup path must refuse (fail closed) rather than share the transaction; eligibility re-asserts B=1 explicitly. Failure to restore model-global position state on all exit paths is a hard no-go.
 
 ### 3. Exact token-prefix verification at the boundary
 
 The boundary stores the **processor-expanded token IDs of the strict prefix**, not generated IDs and not a re-rendered assistant message. Spike evidence is explicit: `generated_ids` appended to the prior prompt is *not* a prefix of the next prompt (0/6), because the template replaces the generation marker with the rendered assistant turn. An entry holds:
 
 * `token_ids` — the processor-expanded prefix (prior prompt up to and including the stable boundary);
-* cloned hybrid cache leaves at exactly that position (a complete prior-turn boundary; recurrent `ArraysCache` state is never trimmed generically — the design restores a complete boundary and prefills a strict suffix, per the handoff);
+* cloned hybrid cache leaves at exactly that position (a complete prior-turn boundary; recurrent `ArraysCache` state is never trimmed generically — the design restores a complete boundary and prefills a strict suffix);
 * the `rope_delta` recorded for that prefix;
 * byte size, identity digest, and insertion/recency for the LRU.
 

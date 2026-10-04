@@ -2847,6 +2847,68 @@ def test_main_does_not_treat_non_one_chat_spawn_value_as_child(monkeypatch):
     assert calls == ["cached"]
 
 
+def test_main_reports_external_cache_probe_timeout_without_traceback(
+    monkeypatch, capsys
+):
+    """Interactive BYOM startup fails fast with the macOS permission remedy."""
+    from rapid_mlx import _download_gate as gate
+
+    monkeypatch.delenv("RAPID_MLX_CHAT_SPAWN", raising=False)
+    monkeypatch.delenv("RAPID_MLX_AUTO_PULL", raising=False)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr(
+        "rapid_mlx.byom.preflight.run_cli_preflight", lambda *_args, **_kwargs: None
+    )
+
+    def blocked(_model):
+        raise gate.CacheProbeTimeoutError("/Volumes/Models/hf/refs/main", 2)
+
+    monkeypatch.setattr("rapid_mlx._download_gate.require_repo_cache_probe", blocked)
+    monkeypatch.setattr(cli, "serve_command", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["rapid-mlx", "serve", "community/model"],
+    )
+
+    with pytest.raises(SystemExit) as raised:
+        cli.main()
+
+    assert raised.value.code == 2
+    stderr = capsys.readouterr().err
+    assert "cannot read the Hugging Face cache" in stderr
+    assert "Privacy & Security → Files & Folders" in stderr
+
+
+def test_main_reports_external_cache_permission_failure_without_traceback(
+    monkeypatch, capsys
+):
+    from rapid_mlx import _download_gate as gate
+
+    monkeypatch.delenv("RAPID_MLX_CHAT_SPAWN", raising=False)
+    monkeypatch.delenv("RAPID_MLX_AUTO_PULL", raising=False)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr(
+        "rapid_mlx.byom.preflight.run_cli_preflight", lambda *_args, **_kwargs: None
+    )
+
+    def denied(_model):
+        raise gate.CacheProbePermissionError("/Volumes/Models/hf/refs/main")
+
+    monkeypatch.setattr("rapid_mlx._download_gate.require_repo_cache_probe", denied)
+    monkeypatch.setattr(cli, "serve_command", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(sys, "argv", ["rapid-mlx", "serve", "community/model"])
+
+    with pytest.raises(SystemExit) as raised:
+        cli.main()
+
+    assert raised.value.code == 2
+    stderr = capsys.readouterr().err
+    assert "cannot read the Hugging Face cache" in stderr
+    assert "Privacy & Security → Files & Folders" in stderr
+    assert "Traceback" not in stderr
+
+
 def test_main_skips_size_estimate_in_non_tty_context(monkeypatch):
     """The B2 gate must short-circuit on TTY/env checks BEFORE calling
     ``estimate_repo_size_bytes`` — otherwise every CI run with

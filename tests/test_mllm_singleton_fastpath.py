@@ -305,7 +305,6 @@ class TestProcessPromptsPathSelection:
     def test_unknown_leaf_fails_closed_into_merge(self, monkeypatch):
         from mlx_vlm.models.cache import ArraysCache
 
-        merges = []
         monkeypatch.setattr(
             ArraysCache, "merge", classmethod(lambda cls, caches: caches[0])
         )
@@ -366,7 +365,6 @@ class TestQueuedAdmission:
         gen.insert([_make_request(0), _make_request(1)])
 
         admitted = []
-        original = MLLMBatchGenerator._process_prompts
 
         def capture(self, requests):
             admitted.extend(r.uid for r in requests)

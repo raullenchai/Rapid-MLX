@@ -272,7 +272,7 @@ def run_benchmark(
     # Warmup runs
     if warmup_runs > 0:
         print(f"\nRunning {warmup_runs} warmup run(s)...")
-        for i in range(warmup_runs):
+        for _i in range(warmup_runs):
             benchmark_resolution(
                 server_url, base_image, 224, 224, model_name, warmup=True
             )

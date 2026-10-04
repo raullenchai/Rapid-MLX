@@ -1201,9 +1201,6 @@ def _near_anchor(norm_answer: str, anchors: tuple[str, ...], start: int) -> bool
         if not anchor:
             continue
         for pos in _term_occurrences(anchor, norm_answer):
-            window = norm_answer[
-                max(0, pos - SALIENT_WINDOW) : pos + len(anchor) + SALIENT_WINDOW
-            ]
             # The candidate's actual span must start inside the window.
             if pos - SALIENT_WINDOW <= start < pos + len(anchor) + SALIENT_WINDOW:
                 return True
