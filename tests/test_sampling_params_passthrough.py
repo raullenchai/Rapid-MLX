@@ -517,13 +517,24 @@ def test_scheduler_overrides_openai_penalty_context_size():
         )
 
     # Repetition penalty is a rapid-mlx extension (not OpenAI-spec) and
-    # is documented as multiplicative over a rolling window — leaving it
-    # at mlx-lm's default 20 is intentional. Assert we don't accidentally
-    # bump it (which would silently change semantics for existing users).
-    assert "repetition_context_size" not in call_args, (
-        "repetition_context_size should NOT be overridden in the scheduler. "
-        "repetition_penalty is rapid-mlx's multiplicative rolling-window "
-        "extension; only the OpenAI-spec frequency/presence penalties need "
-        "the larger window. If you're intentionally changing this, update "
-        "the test and document the semantic change."
+    # is documented as multiplicative over a rolling window. A request may
+    # set the window explicitly; when it does not, the window stays at
+    # mlx-lm's default 20. Assert the fallback is not accidentally bumped
+    # (which would silently change semantics for existing users).
+    fallback = re.search(
+        r"repetition_context_size\s*=\s*\(\s*(\d+)\s+"
+        r"if sp\.repetition_context_size is None\s+"
+        r"else sp\.repetition_context_size\s*\)",
+        call_args,
+    )
+    assert fallback, (
+        "scheduler.py no longer passes repetition_context_size as "
+        "'<default> if the request left it unset else the request value'. "
+        "If you're intentionally changing this, update the test and "
+        "document the semantic change."
+    )
+    assert int(fallback.group(1)) == 20, (
+        "the unset-request repetition window should stay at mlx-lm's "
+        "default 20; only the OpenAI-spec frequency/presence penalties "
+        "need the larger window."
     )

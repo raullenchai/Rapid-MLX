@@ -1355,8 +1355,11 @@ def test_cli_capabilities_and_error_envelope(capsys):
     )
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is False
+    # Runs against the real desktop: which structured refusal comes back
+    # depends on whether some app matches the name and has a window.
     assert payload["error"]["code"] in {
         "app_not_found",
+        "window_not_found",
         "element_not_found",
         "ax_set_failed",
         "unsupported_platform",

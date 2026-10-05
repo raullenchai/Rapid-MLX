@@ -545,6 +545,31 @@ def scheduler_config_stub(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _unstart_global_server_app_after_each_test():
+    """Keep the process-global FastAPI app configurable across tests.
+
+    The first request through ``rapid_mlx.server.app`` builds its middleware
+    stack, after which ``add_middleware`` raises. Without this, any test that
+    drives the real ``serve`` path (which configures CORS on that app) fails
+    whenever an earlier test in the same process sent a request through it.
+    Middleware a test registered is dropped again so it cannot leak either.
+    """
+    import sys
+
+    server = sys.modules.get("rapid_mlx.server")
+    app = getattr(server, "app", None)
+    before = list(app.user_middleware) if app is not None else None
+    yield
+    server = sys.modules.get("rapid_mlx.server")
+    app = getattr(server, "app", None)
+    if app is None:
+        return
+    if before is not None:
+        app.user_middleware[:] = before
+    app.middleware_stack = None
+
+
+@pytest.fixture(autouse=True)
 def _reset_global_parser_state_after_each_test():
     """Keep the process-global parser state hermetic across tests.
 

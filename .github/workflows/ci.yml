@@ -817,6 +817,9 @@ jobs:
             tests/test_scheduler_admission_policy.py \
             tests/test_scheduler_recurrent_cache_materialization.py \
             tests/test_think_stop_scheduler.py \
+            tests/test_memory_stability.py \
+            tests/test_sampling_params_passthrough.py \
+            tests/test_global_app_isolation.py \
             tests/test_prefix_cache_persistence.py \
             tests/test_agent_session_prefix_cache.py \
             tests/test_prefix_boundary_path_parity.py \
