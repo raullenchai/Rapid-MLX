@@ -1903,7 +1903,11 @@ def download_with_mirror_fallback(
         except OSError:
             return False
         if target.is_symlink():
-            return True
+            # Keep only the HF layout readiness gates expect; any other link
+            # (even to identical bytes) is dropped and refetched.
+            resolved = target.resolve(strict=False)
+            blobs = (repo_root / "blobs").resolve(strict=False)
+            return resolved.parent == blobs and resolved.name == expected
         # A proven regular file (e.g. left by an earlier default-branch
         # mirror pull of the same commit) moves into the HF blob layout so
         # readiness gates that require ``blobs/`` containment (Wan) agree.

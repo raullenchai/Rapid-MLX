@@ -790,3 +790,20 @@ def test_warm_pinned_file_without_a_digest_is_refetched(tmp_path, monkeypatch):
     assert ok is True
     assert router.file_urls() == []
     assert hf_calls == [("config.json", PIN)]
+
+
+def test_warm_link_outside_the_blob_layout_is_refetched(tmp_path, monkeypatch):
+    """Identical bytes behind a non-HF link still fail Wan's containment gate."""
+    snap = _snap(tmp_path)
+    snap.mkdir(parents=True)
+    elsewhere = tmp_path / "models--org--pinned-image" / "blobs" / "not-the-oid"
+    elsewhere.parent.mkdir(parents=True, exist_ok=True)
+    elsewhere.write_bytes(CONFIG)
+    (snap / "config.json").symlink_to(elsewhere)
+    siblings = [_sibling("config.json", CONFIG, lfs=False)]
+    ok, router, hf_calls, _ = _run(
+        tmp_path, monkeypatch, siblings, {"config.json": CONFIG}
+    )
+    assert ok is True
+    assert router.file_urls() == [f"{BASE}/{REPO}/config.json"]
+    assert (snap / "config.json").resolve().name == _oid(CONFIG)
