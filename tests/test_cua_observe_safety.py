@@ -290,6 +290,9 @@ def test_borrow_foreground_reactivates_on_foreground_route(monkeypatch):
 
 
 def test_save_and_synthetic_fill_borrow_foreground_first(monkeypatch):
+    # The foreground (global HID, Cmd+A) fill path; background delivery fills
+    # without taking the foreground (test_computer_use_offspace.py).
+    monkeypatch.setattr(background_input, "background_enabled", lambda: False)
     order = []
     monkeypatch.setattr(
         backend, "_borrow_foreground", lambda snap: order.append("borrow")

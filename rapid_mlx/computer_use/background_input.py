@@ -147,6 +147,37 @@ def click_plan(
     return steps
 
 
+_LEFT_DRAGGED = 6  # kCGEventLeftMouseDragged
+
+
+def drag_plan(
+    x0: float, y0: float, x1: float, y1: float, *, steps: int = 12
+) -> list[MouseStep]:
+    """Pure event plan for a background left-button drag (no OS calls).
+
+    Same primer and Chromium activation decoy as a left click, then a press
+    at the start, ``steps`` interpolated ``leftMouseDragged`` moves and a
+    release at the end. Pointer-event handlers (canvas, sliders, sortable
+    lists) see a real down/move/up sequence.
+    """
+    steps = max(2, min(int(steps), 60))
+    plan = [
+        MouseStep(_MOUSE_MOVED, x0, y0, 2, 0, 0, 0.015),
+        MouseStep(1, -1.0, -1.0, 1, 1, 0, 0.001),
+        MouseStep(2, -1.0, -1.0, 2, 1, 0, 0.100),
+        MouseStep(1, x0, y0, 3, 1, 0, 0.040),
+    ]
+    for i in range(1, steps + 1):
+        t = i / steps
+        plan.append(
+            MouseStep(
+                _LEFT_DRAGGED, x0 + (x1 - x0) * t, y0 + (y1 - y0) * t, 3, 1, 0, 0.012
+            )
+        )
+    plan.append(MouseStep(2, x1, y1, 3, 1, 0, 0.0))
+    return plan
+
+
 def scroll_ticks(lines: int) -> list[int]:
     """Split a signed line delta into per-notch wheel deltas (pure).
 
@@ -474,6 +505,42 @@ def _focus_record(wid: int, direction: int) -> ctypes.Array:
     return buf
 
 
+def _make_key_record(wid: int, kind: int) -> ctypes.Array:
+    """yabai's make-key-window record: a mouse down (0x01) / up (0x02) record
+    for ``wid`` at no location. Inside one process the 0x0D focus records
+    alone do not move key status; these do, without ordering the window
+    front."""
+    buf = (c_uint8 * 0xF8)()
+    buf[0x04] = 0xF8
+    buf[0x08] = kind
+    buf[0x3A] = 0x10
+    for offset in range(0x20, 0x30):
+        buf[offset] = 0xFF
+    for offset, byte in enumerate(int(wid).to_bytes(4, "little")):
+        buf[0x3C + offset] = byte
+    return buf
+
+
+def _switch_key_window(psn: _PSN, from_wid: int, to_wid: int) -> bool:
+    """Move key status between two windows of one process (yabai's recipe).
+
+    Defocus, a 20 ms gap (measured: with no gap the switch back is dropped),
+    focus, then the make-key records. Nothing is ordered front.
+    """
+    if not _post_record(psn, _focus_record(from_wid, 0x02)):
+        return False
+    time.sleep(0.02)
+    return (
+        _post_record(psn, _focus_record(to_wid, 0x01))
+        and _post_record(psn, _make_key_record(to_wid, 0x01))
+        and _post_record(psn, _make_key_record(to_wid, 0x02))
+    )
+
+
+def _same_psn(a: _PSN, b: _PSN) -> bool:
+    return (a.hi, a.lo) == (b.hi, b.lo)
+
+
 def _post_record(psn: _PSN, record: ctypes.Array) -> bool:
     s = _live()
     return bool(
@@ -502,6 +569,10 @@ def activate_without_raise(
     target = _psn_for_window(target_wid, target_pid)
     if front is None or target is None:
         return False
+    if _same_psn(front, target):
+        # Another window of the app the user is in: switch the key window
+        # inside the process (it stays the active app, nothing is raised).
+        return _switch_key_window(target, front_wid, target_wid) if front_wid else False
     front_record_wid = front_wid or target_wid
     if not _post_record(front, _focus_record(front_record_wid, 0x02)):
         return False
@@ -522,6 +593,8 @@ def restore_focus_after_without_raise(
     target = _psn_for_window(target_wid, target_pid)
     if previous is None or target is None:
         return False
+    if _same_psn(previous, target):
+        return _switch_key_window(previous, target_wid, previous_wid)
     defocused = _post_record(target, _focus_record(target_wid, 0x02))
     focused = _post_record(previous, _focus_record(previous_wid, 0x01))
     return defocused and focused
@@ -625,10 +698,56 @@ def click(
     ``window_origin`` is the window's top-left in screen points; non-left
     buttons stamp the window-local point derived from it.
     """
+    return _post_plan(
+        pid,
+        wid,
+        click_plan(x, y, button=button, count=count),
+        button=button,
+        flags=flags,
+        window_origin=window_origin,
+        front_wid=front_wid,
+    )
+
+
+def drag(
+    pid: int,
+    wid: int,
+    x0: float,
+    y0: float,
+    x1: float,
+    y1: float,
+    *,
+    window_origin: tuple[float, float] | None = None,
+    front_wid: int = 0,
+) -> bool:
+    """Deliver a left-button drag from ``(x0, y0)`` to ``(x1, y1)`` (screen points).
+
+    Same contract as :func:`click`: no cursor movement, no raise, focus is
+    the caller's to restore under :data:`GESTURE_LOCK`.
+    """
+    return _post_plan(
+        pid,
+        wid,
+        drag_plan(x0, y0, x1, y1),
+        button="left",
+        window_origin=window_origin,
+        front_wid=front_wid,
+    )
+
+
+def _post_plan(
+    pid: int,
+    wid: int,
+    plan: list[MouseStep],
+    *,
+    button: str,
+    flags: int = 0,
+    window_origin: tuple[float, float] | None = None,
+    front_wid: int = 0,
+) -> bool:
     s = _syms()
     if s is None or not wid:
         return False
-    plan = click_plan(x, y, button=button, count=count)
     events = _allocate(
         len(plan),
         lambda i: s["mouse_event"](

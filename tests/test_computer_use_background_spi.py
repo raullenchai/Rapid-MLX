@@ -271,9 +271,13 @@ def test_restore_focus_posts_defocus_then_focus(monkeypatch):
     # The target window has no PSN: nothing is posted.
     assert background_input.restore_focus_after_without_raise(9, 555, 4, 101) is False
     assert posted == []
-    monkeypatch.setattr(background_input, "_psn_for_window", lambda wid, pid: wid)
+    monkeypatch.setattr(
+        background_input,
+        "_psn_for_window",
+        lambda wid, pid: background_input._PSN(0, wid),
+    )
     assert background_input.restore_focus_after_without_raise(9, 555, 4, 101)
-    assert posted == [(101, 0x02), (555, 0x01)]
+    assert [(psn.lo, kind) for psn, kind in posted] == [(101, 0x02), (555, 0x01)]
     assert background_input.restore_focus_after_without_raise(9, 0, 4, 101) is False
     monkeypatch.setattr(background_input, "_syms", lambda: None)
     assert background_input.restore_focus_after_without_raise(9, 555, 4, 101) is False
@@ -480,6 +484,10 @@ def test_window_origin_requires_numeric_corner():
 
 def test_send_key_routes(monkeypatch):
     snapshot = {"app": {"pid": 4}, "window": {"window_id": "cg:101"}}
+    # The target is already key and the user is in another app: no switch.
+    monkeypatch.setattr(backend, "_frontmost_window", lambda: (999, 555))
+    monkeypatch.setattr(backend, "_key_window_id", lambda pid: 101)
+    monkeypatch.setattr(backend, "_validate_focused_window", lambda *a, **k: None)
     monkeypatch.setattr(background_input, "press_key", lambda *a: False)
     with pytest.raises(errors.ComputerUseError) as exc:
         backend._send_key(snapshot, 36, 0, background=True)

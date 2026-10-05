@@ -81,6 +81,15 @@ def background(monkeypatch):
         lambda *a: calls.append(("restore", a, {})) or True,
     )
     monkeypatch.setattr(backend, "_frontmost_window", lambda: (999, 555))
+    # The target window (cg:101) is already its app's key window, so a
+    # keyboard gesture needs no key-window switch unless a test says so.
+    monkeypatch.setattr(backend, "_key_window_id", lambda pid: 101)
+    monkeypatch.setattr(backend, "_sheet_owner_id", lambda pid: None)
+    monkeypatch.setattr(
+        background_input,
+        "activate_without_raise",
+        lambda *a, **k: calls.append(("activate", a, k)) or True,
+    )
     monkeypatch.setattr(
         backend.ax_driver,
         "_cg_click",
@@ -985,14 +994,20 @@ def test_restore_reactivates_user_app_when_target_self_activated(monkeypatch):
 def test_defocus_record_names_the_front_window(monkeypatch):
     posted = []
     monkeypatch.setattr(background_input, "_syms", lambda: {"ok": True})
-    monkeypatch.setattr(background_input, "_front_psn", lambda: "front")
-    monkeypatch.setattr(background_input, "_psn_for_window", lambda wid, pid: "target")
+    front, target = background_input._PSN(0, 1), background_input._PSN(0, 2)
+    names = {id(front): "front", id(target): "target"}
+    monkeypatch.setattr(background_input, "_front_psn", lambda: front)
+    monkeypatch.setattr(background_input, "_psn_for_window", lambda wid, pid: target)
     monkeypatch.setattr(
         background_input,
         "_post_record",
         lambda psn, rec: (
             posted.append(
-                (psn, int.from_bytes(bytes(rec[0x3C:0x40]), "little"), rec[0x8A])
+                (
+                    names[id(psn)],
+                    int.from_bytes(bytes(rec[0x3C:0x40]), "little"),
+                    rec[0x8A],
+                )
             )
             or True
         ),
@@ -1015,12 +1030,14 @@ def test_click_count_rejects_non_integral_values(count):
 def test_focus_failure_rolls_back_the_defocus(monkeypatch):
     posted = []
     monkeypatch.setattr(background_input, "_syms", lambda: {"ok": True})
-    monkeypatch.setattr(background_input, "_front_psn", lambda: "front")
-    monkeypatch.setattr(background_input, "_psn_for_window", lambda wid, pid: "target")
+    front, target = background_input._PSN(0, 1), background_input._PSN(0, 2)
+    names = {id(front): "front", id(target): "target"}
+    monkeypatch.setattr(background_input, "_front_psn", lambda: front)
+    monkeypatch.setattr(background_input, "_psn_for_window", lambda wid, pid: target)
 
     def post(psn, rec):
-        posted.append((psn, rec[0x8A]))
-        return psn == "front"
+        posted.append((names[id(psn)], rec[0x8A]))
+        return psn is front
 
     monkeypatch.setattr(background_input, "_post_record", post)
     assert background_input.activate_without_raise(4, 101, front_wid=555) is False
@@ -1030,10 +1047,14 @@ def test_focus_failure_rolls_back_the_defocus(monkeypatch):
 def test_defocus_failure_posts_no_focus(monkeypatch):
     posted = []
     monkeypatch.setattr(background_input, "_syms", lambda: {"ok": True})
-    monkeypatch.setattr(background_input, "_front_psn", lambda: "front")
-    monkeypatch.setattr(background_input, "_psn_for_window", lambda wid, pid: "target")
+    front, target = background_input._PSN(0, 1), background_input._PSN(0, 2)
+    names = {id(front): "front", id(target): "target"}
+    monkeypatch.setattr(background_input, "_front_psn", lambda: front)
+    monkeypatch.setattr(background_input, "_psn_for_window", lambda wid, pid: target)
     monkeypatch.setattr(
-        background_input, "_post_record", lambda psn, rec: posted.append(psn) and False
+        background_input,
+        "_post_record",
+        lambda psn, rec: posted.append(names[id(psn)]) and False,
     )
     assert background_input.activate_without_raise(4, 101, front_wid=555) is False
     assert posted == ["front"]
