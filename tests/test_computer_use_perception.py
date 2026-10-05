@@ -683,10 +683,20 @@ def test_focused_secret_reads_names_never_values(monkeypatch):
 
     from rapid_mlx.computer_use import ax_driver
 
-    monkeypatch.setattr(ax_driver, "_get", get)
-    monkeypatch.setattr(
-        perception.backend, "_focused_ax_element", lambda info: "focused"
-    )
+    focus = {"readable": True, "element": "focused"}
+    failing: set[str] = set()
+
+    def get_checked(element, attribute):
+        if element == "app":
+            return focus["readable"], focus["element"] if focus["readable"] else None
+        read.append(attribute)
+        if attribute in failing:
+            return False, None
+        return True, attrs.get(attribute)
+
+    monkeypatch.setattr(ax_driver, "_get_checked", get_checked)
+    monkeypatch.setattr(perception.backend, "_pid_app_element", lambda info: "app")
+    unchecked = "a field whose focus could not be checked"
     assert perception._focused_secret({"pid": 7}) == "a password field"
     attrs.update(AXSubrole="", AXDescription="", AXTitle="Verification code")
     assert perception._focused_secret({"pid": 7}).startswith("a secret field")
@@ -694,17 +704,22 @@ def test_focused_secret_reads_names_never_values(monkeypatch):
     assert perception._focused_secret({"pid": 7}) is None
     assert "AXValue" not in read
     assert perception._focused_secret({}) is None
-    monkeypatch.setattr(perception.backend, "_focused_ax_element", lambda info: None)
+    # Nothing has focus: typing goes nowhere.
+    focus["element"] = None
     assert perception._focused_secret({"pid": 7}) is None
+    # Focus, or a name of the focused element, that cannot be read is not
+    # assumed harmless.
+    focus.update(readable=False, element="focused")
+    assert perception._focused_secret({"pid": 7}) == unchecked
+    focus["readable"] = True
+    failing.add("AXTitle")
+    assert perception._focused_secret({"pid": 7}) == unchecked
     monkeypatch.setattr(
         perception.backend,
-        "_focused_ax_element",
+        "_pid_app_element",
         lambda info: (_ for _ in ()).throw(RuntimeError("no AX")),
     )
-    # Focus that cannot be inspected is not assumed harmless.
-    assert perception._focused_secret({"pid": 7}) == (
-        "a field whose focus could not be checked"
-    )
+    assert perception._focused_secret({"pid": 7}) == unchecked
 
 
 def test_secrets_cannot_be_spelled_key_by_key(session, screen, monkeypatch):
@@ -783,6 +798,17 @@ def test_a_card_number_split_across_typing_is_still_refused(session, screen):
     session.observe("Chrome", "cg:1")
     with pytest.raises(ComputerUseError) as err:
         session.act("key", None, key="2", window_id="cg:1")
+    assert err.value.code == "sensitive_data"
+    # Naming a harmless ref does not hide the focused field the text lands in.
+    screen.show(
+        [
+            E("n", "AXTextArea", "Message", value="4242424242424", states=("focused",)),
+            E("s", "AXSearchField", "Search"),
+        ]
+    )
+    other = session.observe("Chrome", "cg:1")
+    with pytest.raises(ComputerUseError) as err:
+        session.act("type", _ref(other, "Search"), text="242")
     assert err.value.code == "sensitive_data"
     # A fill replaces the value, so only its own text counts.
     session.act("fill", _ref(obs, "Message"), text="4242")
