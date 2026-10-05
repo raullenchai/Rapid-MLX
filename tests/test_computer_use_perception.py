@@ -215,6 +215,8 @@ def screen(monkeypatch, session):
     monkeypatch.setattr(perception, "SETTLE_CAP_S", 0.05)
     monkeypatch.setattr(perception, "SETTLE_CAP_SLOW_S", 0.05)
     monkeypatch.setattr(perception, "WAIT_POLL_S", 0)
+    # The app's live focus is a harmless field unless a test says otherwise.
+    monkeypatch.setattr(perception, "_focused_secret", lambda app_info: None)
     return Screen(monkeypatch)
 
 
@@ -686,7 +688,52 @@ def test_focused_secret_reads_names_never_values(monkeypatch):
         "_focused_ax_element",
         lambda info: (_ for _ in ()).throw(RuntimeError("no AX")),
     )
-    assert perception._focused_secret({"pid": 7}) is None
+    # Focus that cannot be inspected is not assumed harmless.
+    assert perception._focused_secret({"pid": 7}) == (
+        "a field whose focus could not be checked"
+    )
+
+
+def test_secrets_cannot_be_spelled_key_by_key(session, screen, monkeypatch):
+    screen.show(
+        [
+            E("pin", "AXTextField", "PIN", states=("focused",)),
+            E("q", "AXTextField", "Search"),
+        ]
+    )
+    obs = session.observe("Chrome", "cg:1")
+    for key in ("4", "shift+a", "A"):
+        with pytest.raises(ComputerUseError) as err:
+            session.act("key", None, key=key, window_id="cg:1")
+        assert err.value.code == "needs_human"
+    with pytest.raises(ComputerUseError) as err:
+        session.act("key", _ref(obs, "PIN"), key="7")
+    assert err.value.code == "needs_human"
+    assert not screen.calls
+    session.act("key", None, key="Tab", window_id="cg:1")
+    session.observe("Chrome", "cg:1")
+    session.act("key", None, key="cmd+a", window_id="cg:1")
+    session.observe("Chrome", "cg:1")
+    session.act("key", _ref(obs, "Search"), key="backspace")
+    assert [c[0] for c in screen.calls] == ["press_key"] * 3
+    assert perception._is_text_key("shift+shift+1")
+    assert not perception._is_text_key(None)
+
+
+def test_values_the_user_typed_into_secret_fields_are_not_shown(session, screen):
+    screen.show(
+        [
+            E("otp", "AXTextField", "Verification code", value="482913"),
+            E("empty", "AXTextField", "PIN", value=""),
+            E("q", "AXTextField", "Search", value="milk"),
+        ]
+    )
+    obs = session.observe("Chrome", "cg:1")
+    text = obs.render()
+    assert "482913" not in text and "482913" not in " ".join(obs.texts())
+    assert "[entered by the user]" in text
+    assert obs.by_ref()[_ref(obs, "PIN")].value == ""
+    assert "'milk'" in text
 
 
 def test_card_numbers_are_never_typed(session, screen):

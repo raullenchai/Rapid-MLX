@@ -34,7 +34,12 @@ _COMMIT_LABEL = re.compile(
     r"|\b(?:transfer|donate|subscribe|enroll)\b",
     re.I,
 )
-_AMOUNT = re.compile(r"[$€£]\s?\d[\d,]*(?:\.\d{2})?")
+# Prefix or suffix symbol or code, any grouping and decimal separator
+# ("$1,204.50", "€12,50", "12,50 €", "1.234,56 EUR").
+_AMOUNT = re.compile(
+    r"(?:[$€£¥]|\b(?:USD|EUR|GBP|CAD|AUD|JPY)\b)\s?\d(?:[\d.,]*\d)?"
+    r"|\d(?:[\d.,]*\d)?\s?(?:[€£]|\b(?:USD|EUR|GBP|CAD|AUD|JPY)\b)"
+)
 _PRICED_VERB = re.compile(
     r"\b(?:upgrade|join|pay|buy|purchase|subscribe|donate|renew|tip|add funds)\b", re.I
 )

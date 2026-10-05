@@ -128,6 +128,12 @@ def test_priced_actions_and_amounts():
     assert guards.is_money_commit("AXMenuItem", "Tip $3")
     assert not guards.is_money_commit("AXButton", "View plan $9.99")
     assert not guards.is_money_commit("AXButton", "")
+    assert guards.amounts(["€12,50", "12,99 €", "1.234,56 EUR", "USD 9"]) == (
+        "€12,50",
+        "12,99€",
+        "1.234,56EUR",
+        "USD9",
+    )
     assert guards.amounts(["Total $1,204.50 and €3", "", None, "£ 7"]) == (
         "$1,204.50",
         "€3",
