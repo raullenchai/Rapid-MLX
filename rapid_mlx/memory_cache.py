@@ -3327,19 +3327,18 @@ class MemoryAwarePrefixCache:
                     type(layer).__name__ for layer in persist_cache if layer is not None
                 ]
 
-                index["entries"].append(
-                    {
-                        "index": i,
-                        "num_tokens": len(tokens_key),
-                        "memory_bytes": entry.memory_bytes,
-                        "cache_types": cache_types,
-                        "message_boundary": entry.message_boundary,
-                        "message_boundary_sequence": (entry.message_boundary_sequence),
-                        "checkpoints": has_checkpoints,
-                    }
-                )
+                index_row: dict[str, Any] = {
+                    "index": i,
+                    "num_tokens": len(tokens_key),
+                    "memory_bytes": entry.memory_bytes,
+                    "cache_types": cache_types,
+                    "message_boundary": entry.message_boundary,
+                    "message_boundary_sequence": (entry.message_boundary_sequence),
+                    "checkpoints": has_checkpoints,
+                }
+                index["entries"].append(index_row)
                 saved_lru_rank[i] = lru_rank[tokens_key]
-                index_owed_bytes += _persist_index_row_bytes(index["entries"][-1])
+                index_owed_bytes += _persist_index_row_bytes(index_row)
                 saved += 1
                 # Feed the throughput estimator. We measure including
                 # both the safetensors write and the tokens sidecar so
