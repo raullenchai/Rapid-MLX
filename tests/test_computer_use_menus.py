@@ -288,6 +288,36 @@ def test_menu_opened_despite_error(monkeypatch, clock):
     with pytest.raises(errors.ComputerUseError) as exc:
         backend._menu_opened_despite_error(snap, 0)
     assert exc.value.code == "action_failed"
+    # A menu that opens late, within the regular open window, still counts.
+    start = clock.now
+    monkeypatch.setattr(
+        backend, "_open_menu_count", lambda pid: 1 if clock.now - start > 0.45 else 0
+    )
+    assert backend._menu_opened_despite_error(snap, 0) is True
+
+
+def test_choose_from_ax_menu_closes_a_late_menu_after_a_failed_press(
+    monkeypatch, native_popup, calls
+):
+    real = sys.modules["ApplicationServices"].AXUIElementPerformAction
+
+    def perform(element, action):
+        calls.append(("ax", element, action))
+        return -25204 if (element, action) == ("popup", "AXPress") else 0
+
+    sys.modules["ApplicationServices"].AXUIElementPerformAction = perform
+    # teardown wait, lingering check, open wait, then the late look.
+    menus = iter([None, None, None, "menu"])
+    monkeypatch.setattr(backend, "_open_menu_of", lambda live, timeout: next(menus))
+    closed = []
+    monkeypatch.setattr(
+        backend, "_close_menu", lambda live, menu, pid: closed.append(menu) or True
+    )
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend._choose_from_ax_menu("popup", "B", 4)
+    assert exc.value.code == "accessibility_error"
+    assert closed == ["menu"]
+    sys.modules["ApplicationServices"].AXUIElementPerformAction = real
 
 
 @pytest.fixture

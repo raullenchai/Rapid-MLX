@@ -2678,14 +2678,19 @@ def _open_menu_count(pid: int) -> int | None:
         return None
 
 
+# How long an action that may open a menu is given to open it.
+_MENU_OPEN_WAIT = 0.6
+
+
 def _menu_opened_despite_error(snapshot: dict, before: int | None) -> bool:
     """Whether an Accessibility action that returned an error still opened a
     menu (an AX call can time out after the action took effect). Raises
-    when open menus can no longer be counted, since one may be up."""
+    when open menus can no longer be counted, since one may be up. Waits
+    as long as :func:`_settle_menus` waits for a menu to open."""
     if before is None:
         return False
     pid = int(snapshot["app"]["pid"])
-    deadline = time.monotonic() + 0.3
+    deadline = time.monotonic() + _MENU_OPEN_WAIT
     while True:
         count = _open_menu_count(pid)
         if count is not None and count > before:
@@ -2802,7 +2807,7 @@ def _settle_menus(
     if before is None:
         return None
     pid = int(snapshot["app"]["pid"])
-    deadline = time.monotonic() + (0.6 if expect_menu or choose else 0.0)
+    deadline = time.monotonic() + (_MENU_OPEN_WAIT if expect_menu or choose else 0.0)
     count = _open_menu_count(pid)
     while (count is None or count <= before) and time.monotonic() < deadline:
         time.sleep(0.05)
@@ -3539,24 +3544,21 @@ def _choose_from_ax_menu(live: object, value: str, pid: int) -> str | None:
             f"the popup's previous menu did not close{_MENU_LEFT_OPEN}",
         )
     time.sleep(0.15)
-    if AXUIElementPerformAction(live, "AXPress") != 0:
-        # The press may have opened the menu before the AX call failed.
-        opened = _open_menu_of(live, timeout=0.3)
-        closed = opened is None or _close_menu(live, opened, pid)
-        raise ComputerUseError(
-            "accessibility_error",
-            "popup could not be opened" + ("" if closed else _MENU_LEFT_OPEN),
-        )
+    press_err = AXUIElementPerformAction(live, "AXPress")
+    # A failed press may still have opened the menu, so it is awaited either way.
     menu_element = _open_menu_of(live, timeout=1.5)
-    if menu_element is None:
-        # A menu arriving just after the timeout would track the keyboard;
-        # look once more and close it before giving up.
-        late = _open_menu_of(live, timeout=0.3)
-        closed = late is None or _close_menu(live, late, pid)
-        raise ComputerUseError(
-            "action_failed",
-            "popup opened no menu" + ("" if closed else _MENU_LEFT_OPEN),
+    if press_err != 0 or menu_element is None:
+        if menu_element is None:
+            # A menu arriving just after the timeout would track the
+            # keyboard; look once more and close it before giving up.
+            menu_element = _open_menu_of(live, timeout=0.3)
+        closed = menu_element is None or _close_menu(live, menu_element, pid)
+        code, message = (
+            ("accessibility_error", "popup could not be opened")
+            if press_err != 0
+            else ("action_failed", "popup opened no menu")
         )
+        raise ComputerUseError(code, message + ("" if closed else _MENU_LEFT_OPEN))
     items = [
         item
         for item in ax_driver._as_list(ax_driver._get(menu_element, "AXChildren"))
