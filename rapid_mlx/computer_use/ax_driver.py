@@ -177,6 +177,22 @@ def _get(element: object, attribute: str) -> object:
     return value if err == kAXErrorSuccess else None
 
 
+# kAXErrorNoValue and kAXErrorAttributeUnsupported: the attribute is simply
+# not there, which is not a failed read.
+_AX_ABSENT_ERRORS = frozenset({-25212, -25205})
+
+
+def _get_checked(element: object, attribute: str) -> tuple[bool, object]:
+    """``(readable, value)``; ``readable`` is False only for a failed read.
+
+    A missing or unsupported attribute reads as ``(True, None)``.
+    """
+    err, value = AXUIElementCopyAttributeValue(element, attribute, None)
+    if err == kAXErrorSuccess:
+        return True, value
+    return err in _AX_ABSENT_ERRORS, None
+
+
 def _as_list(raw: object) -> list[object]:
     """pyobjc returns AX arrays as NSMutableArray — iterable, never a python
     list. isinstance(raw, (list, tuple)) is always False for them and silently
@@ -187,6 +203,144 @@ def _as_list(raw: object) -> list[object]:
         return list(cast(Iterable[object], raw))
     except TypeError:
         return []
+
+
+def _app_windows(app: object) -> list[object]:
+    """AXWindows plus the focused/main window and remotely resolved windows.
+
+    For an app whose windows sit on another Space (e.g. behind a full-screen
+    app) AXWindows is empty while AXFocusedWindow/AXMainWindow may still
+    return one off-Space window. Others are reachable only by remote token;
+    those already discovered by :func:`discover_remote_windows` are included.
+    """
+    from . import background_input
+
+    windows = _as_list(_get(app, "AXWindows"))
+    # Dedupe by CGWindowID: the same window reached through different
+    # attributes (or by remote token) is not always CFEqual.
+    have = {background_input.ax_window_id(w) for w in windows}
+    extras = [_get(app, "AXFocusedWindow"), _get(app, "AXMainWindow")]
+    pid = _pid_of(app)
+    if pid is not None and pid in _REMOTE_IDS:
+        extras += _remote_windows(pid)
+    for extra in extras:
+        if extra is None:
+            continue
+        wid = background_input.ax_window_id(extra)
+        if wid is None:
+            if not any(extra == w for w in windows):
+                windows.append(extra)
+        elif wid not in have:
+            have.add(wid)
+            windows.append(extra)
+    return windows
+
+
+def _pid_of(element: object) -> int | None:
+    if AS is None:
+        return None
+    try:
+        err, pid = AS.AXUIElementGetPid(element, None)
+    except Exception:  # noqa: BLE001 - not an AX element
+        return None
+    return int(pid) if err == 0 else None
+
+
+# --- remote-token windows (yabai) ---------------------------------------------
+# AXWindows lists only windows on the active Space. An AX element can be rebuilt
+# from (pid, element id) with the private _AXUIElementCreateWithRemoteToken;
+# scanning element ids finds every window of the process. Discovered ids are
+# cached per pid; a scan runs only when a CG window cannot be mapped otherwise.
+
+_REMOTE_IDS: dict[int, set[int]] = {}
+_REMOTE_MAGIC = 0x636F636F  # 'coco'
+_remote_create: Any = None
+
+
+def _remote_factory() -> Any:
+    global _remote_create
+    if _remote_create is None:
+        import ctypes
+
+        lib = ctypes.CDLL(
+            "/System/Library/Frameworks/ApplicationServices.framework/"
+            "Frameworks/HIServices.framework/HIServices"
+        )
+        cf = ctypes.CDLL(
+            "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
+        )
+        fn = getattr(lib, "_AXUIElementCreateWithRemoteToken", None)
+        if fn is None:
+            _remote_create = False
+            return False
+        fn.restype = ctypes.c_void_p
+        fn.argtypes = [ctypes.c_void_p]
+        cf.CFDataCreate.restype = ctypes.c_void_p
+        cf.CFDataCreate.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_long]
+        cf.CFRelease.argtypes = [ctypes.c_void_p]
+        _remote_create = (fn, cf)
+    return _remote_create
+
+
+def _remote_element(pid: int, element_id: int) -> object | None:
+    import struct
+
+    import objc  # type: ignore[import-untyped]
+
+    factory = _remote_factory()
+    if not factory:
+        return None
+    fn, cf = factory
+    token = struct.pack("<iiIQ", int(pid), 0, _REMOTE_MAGIC, int(element_id))
+    data = cf.CFDataCreate(None, token, len(token))
+    if not data:
+        return None
+    try:
+        ref = fn(data)
+    finally:
+        cf.CFRelease(data)
+    if not ref:
+        return None
+    # The create rule hands us a +1 reference; let the bridge own it.
+    element: object = objc.objc_object(c_void_p=ref)
+    cf.CFRelease(ref)
+    return element
+
+
+def _remote_windows(pid: int) -> list[object]:
+    out = []
+    for element_id in sorted(_REMOTE_IDS.get(pid, ())):
+        element = _remote_element(pid, element_id)
+        if element is not None and _get(element, "AXRole") == "AXWindow":
+            out.append(element)
+    return out
+
+
+def discover_remote_windows(
+    pid: int, wanted: set[int], *, budget_s: float = 2.0, limit: int = 400_000
+) -> set[int]:
+    """Scan element ids of ``pid`` for windows; returns the CG ids found.
+
+    Stops once every id in ``wanted`` is found or the time budget runs out.
+    """
+    from . import background_input
+
+    found: set[int] = set()
+    ids = _REMOTE_IDS.setdefault(int(pid), set())
+    deadline = time.monotonic() + budget_s
+    for element_id in range(limit):
+        if element_id % 64 == 0 and time.monotonic() > deadline:
+            break
+        element = _remote_element(pid, element_id)
+        if element is None or _get(element, "AXRole") != "AXWindow":
+            continue
+        wid = background_input.ax_window_id(element)
+        if wid:
+            ids.add(element_id)
+            found.add(wid)
+            if wanted <= found:
+                break
+    return found
 
 
 def _action_names(element: object) -> list[str]:
@@ -237,11 +391,19 @@ def _label(element: object) -> str:
     return ""
 
 
-def _walk(element: object, depth: int, out: list[dict], counter: list[int]) -> None:
+def _walk(
+    element: object,
+    depth: int,
+    out: list[dict],
+    counter: list[int],
+    roles_seen: set[str] | None = None,
+) -> None:
     if depth > MAX_DEPTH or counter[0] >= MAX_NODES:
         return
     raw_role = _get(element, "AXRole")
     role = raw_role if isinstance(raw_role, str) else ""
+    if roles_seen is not None:
+        roles_seen.add(role)
     raw_subrole = _get(element, "AXSubrole")
     subrole = raw_subrole if isinstance(raw_subrole, str) else ""
     parent = _get(element, "AXParent")
@@ -267,6 +429,11 @@ def _walk(element: object, depth: int, out: list[dict], counter: list[int]) -> N
     # remain excluded to preserve the bounded grounding budget.
     if interesting and (label or actionable or editable):
         counter[0] += 1
+        value = None
+        if editable and not secure_text:
+            raw_value = _get(element, "AXValue")
+            if isinstance(raw_value, str) and raw_value.strip() != label.strip():
+                value = raw_value[:120]
         out.append(
             {
                 "target_id": f"t{counter[0] - 1:03d}",
@@ -274,13 +441,14 @@ def _walk(element: object, depth: int, out: list[dict], counter: list[int]) -> N
                 "subrole": subrole,
                 "parent_role": parent_role,
                 "text": label,
+                "value": value,
                 "actions": actions[:6],
                 "rect": geom,
                 "element": element,  # live ref, popped before serialization
             }
         )
     for child in _priority_children(element):
-        _walk(child, depth + 1, out, counter)
+        _walk(child, depth + 1, out, counter, roles_seen)
         if counter[0] >= MAX_NODES:
             return
 
@@ -369,6 +537,36 @@ class AppNotFoundError(LookupError):
     """
 
 
+# Processes already initialised, keyed by (kind, pid, launch time) so a
+# recycled pid is handled again. "attrs": the AXManualAccessibility /
+# AXEnhancedUserInterface poke was sent (it sticks for the process lifetime;
+# only the first poke needs the settle wait). "settle": the plain first-touch
+# settle wait ran (no attributes set).
+_EXPOSED: set[tuple[str, int, float]] = set()
+
+
+def _launch_time(app: Any) -> float | None:
+    try:
+        launched = float(app.launchDate().timeIntervalSince1970())
+    except Exception:  # noqa: BLE001 - some bridges omit launchDate
+        return None
+    return launched if launched > 0 else None
+
+
+def first_exposure(app: Any, kind: str = "attrs") -> bool:
+    """True the first time ``app``'s process is seen for ``kind`` (then
+    remembered). Without a launch time the process cannot be told apart from
+    a recycled pid, so it is never remembered."""
+    launched = _launch_time(app)
+    if launched is None:
+        return True
+    key = (kind, int(app.processIdentifier()), launched)
+    if key in _EXPOSED:
+        return False
+    _EXPOSED.add(key)
+    return True
+
+
 def _app_element(app_name: str, expected_pid: int | None = None) -> object:
     if AS is None:
         raise RuntimeError("computer-use actions require macOS with PyObjC installed")
@@ -404,15 +602,16 @@ def _app_element(app_name: str, expected_pid: int | None = None) -> object:
         # the poke to Chrome-family apps.
         bundle = (app.bundleIdentifier() or "").lower()
         if "chrome" in bundle or "chromium" in bundle or "edge" in bundle:
-            AXUIElementSetAttributeValue(element, _MANUAL_ACCESSIBILITY, True)
-            AXUIElementSetAttributeValue(element, _ENHANCED_UI, True)
-            time.sleep(0.4)
-        else:
+            if first_exposure(app):
+                AXUIElementSetAttributeValue(element, _MANUAL_ACCESSIBILITY, True)
+                AXUIElementSetAttributeValue(element, _ENHANCED_UI, True)
+                time.sleep(0.4)
+        elif first_exposure(app, "settle"):
             time.sleep(0.1)
         # Window verification only matters when several processes matched
         # (an XPC helper could shadow the real app); with a single candidate
         # take it as-is — an AX-unresponsive app should still be selectable.
-        if len(matches) == 1 or _as_list(_get(element, "AXWindows")):
+        if len(matches) == 1 or _app_windows(element):
             return element
     suffix = f" with pid {expected_pid}" if expected_pid is not None else ""
     raise AppNotFoundError(f"app not found: {app_name!r}{suffix}")
@@ -440,7 +639,7 @@ def collect(
     counter = [0]
     attempts = 4 if retry_web_content else 1
     for attempt in range(attempts):
-        windows = _as_list(_get(app, "AXWindows"))
+        windows = _app_windows(app)
         if window_frame is not None:
             matching = []
             for window in windows:
@@ -468,13 +667,15 @@ def collect(
             selected_windows = windows[window_index : window_index + max_windows]
         targets.clear()
         counter = [0]
+        roles_seen: set[str] = set()
         for window in selected_windows:
-            _walk(window, 0, targets, counter)
+            _walk(window, 0, targets, counter, roles_seen)
             if counter[0] >= MAX_NODES:
                 break
+        # AXWebArea is structural (never a target), so look at what was walked.
         if (
             not retry_web_content
-            or any(t["role"] == "AXWebArea" for t in targets)
+            or "AXWebArea" in roles_seen
             or attempt == attempts - 1
         ):
             break
@@ -582,8 +783,7 @@ def press(targets: list[dict], target_id: str, app_name: str) -> dict:
         # Re-resolve by re-walking (live refs are not serialized with --dump).
         fresh: list[dict] = []
         counter = [0]
-        raw_windows = _get(live, "AXWindows")
-        windows = raw_windows if isinstance(raw_windows, (list, tuple)) else []
+        windows = _app_windows(live)
         for window in windows:
             _walk(window, 0, fresh, counter)
             if any(f["target_id"] == target_id for f in fresh):

@@ -42,6 +42,9 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--allowed-domain", default="", help="hard domain guard")
     run_p.add_argument("--max-steps", type=int, default=None)
     run_p.add_argument(
+        "--window-id", default=None, help="bind the run to one window, e.g. cg:123"
+    )
+    run_p.add_argument(
         "--human-login",
         action="store_true",
         help="pause with a file sentinel when a sign-in page appears",
@@ -123,6 +126,17 @@ def _cmd_run(args) -> int:
     )
     from rapid_mlx.cua.loop import run
 
+    bound: dict = {}
+    if args.window_id:
+        from rapid_mlx.computer_use import backend
+
+        selection = backend.validate_window(args.app, args.window_id)
+        selected_app = dict(selection["app"])
+        bound = {
+            "window_id": str(selection["window_id"]),
+            "backend_app": f"pid:{selected_app['pid']}",
+            "expected_app": selected_app,
+        }
     trace = asyncio.run(
         run(
             config,
@@ -130,6 +144,7 @@ def _cmd_run(args) -> int:
             args.goal,
             open_url=args.open_url,
             max_steps=args.max_steps,
+            **bound,
         )
     )
     status = trace.get("status", "incomplete")

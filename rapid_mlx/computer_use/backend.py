@@ -20,8 +20,9 @@ import tempfile
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 from urllib.parse import unquote, urlparse
 
 from .errors import ComputerUseError
@@ -153,8 +154,10 @@ def _ax_app_element(running_app: Any, activate: bool = True) -> object:
     )
 
     element = AXUIElementCreateApplication(int(running_app.processIdentifier()))
-    AXUIElementSetAttributeValue(element, "AXManualAccessibility", True)
-    AXUIElementSetAttributeValue(element, "AXEnhancedUserInterface", True)
+    first = ax_driver.first_exposure(running_app)
+    if first:
+        AXUIElementSetAttributeValue(element, "AXManualAccessibility", True)
+        AXUIElementSetAttributeValue(element, "AXEnhancedUserInterface", True)
     if activate:
         # Synthetic events need the window frontmost; the first click otherwise
         # only raises the window and keystrokes land on the wrong focus.
@@ -168,7 +171,8 @@ def _ax_app_element(running_app: Any, activate: bool = True) -> object:
             except Exception:  # noqa: BLE001
                 pass
         time.sleep(0.6)
-    time.sleep(0.3)
+    if first:
+        time.sleep(0.3)
     return element
 
 
@@ -234,6 +238,7 @@ def _window_records(app_info: dict) -> list[dict]:
         kCGNullWindowID,
     )
     records: list[dict[str, Any]] = []
+    seen: set[int] = set()
     for window in raw or []:
         if int(window.get("kCGWindowOwnerPID", -1)) != int(app_info["pid"]):
             continue
@@ -243,6 +248,7 @@ def _window_records(app_info: dict) -> list[dict]:
         bounds = window.get("kCGWindowBounds") or {}
         if number is None:
             continue
+        seen.add(int(number))
         records.append(
             {
                 "index": len(records),
@@ -254,7 +260,107 @@ def _window_records(app_info: dict) -> list[dict]:
                 "height": bounds.get("Height"),
             }
         )
+    # Windows on other Spaces (e.g. behind the user's full-screen app) are
+    # not "on screen" but still take AX + SkyLight input. Keep only CG windows
+    # that are real AX windows of this app (same CGWindowID), so hidden helper
+    # surfaces never become targets.
+    for window in _offscreen_ax_windows(app_info, seen):
+        window["index"] = len(records)
+        records.append(window)
     return records
+
+
+# CG window ids already searched for by remote token, per pid, tagged with the
+# process start time so a recycled pid is searched (and its cached element
+# ids dropped) afresh.
+_REMOTE_SCANNED: dict[int, tuple[object, set[int]]] = {}
+
+
+def _offscreen_ax_windows(app_info: dict, seen: set[int]) -> list[dict]:
+    """Layer-0 CG windows of ``app_info`` missing from the on-screen list
+    that map to one of its AX windows by CGWindowID (best-effort)."""
+    if ax_driver.AS is None:
+        return []
+    try:
+        return _offscreen_ax_windows_unchecked(app_info, seen)
+    except Exception:  # noqa: BLE001 - discovery must never break listing
+        return []
+
+
+def _offscreen_ax_windows_unchecked(app_info: dict, seen: set[int]) -> list[dict]:
+    from Quartz import (
+        CGWindowListCopyWindowInfo,
+        kCGNullWindowID,
+        kCGWindowListOptionAll,
+    )
+
+    pid = int(app_info["pid"])
+    # Validate the process incarnation before any AX read: remote element ids
+    # cached for a recycled pid would resolve windows of another process.
+    incarnation = app_info.get("processStartTime")
+    scanned = _REMOTE_SCANNED.get(pid)
+    if scanned is None or scanned[0] != incarnation:
+        ax_driver._REMOTE_IDS.pop(pid, None)
+        scanned = _REMOTE_SCANNED[pid] = (incarnation, set())
+    tried = scanned[1]
+    app_element = ax_driver.AXUIElementCreateApplication(pid)
+
+    def ax_titles() -> dict[int, str]:
+        frames = {}
+        for ax_window in ax_driver._app_windows(app_element):
+            if ax_driver._get(ax_window, "AXMinimized"):
+                continue
+            wid = background_input.ax_window_id(ax_window)
+            if wid:
+                frames[wid] = str(ax_driver._get(ax_window, "AXTitle") or "")
+        return frames
+
+    titles = ax_titles()
+    cg_windows = (
+        CGWindowListCopyWindowInfo(kCGWindowListOptionAll, kCGNullWindowID) or []
+    )
+    unmapped = {
+        int(window["kCGWindowNumber"])
+        for window in cg_windows
+        if int(window.get("kCGWindowOwnerPID", -1)) == pid
+        and int(window.get("kCGWindowLayer", 99)) == 0
+        # Untitled layer-0 surfaces are mostly helpers (Chromium has several);
+        # scanning for each would cost the full budget. An untitled
+        # off-Space window is still found via AXFocusedWindow/AXMainWindow.
+        and window.get("kCGWindowName")
+        and int(window["kCGWindowNumber"]) not in titles
+        and int(window["kCGWindowNumber"]) not in seen
+    }
+    if unmapped - tried:
+        # Windows on another Space are invisible to AXWindows; resolve them
+        # by remote token (bounded scan, once per unseen window).
+        tried |= unmapped
+        ax_driver.discover_remote_windows(pid, unmapped)
+        titles = ax_titles()
+    out = []
+    for window in cg_windows:
+        number = window.get("kCGWindowNumber")
+        if (
+            number is None
+            or int(number) in seen
+            or int(number) not in titles
+            or int(window.get("kCGWindowOwnerPID", -1)) != int(app_info["pid"])
+            or int(window.get("kCGWindowLayer", 99)) != 0
+        ):
+            continue
+        bounds = window.get("kCGWindowBounds") or {}
+        out.append(
+            {
+                "window_id": f"cg:{int(number)}",
+                "title": window.get("kCGWindowName") or titles[int(number)],
+                "x": bounds.get("X"),
+                "y": bounds.get("Y"),
+                "width": bounds.get("Width"),
+                "height": bounds.get("Height"),
+                "offscreen": True,
+            }
+        )
+    return out
 
 
 def _select_window(
@@ -314,7 +420,7 @@ def _pid_app_element(app_info: dict) -> object:
 
 def _focused_ax_window(app_info: dict) -> object | None:
     app_element = _pid_app_element(app_info)
-    app_windows = ax_driver._as_list(ax_driver._get(app_element, "AXWindows"))
+    app_windows = ax_driver._app_windows(app_element)
     focused = ax_driver._get(app_element, "AXFocusedWindow")
     if focused is None:
         focused = ax_driver._get(app_element, "AXFocusedUIElement")
@@ -539,6 +645,11 @@ def _topmost_window_id_at(x: float, y: float) -> int | None:
     return None
 
 
+# ``get_app_state(activate=...)`` value for internal re-observations: activate
+# only when the delivery route needs it (see :func:`observation_activates`).
+OBSERVE_BY_ROUTE: Literal["route"] = "route"
+
+
 def get_app_state(
     app: str,
     window_index: int = 0,
@@ -546,17 +657,25 @@ def get_app_state(
     use_cache: bool = True,
     window_id: int | str | None = None,
     *,
-    activate: bool = True,
+    activate: bool | Literal["route"] = True,
     trusted_transient_window_id: int | str | None = None,
     transient_baseline_window_ids: set[str] | None = None,
 ) -> dict:
     """Snapshot one window: elements with indexes, tree text, optional PNG."""
-    # Keep the historical action-path behavior by default. Read-only callers
-    # can explicitly forbid activation; this is a security boundary because an
-    # observation request must not steal focus or expose a different window.
-    ax_element, app_info = (
-        _resolve_app(app) if activate else _resolve_app(app, activate=False)
-    )
+    # Read-only callers can explicitly forbid activation; this is a security
+    # boundary because an observation request must not steal focus or expose a
+    # different window. The public default still activates.
+    # ``activate=OBSERVE_BY_ROUTE`` lets the delivery route decide; internal
+    # re-observations (no caller snapshot, post-action state) pass it so that
+    # background delivery never hands the user's keyboard to the target.
+    if activate == OBSERVE_BY_ROUTE:
+        ax_element, app_info = _resolve_app(app, activate=False)
+        if observation_activates(app_info):
+            ax_element, app_info = _resolve_app(app)
+    elif activate:
+        ax_element, app_info = _resolve_app(app)
+    else:
+        ax_element, app_info = _resolve_app(app, activate=False)
     window = _select_window(app_info, window_index=window_index, window_id=window_id)
     if (
         use_cache
@@ -633,6 +752,7 @@ def get_app_state(
                 "subrole": target.get("subrole") or "",
                 "parent_role": target.get("parent_role") or "",
                 "label": target["text"],
+                "value": target.get("value"),
                 "actions": target.get("actions", []),
                 "x": round(rect[0]),
                 "y": round(rect[1]),
@@ -645,6 +765,7 @@ def get_app_state(
         )
     tree_lines = [
         f"[{e['index']}] {e['role']}{'*' if 'AXPress' in e['actions'] else ''} {e['label'][:90]}"
+        + (f" = {e['value']!r}" if e.get("value") is not None else "")
         for e in elements
     ]
     snapshot = {
@@ -891,8 +1012,12 @@ def _live_element(
                 ),
             )
     else:
+        # AX actions/values reach a covered element directly; only the
+        # global-HID route is hit-tested and needs the point to be topmost.
         current_window = _validate_snapshot_window(
-            snapshot, point=point if validate_point else None
+            snapshot,
+            point=point if validate_point else None,
+            require_topmost=not _background_delivery(snapshot),
         )
     fresh = _collect_with_timeout(
         snapshot["app"]["name"],
@@ -1050,6 +1175,7 @@ def _finish_action(
             screenshot=False,
             use_cache=False,
             window_id=snapshot.get("window_id"),
+            activate=OBSERVE_BY_ROUTE,
         )
     except ComputerUseError as exc:
         result["post_action_state"] = None
@@ -1145,6 +1271,37 @@ def _key_window_id(pid: int) -> int | None:
     return background_input.ax_window_id(ax_driver._get(app_element, "AXFocusedWindow"))
 
 
+def _sheet_owner_id(pid: int) -> int | None:
+    """CG id of the window whose sheet holds ``pid``'s key focus, if any.
+
+    Making a window key also makes its attached sheet (an alert, a save
+    panel) key; that is still the target, not a window the user picked.
+    """
+    if ax_driver.AS is None:
+        return None
+    app_element = ax_driver.AXUIElementCreateApplication(pid)
+    focused = ax_driver._get(app_element, "AXFocusedWindow")
+    if focused is None or ax_driver._get(focused, "AXRole") != "AXSheet":
+        return None
+    return background_input.ax_window_id(ax_driver._get(focused, "AXParent"))
+
+
+def _sheet_summary(pid: int) -> str:
+    app_element = ax_driver.AXUIElementCreateApplication(pid)
+    sheet = ax_driver._get(app_element, "AXFocusedWindow")
+    texts, buttons, stack, seen = [], [], [sheet], 0
+    while stack and seen < 200:
+        node = stack.pop()
+        seen += 1
+        role = ax_driver._get(node, "AXRole")
+        if role == "AXStaticText":
+            texts.append(str(ax_driver._get(node, "AXValue") or ""))
+        elif role == "AXButton" and ax_driver._get(node, "AXTitle"):
+            buttons.append(str(ax_driver._get(node, "AXTitle")))
+        stack.extend(reversed(ax_driver._as_list(ax_driver._get(node, "AXChildren"))))
+    return f"{' '.join(t for t in texts if t)[:300]} (buttons: {', '.join(buttons)})"
+
+
 def _restore_user_focus(
     previous: tuple[int, int] | None, pid: int, window_id: int
 ) -> bool | None:
@@ -1169,7 +1326,11 @@ def _restore_user_focus(
         return None
     if current == previous_pid and previous_wid:
         key = _key_window_id(previous_pid)
-        if key is not None and key not in (previous_wid, window_id):
+        if (
+            key is not None
+            and key not in (previous_wid, window_id)
+            and not (previous_pid == pid and _sheet_owner_id(pid) == window_id)
+        ):
             # The user picked another window of their app mid-gesture.
             return None
     other_app = previous_pid != pid
@@ -1188,6 +1349,131 @@ def _restore_user_focus(
     # No window to target, or the record was refused: re-activating the
     # user's app is the remaining way to give their keyboard back.
     return _activate_app(previous_pid) if other_app else False
+
+
+def _undo_self_activation(previous_pid: int | None, pid: int) -> bool | None:
+    """Re-activate the user's app if the target activated itself.
+
+    Used after a gesture that moved no focus itself (the target was already
+    key, or a transient held focus). Returns None when the foreground did not
+    move to the target, otherwise whether the user's app was re-activated.
+    """
+    if previous_pid is None or previous_pid == pid:
+        return None
+    if _live_front_pid() != pid:
+        return None
+    return _activate_app(previous_pid)
+
+
+def _settle_and_undo_self_activation(
+    previous_pid: int | None, pid: int, state: dict
+) -> None:
+    try:
+        # Let the target consume the stream (and any activation it triggers).
+        time.sleep(0.05)
+        restored = _undo_self_activation(previous_pid, pid)
+    except Exception:  # noqa: BLE001 - surfaced as focus_restored
+        restored = False
+    if restored is not None:
+        state["focus_restored"] = restored
+
+
+# Private snapshot key set by _prepare_synthetic_action when the keyboard
+# target is a validated transient companion window rather than the snapshot
+# window itself.
+_KEYBOARD_WINDOW = "_keyboard_window"
+
+
+@contextmanager
+def _keyed_target(snapshot: dict):
+    """Make the target window key (without raising it) for one keyboard gesture.
+
+    Keys posted to a pid land on that process's key window. When the target
+    is another window of the app the user is typing in, or a window of an app
+    whose key window is a different one, posting straight to the pid would
+    type into the wrong window. The target is made key, verified to hold
+    focus, and the user's window gets focus back afterwards, all under the
+    gesture lock. Yields a dict that receives ``focus_restored``.
+    """
+    pid, window_id = _target_ids(snapshot)
+    state: dict[str, Any] = {}
+    transient = snapshot.get(_KEYBOARD_WINDOW)
+    with background_input.GESTURE_LOCK:
+        if transient is not None:
+            # A validated transient companion (popover, completion list) of
+            # the snapshot window already holds focus; making the anchor key
+            # would dismiss it. Keys go to it only while it is still exactly
+            # the focused window.
+            front = _live_front_pid()
+            _validate_focused_window(
+                snapshot,
+                transient,
+                require_active_app=False,
+                require_exact_window_id=True,
+            )
+            try:
+                yield state
+            finally:
+                _settle_and_undo_self_activation(front, pid, state)
+            return
+        previous = _frontmost_window()
+        if previous is None:
+            raise ComputerUseError(
+                "action_failed", "could not capture the user's focused window"
+            )
+        if _key_window_id(pid) == window_id and (
+            previous[0] != pid or previous[1] == window_id
+        ):
+            # Already the app's key window and the user is either elsewhere
+            # or in that very window: keys to the pid reach it without any
+            # focus change.
+            _validate_focused_window(
+                snapshot, require_active_app=False, require_exact_window_id=True
+            )
+            try:
+                yield state
+            finally:
+                # Nothing was moved, but a key the target handles may make
+                # it activate itself; hand the foreground back if so.
+                _settle_and_undo_self_activation(previous[0], pid, state)
+            return
+        try:
+            if not _synthesize(
+                background_input.activate_without_raise, pid, window_id, previous[1]
+            ):
+                raise ComputerUseError(
+                    "synthetic_input_blocked",
+                    "window could not be made key in the background",
+                )
+            # Key status moves asynchronously (slower right after the app
+            # was activated); wait for it rather than guess a delay.
+            deadline = time.monotonic() + 0.5
+            while True:
+                time.sleep(0.02)
+                key = _key_window_id(pid)
+                if key == window_id or time.monotonic() > deadline:
+                    break
+                if _sheet_owner_id(pid) == window_id:
+                    break
+            if _sheet_owner_id(pid) == window_id:
+                # The target is blocked by its own sheet; keys would go to it.
+                raise ComputerUseError(
+                    "synthetic_input_blocked",
+                    f"window {snapshot.get('window_id')} is showing a dialog: "
+                    f"{_sheet_summary(pid)}",
+                    ("Answer the dialog first (press one of its buttons).",),
+                )
+            _validate_focused_window(
+                snapshot, require_active_app=False, require_exact_window_id=True
+            )
+            yield state
+            # Let the target consume the stream before focus moves back.
+            time.sleep(0.05)
+        finally:
+            try:
+                state["focus_restored"] = _restore_user_focus(previous, pid, window_id)
+            except Exception:  # noqa: BLE001 - surfaced as focus_restored
+                state["focus_restored"] = False
 
 
 def _synthesize(primitive, *args, **kwargs) -> bool:
@@ -1298,6 +1584,87 @@ def _pixel_click(
     }
 
 
+def drag(
+    app: str,
+    from_x: int,
+    from_y: int,
+    to_x: int,
+    to_y: int,
+    expected_snapshot: dict | None = None,
+    window_id: int | str | None = None,
+    include_post_state: bool = False,
+) -> dict:
+    """Left-button drag between two screen points inside the snapshot window."""
+    snapshot = expected_snapshot or get_app_state(
+        app,
+        screenshot=False,
+        use_cache=False,
+        window_id=window_id,
+        activate=OBSERVE_BY_ROUTE,
+    )
+    if not _background_delivery(snapshot):
+        raise ComputerUseError(
+            "synthetic_input_blocked",
+            "drag needs background delivery; foreground drags would move the "
+            "user's cursor",
+        )
+    pid, target_wid = _target_ids(snapshot)
+    with background_input.GESTURE_LOCK:
+        # Validate under the lock so no other gesture moves the window
+        # between the check and the posted stream.
+        window = _validate_snapshot_window(
+            snapshot, point=(from_x, from_y), require_topmost=False
+        )
+        _validate_snapshot_window(snapshot, point=(to_x, to_y), require_topmost=False)
+        previous = _frontmost_window()
+        if previous is None:
+            raise ComputerUseError(
+                "action_failed",
+                "could not capture the user's focused window before dragging",
+            )
+        restored = None
+        try:
+            if not _synthesize(
+                background_input.drag,
+                pid,
+                target_wid,
+                float(from_x),
+                float(from_y),
+                float(to_x),
+                float(to_y),
+                window_origin=_window_origin(window),
+                front_wid=previous[1],
+            ):
+                raise ComputerUseError(
+                    "action_failed", "background drag could not be synthesized"
+                )
+            time.sleep(0.05)
+        finally:
+            try:
+                restored = _restore_user_focus(previous, pid, target_wid)
+            except Exception:  # noqa: BLE001 - surfaced as focus_restored
+                restored = False
+    delivery = {
+        "mode": "SkyLight-drag",
+        "route": ROUTE_PID,
+        "from": [from_x, from_y],
+        "to": [to_x, to_y],
+        "focus_restored": restored,
+    }
+    if restored is False:
+        delivery["warning"] = (
+            "keyboard focus could not be handed back to the user's window"
+        )
+    return _finish_action(
+        app,
+        snapshot,
+        delivery,
+        verified=None,
+        verification="synthetic drag emitted; outcome not asserted",
+        include_post_state=include_post_state,
+    )
+
+
 def _same_process(expected: dict):
     """The running app for ``expected``'s pid, only if it is still that process.
 
@@ -1381,13 +1748,38 @@ def _keyboard_background(snapshot: dict, modifiers: int = 0) -> bool:
     return _background_delivery(snapshot) and not modifiers & MODIFIER_FLAGS["cmd"]
 
 
-def _send_key(snapshot: dict, keycode: int, modifiers: int, background: bool) -> str:
+def _focus_fields(state: dict) -> dict:
+    """``focus_restored`` (plus a warning when it failed) from a
+    :func:`_keyed_target` state; None when focus never moved."""
+    if state.get("focus_restored") is None:
+        return {"focus_restored": None}
+    fields: dict[str, Any] = {"focus_restored": state["focus_restored"]}
+    if state["focus_restored"] is False:
+        # The input itself was delivered, so this is not an action failure
+        # (raising would invite a duplicate retry); surface it instead.
+        fields["warning"] = (
+            "keyboard focus could not be handed back to the user's window"
+        )
+    return fields
+
+
+def _send_key(
+    snapshot: dict,
+    keycode: int,
+    modifiers: int,
+    background: bool,
+    delivery: dict | None = None,
+) -> str:
+    """Post one key; ``delivery`` (if given) receives the focus outcome."""
     if background:
         pid, _ = _target_ids(snapshot)
-        if not _synthesize(background_input.press_key, pid, keycode, modifiers):
-            raise ComputerUseError(
-                "action_failed", "background key could not be synthesized"
-            )
+        with _keyed_target(snapshot) as state:
+            if not _synthesize(background_input.press_key, pid, keycode, modifiers):
+                raise ComputerUseError(
+                    "action_failed", "background key could not be synthesized"
+                )
+        if delivery is not None:
+            delivery.update(_focus_fields(state))
         return ROUTE_PID
     if modifiers:
         ax_driver._press_key(keycode, modifiers)
@@ -1437,7 +1829,7 @@ def _validate_focused_window(
             {"name": snapshot["app"]["name"], "pid": expected_pid}
         )
         main = ax_driver._get(app_element, "AXMainWindow")
-        windows = ax_driver._as_list(ax_driver._get(app_element, "AXWindows"))
+        windows = ax_driver._app_windows(app_element)
         detached = ax_driver._get(app_element, "AXFocusedUIElement")
         main_frame = ax_driver._point_size(main) if main is not None else None
         detached_frame = (
@@ -1537,7 +1929,7 @@ def raise_selected_window(
     )
     matches = [
         window
-        for window in ax_driver._as_list(ax_driver._get(app_element, "AXWindows"))
+        for window in ax_driver._app_windows(app_element)
         if (candidate := ax_driver._point_size(window)) is not None
         and _ax_cg_frames_match(candidate, frame)
     ]
@@ -1567,7 +1959,7 @@ def raise_selected_window(
         )
     matches = [
         window
-        for window in ax_driver._as_list(ax_driver._get(app_element, "AXWindows"))
+        for window in ax_driver._app_windows(app_element)
         if (candidate := ax_driver._point_size(window)) is not None
         and _ax_cg_frames_match(candidate, frame)
     ]
@@ -1980,6 +2372,75 @@ COMMIT_ON_CLICK_ROLES = {
 }
 
 
+_POPUP_MENU_LAYER = 101  # kCGPopUpMenuWindowLevel
+
+
+def _open_popup_menus(snapshot: dict) -> set[int]:
+    """CG ids of the snapshot app's on-screen popup-menu windows (best-effort).
+
+    Empty unless background delivery serves a Chromium-family app, the only
+    case :func:`_dismiss_lingering_popup` acts on.
+    """
+    if not _background_delivery(snapshot) or not _needs_web_content_retry(
+        snapshot["app"]
+    ):
+        return set()
+    try:
+        from Quartz import (
+            CGWindowListCopyWindowInfo,
+            kCGNullWindowID,
+            kCGWindowListOptionOnScreenOnly,
+        )
+
+        pid = int(snapshot["app"]["pid"])
+        return {
+            int(window["kCGWindowNumber"])
+            for window in CGWindowListCopyWindowInfo(
+                kCGWindowListOptionOnScreenOnly, kCGNullWindowID
+            )
+            or []
+            if int(window.get("kCGWindowOwnerPID", -1)) == pid
+            and int(window.get("kCGWindowLayer", 0)) == _POPUP_MENU_LAYER
+            and window.get("kCGWindowNumber") is not None
+        }
+    except Exception:  # noqa: BLE001 - best-effort probe
+        return set()
+
+
+def _dismiss_lingering_popup(snapshot: dict, before: set[int]) -> None:
+    """Close a native popup menu left open after picking a web <select> option.
+
+    Chrome applies the option on AXPress but keeps its popup menu up; while
+    it is open the app's AXWindows lists only the menu, which breaks window
+    binding on the next step. Escape keeps the chosen value. Only a popup
+    that was already open when the option was picked (``before``) counts; a
+    menu the press itself opened is left alone.
+    """
+    if not before:
+        return
+    try:
+        pid = int(snapshot["app"]["pid"])
+
+        def lingering() -> bool:
+            return bool(_open_popup_menus(snapshot) & before)
+
+        # Held from the settle wait to the menu closing: no other gesture can
+        # interleave with the Escape or the menu's keyboard tracking.
+        with background_input.GESTURE_LOCK:
+            time.sleep(0.2)
+            # Only while the user is in another app: an Escape to the pid of
+            # the app they are using could close a menu they opened.
+            if not lingering() or _live_front_pid() in (None, pid):
+                return
+            if not _synthesize(background_input.press_key, pid, KEY_ALIASES["escape"]):
+                return
+            deadline = time.monotonic() + 1.5
+            while lingering() and time.monotonic() < deadline:
+                time.sleep(0.05)
+    except Exception:  # noqa: BLE001 - the pick itself already succeeded
+        return
+
+
 def _focus_without_commit(snapshot: dict, live: object | None) -> str | None:
     """Give ``live`` keyboard focus via AXFocused; the mode name, or None."""
     if live is None:
@@ -2016,7 +2477,11 @@ def click(
     click_count = int(click_count)
     if element_index is not None:
         snapshot = expected_snapshot or get_app_state(
-            app, screenshot=False, use_cache=False, window_id=window_id
+            app,
+            screenshot=False,
+            use_cache=False,
+            window_id=window_id,
+            activate=OBSERVE_BY_ROUTE,
         )
         entry = _element(snapshot, element_index)
         is_transient = entry.get(
@@ -2050,8 +2515,15 @@ def click(
             import ApplicationServices as AS  # type: ignore[import-untyped]  # noqa: N813, N817  # camelcase pyobjc module, alias is conventional
             from ApplicationServices import AXUIElementPerformAction
 
+            popups_before = (
+                _open_popup_menus(snapshot)
+                if entry.get("role") == "AXMenuItem"
+                else set()
+            )
             err = AXUIElementPerformAction(live, semantic)
             if err == AS.kAXErrorSuccess:
+                if popups_before:
+                    _dismiss_lingering_popup(snapshot, popups_before)
                 return _finish_action(
                     app,
                     snapshot,
@@ -2083,11 +2555,28 @@ def click(
             )
         if focus_only:
             focused = _focus_without_commit(snapshot, live)
+            keyed: dict = {}
+            if (
+                focused is None
+                and live is not None
+                and not is_transient
+                and _background_delivery(snapshot)
+            ):
+                # AXFocused only takes in the app's key window; make the
+                # target key for the focus change. The window keeps its first
+                # responder after the user's window gets focus back. (Never
+                # for a transient: making its anchor key would dismiss it.)
+                with _keyed_target(snapshot) as keyed:
+                    focused = _focus_without_commit(snapshot, live)
             if focused is not None:
                 return _finish_action(
                     app,
                     snapshot,
-                    {"mode": focused, "element_index": element_index},
+                    {
+                        "mode": focused,
+                        "element_index": element_index,
+                        **_focus_fields(keyed),
+                    },
                     verified=True,
                     verification="exact Accessibility element holds keyboard focus",
                     include_post_state=include_post_state,
@@ -2132,7 +2621,11 @@ def click(
             "invalid_argument", "click requires --element-index or both --x and --y"
         )
     snapshot = expected_snapshot or get_app_state(
-        app, screenshot=False, use_cache=False, window_id=window_id
+        app,
+        screenshot=False,
+        use_cache=False,
+        window_id=window_id,
+        activate=OBSERVE_BY_ROUTE,
     )
     delivery = _pixel_click(
         snapshot, float(x), float(y), button=mouse_button, count=click_count
@@ -2163,7 +2656,11 @@ def set_value(
     the agent whether the value landed exactly.
     """
     snapshot = expected_snapshot or get_app_state(
-        app, screenshot=False, use_cache=False, window_id=window_id
+        app,
+        screenshot=False,
+        use_cache=False,
+        window_id=window_id,
+        activate=OBSERVE_BY_ROUTE,
     )
     entry = _element(snapshot, element_index)
     is_transient = entry.get(
@@ -2244,7 +2741,128 @@ def set_value(
     )
 
 
+def _background_fill(snapshot: dict, element_index: int, value: str) -> dict:
+    """Replace a field's text without activating the app (cua's recipe).
+
+    AXFocused focuses the field, AXSelectedTextRange selects its whole text,
+    and the value arrives as SkyLight unicode events to the pid, replacing the
+    selection. No global HID click, no Cmd+A, no activation. When the window
+    is not key (e.g. on another Space) AXFocused is ignored, so the window is
+    first made key with focus-without-raise and focus is handed back after.
+    """
+    live = _live_element(snapshot, element_index, validate_point=False)
+    if live is None:
+        raise ComputerUseError(
+            "synthetic_input_blocked", "field could not be focused in the background"
+        )
+    typer = (
+        _choose_by_typeahead
+        if _element(snapshot, element_index).get("role") == "AXPopUpButton"
+        else _type_into_focused
+    )
+    with _keyed_target(snapshot) as state:
+        if _focus_without_commit(snapshot, live) is None:
+            raise ComputerUseError(
+                "synthetic_input_blocked",
+                "field could not be focused in the background",
+            )
+        result = typer(snapshot, live, element_index, value)
+    result.update(_focus_fields(state))
+    return result
+
+
+def _type_into_focused(
+    snapshot: dict, live: object, element_index: int, value: str
+) -> dict:
+    services = ax_driver.AS
+    current = _read_value(live)
+    if current is not None:
+        length = len(current.encode("utf-16-le")) // 2
+    else:
+        # An unreadable value is not an empty field: without its length the
+        # replace could append to existing text.
+        count = ax_driver._get(live, "AXNumberOfCharacters")
+        if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+            raise ComputerUseError(
+                "synthetic_input_blocked",
+                "field text could not be read to replace it",
+            )
+        length = count
+    selection = services.AXValueCreate(services.kAXValueCFRangeType, (0, length))
+    if length and (
+        ax_driver.AXUIElementSetAttributeValue(live, "AXSelectedTextRange", selection)
+        != ax_driver.kAXErrorSuccess
+    ):
+        raise ComputerUseError(
+            "synthetic_input_blocked", "field text could not be selected for replace"
+        )
+    _validate_focused_window(
+        snapshot, require_active_app=False, require_exact_window_id=True
+    )
+    pid, _ = _target_ids(snapshot)
+    if value:
+        sent = _synthesize(background_input.type_text, pid, value)
+    else:
+        # Typing nothing would leave the selection in place: clearing the
+        # field takes an explicit delete of the selected text.
+        sent = not length or _synthesize(
+            background_input.press_key, pid, KEY_ALIASES["delete"]
+        )
+    if not sent:
+        raise ComputerUseError(
+            "action_failed", "background text could not be synthesized"
+        )
+    # Never re-type on a short readback: off-Space, the AX value can trail the
+    # page (the page already holds the whole text), so a "missing" suffix is a
+    # perception lag, not a drop. Wait for the value to settle instead.
+    deadline = time.monotonic() + 3.0
+    while True:
+        time.sleep(0.15)
+        readback = _read_value(live)
+        if readback == value or time.monotonic() > deadline:
+            break
+    return {
+        "mode": "SkyLight-fill",
+        "element_index": element_index,
+        "verified": True if readback == value else None,
+        "actual": readback,
+    }
+
+
+def _choose_by_typeahead(
+    snapshot: dict, live: object, element_index: int, value: str
+) -> dict:
+    """Pick a popup option by typing its label into the focused, closed popup.
+
+    Opening the menu needs the window on screen (Chrome renders no menu for a
+    window on another Space) and leaves a menu tracking the keyboard; typeahead
+    on the closed control changes the selection directly and fires ``change``.
+    """
+    _validate_focused_window(
+        snapshot, require_active_app=False, require_exact_window_id=True
+    )
+    pid, _ = _target_ids(snapshot)
+    if not _synthesize(background_input.type_text, pid, value):
+        raise ComputerUseError(
+            "action_failed", "background text could not be synthesized"
+        )
+    deadline = time.monotonic() + 2.0
+    while True:
+        time.sleep(0.15)
+        readback = _read_value(live)
+        if readback == value or time.monotonic() > deadline:
+            break
+    return {
+        "mode": "SkyLight-typeahead",
+        "element_index": element_index,
+        "verified": True if readback == value else None,
+        "actual": readback,
+    }
+
+
 def _synthetic_fill(snapshot: dict, element_index: int, value: str) -> dict:
+    if _keyboard_background(snapshot):
+        return _background_fill(snapshot, element_index, value)
     entry = _element(snapshot, element_index)
     center = entry["center"]
     # Cmd+A is a menu key equivalent: this fallback is foreground-only.
@@ -2312,13 +2930,18 @@ def _prepare_synthetic_action(
     with the same ``_keyboard_background(snapshot, modifiers)`` decision.
     """
     snapshot = expected_snapshot or get_app_state(
-        app, screenshot=False, use_cache=False, window_id=window_id
+        app,
+        screenshot=False,
+        use_cache=False,
+        window_id=window_id,
+        activate=OBSERVE_BY_ROUTE,
     )
     background = _keyboard_background(snapshot, modifiers)
     # Foreground keeps the historical (HID) validation call shapes exactly;
     # background relaxes only the frontmost/topmost requirements.
     window_kwargs = {"require_topmost": False} if background else {}
     is_finder_transient = False
+    is_transient = False
     if element_index is not None:
         entry = _element(snapshot, element_index)
         if entry.get("source_window_id", snapshot.get("window_id")) != snapshot.get(
@@ -2347,6 +2970,7 @@ def _prepare_synthetic_action(
                     "target_drift", "transient companion changed or lost focus"
                 )
             expected_window = current
+            is_transient = True
             is_finder_transient = is_finder_snapshot(snapshot)
         else:
             entry_is_focused_editable = (
@@ -2409,19 +3033,20 @@ def _prepare_synthetic_action(
             snapshot["window"],
             allow_exact_main_window=True,
         )
-    else:
+    elif not background:
+        _validate_focused_window(snapshot, expected_window)
+    elif is_transient:
+        # A transient companion holds the keyboard: validate it exactly now
+        # and have _keyed_target re-check it (without moving key status).
         _validate_focused_window(
             snapshot,
             expected_window,
-            **(
-                {
-                    "require_active_app": False,
-                    "require_exact_window_id": True,
-                }
-                if background
-                else {}
-            ),
+            require_active_app=False,
+            require_exact_window_id=True,
         )
+        return {**snapshot, _KEYBOARD_WINDOW: expected_window}
+    # Background keyboard dispatch to the snapshot window validates focus
+    # inside _keyed_target, after the target window has been made key.
     return snapshot
 
 
@@ -2444,11 +3069,16 @@ def type_text(
             "set the field's value instead of typing it",
         )
     snapshot = _prepare_synthetic_action(app, window_id)
+    focus: dict[str, Any] = {}
     if _keyboard_background(snapshot):
-        if not _synthesize(background_input.type_text, _target_ids(snapshot)[0], text):
-            raise ComputerUseError(
-                "action_failed", "background text could not be synthesized"
-            )
+        with _keyed_target(snapshot) as state:
+            if not _synthesize(
+                background_input.type_text, _target_ids(snapshot)[0], text
+            ):
+                raise ComputerUseError(
+                    "action_failed", "background text could not be synthesized"
+                )
+        focus = _focus_fields(state)
         mode = "SkyLight-unicode"
     else:
         ax_driver._type_text(text)
@@ -2456,7 +3086,7 @@ def type_text(
     return _finish_action(
         app,
         snapshot,
-        {"mode": mode, "characters": len(text)},
+        {"mode": mode, "characters": len(text), **focus},
         verified=None,
         verification="synthetic text emitted; focused value was not readable",
         include_post_state=include_post_state,
@@ -3316,8 +3946,13 @@ def press_key(
                 element_index,
                 allow_selected_finder_row=normalized in {"enter", "return"},
             )
+        focus: dict[str, Any] = {}
         route = _send_key(
-            snapshot, KEY_ALIASES[normalized], 0, _keyboard_background(snapshot)
+            snapshot,
+            KEY_ALIASES[normalized],
+            0,
+            _keyboard_background(snapshot),
+            focus,
         )
         mode = "SkyLight-keycode" if route == ROUTE_PID else "CGEvent-keycode"
         if finder_enter_binding is not None:
@@ -3338,6 +3973,7 @@ def press_key(
                             "key": normalized,
                             "verification_source": "finder_file_reference_basename",
                             "actual_basename": Path(actual_path).name,
+                            **focus,
                         },
                         verified=True,
                         verification="Finder file-reference URL resolved to the requested basename",
@@ -3347,7 +3983,7 @@ def press_key(
         return _finish_action(
             app,
             snapshot,
-            {"mode": mode, "key": normalized},
+            {"mode": mode, "key": normalized, **focus},
             verified=None,
             verification="synthetic key emitted; outcome not asserted",
             include_post_state=include_post_state,
@@ -3356,17 +3992,19 @@ def press_key(
         snapshot = _prepare_synthetic_action(
             app, window_id, expected_snapshot, element_index
         )
+        focus = {}
         route = _send_key(
             snapshot,
             ax_driver._keycode_for(normalized),
             0,
             _keyboard_background(snapshot),
+            focus,
         )
         mode = "SkyLight-keycode" if route == ROUTE_PID else "CGEvent-keycode"
         return _finish_action(
             app,
             snapshot,
-            {"mode": mode, "key": normalized},
+            {"mode": mode, "key": normalized, **focus},
             verified=None,
             verification="synthetic key emitted; outcome not asserted",
             include_post_state=include_post_state,
@@ -3400,9 +4038,47 @@ def hotkey(
         raise ComputerUseError(
             "unsupported_key", f"unsupported hotkey key {key_part!r}"
         )
+    if modifiers & MODIFIER_FLAGS["cmd"] and window_id is not None:
+        probe = get_app_state(
+            app,
+            screenshot=False,
+            use_cache=False,
+            window_id=window_id,
+            activate=OBSERVE_BY_ROUTE,
+        )
+        if _background_delivery(probe):
+            if not _is_menu_equivalent(probe["app"], key_part, modifiers, keycode):
+                # Not a menu command: the chord is for the content (a web
+                # app's Cmd+K, an editor binding), which takes it in the
+                # background.
+                return _background_chord(
+                    app, probe, keycode, modifiers, key, include_post_state
+                )
+            if _process_is_active(probe):
+                # The user is in this app: its menus are live, but a menu
+                # command acts on the key window -- make the target key for
+                # the chord so it cannot hit the user's window.
+                return _background_chord(
+                    app, probe, keycode, modifiers, key, include_post_state
+                )
+            else:
+                # AppKit runs menu commands only for the active app; raising
+                # it would take the user's screen, so say so instead of
+                # failing on a geometry check.
+                raise ComputerUseError(
+                    "synthetic_input_blocked",
+                    f"{key} is (or may be) a menu command of "
+                    f"{probe['app']['name']}; menu "
+                    "commands only run while the app is in front",
+                    (
+                        "Use an Accessibility action or set-value for the same "
+                        "effect, or ask the user before bringing the app forward.",
+                    ),
+                )
     snapshot = _prepare_synthetic_action(app, window_id, modifiers=modifiers)
+    focus: dict[str, Any] = {}
     if _keyboard_background(snapshot, modifiers):
-        _send_key(snapshot, keycode, modifiers, True)
+        _send_key(snapshot, keycode, modifiers, True, focus)
         mode = "SkyLight-hotkey"
     else:
         import Quartz
@@ -3418,9 +4094,114 @@ def hotkey(
     return _finish_action(
         app,
         snapshot,
-        {"mode": mode, "key": key},
+        {"mode": mode, "key": key, **focus},
         verified=None,
         verification="synthetic hotkey emitted; outcome not asserted",
+        include_post_state=include_post_state,
+    )
+
+
+def _process_is_active(snapshot: dict) -> bool:
+    running = ax_driver._application_for_pid(int(snapshot["app"]["pid"]))
+    try:
+        return bool(running is not None and running.isActive())
+    except Exception:  # noqa: BLE001 - treat unknown as inactive
+        return False
+
+
+# AXMenuItemCmdModifiers: Cmd is implied unless bit 3 (0x8) is set.
+_MENU_SHIFT, _MENU_OPTION, _MENU_CONTROL, _MENU_NO_CMD = 0x1, 0x2, 0x4, 0x8
+_MENU_SCAN_LIMIT = 3000
+
+
+# Menu-tree nodes whose children must be readable for a chord to be ruled out.
+_MENU_CONTAINER_ROLES = frozenset({"AXMenuBar", "AXMenuBarItem", "AXMenu"})
+
+
+def _is_menu_equivalent(
+    app_info: dict, key_part: str, modifiers: int, keycode: int | None = None
+) -> bool:
+    """Whether a Cmd chord is one of the app's menu key equivalents.
+
+    Menu commands only run while the app is really active (AppKit disables
+    every menu item of an inactive app), so those keep the foreground route.
+    Items match by ``AXMenuItemCmdChar`` or, for arrows and function keys,
+    ``AXMenuItemCmdVirtualKey``. An unreadable or truncated menu tree (a menu
+    bar without readable items, a menu whose children fail to read), or a
+    matching key with unreadable modifiers, counts as a match (fail closed).
+    A leaf item without ``AXChildren`` is normal.
+    """
+    want = 0
+    if modifiers & MODIFIER_FLAGS["shift"]:
+        want |= _MENU_SHIFT
+    if modifiers & MODIFIER_FLAGS["option"]:
+        want |= _MENU_OPTION
+    if modifiers & MODIFIER_FLAGS["ctrl"]:
+        want |= _MENU_CONTROL
+    app_element = _pid_app_element(app_info)
+    bar = ax_driver._get(app_element, "AXMenuBar")
+    if bar is None:
+        # Unreadable menu bar: cannot rule a menu command out, fail closed.
+        return True
+    stack, seen = [bar], 0
+    while stack:
+        if seen >= _MENU_SCAN_LIMIT:
+            return True  # truncated scan: fail closed as well
+        node = stack.pop()
+        seen += 1
+        char = ax_driver._get(node, "AXMenuItemCmdChar")
+        vkey = ax_driver._get(node, "AXMenuItemCmdVirtualKey")
+        if (
+            isinstance(char, str)
+            and char.strip()
+            and char.casefold() == key_part.casefold()
+        ) or (
+            keycode is not None
+            and isinstance(vkey, int)
+            and not isinstance(vkey, bool)
+            and vkey == keycode
+        ):
+            mods = ax_driver._get(node, "AXMenuItemCmdModifiers")
+            if not isinstance(mods, int):
+                return True
+            if not mods & _MENU_NO_CMD and mods == want:
+                return True
+        if node is bar or ax_driver._get(node, "AXRole") in _MENU_CONTAINER_ROLES:
+            readable, raw = ax_driver._get_checked(node, "AXChildren")
+            children = ax_driver._as_list(raw)
+            if not readable or (node is bar and not children):
+                return True  # menu items could not be enumerated: fail closed
+        else:
+            children = ax_driver._as_list(ax_driver._get(node, "AXChildren"))
+        stack.extend(children)
+    return False
+
+
+def _background_chord(
+    app: str,
+    snapshot: dict,
+    keycode: int,
+    modifiers: int,
+    key: str,
+    include_post_state: bool,
+) -> dict:
+    pid, _ = _target_ids(snapshot)
+    with _keyed_target(snapshot) as state:
+        if not _synthesize(background_input.press_key, pid, keycode, modifiers):
+            raise ComputerUseError(
+                "action_failed", "background chord could not be synthesized"
+            )
+    return _finish_action(
+        app,
+        snapshot,
+        {
+            "mode": "SkyLight-chord",
+            "key": key,
+            "route": ROUTE_PID,
+            **_focus_fields(state),
+        },
+        verified=None,
+        verification="background chord delivered to the content; outcome not asserted",
         include_post_state=include_post_state,
     )
 
@@ -3440,7 +4221,11 @@ def scroll(
             "invalid_argument", f"unsupported direction {direction!r}"
         )
     snapshot = expected_snapshot or get_app_state(
-        app, screenshot=False, use_cache=False, window_id=window_id
+        app,
+        screenshot=False,
+        use_cache=False,
+        window_id=window_id,
+        activate=OBSERVE_BY_ROUTE,
     )
     point = (x, y) if x is not None and y is not None else _window_center(snapshot)
     lines = int(max(1, round(pages * 10)))
@@ -3509,7 +4294,11 @@ def perform_secondary_action(
     from ApplicationServices import AXUIElementPerformAction
 
     snapshot = get_app_state(
-        app, screenshot=False, use_cache=False, window_id=window_id
+        app,
+        screenshot=False,
+        use_cache=False,
+        window_id=window_id,
+        activate=OBSERVE_BY_ROUTE,
     )
     entry = _element(snapshot, element_index)
     live = _live_element(snapshot, element_index)
