@@ -374,7 +374,8 @@ def test_settle_menus_refuses_a_missing_or_disabled_item(open_menu, calls):
 def test_settle_menus_matches_a_unique_start_or_part_and_refuses_ambiguity(
     open_menu, calls, attrs
 ):
-    attrs["menu"]["AXChildren"] = ["visa", "checking", "savings", "add"]
+    attrs["menu"]["AXChildren"] = ["visa", "checking", "savings", "add", "settings"]
+    attrs["settings"] = {"AXRole": "AXMenuItem", "AXTitle": "Payment settings"}
     attrs["visa"] = {"AXRole": "AXMenuItem", "AXTitle": "Visa ending 4242 (2.95% fee)"}
     attrs["checking"] = {
         "AXRole": "AXMenuItem",
@@ -387,8 +388,14 @@ def test_settle_menus_matches_a_unique_start_or_part_and_refuses_ambiguity(
     open_menu.state["open"] = 1
     report = backend._settle_menus(_snapshot(), 0, 0, "6789", expect_menu=True)
     assert report["chosen"] == "Checking ending 6789 (no fee)"
+    open_menu.state["open"] = 1
+    report = backend._settle_menus(_snapshot(), 0, 0, "Sa", expect_menu=True)
+    assert report["chosen"] == "Savings ending 1111"
     for wanted, why in (
         ("ending", "has 3 items matching"),  # in three titles
+        # One title starts with it, another holds it: still ambiguous.
+        ("pay", "has 2 items matching"),
+        ("ng", "has no enabled item"),  # two letters choose only as a start
         ("c", "has no enabled item"),  # too short to choose by
         ("Mastercard", "has no enabled item"),
     ):
