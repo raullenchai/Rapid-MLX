@@ -914,6 +914,23 @@ def test_approval_binds_to_every_chosen_option(session, screen):
     assert not screen.calls
 
 
+def test_approval_binds_to_what_the_text_fields_hold(session, screen):
+    def page(to):
+        return [*_checkout(), E("to", "AXTextField", "Recipient", value=to)]
+
+    screen.show(page("ada@example.com"))
+    obs = session.observe("Chrome", "cg:1")
+    with pytest.raises(ComputerUseError):
+        session.act("click", _ref(obs, "Place order"))
+    session.approve("a1")
+    screen.show(page("eve@example.com"))  # same total, another recipient
+    obs = session.observe("Chrome", "cg:1")
+    with pytest.raises(ComputerUseError) as err:
+        session.act("click", _ref(obs, "Place order"))
+    assert "approval a2" in err.value.message
+    assert not screen.calls
+
+
 def test_refused_commit_click_keeps_the_approval(session, screen):
     events = []
     session.on_event = lambda kind, payload: events.append(kind)
@@ -1532,7 +1549,7 @@ def test_dispatch_routes_each_op_to_the_backend(session, screen):
         "scroll", "Chrome", {"s": 1}, "cg:1", row, {"direction": "up", "pages": 2}
     )
     session._dispatch("scroll", "Chrome", {"s": 1}, "cg:1", None, {})
-    session._dispatch("action", "Chrome", {}, "cg:1", row, {"name": "AXShowMenu"})
+    session._dispatch("action", "Chrome", {"s": 2}, "cg:1", row, {"name": "AXShowMenu"})
     session._dispatch("type", "Chrome", {}, "cg:1", None, {"text": "hi"})
     session._dispatch(
         "click",
@@ -1552,6 +1569,8 @@ def test_dispatch_routes_each_op_to_the_backend(session, screen):
     ]
     assert screen.calls[0][1]["x"] == 40 and screen.calls[0][1]["pages"] == 2.0
     assert screen.calls[1][1]["x"] is None
+    # An action names the element of the observation it was taken from.
+    assert screen.calls[2][1]["expected_snapshot"] == {"s": 2}
     assert screen.calls[4][1]["click_count"] == 2 and screen.calls[4][1][
         "modifiers"
     ] == ["cmd"]

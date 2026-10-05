@@ -1210,6 +1210,27 @@ def test_show_menu_is_refused_when_menus_cannot_be_counted(monkeypatch, calls):
     assert not [c for c in calls if c[0] == "ax"]
 
 
+def test_secondary_action_resolves_the_index_in_the_expected_snapshot(
+    monkeypatch, calls
+):
+    snap = _snapshot(
+        elements=[{"index": 0, "role": "AXButton", "actions": ["AXShowMenu"]}]
+    )
+
+    def fresh(*a, **k):
+        raise AssertionError("an expected snapshot is never re-observed")
+
+    resolved = []
+    _ax_actions(monkeypatch, calls)
+    monkeypatch.setattr(backend, "get_app_state", fresh)
+    monkeypatch.setattr(
+        backend, "_live_element", lambda s, i, **k: resolved.append(s) or None
+    )
+    with pytest.raises(errors.ComputerUseError):
+        backend.perform_secondary_action("App", 0, "AXShowMenu", expected_snapshot=snap)
+    assert resolved == [snap]
+
+
 def test_show_menu_action_never_leaves_the_menu_open(monkeypatch, open_menu, calls):
     snap = _snapshot(
         elements=[{"index": 0, "role": "AXButton", "actions": ["AXShowMenu"]}]

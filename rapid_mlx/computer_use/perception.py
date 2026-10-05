@@ -1048,8 +1048,10 @@ class PerceptionSession:
                 expected_snapshot=snapshot,
             )
         if op == "action" and index is not None:
+            # The index names an element of this observation, never whatever
+            # sits at that index on a page that moved since.
             return backend.perform_secondary_action(
-                app, index, str(kw["name"]), window_id=wid
+                app, index, str(kw["name"]), window_id=wid, expected_snapshot=snapshot
             )
         raise ComputerUseError("invalid_argument", f"unknown op {op!r}")
 
@@ -1337,14 +1339,16 @@ def _frontmost_bundle() -> str | None:
 
 
 def _approval_key(obs: Observation, row: Row) -> tuple:
-    """What an approval binds to: window, control, every amount on screen and
-    every chosen option (delivery slot, plan, payment method, ...)."""
+    """What an approval binds to: window, control, every amount on screen,
+    every chosen option (delivery slot, plan, payment method, ...) and what
+    every text field holds (recipient, address, account, quantity)."""
     return (
         obs.window_id,
         row.ref,
         row.label,
         guards.amounts(obs.texts()),
         tuple(obs.choices()),
+        tuple((r.ref, r.value or "") for r in obs.rows if r.role in guards.TEXT_ROLES),
     )
 
 

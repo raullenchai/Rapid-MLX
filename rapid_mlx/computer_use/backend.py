@@ -5535,11 +5535,18 @@ def perform_secondary_action(
     action: str,
     window_id: int | str | None = None,
     include_post_state: bool = False,
+    expected_snapshot: dict | None = None,
 ) -> dict:
+    """Perform an advertised AX action on an element.
+
+    With ``expected_snapshot`` the index names the element of that
+    observation (its live element), as for :func:`click`; without it, the
+    index is resolved in a fresh snapshot.
+    """
     import ApplicationServices as AS  # type: ignore[import-untyped]  # noqa: N813, N817  # camelcase pyobjc module, alias is conventional
     from ApplicationServices import AXUIElementPerformAction
 
-    snapshot = get_app_state(
+    snapshot = expected_snapshot or get_app_state(
         app,
         screenshot=False,
         use_cache=False,

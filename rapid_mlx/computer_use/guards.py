@@ -55,7 +55,9 @@ _CURRENCY = (
 # ("Qty 2 €5" is €5, not "2 €").
 _AMOUNT = re.compile(rf"{_CURRENCY}\s?{_NUMBER}|{_NUMBER}\s?{_CURRENCY}(?!\s?\d)")
 _PRICED_VERB = re.compile(
-    r"\b(?:upgrade|join|pay|buy|purchase|subscribe|donate|renew|tip|add funds)\b", re.I
+    r"\b(?:upgrade|join|pay|buy|purchase|subscribe|donate|renew|tip|add funds"
+    r"|charge|send|transfer|withdraw|deposit|checkout|check out)\b",
+    re.I,
 )
 _PRESS_ROLES = {"AXButton", "AXLink", "AXMenuItem", "AXMenuButton", "AXPopUpButton"}
 _TOTAL_WORDS = re.compile(

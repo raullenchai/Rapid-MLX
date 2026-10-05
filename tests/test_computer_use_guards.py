@@ -128,6 +128,9 @@ def test_card_number_bounds():
 def test_priced_actions_and_amounts():
     assert guards.is_money_commit("AXLink", "Renew for £9.99")
     assert guards.is_money_commit("AXMenuItem", "Tip $3")
+    for label in ("Charge $100", "Send $100", "Withdraw €50", "Check out · $42.10"):
+        assert guards.is_money_commit("AXButton", label), label
+    assert not guards.is_money_commit("AXButton", "Send message")
     assert not guards.is_money_commit("AXButton", "View plan $9.99")
     assert not guards.is_money_commit("AXButton", "")
     assert guards.amounts(["€12,50", "12,99 €", "1.234,56 EUR", "USD 9"]) == (
