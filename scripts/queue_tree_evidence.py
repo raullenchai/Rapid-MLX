@@ -484,8 +484,7 @@ def discover(client: GitHubClient, scope: str, main_sha: str) -> DiscoveryProbe:
         (
             run
             for run in _recent_runs(client, scope)
-            if run.get("conclusion") != "cancelled"
-            and run.get("head_sha") != main_sha
+            if run.get("head_sha") != main_sha
             and isinstance(run.get("head_sha"), str)
             and CANDIDATE_RE.fullmatch(str(run.get("head_branch", "")))
         ),
@@ -497,8 +496,10 @@ def discover(client: GitHubClient, scope: str, main_sha: str) -> DiscoveryProbe:
         try:
             if _tree_sha(client, candidate_sha) != main_tree:
                 continue
-            # Runs are newest-first. A later non-cancelled failure supersedes
-            # every older success for the same immutable candidate/tree.
+            # Runs are newest-first. Cancellation is also authoritative: a
+            # newer cancelled candidate cannot resurrect historical full proof.
+            # A reduced candidate without this full namespace is likewise a
+            # cache miss, forcing main to execute its complete backstop.
             if run.get("conclusion") != "success":
                 return DiscoveryProbe(None, False)
             status_pages = client.json(
@@ -570,8 +571,12 @@ def discover(client: GitHubClient, scope: str, main_sha: str) -> DiscoveryProbe:
             return DiscoveryProbe(None, True)
         except EvidenceError as exc:
             print(
-                f"warning: ignoring candidate {candidate_sha}: {exc}", file=sys.stderr
+                f"warning: cannot qualify candidate {candidate_sha}: {exc}",
+                file=sys.stderr,
             )
+            # An unavailable newer candidate cannot justify selecting an older
+            # identical-tree success. Missing evidence runs ordinary full CI.
+            return DiscoveryProbe(None, False)
     return DiscoveryProbe(None, False)
 
 
