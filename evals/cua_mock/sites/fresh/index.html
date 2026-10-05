@@ -162,7 +162,9 @@ function showSearch(q) {
   const hits = CATALOG.filter((p) => terms.every((t) => (p.name + " " + p.size).toLowerCase().includes(t)));
   // Sponsored results first, like real stores.
   hits.sort((a, b) => (b.price > 10) - (a.price > 10));
-  view.innerHTML = `<h1>Results for "${q}"</h1><p class="muted">${hits.length} items</p>`;
+  // q comes from the URL: text, never markup.
+  view.innerHTML = `<h1></h1><p class="muted">${hits.length} items</p>`;
+  view.querySelector("h1").textContent = `Results for "${q}"`;
   const grid = document.createElement("div");
   grid.className = "grid";
   hits.forEach((p) => grid.appendChild(card(p)));
