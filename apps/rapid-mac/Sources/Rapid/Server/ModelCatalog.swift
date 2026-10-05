@@ -210,7 +210,7 @@ struct SpeculativeDecodingPreset: Codable, Sendable, Hashable {
         switch method {
         case .mtp: return "MTP"
         case .dflash: return "DFlash"
-        case .suffix: return "Suffix decoding"
+        case .suffix: return String(localized: "Suffix decoding")
         }
     }
 

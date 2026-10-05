@@ -1231,11 +1231,11 @@ struct SettingsModelManagementPanel: View {
     private func statusBadgeView(_ badge: ModelCacheActions.StatusBadge) -> some View {
         switch badge {
         case .cached:
-            pill(text: String(localized: "On disk"), color: RapidTheme.statusReady)
+            pill(text: String(localized: "On disk"), id: "On disk", color: RapidTheme.statusReady)
         case .inUse:
-            pill(text: String(localized: "In use"), color: RapidTheme.statusReady)
+            pill(text: String(localized: "In use"), id: "In use", color: RapidTheme.statusReady)
         case .notCached:
-            pill(text: String(localized: "Not cached"), color: RapidTheme.statusIdle)
+            pill(text: String(localized: "Not cached"), id: "Not cached", color: RapidTheme.statusIdle)
         case .downloading(let pct):
             let label: String = {
                 if let pct {
@@ -1243,14 +1243,20 @@ struct SettingsModelManagementPanel: View {
                 }
                 return String(localized: "Downloading…")
             }()
-            pill(text: label, color: RapidTheme.statusWorking)
+            pill(
+                text: label,
+                id: pct.map { "Downloading… \($0)%" } ?? "Downloading…",
+                color: RapidTheme.statusWorking
+            )
         case .failed:
-            pill(text: String(localized: "Failed"), color: RapidTheme.statusError)
+            pill(text: String(localized: "Failed"), id: "Failed", color: RapidTheme.statusError)
         }
     }
 
     @ViewBuilder
-    private func pill(text: String, color: Color) -> some View {
+    /// `id` is the English status, kept out of the catalog so the
+    /// accessibility identifier stays the same in every language.
+    private func pill(text: String, id: String, color: Color) -> some View {
         Text(text)
             .font(RapidFont.caption)
             .foregroundStyle(color)
@@ -1262,7 +1268,7 @@ struct SettingsModelManagementPanel: View {
             )
             .lineLimit(1)
             .fixedSize()
-            .accessibilityIdentifier("Settings.ModelManagement.Status.\(text)")
+            .accessibilityIdentifier("Settings.ModelManagement.Status.\(id)")
     }
 
     /// The prominent action button on a Recommended CARD. The dense

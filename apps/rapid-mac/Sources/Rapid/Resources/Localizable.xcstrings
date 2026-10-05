@@ -8489,6 +8489,16 @@
           }
         }
       }
+    },
+    "Suffix decoding" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "后缀解码"
+          }
+        }
+      }
     }
   }
 }
