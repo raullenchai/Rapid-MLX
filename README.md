@@ -3,6 +3,10 @@
 <p align="center">
   <strong>Rapid-MLX is an open-source (Apache 2.0) OpenAI- and Anthropic-compatible LLM inference server and Mac app for Apple Silicon, built on MLX, focused on reliable tool calling for coding agents.</strong>
   <br>
+  <strong>Up to 4× faster than Apple's MLX (mlx-lm), 1.5× on a typical task — same model, same weights.</strong>
+  <br>
+  <em>Qwen3.5-9B 4-bit on a Mac mini M4 Pro, greedy decoding, both servers at their defaults — <a href="https://rapidmlx.com/compare/mlx-lm">per-task results, method, and raw data</a>.</em>
+  <br>
   <em>Measured: 3.0× Ollama's aggregate decode throughput at 8 concurrent streams on Qwen3.6-35B-A3B (M2 Pro) — <a href="https://rapidmlx.com/blog/rapid-mlx-vs-ollama-benchmark">method, raw data, and where it is slower</a>.</em>
 </p>
 
@@ -38,8 +42,8 @@
 ## How it compares
 
 Feature facts only, taken mostly from each project's own documentation as of
-2026-09-26 (sources below). For measured speed, see the benchmark linked
-above.
+2026-09-26 (sources below). For measured speed, see the benchmarks linked
+above and below.
 
 | | Rapid-MLX | [oMLX](https://github.com/jundot/omlx) | [Ollama](https://github.com/ollama/ollama) | [LM Studio](https://lmstudio.ai) | [mlx-lm](https://github.com/ml-explore/mlx-lm) (`mlx_lm.server`) |
 |---|---|---|---|---|---|
@@ -58,7 +62,17 @@ LM Studio [Anthropic compatibility](https://lmstudio.ai/docs/developer/anthropic
 Ollama prompt-cache reuse is from our [benchmark notes](https://rapidmlx.com/blog/assets/engine-bench-2026-08/results.json).
 — = not verified for this table. Spot an error? Please [open an issue](https://github.com/raullenchai/Rapid-MLX/issues).</sub>
 
-**Measured speed:** the 3.0× above is 82.9 vs 27.2 tok/s aggregate decode
+**Measured speed vs mlx-lm:** Rapid-MLX 0.15.6 against mlx-lm 0.32.0
+(`mlx_lm.server`) on a 48 GB M4 Pro Mac mini, Qwen3.5-9B 4-bit, same weights,
+greedy decoding, both at defaults (measured 2026-10-04). Decode was 1.50× at
+the median of 18 streaming tasks (lowest 1.28×) and up to 4.27× on a
+whole-file code edit (46.4 → 198.4 tok/s; 4.00× against `mlx_lm.generate`,
+hence "4×"). The gain is speculative decoding (MTP plus prompt lookup), on by
+default for this model; a long-prompt agent turn was close to a tie (1.05× end
+to end), and Qwen3.5-4B, where it is off by default, was 1.12× at the median
+([per-task results and raw data](https://rapidmlx.com/compare/mlx-lm)).
+
+**Measured speed vs Ollama:** the 3.0× above is 82.9 vs 27.2 tok/s aggregate decode
 (32 GB M2 Pro Mac mini, Rapid-MLX 0.12.11 vs Ollama 0.32.7). Including
 prefill, whole-batch throughput was 1.6×; single-stream decode was about 1.5×;
 a dense 12B model was no faster; and llama.cpp-family engines prefilled cold
