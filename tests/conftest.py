@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Pytest configuration and shared fixtures."""
 
+import argparse
 import importlib.util
 import ipaddress
 import os
@@ -591,11 +592,17 @@ def _reset_global_parser_state_after_each_test():
         _server._reasoning_parser_name = None
 
 
+class _ServerURLOptIn(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+        namespace.integration_server_opt_in = bool(values)
+
+
 def pytest_addoption(parser):
     """Add custom command line options."""
     parser.addoption(
         "--server-url",
-        action="store",
+        action=_ServerURLOptIn,
         default="http://localhost:8000",
         help="URL of the Rapid-MLX server for integration tests",
     )
@@ -655,10 +662,13 @@ def pytest_collection_modifyitems(config, items):
                 item.add_marker(skip_slow)
 
     # Skip integration tests unless server URL is explicitly provided
-    skip_integration = pytest.mark.skip(reason="Integration tests require --server-url")
-    for item in items:
-        if "integration" in item.keywords:
-            item.add_marker(skip_integration)
+    if not getattr(config.option, "integration_server_opt_in", False):
+        skip_integration = pytest.mark.skip(
+            reason="Integration tests require --server-url"
+        )
+        for item in items:
+            if "integration" in item.keywords:
+                item.add_marker(skip_integration)
 
     # Skip items inside script-only modules (regression_suite.py etc.)
     # — see ``_SCRIPT_ONLY_MODULES`` above. ``pytest_ignore_collect`` is
