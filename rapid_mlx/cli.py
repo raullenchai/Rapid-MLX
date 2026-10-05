@@ -5729,8 +5729,7 @@ def serve_command(args):
     # after a multi-minute weight download. See #287.
     #
     # ``resolve_pflash_mode_default`` runs before ``config_from_args``
-    # so the per-alias default (``"always"`` for verified Qwen3.5 /
-    # Qwen3.6 aliases, ``"off"`` everywhere else) is materialized into
+    # so the default (``"off"`` for every alias since #4092) is materialized into
     # ``args.pflash``. The resolved value then flows through the same
     # validation path the user-explicit case takes.
     from .api.utils import resolve_serving_lane
@@ -5794,8 +5793,8 @@ def serve_command(args):
             force_text=getattr(args, "no_mllm", False),
             requested_spec_decode=_requested_spec_decode,
         )
-        # Resolve BOTH per-alias PFlash defaults (mode + keep_ratio, e.g.
-        # bonsai-27b-2bit → always @ 0.50) and build the config in one shared
+        # Resolve BOTH PFlash defaults (mode + per-alias keep_ratio, e.g.
+        # bonsai-27b-2bit explicit opt-in → 0.50) and build the config in one shared
         # helper; an explicit --pflash / --pflash-keep-ratio still wins inside.
         try:
             pflash_detection = {}
@@ -7951,9 +7950,9 @@ def bench_command(args):
     # Handle prefix cache flags
     enable_prefix_cache = args.enable_prefix_cache and not args.disable_prefix_cache
 
-    # PFlash for the bench command — same per-alias default as serve:
-    # verified Qwen3.5 / Qwen3.6 aliases switch to ``always``, everything
-    # else stays ``off``. Resolves before config_from_args so the
+    # PFlash for the bench command — same default as serve: ``off`` for
+    # every alias unless the user explicitly opts in. Resolves before
+    # config_from_args so the
     # validate path sees the final mode, then runs the MLLM-rejection
     # gate ``serve``/``server.py`` already enforce (codex r3 BLOCKING:
     # bench previously skipped this check, so ``rapid-mlx bench
@@ -8861,30 +8860,24 @@ def _print_cached_models() -> None:
     print()
 
 
-def recipe_command(args) -> None:
-    """Recommend exactly two curated models for this Mac's RAM tier.
+def _annotate_recipe_picks(
+    payload: dict, cache_rows: list[tuple[str, int, float]] | None = None
+) -> dict:
+    """Add cache, download-size and disk-fit facts to a recommendation payload.
 
-    Recommendations stay anchored to the shared, curated RAM-tier SSOT. Disk
-    pressure is presentation state, not a reason to silently substitute a
-    lower-quality model: an unavailable pick remains visible, but we do not
-    print a copy-paste ``serve`` command that is known to fail mid-download.
+    Shared by ``rapid-mlx recipe`` and the bare-command front door so both
+    surfaces show the same picks with the same numbers. Offline: sizes come
+    from the checked-in manifest, cache state from the local HF cache scan
+    (pass ``cache_rows`` to reuse a scan the caller already did).
     """
-    import json
     import math
 
     from rapid_mlx.model_aliases import resolve_profile
     from rapid_mlx.model_sizes import size_bytes
-    from rapid_mlx.recommendations import physical_ram_gb, recommendation_payload
 
-    ram_gb = (
-        float(args.max_ram)
-        if getattr(args, "max_ram", None) is not None
-        else physical_ram_gb()
-    )
-    if ram_gb <= 0:
-        raise SystemExit("Could not detect physical RAM. Pass --max-ram GB explicitly.")
-    payload = recommendation_payload(ram_gb)
-    cached_repos = {repo.casefold() for repo, _, _ in _scan_hf_cache_models()}
+    if cache_rows is None:
+        cache_rows = _scan_hf_cache_models()
+    cached_repos = {repo.casefold() for repo, _, _ in cache_rows}
     free_disk_gb = _recipe_free_disk_gb()
     # Free space rounds DOWN while required space below rounds UP for display.
     # Fit itself still compares the unrounded measurements: presentation must
@@ -8929,6 +8922,30 @@ def recipe_command(args) -> None:
             if free_disk_gb is None or required_disk_gb is None
             else free_disk_gb >= required_disk_gb
         )
+    return payload
+
+
+def recipe_command(args) -> None:
+    """Recommend exactly two curated models for this Mac's RAM tier.
+
+    Recommendations stay anchored to the shared, curated RAM-tier SSOT. Disk
+    pressure is presentation state, not a reason to silently substitute a
+    lower-quality model: an unavailable pick remains visible, but we do not
+    print a copy-paste ``serve`` command that is known to fail mid-download.
+    """
+    import json
+
+    from rapid_mlx.recommendations import physical_ram_gb, recommendation_payload
+
+    ram_gb = (
+        float(args.max_ram)
+        if getattr(args, "max_ram", None) is not None
+        else physical_ram_gb()
+    )
+    if ram_gb <= 0:
+        raise SystemExit("Could not detect physical RAM. Pass --max-ram GB explicitly.")
+    payload = recommendation_payload(ram_gb)
+    _annotate_recipe_picks(payload)
 
     if getattr(args, "json", False):
         print(json.dumps(payload, indent=2, sort_keys=True))
@@ -10626,18 +10643,15 @@ def _elide_front(text: str, width: int) -> str:
     return "…" + text[-(width - 1) :]
 
 
-def ps_command(_args):
-    """List running rapid-mlx servers (process scan)."""
+def _scan_running_servers() -> list[tuple[int, str, str, str]]:
+    """``[(pid, port, model, uptime), ...]`` for running ``rapid-mlx serve``
+    processes, found by a local process scan (no network).
+
+    Shared by ``rapid-mlx ps`` and the bare-command front door.
+    """
     import time
 
     import psutil
-
-    # Surface the staleness nudge up front. ps has no ``--json`` form, so
-    # there is no machine-readable mode whose stderr must stay clean.
-    if not getattr(_args, "json", False):
-        from rapid_mlx._version_check import print_staleness_warning_if_any
-
-        print_staleness_warning_if_any()
 
     rows: list[tuple[int, str, str, str]] = []
     for proc in psutil.process_iter(["pid", "cmdline", "create_time"]):
@@ -10727,6 +10741,20 @@ def ps_command(_args):
         h, m = uptime_s // 3600, (uptime_s % 3600) // 60
         uptime = f"{h}h{m:02d}m" if h else f"{m}m{uptime_s % 60:02d}s"
         rows.append((proc.info["pid"], port, model, uptime))
+
+    return rows
+
+
+def ps_command(_args):
+    """List running rapid-mlx servers (process scan)."""
+    # Surface the staleness nudge up front. ps has no ``--json`` form, so
+    # there is no machine-readable mode whose stderr must stay clean.
+    if not getattr(_args, "json", False):
+        from rapid_mlx._version_check import print_staleness_warning_if_any
+
+        print_staleness_warning_if_any()
+
+    rows = _scan_running_servers()
 
     if not rows:
         print("\n  No rapid-mlx servers running.")
@@ -13447,6 +13475,7 @@ def telemetry_command(args) -> None:
                 ("consent file", result.consent_file),
                 ("consent lock", result.consent_lock),
                 ("client ID", result.client_id),
+                ("BYOM suggestion ledger", result.byom_suggestion_ledger),
             )
             problems = [
                 f"{label} ({'/'.join(item.error_types)})"
@@ -14230,6 +14259,11 @@ def main():
         # ``run`` is exposed as a subparser alias for Ollama compatibility;
         # argparse routes via ``aliases=`` but reports the user-typed name
         # on ``args.command``. Both names land here.
+        if not (getattr(args, "base_url", None) or getattr(args, "port", None)):
+            # Remembered for the bare-command front door's "last used" line.
+            from rapid_mlx.first_run import record_last_model
+
+            record_last_model(getattr(args, "_original_alias", None))
         chat_command(args)
     elif args.command == "info":
         info_command(args)
@@ -14263,30 +14297,39 @@ def main():
         from rapid_mlx.headless_service.cli import service_command
 
         service_command(args)
-    elif (
-        getattr(args, "command", None) is None
-        and sys.stdout.isatty()
-        and sys.stdin.isatty()
-    ):
-        # Bare ``rapid-mlx`` in an interactive terminal = a first-run
-        # nameplate (hardware + cached-model hint + "get started" signpost),
-        # not a wall of argparse help. Non-blocking: it prints and exits 0.
-        # Non-interactive invocations (pipe, redirect, CI) fall through to the
-        # unchanged help + exit 1 so scripts parsing ``rapid-mlx`` output are
-        # unaffected. Fail-silent: any nameplate error also falls through.
-        try:
-            from rapid_mlx.first_run import build_nameplate
-
-            print(build_nameplate(_version))
-            sys.exit(0)
-        except SystemExit:
-            raise
-        except Exception:
-            parser.print_help()
-            sys.exit(1)
+    elif getattr(args, "command", None) is None:
+        # Bare ``rapid-mlx`` = the front door (rapid_mlx/front_door.py): an
+        # interactive one-screen menu on a terminal, or a short deterministic
+        # recipe on stderr (exit 1, unchanged for scripts) otherwise.
+        sys.exit(_run_front_door(parser, args, _version))
     else:
         parser.print_help()
         sys.exit(1)
+
+
+def _dispatch_in_process(argv: list[str]) -> None:
+    """Run one CLI invocation through ``main()`` as if the user typed it."""
+    saved = sys.argv
+    sys.argv = [saved[0] if saved else "rapid-mlx", *argv]
+    try:
+        main()
+    finally:
+        sys.argv = saved
+
+
+def _run_front_door(parser, args, version: str) -> int:
+    """Bare-command front door; falls back to the plain help if it cannot
+    render. Errors from the command an action runs propagate unchanged."""
+    from rapid_mlx import front_door
+
+    flags = ["--no-telemetry"] if getattr(args, "no_telemetry", False) else []
+    try:
+        return front_door.run_bare(
+            version=version, top_level_flags=flags, dispatch=_dispatch_in_process
+        )
+    except front_door.FrontDoorUnavailableError:
+        parser.print_help()
+        return 1
 
 
 def cli_entrypoint() -> None:

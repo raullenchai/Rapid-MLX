@@ -9,6 +9,7 @@ on this module (not on :mod:`rapid_mlx.cli`) to affect parser construction.
 """
 
 import argparse
+import textwrap
 
 from rapid_mlx._completion import alias_completer
 from rapid_mlx.runtime.optional_runtime import optional_extra_install_hint
@@ -175,18 +176,20 @@ def _add_pflash_args(parser) -> None:
     Used by both ``serve`` and ``bench`` so the flag surface stays in
     sync. The default for ``--pflash`` is intentionally ``None``
     (sentinel for "user passed nothing") so the per-alias resolver in
-    ``pflash.resolve_pflash_mode_default`` can switch the engine to
-    ``always`` for ``pflash_tier="verified"`` aliases (Qwen3.5 /
-    Qwen3.6 family per #287) without breaking the explicit-override
-    contract: passing ``--pflash off`` still wins.
+    ``pflash.resolve_pflash_mode_default`` decides the default — ``off``
+    for every alias since #4092, with an opt-in hint for
+    ``pflash_tier="verified"`` aliases — while an explicit flag always
+    wins.
     """
     parser.add_argument(
         "--pflash",
         choices=["off", "auto", "always"],
         default=None,
-        help="Enable PFlash long-prompt prefill compression "
-        "(off, auto, always). Default: 'always' for verified aliases "
-        "(Qwen3.5 / Qwen3.6 family per #287), 'off' for everything else.",
+        help="Opt in to PFlash long-prompt prefill compression "
+        "(off, auto, always). Default: off. Compression is lossy: it drops "
+        "most of the middle of the prompt for a faster cold prefill. 'auto' "
+        "compresses only prompts of at least --pflash-threshold tokens; "
+        "'always' compresses every eligible long prompt.",
     )
     parser.add_argument(
         "--pflash-threshold",
@@ -247,6 +250,13 @@ def _add_pflash_args(parser) -> None:
         help="Allow PFlash compression on prompts with tool definitions. "
         "By default tool prompts are skipped for tool-call reliability.",
     )
+
+
+CLI_IDENTITY = (
+    "Rapid-MLX — OpenAI- and Anthropic-compatible LLM server and Mac app "
+    "for Apple Silicon, built on MLX, focused on reliable tool calling "
+    "for coding agents."
+)
 
 
 def _resolve_cli_version() -> str:
@@ -2754,21 +2764,7 @@ def build_parser() -> argparse.ArgumentParser:
     _version = _resolve_cli_version()
 
     parser = _PortContextArgumentParser(
-        description=(
-            "Rapid-MLX — OpenAI- and Anthropic-compatible LLM server and Mac app "
-            "for Apple Silicon, built on MLX, focused on reliable tool calling "
-            "for coding agents."
-        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""\
-Examples:
-  rapid-mlx chat                                      # interactive REPL (defaults to qwen3.5-4b-4bit)
-  rapid-mlx chat qwen3.5-9b-4bit --think                   # larger model, surface reasoning
-  rapid-mlx serve qwen3.5-9b-4bit --port 8000              # OpenAI-compatible server
-  rapid-mlx serve mlx-community/Qwen3.5-9B-4bit       # full HF repo also works
-  rapid-mlx models                                    # list all aliases
-  rapid-mlx info qwen3.5-9b-4bit                           # show per-alias profile
-""",
     )
     parser.add_argument(
         "--version", "-V", action="version", version=f"rapid-mlx {_version}"
@@ -2786,7 +2782,7 @@ Examples:
         "(place it before the subcommand, e.g. 'rapid-mlx --no-banner "
         "serve', like --no-telemetry); equivalent to RAPID_MLX_NO_BANNER=1.",
     )
-    subparsers = parser.add_subparsers(dest="command", help="Commands")
+    subparsers = parser.add_subparsers(dest="command", metavar="<command>")
 
     _add_system_one_parser(subparsers)
     _add_cua_parser(subparsers)
@@ -2838,5 +2834,11 @@ Examples:
     from rapid_mlx.headless_service.cli import register as _register_service
 
     _register_service(subparsers)
+
+    # Group the top-level command list by purpose (rapid_mlx/cli_help.py)
+    # instead of argparse's registration-order brace list.
+    from rapid_mlx.cli_help import apply_grouped_help
+
+    apply_grouped_help(parser, subparsers, textwrap.fill(CLI_IDENTITY, width=79))
 
     return parser

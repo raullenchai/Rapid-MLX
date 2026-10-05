@@ -53,6 +53,7 @@ from ..service.helpers import (
     _TOOL_USE_REQUIRED_SUFFIX,
     SSE_RESPONSE_HEADERS,
     _apply_reasoning_cutoff_notice,
+    _build_response_metrics,
     _build_usage,
     _check_admission_or_503,
     _disconnect_guard,
@@ -81,6 +82,7 @@ from ..service.helpers import (
     get_engine,
     maybe_auto_disable_thinking_for_casual_chat,
     maybe_auto_disable_thinking_for_tools,
+    prompt_compression_headers,
     reasoning_stop_scope_kwargs,
 )
 
@@ -1276,6 +1278,9 @@ async def create_anthropic_message(
         response = Response(
             content=anthropic_response.model_dump_json(exclude_none=True),
             media_type="application/json",
+            # #4092: the Anthropic schema has no extension slot, so a
+            # PFlash-compressed prompt is announced by header only.
+            headers=prompt_compression_headers(_build_response_metrics(output)) or None,
         )
         _telemetry_inference.emit_completed_request(
             model=_served_telemetry_id or "<custom>",

@@ -102,6 +102,7 @@ class ResetStateResult:
     consent_file: ResetItemResult
     consent_lock: ResetItemResult
     client_id: ResetItemResult
+    byom_suggestion_ledger: ResetItemResult = ResetItemResult(False, True)
     activation_markers: tuple[ResetItemResult, ...] = ()
     activation_marker_scan: ResetItemResult = ResetItemResult(False, True)
     client_id_rotation_errors: tuple[str, ...] = ()
@@ -114,6 +115,7 @@ class ResetStateResult:
                 self.consent_file,
                 self.consent_lock,
                 self.client_id,
+                self.byom_suggestion_ledger,
                 self.activation_marker_scan,
                 *self.activation_markers,
             )
@@ -127,6 +129,7 @@ class ResetStateResult:
                 self.consent_file,
                 self.consent_lock,
                 self.client_id,
+                self.byom_suggestion_ledger,
                 *self.activation_markers,
             )
         )
@@ -570,6 +573,10 @@ def _reset_state_items(consent: Path, lock_result: ResetItemResult) -> ResetStat
 
     identity_result = _remove_reset_item(client_id_path())
 
+    suggestion_ledger_result = _remove_reset_item(
+        _default_telemetry_dir() / "state" / "byom-suggested-recent.json"
+    )
+
     try:
         marker_paths = tuple(_default_telemetry_dir().glob("activation_seen_*"))
     except OSError as exc:
@@ -601,6 +608,7 @@ def _reset_state_items(consent: Path, lock_result: ResetItemResult) -> ResetStat
         consent_file=consent_result,
         consent_lock=lock_result,
         client_id=identity_result,
+        byom_suggestion_ledger=suggestion_ledger_result,
         activation_markers=marker_results,
         activation_marker_scan=marker_scan_result,
         client_id_rotation_errors=rotation_errors,
