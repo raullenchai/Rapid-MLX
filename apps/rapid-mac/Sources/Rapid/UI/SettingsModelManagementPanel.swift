@@ -148,7 +148,7 @@ struct SettingsModelManagementPanel: View {
                 InlineNotice(
                     message: lastError,
                     tone: .error,
-                    actionTitle: "Dismiss",
+                    actionTitle: String(localized: "Dismiss"),
                     actionIdentifier: "Settings.ModelManagement.DismissError",
                     action: { self.lastError = nil }
                 )
@@ -157,7 +157,7 @@ struct SettingsModelManagementPanel: View {
                 InlineNotice(
                     message: lastFreed,
                     tone: .success,
-                    actionTitle: "Dismiss",
+                    actionTitle: String(localized: "Dismiss"),
                     actionIdentifier: "Settings.ModelManagement.DismissSuccess",
                     action: { self.lastFreed = nil }
                 )
@@ -206,7 +206,7 @@ struct SettingsModelManagementPanel: View {
             presenting: pendingDeletion
         ) { entry in
             Button(
-                entry.alias == server.servingAlias ? "Stop and delete" : "Delete from disk",
+                entry.alias == server.servingAlias ? String(localized: "Stop and delete") : String(localized: "Delete from disk"),
                 role: .destructive
             ) {
                 Task { await deleteAlias(entry) }
@@ -230,8 +230,8 @@ struct SettingsModelManagementPanel: View {
     @ViewBuilder
     private var header: some View {
         SectionHeader(
-            "Model Management",
-            subtitle: "Manage the on-disk model cache. Download what you need in the background; delete what you don't to reclaim space.",
+            String(localized: "Model Management"),
+            subtitle: String(localized: "Manage the on-disk model cache. Download what you need in the background; delete what you don't to reclaim space."),
             emphasis: .page
         )
     }
@@ -247,7 +247,7 @@ struct SettingsModelManagementPanel: View {
     @ViewBuilder
     private var modelsFolderSection: some View {
         let unavailable = ModelsFolderPreference.customFolderUnavailable()
-        SettingsSection("Models folder") {
+        SettingsSection(String(localized: "Models folder")) {
             VStack(alignment: .leading, spacing: RapidTheme.Space.md) {
                 HStack(alignment: .top, spacing: RapidTheme.Space.sm) {
                     Image(systemName: customFolderPath == nil ? "internaldrive" : "externaldrive")
@@ -255,7 +255,7 @@ struct SettingsModelManagementPanel: View {
                         .frame(width: RapidTheme.Layout.iconSlot)
                         .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: RapidTheme.Space.xxs) {
-                        Text(customFolderPath == nil ? "Default location" : "Custom folder")
+                        Text(customFolderPath == nil ? String(localized: "Default location") : String(localized: "Custom folder"))
                             .font(RapidFont.bodyEmphasis)
                             .foregroundStyle(RapidTheme.textPrimary)
                         Text(effectiveFolderDisplayPath)
@@ -271,7 +271,7 @@ struct SettingsModelManagementPanel: View {
 
                 if unavailable {
                     InlineNotice(
-                        message: "Your chosen models folder isn't available right now — the drive may be unplugged. Rapid is using its default location until it's back.",
+                        message: String(localized: "Your chosen models folder isn't available right now — the drive may be unplugged. Rapid is using its default location until it's back."),
                         tone: .warning
                     )
                     .accessibilityIdentifier("Settings.ModelManagement.FolderUnavailable")
@@ -308,11 +308,11 @@ struct SettingsModelManagementPanel: View {
     /// distinct without creating several floating boxes.
     @ViewBuilder
     private var preferencesSection: some View {
-        SettingsSection("Preferences") {
+        SettingsSection(String(localized: "Preferences")) {
                 Toggle(isOn: $showAllModels) {
                     SettingsRowLabel(
-                        title: "Show small (<1B) models in the picker",
-                        description: "Sub-1B models (qwen3-0.6b-*) are hidden from the model picker by default — they hallucinate within 1-2 turns and are intended for unit tests, not chat. Turn on to see every model, including the tiny ones."
+                        title: String(localized: "Show small (<1B) models in the picker"),
+                        description: String(localized: "Sub-1B models (qwen3-0.6b-*) are hidden from the model picker by default — they hallucinate within 1-2 turns and are intended for unit tests, not chat. Turn on to see every model, including the tiny ones.")
                     )
                 }
                 .toggleStyle(TrailingSettingsToggleStyle())
@@ -328,8 +328,8 @@ struct SettingsModelManagementPanel: View {
 
                 Toggle(isOn: $autoStartOnLaunch) {
                     SettingsRowLabel(
-                        title: "Auto-start model on launch",
-                        description: "On launch, Rapid-MLX loads your last-used model into memory so the chat is interactive immediately. Nothing loads while first-run setup is still open. Turn off if you sometimes open Rapid-MLX just to browse past conversations — you can still start a model manually by picking one in the message box and sending."
+                        title: String(localized: "Auto-start model on launch"),
+                        description: String(localized: "On launch, Rapid-MLX loads your last-used model into memory so the chat is interactive immediately. Nothing loads while first-run setup is still open. Turn off if you sometimes open Rapid-MLX just to browse past conversations — you can still start a model manually by picking one in the message box and sending.")
                     )
                 }
                 .toggleStyle(TrailingSettingsToggleStyle())
@@ -342,8 +342,8 @@ struct SettingsModelManagementPanel: View {
 
                 Toggle(isOn: $confirmActiveRequestSwitch) {
                     SettingsRowLabel(
-                        title: "Confirm before interrupting active requests",
-                        description: "Ask before switching models when the current model is still serving API or streaming requests. Turn this off only for unattended automation."
+                        title: String(localized: "Confirm before interrupting active requests"),
+                        description: String(localized: "Ask before switching models when the current model is still serving API or streaming requests. Turn this off only for unattended automation.")
                     )
                 }
                 .toggleStyle(TrailingSettingsToggleStyle())
@@ -389,7 +389,7 @@ struct SettingsModelManagementPanel: View {
         // inset. Same content and the same identifiers, moved onto the
         // shared section so it does not ship as the one un-migrated card
         // in the window.
-        SettingsSection("Disk overview") {
+        SettingsSection(String(localized: "Disk overview")) {
             HStack(spacing: RapidTheme.Space.md) {
                 Label("Models", systemImage: "internaldrive")
                     .font(RapidFont.bodyEmphasis)
@@ -432,9 +432,9 @@ struct SettingsModelManagementPanel: View {
     /// what's in the newly chosen folder.
     private func chooseModelsFolder() {
         let panel = NSOpenPanel()
-        panel.title = "Choose a models folder"
-        panel.message = "Pick the folder where Rapid should keep downloaded models."
-        panel.prompt = "Use Folder"
+        panel.title = String(localized: "Choose a models folder")
+        panel.message = String(localized: "Pick the folder where Rapid should keep downloaded models.")
+        panel.prompt = String(localized: "Use Folder")
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
@@ -466,9 +466,9 @@ struct SettingsModelManagementPanel: View {
             RapidSegmentedControl(
                 selection: $capability,
                 options: availableKinds.map {
-                    .init(value: $0, title: "\($0.tabLabel) models")
+                    .init(value: $0, title: $0.tabLabel)
                 },
-                accessibilityLabel: "Model type"
+                accessibilityLabel: String(localized: "Model type")
             )
             .accessibilityIdentifier("Settings.ModelManagement.CapabilityTabs")
         }
@@ -489,7 +489,7 @@ struct SettingsModelManagementPanel: View {
                     if !query.isEmpty {
                         QuietIconButton(
                             symbol: "xmark.circle.fill",
-                            label: "Clear search",
+                            label: String(localized: "Clear search"),
                             size: RapidTheme.ControlHeight.mini
                         ) {
                             query = ""
@@ -546,7 +546,7 @@ struct SettingsModelManagementPanel: View {
                 options: ModelCacheActions.FilterMode.allCases.map {
                     .init(value: $0, title: $0.displayLabel)
                 },
-                accessibilityLabel: "Filter"
+                accessibilityLabel: String(localized: "Filter")
             )
             .accessibilityIdentifier("Settings.ModelManagement.Filter")
         }
@@ -593,7 +593,7 @@ struct SettingsModelManagementPanel: View {
     @ViewBuilder
     private var recommendedSection: some View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
-            SectionHeader("Recommended for your \(hardware.shortDescription)")
+            SectionHeader(String(localized: "Recommended for your \(hardware.shortDescription)"))
                 .accessibilityIdentifier("Settings.ModelManagement.RecommendedHeader")
             ForEach(recommendedPicks, id: \.pick.alias) { entry in
                 recommendedCard(pick: entry.pick, isPrimary: entry.isPrimary)
@@ -622,7 +622,7 @@ struct SettingsModelManagementPanel: View {
             // capsule goes because the card's own brand tint, brand border
             // and shadow already say "this is the featured one", and the
             // table below still pills the same alias as RECOMMENDED.
-            Label(isPrimary ? "Best pick" : "Faster",
+            Label(isPrimary ? String(localized: "Best pick") : String(localized: "Faster"),
                   systemImage: isPrimary ? "star.fill" : "hare.fill")
                 .font(RapidFont.caption)
                 .foregroundStyle(isPrimary ? RapidTheme.brandPrimaryDeep : RapidTheme.textSecondary)
@@ -702,7 +702,7 @@ struct SettingsModelManagementPanel: View {
             }
             parts.append(caveat)
         } else {
-            parts.append("\(pick.capabilityPct)% capability")
+            parts.append(String(localized: "\(pick.capabilityPct)% capability"))
             if let tps = pick.tokensPerSec {
                 parts.append("~\(Int(tps.rounded())) tok/s")
             }
@@ -887,7 +887,7 @@ struct SettingsModelManagementPanel: View {
         }
         .buttonStyle(.plain)
         .frame(width: 15)
-        .accessibilityLabel(isFav ? "Unpin \(alias)" : "Pin \(alias)")
+        .accessibilityLabel(isFav ? String(localized: "Unpin \(alias)") : String(localized: "Pin \(alias)"))
         .accessibilityIdentifier("Settings.ModelManagement.Favorite.\(alias)")
     }
 
@@ -957,9 +957,8 @@ struct SettingsModelManagementPanel: View {
                         .minimumScaleFactor(ModelTableLayout.cellMinimumScaleFactor)
                         .help(
                             entry.isExternal
-                                ? "Measured size on disk. Downloaded by another app — "
-                                    + "Rapid can't delete it."
-                                : "Measured size on disk. Deleting frees this much."
+                                ? String(localized: "Measured size on disk. Downloaded by another app — Rapid can't delete it.")
+                                : String(localized: "Measured size on disk. Deleting frees this much.")
                         )
                         .accessibilityLabel("On disk, \(size)")
                 } else {
@@ -985,8 +984,8 @@ struct SettingsModelManagementPanel: View {
                     // staying the same grey as the copy glyph beside it.
                     QuietIconButton(
                         symbol: "trash",
-                        label: "Delete \(entry.alias) from disk",
-                        help: "Delete from disk",
+                        label: String(localized: "Delete \(entry.alias) from disk"),
+                        help: String(localized: "Delete from disk"),
                         tint: RapidTheme.statusError,
                         size: RapidTheme.ControlHeight.mini
                     ) {
@@ -1019,8 +1018,8 @@ struct SettingsModelManagementPanel: View {
                     .minimumScaleFactor(ModelTableLayout.cellMinimumScaleFactor)
                 QuietIconButton(
                     symbol: "trash",
-                    label: "Stop serving and delete \(entry.alias) from disk",
-                    help: "Stop serving and delete this model from disk.",
+                    label: String(localized: "Stop serving and delete \(entry.alias) from disk"),
+                    help: String(localized: "Stop serving and delete this model from disk."),
                     tint: RapidTheme.statusError,
                     size: RapidTheme.ControlHeight.mini
                 ) {
@@ -1041,8 +1040,8 @@ struct SettingsModelManagementPanel: View {
                 }
                 QuietIconButton(
                     symbol: "arrow.down.circle",
-                    label: "Download \(entry.alias)",
-                    help: "Download",
+                    label: String(localized: "Download \(entry.alias)"),
+                    help: String(localized: "Download"),
                     size: RapidTheme.ControlHeight.mini,
                     symbolSize: 14
                 ) {
@@ -1054,11 +1053,11 @@ struct SettingsModelManagementPanel: View {
             Button {
                 downloads.cancelDownload(alias: entry.alias)
             } label: {
-                Text(pct.map { "\($0)%" } ?? "Cancel")
+                Text(pct.map { "\($0)%" } ?? String(localized: "Cancel"))
             }
             .buttonStyle(.rapidSecondaryCompact)
             .help("Cancel download")
-            .accessibilityLabel(pct.map { "Cancel download, \($0) percent" } ?? "Cancel download")
+            .accessibilityLabel(pct.map { String(localized: "Cancel download, \($0) percent") } ?? String(localized: "Cancel download"))
             .accessibilityIdentifier("Settings.ModelManagement.Cancel.\(entry.alias)")
         case .failed:
             Button {
@@ -1126,14 +1125,14 @@ struct SettingsModelManagementPanel: View {
         if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             switch filterMode {
             case .all:
-                return "No models found. Restart Rapid-MLX to try again."
+                return String(localized: "No models found. Restart Rapid-MLX to try again.")
             case .cached:
-                return "Nothing cached on disk yet. Pick a row from \"Not cached\" and hit Download."
+                return String(localized: "Nothing cached on disk yet. Pick a row from \"Not cached\" and hit Download.")
             case .notCached:
-                return "Every model in the catalog is already downloaded."
+                return String(localized: "Every model in the catalog is already downloaded.")
             }
         }
-        return "No matches for \"\(query)\"."
+        return String(localized: "No matches for \"\(query)\".")
     }
 
     @ViewBuilder
@@ -1220,11 +1219,11 @@ struct SettingsModelManagementPanel: View {
 
     private func audioCapabilityLabel(_ capability: AudioModelCapability) -> String {
         switch capability {
-        case .transcription: return "Speech to text"
-        case .alignment: return "Forced alignment"
-        case .speech: return "Text to speech"
-        case .voiceCloning: return "Voice cloning"
-        case .voiceDesign: return "Voice design"
+        case .transcription: return String(localized: "Speech to text")
+        case .alignment: return String(localized: "Forced alignment")
+        case .speech: return String(localized: "Text to speech")
+        case .voiceCloning: return String(localized: "Voice cloning")
+        case .voiceDesign: return String(localized: "Voice design")
         }
     }
 
@@ -1232,26 +1231,32 @@ struct SettingsModelManagementPanel: View {
     private func statusBadgeView(_ badge: ModelCacheActions.StatusBadge) -> some View {
         switch badge {
         case .cached:
-            pill(text: "On disk", color: RapidTheme.statusReady)
+            pill(text: String(localized: "On disk"), id: "On disk", color: RapidTheme.statusReady)
         case .inUse:
-            pill(text: "In use", color: RapidTheme.statusReady)
+            pill(text: String(localized: "In use"), id: "In use", color: RapidTheme.statusReady)
         case .notCached:
-            pill(text: "Not cached", color: RapidTheme.statusIdle)
+            pill(text: String(localized: "Not cached"), id: "Not cached", color: RapidTheme.statusIdle)
         case .downloading(let pct):
             let label: String = {
                 if let pct {
-                    return "Downloading… \(pct)%"
+                    return String(localized: "Downloading… \(pct)%")
                 }
-                return "Downloading…"
+                return String(localized: "Downloading…")
             }()
-            pill(text: label, color: RapidTheme.statusWorking)
+            pill(
+                text: label,
+                id: pct.map { "Downloading… \($0)%" } ?? "Downloading…",
+                color: RapidTheme.statusWorking
+            )
         case .failed:
-            pill(text: "Failed", color: RapidTheme.statusError)
+            pill(text: String(localized: "Failed"), id: "Failed", color: RapidTheme.statusError)
         }
     }
 
     @ViewBuilder
-    private func pill(text: String, color: Color) -> some View {
+    /// `id` is the English status, kept out of the catalog so the
+    /// accessibility identifier stays the same in every language.
+    private func pill(text: String, id: String, color: Color) -> some View {
         Text(text)
             .font(RapidFont.caption)
             .foregroundStyle(color)
@@ -1263,7 +1268,7 @@ struct SettingsModelManagementPanel: View {
             )
             .lineLimit(1)
             .fixedSize()
-            .accessibilityIdentifier("Settings.ModelManagement.Status.\(text)")
+            .accessibilityIdentifier("Settings.ModelManagement.Status.\(id)")
     }
 
     /// The prominent action button on a Recommended CARD. The dense
@@ -1522,7 +1527,7 @@ struct SettingsModelManagementPanel: View {
         if server.servingAlias == entry.alias {
             await server.stop()
             guard server.servingAlias != entry.alias else {
-                lastError = "Couldn't stop \(entry.alias), so it was not deleted."
+                lastError = String(localized: "Couldn't stop \(entry.alias), so it was not deleted.")
                 return
             }
         }
@@ -1595,10 +1600,10 @@ enum RecommendedCardLayout {
     /// Every button label the card's trailing slot can render. "Delete"
     /// is included because ``actionButton`` still carries that branch,
     /// even though the cached card currently resolves to a pill.
-    static let actionButtonTitles = ["Download", "Delete", "Cancel", "Retry"]
+    static let actionButtonTitles = [String(localized: "Download"), String(localized: "Delete"), String(localized: "Cancel"), String(localized: "Retry")]
 
     /// Every status pill the same slot can render.
-    static let actionPillTitles = ["On disk", "In use", "Serving", "External"]
+    static let actionPillTitles = [String(localized: "On disk"), String(localized: "In use"), String(localized: "Serving"), String(localized: "External")]
 
     /// Intrinsic width of a small push-button with this title.
     static func buttonWidth(title: String) -> CGFloat {
@@ -1733,7 +1738,7 @@ enum ModelTableLayout {
     static func inUseCellWidth(size: String) -> CGFloat {
         RecommendedCardLayout.captionWidth(size)
             + cellSpacing
-            + RecommendedCardLayout.captionMediumWidth("Serving")
+            + RecommendedCardLayout.captionMediumWidth(String(localized: "Serving"))
             + cellSpacing
             + glyphWidth
     }

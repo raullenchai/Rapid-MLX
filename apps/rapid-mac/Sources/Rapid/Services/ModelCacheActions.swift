@@ -166,13 +166,15 @@ enum ModelCacheActions {
     ) -> DeletionConfirmation {
         let title: String
         if let size = entry.sizeOnDisk {
-            title = "Delete \"\(entry.alias)\"? This frees \(size)."
+            title = String(localized: "Delete \"\(entry.alias)\"? This frees \(size).")
         } else {
-            title = "Delete \"\(entry.alias)\"?"
+            title = String(localized: "Delete \"\(entry.alias)\"?")
         }
-        let suffix = entry.sizeOnDisk.map { " Frees \($0)." } ?? ""
-        let stopPrefix = isServing ? "Stops the currently serving model first. " : ""
-        let message = "\(stopPrefix)Removes this model from your Mac. You can download it again later by selecting it.\(suffix)"
+        let suffix = entry.sizeOnDisk.map { String(localized: " Frees \($0).") } ?? ""
+        let stopPrefix = isServing ? String(localized: "Stops the currently serving model first. ") : ""
+        let message = stopPrefix
+            + String(localized: "Removes this model from your Mac. You can download it again later by selecting it.")
+            + suffix
         return DeletionConfirmation(title: title, message: message)
     }
 
@@ -193,13 +195,13 @@ enum ModelCacheActions {
             freedLabel = ""
         }
         if freedLabel.isEmpty {
-            return "Deleted \(alias)."
+            return String(localized: "Deleted \(alias).")
         }
-        return "Deleted \(alias) — freed \(freedLabel)."
+        return String(localized: "Deleted \(alias) — freed \(freedLabel).")
     }
 
     static func failureMessage(alias: String, error: String) -> String {
-        "Couldn't delete \(alias): \(error)"
+        String(localized: "Couldn't delete \(alias): \(error)")
     }
 
     // MARK: - Run delete
@@ -236,8 +238,7 @@ enum ModelCacheActions {
         // present and future delete path has to pass.
         guard !entry.isExternal else {
             return .failure(
-                message: "\(entry.alias) was downloaded by another app. "
-                    + "Rapid can't remove it — delete it where it was installed."
+                message: String(localized: "\(entry.alias) was downloaded by another app. Rapid can't remove it — delete it where it was installed.")
             )
         }
         // Audio (and image) snapshots list as `(unmapped)`, so pass the
@@ -271,9 +272,9 @@ enum ModelCacheActions {
         var id: String { rawValue }
         var displayLabel: String {
             switch self {
-            case .all: return "All"
-            case .cached: return "Cached"
-            case .notCached: return "Not cached"
+            case .all: return String(localized: "All")
+            case .cached: return String(localized: "Cached")
+            case .notCached: return String(localized: "Not cached")
             }
         }
     }
@@ -339,9 +340,9 @@ enum ModelCacheActions {
     ) -> ListHeading {
         let title: String = {
             switch filter {
-            case .all: return "All models"
-            case .cached: return "Cached"
-            case .notCached: return "Not cached"
+            case .all: return String(localized: "All models")
+            case .cached: return String(localized: "Cached")
+            case .notCached: return String(localized: "Not cached")
             }
         }()
         let searching = !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -369,9 +370,9 @@ enum ModelCacheActions {
         var id: String { rawValue }
         var displayLabel: String {
             switch self {
-            case .familyThenSize: return "Family · size"
-            case .nameAscending: return "Name"
-            case .sizeDescending: return "Size (largest first)"
+            case .familyThenSize: return String(localized: "Family · size")
+            case .nameAscending: return String(localized: "Name")
+            case .sizeDescending: return String(localized: "Size (largest first)")
             }
         }
     }
@@ -438,11 +439,19 @@ enum ModelCacheActions {
     static func storageSummary(usage: DiskUsage, freeBytes: Int64?) -> String {
         let used = usage.totalBytes.map {
             ByteCountFormatter.string(fromByteCount: $0, countStyle: .file)
-        } ?? "size unavailable"
-        let models = "\(usage.cachedCount) model\(usage.cachedCount == 1 ? "" : "s")"
+        } ?? String(localized: "size unavailable")
+        let models = modelCountLabel(usage.cachedCount)
         guard let freeBytes else { return "\(used) · \(models)" }
         let free = ByteCountFormatter.string(fromByteCount: freeBytes, countStyle: .file)
-        return "\(used) · \(models) · \(free) free"
+        return String(localized: "\(used) · \(models) · \(free) free")
+    }
+
+    /// "1 model" / "N models" as whole phrases, so each form is one
+    /// translatable unit rather than a spliced plural suffix.
+    private static func modelCountLabel(_ count: Int) -> String {
+        count == 1
+            ? String(localized: "1 model")
+            : String(localized: "\(count) models")
     }
 
     /// Conservative keep-signals shown beside chat models. They make the two
@@ -491,16 +500,16 @@ enum ModelCacheActions {
     /// proper subset, not the whole cache.
     static func diskUsageFooter(_ usage: DiskUsage) -> String? {
         guard usage.cachedCount > 0 else { return nil }
-        let label = "\(usage.cachedCount) model\(usage.cachedCount == 1 ? "" : "s")"
+        let label = modelCountLabel(usage.cachedCount)
         let unmeasuredSuffix: String = {
             guard usage.missingSizeCount > 0 else { return "" }
-            return " (+\(usage.missingSizeCount) unmeasured)"
+            return String(localized: " (+\(usage.missingSizeCount) unmeasured)")
         }()
         if let bytes = usage.totalBytes {
             let size = ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
-            return "Total: \(size) across \(label)\(unmeasuredSuffix)"
+            return String(localized: "Total: \(size) across \(label)\(unmeasuredSuffix)")
         }
-        return "Total: \(label)\(unmeasuredSuffix)"
+        return String(localized: "Total: \(label)\(unmeasuredSuffix)")
     }
 
     // MARK: - Size parsing

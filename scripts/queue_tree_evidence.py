@@ -78,9 +78,21 @@ REQUIRED_CI_JOBS = (
     "changed-lines-coverage",
     "tests",
 )
-REQUIRED_CI_MATRIX_PREFIXES = {
-    "test-matrix (": 9,
-    "l1-smoke (": 5,
+# Full evidence requires these identities, independently of recorded counts.
+# Workflow parity tests force any enrollment change to update this contract.
+REQUIRED_CI_MATRIX_JOBS = {
+    "test-matrix (": tuple(
+        f"test-matrix ({version}, {shard})"
+        for version in ("3.10", "3.11", "3.12")
+        for shard in (1, 2, 3)
+    ),
+    "l1-smoke (": (
+        "l1-smoke (qwen3.5-4b-4bit, 0)",
+        "l1-smoke (llama3-3b-4bit, 0)",
+        "l1-smoke (gemma3-4b-qat-4bit, 1)",
+        "l1-smoke (qwen3-4b-instruct-2507-4bit, 1)",
+        "l1-smoke (qwen3-4b-thinking-2507-4bit, 1)",
+    ),
 }
 MAX_GUI_MATRIX_JOBS = 4
 
@@ -318,7 +330,8 @@ def _validate_ci_jobs(
 ) -> list[dict[str, Any]]:
     jobs = _successful_jobs(client, run)
     selected = [_require_unique_success(jobs, name) for name in REQUIRED_CI_JOBS]
-    for prefix, expected_count in REQUIRED_CI_MATRIX_PREFIXES.items():
+    for prefix, expected_names in REQUIRED_CI_MATRIX_JOBS.items():
+        expected_count = len(expected_names)
         matches = [job for job in jobs if str(job.get("name", "")).startswith(prefix)]
         if len(matches) != expected_count:
             raise EvidenceError(
@@ -330,7 +343,9 @@ def _validate_ci_jobs(
             for job in matches
         ):
             raise EvidenceError(f"CI matrix {prefix!r} did not fully succeed")
-        selected.extend(matches)
+        selected.extend(
+            _require_unique_success(matches, name) for name in expected_names
+        )
     return selected
 
 

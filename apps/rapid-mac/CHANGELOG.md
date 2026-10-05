@@ -17,6 +17,31 @@ can actually understand.
 
 ## [Unreleased]
 
+### Fixed
+- Simplified Chinese now covers the sidebar, the chat home screen and message box, the Settings categories and panels, Model Management, and the model picker, which previously stayed in English when macOS was set to Chinese. Experimental tabs (Benchmark, Share Compute, Computer Use, Video) are not yet fully translated.
+
+## [0.15.6] — 2026-10-04
+
+Rapid-MLX 0.15.6 adds a simpler interactive first run and improves reliability for long prompts, local agents, custom models, shared caches, and long-running servers.
+
+### Added
+- Bare `rapid-mlx` now opens a compact interactive front door that shows the active or last-used model when available and waits for an explicit keypress before chatting, serving, connecting a detected coding agent, or choosing another model.
+- `rapid-mlx --help` is grouped by task, with concise deterministic guidance for non-interactive use.
+- System One supports Clef and Clef-Flash decision models for validated text and media inputs.
+- Opt-in BYOM telemetry records closed-category preflight, suggestion, support-request, and import outcomes without sending local paths or custom model names.
+
+### Changed
+- PFlash prompt compression is off by default for every alias. `--pflash auto` and `--pflash always` remain explicit opt-ins, and compressed responses expose retained and original token counts on supported APIs.
+- Generated Codex, OpenCode, Claude, and Pi configurations preserve user settings, use live server metadata, and avoid persisting local-server secrets.
+- Supported MTP models yield into ordinary batching when requests overlap while retaining the qualified speculative path for a single request.
+
+### Fixed
+- Completed single-request KV state is released promptly, and idle admission rechecks reclaimed Metal memory before refusing new work.
+- Valid deduplicated shared Hugging Face blob layouts pass model-integrity checks, and a stray non-model folder no longer hides a catalog alias.
+- BYOM revision probes are bounded, honor warm-cache and offline behavior, and apply requested server log levels before serving imports.
+- Community Qwen3.8 checkpoints select the correct reasoning and nested tool-call parsers.
+- Failed video jobs remove partial artifacts before reporting terminal failure.
+
 ## [0.15.5] — 2026-10-03
 
 Rapid-MLX 0.15.5 makes experimental Computer Use less disruptive, speeds up
@@ -4205,7 +4230,8 @@ Older versions: see the
 [GitHub Releases page](https://github.com/machinefi/rapid-desktop/releases)
 for auto-generated notes against earlier tags.
 
-[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.15.5...HEAD
+[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.15.6...HEAD
+[0.15.6]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.15.5...rapid-mac-v0.15.6
 [0.15.5]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.15.4...rapid-mac-v0.15.5
 [0.15.4]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.15.3...rapid-mac-v0.15.4
 [0.15.3]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.15.2...rapid-mac-v0.15.3

@@ -9,6 +9,7 @@ on this module (not on :mod:`rapid_mlx.cli`) to affect parser construction.
 """
 
 import argparse
+import textwrap
 
 from rapid_mlx._completion import alias_completer
 from rapid_mlx.runtime.optional_runtime import optional_extra_install_hint
@@ -249,6 +250,13 @@ def _add_pflash_args(parser) -> None:
         help="Allow PFlash compression on prompts with tool definitions. "
         "By default tool prompts are skipped for tool-call reliability.",
     )
+
+
+CLI_IDENTITY = (
+    "Rapid-MLX — OpenAI- and Anthropic-compatible LLM server and Mac app "
+    "for Apple Silicon, built on MLX, focused on reliable tool calling "
+    "for coding agents."
+)
 
 
 def _resolve_cli_version() -> str:
@@ -2756,21 +2764,7 @@ def build_parser() -> argparse.ArgumentParser:
     _version = _resolve_cli_version()
 
     parser = _PortContextArgumentParser(
-        description=(
-            "Rapid-MLX — OpenAI- and Anthropic-compatible LLM server and Mac app "
-            "for Apple Silicon, built on MLX, focused on reliable tool calling "
-            "for coding agents."
-        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""\
-Examples:
-  rapid-mlx chat                                      # interactive REPL (defaults to qwen3.5-4b-4bit)
-  rapid-mlx chat qwen3.5-9b-4bit --think                   # larger model, surface reasoning
-  rapid-mlx serve qwen3.5-9b-4bit --port 8000              # OpenAI-compatible server
-  rapid-mlx serve mlx-community/Qwen3.5-9B-4bit       # full HF repo also works
-  rapid-mlx models                                    # list all aliases
-  rapid-mlx info qwen3.5-9b-4bit                           # show per-alias profile
-""",
     )
     parser.add_argument(
         "--version", "-V", action="version", version=f"rapid-mlx {_version}"
@@ -2788,7 +2782,7 @@ Examples:
         "(place it before the subcommand, e.g. 'rapid-mlx --no-banner "
         "serve', like --no-telemetry); equivalent to RAPID_MLX_NO_BANNER=1.",
     )
-    subparsers = parser.add_subparsers(dest="command", help="Commands")
+    subparsers = parser.add_subparsers(dest="command", metavar="<command>")
 
     _add_system_one_parser(subparsers)
     _add_cua_parser(subparsers)
@@ -2840,5 +2834,11 @@ Examples:
     from rapid_mlx.headless_service.cli import register as _register_service
 
     _register_service(subparsers)
+
+    # Group the top-level command list by purpose (rapid_mlx/cli_help.py)
+    # instead of argparse's registration-order brace list.
+    from rapid_mlx.cli_help import apply_grouped_help
+
+    apply_grouped_help(parser, subparsers, textwrap.fill(CLI_IDENTITY, width=79))
 
     return parser

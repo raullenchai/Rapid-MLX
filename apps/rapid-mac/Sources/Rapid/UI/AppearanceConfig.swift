@@ -88,9 +88,9 @@ enum AppearanceMode: String, CaseIterable, Identifiable, Sendable {
     /// Settings → Appearance row text.
     var displayName: String {
         switch self {
-        case .system: return "Auto (follow system)"
-        case .light:  return "Light"
-        case .dark:   return "Dark"
+        case .system: return String(localized: "Auto (follow system)")
+        case .light:  return String(localized: "Light")
+        case .dark:   return String(localized: "Dark")
         }
     }
 

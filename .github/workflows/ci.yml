@@ -569,6 +569,9 @@ jobs:
           COVERAGE_FILE=coverage-linux-3.11.data python -m coverage xml -o coverage.xml
 
       - name: Upload combined coverage to Codecov
+        # The external report is advisory. Keep action bootstrap failures from
+        # masking the mandatory local coverage artifact and changed-lines gate.
+        continue-on-error: true
         uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238  # v4
         with:
           file: ./coverage.xml

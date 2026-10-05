@@ -209,6 +209,31 @@ def test_keyed_model_probe_uses_exported_server_key(monkeypatch):
         thread.join(timeout=2)
 
 
+@pytest.mark.parametrize(
+    "requested,expected",
+    [("local-alias", "local-alias"), ("default", "organization/full-model")],
+)
+def test_verify_server_reports_the_requested_advertised_alias(
+    monkeypatch, requested, expected
+):
+    from io import BytesIO
+
+    class Response(BytesIO):
+        status = 200
+
+    def open_url(request, **kwargs):
+        if isinstance(request, str):
+            return Response(b'{"ready": true}')
+        return Response(
+            b'{"data": [{"id": "organization/full-model"}, {"id": "local-alias"}, {"id": "default"}]}'
+        )
+
+    monkeypatch.setattr("rapid_mlx.agents.setup.urllib.request.urlopen", open_url)
+    assert (
+        verify_server("http://localhost:8000/v1", requested, agent="codex") == expected
+    )
+
+
 def test_verify_server_reports_malformed_url_as_setup_failure():
     with pytest.raises(RuntimeError, match="server is not ready"):
         verify_server("localhost:8000/v1", "default", agent="codex")

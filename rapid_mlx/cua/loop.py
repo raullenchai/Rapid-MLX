@@ -12,9 +12,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import subprocess
 import time
 import uuid
+from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -31,11 +33,46 @@ from rapid_mlx.cua.fast import FastOutcomeRanker, NoProgressTracker
 from rapid_mlx.cua.gates import ConsentError
 from rapid_mlx.cua.planner import Planner
 
+# Live browser-chrome telemetry that is not page state (Chrome appends a tab's
+# memory use to its tab label); it must not invalidate an approval. Only a
+# trailing suffix on a tab-strip line (AXRadioButton/AXTab) is stripped.
+_VOLATILE_LABEL = re.compile(
+    r"^(\[\d+\] AX(?:RadioButton|Tab)\*? .*?) - Memory usage - [\d.,]+ [KMGT]?B$",
+    re.MULTILINE,
+)
+
 
 def _tree_signature(snapshot: dict) -> str:
-    return hashlib.sha1(
-        snapshot.get("tree_text", "").encode("utf-8", "replace")
-    ).hexdigest()[:12]
+    text = _VOLATILE_LABEL.sub(r"\1", snapshot.get("tree_text", ""))
+    return hashlib.sha1(text.encode("utf-8", "replace")).hexdigest()[:12]
+
+
+def _observed_change(before: dict, after: dict, limit: int = 6) -> dict:
+    """Label-level diff of two snapshots (index churn ignored), for the planner."""
+
+    def labels(snap: dict) -> list[str]:
+        out = []
+        for line in snap.get("tree_text", "").splitlines():
+            _, _, rest = line.partition("] ")
+            if rest:
+                out.append(rest[:90])
+        return out
+
+    def extra(items: list[str], other: list[str]) -> list[str]:
+        # Multiset difference in display order: one of several identical
+        # labels disappearing is still a change.
+        budget = Counter(other)
+        out = []
+        for item in items:
+            if budget[item]:
+                budget[item] -= 1
+            else:
+                out.append(item)
+        return out
+
+    old, new = labels(before), labels(after)
+    appeared, gone = extra(new, old), extra(old, new)
+    return {"appeared": appeared[:limit], "disappeared": gone[:limit]}
 
 
 def _open_url(app: str, url: str) -> None:
@@ -1273,6 +1310,7 @@ class CUARun:
             "instruction": plan["step_instruction"][:120],
             "outcome": outcome,
             "url_after": url_after[:120],
+            "observed_change": _observed_change(snapshot, after),
         }
         if plan["action"] == "save":
             safe_source = str(executed.get("verification_source", "unverified"))

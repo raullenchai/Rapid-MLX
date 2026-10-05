@@ -5137,7 +5137,9 @@ def test_loop_ax_watchdog_stops_honestly(config_dir, tmp_path, monkeypatch):
     monkeypatch.setattr(loop_mod.backend, "AX_COLLECT_TIMEOUT_S", 0.01)
     monkeypatch.setattr(loop_mod.backend, "read_url", lambda app, **kwargs: "")
     monkeypatch.setattr(
-        loop_mod.backend, "_resolve_app", lambda app: (None, {"name": app, "pid": 1})
+        loop_mod.backend,
+        "_resolve_app",
+        lambda app, **kwargs: (None, {"name": app, "pid": 1}),
     )
     monkeypatch.setattr(
         loop_mod.backend,
