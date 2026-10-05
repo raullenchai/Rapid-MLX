@@ -511,7 +511,23 @@ jobs:
           set -euo pipefail
           read -r -a selected <<< "$MAPPED_TESTS"
           test "${#selected[@]}" -gt 0
-          pytest "${selected[@]}" --cov=rapid_mlx --cov-report=xml --junitxml=source-canary-junit.xml
+          # Collect the exact base with the same recorder. Do not let default
+          # marker filters silently drop mapped tests or a PR shrink the suite.
+          baseline="$RUNNER_TEMP/mapped-base"
+          git worktree add --detach "$baseline" "$PR_BASE_SHA"
+          cp scripts/ci_mapped_execution.py "$baseline/scripts/ci_mapped_execution.py"
+          (
+            cd "$baseline"
+            PYTHONPATH="$baseline" python -m pytest "${selected[@]}" -o addopts= \
+              --collect-only -p scripts.ci_mapped_execution \
+              --mapped-execution-manifest "$GITHUB_WORKSPACE/source-canary-base-collection.json"
+          )
+          python -m pytest "${selected[@]}" -o addopts= -p scripts.ci_mapped_execution \
+            --mapped-execution-manifest source-canary-execution.json \
+            --cov=rapid_mlx --cov-report=xml --junitxml=source-canary-junit.xml
+          python scripts/ci_mapped_execution.py \
+            --baseline source-canary-base-collection.json \
+            --executed source-canary-execution.json --tests "${selected[@]}"
           python -c 'import xml.etree.ElementTree as E; cases=E.parse("source-canary-junit.xml").findall(".//testcase"); assert cases and all(c.find("skipped") is None and c.find("failure") is None and c.find("error") is None for c in cases), "mapped tests must actually execute successfully"'
           python -m diff_cover.diff_cover_tool coverage.xml \
             --compare-branch "$PR_BASE_SHA" --show-uncovered --fail-under 100
@@ -527,6 +543,8 @@ jobs:
           path: |
             source-canary-scope.json
             source-canary-junit.xml
+            source-canary-base-collection.json
+            source-canary-execution.json
             coverage.xml
           if-no-files-found: error
           retention-days: 7
