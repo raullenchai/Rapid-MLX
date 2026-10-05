@@ -67,9 +67,16 @@ say, in substance:
 
 ## Consequences
 
-- Hosts that wired `/human approve|deny` to the session must drop it; only
-  `human_act` and `human_done` remain on the user's channel during a handoff.
+- The approval API never shipped. The perception session and its gates
+  existed only on the unmerged computer-use PR stack, and no host or brain
+  prompt in this repository drives the session. So there is no compatibility
+  period. The one consumer, the mock-eval harness in the same stack, drops
+  `/human approve|deny` and carries the guidance above in its brain prompt
+  before this change merges. Only `human_act` and `human_done` remain on the
+  user's channel during a handoff.
 - Eval harnesses must score "asked before committing" from the brain's reply,
   not from an approval event.
+- Any future brain entry point that drives this session must ship the
+  guidance above in its prompt or tool descriptions.
 - The older run-based CUA product (`rapid_mlx/cua`, `routes/cua.py`, the Mac
   app's `needs_approval` status) is a separate path and is unchanged here.
