@@ -5073,25 +5073,29 @@ def _match_menu_item(
 ) -> tuple[object | None, str | None]:
     """The item ``wanted`` names, and why none was taken when it is None.
 
-    An exact title (case, a trailing ellipsis aside) wins; otherwise one
-    title starting with it ("Checking" for "Checking ending 6789 (no fee)"),
-    otherwise one containing it. Two or more candidates are ambiguous and
-    nothing is chosen.
+    An exact title (case, a trailing ellipsis aside) wins; otherwise the one
+    title holding it ("checking" or "6789" for "Checking ending 6789 (no
+    fee)"). Two or more titles holding it are ambiguous, even when only one
+    starts with it ("card": "Card settings", "Gift card"), and nothing is
+    chosen.
     """
     key = _menu_title_key(wanted)
     keys = [_menu_title_key(t) for t in titles]
     exact = [item for item, k in zip(items, keys) if k == key]
     if exact:
         return exact[0], None
-    # A letter or two names too little to choose by (a typo would pick).
-    for test, shortest in ((str.startswith, 2), (str.__contains__, 3)):
-        if len(key) < shortest:
-            continue
-        found = [item for item, k in zip(items, keys) if k and test(k, key)]
-        if len(found) == 1:
-            return found[0], None
-        if found:
-            return None, f"has {len(found)} items matching"
+    # A letter names too little to choose by (a typo would pick); two
+    # letters only as the start of a title.
+    if len(key) >= 3:
+        found = [item for item, k in zip(items, keys) if key in k]
+    elif len(key) == 2:
+        found = [item for item, k in zip(items, keys) if k.startswith(key)]
+    else:
+        found = []
+    if len(found) == 1:
+        return found[0], None
+    if found:
+        return None, f"has {len(found)} items matching"
     return None, None
 
 
