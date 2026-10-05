@@ -166,6 +166,34 @@ def _container_reprs(module) -> dict[str, str]:
     }
 
 
+def _container_snapshots(module) -> dict[str, tuple[Any, Any]]:
+    """Keep each container's identity and shallow contents for restoration."""
+    snapshots: dict[str, tuple[Any, Any]] = {}
+    for key, value in vars(module).items():
+        if key.startswith("__"):
+            continue
+        if isinstance(value, list):
+            snapshots[key] = (value, list(value))
+        elif isinstance(value, dict):
+            snapshots[key] = (value, dict(value))
+        elif isinstance(value, set):
+            snapshots[key] = (value, set(value))
+    return snapshots
+
+
+def _restore_container(original: Any, snapshot: Any) -> None:
+    original.clear()
+    if isinstance(original, list):
+        original.extend(snapshot)
+    else:
+        original.update(snapshot)
+
+
+def _rapid_environment() -> dict[str, str]:
+    """Return product-owned environment state without serializing host values."""
+    return {key: value for key, value in os.environ.items() if key.startswith("RAPID_")}
+
+
 # Earlier tests in the same process may leave ``rapid_mlx.server`` globals
 # modified, so the import-time defaults come from a fresh interpreter. The
 # sentinel keeps any import-time stdout from being parsed as the payload.
@@ -207,25 +235,32 @@ def _pristine_server_state() -> Iterator[None]:
     order; restoring afterwards keeps this test from leaking into others.
     """
     from rapid_mlx import server
-    from rapid_mlx.config import reset_config
+    from rapid_mlx.config import server_config as config_mod
     from rapid_mlx.runtime.model_registry import ModelRegistry
 
     saved = dict(vars(server))
+    saved_containers = _container_snapshots(server)
+    saved_config = config_mod._config
+    saved_environ = dict(os.environ)
     for key, value in _server_import_defaults().items():
         setattr(server, key, value)
     # Not a scalar, so the defaults above miss it, and other tests register
     # models into it; the residency manager reads it into the config.
     server._model_registry = ModelRegistry()
-    reset_config()
+    config_mod.reset_config()
     try:
         yield
     finally:
+        os.environ.clear()
+        os.environ.update(saved_environ)
+        for original, snapshot in saved_containers.values():
+            _restore_container(original, snapshot)
         for key in list(vars(server)):
             if key not in saved:
                 delattr(server, key)
         for key, value in saved.items():
             setattr(server, key, value)
-        reset_config()
+        config_mod._config = saved_config
 
 
 @pytest.fixture
@@ -240,6 +275,7 @@ def stub_heavy_serve_deps(monkeypatch):
     from rapid_mlx import server as server_mod
     from rapid_mlx.middleware import auth as auth_mod
     from rapid_mlx.middleware import request_logging as reqlog_mod
+    from rapid_mlx.models import mllm as mllm_mod
 
     monkeypatch.setattr(_version_check, "prompt_upgrade_if_available", lambda: False)
     monkeypatch.setattr(
@@ -249,6 +285,10 @@ def stub_heavy_serve_deps(monkeypatch):
     monkeypatch.setattr(cli, "_check_memory_capacity", lambda *a, **kw: None)
     monkeypatch.setattr(cli, "_check_disk_space", lambda *a, **kw: None)
     monkeypatch.setattr(cli, "_check_alias_min_memory", lambda *a, **kw: None)
+    # Pin flag resolution, not whether this host has a matching optional
+    # vision package installed.  An absent, matching, or stale mlx-vlm must
+    # produce the same characterization snapshot.
+    monkeypatch.setattr(mllm_mod, "require_mlx_vlm_or_exit", lambda *a, **kw: None)
     # Port resolution probes the host; pin it so a busy port can't leak in.
     monkeypatch.setattr(cli, "_port_collision_host", lambda host, port: None)
     monkeypatch.setattr(cli, "_port_preflight_or_die", lambda *a, **kw: None)
@@ -297,6 +337,7 @@ def _run_scenario(extra: list[str], monkeypatch) -> dict:
 
     before = _scalar_globals(server)
     containers_before = _container_reprs(server)
+    environ_before = _rapid_environment()
     output = io.StringIO()
     try:
         with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
@@ -307,6 +348,7 @@ def _run_scenario(extra: list[str], monkeypatch) -> dict:
         lines = [line for line in output.getvalue().splitlines() if line.strip()]
         return {"exit_code": exc.code, "message": lines[-1] if lines else ""}
     after = _scalar_globals(server)
+    environ_after = _rapid_environment()
 
     assert len(load_calls) == 1
     (load_args, load_kwargs) = load_calls[0]
@@ -321,13 +363,23 @@ def _run_scenario(extra: list[str], monkeypatch) -> dict:
             for k, v in _container_reprs(server).items()
             if containers_before.get(k) != v
         ),
+        "environment_keys_mutated": sorted(
+            key
+            for key in set(environ_before) | set(environ_after)
+            if environ_before.get(key) != environ_after.get(key)
+        ),
         "uvicorn": uvicorn_calls,
     }
 
 
-def _snapshot(monkeypatch) -> str:
+def _snapshot(
+    monkeypatch,
+    *,
+    accepted: dict[str, list[str]] = SCENARIOS,
+    rejected: dict[str, list[str]] = REJECTIONS,
+) -> str:
     result: dict[str, dict] = {"accepted": {}, "rejected": {}}
-    for section, table in (("accepted", SCENARIOS), ("rejected", REJECTIONS)):
+    for section, table in (("accepted", accepted), ("rejected", rejected)):
         for name, extra in table.items():
             with monkeypatch.context() as scenario_patch, _pristine_server_state():
                 result[section][name] = _run_scenario(extra, scenario_patch)
@@ -338,9 +390,35 @@ def test_serve_command_resolution_matches_snapshot(
     monkeypatch, stub_heavy_serve_deps, scheduler_config_stub
 ) -> None:
     actual = _snapshot(monkeypatch)
+    reordered = _snapshot(
+        monkeypatch,
+        accepted=dict(reversed(SCENARIOS.items())),
+        rejected=dict(reversed(REJECTIONS.items())),
+    )
+    assert reordered == actual, "snapshot depends on scenario execution order"
     if os.environ.get("UPDATE_SERVE_SNAPSHOT") == "1":
         SNAPSHOT.write_text(actual)
     assert actual == SNAPSHOT.read_text(), (
         "serve_command resolution changed. If intentional, regenerate with "
         "UPDATE_SERVE_SNAPSHOT=1 and review the fixture diff."
     )
+
+
+def test_pristine_server_state_restores_process_state(monkeypatch) -> None:
+    from rapid_mlx import server
+    from rapid_mlx.config import ServerConfig, get_config
+    from rapid_mlx.config import server_config as config_mod
+
+    original_rejected = list(server._mcp_rejected)
+    original_config = get_config()
+    env_key = "RAPID_MLX_CHARACTERIZATION_STATE_TEST"
+    monkeypatch.setenv(env_key, "before")
+
+    with _pristine_server_state():
+        server._mcp_rejected.append("temporary")
+        os.environ[env_key] = "during"
+        config_mod._config = ServerConfig(model_name="temporary")
+
+    assert server._mcp_rejected == original_rejected
+    assert os.environ[env_key] == "before"
+    assert get_config() is original_config

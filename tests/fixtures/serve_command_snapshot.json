@@ -1,6 +1,7 @@
 {
  "accepted": {
   "bind": {
+   "environment_keys_mutated": [],
    "load_model": {
     "args": [
      "mlx-community/Qwen3.5-4B-8bit"
@@ -120,7 +121,7 @@
        "block_size": 128,
        "keep_ratio": 0.2,
        "min_keep_tokens": 2048,
-       "mode": "always",
+       "mode": "off",
        "query_window": 512,
        "sink_tokens": 256,
        "skip_when_tools": true,
@@ -248,6 +249,7 @@
    ]
   },
   "cache_tuning": {
+   "environment_keys_mutated": [],
    "load_model": {
     "args": [
      "mlx-community/Qwen3.5-4B-8bit"
@@ -369,7 +371,7 @@
        "block_size": 128,
        "keep_ratio": 0.2,
        "min_keep_tokens": 2048,
-       "mode": "always",
+       "mode": "off",
        "query_window": 512,
        "sink_tokens": 256,
        "skip_when_tools": true,
@@ -497,6 +499,7 @@
    ]
   },
   "chat_behavior": {
+   "environment_keys_mutated": [],
    "load_model": {
     "args": [
      "mlx-community/Qwen3.5-4B-8bit"
@@ -616,7 +619,7 @@
        "block_size": 128,
        "keep_ratio": 0.2,
        "min_keep_tokens": 2048,
-       "mode": "always",
+       "mode": "off",
        "query_window": 512,
        "sink_tokens": 256,
        "skip_when_tools": true,
@@ -745,6 +748,7 @@
    ]
   },
   "defaults": {
+   "environment_keys_mutated": [],
    "load_model": {
     "args": [
      "mlx-community/Qwen3.5-4B-8bit"
@@ -864,7 +868,7 @@
        "block_size": 128,
        "keep_ratio": 0.2,
        "min_keep_tokens": 2048,
-       "mode": "always",
+       "mode": "off",
        "query_window": 512,
        "sink_tokens": 256,
        "skip_when_tools": true,
@@ -992,6 +996,7 @@
    ]
   },
   "memory_and_lifecycle": {
+   "environment_keys_mutated": [],
    "load_model": {
     "args": [
      "mlx-community/Qwen3.5-4B-8bit"
@@ -1112,7 +1117,7 @@
        "block_size": 128,
        "keep_ratio": 0.2,
        "min_keep_tokens": 2048,
-       "mode": "always",
+       "mode": "off",
        "query_window": 512,
        "sink_tokens": 256,
        "skip_when_tools": true,
@@ -1244,6 +1249,7 @@
    ]
   },
   "no_parsers": {
+   "environment_keys_mutated": [],
    "load_model": {
     "args": [
      "mlx-community/Qwen3.5-4B-8bit"
@@ -1363,7 +1369,7 @@
        "block_size": 128,
        "keep_ratio": 0.2,
        "min_keep_tokens": 2048,
-       "mode": "always",
+       "mode": "off",
        "query_window": 512,
        "sink_tokens": 256,
        "skip_when_tools": true,
@@ -1488,6 +1494,7 @@
    ]
   },
   "request_limits": {
+   "environment_keys_mutated": [],
    "load_model": {
     "args": [
      "mlx-community/Qwen3.5-4B-8bit"
@@ -1607,7 +1614,7 @@
        "block_size": 128,
        "keep_ratio": 0.2,
        "min_keep_tokens": 2048,
-       "mode": "always",
+       "mode": "off",
        "query_window": 512,
        "sink_tokens": 256,
        "skip_when_tools": true,
@@ -1738,6 +1745,7 @@
    ]
   },
   "tool_and_reasoning_parsers": {
+   "environment_keys_mutated": [],
    "load_model": {
     "args": [
      "mlx-community/Qwen3.5-4B-8bit"
@@ -1857,7 +1865,7 @@
        "block_size": 128,
        "keep_ratio": 0.2,
        "min_keep_tokens": 2048,
-       "mode": "always",
+       "mode": "off",
        "query_window": 512,
        "sink_tokens": 256,
        "skip_when_tools": true,
