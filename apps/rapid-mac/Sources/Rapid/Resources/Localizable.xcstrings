@@ -8149,6 +8149,346 @@
           }
         }
       }
+    },
+    "%@ and %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@和%@"
+          }
+        }
+      }
+    },
+    "%@, and %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@，以及%@"
+          }
+        }
+      }
+    },
+    ", " : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "、"
+          }
+        }
+      }
+    },
+    "4-bit" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "4 位"
+          }
+        }
+      }
+    },
+    "8-bit" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "8 位"
+          }
+        }
+      }
+    },
+    "Full precision (bf16)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "全精度 (bf16)"
+          }
+        }
+      }
+    },
+    "TurboQuant V4" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "TurboQuant V4"
+          }
+        }
+      }
+    },
+    "TurboQuant K8V4" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "TurboQuant K8V4"
+          }
+        }
+      }
+    },
+    "Most memory, no quality loss. Slowest on long contexts." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "占用内存最多，无质量损失。长上下文时最慢。"
+          }
+        }
+      }
+    },
+    "Half the KV memory. Safe for hard math and reasoning." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "KV 内存减半。对高难度数学和推理是安全的。"
+          }
+        }
+      }
+    },
+    "Quarter the KV memory, fastest long-context decode. Can change output on AIME-class math." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "KV 内存降至四分之一，长上下文解码最快。在 AIME 级别的数学题上可能改变输出。"
+          }
+        }
+      }
+    },
+    "Compresses the value cache only. Experimental; can change output." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仅压缩 value 缓存。实验性功能；可能改变输出。"
+          }
+        }
+      }
+    },
+    "~4.6× KV compression on dense models. Experimental; can change output." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在稠密模型上约 4.6 倍的 KV 压缩。实验性功能；可能改变输出。"
+          }
+        }
+      }
+    },
+    "Default" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "默认"
+          }
+        }
+      }
+    },
+    "Model profile" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型配置"
+          }
+        }
+      }
+    },
+    "Your setting" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你的设置"
+          }
+        }
+      }
+    },
+    "Compatibility fallback" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "兼容性回退"
+          }
+        }
+      }
+    },
+    "Safety fallback" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "安全回退"
+          }
+        }
+      }
+    },
+    "Image generation" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "图像生成"
+          }
+        }
+      }
+    },
+    "Image editing" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "图像编辑"
+          }
+        }
+      }
+    },
+    "Image generation and editing" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "图像生成与编辑"
+          }
+        }
+      }
+    },
+    "Generate a one-time key for every model start instead of reusing a saved key." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "每次启动模型都生成一次性密钥，而不是复用已保存的密钥。"
+          }
+        }
+      }
+    },
+    "Keep one Keychain-backed key for 24 hours across model starts and app restarts." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在 24 小时内保留同一个存于钥匙串的密钥，模型重新启动或应用重启后仍沿用。"
+          }
+        }
+      }
+    },
+    "Keep one Keychain-backed key until you rotate it or change this setting." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "保留同一个存于钥匙串的密钥，直到你手动轮换或更改此设置。"
+          }
+        }
+      }
+    },
+    "Run guided setup again?" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "重新运行设置向导？"
+          }
+        }
+      }
+    },
+    "Erase this Mac's Rapid state and restart?" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "抹掉这台 Mac 上的 Rapid 状态并重新启动？"
+          }
+        }
+      }
+    },
+    "Erase and restart" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "抹掉并重新启动"
+          }
+        }
+      }
+    },
+    "Restart into onboarding" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "重新启动并进入设置向导"
+          }
+        }
+      }
+    },
+    "Nothing is selected, so nothing will be erased." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未选择任何内容，因此不会抹掉任何数据。"
+          }
+        }
+      }
+    },
+    "This erases %@. Rapid restarts immediately afterwards." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这将抹掉%@。之后 Rapid 会立即重新启动。"
+          }
+        }
+      }
+    },
+    "every conversation in the sidebar, permanently" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "边栏中的所有对话（永久删除）"
+          }
+        }
+      }
+    },
+    "every setting, back to first-install defaults" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "所有设置（恢复为首次安装时的默认值）"
+          }
+        }
+      }
+    },
+    "the telemetry decision — this one is shared with the rapid-mlx CLI, so both surfaces will return to the default policy" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "遥测选择（它与 rapid-mlx CLI 共用，因此两边都会恢复为默认策略）"
+          }
+        }
+      }
+    },
+    "the record that Quickstart has run" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已运行过快速入门的记录"
+          }
+        }
+      }
     }
   }
 }

@@ -216,11 +216,11 @@ enum KVCacheMode: String, Codable, CaseIterable, Sendable {
     /// Short label for the picker.
     var title: String {
         switch self {
-        case .bf16: return "Full precision (bf16)"
-        case .int8: return "8-bit"
-        case .int4: return "4-bit"
-        case .turboquantV4: return "TurboQuant V4"
-        case .turboquantK8V4: return "TurboQuant K8V4"
+        case .bf16: return String(localized: "Full precision (bf16)")
+        case .int8: return String(localized: "8-bit")
+        case .int4: return String(localized: "4-bit")
+        case .turboquantV4: return String(localized: "TurboQuant V4")
+        case .turboquantK8V4: return String(localized: "TurboQuant K8V4")
         }
     }
 
@@ -231,15 +231,15 @@ enum KVCacheMode: String, Codable, CaseIterable, Sendable {
     var tradeOff: String {
         switch self {
         case .bf16:
-            return "Most memory, no quality loss. Slowest on long contexts."
+            return String(localized: "Most memory, no quality loss. Slowest on long contexts.")
         case .int8:
-            return "Half the KV memory. Safe for hard math and reasoning."
+            return String(localized: "Half the KV memory. Safe for hard math and reasoning.")
         case .int4:
-            return "Quarter the KV memory, fastest long-context decode. Can change output on AIME-class math."
+            return String(localized: "Quarter the KV memory, fastest long-context decode. Can change output on AIME-class math.")
         case .turboquantV4:
-            return "Compresses the value cache only. Experimental; can change output."
+            return String(localized: "Compresses the value cache only. Experimental; can change output.")
         case .turboquantK8V4:
-            return "~4.6× KV compression on dense models. Experimental; can change output."
+            return String(localized: "~4.6× KV compression on dense models. Experimental; can change output.")
         }
     }
 

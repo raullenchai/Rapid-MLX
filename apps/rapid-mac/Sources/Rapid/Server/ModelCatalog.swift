@@ -81,9 +81,9 @@ enum ImageModelCapability: String, Sendable, Hashable {
     var supportsEditing: Bool { self != .generation }
     var label: String {
         switch self {
-        case .generation: return "Image generation"
-        case .editing: return "Image editing"
-        case .generationAndEditing: return "Image generation and editing"
+        case .generation: return String(localized: "Image generation")
+        case .editing: return String(localized: "Image editing")
+        case .generationAndEditing: return String(localized: "Image generation and editing")
         }
     }
 }

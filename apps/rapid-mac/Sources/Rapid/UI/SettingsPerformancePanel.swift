@@ -296,9 +296,9 @@ struct SettingsPerformancePanel: View {
                 RapidSegmentedControl(
                     selection: prefixBinding(alias: alias),
                     options: [
-                        .init(value: Bool?.none, title: "Engine default", identifier: "Settings.Performance.Prefix.Default"),
-                        .init(value: Bool?.some(true), title: "On", identifier: "Settings.Performance.Prefix.On"),
-                        .init(value: Bool?.some(false), title: "Off", identifier: "Settings.Performance.Prefix.Off"),
+                        .init(value: Bool?.none, title: String(localized: "Engine default"), identifier: "Settings.Performance.Prefix.Default"),
+                        .init(value: Bool?.some(true), title: String(localized: "On"), identifier: "Settings.Performance.Prefix.On"),
+                        .init(value: Bool?.some(false), title: String(localized: "Off"), identifier: "Settings.Performance.Prefix.Off"),
                     ],
                     accessibilityLabel: String(localized: "Prefix cache")
                 )
