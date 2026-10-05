@@ -1937,6 +1937,29 @@ def test_a_rerendered_page_keeps_its_refs_and_the_receipt_shows_the_new_state(
     scrolled = session.observe("Chrome", "cg:1")
     assert _ref(scrolled, "Delete") != _ref(listed, "Delete")
 
+    # Neither is the last item's "Delete" after a re-sort: same place, same
+    # quantity before it and footer after it, another item's card.
+    def cart(gen, names):
+        rows = []
+        for i, name in enumerate(names):
+            rows += [
+                E(f"{gen}n{i}", "AXStaticText", name, path=[0, i, 0]),
+                E(f"{gen}q{i}", "AXStaticText", "Qty 1", path=[0, i, 1]),
+                E(f"{gen}d{i}", "AXButton", "Delete", path=[0, i, 2]),
+            ]
+        return [*rows, E(f"{gen}f", "AXButton", "Checkout", path=[0, 9])]
+
+    screen.show(cart("s1", ["Eggs", "Milk"]))
+    first = session.observe("Chrome", "cg:1")
+    milk_delete = first.rows[5].ref
+    screen.show(cart("s2", ["Eggs", "Milk"]))  # rebuilt in place: refs kept
+    same = session.observe("Chrome", "cg:1")
+    assert [row.ref for row in same.rows] == [row.ref for row in first.rows]
+    screen.show(cart("s3", ["Milk", "Eggs"]))
+    sorted_ = session.observe("Chrome", "cg:1")
+    assert sorted_.rows[5].label == "Delete" and sorted_.rows[5].ref != milk_delete
+    assert perception._item_names(["Solo"], [(0,)]) == [None]
+
 
 def test_settled_observation_reports_its_walk_time(session, screen, monkeypatch):
     screen.show([E("b", "AXButton", "Go")])

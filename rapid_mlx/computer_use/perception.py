@@ -1404,34 +1404,54 @@ def _rebind(
     observation whose element is gone, and of no other element now (a
     re-render that rebuilt the DOM in place). The neighbours keep a list that
     put another item's "Delete" in the same place from passing for the old
-    one.
+    one. So does the name of the item the control belongs to (the first
+    named row of its container): after a list is re-sorted, the last item's
+    "Delete" sits where another item's was, between the same quantity and
+    footer.
     """
     if previous is None:
         return {}
 
-    def key(labels: list[str], position: int, role: str, path: Any) -> tuple:
-        before_it = labels[position - 1] if position > 0 else None
-        after_it = labels[position + 1] if position + 1 < len(labels) else None
-        return (role, labels[position], tuple(path), before_it, after_it)
-
-    old_labels = [row.label for row in previous.rows]
-    before: dict[tuple, list[Row]] = {}
-    for position, row in enumerate(previous.rows):
-        if row.path:
-            before.setdefault(key(old_labels, position, row.role, row.path), []).append(
-                row
+    def keys(labels: list[str], roles: list[str], paths: list[tuple]) -> list[tuple]:
+        items = _item_names(labels, paths)
+        out = []
+        for position, label in enumerate(labels):
+            before_it = labels[position - 1] if position > 0 else None
+            after_it = labels[position + 1] if position + 1 < len(labels) else None
+            out.append(
+                (
+                    roles[position],
+                    label,
+                    paths[position],
+                    before_it,
+                    after_it,
+                    items[position],
+                )
             )
+        return out
+
+    old_keys = keys(
+        [row.label for row in previous.rows],
+        [row.role for row in previous.rows],
+        [tuple(row.path) for row in previous.rows],
+    )
+    before: dict[tuple, list[Row]] = {}
+    for row, k in zip(previous.rows, old_keys):
+        if row.path:
+            before.setdefault(k, []).append(row)
     labels = [
         str(element.get("field_name") or "") or str(element.get("label") or "")
         for element in elements
     ]
+    new_keys = keys(
+        labels,
+        [str(element.get("role") or "") for element in elements],
+        [tuple(element.get("path") or ()) for element in elements],
+    )
     now: dict[tuple, list[int]] = {}
     for position, element in enumerate(elements):
         if element.get("path"):
-            now.setdefault(
-                key(labels, position, str(element.get("role") or ""), element["path"]),
-                [],
-            ).append(position)
+            now.setdefault(new_keys[position], []).append(position)
     out: dict[int, str] = {}
     for k, positions in now.items():
         rows = before.get(k) or []
@@ -1443,6 +1463,32 @@ def _rebind(
         ):
             out[positions[0]] = rows[0].ref
     return out
+
+
+MAX_ITEM_ROWS = 40
+ITEM_LEVELS = 3
+
+
+def _item_names(labels: list[str], paths: list[tuple]) -> list[str | None]:
+    """For each row, the name of the item it belongs to: the first named row
+    of its nearest container (up to ``ITEM_LEVELS`` up) that holds another
+    named row and no more than ``MAX_ITEM_ROWS`` (a card, a table row; not
+    the page). None when it has no such container."""
+    members: dict[tuple, list[int]] = {}
+    for position, path in enumerate(paths):
+        for depth in range(1, min(ITEM_LEVELS, len(path)) + 1):
+            members.setdefault(path[:-depth], []).append(position)
+    names: list[str | None] = []
+    for position, path in enumerate(paths):
+        name = None
+        for depth in range(1, min(ITEM_LEVELS, len(path)) + 1):
+            group = members[path[:-depth]]
+            named = [p for p in group if labels[p] and p != position]
+            if named and len(group) <= MAX_ITEM_ROWS:
+                name = labels[named[0]]
+                break
+        names.append(name)
+    return names
 
 
 def _where_differ(old: str, new: str, width: int = 40) -> tuple[str, str]:
