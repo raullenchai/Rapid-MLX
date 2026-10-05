@@ -5,7 +5,7 @@
   <br>
   <strong>Up to 4× faster than Apple's MLX (mlx-lm), 1.5× on a typical task — same model, same weights.</strong>
   <br>
-  <em>Qwen3.5-9B 4-bit on a Mac mini M4 Pro, greedy decoding, both servers at their defaults — <a href="https://rapidmlx.com/compare/mlx-lm">per-task results, method, and raw data</a>.</em>
+  <em>Decode speed, Qwen3.5-9B 4-bit on a Mac mini M4 Pro, greedy decoding, both servers at their defaults — <a href="https://rapidmlx.com/compare/mlx-lm">per-task results, method, and raw data</a>.</em>
   <br>
   <em>Measured: 3.0× Ollama's aggregate decode throughput at 8 concurrent streams on Qwen3.6-35B-A3B (M2 Pro) — <a href="https://rapidmlx.com/blog/rapid-mlx-vs-ollama-benchmark">method, raw data, and where it is slower</a>.</em>
 </p>
