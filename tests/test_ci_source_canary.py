@@ -1,5 +1,6 @@
 """Source-only mapped proof must never stand in for full candidate evidence."""
 
+import json
 import re
 import subprocess
 import sys
@@ -74,6 +75,57 @@ def test_cli_and_telemetry_mapping_unions_all_required_tests():
         "tests/test_cli_parser_snapshot.py",
         "tests/test_telemetry_registry.py",
         "tests/test_telemetry_registry_drift.py",
+    }
+
+
+@pytest.mark.parametrize(
+    "path", ["tests/test_telemetry_track.py", "tests/test_telemetry_v1_retired.py"]
+)
+def test_telemetry_test_maintenance_runs_both_complete_contract_files(path):
+    policy = classify_policy([path], source_canary=True)
+    assert policy.lanes.engine
+    assert set(policy.source_canary_tests) == {
+        "tests/test_telemetry_track.py",
+        "tests/test_telemetry_v1_retired.py",
+    }
+    assert not classify_policy([path]).source_canary_tests
+    promoted = classify_policy([path], source_canary=True, force_full=True)
+    assert not promoted.source_canary_tests
+    assert len(json.loads(promoted.as_outputs()["test_matrix"])["include"]) == 9
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "rapid_mlx/telemetry/track.py",
+        "rapid_mlx/telemetry/consent_runtime.py",
+        "rapid_mlx/telemetry/posthog_sender.py",
+        "rapid_mlx/telemetry/model_events.py",
+        "rapid_mlx/server.py",
+        "rapid_mlx/cli.py",
+        "tests/conftest.py",
+        "tests/test_telemetry_new.py",
+        ".github/workflows/ci.yml",
+        "config/requirements-ci-linux.txt",
+    ],
+)
+def test_telemetry_test_maintenance_does_not_authorize_dependency_changes(extra):
+    policy = classify_policy(
+        ["tests/test_telemetry_track.py", extra], source_canary=True
+    )
+    assert not policy.source_canary_tests
+    assert policy.linux_matrix_mode == "full"
+
+
+def test_telemetry_test_maintenance_unions_with_existing_area():
+    assert set(
+        source_canary_tests({"tests/test_telemetry_track.py", "rapid_mlx/_banner.py"})
+    ) == {
+        "tests/test_telemetry_track.py",
+        "tests/test_telemetry_v1_retired.py",
+        "tests/test_cli_cheetah_banner.py",
+        "tests/test_cli_help_groups.py",
+        "tests/test_cli_parser_snapshot.py",
     }
 
 
@@ -213,8 +265,6 @@ def test_red_pending_missing_or_wrong_base_anchor_is_not_eligible(tmp_path):
         "--event push" in script and '--branch main --commit "$PR_BASE_SHA"' in script
     )
     assert "CANARY_ENABLED=false" in script
-    import json
-
     for record, eligible in [
         ([dict(headSha="a" * 40, status="completed", conclusion="success")], True),
         ([dict(headSha="a" * 40, status="completed", conclusion="failure")], False),

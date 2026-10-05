@@ -158,6 +158,13 @@ _SOURCE_CANARY_AREAS = (
         _PY311_ENGINE_PATHS | _PY311_TEST_PATHS,
         ("tests/test_telemetry_registry.py", "tests/test_telemetry_registry_drift.py"),
     ),
+    (
+        # Test-only maintenance of these CPU/loopback contracts does not
+        # change consent, transport, lifecycle or inference behavior. Run both
+        # complete files; their production dependencies remain outside the map.
+        {"tests/test_telemetry_track.py", "tests/test_telemetry_v1_retired.py"},
+        ("tests/test_telemetry_track.py", "tests/test_telemetry_v1_retired.py"),
+    ),
 )
 
 
