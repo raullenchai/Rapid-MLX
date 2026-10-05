@@ -54,6 +54,11 @@ _CURRENCY = (
 # A suffix currency followed by a number is that number's prefix
 # ("Qty 2 €5" is €5, not "2 €").
 _AMOUNT = re.compile(rf"{_CURRENCY}\s?{_NUMBER}|{_NUMBER}\s?{_CURRENCY}(?!\s?\d)")
+# A cell holding only an amount ("$7.49", "12,50 €", "$65.00/yr").
+_BARE_AMOUNT = re.compile(
+    rf"^\s*[-−+]?(?:{_CURRENCY}\s?{_NUMBER}|{_NUMBER}\s?{_CURRENCY})"
+    r"(?:\s*/\s*[A-Za-z]{1,5})?\s*$"
+)
 _PRICED_VERB = re.compile(
     r"\b(?:upgrade|join|pay|buy|purchase|subscribe|donate|renew|tip|add funds)\b", re.I
 )
@@ -113,13 +118,12 @@ def amounts(texts: list[str]) -> tuple[str, ...]:
     )
 
 
-def money_context(
-    texts: list[str], choices: Sequence[str] = (), limit: int = 10
-) -> list[str]:
-    """The lines a person needs to approve a charge: totals, fees, method,
-    and the options chosen on the page (delivery window, tip, plan)."""
-    # Tables put the name and the value in separate cells: join a label
-    # with the value that follows it ("Total charged" + "$142.37").
+def _join_cells(texts: Sequence[str]) -> list[str]:
+    """Texts with each name joined to the value in the cell after it.
+
+    Tables put the name and the value in separate cells ("Total charged" +
+    "$142.37", "Bananas" + "$7.49"); an amount alone means nothing.
+    """
     texts = [t for t in texts if t and t.strip()]  # cells and groups have no text
     joined: list[str] = []
     i = 0
@@ -127,17 +131,45 @@ def money_context(
         t = texts[i]
         nxt = texts[i + 1] if i + 1 < len(texts) else ""
         if (
-            _TOTAL_WORDS.search(t)
-            and not _AMOUNT.search(t)
+            not _AMOUNT.search(t)
             and not _METHOD.search(t)
             and len(t) < 40
-            and _VALUE.search(nxt)
+            and (
+                (_TOTAL_WORDS.search(t) and _VALUE.search(nxt))
+                or _BARE_AMOUNT.match(nxt)
+            )
         ):
             joined.append(f"{t}: {nxt}")
             i += 2
             continue
         joined.append(t)
         i += 1
+    return joined
+
+
+def priced_lines(texts: Sequence[str], limit: int = 8) -> list[str]:
+    """The lines of ``texts`` that carry an amount, each with its name."""
+    return [t for t in _join_cells(texts) if _AMOUNT.search(t)][:limit]
+
+
+def _same_line(text: str) -> str:
+    # "Order total $48.14" (a heading) and "Order total: $48.14" (two cells)
+    # say the same thing.
+    return re.sub(r"[\s:]+", " ", text).strip().casefold()
+
+
+def money_context(
+    texts: list[str],
+    choices: Sequence[str] = (),
+    limit: int = 12,
+    *,
+    items: Sequence[str] = (),
+    heading: str = "",
+) -> list[str]:
+    """The lines a person needs to approve a charge: what it is for (the
+    button's section), totals, fees, method, the options chosen on the page
+    (delivery window, tip, plan), and the priced lines next to the button."""
+    joined = _join_cells(texts)
     picked = [
         t
         for t in joined
@@ -147,8 +179,14 @@ def money_context(
     ]
     if not picked:
         picked = [t for t in joined if _AMOUNT.search(t)]
+    lines = [f"For: {heading}"] if heading else []
+    lines += [*picked, *(f"Chosen: {c}" for c in choices)]
+    lines += [f"Item: {t}" for t in items]
     seen: list[str] = []
-    for t in [*picked, *(f"Chosen: {c}" for c in choices)]:
-        if t[:120] not in seen:
+    keys: set[str] = set()
+    for t in lines:
+        key = _same_line(t.removeprefix("Item: "))
+        if key not in keys:
+            keys.add(key)
             seen.append(t[:120])
     return seen[:limit]
