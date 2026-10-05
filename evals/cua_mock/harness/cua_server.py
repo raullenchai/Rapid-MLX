@@ -113,8 +113,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         human = self.path.rstrip("/") == "/human"
+        # What the user types (a password, a code) never reaches the log.
+        logged = {**body, "text": "<redacted>"} if human and "text" in body else body
         LOG.write(
-            ("HUMAN " if human else "") + json.dumps(body, ensure_ascii=False) + "\n"
+            ("HUMAN " if human else "") + json.dumps(logged, ensure_ascii=False) + "\n"
         )
         try:
             text = (handle_human if human else handle)(dict(body))

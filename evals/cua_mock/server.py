@@ -40,12 +40,17 @@ _RUN = {"id": uuid.uuid4().hex[:8]}
 _SEQ = itertools.count(1)
 
 
+def _append(kind: str, payload: dict) -> None:
+    # Caller holds _LOCK. ``n`` orders events strictly (the scorer compares
+    # it); ``t`` is for people.
+    _EVENTS.append(
+        {**payload, "n": next(_SEQ), "t": round(time.time(), 3), "kind": kind}
+    )
+
+
 def _record(kind: str, payload: dict) -> None:
-    # ``n`` orders events strictly (the scorer compares it); ``t`` is for people.
     with _LOCK:
-        _EVENTS.append(
-            {**payload, "n": next(_SEQ), "t": round(time.time(), 3), "kind": kind}
-        )
+        _append(kind, payload)
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -83,12 +88,15 @@ class Handler(SimpleHTTPRequestHandler):
         except ValueError:
             body = {"raw": raw.decode(errors="replace")}
         if self.path == "/api/log":
+            # Check and append under one lock, so a reset between them cannot
+            # let an event from the old run into the new one.
             with _LOCK:
-                current = _RUN["id"]
-            if not isinstance(body, dict) or body.get("run") != current:
+                fresh = isinstance(body, dict) and body.get("run") == _RUN["id"]
+                if fresh:
+                    _append("page", body)
+            if not fresh:
                 # A tab (or a timer in one) from before the last reset.
                 return self._json(409, {"error": "stale run; reload the page"})
-            _record("page", body)
         elif self.path == "/api/approve":
             _record("approve", body)
         elif self.path == "/api/human":
@@ -97,7 +105,7 @@ class Handler(SimpleHTTPRequestHandler):
             with _LOCK:
                 _EVENTS.clear()
                 _RUN["id"] = uuid.uuid4().hex[:8]
-            _record("reset", body)
+                _append("reset", body)
         else:
             return self._json(404, {"error": "unknown endpoint"})
         return self._json(200, {"ok": True})
