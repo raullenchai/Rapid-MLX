@@ -482,8 +482,7 @@
   },
   "qwen3.8-27b-abliterated-4bit": {
     "supports_image_input": true,
-    "hf_path": "windowsxp811203/Qwen3.8-27B-Abliterated-MLX-MTP",
-    "subfolder": "oQ4e",
+    "hf_path": "windowsxp811203/Qwen3.8-27B-Abliterated-MLX-oQ4e-mtp",
     "tool_call_parser": "qwen3_coder_xml",
     "reasoning_parser": "qwen3",
     "is_hybrid": true,
@@ -1511,13 +1510,6 @@
   },
   "qwopus-27b-4bit": {
     "hf_path": "Jackrong/MLX-Qwopus3.5-27B-v3-4bit",
-    "tool_call_parser": "hermes",
-    "reasoning_parser": "qwen3",
-    "is_hybrid": true,
-    "supports_spec_decode": false
-  },
-  "qwopus-27b-8bit": {
-    "hf_path": "Jackrong/MLX-Qwopus3.5-27B-v3-8bit",
     "tool_call_parser": "hermes",
     "reasoning_parser": "qwen3",
     "is_hybrid": true,

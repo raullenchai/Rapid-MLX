@@ -12,6 +12,8 @@ The allow-list mirrors the client's selection contract in ``rapid_mlx/_mirror.py
 causes the client to pass ``allow_patterns=["<subfolder>/*"]``. Consequently,
 non-selected quantisation folders such as ``5bit/``, ``6bit/`` and ``8bit/``
 must not be reported missing when the selected/default quant is elsewhere.
+Likewise, a repository whose loader fetches a fixed runtime file list (see
+``scripts/mirror_runtime_files.py``) is audited against that list only.
 
 Public requests are cache-busted after every redirect and carry
 ``Cache-Control: no-cache``. This is essential because the CDN has served an
@@ -51,8 +53,9 @@ from pathlib import Path
 from typing import Any
 
 if __package__:
-    from . import mirror_unmirrored
+    from . import mirror_runtime_files, mirror_unmirrored
 else:
+    import mirror_runtime_files
     import mirror_unmirrored
 
 UnmirroredEntry = mirror_unmirrored.UnmirroredEntry
@@ -665,6 +668,14 @@ def _selected_files(files: list[HfFile], subfolder: str | None) -> list[HfFile]:
     ]
 
 
+def _runtime_scoped(repo_id: str, files: list[HfFile]) -> list[HfFile]:
+    """Keep only the files a pull fetches when the loader declares a fixed list."""
+    allowlist = mirror_runtime_files.runtime_files(repo_id)
+    if allowlist is None:
+        return files
+    return [item for item in files if item.path in allowlist]
+
+
 def _optional_asset(path: str) -> bool:
     """Match documentation/metadata assets that the downloader may HF-fallback."""
     name = Path(path).name.lower()
@@ -1055,7 +1066,10 @@ def audit(
             )
             files = []
         else:
-            files = _selected_files(repos[spec.hf_path].files, spec.subfolder)
+            files = _runtime_scoped(
+                spec.hf_path,
+                _selected_files(repos[spec.hf_path].files, spec.subfolder),
+            )
         report.checked_files = len(files)
         in_progress = _sync_in_progress(entry)
         report_context.append((report, spec, entry, files, in_progress))

@@ -309,20 +309,24 @@ def test_qwen3_8_27b_dflash2_pair_remains_explicit_after_negative_bench() -> Non
     assert "performance-validated" in " ".join(explicit_result.warnings)
 
 
-def test_abliterated_oq4e_subfolder_is_reported_as_four_bit() -> None:
-    """Precision lives in the selected build, not this multi-quant repo name."""
+def test_oq4e_subfolder_in_neutral_repo_is_reported_as_four_bit() -> None:
+    """Precision lives in the selected build, not a multi-quant repo name."""
 
-    from rapid_mlx.model_aliases import resolve_profile
-
-    alias = "qwen3.8-27b-abliterated-4bit"
-    profile = resolve_profile(alias)
-    assert profile is not None
-
-    # Deliberately omit the alias: its own ``-4bit`` suffix must not hide a
-    # regression where the neutral repository ignores its selected subfolder.
+    # A neutral repository name: only the selected subfolder carries the
+    # precision signal, so a regression that ignores it must fail here.
+    profile = AliasProfile(hf_path="user/multi-quant", subfolder="oQ4e")
     result = report(profile)
     assert result.is_4bit is True
     assert "4-bit quantized" in " ".join(result.warnings)
+
+
+def test_abliterated_oq4e_build_is_reported_as_four_bit() -> None:
+    """The single-build successor repository names its oQ4e precision."""
+
+    profile = resolve_profile("qwen3.8-27b-abliterated-4bit")
+    assert profile is not None
+    result = report(profile)
+    assert result.is_4bit is True
 
 
 def test_default_qwen3_5_27b_alias_fails_check_with_4bit_reason() -> None:

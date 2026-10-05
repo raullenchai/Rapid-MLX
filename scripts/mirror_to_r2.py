@@ -70,8 +70,9 @@ from pathlib import Path
 from typing import Any
 
 if __package__:
-    from . import mirror_unmirrored
+    from . import mirror_runtime_files, mirror_unmirrored
 else:
+    import mirror_runtime_files
     import mirror_unmirrored
 
 load_unmirrored = mirror_unmirrored.load_unmirrored
@@ -255,6 +256,29 @@ def _select_subfolder(files: list[FileMeta], subfolder: str) -> list[FileMeta]:
 
     roots = [f for f in files if "/" not in f.relpath and _is_root_keep(f.relpath)]
     return roots + selected
+
+
+def _select_runtime_files(
+    files: list[FileMeta], allowlist: frozenset[str]
+) -> list[FileMeta]:
+    """Narrow ``files`` to a loader's fixed runtime list plus repo-root terms.
+
+    A vendored image backend fetches an audited file list, not the whole
+    repository (``scripts/mirror_runtime_files.py``). Mirroring the rest would
+    store weights no pull ever requests. Every listed file must exist upstream:
+    a partial runtime set would verify cleanly yet leave pulls on the fallback.
+    """
+    present = {f.relpath for f in files}
+    missing = sorted(allowlist - present)
+    if missing:
+        raise ValueError(
+            f"runtime file list names files the repository does not have: {missing[:8]}"
+        )
+    return [
+        f
+        for f in files
+        if f.relpath in allowlist or ("/" not in f.relpath and _is_root_keep(f.relpath))
+    ]
 
 
 def _r2_client(endpoint_url: str, profile: str) -> Any:
@@ -606,6 +630,15 @@ def mirror_repo(
             f"{kept_bytes / 1e9:.3f} of {before_bytes / 1e9:.3f} GB",
             flush=True,
         )
+    else:
+        allowlist = mirror_runtime_files.runtime_files(repo_id)
+        if allowlist is not None:
+            before = len(files)
+            files = _select_runtime_files(files, allowlist)
+            print(
+                f"   runtime:  {len(files)}/{before} files the loader fetches",
+                flush=True,
+            )
     # HF sometimes doesn't expose sizes for a subset of siblings; treat
     # those as 0 for the aggregate banner (the actual bytes-uploaded
     # counter tracks the ground truth below).
