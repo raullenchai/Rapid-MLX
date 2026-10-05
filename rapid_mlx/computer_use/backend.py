@@ -1092,9 +1092,11 @@ def _collect_with_timeout(
             "ax_unavailable",
             f"accessibility tree collection for {app_name!r} failed: {error}",
         ) from error
-    if walk_status.get("budget_exhausted") and collection_status is not None:
-        collection_status["partial"] = True
-        collection_status["budget_exhausted"] = True
+    if collection_status is not None:
+        if walk_status.get("budget_exhausted") or walk_status.get("depth_cap"):
+            collection_status["partial"] = True  # content was left unwalked
+        if walk_status.get("budget_exhausted"):
+            collection_status["budget_exhausted"] = True
     return cast(list[dict], outcome.get("value", []))
 
 

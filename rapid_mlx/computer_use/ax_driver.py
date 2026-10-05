@@ -542,6 +542,14 @@ def _child_elements(node: dict[str, object], role: str) -> list[object]:
     return _as_list(node.get("AXChildren"))
 
 
+def _out_of_time(budget: dict[str, Any] | None) -> bool:
+    if budget is None or time.monotonic() <= budget["deadline"]:
+        return False
+    budget["truncated"] = True
+    budget["deadline_hit"] = True
+    return True
+
+
 def _walk(
     element: object,
     depth: int,
@@ -557,9 +565,10 @@ def _walk(
     if depth > MAX_DEPTH or counter[0] >= MAX_NODES:
         if budget is not None:
             budget["truncated"] = True  # never drop content silently
+            if depth > MAX_DEPTH:
+                budget["depth_cap"] = True
         return
-    if budget is not None and time.monotonic() > budget["deadline"]:
-        budget["truncated"] = True
+    if _out_of_time(budget):
         return
     if node is None:
         node = _read_node(element)
@@ -626,7 +635,11 @@ def _walk(
     if not in_web and 2 <= len(children) <= PRIORITY_SORT_MAX_CHILDREN:
         # Read small sibling groups up front: the reads are needed anyway and
         # their roles order navigation before tables.
-        read = [(child, _read_node(child)) for child in children]
+        read = []
+        for child in children:
+            if _out_of_time(budget):
+                return  # wedged siblings must not outlast the walk budget
+            read.append((child, _read_node(child)))
 
         def priority(entry: tuple[object, dict[str, object]]) -> int:
             child_role = entry[1].get("AXRole")
@@ -923,7 +936,8 @@ def collect(
             if counter[0] >= MAX_NODES:
                 break
         if walk_status is not None:
-            walk_status["budget_exhausted"] = budget["truncated"]
+            walk_status["budget_exhausted"] = bool(budget.get("deadline_hit"))
+            walk_status["depth_cap"] = bool(budget.get("depth_cap"))
             walk_status["node_cap"] = counter[0] >= MAX_NODES
         # AXWebArea is structural (never a target), so look at what was walked.
         if (

@@ -631,6 +631,27 @@ def test_typing_without_a_ref_is_guarded_by_the_focused_field(
     with pytest.raises(ComputerUseError) as err:
         session.act("type", None, text="hunter2", window_id="cg:1")
     assert err.value.code == "needs_human" and "focused field" in err.value.message
+    # Naming a harmless ref does not help: typed text goes to the focus.
+    monkeypatch.setattr(perception, "_focused_secret", lambda app_info: None)
+    screen.show(
+        [
+            E("pw", "AXTextField", "Password", states=("focused",)),
+            E("n", "AXTextField", "Note"),
+        ]
+    )
+    obs = session.observe("Chrome", "cg:1")
+    with pytest.raises(ComputerUseError) as err:
+        session.act("type", _ref(obs, "Note"), text="hunter2")
+    assert err.value.code == "needs_human"
+    monkeypatch.setattr(
+        perception, "_focused_secret", lambda app_info: "a password field"
+    )
+    screen.show([E("pw", "AXTextField", "Password"), E("n", "AXTextField", "Note")])
+    obs = session.observe("Chrome", "cg:1")
+    with pytest.raises(ComputerUseError) as err:
+        session.act("type", _ref(obs, "Note"), text="hunter2")
+    assert err.value.code == "needs_human"
+    assert [c[0] for c in screen.calls] == ["type_text"]
 
 
 def test_focused_secret_reads_names_never_values(monkeypatch):
@@ -976,12 +997,31 @@ def test_open_url_without_a_load_is_unverifiable_and_needs_a_bar(
     monkeypatch.setattr(perception, "OPEN_URL_WAIT_S", 0)
     screen.show([E("bar", "AXComboBox", "Search or enter address")])
     session.observe("Chrome", "cg:1")
-    assert session.open_url("cg:1", "x.test")["receipt"]["effect"] == "unverifiable"
+    receipt = session.open_url("cg:1", "x.test")["receipt"]
+    assert receipt["effect"] == "unverifiable" and "unresolved" in receipt
+    with pytest.raises(ComputerUseError) as err:
+        session.act("key", None, key="Tab", window_id="cg:1")
+    assert err.value.code == "unresolved_outcome"
     screen.show([E("b", "AXButton", "Back")])
     session.observe("Chrome", "cg:1")
     with pytest.raises(ComputerUseError) as err:
         session.open_url("cg:1", "x.test")
     assert err.value.code == "invalid_argument"
+
+
+def test_open_url_stops_when_the_bar_refuses_the_address(session, screen):
+    screen.show([E("bar", "AXTextField", "Address and search bar")])
+    session.observe("Chrome", "cg:1")
+    screen.handlers["set_value"] = lambda *a, **k: (_ for _ in ()).throw(
+        ComputerUseError("target_drift", "focus moved")
+    )
+    with pytest.raises(ComputerUseError) as err:
+        session.open_url("cg:1", "x.test")
+    assert (
+        err.value.code == "target_drift"
+        and "open_url stopped at fill" in err.value.message
+    )
+    assert [c[0] for c in screen.calls] == ["click", "set_value"]  # no Return
 
 
 def test_open_url_will_not_type_a_card_number(session, screen):
