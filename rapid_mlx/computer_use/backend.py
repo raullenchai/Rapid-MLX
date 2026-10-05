@@ -2678,9 +2678,27 @@ def _open_menu_count(pid: int) -> int | None:
         return None
 
 
-def _menus_opened(pid: int, before: int) -> bool:
-    count = _open_menu_count(pid)
-    return count is not None and count > before
+def _menu_opened_despite_error(snapshot: dict, before: int | None) -> bool:
+    """Whether an Accessibility action that returned an error still opened a
+    menu (an AX call can time out after the action took effect). Raises
+    when open menus can no longer be counted, since one may be up."""
+    if before is None:
+        return False
+    pid = int(snapshot["app"]["pid"])
+    deadline = time.monotonic() + 0.3
+    while True:
+        count = _open_menu_count(pid)
+        if count is not None and count > before:
+            return True
+        if time.monotonic() >= deadline:
+            if count is None:
+                raise ComputerUseError(
+                    "action_failed",
+                    "the Accessibility action failed and open menus could not "
+                    "be counted" + _MENU_LEFT_OPEN,
+                )
+            return False
+        time.sleep(0.05)
 
 
 def _menus_before(
@@ -2777,9 +2795,26 @@ def _settle_menus(
         return None
     pid = int(snapshot["app"]["pid"])
     deadline = time.monotonic() + (0.6 if expect_menu or choose else 0.0)
-    while not _menus_opened(pid, before) and time.monotonic() < deadline:
+    count = _open_menu_count(pid)
+    while (count is None or count <= before) and time.monotonic() < deadline:
         time.sleep(0.05)
-    if not _menus_opened(pid, before):
+        count = _open_menu_count(pid)
+    if count is None:
+        # Unknown is not "no menu": one may be up and taking the keys, and
+        # Escape cannot be sent blindly (it would reach the content).
+        if choose is not None:
+            raise ComputerUseError(
+                "action_failed",
+                f"open menus could not be counted after the action, so "
+                f"{choose!r} was not chosen{_MENU_LEFT_OPEN}",
+            )
+        return {
+            "opened": None,
+            "closed": False,
+            "warning": "open menus could not be counted after the action"
+            + _MENU_LEFT_OPEN,
+        }
+    if count <= before:
         if choose is not None:
             raise _NoMenuOpenedError(snapshot, element_index, choose)
         if not expect_menu:
@@ -3049,6 +3084,11 @@ def _click(
             )
             with _guard_user_focus(snapshot) as guard:
                 err = AXUIElementPerformAction(live, semantic)
+                # An error can arrive after the action took effect; a menu
+                # it opened must still be settled (and is not clicked again).
+                accepted = err == AS.kAXErrorSuccess or _menu_opened_despite_error(
+                    snapshot, menus_before
+                )
                 menu = (
                     _settle_menus(
                         snapshot,
@@ -3057,13 +3097,15 @@ def _click(
                         menu_item,
                         expect_menu=opens_menu,
                     )
-                    if err == AS.kAXErrorSuccess
+                    if accepted
                     else None
                 )
-            if err == AS.kAXErrorSuccess:
+            if accepted:
                 if popups_before:
                     _dismiss_lingering_popup(snapshot, popups_before)
                 delivery = {"mode": semantic, "element_index": element_index}
+                if err != AS.kAXErrorSuccess:
+                    delivery["ax_error"] = err
                 if menu is not None:
                     delivery["menu"] = menu
                 delivery.update(_focus_fields(guard))
@@ -3491,7 +3533,13 @@ def _choose_from_ax_menu(live: object, value: str, pid: int) -> str | None:
         )
     time.sleep(0.15)
     if AXUIElementPerformAction(live, "AXPress") != 0:
-        raise ComputerUseError("accessibility_error", "popup could not be opened")
+        # The press may have opened the menu before the AX call failed.
+        opened = _open_menu_of(live, timeout=0.3)
+        closed = opened is None or _close_menu(live, opened, pid)
+        raise ComputerUseError(
+            "accessibility_error",
+            "popup could not be opened" + ("" if closed else _MENU_LEFT_OPEN),
+        )
     menu_element = _open_menu_of(live, timeout=1.5)
     if menu_element is None:
         # A menu arriving just after the timeout would track the keyboard;
@@ -5416,7 +5464,11 @@ def perform_secondary_action(
     menus_before = _menus_before(snapshot, None, expect_menu=action == "AXShowMenu")
     with _guard_user_focus(snapshot) as guard:
         err = AXUIElementPerformAction(live, action)
-        # AXShowMenu and friends open menus; never leave one taking the keys.
+        # AXShowMenu and friends open menus; never leave one taking the keys,
+        # also when the AX call reported an error after opening it.
+        accepted = err == AS.kAXErrorSuccess or _menu_opened_despite_error(
+            snapshot, menus_before
+        )
         menu = (
             _settle_menus(
                 snapshot,
@@ -5425,10 +5477,10 @@ def perform_secondary_action(
                 None,
                 expect_menu=action == "AXShowMenu",
             )
-            if err == AS.kAXErrorSuccess
+            if accepted
             else None
         )
-    if err != AS.kAXErrorSuccess:
+    if not accepted:
         raise ComputerUseError(
             "accessibility_error", f"AXPerformAction {action} failed: {err}"
         )
@@ -5437,10 +5489,11 @@ def perform_secondary_action(
         "action": action,
         "element_index": element_index,
     }
+    if err != AS.kAXErrorSuccess:
+        delivery["ax_error"] = err
     if menu is not None:
         delivery["menu"] = menu
-    if "focus_restored" in guard:
-        delivery["focus_restored"] = guard["focus_restored"]
+    delivery.update(_focus_fields(guard))
     return _finish_action(
         app,
         snapshot,

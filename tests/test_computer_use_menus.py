@@ -190,13 +190,11 @@ def test_open_menu_count_counts_menu_layer_windows_of_the_pid(monkeypatch):
         ],
     )
     assert backend._open_menu_count(4) == 1
-    assert backend._menus_opened(4, 0) and not backend._menus_opened(4, 1)
 
 
 def test_open_menu_count_is_none_when_unreadable(monkeypatch):
     _quartz_windows(monkeypatch, lambda: 1 / 0)
     assert backend._open_menu_count(4) is None
-    assert not backend._menus_opened(4, 0)
 
 
 def test_menus_before_skips_foreground_and_fails_closed_for_a_choice(monkeypatch):
@@ -263,6 +261,33 @@ def test_settle_menus_without_a_menu(monkeypatch, calls):
         backend._settle_menus(snap, 3, 0, "Copy", expect_menu=True)
     assert exc.value.code == "element_not_found"
     assert exc.value.snapshot is snap and exc.value.element_index == 3
+
+
+def test_settle_menus_never_reads_an_uncountable_menu_as_none(monkeypatch, calls):
+    monkeypatch.setattr(backend, "_open_menu_count", lambda pid: None)
+    snap = _snapshot()
+    report = backend._settle_menus(snap, 0, 0, None, expect_menu=False)
+    assert report["opened"] is None and report["closed"] is False
+    assert "may still be open" in report["warning"]
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend._settle_menus(snap, 3, 0, "Copy", expect_menu=True)
+    assert exc.value.code == "action_failed"
+    assert not isinstance(exc.value, backend._NoMenuOpenedError)
+    assert "may still be open" in exc.value.message
+    assert not [c for c in calls if c[0] == "press_key"]  # no blind Escape
+
+
+def test_menu_opened_despite_error(monkeypatch, clock):
+    snap = _snapshot()
+    assert backend._menu_opened_despite_error(snap, None) is False
+    monkeypatch.setattr(backend, "_open_menu_count", lambda pid: 1)
+    assert backend._menu_opened_despite_error(snap, 0) is True
+    monkeypatch.setattr(backend, "_open_menu_count", lambda pid: 0)
+    assert backend._menu_opened_despite_error(snap, 0) is False
+    monkeypatch.setattr(backend, "_open_menu_count", lambda pid: None)
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend._menu_opened_despite_error(snap, 0)
+    assert exc.value.code == "action_failed"
 
 
 @pytest.fixture
@@ -1155,6 +1180,79 @@ def test_show_menu_action_never_leaves_the_menu_open(monkeypatch, open_menu, cal
     result = backend.perform_secondary_action("App", 0, "AXShowMenu")
     assert result["menu"]["closed"] is True
     assert result["menu"]["items"] == ["Copy", "Paste"]
+
+
+def test_show_menu_error_after_opening_still_closes_the_menu(
+    monkeypatch, open_menu, calls
+):
+    snap = _snapshot(
+        elements=[{"index": 0, "role": "AXButton", "actions": ["AXShowMenu"]}]
+    )
+    monkeypatch.setattr(backend, "get_app_state", lambda *a, **k: snap)
+    open_menu.state["open"] = 0
+    real = sys.modules["ApplicationServices"].AXUIElementPerformAction
+
+    def perform(element, action):
+        result = real(element, action)
+        if action == "AXShowMenu":
+            open_menu.state["open"] = 1
+            return -25204  # kAXErrorCannotComplete after the menu opened
+        return result
+
+    sys.modules["ApplicationServices"].AXUIElementPerformAction = perform
+    result = backend.perform_secondary_action("App", 0, "AXShowMenu")
+    assert result["ax_error"] == -25204
+    assert result["menu"]["closed"] is True and open_menu.state["open"] == 0
+    assert "focus_restored" in result
+
+    def failing(element, action):
+        calls.append(("ax", element, action))
+        return -25200
+
+    sys.modules["ApplicationServices"].AXUIElementPerformAction = failing
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend.perform_secondary_action("App", 0, "AXShowMenu")
+    assert exc.value.code == "accessibility_error"
+
+
+def test_semantic_click_error_after_opening_a_menu_settles_it(
+    monkeypatch, open_menu, calls
+):
+    snap = _popup_snapshot()
+    monkeypatch.setattr(backend, "_finish_action", lambda app, s, d, **k: d)
+    open_menu.state["open"] = 0
+    real = sys.modules["ApplicationServices"].AXUIElementPerformAction
+
+    def perform(element, action):
+        result = real(element, action)
+        if action == "AXPress" and element == "popup":
+            open_menu.state["open"] = 1
+            return -25204
+        return result
+
+    sys.modules["ApplicationServices"].AXUIElementPerformAction = perform
+    result = backend.click("App", element_index=0, expected_snapshot=snap)
+    assert result["mode"] == "AXPress" and result["ax_error"] == -25204
+    assert result["menu"]["closed"] is True and open_menu.state["open"] == 0
+    assert not [c for c in calls if c[0] == "click"]  # not clicked again
+
+
+def test_choose_from_ax_menu_closes_a_menu_its_failed_press_opened(
+    monkeypatch, native_popup, calls
+):
+    real = sys.modules["ApplicationServices"].AXUIElementPerformAction
+
+    def perform(element, action):
+        result = real(element, action)
+        return -25204 if (element, action) == ("popup", "AXPress") else result
+
+    sys.modules["ApplicationServices"].AXUIElementPerformAction = perform
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend._choose_from_ax_menu("popup", "B", 4)
+    assert exc.value.code == "accessibility_error"
+    assert "may still be open" not in exc.value.message
+    assert native_popup["open"] is False
+    assert ("ax", "menu", "AXCancel") in calls
 
 
 # --- window titles without Screen Recording ---------------------------------------
