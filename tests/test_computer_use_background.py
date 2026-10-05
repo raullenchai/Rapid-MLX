@@ -205,7 +205,13 @@ def test_coordinate_click_routes_to_pid_without_topmost_check(monkeypatch, backg
     assert background[0] == (
         "click",
         (4, 101, 50.0, 60.0),
-        {"button": "left", "count": 1, "flags": 0, "window_origin": (0.0, 0.0), "front_wid": 555},
+        {
+            "button": "left",
+            "count": 1,
+            "flags": 0,
+            "window_origin": (0.0, 0.0),
+            "front_wid": 555,
+        },
     )
     # The user's front window (pid 999) gets keyboard focus back.
     assert background[1] == ("restore", (999, 555, 4, 101), {})
@@ -608,7 +614,13 @@ def test_element_without_semantic_action_gets_routed_pixel_gesture(
     assert background[0] == (
         "click",
         (4, 101, 9.0, 8.0),
-        {"button": "right", "count": 1, "flags": 0, "window_origin": (0.0, 0.0), "front_wid": 555},
+        {
+            "button": "right",
+            "count": 1,
+            "flags": 0,
+            "window_origin": (0.0, 0.0),
+            "front_wid": 555,
+        },
     )
     assert result["button"] == "right"
     assert result["element_index"] == 0
@@ -1013,7 +1025,14 @@ def test_defocus_record_names_the_front_window(monkeypatch):
         ),
     )
     assert background_input.activate_without_raise(4, 101, front_wid=555)
-    assert posted == [("front", 555, 0x02), ("target", 101, 0x01)]
+    # Focus records (0x0D) for both processes, then yabai's make-key mouse
+    # down/up records for the target window (no focus direction byte).
+    assert posted == [
+        ("front", 555, 0x02),
+        ("target", 101, 0x01),
+        ("target", 101, 0),
+        ("target", 101, 0),
+    ]
     posted.clear()
     # Unknown front window: cua's recipe (target id in the defocus record).
     assert background_input.activate_without_raise(4, 101)

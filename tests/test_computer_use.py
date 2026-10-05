@@ -25,7 +25,7 @@ def _foreground_input_delivery(monkeypatch):
     # process-wide state and query the live AX server; they have their own
     # tests in test_computer_use_offspace.py.
     monkeypatch.setattr(backend, "_offscreen_ax_windows", lambda app, seen: [])
-    monkeypatch.setattr(ax_driver, "_EXPOSED", set())
+    monkeypatch.setattr(ax_driver, "_EXPOSED", {})
     monkeypatch.setattr(ax_driver, "_REMOTE_IDS", {})
 
 

@@ -365,7 +365,7 @@ def test_remote_factory_binds_the_spi_once_and_caches_a_missing_symbol(monkeypat
 
 
 def test_first_exposure_is_per_process_launch(monkeypatch):
-    monkeypatch.setattr(ax_driver, "_EXPOSED", set())
+    monkeypatch.setattr(ax_driver, "_EXPOSED", {})
 
     class App:
         def __init__(self, pid, launched):
@@ -1261,7 +1261,10 @@ def test_focus_only_makes_the_target_key_and_never_commits(monkeypatch, keyboard
         ]
     )
     monkeypatch.setattr(backend, "_live_element", lambda *a, **k: "live")
-    monkeypatch.setattr(backend, "_key_window_id", lambda pid: 202)
+    # Another window is key until the switch lands.
+    monkeypatch.setattr(
+        backend, "_key_window_id", lambda pid, keys=iter([202, 101]): next(keys)
+    )
     focused = iter([None, "AXFocused"])
     monkeypatch.setattr(backend, "_focus_without_commit", lambda s, live: next(focused))
     monkeypatch.setattr(
@@ -1422,12 +1425,15 @@ def test_content_chord_goes_to_the_bound_window_in_the_background(chord, keyboar
     ]
 
 
-def test_menu_chord_of_an_inactive_app_is_refused(monkeypatch, chord, keyboard):
+def test_menu_chord_of_an_inactive_app_is_refused(monkeypatch, chord, keyboard, attrs):
     monkeypatch.setattr(
         ax_driver,
         "_application_for_pid",
         lambda pid: types.SimpleNamespace(isActive=lambda: False),
     )
+    # The chord may be a menu command but its item cannot be resolved
+    # (unreadable modifiers), so it cannot be pressed through Accessibility.
+    attrs["save"]["AXMenuItemCmdModifiers"] = None
     with pytest.raises(errors.ComputerUseError) as exc:
         backend.hotkey("App", "cmd+s", window_id="cg:101")
     assert exc.value.code == "synthetic_input_blocked"
@@ -1560,7 +1566,7 @@ def test_ax_app_element_exposes_once_per_process(monkeypatch, clock):
         AXUIElementCreateApplication=lambda pid: ("element", pid),
         AXUIElementSetAttributeValue=lambda *a: sets.append(a[1]),
     )
-    monkeypatch.setattr(ax_driver, "_EXPOSED", set())
+    monkeypatch.setattr(ax_driver, "_EXPOSED", {})
 
     class App:
         def processIdentifier(self):

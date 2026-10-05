@@ -614,14 +614,9 @@ _WOKEN_PIDS: set[int] = set()
 
 
 def _mark_woken(app_element: object) -> None:
-    try:
-        from ApplicationServices import AXUIElementGetPid  # type: ignore[import-untyped]
-
-        err, pid = AXUIElementGetPid(app_element, None)
-    except Exception:  # pragma: no cover - pyobjc variants
-        return
-    if err == 0:
-        _WOKEN_PIDS.add(int(pid))
+    pid = _pid_of(app_element)
+    if pid is not None:
+        _WOKEN_PIDS.add(pid)
 
 
 def clear_woken(pid: int) -> None:
@@ -635,13 +630,8 @@ def renderer_was_woken(pid: int) -> bool:
 
 def _restart_exposure(app_element: object) -> None:
     """Restart the readiness clock of the process behind ``app_element``."""
-    try:
-        from ApplicationServices import AXUIElementGetPid  # type: ignore[import-untyped]
-
-        err, pid = AXUIElementGetPid(app_element, None)
-    except Exception:  # pragma: no cover - pyobjc variants
-        return
-    if err != 0:
+    pid = _pid_of(app_element)
+    if pid is None:
         return
     for key in [k for k in _EXPOSED if k[1] == pid]:
         _EXPOSED[key] = time.monotonic()
