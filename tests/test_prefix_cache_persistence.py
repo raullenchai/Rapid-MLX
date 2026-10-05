@@ -3376,6 +3376,43 @@ def test_admission_counts_every_file_of_the_entry(tmp_path, monkeypatch):
     assert actual <= mc._persist_entry_disk_bytes(kv, 11)
 
 
+def test_admission_keeps_room_for_index_rows_already_owed(tmp_path, monkeypatch):
+    """``index.json`` is written after the last entry, so the rows of entries
+    already saved are still owed to the volume: an entry that would fit only
+    by spending that room is skipped."""
+    import json
+
+    import rapid_mlx.memory_cache as mc
+
+    cache = fresh_cache()
+    first = make_kvcache(num_tokens=11)
+    cache.store(list(range(11)), first)
+    cache.store(list(range(50, 61)), make_kvcache(num_tokens=11, fill=3.0))
+    entry_bytes = mc._persist_entry_disk_bytes(first, 11)
+
+    reserve = 1000
+    monkeypatch.setenv(mc.PREFIX_CACHE_MIN_FREE_DISK_BYTES_ENV, str(reserve))
+    # Exactly one entry's worth of room on every reading: the second entry
+    # has the bytes for its own files but not for the first one's index row.
+    monkeypatch.setattr(mc, "_free_disk_bytes", lambda _d: reserve + entry_bytes)
+    snap = tmp_path / "snap"
+    assert cache.save_to_disk(str(snap)) is True
+    index = json.loads((snap / "index.json").read_text())
+    assert len(index["entries"]) == 1
+
+    # The per-row figure really covers what the final dump writes.
+    monkeypatch.setenv(mc.PREFIX_CACHE_MIN_FREE_DISK_BYTES_ENV, "0")
+    full = tmp_path / "full"
+    assert cache.save_to_disk(str(full)) is True
+    rows = json.loads((full / "index.json").read_text())["entries"]
+    assert len(rows) == 2
+    owed = sum(mc._persist_index_row_bytes(row) for row in rows)
+    header_only = dict(json.loads((full / "index.json").read_text()), entries=[])
+    assert (full / "index.json").stat().st_size <= owed + len(
+        json.dumps(header_only, indent=2)
+    )
+
+
 def test_reserve_zero_and_unknown_free_space_do_not_block_save(tmp_path, monkeypatch):
     import rapid_mlx.memory_cache as mc
 

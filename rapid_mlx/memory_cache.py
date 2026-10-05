@@ -705,6 +705,17 @@ def _persist_entry_disk_bytes(persist_cache: list[Any], num_tokens: int) -> int:
     )
 
 
+def _persist_index_row_bytes(row: dict[str, Any]) -> int:
+    """Upper bound on what one entry row adds to ``index.json``.
+
+    The index is written once, after every entry, so the rows of entries
+    already admitted are still owed to the volume while later entries are
+    being checked. Serialising at the row's nesting depth plus slack for
+    the separator keeps this at or above the bytes the final dump emits.
+    """
+    return len(json.dumps(row, indent=6)) + 16
+
+
 def _free_disk_bytes(directory: str) -> int | None:
     """Free bytes on the volume holding ``directory``; ``None`` if unknown."""
     import shutil
@@ -3201,6 +3212,9 @@ class MemoryAwarePrefixCache:
         total_write_seconds = 0.0
         disk_skipped = 0
         disk_skipped_bytes = 0
+        # ``index.json`` rows owed for entries already written (the index
+        # itself lands after the loop); later admissions must leave room.
+        index_owed_bytes = 0
         for i, (tokens_key, entry) in enumerate(entries_to_save):
             if total_write_seconds > 0:
                 observed_bps = total_bytes_written / total_write_seconds
@@ -3254,7 +3268,8 @@ class MemoryAwarePrefixCache:
                     free_bytes = _free_disk_bytes(new_dir)
                     if (
                         free_bytes is not None
-                        and free_bytes - persist_bytes < min_free_disk
+                        and free_bytes - persist_bytes - index_owed_bytes
+                        < min_free_disk
                     ):
                         disk_skipped += 1
                         disk_skipped_bytes += persist_bytes
@@ -3324,6 +3339,7 @@ class MemoryAwarePrefixCache:
                     }
                 )
                 saved_lru_rank[i] = lru_rank[tokens_key]
+                index_owed_bytes += _persist_index_row_bytes(index["entries"][-1])
                 saved += 1
                 # Feed the throughput estimator. We measure including
                 # both the safetensors write and the tokens sidecar so
