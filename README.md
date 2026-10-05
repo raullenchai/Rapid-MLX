@@ -1,4 +1,4 @@
-<img width="2400" height="1000" alt="Rapid-MLX — OpenAI- and Anthropic-compatible LLM inference server and Mac app for Apple Silicon" src="docs/assets/readme-banner.png" />
+<h1 align="center">Rapid-MLX</h1>
 
 <p align="center">
   <strong>Rapid-MLX is an open-source (Apache 2.0) OpenAI- and Anthropic-compatible LLM inference server and Mac app for Apple Silicon, built on MLX, focused on reliable tool calling for coding agents.</strong>
@@ -6,8 +6,6 @@
   <strong>Up to 4× faster than Apple's MLX (mlx-lm), 1.5× on a typical task — same model, same weights.</strong>
   <br>
   <em>Decode speed, Qwen3.5-9B 4-bit on a Mac mini M4 Pro, greedy decoding, both servers at their defaults — <a href="https://rapidmlx.com/compare/mlx-lm">per-task results, method, and raw data</a>.</em>
-  <br>
-  <em>Measured: 3.0× Ollama's aggregate decode throughput at 8 concurrent streams on Qwen3.6-35B-A3B (M2 Pro) — <a href="https://rapidmlx.com/blog/rapid-mlx-vs-ollama-benchmark">method, raw data, and where it is slower</a>.</em>
 </p>
 
 <p align="center">
@@ -15,7 +13,7 @@
   <a href="https://formulae.brew.sh/formula/rapid-mlx"><img src="https://img.shields.io/badge/Homebrew-core-orange?logo=homebrew" alt="Homebrew core"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python 3.10+"></a>
   <a href="https://support.apple.com/en-us/HT211814"><img src="https://img.shields.io/badge/Apple_Silicon-M1%20|%20M2%20|%20M3%20|%20M4-black.svg?logo=apple" alt="Apple Silicon"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License"></a>
+  <a href="https://github.com/raullenchai/Rapid-MLX/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License"></a>
 </p>
 
 <p align="center">
@@ -42,8 +40,8 @@
 ## How it compares
 
 Feature facts only, taken mostly from each project's own documentation as of
-2026-09-26 (sources below). For measured speed, see the benchmarks linked
-above and below.
+2026-09-26 (sources below). For speed, see the measured results below the
+table.
 
 | | Rapid-MLX | [oMLX](https://github.com/jundot/omlx) | [Ollama](https://github.com/ollama/ollama) | [LM Studio](https://lmstudio.ai) | [mlx-lm](https://github.com/ml-explore/mlx-lm) (`mlx_lm.server`) |
 |---|---|---|---|---|---|
@@ -72,7 +70,8 @@ default for this model; a long-prompt agent turn was close to a tie (1.05× end
 to end), and Qwen3.5-4B, where it is off by default, was 1.12× at the median
 ([per-task results and raw data](https://rapidmlx.com/compare/mlx-lm)).
 
-**Measured speed vs Ollama:** the 3.0× above is 82.9 vs 27.2 tok/s aggregate decode
+**Measured speed vs Ollama** (published 2026-08-11): at 8 concurrent streams on
+Qwen3.6-35B-A3B, aggregate decode was 3.0× Ollama's, 82.9 vs 27.2 tok/s
 (32 GB M2 Pro Mac mini, Rapid-MLX 0.12.11 vs Ollama 0.32.7). Including
 prefill, whole-batch throughput was 1.6×; single-stream decode was about 1.5×;
 a dense 12B model was no faster; and llama.cpp-family engines prefilled cold
@@ -123,7 +122,7 @@ and image generation from one app.
 - [Download Rapid-MLX Desktop](https://rapidmlx.com/desktop)
 - [Browse signed Desktop releases](https://github.com/raullenchai/Rapid-MLX/releases?q=rapid-mac-v)
 - Requires an M-series Mac; Windows and Linux desktop builds are not available yet
-- [Share Compute setup and credit ledger](docs/guides/share-compute.md)
+- [Share Compute setup and credit ledger](https://github.com/raullenchai/Rapid-MLX/blob/main/docs/guides/share-compute.md)
 
 ### CLI and server — macOS (Apple Silicon)
 
@@ -137,7 +136,7 @@ curl -fsSL https://rapidmlx.com/install.sh | bash
 
 Both install the same `rapid-mlx` CLI. Prefer `uv` or `pip`, or want to verify
 the installer before running it? See [alternative install methods](#alternative-install-methods)
-and [install security](SECURITY.md).
+and [install security](https://github.com/raullenchai/Rapid-MLX/blob/main/SECURITY.md).
 
 The guided installer prefers a runnable model already cached on this Mac when
 it fits the RAM tier. Otherwise its quick first-chat download is
@@ -160,7 +159,7 @@ you do not need a GitHub account or a benchmark JSON pull request.
   with `rapid-mlx benchmark share <run-id>` only if you choose to.
 
 Explore the [Community Benchmark leaderboard](https://rapidmlx.com/leaderboard)
-or read the [protocol and privacy details](community-benchmarks/README.md).
+or read the [protocol and privacy details](https://github.com/raullenchai/Rapid-MLX/blob/main/community-benchmarks/README.md).
 
 ---
 
@@ -273,7 +272,7 @@ family default shown below.
 encoder. `qwen-image-2.1-bf16` preserves the previous 8-bit-on-load transformer
 and bf16 encoder path. Their edit endpoint performs single-image img2img
 conditioning; the separate instruction-edit variant is not yet available
-upstream. See the [family guide](docs/models/families/qwen-image-2.1.md) for
+upstream. See the [family guide](https://github.com/raullenchai/Rapid-MLX/blob/main/docs/models/families/qwen-image-2.1.md) for
 request and memory behavior.
 
 At 1024×1024 with the four-step Klein default, measured warm generation was
@@ -290,14 +289,14 @@ measured denoise `s/step`. For the qualified 1024-square Klein shape it also
 reports estimated achieved TFLOPS; unavailable or unqualified values are never
 fabricated.
 
-→ [Reproducible precision benchmark and methodology](docs/engineering/performance/2026-09-04-image-weight-precision.md)
+→ [Reproducible precision benchmark and methodology](https://github.com/raullenchai/Rapid-MLX/blob/main/docs/engineering/performance/2026-09-04-image-weight-precision.md)
 
 Image work is single-flight: one generation runs at a time so two diffusion
 pipelines cannot exhaust unified memory. Model weights retain their own
 licenses and use restrictions; review the upstream model card before commercial
 deployment.
 
-→ [Release dogfood coverage and reproducible acceptance contract](docs/engineering/operations/image-release-dogfood-matrix.md)
+→ [Release dogfood coverage and reproducible acceptance contract](https://github.com/raullenchai/Rapid-MLX/blob/main/docs/engineering/operations/image-release-dogfood-matrix.md)
 
 ---
 
@@ -404,7 +403,7 @@ rapid-mlx system-one clef-flash
 CLM uses a converted copy of its upstream projection head and does not require
 PyTorch or vLLM while serving.
 
-→ [Laya, CLM, and Clef setup, API examples, and compatibility limits](docs/guides/system-one.md)
+→ [Laya, CLM, and Clef setup, API examples, and compatibility limits](https://github.com/raullenchai/Rapid-MLX/blob/main/docs/guides/system-one.md)
 
 ---
 
@@ -493,7 +492,7 @@ the catalog floor for shorter contexts. Qwen3.8-27B remains the 32 GB
 recommendation for the standard approximately 8K workload; its 32K automatic
 MTP path was not physically qualified on a 32 GB Mac.
 
-→ [Environment, exact methods, full context curves, and qualification notes](docs/benchmarks/recent-large-models-m3-ultra.md)
+→ [Environment, exact methods, full context curves, and qualification notes](https://github.com/raullenchai/Rapid-MLX/blob/main/docs/benchmarks/recent-large-models-m3-ultra.md)
 
 ---
 
@@ -543,7 +542,7 @@ text rows also expose resolved model revisions; the generation rows currently
 report unresolved identity in the public projection, with their exact local
 snapshot revisions preserved in the full record.
 
-→ [Full methodology, revisions, commands, and public submission IDs](docs/benchmarks/m4-pro-48gb-community.md) · [Community Benchmark board](https://rapidmlx.com/leaderboard/contributors/jolly-rooted-zebra-edc)
+→ [Full methodology, revisions, commands, and public submission IDs](https://github.com/raullenchai/Rapid-MLX/blob/main/docs/benchmarks/m4-pro-48gb-community.md) · [Community Benchmark board](https://rapidmlx.com/leaderboard/contributors/jolly-rooted-zebra-edc)
 
 ---
 
@@ -696,8 +695,8 @@ Top three things that go wrong:
 - **Twitter / X:** Follow [@rapidmlx](https://x.com/rapidmlx) for releases, benchmarks, and project updates.
 - **Questions & builds:** Ask or share in [GitHub Discussions](https://github.com/raullenchai/Rapid-MLX/discussions).
 - **Feedback & ideas:** [Report a bug, request a model, or propose a feature](https://github.com/raullenchai/Rapid-MLX/issues/new/choose).
-- **Security:** Send sensitive reports through a [private advisory](https://github.com/raullenchai/Rapid-MLX/security/advisories/new); see [SECURITY.md](SECURITY.md).
-- **Contributing:** Start with [CONTRIBUTING.md](CONTRIBUTING.md). Explore compatible benchmark models with `rapid-mlx benchmark catalog`; runs stay local unless you explicitly share one in the internal beta.
+- **Security:** Send sensitive reports through a [private advisory](https://github.com/raullenchai/Rapid-MLX/security/advisories/new); see [SECURITY.md](https://github.com/raullenchai/Rapid-MLX/blob/main/SECURITY.md).
+- **Contributing:** Start with [CONTRIBUTING.md](https://github.com/raullenchai/Rapid-MLX/blob/main/CONTRIBUTING.md). Explore compatible benchmark models with `rapid-mlx benchmark catalog`; runs stay local unless you explicitly share one in the internal beta.
 - **Show support:** [Star this repository](https://github.com/raullenchai/Rapid-MLX) to follow releases and help others discover the project.
 
 **Privacy:** Anonymous, metadata-only telemetry is on by default in 0.15.0 and
@@ -713,10 +712,10 @@ keys are never collected, and no per-person profile is built. See
 
 ## Contributors
 
-Every avatar here shipped something in rapid-mlx — model support, tool-call parsers, fixes, docs, and benchmark submissions. Thank you.
+Every avatar here shipped something in Rapid-MLX — model support, tool-call parsers, fixes, docs, and benchmark submissions. Thank you.
 
 <a href="https://github.com/raullenchai/Rapid-MLX/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=raullenchai/Rapid-MLX" alt="rapid-mlx contributors" />
+  <img src="https://contrib.rocks/image?repo=raullenchai/Rapid-MLX" alt="Rapid-MLX contributors" />
 </a>
 
 ---
@@ -724,7 +723,7 @@ Every avatar here shipped something in rapid-mlx — model support, tool-call pa
 ## Star History
 
 <a href="https://github.com/raullenchai/Rapid-MLX/stargazers">
-  <img src="docs/assets/star-history.png" alt="Rapid-MLX GitHub star history through August 23, 2026" />
+  <img src="https://raw.githubusercontent.com/raullenchai/Rapid-MLX/main/docs/assets/star-history.png" alt="Rapid-MLX GitHub star history through August 23, 2026" />
 </a>
 
 ---
@@ -747,9 +746,9 @@ It stands on Apple's MLX stack and the runtimes built around it:
 - **[mlx-audio](https://github.com/Blaizzy/mlx-audio)** — speech and audio models
 
 Vendored third-party components and their licenses are listed in
-[NOTICE](NOTICE); what the macOS app ships is enumerated in
-[apps/rapid-mac/THIRD_PARTY.md](apps/rapid-mac/THIRD_PARTY.md).
+[NOTICE](https://github.com/raullenchai/Rapid-MLX/blob/main/NOTICE); what the macOS app ships is enumerated in
+[apps/rapid-mac/THIRD_PARTY.md](https://github.com/raullenchai/Rapid-MLX/blob/main/apps/rapid-mac/THIRD_PARTY.md).
 
 ## License
 
-Apache 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+Apache 2.0 — see [LICENSE](https://github.com/raullenchai/Rapid-MLX/blob/main/LICENSE) and [NOTICE](https://github.com/raullenchai/Rapid-MLX/blob/main/NOTICE).
