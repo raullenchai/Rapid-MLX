@@ -230,6 +230,66 @@
         "other"
       ]
     },
+    "byom_preflight": {
+      "_about": [
+        "Outcome of the bring-your-own-model metadata preflight for the model",
+        "this serve/pull invocation names (rapid_mlx/byom/preflight.py). Absent",
+        "for catalog models and selector pulls (--bits/--format), which the",
+        "preflight never inspects. passed: metadata proved nothing wrong;",
+        "refused: stopped before download (the reason is error_class);",
+        "no_verdict: metadata could not be read or proved nothing, or the Hub",
+        "is offline; skipped: --no-preflight; cached: already in the local",
+        "Hugging Face cache, so not checked."
+      ],
+      "values": ["passed", "refused", "no_verdict", "skipped", "cached"]
+    },
+    "byom_suggestion": {
+      "_about": [
+        "Which kind of runnable alternative a preflight refusal named:",
+        "mlx_build (a verified MLX build of the same base model), catalog (a",
+        "curated alias that fits this Mac) or none. Never the name itself."
+      ],
+      "values": ["mlx_build", "catalog", "none"]
+    },
+    "support_request_outcome": {
+      "_about": [
+        "Closed outcome of the opt-in 'Ask us to support it?' offer after a",
+        "preflight refusal (rapid_mlx/byom/support_request.py).",
+        "not_eligible: never offered (gated/private/local model, or a refusal",
+        "the site does not take such as too-big-for-this-Mac);",
+        "non_interactive: no terminal, the --request hint was printed;",
+        "declined: an explicit or default no; no_answer: EOF or Ctrl-C at the",
+        "prompt; sent: the site filed the request or added a vote; busy: the",
+        "same request was being filed (HTTP 409); unreachable: the site could",
+        "not take it and the prefilled issue link was printed. The repo id",
+        "the user chose to send goes only to rapidmlx.com, never here."
+      ],
+      "values": [
+        "not_eligible", "non_interactive", "declined", "no_answer",
+        "sent", "busy", "unreachable"
+      ]
+    },
+    "import_error_class": {
+      "_about": [
+        "Where `rapid-mlx import` stopped (rapid_mlx/byom/imports.py), in",
+        "pipeline order. invalid_ref: neither a local directory nor an",
+        "org/name; metadata_unavailable: metadata or the current revision",
+        "could not be read; unsupported_format: no root model*.safetensors",
+        "(GGUF/.bin only); already_quantized; unsupported_architecture: no",
+        "model_type, repository model code, or no mlx-lm converter;",
+        "name_conflict: invalid or taken name, a different import under the",
+        "same name, or the per-name lock is held; insufficient_disk /",
+        "insufficient_memory: the resource check refused; download_failed /",
+        "convert_failed / smoke_failed: that execution step failed;",
+        "interrupted: Ctrl-C. No message, path or name is sent."
+      ],
+      "values": [
+        "invalid_ref", "metadata_unavailable", "unsupported_format",
+        "already_quantized", "unsupported_architecture", "name_conflict",
+        "insufficient_disk", "insufficient_memory", "download_failed",
+        "convert_failed", "smoke_failed", "interrupted", "other"
+      ]
+    },
     "optional_extra": {
       "_about": "Optional serving runtime required by the selected model lane.",
       "values": ["vision", "video", "audio", "image"]
@@ -525,32 +585,65 @@
       "props": {}
     },
     "model_pulled": {
-      "_about": "What people want to run, and whether the mirror served it.",
+      "_about": [
+        "What people want to run, and whether the mirror served it.",
+        "preflight / via_suggestion: the bring-your-own-model funnel (enum",
+        "byom_preflight); via_suggestion is sent only as true, when a",
+        "preflight refusal on this install suggested this model in the last",
+        "seven days. Matching happens on the device against one-way digests;",
+        "no suggested name is ever sent."
+      ],
       "props": {
         "model": {"kind": "model_id", "required": true},
         "model_type": {"kind": "enum", "enum": "model_type", "required": true},
         "source": {"kind": "enum", "enum": "pull_source", "required": true},
-        "size_bucket": {"kind": "enum", "enum": "size_bucket", "required": false}
+        "size_bucket": {"kind": "enum", "enum": "size_bucket", "required": false},
+        "preflight": {"kind": "enum", "enum": "byom_preflight", "required": false},
+        "via_suggestion": {"kind": "bool", "required": false}
       }
     },
     "model_pull_failed": {
-      "_about": "_failed twin: same identifying props, all optional, plus error_class.",
+      "_about": [
+        "_failed twin: same identifying props, all optional, plus error_class.",
+        "For a preflight refusal (preflight=refused) only, suggestion and",
+        "support_request record the closed alternative kind and the closed",
+        "outcome of the opt-in support-request offer."
+      ],
       "twin_of": "model_pulled",
       "props": {
         "model": {"kind": "model_id", "required": false},
         "model_type": {"kind": "enum", "enum": "model_type", "required": false},
         "source": {"kind": "enum", "enum": "pull_source", "required": false},
         "size_bucket": {"kind": "enum", "enum": "size_bucket", "required": false},
-        "error_class": {"kind": "enum", "enum": "pull_error_class", "required": true}
+        "error_class": {"kind": "enum", "enum": "pull_error_class", "required": true},
+        "preflight": {"kind": "enum", "enum": "byom_preflight", "required": false},
+        "via_suggestion": {"kind": "bool", "required": false},
+        "suggestion": {
+          "kind": "enum",
+          "enum": "byom_suggestion",
+          "required": false,
+          "only_when": {"preflight": ["refused"]}
+        },
+        "support_request": {
+          "kind": "enum",
+          "enum": "support_request_outcome",
+          "required": false,
+          "only_when": {"preflight": ["refused"]}
+        }
       }
     },
     "model_served": {
-      "_about": "What people actually run.",
+      "_about": [
+        "What people actually run. preflight / via_suggestion: as on",
+        "model_pulled."
+      ],
       "props": {
         "model": {"kind": "model_id", "required": true},
         "model_type": {"kind": "enum", "enum": "model_type", "required": true},
         "auto_selected": {"kind": "bool", "required": true},
-        "quant": {"kind": "enum", "enum": "quant", "required": true}
+        "quant": {"kind": "enum", "enum": "quant", "required": true},
+        "preflight": {"kind": "enum", "enum": "byom_preflight", "required": false},
+        "via_suggestion": {"kind": "bool", "required": false}
       }
     },
     "model_serve_failed": {
@@ -567,7 +660,9 @@
         "decision after prompting and before any installer runs.",
         "failure_stage names the closed startup boundary the failure crossed",
         "(same enum as server_start_state); it is emitted only when the caller",
-        "states it explicitly — telemetry never guesses a stage."
+        "states it explicitly — telemetry never guesses a stage.",
+        "preflight / via_suggestion / suggestion / support_request: the",
+        "bring-your-own-model funnel, exactly as on model_pull_failed."
       ],
       "twin_of": "model_served",
       "props": {
@@ -588,6 +683,20 @@
           "enum": "extra_recovery",
           "required": false,
           "only_when": {"error_class": ["missing_extra"]}
+        },
+        "preflight": {"kind": "enum", "enum": "byom_preflight", "required": false},
+        "via_suggestion": {"kind": "bool", "required": false},
+        "suggestion": {
+          "kind": "enum",
+          "enum": "byom_suggestion",
+          "required": false,
+          "only_when": {"preflight": ["refused"]}
+        },
+        "support_request": {
+          "kind": "enum",
+          "enum": "support_request_outcome",
+          "required": false,
+          "only_when": {"preflight": ["refused"]}
         }
       }
     },
@@ -638,6 +747,28 @@
           "required": false,
           "only_when": {"result": ["failed"]}
         }
+      }
+    },
+    "model_imported": {
+      "_about": [
+        "`rapid-mlx import` published a converted, smoke-tested model. Not",
+        "sent when an identical import already existed (a no-op re-run).",
+        "model is the SOURCE's telemetry_model_id (catalog alias, proven-public",
+        "org/name, '<local>' or '<custom>'), never the import's own name;",
+        "quant is the requested width."
+      ],
+      "props": {
+        "model": {"kind": "model_id", "required": true},
+        "quant": {"kind": "enum", "enum": "quant", "required": true}
+      }
+    },
+    "model_import_failed": {
+      "_about": "_failed twin: same identifying props, all optional, plus error_class.",
+      "twin_of": "model_imported",
+      "props": {
+        "model": {"kind": "model_id", "required": false},
+        "quant": {"kind": "enum", "enum": "quant", "required": false},
+        "error_class": {"kind": "enum", "enum": "import_error_class", "required": true}
       }
     },
     "agent_configured": {

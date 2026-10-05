@@ -120,7 +120,7 @@ def test_stream_overrides_are_the_documented_ones():
         ("shared_wrapper_two_undeclared", "1"),
         ("text_inside_wrapper_after_function", "1"),
     }
-    for (name, size), value in overrides.items():
+    for (name, _size), value in overrides.items():
         case = _case(name)
         assert value["calls"] == case["main_non_stream"]["calls"]
         assert "write_file" not in value["content"]

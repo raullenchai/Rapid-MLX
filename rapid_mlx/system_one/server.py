@@ -110,13 +110,27 @@ def create_app(
         model = request.model or backend.default_model
         started = time.perf_counter()
         try:
-            result = await run_backend(
-                backend.answer,
-                request.state,
-                request.questions,
-                model,
-                request.temperature,
-            )
+            if request.images or request.videos:
+                answer_media = getattr(backend, "answer_media", None)
+                if answer_media is None:
+                    raise ValueError("this decision backend does not support media")
+                result = await run_backend(
+                    answer_media,
+                    request.state,
+                    request.questions,
+                    model,
+                    request.temperature,
+                    request.images,
+                    request.videos,
+                )
+            else:
+                result = await run_backend(
+                    backend.answer,
+                    request.state,
+                    request.questions,
+                    model,
+                    request.temperature,
+                )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc.args[0])) from exc
         except (TypeError, ValueError) as exc:

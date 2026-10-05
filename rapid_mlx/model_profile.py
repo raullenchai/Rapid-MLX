@@ -196,8 +196,9 @@ class ModelProfile:
     # without the user asking.  Independent of the qualification tier above:
     # the tier is a correctness claim, this is the product default.  A
     # verified artifact whose measured speedup is negative for the typical
-    # single-stream user keeps its tier (explicit ``--speculative-config mtp``
-    # still runs the qualified continuous route) but ships default-off (#3115).
+    # single-stream user keeps its tier (an explicit
+    # ``{"method":"mtp","continuous_batching":true}`` still runs the qualified
+    # continuous route) but ships default-off (#3115).
     mtp_default_enabled: bool = True
     default_max_tokens: int | None = None  # Per-model default when user omits
     # Bench-verified service prefill chunk.  This is deliberately an explicit
@@ -266,11 +267,11 @@ class ModelProfile:
     # PFlash long-prompt compression eligibility (#287). Default
     # ``"unknown"`` keeps the engine's PFlash mode at ``"off"`` so a
     # brand-new alias never silently enables compression on an
-    # unbenched architecture. ``"verified"`` flips the engine's default
-    # to ``"always"`` — used only for aliases where we've measured both
-    # the TTFT speedup AND the needle-recall floor (Qwen3.5 / Qwen3.6
-    # families per #287). Explicit CLI ``--pflash {off,auto,always}``
-    # still wins; this only changes the no-flag default.
+    # unbenched architecture. ``"verified"`` marks aliases where we've
+    # measured both the TTFT speedup AND the needle-recall floor (Qwen3.5 /
+    # Qwen3.6 families per #287), so an explicit ``--pflash auto|always``
+    # opt-in is bench-backed. PFlash stays off by default for every alias
+    # (#4092).
     pflash_tier: str = "unknown"
     # Per-alias PFlash keep_ratio override (#287 follow-up). ``None`` means
     # "use the engine default 0.20". Set to a float in (0, 1] when an alias

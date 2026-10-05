@@ -9,8 +9,8 @@ Covers the ``rapid_mlx/first_run.py`` helpers and their three wiring points in
     TTY; the standard download gate is left untouched — the ~3.1 GB starter is
     under its 10 GiB confirm threshold — and non-interactive sessions fall
     through to that gate exactly as before this feature).
-  * P0-2 — bare ``rapid-mlx`` in an interactive terminal → nameplate + exit 0;
-    non-interactive → unchanged help + exit 1.
+  * P0-2 — bare ``rapid-mlx`` now lives in ``rapid_mlx/front_door.py`` and is
+    covered by ``tests/test_front_door.py``.
   * P0-3 — one-time "connect your agent" tip after the first chat that
     produced a response (marker + gating helpers).
 
@@ -22,8 +22,6 @@ from __future__ import annotations
 
 import sys
 from unittest import mock
-
-import pytest
 
 import rapid_mlx.cli as cli
 import rapid_mlx.first_run as fr
@@ -119,7 +117,7 @@ def test_cached_known_aliases_fail_silent(monkeypatch):
 
 
 # ======================================================================
-# P0-2/P0-3: agent detection
+# Front door / P0-3: agent detection
 # ======================================================================
 class _Adapter:
     def __init__(self, detected):
@@ -161,77 +159,6 @@ def test_detected_agents_detect_error_is_safe(monkeypatch):
 
     monkeypatch.setattr("rapid_mlx.launch.ADAPTERS", {"claude-code": _Raiser()})
     assert fr.detected_agents() == []
-
-
-# ======================================================================
-# P0-2: nameplate
-# ======================================================================
-def test_nameplate_cold_cache_no_agent(monkeypatch):
-    monkeypatch.setattr(fr, "cached_known_aliases", lambda: [])
-    monkeypatch.setattr(fr, "preferred_agent", lambda: None)
-    monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: 8.0)
-    out = fr.build_nameplate("9.9.9")
-    assert out.startswith(fr._IDENTITY)
-    assert "8 GB RAM detected" in out
-    assert "Recommended model: lfm2.5-1b-4bit" in out
-    assert "rapid-mlx chat lfm2.5-1b-4bit" in out
-    assert "the server starts automatically" in out
-    assert "Use it from your coding agent (separate stable server on :8000):" in out
-    assert "rapid-mlx serve lfm2.5-1b-4bit --port 8000" in out
-    assert "rapid-mlx launch --all --model lfm2.5-1b-4bit" in out
-    assert "serve exits if :8000 is busy; use another port in both commands:" in out
-    assert "rapid-mlx serve lfm2.5-1b-4bit --port 8001" in out
-    assert (
-        "rapid-mlx launch --all --model lfm2.5-1b-4bit "
-        "--server-url http://127.0.0.1:8001"
-    ) in out
-    assert out.count("rapid-mlx launch") == 2
-    assert out.endswith("Docs: https://rapidmlx.com/docs/")
-
-
-def test_nameplate_with_cache_and_agent(monkeypatch):
-    monkeypatch.setattr(
-        fr, "cached_known_aliases", lambda: [("qwen3.8-27b-4bit", 10.0)]
-    )
-    monkeypatch.setattr(fr, "preferred_agent", lambda: "claude-code")
-    monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: 32.0)
-    out = fr.build_nameplate("9.9.9")
-    assert "32 GB RAM detected" in out
-    assert "Recommended model: qwen3.8-27b-4bit (already cached)" in out
-    assert "rapid-mlx chat qwen3.8-27b-4bit" in out
-    assert "rapid-mlx serve qwen3.8-27b-4bit --port 8000" in out
-    assert (
-        "rapid-mlx launch claude-code --model qwen3.8-27b-4bit  # detected ✓"
-    ) in out
-    assert "--server-url http://127.0.0.1:8001" in out
-    assert "rapid-mlx launch --all" not in out
-    assert out.count("rapid-mlx launch") == 2
-
-
-def test_nameplate_starter_cached_says_already_downloaded(monkeypatch):
-    monkeypatch.setattr(
-        fr, "cached_known_aliases", lambda: [(fr.FIRST_RUN_MODEL, 10.0)]
-    )
-    monkeypatch.setattr(fr, "preferred_agent", lambda: None)
-    monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: 16.0)
-    out = fr.build_nameplate("9.9.9")
-    assert "already cached" in out
-    assert "launch --all" in out
-
-
-def test_nameplate_ram_probe_failure_is_explicit_and_conservative(monkeypatch):
-    monkeypatch.setattr(
-        fr, "cached_known_aliases", lambda: [("lfm2.5-2.6b-4bit", 10.0)]
-    )
-    monkeypatch.setattr(fr, "preferred_agent", lambda: None)
-    monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: 0.0)
-
-    out = fr.build_nameplate("9.9.9")
-
-    assert "RAM detection unavailable" in out
-    assert "0 GB RAM detected" not in out
-    assert "Recommended model: lfm2.5-1b-4bit" in out
-    assert "already cached" not in out
 
 
 # ======================================================================
@@ -464,83 +391,3 @@ def test_explicit_uncached_model_still_confirms(hub_online_env):
     # Control: an explicitly-typed, uncached model DOES hit the confirm gate.
     confirm, _dispatched = _run_main_gate_probe(["chat", "qwen3.5-9b-4bit"])
     assert confirm.called is True
-
-
-# ======================================================================
-# main() wiring — P0-2 bare-command nameplate branch
-# ======================================================================
-def _run_bare(*, stdout_tty, stdin_tty):
-    with (
-        mock.patch(
-            "rapid_mlx.first_run.build_nameplate", return_value="NAMEPLATE-OK"
-        ) as np,
-        mock.patch(
-            "rapid_mlx._version_check.prompt_upgrade_if_available",
-            return_value=False,
-        ),
-        mock.patch.object(sys, "argv", ["rapid-mlx"]),
-        mock.patch.object(sys.stdout, "isatty", return_value=stdout_tty),
-        mock.patch.object(sys.stdin, "isatty", return_value=stdin_tty),
-        pytest.raises(SystemExit) as exc,
-    ):
-        cli.main()
-    return np, exc.value.code
-
-
-def test_bare_command_interactive_shows_nameplate(capsys):
-    np, code = _run_bare(stdout_tty=True, stdin_tty=True)
-    assert np.called is True
-    assert code == 0
-    assert "NAMEPLATE-OK" in capsys.readouterr().out
-
-
-def test_bare_command_interactive_welcome_is_offline_and_load_free(monkeypatch, capsys):
-    monkeypatch.setattr(fr, "cached_known_aliases", lambda: [])
-    monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: 18.0)
-    monkeypatch.setattr(
-        cli,
-        "_ensure_model_downloaded",
-        lambda *_args, **_kwargs: pytest.fail("bare welcome tried to load a model"),
-    )
-    monkeypatch.setattr(
-        "socket.socket.connect",
-        lambda *_args, **_kwargs: pytest.fail("bare welcome tried the network"),
-    )
-    monkeypatch.setattr(sys, "argv", ["rapid-mlx"])
-    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
-    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
-
-    with pytest.raises(SystemExit) as exc:
-        cli.main()
-
-    assert exc.value.code == 0
-    out = capsys.readouterr().out
-    assert fr._IDENTITY in out
-    assert "Recommended model: qwen3.5-4b-4bit" in out
-    assert "rapid-mlx chat qwen3.5-4b-4bit" in out
-    from rapid_mlx.model_aliases import list_aliases
-
-    assert "qwen3.5-4b-4bit" in list_aliases()
-
-
-def test_bare_command_non_tty_falls_back_to_help(capsys):
-    np, code = _run_bare(stdout_tty=False, stdin_tty=True)
-    assert np.called is False  # nameplate never built off a TTY
-    assert code == 1  # unchanged: help + exit 1
-    out = capsys.readouterr().out
-    assert fr._IDENTITY in out
-    assert "usage: rapid-mlx" in out
-    assert "Commands" in out
-
-
-def test_top_level_help_keeps_full_argparse_structure(monkeypatch, capsys):
-    monkeypatch.setattr(sys, "argv", ["rapid-mlx", "--help"])
-    with pytest.raises(SystemExit) as exc:
-        cli.main()
-    assert exc.value.code == 0
-    out = capsys.readouterr().out
-    assert out.startswith("usage: rapid-mlx")
-    assert fr._IDENTITY in out
-    assert "Commands" in out
-    for command in ("serve", "chat", "pull", "models", "launch", "doctor"):
-        assert command in out

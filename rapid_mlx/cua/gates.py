@@ -168,8 +168,10 @@ def check_plan_consents(plan: dict, target_label: str = "") -> None:
 
 
 def looks_like_sign_in(snapshot: dict) -> bool:
+    # Password fields are AXTextField with subrole AXSecureTextField; the
+    # role alone never says "secure".
     parts = [
-        f"{e.get('label', '')} {e.get('role', '')}"
+        f"{e.get('label', '')} {e.get('role', '')} {e.get('subrole', '')}"
         for e in snapshot.get("elements", [])
     ]
     haystack = " ".join(parts)

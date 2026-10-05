@@ -64,6 +64,23 @@ def _never_raise(func: Callable[_P, None]) -> Callable[_P, None]:
     return wrapped
 
 
+def _byom_props(model_ref: object, *, failed: bool) -> dict[str, object]:
+    """Closed BYOM funnel props for this invocation's model (see byom_funnel)."""
+    from rapid_mlx.telemetry.byom_funnel import props_for
+
+    return props_for(model_ref, failed=failed)
+
+
+def _note_emitted(
+    props: dict[str, object], accepted: object, *, passthrough: bool = False
+) -> object:
+    """Let the BYOM funnel consume a suggestion only for an accepted event."""
+    from rapid_mlx.telemetry.byom_funnel import note_emitted
+
+    note_emitted(props, accepted)
+    return accepted if passthrough else None
+
+
 def size_bucket(size_bytes: int | None) -> str:
     """Map checkpoint bytes to the registry's closed GiB scale."""
     if (
@@ -389,14 +406,15 @@ def emit_model_pulled(
 
     if source not in ("mirror", "hf"):
         return
-    props = {
+    props: dict[str, object] = {
         "model": telemetry_model_id(model_ref),
         "model_type": model_type(model_ref),
         "source": source,
     }
     if size_bytes is not None:
         props["size_bucket"] = size_bucket(size_bytes)
-    track("model_pulled", props)
+    props.update(_byom_props(model_ref, failed=False))
+    _note_emitted(props, track("model_pulled", props))
 
 
 @_never_raise
@@ -418,7 +436,45 @@ def emit_model_pull_failed(
         props["source"] = source
     if size_bytes is not None:
         props["size_bucket"] = size_bucket(size_bytes)
-    track("model_pull_failed", props)
+    if model_ref is not None:
+        props.update(_byom_props(model_ref, failed=True))
+    _note_emitted(props, track("model_pull_failed", props))
+
+
+def _import_props(source: object, bits: object) -> dict[str, object]:
+    from rapid_mlx.telemetry.model_id import telemetry_model_id
+    from rapid_mlx.telemetry.quant import quant_token
+
+    props: dict[str, object] = {}
+    if source is not None:
+        # The SOURCE's identity under the model_id policy, never the import's
+        # own (user-chosen) name.
+        props["model"] = telemetry_model_id(source)
+    if isinstance(bits, int) and not isinstance(bits, bool):
+        quant = quant_token(f"{bits}bit")
+        if quant != "unknown":
+            props["quant"] = quant
+    return props
+
+
+@_never_raise
+def emit_model_imported(source: object, bits: object) -> None:
+    from rapid_mlx.telemetry.track import track
+
+    props = _import_props(source, bits)
+    if "model" in props and "quant" in props:
+        track("model_imported", props)
+
+
+@_never_raise
+def emit_model_import_failed(error_class: object, source: object, bits: object) -> None:
+    from rapid_mlx.telemetry.registry import load_registry
+    from rapid_mlx.telemetry.track import track
+
+    allowed = load_registry()["enums"]["import_error_class"]["values"]
+    props = _import_props(source, bits)
+    props["error_class"] = error_class if error_class in allowed else "other"
+    track("model_import_failed", props)
 
 
 def _quant_for_ref(alias_or_path: object) -> str:
@@ -454,6 +510,7 @@ def _serve_props(
         "model_type": model_type(alias_or_path),
         "auto_selected": bool(auto_selected),
         "quant": _quant_for_ref(alias_or_path),
+        **_byom_props(alias_or_path, failed=False),
     }
 
 
@@ -472,6 +529,7 @@ def _record_model_served(
             props = _serve_props(engine, alias_or_path, auto_selected)
             nth = store.note_model_served(str(props["model"]))
             accepted = track.track("model_served", props, nth_model_served=nth or None)
+            _note_emitted(props, accepted)
     except Exception:
         pass
     finally:
@@ -818,6 +876,7 @@ def emit_model_serve_failed(
         props["model_type"] = model_type(alias_or_path)
         props["auto_selected"] = bool(auto_selected)
         props["quant"] = _quant_for_ref(alias_or_path)
+        props.update(_byom_props(alias_or_path, failed=True))
     # Build and validate every potentially-failing property before claiming the
     # one-shot latch. A rejected event must not suppress a later valid failure
     # event from this process.
@@ -841,7 +900,9 @@ def emit_model_serve_failed(
         key,
         # Consent may change after this decision, just as it may while an
         # already-queued event waits for the sender thread. Do not re-decide.
-        on_claim=lambda: track_module._enqueue_accepted(accepted),
+        on_claim=lambda: _note_emitted(
+            props, track_module._enqueue_accepted(accepted), passthrough=True
+        ),
     )
 
 

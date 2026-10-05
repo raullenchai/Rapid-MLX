@@ -1,0 +1,68 @@
+{
+ "anthropic": {
+  "body": "{\"id\":\"X\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"test-model\",\"content\":[{\"type\":\"text\",\"text\":\"hi there\"}],\"stop_reason\":\"end_turn\",\"usage\":{\"input_tokens\":40000,\"output_tokens\":2}}",
+  "headers": {
+   "content-type": "application/json"
+  },
+  "status": 200
+ },
+ "anthropic_stream": {
+  "body": "event: message_start\ndata: {\"type\": \"message_start\", \"message\": {\"id\":\"X\", \"type\": \"message\", \"role\": \"assistant\", \"model\": \"test-model\", \"content\": [], \"stop_reason\": null, \"stop_sequence\": null, \"usage\": {\"input_tokens\": 0, \"output_tokens\": 0}}}\n\nevent: content_block_start\ndata: {\"type\": \"content_block_start\", \"index\": 0, \"content_block\": {\"type\": \"text\", \"text\": \"\"}}\n\nevent: content_block_delta\ndata: {\"type\": \"content_block_delta\", \"index\": 0, \"delta\": {\"type\": \"text_delta\", \"text\": \"hi\"}}\n\nevent: content_block_delta\ndata: {\"type\": \"content_block_delta\", \"index\": 0, \"delta\": {\"type\": \"text_delta\", \"text\": \" there\"}}\n\nevent: content_block_stop\ndata: {\"type\": \"content_block_stop\", \"index\": 0}\n\nevent: message_delta\ndata: {\"type\": \"message_delta\", \"delta\": {\"stop_reason\": \"end_turn\", \"stop_sequence\": null}, \"usage\": {\"input_tokens\": 40000, \"output_tokens\": 2}}\n\nevent: message_stop\ndata: {\"type\": \"message_stop\"}\n\n",
+  "headers": {
+   "cache-control": "no-cache, no-transform",
+   "connection": "keep-alive",
+   "content-type": "text/event-stream; charset=utf-8",
+   "x-accel-buffering": "no"
+  },
+  "status": 200
+ },
+ "chat": {
+  "body": "{\"id\":\"X\",\"object\":\"chat.completion\",\"created\":\"X\",\"model\":\"test-model\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"hi there\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":40000,\"completion_tokens\":2,\"total_tokens\":40002}}",
+  "headers": {
+   "content-type": "application/json"
+  },
+  "status": 200
+ },
+ "chat_stream": {
+  "body": "data: {\"id\":\"X\",\"object\":\"chat.completion.chunk\",\"created\":\"X\",\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}\n\ndata: {\"id\":\"X\",\"object\":\"chat.completion.chunk\",\"created\":\"X\",\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\ndata: {\"id\":\"X\",\"object\":\"chat.completion.chunk\",\"created\":\"X\",\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\" there\"},\"finish_reason\":\"stop\"}]}\n\ndata: {\"id\":\"X\",\"object\":\"chat.completion.chunk\",\"created\":\"X\",\"model\":\"test-model\",\"choices\":[],\"usage\":{\"prompt_tokens\":40000,\"completion_tokens\":2,\"total_tokens\":40002}}\n\ndata: [DONE]\n\n",
+  "headers": {
+   "cache-control": "no-cache, no-transform",
+   "content-type": "text/event-stream; charset=utf-8",
+   "x-accel-buffering": "no"
+  },
+  "status": 200
+ },
+ "completions": {
+  "body": "{\"id\":\"X\",\"object\":\"text_completion\",\"created\":\"X\",\"model\":\"test-model\",\"choices\":[{\"index\":0,\"text\":\"hi there\",\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":40000,\"completion_tokens\":2,\"total_tokens\":40002}}",
+  "headers": {
+   "content-type": "application/json"
+  },
+  "status": 200
+ },
+ "completions_stream": {
+  "body": "data: {\"id\":\"X\", \"object\": \"text_completion\", \"created\":\"X\", \"model\": \"test-model\", \"choices\": [{\"index\": 0, \"text\": \"hi\", \"finish_reason\": null}]}\n\ndata: {\"id\":\"X\", \"object\": \"text_completion\", \"created\":\"X\", \"model\": \"test-model\", \"choices\": [{\"index\": 0, \"text\": \" there\", \"finish_reason\": \"stop\"}]}\n\ndata: [DONE]\n\n",
+  "headers": {
+   "cache-control": "no-cache, no-transform",
+   "content-type": "text/event-stream; charset=utf-8",
+   "x-accel-buffering": "no"
+  },
+  "status": 200
+ },
+ "responses": {
+  "body": "{\"id\":\"X\",\"object\":\"response\",\"created_at\":\"X\",\"model\":\"test-model\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"id\":\"X\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hi there\",\"annotations\":[]}]}],\"usage\":{\"input_tokens\":40000,\"output_tokens\":2,\"total_tokens\":40002,\"input_tokens_details\":{\"cached_tokens\":0,\"cache_write_tokens\":0},\"output_tokens_details\":{\"reasoning_tokens\":0}},\"parallel_tool_calls\":false,\"tool_choice\":\"auto\",\"tools\":[]}",
+  "headers": {
+   "content-type": "application/json"
+  },
+  "status": 200
+ },
+ "responses_stream": {
+  "body": "event: response.created\ndata: {\"type\": \"response.created\", \"response\": {\"id\":\"X\", \"object\": \"response\", \"created_at\":\"X\", \"status\": \"in_progress\", \"model\": \"test-model\", \"output\": [], \"parallel_tool_calls\": false, \"tool_choice\": \"auto\", \"tools\": []}, \"sequence_number\": 0}\n\nevent: response.in_progress\ndata: {\"type\": \"response.in_progress\", \"response\": {\"id\":\"X\", \"object\": \"response\", \"created_at\":\"X\", \"status\": \"in_progress\", \"model\": \"test-model\", \"output\": [], \"parallel_tool_calls\": false, \"tool_choice\": \"auto\", \"tools\": []}, \"sequence_number\": 1}\n\nevent: response.in_progress\ndata: {\"type\": \"response.in_progress\", \"response\": {\"id\":\"X\", \"object\": \"response\", \"created_at\":\"X\", \"status\": \"in_progress\", \"model\": \"test-model\", \"output\": [], \"parallel_tool_calls\": false, \"tool_choice\": \"auto\", \"tools\": []}, \"sequence_number\": 2}\n\nevent: response.output_item.added\ndata: {\"type\": \"response.output_item.added\", \"output_index\": 0, \"item\": {\"type\": \"reasoning\", \"id\":\"X\", \"status\": \"in_progress\", \"summary\": []}, \"sequence_number\": 3}\n\nevent: response.output_item.done\ndata: {\"type\": \"response.output_item.done\", \"output_index\": 0, \"item\": {\"type\": \"reasoning\", \"id\":\"X\", \"status\": \"completed\", \"summary\": []}, \"sequence_number\": 4}\n\nevent: response.output_item.added\ndata: {\"type\": \"response.output_item.added\", \"output_index\": 1, \"item\": {\"type\": \"message\", \"id\":\"X\", \"status\": \"in_progress\", \"role\": \"assistant\", \"content\": []}, \"sequence_number\": 5}\n\nevent: response.content_part.added\ndata: {\"type\": \"response.content_part.added\", \"item_id\":\"X\", \"output_index\": 1, \"content_index\": 0, \"part\": {\"type\": \"output_text\", \"text\": \"\", \"annotations\": []}, \"sequence_number\": 6}\n\nevent: response.output_text.delta\ndata: {\"type\": \"response.output_text.delta\", \"item_id\":\"X\", \"output_index\": 1, \"content_index\": 0, \"delta\": \"hi\", \"logprobs\": [], \"sequence_number\": 7}\n\nevent: response.output_text.delta\ndata: {\"type\": \"response.output_text.delta\", \"item_id\":\"X\", \"output_index\": 1, \"content_index\": 0, \"delta\": \" there\", \"logprobs\": [], \"sequence_number\": 8}\n\nevent: response.output_text.done\ndata: {\"type\": \"response.output_text.done\", \"item_id\":\"X\", \"output_index\": 1, \"content_index\": 0, \"text\": \"hi there\", \"logprobs\": [], \"sequence_number\": 9}\n\nevent: response.content_part.done\ndata: {\"type\": \"response.content_part.done\", \"item_id\":\"X\", \"output_index\": 1, \"content_index\": 0, \"part\": {\"type\": \"output_text\", \"text\": \"hi there\", \"annotations\": []}, \"sequence_number\": 10}\n\nevent: response.output_item.done\ndata: {\"type\": \"response.output_item.done\", \"output_index\": 1, \"item\": {\"type\": \"message\", \"id\":\"X\", \"status\": \"completed\", \"role\": \"assistant\", \"content\": [{\"type\": \"output_text\", \"text\": \"hi there\", \"annotations\": []}]}, \"sequence_number\": 11}\n\nevent: response.completed\ndata: {\"type\": \"response.completed\", \"response\": {\"id\":\"X\", \"object\": \"response\", \"created_at\":\"X\", \"status\": \"completed\", \"model\": \"test-model\", \"output\": [{\"type\": \"reasoning\", \"id\":\"X\", \"status\": \"completed\", \"summary\": []}, {\"type\": \"message\", \"id\":\"X\", \"status\": \"completed\", \"role\": \"assistant\", \"content\": [{\"type\": \"output_text\", \"text\": \"hi there\", \"annotations\": []}]}], \"usage\": {\"input_tokens\": 40000, \"output_tokens\": 2, \"total_tokens\": 40002, \"input_tokens_details\": {\"cached_tokens\": 0, \"cache_write_tokens\": 0}, \"output_tokens_details\": {\"reasoning_tokens\": 0}}, \"parallel_tool_calls\": false, \"tool_choice\": \"auto\", \"tools\": []}, \"sequence_number\": 12}\n\n",
+  "headers": {
+   "cache-control": "no-cache, no-transform",
+   "connection": "keep-alive",
+   "content-type": "text/event-stream; charset=utf-8",
+   "x-accel-buffering": "no"
+  },
+  "status": 200
+ }
+}

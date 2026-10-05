@@ -209,7 +209,7 @@ class CUARun:
             return None
         return (
             str(app.get("pid")),
-            str(app.get("bundle_id", "")),
+            str(app.get("bundleId", "")),
             str(app.get("name", "")),
             str(snapshot.get("window_index")),
             str(snapshot.get("window_id", "")),
@@ -267,6 +267,9 @@ class CUARun:
         self, *, screenshot: bool, transient_baseline: set[str] | None = None
     ) -> dict:
         kwargs: dict[str, Any] = {"screenshot": screenshot, "use_cache": False}
+        if not backend.observation_activates(self.expected_app):
+            # Background hands: watching must not steal the user's focus.
+            kwargs["activate"] = False
         if self.window_id is not None:
             kwargs["window_id"] = self.window_id
             if self._trusted_transient_window_id is not None:
@@ -960,7 +963,9 @@ class CUARun:
                 if finder_rename_fill:
                     fresh = snapshot
                 else:
-                    if self.window_id is not None:
+                    if self.window_id is not None and backend.observation_activates(
+                        self.expected_app
+                    ):
                         backend.raise_selected_window(self.backend_app, snapshot)
                     fresh = self._get_app_state(screenshot=not planner.text_only)
             except ComputerUseError as exc:

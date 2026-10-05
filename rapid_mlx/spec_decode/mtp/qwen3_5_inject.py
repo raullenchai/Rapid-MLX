@@ -1098,6 +1098,22 @@ def inject_mtp_support(
                 logits = self.lm_head(mtp_out)
             return (logits, mtp_out) if return_hidden else logits
 
+        def mtp_hidden_forward(self, hidden_states, next_token_ids, mtp_cache):
+            """``mtp_forward`` without the vocabulary projection."""
+            return self.mtp(
+                hidden_states,
+                next_token_ids,
+                self.model.embed_tokens,
+                mtp_cache,
+                concat_order=mtp_concat_order,
+            )
+
+        def mtp_logits(self, mtp_hidden):
+            """The shared vocabulary projection ``mtp_forward`` applies."""
+            if self.args.tie_word_embeddings:
+                return self.model.embed_tokens.as_linear(mtp_hidden)
+            return self.lm_head(mtp_hidden)
+
         def mtp_greedy(self, hidden_states, next_token_ids, mtp_cache):
             """Return greedy MTP ids without materializing full-vocab logits."""
             if self.args.tie_word_embeddings:
@@ -1194,6 +1210,16 @@ def validate_mtp_support(model: Any) -> bool:
         return False
     if not callable(getattr(inner, "make_mtp_cache", None)):
         logger.warning("[mtp.validate] model.make_mtp_cache is missing.")
+        return False
+    # The split head/projection seam is optional, but only as a pair: one half
+    # alone means a partial injection, not a deliberate absence.
+    if callable(getattr(inner, "mtp_hidden_forward", None)) != callable(
+        getattr(inner, "mtp_logits", None)
+    ):
+        logger.warning(
+            "[mtp.validate] split MTP seam is partial "
+            "(mtp_hidden_forward / mtp_logits must be installed together)."
+        )
         return False
     sig = inspect.signature(type(inner).__call__)
     if "return_hidden" not in sig.parameters:

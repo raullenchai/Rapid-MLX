@@ -40,7 +40,7 @@ def register(subparsers) -> None:
     wired. We keep the whole parser here (not in ``cli.py``) so the
     sub-command surface lives with its implementation.
     """
-    from ..cli import _port_arg
+    from ..cli_parser import _port_arg
 
     p = subparsers.add_parser(
         "service",

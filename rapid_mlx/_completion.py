@@ -16,7 +16,7 @@ Two layers of defense for the completion hot path:
    uses ASCII identifier characters, so this is purely defense in
    depth against a supply-chain swap or a hand-edited dev copy.
 
-Wired in ``rapid_mlx/cli.py`` and ``rapid_mlx/share/cli.py`` via::
+Wired in ``rapid_mlx/cli_parser.py`` and ``rapid_mlx/share/cli.py`` via::
 
     arg = parser.add_argument("model", ...)
     arg.completer = alias_completer

@@ -401,7 +401,7 @@ class PrimaryModelLifecycle:
                     self._set_state("ready")
                     self.touch()
                     raise
-                except Exception as exc:
+                except Exception:
                     # Cache persistence is best-effort: losing this cache is
                     # preferable to silently defeating the operator's memory
                     # policy and retaining the full model indefinitely.

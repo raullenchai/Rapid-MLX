@@ -311,10 +311,13 @@ def test_failed_twins_exist_and_mirror_their_success_event(registry):
                 # Failure-only diagnostic context; never part of the success
                 # identity. ``extra``/``extra_recovery`` describe a missing
                 # optional runtime, ``failure_stage`` the startup boundary
-                # (model_serve_failed only).
+                # (model_serve_failed only). ``suggestion``/``support_request``
+                # describe a BYOM preflight refusal (preflight=refused only).
                 "extra",
                 "extra_recovery",
                 "failure_stage",
+                "suggestion",
+                "support_request",
             }
         }
         assert set(identifying) == set(success_props), (
@@ -332,7 +335,12 @@ def test_failed_twins_exist_and_mirror_their_success_event(registry):
 def test_every_success_event_with_a_failure_mode_has_a_twin(registry):
     events = _specs(registry["events"])
     twinned = {e["twin_of"] for e in events.values() if "twin_of" in e}
-    for expected in ("model_pulled", "model_served", "agent_configured"):
+    for expected in (
+        "model_pulled",
+        "model_served",
+        "model_imported",
+        "agent_configured",
+    ):
         assert expected in twinned, f"{expected} lost its _failed twin"
 
 

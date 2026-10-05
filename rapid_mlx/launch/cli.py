@@ -239,6 +239,18 @@ def launch_command(args: argparse.Namespace) -> None:
     # if any single client failed even when others succeeded — the user
     # gets the partial-success line plus a final summary.
     failures: list[str] = []
+    claude_context_length = None
+    if "claude-code" in targets:
+        from rapid_mlx.agents.adapter import fetch_context_window
+        from rapid_mlx.run.cli import _cached_context_window
+
+        # --start-server patches the client before the detached server boots;
+        # probing it now only adds a guaranteed timeout to first run.
+        if not args.start_server:
+            claude_context_length = fetch_context_window(
+                f"{server_url.rstrip('/').removesuffix('/v1')}/v1", model
+            )
+        claude_context_length = claude_context_length or _cached_context_window(model)
     for name in targets:
         adapter = ADAPTERS[name]
         if not adapter.detect():
@@ -256,6 +268,8 @@ def launch_command(args: argparse.Namespace) -> None:
             }
             if api_key:
                 config_kwargs["api_key"] = api_key
+            if name == "claude-code":
+                config_kwargs["context_length"] = claude_context_length
             path = adapter.write_or_patch_config(**config_kwargs)
         except Exception as exc:
             print(f"  {name}: FAILED — {exc}", file=sys.stderr)
@@ -301,7 +315,7 @@ def register(subparsers) -> None:
     # port validator so `launch --port 99999` argparse-rejects up front
     # instead of failing inside the detached child after the parent has
     # already written a PID and printed "Started".
-    from ..cli import _port_arg
+    from ..cli_parser import _port_arg
 
     p = subparsers.add_parser(
         "launch",

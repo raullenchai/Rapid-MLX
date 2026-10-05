@@ -980,6 +980,26 @@ def test_attach_first_class_template_fetch_context(monkeypatch, capsys):
     assert "Configured Claude Code" in out
 
 
+def test_attach_claude_fetches_context_without_template_placeholder(monkeypatch):
+    args = _make_args(yes=True)
+    prof = _first_class_profile()
+    prof.config = _FakeCfg(template=None, config_type="env")
+
+    import rapid_mlx.agents.setup as setup_mod
+    from rapid_mlx.agents import adapter as ad
+
+    monkeypatch.setattr(ad, "fetch_context_window", lambda *_args: 131072)
+    planned = {}
+    monkeypatch.setattr(
+        setup_mod,
+        "build_setup_plan",
+        lambda *a, **k: planned.update(k=k) or _SetupPlanFake(changed=False),
+    )
+
+    assert run_cli._attach_and_configure("http://b", "m", prof, args) == 0
+    assert planned["k"]["context_length"] == 131072
+
+
 def test_attach_first_class_context_fetch_fails(monkeypatch, capsys):
     """A failed context-length fetch degrades gracefully (context_length=None)."""
     args = _make_args(yes=True)
