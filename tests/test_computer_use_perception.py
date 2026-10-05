@@ -1933,7 +1933,7 @@ def test_diffs_skip_browser_noise_and_show_where_long_labels_differ(session, scr
             E("tab", "AXRadioButton", "Shop", web=False),
             E("hover", "AXRadioButton", "Shop - Memory usage - 160 MB"),
             E("ext", "AXPopUpButton", "Grammarly has access to this site"),
-            E("p", "AXStaticText", long_old),
+            E("p", "AXStaticText", long_old, web=True),
             E("gone", "AXLink", "Deals"),
         ]
     )
@@ -1943,7 +1943,7 @@ def test_diffs_skip_browser_noise_and_show_where_long_labels_differ(session, scr
             E("tab", "AXRadioButton", "Mart", web=False),
             E("hover", "AXRadioButton", "Shop - Memory usage - 171 MB"),
             E("ext", "AXPopUpButton", "Grammarly wants access to this site"),
-            E("p", "AXStaticText", long_new),
+            E("p", "AXStaticText", long_new, web=True),
             E("new", "AXLink", "Offers"),
         ]
     )
@@ -1954,10 +1954,20 @@ def test_diffs_skip_browser_noise_and_show_where_long_labels_differ(session, scr
     assert "Mart" not in joined
     assert 'label "…rade A — $7.49" -> "…rade A — $8.99"' in joined
     # A row that was new when last seen is shown removed without the marker.
-    screen.show([E("p", "AXStaticText", long_new)])
+    screen.show([E("p", "AXStaticText", long_new, web=True)])
     gone = session.observe("Chrome", "cg:1")
     assert any(line.startswith("- e") and "Offers" in line for line in gone.changes)
     assert not any(line.startswith("- *") for line in gone.changes)
+    # A native app's radio buttons and tabs are its own: their changes count.
+    native = [
+        E("r1", "AXRadioButton", "Light", states=("checked",), web=False),
+        E("r2", "AXTab", "General", web=False),
+    ]
+    screen.show(native, wid="cg:2")
+    session.observe("Settings", "cg:2")
+    native[0]["states"] = ["unchecked"]
+    native[1]["label"] = "Advanced"
+    assert session.observe("Settings", "cg:2").change_counts == (0, 0, 2)
     assert perception._where_differ("abc", "abd") == ("abc", "abd")
     assert perception._where_differ("x" * 45, "x" * 46, 40) == (
         "…" + "x" * 10,
