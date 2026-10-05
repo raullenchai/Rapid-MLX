@@ -13019,11 +13019,30 @@ def agents_command(args):
             print(f"\n  {summary}")
             print("\n  Dry run only; nothing was written.\n")
             return
+        report = None
+        if profile.name == "codex" and cfg.type == "toml" and cfg.path:
+            from rapid_mlx.agents.adapter import codex_setup_report
+
+            try:
+                report = codex_setup_report(profile, args.agent_version)
+            except (OSError, ValueError) as exc:
+                print(
+                    f"\n  Configuration was saved, but Codex config verification failed: {exc}\n"
+                )
+                sys.exit(1)
         if summary.startswith("Already configured"):
             print(f"\n  {profile.display_name} is already configured.")
         else:
             print(f"\n  {profile.display_name} configured!")
         print(f"  {summary}")
+        if report:
+            print(f"  {report}")
+            if args.no_check:
+                print(
+                    "  Connection check skipped (--no-check); no live model was verified."
+                )
+            else:
+                print(f"  Connection check passed (advertised model: {advertised}).")
         print()
         return
 

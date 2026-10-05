@@ -489,7 +489,11 @@ def verify_server(
         raise RuntimeError(
             f"server does not advertise model {expected_model!r} (found: {', '.join(ids)})"
         )
-    return ids[0]
+    return (
+        expected_model
+        if expected_model != "default" and expected_model in ids
+        else ids[0]
+    )
 
 
 def confirm_plan(plan: SetupPlan) -> bool:
