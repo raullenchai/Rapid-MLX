@@ -379,6 +379,19 @@ def test_remembered_elements_are_bounded(session, screen, monkeypatch):
     }
 
 
+def test_pruning_keeps_the_refs_other_windows_still_show(session, screen, monkeypatch):
+    monkeypatch.setattr(perception, "MAX_REMEMBERED_ELEMENTS", 3)
+    screen.show([E("o", "AXLink", "Other")], wid="cg:2")
+    other = session.observe("Chrome", "cg:2")
+    screen.show([E(f"k{i}", "AXLink", f"L{i}") for i in range(2)])
+    session.observe("Chrome", "cg:1")
+    screen.show([E(f"n{i}", "AXLink", f"N{i}") for i in range(2)])
+    obs = session.observe("Chrome", "cg:1")
+    assert {entry[0] for entry in session._refs.values()} == {
+        row.ref for row in [*obs.rows, *other.rows]
+    }
+
+
 def test_stale_ref_is_refused_with_the_latest_observations(session, screen):
     with pytest.raises(ComputerUseError) as err:
         session.act("click", "e99")
@@ -1101,6 +1114,39 @@ def test_open_url_without_a_load_is_unverifiable_and_needs_a_bar(
     assert err.value.code == "invalid_argument"
 
 
+def test_open_url_polls_until_the_page_loads(session, screen, monkeypatch):
+    screen.show([E("bar", "AXTextField", "Address and search bar")], title="New Tab")
+    session.observe("Chrome", "cg:1")
+    # The page shows only after open_url's load loop has slept once.
+    monkeypatch.setattr(perception, "WAIT_POLL_S", 0.0001)
+    slept = []
+    real_time = perception.time
+
+    def sleep(seconds):
+        if seconds == perception.WAIT_POLL_S:
+            slept.append(seconds)
+            screen.show(
+                [
+                    E("bar", "AXTextField", "Address and search bar"),
+                    E("h", "AXHeading", "Mart"),
+                ],
+                title="Mart",
+            )
+
+    monkeypatch.setattr(
+        perception,
+        "time",
+        types.SimpleNamespace(
+            sleep=sleep,
+            monotonic=real_time.monotonic,
+            perf_counter=real_time.perf_counter,
+        ),
+    )
+    receipt = session.open_url("cg:1", "mart.test")["receipt"]
+    assert receipt["effect"] == "confirmed" and receipt["title"] == "Mart"
+    assert slept
+
+
 def test_open_url_stops_when_the_bar_refuses_the_address(session, screen):
     screen.show([E("bar", "AXTextField", "Address and search bar")])
     session.observe("Chrome", "cg:1")
@@ -1156,6 +1202,22 @@ def test_window_resolution_never_swaps_a_named_window(session, screen, monkeypat
     with pytest.raises(ComputerUseError) as err:
         session._window_obs(None)  # two windows observed now
     assert err.value.code == "invalid_argument"
+
+
+def test_known_window_skips_observed_ids_that_are_not_window_ids(session, screen):
+    screen.show([E("a", "AXLink", "A")])
+    obs = session.observe("Chrome", "cg:1")
+    session._latest["not-a-window"] = obs
+    assert session._known_window(1) == "cg:1"
+    assert session._known_window("cg:9") is None
+
+
+def test_shows_is_false_for_a_ref_the_baseline_lacks(session, screen):
+    screen.show([E("a", "AXTextField", "Qty", value="2")])
+    obs = session.observe("Chrome", "cg:1")
+    snapshot = screen.get_app_state("Chrome", window_id="cg:1")
+    assert perception._shows(obs, snapshot, (_ref(obs, "Qty"), "2"))
+    assert not perception._shows(obs, snapshot, ("e999", "2"))
 
 
 def test_window_owner_reads_the_window_server(monkeypatch):

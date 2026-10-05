@@ -365,6 +365,25 @@ def test_is_ax_error_is_false_for_plain_values():
     assert ax_driver._is_ax_error("text") is False
 
 
+def test_is_ax_error_recognizes_an_ax_error_value(monkeypatch):
+    # A batched read reports a missing attribute as an AXValue of error type.
+    cf = types.ModuleType("CoreFoundation")
+    cf.CFGetTypeID = lambda value: 5 if value in ("err", "point") else 1
+    monkeypatch.setitem(sys.modules, "CoreFoundation", cf)
+    monkeypatch.setattr(
+        ax_driver,
+        "AS",
+        types.SimpleNamespace(
+            AXValueGetTypeID=lambda: 5,
+            AXValueGetType=lambda value: 9 if value == "err" else 1,
+            kAXValueAXErrorType=9,
+        ),
+    )
+    assert ax_driver._is_ax_error("err") is True
+    assert ax_driver._is_ax_error("point") is False  # an AXValue, not an error
+    assert ax_driver._is_ax_error("text") is False
+
+
 # -- backend plumbing -----------------------------------------------------------
 
 

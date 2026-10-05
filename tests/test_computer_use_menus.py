@@ -1660,7 +1660,7 @@ def test_collect_wakes_a_hidden_renderer_once(monkeypatch, clock):
     monkeypatch.setattr(ax_driver, "_app_windows", lambda app: ["win"])
     walks = {"n": 0}
 
-    def walk(element, depth, out, counter, seen=None):
+    def walk(element, depth, out, counter, seen=None, **kwargs):
         walks["n"] += 1
         role = "AXWebArea" if walks["n"] > 1 else "AXGroup"
         if seen is not None:
