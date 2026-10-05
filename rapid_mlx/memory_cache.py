@@ -687,6 +687,20 @@ def _resolve_persist_min_free_disk_bytes() -> int:
         return _DEFAULT_PERSIST_MIN_FREE_DISK_BYTES
 
 
+# Bytes an entry puts on disk beyond its cache arrays: safetensors header,
+# tokens.bin header, its ``index.json`` row and filesystem block rounding.
+_PERSIST_ENTRY_OVERHEAD_BYTES = _BYTES_PER_MB
+
+
+def _persist_entry_disk_bytes(persist_cache: list[Any], num_tokens: int) -> int:
+    """Conservative on-disk size of one persisted entry (all of its files)."""
+    return (
+        estimate_kv_cache_memory(persist_cache)
+        + 4 * num_tokens
+        + _PERSIST_ENTRY_OVERHEAD_BYTES
+    )
+
+
 def _free_disk_bytes(directory: str) -> int | None:
     """Free bytes on the volume holding ``directory``; ``None`` if unknown."""
     import shutil
@@ -3131,7 +3145,14 @@ class MemoryAwarePrefixCache:
         # original incident) ~6× safety margin while still catching
         # genuinely-too-large entries.
         _BOOTSTRAP_BYTES_PER_SEC: float = 150 * _BYTES_PER_MB
-        if should_abort is not None:
+        min_free_disk = _resolve_persist_min_free_disk_bytes()
+        # The probe is a real write: skip it when it would itself cross the
+        # free-disk reserve (the fixed floor then stands in for it).
+        probe_free = _free_disk_bytes(new_dir) if min_free_disk > 0 else None
+        probe_fits = (
+            probe_free is None or probe_free - _THROUGHPUT_PROBE_BYTES >= min_free_disk
+        )
+        if should_abort is not None and probe_fits:
             # Budgeted (shutdown) save: calibrate the first prediction
             # against the real disk instead of the fixed floor. The floor
             # still wins on a disk slower than it (the historical contract).
@@ -3171,7 +3192,6 @@ class MemoryAwarePrefixCache:
             )
         total_bytes_written = 0
         total_write_seconds = 0.0
-        min_free_disk = _resolve_persist_min_free_disk_bytes()
         disk_skipped = 0
         disk_skipped_bytes = 0
         for i, (tokens_key, entry) in enumerate(entries_to_save):
@@ -3221,7 +3241,9 @@ class MemoryAwarePrefixCache:
                 # else filling the volume are both accounted for. A skipped
                 # entry does not end the loop: a smaller one may still fit.
                 if min_free_disk > 0:
-                    persist_bytes = estimate_kv_cache_memory(persist_cache)
+                    persist_bytes = _persist_entry_disk_bytes(
+                        persist_cache, len(tokens_key)
+                    )
                     free_bytes = _free_disk_bytes(new_dir)
                     if (
                         free_bytes is not None

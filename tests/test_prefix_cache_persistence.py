@@ -3245,11 +3245,18 @@ def test_save_skipped_when_free_disk_below_reserve(tmp_path, monkeypatch, caplog
         lambda *a, **k: (writes.append(a[0]), real_save(*a, **k))[1],
     )
 
+    probes = []
+    monkeypatch.setattr(
+        mc, "_probe_write_bytes_per_sec", lambda d: probes.append(d) or 0.0
+    )
+
     cache = _three_entry_cache()
     with caplog.at_level(logging.WARNING, logger="rapid_mlx.memory_cache"):
-        assert cache.save_to_disk(str(snap)) is False
+        # Shutdown shape: a deadline predicate is what arms the probe.
+        assert cache.save_to_disk(str(snap), should_abort=lambda _s: False) is False
 
     assert writes == [], "no entry may be written below the free-disk reserve"
+    assert probes == [], "the throughput probe is a write and must be skipped too"
     assert cache._last_save_outcome == "failed"
     assert not (tmp_path / "snap.new").exists()
     assert sorted(p.name for p in snap.iterdir()) == before
@@ -3275,9 +3282,9 @@ def test_save_persists_only_entries_that_fit_above_reserve(tmp_path, monkeypatch
     cache.store(list(range(50, 61)), small_b)
 
     reserve = 1000
-    small_bytes = mc.estimate_kv_cache_memory(small_a)
-    big_bytes = mc.estimate_kv_cache_memory(big)
-    assert small_bytes * 2 < big_bytes
+    small_bytes = mc._persist_entry_disk_bytes(small_a, 11)
+    big_bytes = mc._persist_entry_disk_bytes(big, 400)
+    assert small_bytes < big_bytes
     monkeypatch.setenv(mc.PREFIX_CACHE_MIN_FREE_DISK_BYTES_ENV, str(reserve))
     # Room for either small entry, never for the big one.
     monkeypatch.setattr(mc, "_free_disk_bytes", lambda _d: reserve + big_bytes - 1)
@@ -3301,8 +3308,9 @@ def test_quantized_entry_admitted_by_persisted_size(tmp_path, monkeypatch):
     cache = fresh_cache()
     cache.store(list(range(64)), _make_quantized_kvcache(num_tokens=64))
     entry = next(iter(cache._entries.values()))
-    on_disk = mc.estimate_kv_cache_memory(mc._dequantize_cache(entry.cache))
-    assert on_disk != entry.memory_bytes
+    dequantized = mc._dequantize_cache(entry.cache)
+    assert mc.estimate_kv_cache_memory(dequantized) != entry.memory_bytes
+    on_disk = mc._persist_entry_disk_bytes(dequantized, 64)
 
     reserve = 1000
     monkeypatch.setenv(mc.PREFIX_CACHE_MIN_FREE_DISK_BYTES_ENV, str(reserve))
@@ -3312,6 +3320,29 @@ def test_quantized_entry_admitted_by_persisted_size(tmp_path, monkeypatch):
 
     monkeypatch.setattr(mc, "_free_disk_bytes", lambda _d: reserve + on_disk)
     assert cache.save_to_disk(str(tmp_path / "fits")) is True
+
+
+def test_admission_counts_every_file_of_the_entry(tmp_path, monkeypatch):
+    """Room for the cache arrays alone is not room for the entry: its token
+    file, headers and index row land on the same volume."""
+    import rapid_mlx.memory_cache as mc
+
+    kv = make_kvcache(num_tokens=11)
+    cache = fresh_cache()
+    cache.store(list(range(11)), kv)
+    arrays_only = mc.estimate_kv_cache_memory(kv)
+    assert mc._persist_entry_disk_bytes(kv, 11) > arrays_only + 4 * 11
+
+    reserve = 1000
+    monkeypatch.setenv(mc.PREFIX_CACHE_MIN_FREE_DISK_BYTES_ENV, str(reserve))
+    monkeypatch.setattr(mc, "_free_disk_bytes", lambda _d: reserve + arrays_only)
+    assert cache.save_to_disk(str(tmp_path / "snap")) is False
+
+    written = tmp_path / "written"
+    monkeypatch.setenv(mc.PREFIX_CACHE_MIN_FREE_DISK_BYTES_ENV, "0")
+    assert cache.save_to_disk(str(written)) is True
+    actual = sum(p.stat().st_size for p in written.iterdir())
+    assert actual <= mc._persist_entry_disk_bytes(kv, 11)
 
 
 def test_reserve_zero_and_unknown_free_space_do_not_block_save(tmp_path, monkeypatch):
