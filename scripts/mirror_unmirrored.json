@@ -42,9 +42,74 @@
       "since": "2026-09-24"
     },
     {
-      "hf_path": "Jackrong/MLX-Qwopus3.5-27B-v3-8bit",
-      "reason": "unused: 0 pulls in 90 d, <400 HF downloads/month",
-      "since": "2026-09-24"
+      "hf_path": "Vontra/DeepSeek-V4-Flash-0731-MXFP4-MLX",
+      "reason": "large variant; HF fallback; mirror cost not justified",
+      "since": "2026-10-05"
+    },
+    {
+      "hf_path": "rapid-mlx/DeepSeek-V4.1-Flash-REAP-2bit-MLX",
+      "reason": "large variant; HF fallback; mirror cost not justified",
+      "since": "2026-10-05"
+    },
+    {
+      "hf_path": "pipenetwork/GLM-5.2-REAP50-MLX-4bit",
+      "reason": "large variant; HF fallback; mirror cost not justified",
+      "since": "2026-10-05"
+    },
+    {
+      "hf_path": "Vontra/GLM-5.3-Flash-MLX-4bit-MTP",
+      "reason": "large variant; HF fallback; mirror cost not justified",
+      "since": "2026-10-05"
+    },
+    {
+      "hf_path": "mlx-community/gpt-oss-120b-4bit",
+      "reason": "large variant; HF fallback; mirror cost not justified",
+      "since": "2026-10-05"
+    },
+    {
+      "hf_path": "mlx-community/gpt-oss-120b-MXFP4-Q4",
+      "reason": "large variant; HF fallback; mirror cost not justified",
+      "since": "2026-10-05"
+    },
+    {
+      "hf_path": "mlx-community/Hy3-preview-4bit",
+      "reason": "large variant; HF fallback; mirror cost not justified",
+      "since": "2026-10-05"
+    },
+    {
+      "hf_path": "mlx-community/Kimi-K2.6-mlx-DQ3_K_M-q8",
+      "reason": "large variant; HF fallback; mirror cost not justified",
+      "since": "2026-10-05"
+    },
+    {
+      "hf_path": "Vontra/MiMo-V2.6-Flash-RL-MLX-4bit-MTP",
+      "reason": "large variant; HF fallback; mirror cost not justified",
+      "since": "2026-10-05"
+    },
+    {
+      "hf_path": "mlx-community/Mistral-Small-4-119B-2603-4bit",
+      "reason": "large variant; HF fallback; mirror cost not justified",
+      "since": "2026-10-05"
+    },
+    {
+      "hf_path": "mlx-community/Mistral-Small-4-119B-2603-8bit",
+      "reason": "large variant; HF fallback; mirror cost not justified",
+      "since": "2026-10-05"
+    },
+    {
+      "hf_path": "mlx-community/Qwen3.5-122B-A10B-6bit",
+      "reason": "large variant; HF fallback; mirror cost not justified",
+      "since": "2026-10-05"
+    },
+    {
+      "hf_path": "rickylin20260522/Wan2.2-T2V-A14B-mlx",
+      "reason": "large variant; HF fallback; mirror cost not justified",
+      "since": "2026-10-05"
+    },
+    {
+      "hf_path": "stabilityai/stable-diffusion-xl-base-1.0",
+      "reason": "pinned image runtime downloads from HF directly; the mirror is never consulted",
+      "since": "2026-10-05"
     }
   ]
 }
