@@ -3,6 +3,10 @@
 
 from __future__ import annotations
 
+import json
+import re
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -115,11 +119,11 @@ def _ci_jobs() -> list[dict[str, Any]]:
             for shard in (1, 2, 3)
         ]
         + [
-            "l1-smoke (first)",
-            "l1-smoke (second)",
-            "l1-smoke (third)",
-            "l1-smoke (fourth)",
-            "l1-smoke (fifth)",
+            "l1-smoke (qwen3.5-4b-4bit, 0)",
+            "l1-smoke (llama3-3b-4bit, 0)",
+            "l1-smoke (gemma3-4b-qat-4bit, 1)",
+            "l1-smoke (qwen3-4b-instruct-2507-4bit, 1)",
+            "l1-smoke (qwen3-4b-thinking-2507-4bit, 1)",
         ]
     )
     return [_job(20, 200 + index, name) for index, name in enumerate(names)]
@@ -713,3 +717,163 @@ def test_mergify_candidate_selects_complete_gui_inventory():
     assert 'if [ "$is_mergify" = true ]' in script
     assert "python3 scripts/select_gui_flows.py --github-output" in script
     assert "--paths-file /tmp/changed-paths" in script
+
+
+@pytest.mark.parametrize("prefix", ["test-matrix (", "l1-smoke ("])
+@pytest.mark.parametrize("mutation", ["renamed", "duplicate", "extra", "missing"])
+@pytest.mark.parametrize("stage", ["create", "validate"])
+def test_ci_evidence_requires_exact_matrix_identities(
+    tmp_path: Path, prefix: str, mutation: str, stage: str
+):
+    client = _configured_client()
+    manifest = _manifest(tmp_path)
+    payload = evidence.create_evidence(client, "ci", 20, 30, TRUSTED, manifest)
+    jobs = client.job_records[20]
+    matrix = [job for job in jobs if job["name"].startswith(prefix)]
+    if mutation == "renamed":
+        matrix[-1]["name"] = prefix + "unexpected)"
+    elif mutation == "duplicate":
+        matrix[-1]["name"] = matrix[0]["name"]
+    elif mutation == "extra":
+        jobs.append(_job(20, 999, prefix + "unexpected)"))
+    else:
+        jobs.remove(matrix[-1])
+    # Refresh the recorded list too: reject invalid live enrollment even when
+    # a producer record agrees with it, rather than only detecting stale data.
+    payload["source"]["jobs"] = [
+        {key: job[key] for key in ("id", "name", "conclusion")} for job in jobs
+    ]
+    with pytest.raises(evidence.EvidenceError):
+        if stage == "create":
+            evidence.create_evidence(client, "ci", 20, 30, TRUSTED, manifest)
+        else:
+            discovery = evidence.Discovery("ci", CANDIDATE, TREE, 30, "unused", 20)
+            evidence.validate_evidence(client, MAIN, discovery, payload, manifest)
+
+
+def _assert_full_ci_matrix_identity_contract(source: str):
+    jobs = yaml.safe_load(source)["jobs"]
+    matrix = jobs["test-matrix"]["strategy"]["matrix"]
+    if isinstance(matrix, dict):
+        expected_cpu = {
+            f"test-matrix ({version}, {shard})"
+            for version in matrix["python-version"]
+            for shard in matrix["shard"]
+        }
+    else:
+        # The source-only risk-routing pilot keeps candidates full but emits
+        # their matrix via the trusted classifier rather than static YAML.
+        assert matrix == "${{ fromJSON(needs.changes.outputs.test_matrix) }}"
+        assert "--force-full" in source
+        classifier = (
+            Path(__file__).resolve().parent.parent / "scripts/classify_ci_changes.py"
+        )
+        outputs = json.loads(
+            subprocess.check_output(
+                [sys.executable, str(classifier), "--force-full", "rapid_mlx/cli.py"],
+                text=True,
+            )
+        )
+        full_matrix = json.loads(outputs["test_matrix"])["include"]
+        expected_cpu = {
+            f"test-matrix ({item['python-version']}, {item['shard']})"
+            for item in full_matrix
+        }
+        assert len(expected_cpu) == len(full_matrix)
+        # Main and merge-group also emit a literal full matrix independently.
+        literals = [
+            json.loads(value)["include"]
+            for value in re.findall(r"test_matrix=(\{[^'\n]+\})", source)
+        ]
+        assert literals
+        for literal in literals:
+            names = [
+                f"test-matrix ({item['python-version']}, {item['shard']})"
+                for item in literal
+            ]
+            assert len(names) == len(set(names))
+            assert set(names) == expected_cpu
+    assert expected_cpu == set(evidence.REQUIRED_CI_MATRIX_JOBS["test-matrix ("])
+    # Both candidate promotion and main/merge-group paths declare the same
+    # full model matrix; the ordinary source-only one-model path is excluded.
+    matrices = [
+        json.loads(value)["include"]
+        for value in re.findall(r"l1_matrix=(\{[^'\n]+\})", source)
+    ]
+    full_matrices = [matrix for matrix in matrices if len(matrix) > 1]
+    assert len(full_matrices) == 2
+    for matrix in full_matrices:
+        names = [
+            f"l1-smoke ({item['model']}, {item['contract_only']})" for item in matrix
+        ]
+        assert len(names) == len(set(names))
+        assert set(names) == set(evidence.REQUIRED_CI_MATRIX_JOBS["l1-smoke ("])
+
+
+def test_full_ci_matrix_identity_contract_matches_workflow():
+    source = (
+        Path(__file__).resolve().parent.parent / evidence.CI_WORKFLOW_PATH
+    ).read_text()
+    _assert_full_ci_matrix_identity_contract(source)
+
+
+@pytest.mark.parametrize("drift", [False, True])
+def test_full_ci_identity_parity_accepts_dynamic_matrix_and_rejects_drift(
+    monkeypatch, drift
+):
+    # Independent enrollment fixture for the source-only dynamic-matrix pilot.
+    cpu = [
+        {"python-version": version, "shard": shard}
+        for version in ("3.10", "3.11", "3.12")
+        for shard in (1, 2, 3)
+    ]
+    models = [
+        {"model": model, "contract_only": mode}
+        for model, mode in (
+            ("qwen3.5-4b-4bit", "0"),
+            ("llama3-3b-4bit", "0"),
+            ("gemma3-4b-qat-4bit", "1"),
+            ("qwen3-4b-instruct-2507-4bit", "1"),
+            ("qwen3-4b-thinking-2507-4bit", "1"),
+        )
+    ]
+    classifier_matrix = json.dumps({"include": cpu})
+    if drift:
+        cpu[-1] = {"python-version": "3.13", "shard": 3}
+    source = yaml.safe_dump(
+        {
+            "jobs": {
+                "test-matrix": {
+                    "strategy": {
+                        "matrix": "${{ fromJSON(needs.changes.outputs.test_matrix) }}"
+                    }
+                },
+                "changes": {
+                    "steps": [
+                        {
+                            "run": "\n".join(
+                                [
+                                    "python scripts/classify_ci_changes.py --force-full",
+                                    "test_matrix=" + json.dumps({"include": cpu}),
+                                    "l1_matrix=" + json.dumps({"include": models}),
+                                    "l1_matrix=" + json.dumps({"include": models}),
+                                ]
+                            )
+                        }
+                    ]
+                },
+            }
+        },
+        width=10000,
+    )
+
+    def classify(command, *, text):
+        assert "--force-full" in command
+        return json.dumps({"test_matrix": classifier_matrix})
+
+    monkeypatch.setattr(subprocess, "check_output", classify)
+    if drift:
+        with pytest.raises(AssertionError):
+            _assert_full_ci_matrix_identity_contract(source)
+    else:
+        _assert_full_ci_matrix_identity_contract(source)
