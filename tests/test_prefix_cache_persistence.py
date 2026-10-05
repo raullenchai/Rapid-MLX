@@ -3389,6 +3389,17 @@ def test_reserve_zero_and_unknown_free_space_do_not_block_save(tmp_path, monkeyp
     assert _three_entry_cache().save_to_disk(str(tmp_path / "unknown")) is True
 
 
+def test_absurdly_large_reserve_skips_instead_of_crashing(tmp_path, monkeypatch):
+    """Any non-negative integer is a valid reserve, including one too large
+    for a float: the save reports skipped entries rather than raising."""
+    import rapid_mlx.memory_cache as mc
+
+    monkeypatch.setenv(mc.PREFIX_CACHE_MIN_FREE_DISK_BYTES_ENV, "9" * 400)
+    cache = _three_entry_cache()
+    assert cache.save_to_disk(str(tmp_path / "snap")) is False
+    assert cache._last_save_outcome == "failed"
+
+
 def test_failed_entry_write_removes_partial_files_immediately(tmp_path, monkeypatch):
     """A write that dies mid-entry (full disk) must not leave its partial
     file occupying space while the remaining entries are attempted."""

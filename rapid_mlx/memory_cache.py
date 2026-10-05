@@ -3353,7 +3353,7 @@ class MemoryAwarePrefixCache:
             logger.warning(
                 f"[cache_persist] skipped {disk_skipped}/{total_entries} entries "
                 f"({disk_skipped_bytes / _BYTES_PER_MB:.0f}MB): writing them "
-                f"would leave less than {min_free_disk / _BYTES_PER_MB:.0f}MB "
+                f"would leave less than {min_free_disk // _BYTES_PER_MB}MB "
                 f"free on the volume holding {cache_dir}. Free up disk space, "
                 f"or set {PREFIX_CACHE_MIN_FREE_DISK_BYTES_ENV} (bytes, 0 "
                 f"disables the check) to change the reserve."
