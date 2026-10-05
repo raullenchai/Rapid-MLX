@@ -1640,8 +1640,7 @@ def test_key_chords_take_the_hotkey_route_and_keep_every_guard(session, screen):
     session.act("key", None, key="+", window_id="cg:1")
     assert screen.calls[-1][0] == "press_key"
     assert perception._is_combo("Shift+Return") and not perception._is_combo("+")
-    assert perception._base_key("cmd+Return") == "return"
-    assert perception._base_key(" ") == " "
+    assert perception._activating("cmd+Return") and perception._activating(" ")
 
 
 def test_chords_into_secret_fields_and_onto_commit_buttons_are_guarded(session, screen):
