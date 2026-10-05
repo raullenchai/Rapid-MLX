@@ -3208,3 +3208,169 @@ def test_r12_metrics_exposes_save_drift_drops():
         "metrics route lost the R12-T1 counter wiring"
     )
     assert "save_drift_drops" in src
+
+
+# --------------------------------------------------------------------------
+# Free-disk reserve (#4109) — a persist must never fill the volume
+# --------------------------------------------------------------------------
+
+
+def _three_entry_cache() -> MemoryAwarePrefixCache:
+    cache = fresh_cache()
+    cache.store(list(range(11)), make_kvcache(num_tokens=11))
+    cache.store(list(range(20, 31)), make_kvcache(num_tokens=11, fill=2.0))
+    cache.store(list(range(50, 61)), make_kvcache(num_tokens=11, fill=3.0))
+    return cache
+
+
+def test_save_skipped_when_free_disk_below_reserve(tmp_path, monkeypatch, caplog):
+    """With the volume already under the reserve, nothing is written and the
+    previous snapshot stays intact."""
+    import rapid_mlx.memory_cache as mc
+
+    snap = tmp_path / "snap"
+    monkeypatch.setenv(mc.PREFIX_CACHE_MIN_FREE_DISK_BYTES_ENV, "0")
+    previous = fresh_cache()
+    previous.store(list(range(7)), make_kvcache(num_tokens=7))
+    assert previous.save_to_disk(str(snap)) is True
+    before = sorted(p.name for p in snap.iterdir())
+
+    monkeypatch.delenv(mc.PREFIX_CACHE_MIN_FREE_DISK_BYTES_ENV)
+    monkeypatch.setattr(mc, "_free_disk_bytes", lambda _d: 2 * 1024**3)
+    writes = []
+    real_save = mc._save_prompt_cache_compat
+    monkeypatch.setattr(
+        mc,
+        "_save_prompt_cache_compat",
+        lambda *a, **k: (writes.append(a[0]), real_save(*a, **k))[1],
+    )
+
+    cache = _three_entry_cache()
+    with caplog.at_level(logging.WARNING, logger="rapid_mlx.memory_cache"):
+        assert cache.save_to_disk(str(snap)) is False
+
+    assert writes == [], "no entry may be written below the free-disk reserve"
+    assert cache._last_save_outcome == "failed"
+    assert not (tmp_path / "snap.new").exists()
+    assert sorted(p.name for p in snap.iterdir()) == before
+    assert any(
+        "skipped 3/3 entries" in r.message
+        and mc.PREFIX_CACHE_MIN_FREE_DISK_BYTES_ENV in r.message
+        for r in caplog.records
+    )
+
+
+def test_save_persists_only_entries_that_fit_above_reserve(tmp_path, monkeypatch):
+    """Entries are admitted one by one against the live free-space reading:
+    the oversized one is skipped, the ones that fit are committed."""
+    import rapid_mlx.memory_cache as mc
+
+    snap = tmp_path / "snap"
+    cache = fresh_cache()
+    small_a = make_kvcache(num_tokens=11)
+    big = make_kvcache(num_tokens=400, fill=2.0)
+    small_b = make_kvcache(num_tokens=11, fill=3.0)
+    cache.store(list(range(11)), small_a)
+    cache.store(list(range(1000, 1400)), big)
+    cache.store(list(range(50, 61)), small_b)
+
+    reserve = 1000
+    small_bytes = mc.estimate_kv_cache_memory(small_a)
+    big_bytes = mc.estimate_kv_cache_memory(big)
+    assert small_bytes * 2 < big_bytes
+    monkeypatch.setenv(mc.PREFIX_CACHE_MIN_FREE_DISK_BYTES_ENV, str(reserve))
+    # Room for either small entry, never for the big one.
+    monkeypatch.setattr(mc, "_free_disk_bytes", lambda _d: reserve + big_bytes - 1)
+
+    assert cache.save_to_disk(str(snap)) is True
+    assert cache._last_save_outcome == "committed"
+
+    index = json.loads((snap / "index.json").read_text())
+    assert sorted(e["num_tokens"] for e in index["entries"]) == [11, 11]
+    assert not (snap / "entry_1.safetensors").exists()
+
+    reloaded = fresh_cache()
+    assert reloaded.load_from_disk(str(snap)) == 2
+
+
+def test_quantized_entry_admitted_by_persisted_size(tmp_path, monkeypatch):
+    """The reserve is checked against what lands on disk: a quantized entry
+    is persisted dequantized, so its in-memory size is the wrong yardstick."""
+    import rapid_mlx.memory_cache as mc
+
+    cache = fresh_cache()
+    cache.store(list(range(64)), _make_quantized_kvcache(num_tokens=64))
+    entry = next(iter(cache._entries.values()))
+    on_disk = mc.estimate_kv_cache_memory(mc._dequantize_cache(entry.cache))
+    assert on_disk != entry.memory_bytes
+
+    reserve = 1000
+    monkeypatch.setenv(mc.PREFIX_CACHE_MIN_FREE_DISK_BYTES_ENV, str(reserve))
+    monkeypatch.setattr(mc, "_free_disk_bytes", lambda _d: reserve + on_disk - 1)
+    assert cache.save_to_disk(str(tmp_path / "tight")) is False
+    assert not (tmp_path / "tight").exists()
+
+    monkeypatch.setattr(mc, "_free_disk_bytes", lambda _d: reserve + on_disk)
+    assert cache.save_to_disk(str(tmp_path / "fits")) is True
+
+
+def test_reserve_zero_and_unknown_free_space_do_not_block_save(tmp_path, monkeypatch):
+    import rapid_mlx.memory_cache as mc
+
+    monkeypatch.setenv(mc.PREFIX_CACHE_MIN_FREE_DISK_BYTES_ENV, "0")
+    monkeypatch.setattr(mc, "_free_disk_bytes", lambda _d: 0)
+    assert _three_entry_cache().save_to_disk(str(tmp_path / "off")) is True
+
+    # An unreadable volume must not cost the user their warm cache.
+    monkeypatch.delenv(mc.PREFIX_CACHE_MIN_FREE_DISK_BYTES_ENV)
+    monkeypatch.setattr(mc, "_free_disk_bytes", lambda _d: None)
+    assert _three_entry_cache().save_to_disk(str(tmp_path / "unknown")) is True
+
+
+def test_failed_entry_write_removes_partial_files_immediately(tmp_path, monkeypatch):
+    """A write that dies mid-entry (full disk) must not leave its partial
+    file occupying space while the remaining entries are attempted."""
+    import rapid_mlx.memory_cache as mc
+
+    monkeypatch.setenv(mc.PREFIX_CACHE_MIN_FREE_DISK_BYTES_ENV, "0")
+    real_save = mc._save_prompt_cache_compat
+    staged_at_write: list[list[str]] = []
+
+    def flaky_save(path, *args, **kwargs):
+        staged_at_write.append(sorted(os.listdir(os.path.dirname(path))))
+        if len(staged_at_write) == 1:
+            with open(path, "wb") as f:
+                f.write(b"partial")
+            raise RuntimeError("[write] Unable to write 7 bytes")
+        return real_save(path, *args, **kwargs)
+
+    monkeypatch.setattr(mc, "_save_prompt_cache_compat", flaky_save)
+
+    snap = tmp_path / "snap"
+    assert _three_entry_cache().save_to_disk(str(snap)) is True
+
+    assert not any("entry_0" in name for name in staged_at_write[1])
+    index = json.loads((snap / "index.json").read_text())
+    assert [e["index"] for e in index["entries"]] == [1, 2]
+
+
+def test_persist_min_free_disk_env_parsing(monkeypatch, caplog):
+    import rapid_mlx.memory_cache as mc
+
+    default = mc._DEFAULT_PERSIST_MIN_FREE_DISK_BYTES
+    monkeypatch.delenv(mc.PREFIX_CACHE_MIN_FREE_DISK_BYTES_ENV, raising=False)
+    assert mc._resolve_persist_min_free_disk_bytes() == default == 5 * 1024**3
+    for raw, expected in ((" ", default), ("123", 123), ("0", 0), ("-5", 0)):
+        monkeypatch.setenv(mc.PREFIX_CACHE_MIN_FREE_DISK_BYTES_ENV, raw)
+        assert mc._resolve_persist_min_free_disk_bytes() == expected
+    monkeypatch.setenv(mc.PREFIX_CACHE_MIN_FREE_DISK_BYTES_ENV, "5GB")
+    with caplog.at_level(logging.WARNING, logger="rapid_mlx.memory_cache"):
+        assert mc._resolve_persist_min_free_disk_bytes() == default
+    assert any("5GB" in r.message for r in caplog.records)
+
+
+def test_free_disk_bytes_reads_volume_and_tolerates_missing_path(tmp_path):
+    import rapid_mlx.memory_cache as mc
+
+    assert mc._free_disk_bytes(str(tmp_path)) > 0
+    assert mc._free_disk_bytes(str(tmp_path / "does-not-exist")) is None

@@ -661,6 +661,52 @@ def _probe_write_bytes_per_sec(directory: str) -> float:
     return _THROUGHPUT_PROBE_BYTES / max(elapsed, 1e-6) * _THROUGHPUT_PROBE_SAFETY
 
 
+# Free-disk reserve for prefix-cache persistence. The save loop used to write
+# every live entry with no look at the volume, so a normal restart could take
+# a tight disk to 0 bytes free (multi-GB snapshots are routine). Each entry is
+# now admitted only if writing it leaves at least this much free; the default
+# matches the "very low" disk threshold ``rapid-mlx doctor`` reports. ``0``
+# disables the check.
+PREFIX_CACHE_MIN_FREE_DISK_BYTES_ENV = "RAPID_MLX_PREFIX_CACHE_MIN_FREE_DISK_BYTES"
+_DEFAULT_PERSIST_MIN_FREE_DISK_BYTES = 5 * 1024 * _BYTES_PER_MB
+
+
+def _resolve_persist_min_free_disk_bytes() -> int:
+    """Free-disk reserve a persist must leave; ``0`` disables the check."""
+    raw = os.environ.get(PREFIX_CACHE_MIN_FREE_DISK_BYTES_ENV)
+    if raw is None or not raw.strip():
+        return _DEFAULT_PERSIST_MIN_FREE_DISK_BYTES
+    try:
+        return max(0, int(raw.strip()))
+    except ValueError:
+        logger.warning(
+            f"[cache_persist] invalid {PREFIX_CACHE_MIN_FREE_DISK_BYTES_ENV}="
+            f"{raw!r}; falling back to default "
+            f"{_DEFAULT_PERSIST_MIN_FREE_DISK_BYTES}"
+        )
+        return _DEFAULT_PERSIST_MIN_FREE_DISK_BYTES
+
+
+def _free_disk_bytes(directory: str) -> int | None:
+    """Free bytes on the volume holding ``directory``; ``None`` if unknown."""
+    import shutil
+
+    try:
+        return shutil.disk_usage(directory).free
+    except OSError as exc:
+        logger.debug(f"[cache_persist] free-space probe failed: {exc}")
+        return None
+
+
+def _remove_entry_files(*paths: str) -> None:
+    """Best-effort removal of one entry's (possibly partial) files."""
+    for path in paths:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
 def _fsync_file(path: str) -> None:
     """Flush a file's contents to disk.
 
@@ -3125,6 +3171,9 @@ class MemoryAwarePrefixCache:
             )
         total_bytes_written = 0
         total_write_seconds = 0.0
+        min_free_disk = _resolve_persist_min_free_disk_bytes()
+        disk_skipped = 0
+        disk_skipped_bytes = 0
         for i, (tokens_key, entry) in enumerate(entries_to_save):
             if total_write_seconds > 0:
                 observed_bps = total_bytes_written / total_write_seconds
@@ -3165,6 +3214,28 @@ class MemoryAwarePrefixCache:
                     if any(isinstance(c, QuantizedKVCache) for c in entry.cache)
                     else entry.cache
                 )
+                # Free-disk admission. Sized from ``persist_cache`` (what
+                # lands on disk — dequantized entries are larger than
+                # ``entry.memory_bytes``) and re-measured per entry, so the
+                # old snapshot still sitting in ``cache_dir`` and anything
+                # else filling the volume are both accounted for. A skipped
+                # entry does not end the loop: a smaller one may still fit.
+                if min_free_disk > 0:
+                    persist_bytes = estimate_kv_cache_memory(persist_cache)
+                    free_bytes = _free_disk_bytes(new_dir)
+                    if (
+                        free_bytes is not None
+                        and free_bytes - persist_bytes < min_free_disk
+                    ):
+                        disk_skipped += 1
+                        disk_skipped_bytes += persist_bytes
+                        logger.debug(
+                            f"[cache_persist] skipping entry {i}: "
+                            f"{persist_bytes / _BYTES_PER_MB:.1f}MB would leave "
+                            f"less than the free-disk reserve "
+                            f"({free_bytes / _BYTES_PER_MB:.0f}MB free)"
+                        )
+                        continue
                 _save_prompt_cache_compat(
                     entry_path,
                     persist_cache,
@@ -3241,6 +3312,23 @@ class MemoryAwarePrefixCache:
                 )
             except Exception as e:
                 logger.warning(f"[cache_persist] failed to save entry {i}: {e}")
+                # Drop the partial files now rather than at the orphan sweep:
+                # after a failed write (typically a full disk) they would
+                # otherwise hold space the remaining entries are measured
+                # against.
+                _remove_entry_files(
+                    entry_path, tokens_path, _checkpoints_sidecar_path(entry_path)
+                )
+
+        if disk_skipped:
+            logger.warning(
+                f"[cache_persist] skipped {disk_skipped}/{total_entries} entries "
+                f"({disk_skipped_bytes / _BYTES_PER_MB:.0f}MB): writing them "
+                f"would leave less than {min_free_disk / _BYTES_PER_MB:.0f}MB "
+                f"free on the volume holding {cache_dir}. Free up disk space, "
+                f"or set {PREFIX_CACHE_MIN_FREE_DISK_BYTES_ENV} (bytes, 0 "
+                f"disables the check) to change the reserve."
+            )
 
         if saved == 0:
             shutil.rmtree(new_dir, ignore_errors=True)
@@ -3562,6 +3650,8 @@ class MemoryAwarePrefixCache:
 
         dt = _time.monotonic() - t0
         tail = " (partial — shutdown deadline hit)" if aborted_early else ""
+        if disk_skipped:
+            tail += " (partial — free-disk reserve)"
         if rename_committed:
             logger.info(
                 f"[cache_persist] SAVED {saved}/{total_entries} entries "
