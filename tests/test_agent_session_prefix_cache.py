@@ -933,3 +933,59 @@ def test_context_ceiling_shares_the_model_dims_footprint(monkeypatch):
     monkeypatch.setattr(sched, "_footprint_from_model_dims", _spy)
     sched.projected_memory_max_context(262_144)
     assert calls
+
+
+def test_free_disk_admission_counts_the_checkpoint_sidecar(tmp_path, monkeypatch):
+    """The checkpoint sidecar is part of what an entry puts on disk, so the
+    free-disk reserve is checked against it too: room for the cache arrays
+    alone does not admit a checkpointed entry."""
+    import mlx.core as mx
+    from mlx_lm.models.cache import ArraysCache, KVCache
+
+    from rapid_mlx.hybrid_state_checkpoints import CHECKPOINT_ATTR, StateCheckpoints
+
+    def build(with_checkpoints: bool) -> list:
+        kv = KVCache()
+        kv.keys = mx.zeros((1, 2, 64, 8))
+        kv.values = mx.zeros((1, 2, 64, 8))
+        kv.offset = 64
+        rec = ArraysCache(2)
+        rec.cache = [mx.zeros((1, 3, 4)), mx.zeros((1, 2, 2))]
+        if with_checkpoints:
+            # Far larger than the fixed per-entry allowance, so the sidecar
+            # cannot hide inside it.
+            states = ((pos, (mx.zeros((1, 512, 1024)),)) for pos in (16, 32))
+            setattr(rec, CHECKPOINT_ATTR, StateCheckpoints(states))
+        return [kv, rec]
+
+    tokens = list(range(64))
+    entry = build(with_checkpoints=True)
+    persist_bytes = mc._persist_entry_disk_bytes(entry, len(tokens))
+    bare_bytes = mc._persist_entry_disk_bytes(build(with_checkpoints=False), 64)
+
+    def save(free_bytes: int | None, reserve: int, name: str):
+        monkeypatch.setenv(mc.PREFIX_CACHE_MIN_FREE_DISK_BYTES_ENV, str(reserve))
+        monkeypatch.setattr(mc, "_free_disk_bytes", lambda _d: free_bytes)
+        cache = _hybrid_cache_store()
+        assert cache.store(tokens, entry, message_boundary=True)
+        snap = tmp_path / name
+        return cache.save_to_disk(str(snap)), snap
+
+    saved, snap = save(None, 0, "unchecked")
+    assert saved is True
+    sidecar_bytes = (snap / "entry_0_ckpt.safetensors").stat().st_size
+    assert sidecar_bytes > mc._PERSIST_ENTRY_OVERHEAD_BYTES
+    assert (
+        persist_bytes - bare_bytes >= sidecar_bytes - mc._PERSIST_ENTRY_OVERHEAD_BYTES
+    )
+    written = sum(p.stat().st_size for p in snap.iterdir() if p.name != "index.json")
+    assert written <= persist_bytes
+
+    reserve = 1000
+    # Room for everything except the sidecar: skipped.
+    saved, snap = save(reserve + bare_bytes, reserve, "tight")
+    assert saved is False
+    assert not (snap / "entry_0_ckpt.safetensors").exists()
+    saved, snap = save(reserve + persist_bytes, reserve, "roomy")
+    assert saved is True
+    assert (snap / "entry_0_ckpt.safetensors").exists()

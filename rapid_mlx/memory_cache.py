@@ -697,7 +697,11 @@ _PERSIST_ENTRY_OVERHEAD_BYTES = _BYTES_PER_MB
 
 
 def _persist_entry_disk_bytes(persist_cache: list[Any], num_tokens: int) -> int:
-    """Conservative on-disk size of one persisted entry (all of its files)."""
+    """Conservative on-disk size of one persisted entry (all of its files).
+
+    ``estimate_kv_cache_memory`` already charges the entry its hybrid
+    recurrent-state checkpoints, so the checkpoint sidecar is covered.
+    """
     return (
         estimate_kv_cache_memory(persist_cache)
         + 4 * num_tokens
