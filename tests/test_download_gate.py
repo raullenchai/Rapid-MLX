@@ -477,12 +477,20 @@ def test_external_ref_timeout_degrades_to_cache_miss_by_default(tmp_path, monkey
 
 
 @pytest.mark.parametrize(
-    "terminal,expected", [("Apple_Terminal", "Terminal"), ("iTerm.app", "iTerm")]
+    "terminal,expected",
+    [
+        ("Apple_Terminal", "Terminal"),
+        ("iTerm.app", "iTerm"),
+        (None, "the app that launched this command"),
+    ],
 )
 def test_external_permission_recovery_targets_the_launching_app(
     monkeypatch, terminal, expected
 ):
-    monkeypatch.setenv("TERM_PROGRAM", terminal)
+    if terminal is None:
+        monkeypatch.delenv("TERM_PROGRAM", raising=False)
+    else:
+        monkeypatch.setenv("TERM_PROGRAM", terminal)
     message = gate.CacheProbePermissionError(
         "/Volumes/Models/hf/refs/main"
     ).user_message()

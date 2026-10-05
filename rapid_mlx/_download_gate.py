@@ -124,7 +124,7 @@ class ExternalCacheProbeError(RuntimeError):
             "iTerm.app": "iTerm",
             "vscode": "Visual Studio Code",
             "WarpTerminal": "Warp",
-        }.get(os.environ.get("TERM_PROGRAM"), "the app that launched this command")
+        }.get(os.environ.get("TERM_PROGRAM", ""), "the app that launched this command")
         reason = (
             "Access was denied."
             if isinstance(self, CacheProbePermissionError)
