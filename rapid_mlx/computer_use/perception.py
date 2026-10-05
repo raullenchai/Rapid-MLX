@@ -108,10 +108,14 @@ class Row:
             _EXTENSION_BUTTON.search(self.label)
         )
 
-    def is_tab_strip(self) -> bool:
-        """A browser tab: its title and hover card change with every page."""
+    def is_tab_strip(self, in_browser: bool) -> bool:
+        """A browser tab: its title and hover card change with every page.
+
+        ``in_browser``: the window shows web content, so a tab outside it is
+        the browser's (a native app's tabs and radio buttons are its own).
+        """
         return self.role in _TAB_ROLES and (
-            self.web is False or bool(_TAB_HOVER.search(self.label))
+            (in_browser and self.web is False) or bool(_TAB_HOVER.search(self.label))
         )
 
     def is_dialog(self) -> bool:
@@ -1314,10 +1318,12 @@ def _diff(
     if previous is None:
         return [], (0, 0, 0)
 
+    in_browser = any(row.web for row in [*previous.rows, *rows])
+
     def counted(row: Row) -> bool:
         # Extension buttons renaming themselves and a tab's title or hover
         # card are the browser's, not an outcome of the action.
-        return not row.is_browser_noise() and not row.is_tab_strip()
+        return not row.is_browser_noise() and not row.is_tab_strip(in_browser)
 
     before = {row.ref: row for row in previous.rows if counted(row)}
     now = {row.ref: row for row in rows if counted(row)}
