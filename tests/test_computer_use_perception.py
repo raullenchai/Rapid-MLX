@@ -736,19 +736,25 @@ def test_focused_secret_reads_names_never_values(monkeypatch):
         failing.clear()
         failing.add(attribute)
         assert perception._focused_secret({"pid": 7}) == unchecked, attribute
-    # A name that cannot be read is absent (TextEdit's NSTextView fails
-    # AXDescription with kAXErrorFailure); the names that are read still count.
+    # In a text area a name that cannot be read is absent (TextEdit's
+    # NSTextView fails AXDescription with kAXErrorFailure); the names that
+    # are read still count.
     attrs.update(AXRole="AXTextArea", AXSubrole="", AXTitle="")
     failing.clear()
     failing.update({"AXDescription", "AXTitle", "AXPlaceholderValue"})
     assert perception._focused_secret({"pid": 7}) is None
     failing.discard("AXPlaceholderValue")
-    attrs.update(AXRole="AXTextField", AXPlaceholderValue="Contraseña")
+    attrs.update(AXPlaceholderValue="Contraseña")
     assert perception._focused_secret({"pid": 7}).startswith("a secret field")
     # A secure subrole is a password field whatever its names read.
-    failing.update({"AXPlaceholderValue"})
+    failing.add("AXPlaceholderValue")
     attrs.update(AXSubrole="AXSecureTextField")
     assert perception._focused_secret({"pid": 7}) == "a password field"
+    # A one-line field may be a code or card box: its name must be read.
+    attrs.update(AXRole="AXTextField", AXSubrole="")
+    failing.clear()
+    failing.add("AXDescription")
+    assert perception._focused_secret({"pid": 7}) == unchecked
     monkeypatch.setattr(
         perception.backend,
         "_pid_app_element",

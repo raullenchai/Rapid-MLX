@@ -1637,12 +1637,17 @@ def _focused_secret(app_info: dict) -> str | None:
             "AXPlaceholderValue",
         ):
             readable, value = ax_driver._get_checked(focused, attribute)
-            if not readable and attribute in {"AXRole", "AXSubrole"}:
+            # Role and subrole decide a secure field and must be read. In a
+            # multi-line text area (a document, a message body: TextEdit's
+            # NSTextView fails AXDescription with kAXErrorFailure) a name
+            # that cannot be read is a name it does not have, as the walk
+            # (whose rows guard a fill) reads it. A one-line field whose
+            # name cannot be read may be a code or card box: not assumed.
+            if not readable and (
+                attribute in {"AXRole", "AXSubrole"}
+                or names.get("AXRole") != "AXTextArea"
+            ):
                 return unchecked
-            # Role and subrole decide a secure field and must be read. A name
-            # that cannot be read is a name the field does not have: an
-            # NSTextView fails AXDescription with kAXErrorFailure, and the walk
-            # (whose rows guard a fill) reads such a name as absent too.
             names[attribute] = value.strip() if isinstance(value, str) else ""
         role, subrole = names["AXRole"], names["AXSubrole"]
         if "AXSecureTextField" in (role, subrole):

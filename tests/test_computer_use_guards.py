@@ -58,6 +58,11 @@ def test_money_commits():
         "By clicking Place order you agree to the conditions of use and sale."
     )  # a button's whole name is still its name
     assert not commit("Place order", role="AXTextField")
+    # Chinese and Japanese write no spaces: a sentence is still content.
+    assert commit("立即购买", role="AXStaticText")
+    assert commit("注文を確定する", role="AXGroup")
+    assert not commit("点击确认付款即同意服务条款", role="AXStaticText")
+    assert not commit("确认付款，即表示同意", role="AXStaticText")
 
 
 def test_money_context_joins_table_cells():

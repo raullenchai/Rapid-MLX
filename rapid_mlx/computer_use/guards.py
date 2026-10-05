@@ -186,6 +186,8 @@ _NEARBY_PRICED_VERB = re.compile(
 _PRESS_ROLES = {"AXButton", "AXLink", "AXMenuItem", "AXMenuButton", "AXPopUpButton"}
 MAX_CONTROL_WORDS = 6
 MAX_CONTROL_CHARS = 48
+_CJK = re.compile(r"[぀-ヿ㐀-䶿一-鿿가-힯]")
+_CJK_SENTENCE = re.compile(r"[。，、！？；]")
 _TOTAL_WORDS = re.compile(
     r"\b(?:(?:sub)?totals?|amounts?|charged?|due|fees?|pay from|paid with|date)\b", re.I
 )
@@ -234,8 +236,16 @@ def _names_a_control(role: str, label: str) -> bool:
     """
     if not label or role in TEXT_ROLES:
         return False
-    return role in _PRESS_ROLES or (
-        len(label) <= MAX_CONTROL_CHARS and len(label.split()) <= MAX_CONTROL_WORDS
+    if role in _PRESS_ROLES:
+        return True
+    # Chinese and Japanese write no spaces: two characters make about a word,
+    # and sentence punctuation marks a sentence.
+    cjk = len(_CJK.findall(label))
+    words = len(_CJK.sub(" ", label).split()) + (cjk + 1) // 2
+    return (
+        len(label) <= MAX_CONTROL_CHARS
+        and words <= MAX_CONTROL_WORDS
+        and not _CJK_SENTENCE.search(label)
     )
 
 
