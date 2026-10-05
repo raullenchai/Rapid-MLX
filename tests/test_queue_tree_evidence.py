@@ -751,10 +751,7 @@ def test_ci_evidence_requires_exact_matrix_identities(
             evidence.validate_evidence(client, MAIN, discovery, payload, manifest)
 
 
-def test_full_ci_matrix_identity_contract_matches_workflow():
-    source = (
-        Path(__file__).resolve().parent.parent / evidence.CI_WORKFLOW_PATH
-    ).read_text()
+def _assert_full_ci_matrix_identity_contract(source: str):
     jobs = yaml.safe_load(source)["jobs"]
     matrix = jobs["test-matrix"]["strategy"]["matrix"]
     if isinstance(matrix, dict):
@@ -811,3 +808,72 @@ def test_full_ci_matrix_identity_contract_matches_workflow():
         ]
         assert len(names) == len(set(names))
         assert set(names) == set(evidence.REQUIRED_CI_MATRIX_JOBS["l1-smoke ("])
+
+
+def test_full_ci_matrix_identity_contract_matches_workflow():
+    source = (
+        Path(__file__).resolve().parent.parent / evidence.CI_WORKFLOW_PATH
+    ).read_text()
+    _assert_full_ci_matrix_identity_contract(source)
+
+
+@pytest.mark.parametrize("drift", [False, True])
+def test_full_ci_identity_parity_accepts_dynamic_matrix_and_rejects_drift(
+    monkeypatch, drift
+):
+    # Independent enrollment fixture for the source-only dynamic-matrix pilot.
+    cpu = [
+        {"python-version": version, "shard": shard}
+        for version in ("3.10", "3.11", "3.12")
+        for shard in (1, 2, 3)
+    ]
+    models = [
+        {"model": model, "contract_only": mode}
+        for model, mode in (
+            ("qwen3.5-4b-4bit", "0"),
+            ("llama3-3b-4bit", "0"),
+            ("gemma3-4b-qat-4bit", "1"),
+            ("qwen3-4b-instruct-2507-4bit", "1"),
+            ("qwen3-4b-thinking-2507-4bit", "1"),
+        )
+    ]
+    classifier_matrix = json.dumps({"include": cpu})
+    if drift:
+        cpu[-1] = {"python-version": "3.13", "shard": 3}
+    source = yaml.safe_dump(
+        {
+            "jobs": {
+                "test-matrix": {
+                    "strategy": {
+                        "matrix": "${{ fromJSON(needs.changes.outputs.test_matrix) }}"
+                    }
+                },
+                "changes": {
+                    "steps": [
+                        {
+                            "run": "\n".join(
+                                [
+                                    "python scripts/classify_ci_changes.py --force-full",
+                                    "test_matrix=" + json.dumps({"include": cpu}),
+                                    "l1_matrix=" + json.dumps({"include": models}),
+                                    "l1_matrix=" + json.dumps({"include": models}),
+                                ]
+                            )
+                        }
+                    ]
+                },
+            }
+        },
+        width=10000,
+    )
+
+    def classify(command, *, text):
+        assert "--force-full" in command
+        return json.dumps({"test_matrix": classifier_matrix})
+
+    monkeypatch.setattr(subprocess, "check_output", classify)
+    if drift:
+        with pytest.raises(AssertionError):
+            _assert_full_ci_matrix_identity_contract(source)
+    else:
+        _assert_full_ci_matrix_identity_contract(source)
