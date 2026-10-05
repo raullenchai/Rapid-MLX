@@ -1535,10 +1535,12 @@ def _off_screen_hint(page: list[Row], off: list[Row]) -> str:
     first, last = (shown_at[0], shown_at[-1]) if shown_at else (0, -1)
     where = {"above": 0, "below": 0, "hidden in place": 0}
     for i, row in enumerate(page):
-        if not row.on_screen:
+        # With nothing on screen there is no above or below to tell.
+        if not row.on_screen and shown_at:
             side = "above" if i < first else "below" if i > last else "hidden in place"
             where[side] += 1
-    hint += "; " + ", ".join(f"{n} {side}" for side, n in where.items() if n)
+    sides = ", ".join(f"{n} {side}" for side, n in where.items() if n)
+    hint += f"; {sides}" if sides else ""
     return hint + "; scroll, or observe with find=<text> or all=true)"
 
 

@@ -2127,7 +2127,9 @@ def test_render_puts_the_page_first_and_marks_browser_chrome_and_dialogs(
     plain = session.observe("Chrome", "cg:1").render()
     assert "browser (outside" not in plain and "; 1 above;" in plain
     screen.show([E("a", "AXLink", "Top", width=0, height=0)])
-    assert "; 1 below;" in session.observe("Chrome", "cg:1").render()
+    # With no row on screen, nothing says which way the hidden one lies.
+    alone = session.observe("Chrome", "cg:1").render()
+    assert "(1 more elements off screen; scroll" in alone
     # An unnamed dialog is still announced.
     screen.show([E("d", "AXSheet", "")])
     sheet = session.observe("Chrome", "cg:1")
