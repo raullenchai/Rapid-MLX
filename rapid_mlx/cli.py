@@ -10211,11 +10211,17 @@ def _pull_repository(
         # A pinned revision goes through the mirror too: the mirror accepts a
         # file for an exact commit only when its bytes are proven identical
         # to that commit, and falls back to HF per file otherwise.
-        mirror_ok = _try_mirror_prefetch(
-            repo_id,
-            allow_patterns=variant_allow,
-            out=_mirror_out,
-            **({"revision": revision_override} if revision_override else {}),
+        mirror_ok = (
+            _try_mirror_prefetch(
+                repo_id,
+                allow_patterns=variant_allow,
+                out=_mirror_out,
+                revision=revision_override,
+            )
+            if revision_override
+            else _try_mirror_prefetch(
+                repo_id, allow_patterns=variant_allow, out=_mirror_out
+            )
         )
     except Exception as exc:
         if emit_lifecycle_event:

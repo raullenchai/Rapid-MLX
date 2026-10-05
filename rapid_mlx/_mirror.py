@@ -598,7 +598,7 @@ def pinned_snapshot_download(
     kwargs: dict[str, Any] = {"revision": revision}
     if allow_patterns is not None:
         kwargs["allow_patterns"] = list(allow_patterns)
-    return snapshot_download(repo_id, **kwargs)
+    return str(snapshot_download(repo_id, **kwargs))
 
 
 def _hf_cache_root() -> Path:
