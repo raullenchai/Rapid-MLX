@@ -573,13 +573,20 @@ def _preceding_label(out: list[dict], path: tuple[int, ...]) -> str:
     """The static text just before a field in its own group ("Password").
 
     Only when nothing else came between them (a label two controls up
-    names something else), and only a short text in the field's parent.
+    names something else), and only a short text that is the field's
+    previous sibling or that sibling's child (a <label> wrapping its text).
     """
-    if not out or out[-1].get("role") != "AXStaticText":
+    if not path or not out or out[-1].get("role") != "AXStaticText":
         return ""
     parent = list(path[:-1])
     text = str(out[-1].get("text") or "")
-    if out[-1].get("path", [])[: len(parent)] != parent:
+    candidate = list(out[-1].get("path") or [])
+    rest = candidate[len(parent) :]
+    if (
+        candidate[: len(parent)] != parent
+        or not 1 <= len(rest) <= 2
+        or rest[0] != path[-1] - 1
+    ):
         return ""
     return text if 0 < len(text) <= MAX_FIELD_LABEL_CHARS else ""
 

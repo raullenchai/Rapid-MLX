@@ -398,6 +398,18 @@ def test_secure_field_without_a_label_takes_the_text_just_before_it(tree):
         }
     )
     assert _walk("win")[-1]["field_name"] == "Password"
+    # A <label> wrapping its text is the previous sibling too.
+    nodes["form"]["AXChildren"] = ["lab", "pw"]
+    nodes["lab"] = {"AXRole": "AXGroup", "AXChildren": ["txt"]}
+    assert _walk("win")[-1]["field_name"] == "Password"
+    # Text buried deeper in the previous sibling, or in an earlier one with
+    # an unnamed element between, is not its label.
+    nodes["lab"]["AXChildren"] = ["inner"]
+    nodes["inner"] = {"AXRole": "AXGroup", "AXChildren": ["txt"]}
+    assert _walk("win")[-1]["field_name"] == ""
+    nodes["form"]["AXChildren"] = ["txt", "spacer", "pw"]
+    nodes["spacer"] = {"AXRole": "AXGroup"}
+    assert _walk("win")[-1]["field_name"] == ""
     # Anything else in between, another group, a paragraph, or nothing
     # before it: no name.
     nodes["form"]["AXChildren"] = ["txt", "btn", "pw"]

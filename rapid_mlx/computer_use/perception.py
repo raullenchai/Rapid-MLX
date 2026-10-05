@@ -1142,7 +1142,9 @@ class PerceptionSession:
         )
         receipt: dict[str, Any] = {
             "action": description,
-            "effect": "window_closed",
+            # A refused action did not close it (something else did): the
+            # refusal stays the outcome; the window is gone either way.
+            "effect": "refused" if error else "window_closed",
             "window_closed": True,
             "settled": True,
             "acted_ms": acted_ms,
