@@ -5612,6 +5612,8 @@ def test_set_value_and_synthetic_fill_paths(monkeypatch):
         AXUIElementSetAttributeValue=lambda *a: 0,
     )
     monkeypatch.setattr(backend, "_read_value", lambda _: "wanted")
+    # A role-less control is read first to see whether it holds a number.
+    monkeypatch.setattr(backend.ax_driver, "_get", lambda *a: "old")
     assert backend.set_value("A", 0, "wanted")["verified"] is True
     module.AXUIElementSetAttributeValue = lambda *a: 1
     monkeypatch.setattr(backend, "_synthetic_fill", lambda *a: {"mode": "fallback"})
@@ -6099,7 +6101,7 @@ def test_ax_driver_tree_collect_and_events(monkeypatch):
     monkeypatch.setattr(
         ax_driver,
         "_walk",
-        lambda e, d, out, c, *_: out.append(dict(_target(element=e))),
+        lambda e, d, out, c, *_, **__: out.append(dict(_target(element=e))),
     )
     assert ax_driver.collect("A", keep_elements=False)[0]["center"] == [6, 12]
     assert "element" not in ax_driver.collect("A", keep_elements=False)[0]
@@ -6222,7 +6224,7 @@ def test_ax_driver_app_collect_retries_and_press(monkeypatch):
         ax_driver, "_get", lambda e, a: ["window"] if a == "AXWindows" else None
     )
 
-    def walk(e, d, out, c, seen=None):
+    def walk(e, d, out, c, seen=None, **_kw):
         attempts["n"] += 1
         role = "AXWebArea" if attempts["n"] > 1 else "AXButton"
         if seen is not None:
@@ -6255,7 +6257,7 @@ def test_ax_driver_app_collect_retries_and_press(monkeypatch):
     monkeypatch.setattr(ax_driver, "_cg_click", lambda *a: None)
     assert ax_driver.press([_target()], "t000", "A")["mode"] == "CGEvent-click"
     assert ax_driver.press([_target()], "t999", "A")["ok"] is False
-    monkeypatch.setattr(ax_driver, "_walk", lambda *a: None)
+    monkeypatch.setattr(ax_driver, "_walk", lambda *a, **k: None)
     assert ax_driver.press([_target()], "t000", "A")["ok"] is False
 
 
@@ -6267,7 +6269,7 @@ def test_ax_driver_press_rejects_missing_geometry(monkeypatch):
     monkeypatch.setattr(
         ax_driver,
         "_walk",
-        lambda e, d, out, c, *_: out.append(
+        lambda e, d, out, c, *_, **__: out.append(
             _target(rect=None, actions=[], element="live")
         ),
     )
@@ -6346,8 +6348,8 @@ def test_ax_walk_keeps_blank_editable_control_without_adding_empty_structure(
     monkeypatch.setattr(ax_driver, "_action_names", lambda _element: [])
     monkeypatch.setattr(
         ax_driver,
-        "_point_size",
-        lambda element: (10, 20, 300, 200) if element == "editor" else None,
+        "_frame_of",
+        lambda node: (10, 20, 300, 200) if node.get("AXRole") == "AXTextArea" else None,
     )
 
     targets = []
@@ -6493,7 +6495,9 @@ def test_ax_driver_limits_menu_bar_and_old_unicode(monkeypatch):
     monkeypatch.setattr(ax_driver, "AXUIElementCreateSystemWide", lambda: "system")
     monkeypatch.setattr(ax_driver, "AXUIElementSetAttributeValue", lambda *a: None)
     monkeypatch.setattr(
-        ax_driver, "_walk", lambda e, d, out, c, *_: out.append(_target(element=e))
+        ax_driver,
+        "_walk",
+        lambda e, d, out, c, *_, **__: out.append(_target(element=e)),
     )
     assert ax_driver.collect("A", keep_elements=True)[0]["element"] == "system"
 
@@ -6504,7 +6508,7 @@ def test_ax_driver_limits_menu_bar_and_old_unicode(monkeypatch):
     monkeypatch.setattr(
         ax_driver,
         "_walk",
-        lambda e, d, out, c, *_: (
+        lambda e, d, out, c, *_, **__: (
             out.append({**_target(element=e), "role": "AXWebArea"}),
             c.__setitem__(0, 1),
         ),
