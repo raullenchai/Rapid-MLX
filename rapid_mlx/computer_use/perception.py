@@ -1185,6 +1185,9 @@ class PerceptionSession:
         if op == "type":
             return backend.type_text(app, str(kw["text"]), window_id=wid)
         if op == "key" and _is_combo(str(kw["key"])):
+            # Any modified key, shift+a included: the single-key route below
+            # takes no modifiers ("unsupported single key"), and the hotkey
+            # route posts the key with its flags, which types the character.
             # A chord (Cmd+W, Cmd+V): the backend's hotkey route, which
             # presses a menu command through its menu item or refuses when it
             # cannot rule one out. A chord goes to the focused element, so a
@@ -1362,6 +1365,13 @@ def _diff(
     now = {row.ref: row for row in rows if counted(row)}
     added = [row for row in now.values() if row.ref not in before]
     removed = [row for ref, row in before.items() if ref not in now]
+    tabs_in = [row for row in added if row.is_tab_strip(in_browser)]
+    tabs_out = [row for row in removed if row.is_tab_strip(in_browser)]
+    if tabs_in and len(tabs_in) == len(tabs_out):
+        # As many tabs came as went: the browser rebuilt them under new
+        # titles. A tab opened or closed changes the count and is reported.
+        added = [row for row in added if row not in tabs_in]
+        removed = [row for row in removed if row not in tabs_out]
     changed = [
         (before[row.ref], row)
         for row in now.values()

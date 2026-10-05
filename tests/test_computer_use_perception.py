@@ -2048,6 +2048,13 @@ def test_diffs_skip_browser_noise_and_show_where_long_labels_differ(session, scr
     switched = session.observe("Chrome", "cg:3")
     assert switched.change_counts == (0, 0, 2)
     assert all("label" not in line for line in switched.changes)
+    # A tab the browser rebuilt under a new title is no outcome; one more is.
+    tabs[1] = E("t1b", "AXRadioButton", "Cart", web=False)
+    screen.show(tabs, wid="cg:3")
+    assert session.observe("Chrome", "cg:3").change_counts == (0, 0, 0)
+    tabs.insert(2, E("t3", "AXRadioButton", "Help", web=False))
+    screen.show(tabs, wid="cg:3")
+    assert session.observe("Chrome", "cg:3").change_counts == (1, 0, 0)
     # A row that was new when last seen is shown removed without the marker.
     screen.show([E("p", "AXStaticText", long_new, web=True)])
     gone = session.observe("Chrome", "cg:1")
