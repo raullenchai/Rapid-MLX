@@ -777,3 +777,16 @@ def test_unreadable_warm_pinned_file_is_refetched(tmp_path, monkeypatch):
     assert ok is True
     assert router.file_urls() == [f"{BASE}/{REPO}/config.json"]
     assert hf_calls == []
+
+
+def test_warm_pinned_file_without_a_digest_is_refetched(tmp_path, monkeypatch):
+    snap = _snap(tmp_path)
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_bytes(CONFIG)
+    siblings = [_sibling("config.json", CONFIG, lfs=False, blob_id=None)]
+    ok, router, hf_calls, _ = _run(
+        tmp_path, monkeypatch, siblings, {"config.json": CONFIG}
+    )
+    assert ok is True
+    assert router.file_urls() == []
+    assert hf_calls == [("config.json", PIN)]

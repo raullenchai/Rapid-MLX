@@ -1886,12 +1886,17 @@ def download_with_mirror_fallback(
 
         Whatever left a file in ``snapshots/<pin>`` (an interrupted run, a
         default-branch pull of the same commit, corruption), it is kept only
-        when its bytes hash to the pinned blob id. Without a pin or a
-        published blob id the historical acceptance stands.
+        when its bytes hash to the pinned blob id; without a published blob
+        id it is refetched. Default-branch pulls keep the historical
+        acceptance.
         """
-        expected = git_oids.get(fname) if pinned else None
-        if expected is None:
+        if not pinned:
             return True
+        expected = git_oids.get(fname)
+        if expected is None:
+            # No published digest: nothing can prove the warm bytes, so the
+            # file is refetched from HF at the pin, like a cold one.
+            return False
         try:
             if _git_blob_oid(target) != expected:
                 return False
