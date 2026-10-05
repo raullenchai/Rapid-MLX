@@ -193,13 +193,11 @@ dimensions are rounded up to the runtime's required 32-pixel boundary and
 cropped back to the requested OpenAI size when necessary. The distilled path
 does not expose `guidance_scale` or `negative_prompt`.
 
-### Extend a short LTX-2.5 video (beta)
+### Extend an LTX-2.5 video
 
 `POST /v1/videos/extend` uses the existing MP4 as temporal context and returns
 one MP4 containing the original and appended frames. It runs the runtime's
-video extension pipeline, which reprocesses the entire output sequence. Start
-with a short clip: extending long or large inputs can take substantially more
-time and unified memory than generating a small clip.
+video extension pipeline with the source video as temporal context.
 
 ```bash
 curl http://localhost:8000/v1/videos/extend \
@@ -213,8 +211,8 @@ curl http://localhost:8000/v1/videos/extend \
 The source must be an MP4 at exactly 24 fps, with dimensions from 256 to 1920
 pixels in multiples of 32 and a decoded frame count of `8n+1` (at least 9).
 `extend_frames` counts **output frames**, must be a multiple of 8, and accepts
-8–48. The beta limit is 97 total output frames and 24 million pixel-frames;
-the upload limit is 20 MB. The result uses the same asynchronous job and
+8–48. The endpoint accepts up to 97 total output frames, 24 million
+pixel-frames, and a 20 MB upload. The result uses the same asynchronous job and
 download endpoints as `POST /v1/videos`. `GET /v1/videos/capabilities` reports
 these extension limits. The uploaded source is removed after generation.
 

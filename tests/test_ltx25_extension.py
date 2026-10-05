@@ -60,6 +60,7 @@ def test_extension_runtime_uses_video_context_and_latent_frame_count(
     assert command[command.index("--extend-frames") + 1] == "2"
     assert command[command.index("--direction") + 1] == "after"
     assert "--distilled" not in command
+    assert "--low-ram" not in command
     assert "private motion prompt" not in command
     assert captured["prompt"] == "private motion prompt"
     assert output.read_bytes() == b"extended-mp4"
@@ -188,7 +189,7 @@ async def test_extension_rejects_oversized_result_and_removes_upload(
     )
     monkeypatch.setattr(video, "_probe_extension_video", lambda _: (512, 512, 97))
     try:
-        with pytest.raises(HTTPException, match="beta workload limit") as exc:
+        with pytest.raises(HTTPException, match="supported workload") as exc:
             await video.extend_video(
                 prompt="follow the dragon",
                 model="ltx-2.5-mlx-q8",

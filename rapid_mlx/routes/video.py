@@ -1485,7 +1485,7 @@ async def extend_video(
         ):
             raise HTTPException(
                 status_code=400,
-                detail="video extension exceeds the beta workload limit; reduce size or duration",
+                detail="video extension exceeds the supported workload; reduce size or duration",
             )
         job = _VideoJob(
             id=job_id,
