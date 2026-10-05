@@ -114,8 +114,10 @@ class Row:
         ``in_browser``: the window shows web content, so a tab outside it is
         the browser's (a native app's tabs and radio buttons are its own).
         """
-        return self.role in _TAB_ROLES and (
-            (in_browser and self.web is False) or bool(_TAB_HOVER.search(self.label))
+        return (
+            in_browser
+            and self.role in _TAB_ROLES
+            and (self.web is False or bool(_TAB_HOVER.search(self.label)))
         )
 
     def is_dialog(self) -> bool:

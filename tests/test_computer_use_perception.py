@@ -1888,12 +1888,14 @@ def test_diffs_skip_browser_noise_and_show_where_long_labels_differ(session, scr
     native = [
         E("r1", "AXRadioButton", "Light", states=("checked",), web=False),
         E("r2", "AXTab", "General", web=False),
+        E("r3", "AXRadioButton", "Job - Memory usage - 1 GB"),
     ]
     screen.show(native, wid="cg:2")
     session.observe("Settings", "cg:2")
     native[0]["states"] = ["unchecked"]
     native[1]["label"] = "Advanced"
-    assert session.observe("Settings", "cg:2").change_counts == (0, 0, 2)
+    native[2]["label"] = "Job - Memory usage - 2 GB"
+    assert session.observe("Settings", "cg:2").change_counts == (0, 0, 3)
     assert perception._where_differ("abc", "abd") == ("abc", "abd")
     assert perception._where_differ("x" * 45, "x" * 46, 40) == (
         "…" + "x" * 10,
