@@ -392,19 +392,17 @@ class PerceptionSession:
                         "handoff with a reason, then continue when it returns.",
                     )
             text = key_text if key_text is not None else str(kw.get("text", ""))
+            held = [text]
             if typing:
-                # Typing appends: a card number split across calls is
-                # still a card number in the field.
-                field = row or next(
-                    (r for r in obs.rows if "focused" in r.states), None
-                )
-                if (
-                    field is not None
-                    and field.value
-                    and field.value != guards.USER_VALUE
-                ):
-                    text = field.value + text
-            if guards.contains_card_number(text):
+                # Typing appends: a card number split across calls is still a
+                # card number in the field. The text may land in the named
+                # field or the focused one, so each is checked.
+                held += [
+                    field.value + text
+                    for field in targets
+                    if field.value and field.value != guards.USER_VALUE
+                ]
+            if any(guards.contains_card_number(t) for t in held):
                 raise ComputerUseError(
                     "sensitive_data",
                     "the text contains a card number; it was not typed",
@@ -1226,27 +1224,42 @@ def _focused_secret(app_info: dict) -> str | None:
     """
     if app_info.get("pid") is None:
         return None
+    unchecked = "a field whose focus could not be checked"
     try:
         from . import ax_driver
 
-        focused = backend._focused_ax_element(app_info)
+        app_element = backend._pid_app_element(app_info)
+        readable, focused = ax_driver._get_checked(app_element, "AXFocusedUIElement")
+        if not readable:
+            return unchecked
         if focused is None:
-            return None
-        raw_role = ax_driver._get(focused, "AXRole")
-        raw_subrole = ax_driver._get(focused, "AXSubrole")
-        role = raw_role if isinstance(raw_role, str) else ""
-        subrole = raw_subrole if isinstance(raw_subrole, str) else ""
+            return None  # nothing has focus: typed text goes nowhere
+        names: dict[str, str] = {}
+        for attribute in (
+            "AXRole",
+            "AXSubrole",
+            "AXDescription",
+            "AXTitle",
+            "AXPlaceholderValue",
+        ):
+            readable, value = ax_driver._get_checked(focused, attribute)
+            if not readable:
+                return unchecked
+            names[attribute] = value.strip() if isinstance(value, str) else ""
+        role, subrole = names["AXRole"], names["AXSubrole"]
         if "AXSecureTextField" in (role, subrole):
             return guards.needs_human_input(role, subrole, "")
-        label = ""
-        for attribute in ("AXDescription", "AXTitle", "AXPlaceholderValue"):
-            value = ax_driver._get(focused, attribute)
-            if isinstance(value, str) and value.strip():
-                label = value.strip()
-                break
+        label = next(
+            (
+                names[a]
+                for a in ("AXDescription", "AXTitle", "AXPlaceholderValue")
+                if names[a]
+            ),
+            "",
+        )
         return guards.needs_human_input(role, subrole, label)
     except Exception:  # noqa: BLE001 - focus could not be inspected: fail closed
-        return "a field whose focus could not be checked"
+        return unchecked
 
 
 def _window_owner(window_id: str | int) -> str | None:

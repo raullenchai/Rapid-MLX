@@ -44,8 +44,13 @@ _CURRENCY_CODES = (
     "USD|EUR|GBP|CAD|AUD|NZD|JPY|CNY|HKD|SGD|CHF|INR|KRW|BRL|MXN|SEK|NOK|DKK|"
     "PLN|CZK|HUF|ZAR|TRY|ILS|AED|SAR|THB|PHP|IDR|MYR|TWD|RUB|UAH|NGN"
 )
+# Dollars of other countries keep their letters: "R$ 30" and "$30" differ.
+_DOLLAR_PREFIXES = "R|US|C|CA|A|AU|NZ|HK|S|SG|MX|NT"
 _NUMBER = r"\d(?:[\d.,]*\d)?"
-_CURRENCY = rf"(?:[{_CURRENCY_SYMBOLS}]|\b(?:{_CURRENCY_CODES})\b)"
+_CURRENCY = (
+    rf"(?:(?<![A-Za-z])(?:{_DOLLAR_PREFIXES})\$"
+    rf"|[{_CURRENCY_SYMBOLS}]|\b(?:{_CURRENCY_CODES})\b)"
+)
 # A suffix currency followed by a number is that number's prefix
 # ("Qty 2 €5" is €5, not "2 €").
 _AMOUNT = re.compile(rf"{_CURRENCY}\s?{_NUMBER}|{_NUMBER}\s?{_CURRENCY}(?!\s?\d)")

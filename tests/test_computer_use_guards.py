@@ -139,10 +139,17 @@ def test_priced_actions_and_amounts():
     assert guards.amounts(
         ["R$ 30,00", "CHF 9.50", "₹1,299", "Qty 2 €5", "3 items"]
     ) == (
-        "$30,00",
+        "R$30,00",
         "CHF9.50",
         "₹1,299",
         "€5",
+    )
+    # Other countries' dollars keep their letters, so they never bind as $.
+    assert guards.amounts(["US$ 5", "C$5", "30 R$", "BAR$5"]) == (
+        "US$5",
+        "C$5",
+        "30R$",
+        "$5",
     )
     assert guards.amounts(["Total $1,204.50 and €3", "", None, "£ 7"]) == (
         "$1,204.50",
