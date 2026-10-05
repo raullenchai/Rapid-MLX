@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -755,11 +757,45 @@ def test_full_ci_matrix_identity_contract_matches_workflow():
     ).read_text()
     jobs = yaml.safe_load(source)["jobs"]
     matrix = jobs["test-matrix"]["strategy"]["matrix"]
-    expected_cpu = {
-        f"test-matrix ({version}, {shard})"
-        for version in matrix["python-version"]
-        for shard in matrix["shard"]
-    }
+    if isinstance(matrix, dict):
+        expected_cpu = {
+            f"test-matrix ({version}, {shard})"
+            for version in matrix["python-version"]
+            for shard in matrix["shard"]
+        }
+    else:
+        # The source-only risk-routing pilot keeps candidates full but emits
+        # their matrix via the trusted classifier rather than static YAML.
+        assert matrix == "${{ fromJSON(needs.changes.outputs.test_matrix) }}"
+        assert "--force-full" in source
+        classifier = (
+            Path(__file__).resolve().parent.parent / "scripts/classify_ci_changes.py"
+        )
+        outputs = json.loads(
+            subprocess.check_output(
+                [sys.executable, str(classifier), "--force-full", "rapid_mlx/cli.py"],
+                text=True,
+            )
+        )
+        full_matrix = json.loads(outputs["test_matrix"])["include"]
+        expected_cpu = {
+            f"test-matrix ({item['python-version']}, {item['shard']})"
+            for item in full_matrix
+        }
+        assert len(expected_cpu) == len(full_matrix)
+        # Main and merge-group also emit a literal full matrix independently.
+        literals = [
+            json.loads(value)["include"]
+            for value in re.findall(r"test_matrix=(\{[^'\n]+\})", source)
+        ]
+        assert literals
+        for literal in literals:
+            names = [
+                f"test-matrix ({item['python-version']}, {item['shard']})"
+                for item in literal
+            ]
+            assert len(names) == len(set(names))
+            assert set(names) == expected_cpu
     assert expected_cpu == set(evidence.REQUIRED_CI_MATRIX_JOBS["test-matrix ("])
     # Both candidate promotion and main/merge-group paths declare the same
     # full model matrix; the ordinary source-only one-model path is excluded.
