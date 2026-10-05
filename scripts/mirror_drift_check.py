@@ -1080,7 +1080,11 @@ def audit(
             files = _selected_files(repos[spec.hf_path].files, spec.subfolder)
             pin = runtime_pins.get(spec.hf_path)
             if pin is not None:
-                files = [item for item in files if item.path in pin[1]]
+                # The pinned list is exactly what a pull fetches (the pull
+                # ignores any catalog subfolder for these repositories).
+                files = [
+                    item for item in repos[spec.hf_path].files if item.path in pin[1]
+                ]
                 upstream = {item.path for item in repos[spec.hf_path].files}
                 for path in sorted(pin[1] - upstream):
                     report.findings.append(

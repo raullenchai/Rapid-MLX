@@ -260,10 +260,10 @@ def test_revision_must_be_an_immutable_commit(monkeypatch):
         mirror.mirror_repo(REPO, revision="main")
 
 
-def test_runtime_files_outside_an_alias_subfolder_are_not_reported_missing(
-    monkeypatch, tmp_path
-):
-    """Upstream existence is checked against the whole pinned listing."""
+def test_pinned_runtime_list_overrides_an_alias_subfolder(monkeypatch, tmp_path):
+    """A pinned pull fetches its declared list whatever the catalog subfolder
+    says, so the audit probes every listed file and checks upstream existence
+    against the whole pinned listing."""
     main = tmp_path / "main.json"
     audio = tmp_path / "audio.json"
     main.write_text(json.dumps({"pinned": {"hf_path": REPO, "subfolder": "unet"}}))
@@ -291,4 +291,4 @@ def test_runtime_files_outside_an_alias_subfolder_are_not_reported_missing(
     )
     [report] = drift.audit(main, audio, unmirrored_path=None)
     assert report.findings == []
-    assert report.checked_files == 1
+    assert report.checked_files == len(LIST)
