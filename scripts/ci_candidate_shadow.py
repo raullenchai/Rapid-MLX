@@ -118,8 +118,6 @@ def inspect_candidate(
             or commit.get("tree", {}).get("sha") != full.get("candidate_tree")
         ):
             raise evidence.EvidenceError("candidate base/tree identity mismatch")
-        if _tip(client) != base:
-            raise evidence.EvidenceError("candidate base is not current main")
         compare = client.json(f"repos/{client.repo}/compare/{base}...{sha}")
         files = compare["files"]
         if (
@@ -143,6 +141,10 @@ def inspect_candidate(
                 "combined diff includes unmapped/critical/control paths"
             )
         result["mapped_tests"] = list(tests)
+        # Preserve path observations even if this asynchronous workflow starts
+        # after the merge. A stale base still cannot qualify reduced routing.
+        if _tip(client) != base:
+            raise evidence.EvidenceError("candidate base is not current main")
         main = _latest_main(client, base)
         jobs = evidence._successful_jobs(client, main)
         for name in MAIN_JOBS:

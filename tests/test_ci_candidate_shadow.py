@@ -128,6 +128,17 @@ def test_real_two_parent_shape_with_full_green_main_is_advisory_only():
     assert result["scope"] not in evidence.SCHEMAS
 
 
+def test_post_merge_snapshot_retains_paths_without_qualifying_old_base():
+    client = Client()
+    client.tip = SOURCE
+    result = shadow.inspect_candidate(client, full(), 900)
+    assert result["route"] == "full"
+    assert result["paths"] == ["tests/test_cli_cheetah_banner.py"]
+    assert result["mapped_tests"]
+    assert result["reason"] == "candidate base is not current main"
+    assert result["authorizes_reduced_ci"] is False
+
+
 @pytest.mark.parametrize(
     "field,value",
     [
