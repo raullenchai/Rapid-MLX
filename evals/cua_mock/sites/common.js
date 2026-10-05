@@ -17,7 +17,12 @@ const Mock = {
         localStorage.clear();
         localStorage.setItem("mock.run", run);
       }
-    } catch (e) {}
+    } catch (e) {
+      // Without the run id every event would be rejected as stale and the
+      // run would score INCOMPLETE for no visible reason: say so instead.
+      document.body.textContent = "Mock server unreachable; start evals/cua_mock/server.py and reload.";
+      return;
+    }
     ready();
   },
   get(key, fallback) {
