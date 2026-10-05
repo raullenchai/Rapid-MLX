@@ -228,7 +228,10 @@ def test_video_extra_marks_every_dependency_python_311_or_newer() -> None:
 
 
 @pytest.mark.asyncio
-async def test_video_multipart_gate_authenticates_before_reading_body() -> None:
+@pytest.mark.parametrize("path", ["/v1/videos", "/v1/videos/extend"])
+async def test_video_multipart_gate_authenticates_before_reading_body(
+    path: str,
+) -> None:
     from rapid_mlx.config import get_config
 
     cfg = get_config()
@@ -254,7 +257,7 @@ async def test_video_multipart_gate_authenticates_before_reading_body() -> None:
             {
                 "type": "http",
                 "method": "POST",
-                "path": "/v1/videos",
+                "path": path,
                 "headers": [],
             },
             receive,
@@ -268,7 +271,10 @@ async def test_video_multipart_gate_authenticates_before_reading_body() -> None:
 
 
 @pytest.mark.asyncio
-async def test_video_multipart_gate_rejects_content_length_before_read() -> None:
+@pytest.mark.parametrize("path", ["/v1/videos", "/v1/videos/extend"])
+async def test_video_multipart_gate_rejects_content_length_before_read(
+    path: str,
+) -> None:
     from rapid_mlx.config import get_config
 
     cfg = get_config()
@@ -294,7 +300,7 @@ async def test_video_multipart_gate_rejects_content_length_before_read() -> None
             {
                 "type": "http",
                 "method": "POST",
-                "path": "/v1/videos",
+                "path": path,
                 "headers": [
                     (
                         b"content-length",

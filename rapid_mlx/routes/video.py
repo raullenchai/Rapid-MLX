@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import stat
+import subprocess
 import tempfile
 import threading
 import time
@@ -19,6 +20,7 @@ import uuid
 import warnings
 import weakref
 from dataclasses import asdict, dataclass, replace
+from fractions import Fraction
 from pathlib import Path
 from typing import Annotated
 
@@ -35,6 +37,8 @@ _MAX_REFERENCE_BYTES = 20 * 1024 * 1024
 _VIDEO_REQUEST_BYTES = _MAX_REFERENCE_BYTES + 1024 * 1024
 _MAX_JOBS = 100
 _MAX_PIXEL_FRAMES = 768 * 512 * 97
+_MAX_EXTEND_PIXEL_FRAMES = 24_000_000
+_MAX_EXTEND_OUTPUT_FRAMES = 97
 _MAX_REFERENCE_PIXELS = 16_777_216
 _VIDEO_JOB_SCHEMA_VERSION = 1
 _VIDEO_JOB_METADATA = "job.json"
@@ -105,7 +109,7 @@ class VideoBodyLimitMiddleware:
         if (
             scope.get("type") != "http"
             or scope.get("method") != "POST"
-            or scope.get("path") != "/v1/videos"
+            or scope.get("path") not in {"/v1/videos", "/v1/videos/extend"}
         ):
             return await self.app(scope, receive, send)
 
@@ -833,6 +837,19 @@ def _video_capabilities(engine) -> dict:
                 "maximum_pixels": _MAX_REFERENCE_PIXELS,
                 "formats": ["jpeg", "png", "webp"],
             },
+            "video_extension": (
+                {
+                    "endpoint": "/v1/videos/extend",
+                    "input_format": "mp4",
+                    "input_fps": 24,
+                    "maximum_input_bytes": _MAX_REFERENCE_BYTES,
+                    "added_frames": {"minimum": 8, "maximum": 48, "multiple_of": 8},
+                    "maximum_output_frames": _MAX_EXTEND_OUTPUT_FRAMES,
+                    "maximum_pixel_frames": _MAX_EXTEND_PIXEL_FRAMES,
+                }
+                if family == "ltx-2.5"
+                else None
+            ),
         },
         "controls": {
             "guidance_scale": (
@@ -893,6 +910,67 @@ def _validate_reference_image(
         ) from exc
 
 
+def _probe_extension_video(path: Path) -> tuple[int, int, int]:
+    """Return a bounded MP4's width, height and exact decoded frame count."""
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe is None:
+        raise HTTPException(status_code=503, detail="video extension requires ffprobe")
+    try:
+        result = subprocess.run(
+            [
+                ffprobe,
+                "-v",
+                "error",
+                "-count_frames",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=width,height,avg_frame_rate,nb_read_frames:format=format_name",
+                "-of",
+                "json",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        details = json.loads(result.stdout)
+        stream = details["streams"][0]
+        width = int(stream["width"])
+        height = int(stream["height"])
+        frames = int(stream["nb_read_frames"])
+        frame_rate = Fraction(stream["avg_frame_rate"])
+        formats = details["format"]["format_name"].split(",")
+    except (
+        OSError,
+        ValueError,
+        KeyError,
+        IndexError,
+        ZeroDivisionError,
+        TypeError,
+        subprocess.SubprocessError,
+    ) as exc:
+        raise HTTPException(status_code=400, detail="invalid input_video") from exc
+    if "mp4" not in formats:
+        raise HTTPException(status_code=400, detail="input_video must be MP4")
+    if frame_rate != 24:
+        raise HTTPException(status_code=400, detail="input_video must be 24 fps")
+    if not (256 <= width <= 1920 and 256 <= height <= 1920):
+        raise HTTPException(
+            status_code=400, detail="input_video dimensions are unsupported"
+        )
+    if width % 32 or height % 32:
+        raise HTTPException(
+            status_code=400, detail="input_video dimensions must be multiples of 32"
+        )
+    if frames < 9 or frames % 8 != 1:
+        raise HTTPException(
+            status_code=400, detail="input_video must contain 8n+1 frames"
+        )
+    return width, height, frames
+
+
 async def _run_job(
     job: _VideoJob,
     *,
@@ -906,6 +984,8 @@ async def _run_job(
     negative_prompt: str | None,
     guidance_scale: float | None,
     conditioning_strength: float | None,
+    source_video: Path | None = None,
+    extend_frames: int | None = None,
 ) -> None:
     started = False
     generation_completed = False
@@ -932,22 +1012,34 @@ async def _run_job(
                 started = True
                 job.status = "in_progress"
                 job.progress = 1
-            await _run_in_generation_thread(
-                engine.generate,
-                prompt=job.prompt,
-                output_path=output,
-                width=generation_width,
-                height=generation_height,
-                num_frames=num_frames,
-                fps=fps,
-                seed=seed,
-                image=image_path,
-                negative_prompt=negative_prompt,
-                guidance_scale=guidance_scale,
-                conditioning_strength=conditioning_strength,
-                output_width=width,
-                output_height=height,
-            )
+            if source_video is None:
+                await _run_in_generation_thread(
+                    engine.generate,
+                    prompt=job.prompt,
+                    output_path=output,
+                    width=generation_width,
+                    height=generation_height,
+                    num_frames=num_frames,
+                    fps=fps,
+                    seed=seed,
+                    image=image_path,
+                    negative_prompt=negative_prompt,
+                    guidance_scale=guidance_scale,
+                    conditioning_strength=conditioning_strength,
+                    output_width=width,
+                    output_height=height,
+                )
+            else:
+                assert extend_frames is not None
+                await _run_in_generation_thread(
+                    engine.extend,
+                    prompt=job.prompt,
+                    source_video=source_video,
+                    output_path=output,
+                    extend_frames=extend_frames,
+                    seed=seed,
+                )
+                await asyncio.to_thread(source_video.unlink)
             return True
 
     runner = asyncio.create_task(generate_under_gate())
@@ -1309,6 +1401,137 @@ async def create_video(
                     negative_prompt=negative_prompt,
                     guidance_scale=guidance_scale,
                     conditioning_strength=conditioning_strength,
+                )
+            )
+            _tasks[job.id] = task
+            enqueued = True
+    finally:
+        if not enqueued:
+            await asyncio.to_thread(shutil.rmtree, job_dir, ignore_errors=True)
+    assert task is not None
+
+    def discard_task(done: asyncio.Task) -> None:
+        if _tasks.get(job.id) is done:
+            _tasks.pop(job.id, None)
+
+    task.add_done_callback(discard_task)
+    if evicted_id is not None:
+        await asyncio.to_thread(
+            shutil.rmtree, _jobs_root / evicted_id, ignore_errors=True
+        )
+    return job.public()
+
+
+@router.post("/v1/videos/extend", dependencies=[Depends(verify_api_key)])
+async def extend_video(
+    prompt: str = Form(..., min_length=1, max_length=4096),
+    model: str = Form("ltx-2.5-mlx-q8"),
+    extend_frames: int = Form(...),
+    seed: int = Form(42),
+    input_video: UploadFile = File(...),
+):
+    """Extend a short LTX-2.5 MP4 with its existing frames as context."""
+    engine = _video_engine()
+    if getattr(engine, "video_family", "") != "ltx-2.5":
+        raise HTTPException(status_code=400, detail="video extension requires LTX-2.5")
+    allowed_models = {engine.model_name}
+    profile = resolve_profile(model)
+    if profile is not None and profile.hf_path == engine.model_name:
+        allowed_models.add(model)
+    if model not in allowed_models:
+        raise HTTPException(
+            status_code=400,
+            detail=f"model must match the served video model ({engine.model_name})",
+        )
+    prompt = prompt.strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="prompt must not be blank")
+    if extend_frames < 8 or extend_frames > 48 or extend_frames % 8:
+        raise HTTPException(
+            status_code=400, detail="extend_frames must be 8, 16, 24, 32, 40, or 48"
+        )
+    with _jobs_lock:
+        if not _accepting_jobs:
+            raise HTTPException(status_code=503, detail="video server is shutting down")
+
+    job_id = f"video_{uuid.uuid4().hex}"
+    job_dir = _jobs_root / job_id
+    job_dir.mkdir(mode=0o700)
+    source_video = job_dir / "source.mp4"
+    enqueued = False
+    evicted_id: str | None = None
+    task: asyncio.Task | None = None
+    try:
+        total_bytes = 0
+        target = await asyncio.to_thread(source_video.open, "xb")
+        try:
+            while chunk := await input_video.read(1024 * 1024):
+                total_bytes += len(chunk)
+                if total_bytes > _MAX_REFERENCE_BYTES:
+                    raise HTTPException(
+                        status_code=413, detail="input_video exceeds 20 MB"
+                    )
+                await asyncio.to_thread(target.write, chunk)
+        finally:
+            await asyncio.to_thread(target.close)
+
+        width, height, source_frames = await asyncio.to_thread(
+            _probe_extension_video, source_video
+        )
+        output_frames = source_frames + extend_frames
+        if (
+            output_frames > _MAX_EXTEND_OUTPUT_FRAMES
+            or width * height * output_frames > _MAX_EXTEND_PIXEL_FRAMES
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="video extension exceeds the beta workload limit; reduce size or duration",
+            )
+        job = _VideoJob(
+            id=job_id,
+            model=model,
+            prompt=prompt,
+            seconds=str((output_frames + 23) // 24),
+            size=f"{width}x{height}",
+            frames=output_frames,
+            fps=24,
+            created_at=int(time.time()),
+        )
+        with _jobs_lock:
+            if not _accepting_jobs:
+                raise HTTPException(
+                    status_code=503, detail="video server is shutting down"
+                )
+            if len(_jobs) >= _MAX_JOBS:
+                finished = [
+                    item
+                    for item in _jobs.values()
+                    if item.status in {"completed", "failed"}
+                    and item.generation_finished
+                ]
+                if not finished:
+                    raise HTTPException(
+                        status_code=429, detail="video job queue is full"
+                    )
+                oldest = min(finished, key=lambda item: item.created_at)
+                _jobs.pop(oldest.id, None)
+                evicted_id = oldest.id
+            _jobs[job.id] = job
+            task = asyncio.create_task(
+                _run_job(
+                    job,
+                    engine=engine,
+                    width=width,
+                    height=height,
+                    num_frames=output_frames,
+                    fps=24,
+                    seed=seed,
+                    image_path=None,
+                    negative_prompt=None,
+                    guidance_scale=None,
+                    conditioning_strength=None,
+                    source_video=source_video,
+                    extend_frames=extend_frames,
                 )
             )
             _tasks[job.id] = task

@@ -314,6 +314,33 @@ class VideoEngine:
 
         _emit_primary_model_served_once(self)
 
+    def extend(
+        self,
+        *,
+        prompt: str,
+        source_video: Path,
+        output_path: Path,
+        extend_frames: int,
+        seed: int,
+    ) -> None:
+        """Append video using the LTX-2.5 runtime's temporal conditioning."""
+        if self._ltx25_engine is None:
+            raise VideoRuntimeError("Video extension requires LTX-2.5.")
+        from ..video.ltx25 import LTX25BackendError
+
+        try:
+            with self._generation_lock:
+                self._ltx25_engine.extend(
+                    prompt=prompt,
+                    source_video=source_video,
+                    output_path=output_path,
+                    extend_frames=extend_frames,
+                    seed=seed,
+                    on_loaded=self._emit_model_served,
+                )
+        except LTX25BackendError as exc:
+            raise VideoRuntimeError(str(exc)) from exc
+
     def generate(
         self,
         *,

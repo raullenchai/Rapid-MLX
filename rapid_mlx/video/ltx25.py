@@ -51,6 +51,22 @@ def load_and_signal(self):
 
 DistilledPipeline.load = load_and_signal
 
+if sys.argv[1] == "extend":
+    from ltx_pipelines_mlx.retake import RetakePipeline
+
+    original_dev_load = RetakePipeline._load_dev_transformer
+
+    def load_dev_and_signal(self):
+        global ready_sent
+        model = original_dev_load(self)
+        if not ready_sent:
+            os.write(ready_fd, {_READINESS_TOKEN!r})
+            os.close(ready_fd)
+            ready_sent = True
+        return model
+
+    RetakePipeline._load_dev_transformer = load_dev_and_signal
+
 signal.signal(signal.SIGTERM, signal.SIG_DFL)
 sys.argv = ["ltx-2-mlx", *sys.argv[1:], "--prompt", sys.stdin.read()]
 main()
@@ -452,6 +468,83 @@ class LTX25VideoEngine:
         conditioning_strength: float | None = None,
         on_loaded: Callable[[], None] | None = None,
     ) -> None:
+        command = [
+            "generate",
+            "--model",
+            self.model_name,
+            "--distilled",
+            "--low-ram",
+            "--quiet",
+            "--height",
+            str(height),
+            "--width",
+            str(width),
+            "--frames",
+            str(num_frames),
+            "--frame-rate",
+            str(fps),
+            "--seed",
+            str(seed),
+        ]
+        if image is not None:
+            command.extend(
+                [
+                    "--image",
+                    str(image),
+                    "0",
+                    str(
+                        1.0 if conditioning_strength is None else conditioning_strength
+                    ),
+                ]
+            )
+        self._run_runtime(
+            command=command,
+            prompt=prompt,
+            output_path=output_path,
+            on_loaded=on_loaded,
+        )
+
+    def extend(
+        self,
+        *,
+        prompt: str,
+        source_video: Path,
+        output_path: Path,
+        extend_frames: int,
+        seed: int,
+        on_loaded: Callable[[], None] | None = None,
+    ) -> None:
+        """Append a multiple of eight pixel frames using video context."""
+        if extend_frames < 8 or extend_frames % 8:
+            raise LTX25BackendError("LTX-2.5 extension requires 8n added frames.")
+        self._run_runtime(
+            command=[
+                "extend",
+                "--model",
+                self.model_name,
+                "--quiet",
+                "--video",
+                str(source_video),
+                "--extend-frames",
+                str(extend_frames // 8),
+                "--direction",
+                "after",
+                "--seed",
+                str(seed),
+            ],
+            prompt=prompt,
+            output_path=output_path,
+            on_loaded=on_loaded,
+        )
+
+    def _run_runtime(
+        self,
+        *,
+        command: list[str],
+        prompt: str,
+        output_path: Path,
+        on_loaded: Callable[[], None] | None,
+    ) -> None:
         timeout = _generation_timeout_seconds()
         interpreter = embedded_ltx25_interpreter()
         environment = os.environ.copy()
@@ -481,40 +574,19 @@ class LTX25VideoEngine:
                 "LTX-2.5 generation could not create its temporary output."
             ) from exc
 
+        output_option = ["--output", str(staged_output)]
+        if "--image" in command:
+            # Keep the image's three positional arguments together at the end.
+            image_index = command.index("--image")
+            command = [*command[:image_index], *output_option, *command[image_index:]]
+        else:
+            command = [*command, *output_option]
         command = [
             interpreter,
             "-c",
             _STDIN_PROMPT_RUNNER,
-            "generate",
-            "--model",
-            self.model_name,
-            "--distilled",
-            "--low-ram",
-            "--quiet",
-            "--height",
-            str(height),
-            "--width",
-            str(width),
-            "--frames",
-            str(num_frames),
-            "--frame-rate",
-            str(fps),
-            "--seed",
-            str(seed),
-            "--output",
-            str(staged_output),
+            *command,
         ]
-        if image is not None:
-            command.extend(
-                [
-                    "--image",
-                    str(image),
-                    "0",
-                    str(
-                        1.0 if conditioning_strength is None else conditioning_strength
-                    ),
-                ]
-            )
         process: subprocess.Popen[str] | None = None
         ready_read: int | None = None
         ready_write: int | None = None
