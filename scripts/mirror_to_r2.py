@@ -264,32 +264,24 @@ def _select_subfolder(files: list[FileMeta], subfolder: str) -> list[FileMeta]:
 def _select_included(files: list[FileMeta], include: list[str]) -> list[FileMeta]:
     """Keep files matching any ``include`` glob, plus repo-root terms.
 
-    Refuses an empty selection, and any pattern naming a literal file the
-    repository does not have, so a typo can never verify an incomplete set.
+    Every pattern must match at least one file in the repository, so a typo
+    in any one of them can never verify an incomplete set.
     """
     from fnmatch import fnmatchcase
 
-    present = {f.relpath for f in files}
-    literal_missing = sorted(
+    unmatched = [
         pattern
         for pattern in include
-        if not any(ch in pattern for ch in "*?[") and pattern not in present
-    )
-    if literal_missing:
-        raise ValueError(
-            f"--include names files the repository lacks: {literal_missing}"
-        )
-    selected = [
+        if not any(fnmatchcase(f.relpath, pattern) for f in files)
+    ]
+    if unmatched:
+        raise ValueError(f"--include matched no repository files: {unmatched}")
+    return [
         f
         for f in files
         if any(fnmatchcase(f.relpath, pattern) for pattern in include)
         or ("/" not in f.relpath and _is_root_keep(f.relpath))
     ]
-    if not any(
-        any(fnmatchcase(f.relpath, pattern) for pattern in include) for f in selected
-    ):
-        raise ValueError(f"--include {include} matched no files")
-    return selected
 
 
 def _r2_client(endpoint_url: str, profile: str) -> Any:

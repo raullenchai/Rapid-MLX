@@ -177,7 +177,11 @@ def test_include_keeps_matches_and_root_terms():
 
 @pytest.mark.parametrize(
     ("include", "message"),
-    [(["vae/config.json"], "lacks"), (["nothing/*"], "matched no files")],
+    [
+        (["vae/config.json"], "matched no repository files"),
+        (["nothing/*"], "matched no repository files"),
+        (["model_index.json", "unet/typo*"], r"\['unet/typo\*'\]"),
+    ],
 )
 def test_include_refuses_an_incomplete_or_empty_selection(include, message):
     with pytest.raises(ValueError, match=message):
