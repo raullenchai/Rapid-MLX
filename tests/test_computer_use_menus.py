@@ -69,8 +69,17 @@ def clock(monkeypatch):
 def attrs(monkeypatch):
     """Dict-backed AX attributes: ``attrs[element][attribute]``."""
     table: dict = {}
+
+    def checked(element, attribute):
+        value = table.get(element, {}).get(attribute)
+        return (False, None) if value is _UNREADABLE else (True, value)
+
     monkeypatch.setattr(ax_driver, "_get", lambda e, a: table.get(e, {}).get(a))
+    monkeypatch.setattr(ax_driver, "_get_checked", checked)
     return table
+
+
+_UNREADABLE = object()  # an attribute whose read fails (not merely absent)
 
 
 @pytest.fixture
@@ -660,6 +669,21 @@ def test_menu_equivalent_lookup_keeps_scanning_past_unreadable_modifiers(
     menubar["edit-menu"]["AXChildren"] = ["odd"]
     assert backend._menu_equivalent_lookup({"pid": 4}, "c", cmd) == (True, None)
     assert backend._menu_equivalent_lookup({"pid": 4}, "z", cmd) == (False, None)
+
+
+def test_menu_equivalent_lookup_fails_closed_on_unenumerable_menus(menubar):
+    cmd = backend.MODIFIER_FLAGS["cmd"]
+    # A menu whose children fail to read may hide the chord: fail closed,
+    # but still resolve an item that was found elsewhere.
+    menubar["bar"]["AXChildren"] = ["edit-title", "view-title"]
+    menubar["view-title"] = {"AXRole": "AXMenuBarItem", "AXChildren": _UNREADABLE}
+    assert backend._menu_equivalent_lookup({"pid": 4}, "z", cmd) == (True, None)
+    assert backend._menu_equivalent_lookup({"pid": 4}, "c", cmd) == (True, "copy")
+    # A menu bar with no readable items cannot rule anything out.
+    menubar["bar"]["AXChildren"] = []
+    assert backend._menu_equivalent_lookup({"pid": 4}, "z", cmd) == (True, None)
+    menubar["app"]["AXMenuBar"] = None
+    assert backend._menu_equivalent_lookup({"pid": 4}, "z", cmd) == (True, None)
 
 
 # --- focus guard and keyed target ------------------------------------------------

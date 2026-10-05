@@ -1202,6 +1202,7 @@ def test_menu_item_press_dismisses_a_lingering_popup(monkeypatch, keyboard):
         assert backend.click("App", element_index=0, expected_snapshot=snapshot) == {
             "mode": "AXPress",
             "element_index": 0,
+            "focus_restored": None,
         }
     # Cleanup runs only when a popup was already open before the press.
     assert dismissed == [{7}]
