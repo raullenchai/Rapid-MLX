@@ -5,6 +5,14 @@ CLI help/banner and telemetry registry/chip paths. The mapping is in
 `scripts/classify_ci_changes.py`; tests, shared support, dependencies, controls,
 unknown paths and mixed unmapped changes otherwise retain full validation.
 
+Test-only changes to `tests/test_telemetry_track.py` or
+`tests/test_telemetry_v1_retired.py` also select both complete regression files.
+They exercise CPU, isolated state and loopback contracts without real models.
+Their consent, transport, lifecycle, model-event and server production
+dependencies remain unmapped: changing any of those alongside a mapped test
+forces full source validation. Shared fixtures and dependency changes do too.
+This does not classify telemetry production code generally as low risk.
+
 `RAPID_MLX_SOURCE_CANARY=true` is an opt-in repository Actions variable. Missing
 or any other value broadens source checks to the full matrix. Enable only after
 this workflow's full integration candidate has passed and merged. The latest
