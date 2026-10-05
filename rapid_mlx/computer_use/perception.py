@@ -44,6 +44,10 @@ SETTLE_CAP_SLOW_S = 5.0
 _SLOW_KEYS = {"return", "enter", "cmd+r", "cmd+l", "cmd+n", "cmd+t", "cmd+w"}
 # Keys that press the focused control.
 _ACTIVATING_KEYS = {"return", "enter", "space", " ", "kp_enter"}
+_PASTE = re.compile(
+    r"^(?:(?:shift|option|alt|ctrl)\+)*(?:cmd|command)\+(?:(?:shift|option|alt)\+)*v$",
+    re.I,
+)
 WAIT_POLL_S = 0.5
 # A bot reply lands in pieces (bubble, then text, then quick replies).
 WAIT_QUIET_S = 2.5
@@ -358,7 +362,9 @@ class PerceptionSession:
         # A printable key is typing too: a password spelled key by key is
         # still the user's.
         key_text = _key_text(kw.get("key")) if op == "key" else None
-        typing = op == "type" or key_text is not None
+        # A paste enters text the agent never saw (the user's clipboard).
+        pasting = op == "key" and bool(_PASTE.match(str(kw.get("key", ""))))
+        typing = op == "type" or key_text is not None or pasting
         if op == "fill" or typing:
             # Typed text goes to the focused element whatever ref was named,
             # so a focused secret field is guarded the same as a named one.
@@ -443,7 +449,12 @@ class PerceptionSession:
                 "label": row.label,
                 "window": obs.window_id,
                 "title": obs.title,
-                "context": guards.money_context(texts, obs.choices()),
+                "context": guards.money_context(texts, obs.choices())
+                + (
+                    ["(the page was only partly read: check every amount on screen)"]
+                    if obs.truncated
+                    else []
+                ),
             }
             self._emit("approval_requested", {"id": aid, **_public(self._pending[aid])})
         pending = self._pending[aid]
@@ -568,7 +579,8 @@ class PerceptionSession:
 
         Brings the window forward, tells the user why, blocks agent input to
         that window, and returns when the page shows the condition (or the
-        user says they are done). The agent never sees what they typed.
+        user says they are done). The agent never sees what they typed into
+        a field only they may fill.
         """
         with self._lock:
             obs = self._window_obs(window_id)

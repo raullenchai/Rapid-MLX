@@ -23,7 +23,8 @@ USER_VALUE = "[entered by the user]"
 _SECRET_LABEL = re.compile(
     r"password|passcode|\bpin\b|one[- ]time|verification code|security code|"
     r"\bcvv\b|\bcvc\b|\b2fa\b|two[- ]factor|authenticat(?:ion|or) code|"
-    r"social security|\bssn\b|card number|\bcard no\b|credit card|debit card",
+    r"social security|\bssn\b|card number|\bcard no\b|credit card|debit card|"
+    r"\botp\b|\bmfa\b|\bsms code\b|(?:sign[- ]in|login|access) code|two[- ]step|2[- ]step",
     re.I,
 )
 
@@ -37,11 +38,17 @@ _COMMIT_LABEL = re.compile(
     re.I,
 )
 # Prefix or suffix symbol or code, any grouping and decimal separator
-# ("$1,204.50", "€12,50", "12,50 €", "1.234,56 EUR").
-_AMOUNT = re.compile(
-    r"(?:[$€£¥]|\b(?:USD|EUR|GBP|CAD|AUD|JPY)\b)\s?\d(?:[\d.,]*\d)?"
-    r"|\d(?:[\d.,]*\d)?\s?(?:[€£]|\b(?:USD|EUR|GBP|CAD|AUD|JPY)\b)"
+# ("$1,204.50", "€12,50", "12,50 €", "1.234,56 EUR", "R$ 30", "CHF 9.50").
+_CURRENCY_SYMBOLS = "$€£¥₹₩₽₺₪₫฿₱₦₴₡"
+_CURRENCY_CODES = (
+    "USD|EUR|GBP|CAD|AUD|NZD|JPY|CNY|HKD|SGD|CHF|INR|KRW|BRL|MXN|SEK|NOK|DKK|"
+    "PLN|CZK|HUF|ZAR|TRY|ILS|AED|SAR|THB|PHP|IDR|MYR|TWD|RUB|UAH|NGN"
 )
+_NUMBER = r"\d(?:[\d.,]*\d)?"
+_CURRENCY = rf"(?:[{_CURRENCY_SYMBOLS}]|\b(?:{_CURRENCY_CODES})\b)"
+# A suffix currency followed by a number is that number's prefix
+# ("Qty 2 €5" is €5, not "2 €").
+_AMOUNT = re.compile(rf"{_CURRENCY}\s?{_NUMBER}|{_NUMBER}\s?{_CURRENCY}(?!\s?\d)")
 _PRICED_VERB = re.compile(
     r"\b(?:upgrade|join|pay|buy|purchase|subscribe|donate|renew|tip|add funds)\b", re.I
 )

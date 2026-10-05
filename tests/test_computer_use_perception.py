@@ -720,6 +720,16 @@ def test_secrets_cannot_be_spelled_key_by_key(session, screen, monkeypatch):
     assert perception._key_text(None) is None
 
 
+def test_pasting_into_a_secret_field_is_the_users(session, screen):
+    screen.show([E("pw", "AXTextField", "Password", states=("focused",))])
+    session.observe("Chrome", "cg:1")
+    for key in ("cmd+v", "shift+cmd+v", "cmd+option+shift+v"):
+        with pytest.raises(ComputerUseError) as err:
+            session.act("key", None, key=key, window_id="cg:1")
+        assert err.value.code == "needs_human"
+    assert not screen.calls
+
+
 def test_values_the_user_typed_into_secret_fields_are_not_shown(session, screen):
     screen.show(
         [
@@ -815,6 +825,15 @@ def test_money_commit_needs_one_approval_of_this_exact_screen(session, screen):
     with pytest.raises(ComputerUseError) as err:
         session.act("click", place)
     assert "approval a2" in err.value.message
+
+
+def test_approval_of_a_partly_read_page_says_so(session, screen):
+    screen.show(_checkout(), truncated=True)
+    obs = session.observe("Chrome", "cg:1")
+    with pytest.raises(ComputerUseError) as err:
+        session.act("click", _ref(obs, "Place order"))
+    assert "only partly read" in err.value.message
+    assert "only partly read" in session.pending_approvals()["a1"]["context"][-1]
 
 
 def test_approval_binds_to_every_amount_on_screen(session, screen):

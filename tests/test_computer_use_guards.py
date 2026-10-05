@@ -112,6 +112,8 @@ def test_secure_roles_and_labels_on_non_text_controls():
     )
     assert guards.needs_human_input("AXSearchField", "", "Search orders") is None
     assert guards.needs_human_input("AXButton", "", "Forgot password?") is None
+    for label in ("OTP", "MFA code", "Sign-in code", "2-step code", "SMS code"):
+        assert guards.needs_human_input("AXTextField", "", label), label
 
 
 def test_card_number_bounds():
@@ -133,6 +135,14 @@ def test_priced_actions_and_amounts():
         "12,99€",
         "1.234,56EUR",
         "USD9",
+    )
+    assert guards.amounts(
+        ["R$ 30,00", "CHF 9.50", "₹1,299", "Qty 2 €5", "3 items"]
+    ) == (
+        "$30,00",
+        "CHF9.50",
+        "₹1,299",
+        "€5",
     )
     assert guards.amounts(["Total $1,204.50 and €3", "", None, "£ 7"]) == (
         "$1,204.50",
