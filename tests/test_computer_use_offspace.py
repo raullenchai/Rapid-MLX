@@ -1176,6 +1176,8 @@ def test_non_menu_press_never_probes_popups(monkeypatch, keyboard):
 
 
 def test_open_popup_menus_is_scoped_and_best_effort(monkeypatch):
+    monkeypatch.setenv(background_input.DELIVERY_ENV, "background")
+    monkeypatch.setattr(background_input, "skylight_available", lambda: True)
     _install_module(
         monkeypatch,
         "Quartz",
