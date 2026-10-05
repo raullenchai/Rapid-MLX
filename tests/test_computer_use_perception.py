@@ -1628,6 +1628,26 @@ def test_key_chords_take_the_hotkey_route_and_keep_every_guard(session, screen):
     session.observe("Chrome", "cg:1")
     session.act("key", _ref(obs, "Note"), key="cmd+a")
     assert [c[0] for c in screen.calls[-2:]] == ["click", "hotkey"]
+    assert screen.calls[-2][1].get("focus_only") is True  # proven, never commits
+    # Where focus needs a click, the chord goes only once the field has it.
+    proofs = iter([_raise("synthetic_input_blocked"), lambda *a, **k: {}])
+
+    def click(*args, **kw):
+        return next(proofs)() if kw.get("focus_only") else {}
+
+    screen.handlers["click"] = click
+    session.observe("Chrome", "cg:1")
+    session.act("key", _ref(obs, "Note"), key="cmd+a")
+    assert [c[0] for c in screen.calls[-4:]] == ["click", "click", "click", "hotkey"]
+    assert [c[1].get("focus_only") for c in screen.calls[-4:-1]] == [True, False, True]
+    screen.handlers["click"] = lambda *a, **kw: (
+        _raise("synthetic_input_blocked")() if kw.get("focus_only") else {}
+    )
+    session.observe("Chrome", "cg:1")
+    receipt = session.act("key", _ref(obs, "Note"), key="cmd+a")["receipt"]
+    assert receipt["error"]["code"] == "synthetic_input_blocked"
+    assert screen.calls[-1][0] == "click"  # no chord went to the old focus
+    del screen.handlers["click"]
     session.observe("Chrome", "cg:1")
     receipt = session.act("key", _ref(obs, "Help"), key="cmd+a")["receipt"]
     assert receipt["effect"] == "refused"

@@ -119,6 +119,7 @@ class Row:
         return (
             in_browser
             and self.role in _TAB_ROLES
+            and self.web is not True  # a page's own tabs are the page's
             and (self.web is False or bool(_TAB_HOVER.search(self.label)))
         )
 
@@ -1195,9 +1196,7 @@ class PerceptionSession:
                         f"a key combination goes to the focused element; {row.ref} "
                         "is not a text field (omit ref, or click it first)",
                     )
-                backend.click(
-                    app, element_index=index, expected_snapshot=snapshot, window_id=wid
-                )
+                _focus_field(app, index, snapshot, wid)
             return backend.hotkey(app, str(kw["key"]), window_id=wid)
         if op == "key":
             try:
@@ -1613,6 +1612,34 @@ def _key_text(key: object) -> str | None:
 def _activating(key: object) -> bool:
     """Whether ``key`` presses the focused control, with any modifiers."""
     return _split_key(key)[1].lower() in _ACTIVATING_KEYS
+
+
+def _focus_field(app: str, index: int, snapshot: dict, wid: str) -> None:
+    """Give a text field keyboard focus, or raise: a chord sent after a focus
+    change that did not take lands on whatever held focus before.
+
+    The backend's ``focus_only`` proves the exact element holds focus and never
+    commits. Where it cannot move focus itself (a web field often takes it
+    only from a click), the field is clicked and the proof is asked for again.
+    """
+
+    def focus(focus_only: bool) -> None:
+        backend.click(
+            app,
+            element_index=index,
+            expected_snapshot=snapshot,
+            window_id=wid,
+            focus_only=focus_only,
+        )
+
+    try:
+        focus(True)
+        return
+    except ComputerUseError as exc:
+        if exc.code != "synthetic_input_blocked":
+            raise
+    focus(False)
+    focus(True)
 
 
 def _is_combo(key: str) -> bool:
