@@ -406,6 +406,17 @@ def test_settle_menus_matches_a_unique_start_or_part_and_refuses_ambiguity(
         assert exc.value.code == "element_not_found"
         assert why in exc.value.message and "Savings ending 1111" in exc.value.message
         assert len([c for c in calls if c[2:] == ("AXPress",)]) == presses
+    # Two items with the very title asked for: neither is chosen.
+    attrs["menu"]["AXChildren"].append("joint")
+    attrs["joint"] = {"AXRole": "AXMenuItem", "AXTitle": "savings ending 1111…"}
+    open_menu.state["open"] = 1
+    presses = len([c for c in calls if c[2:] == ("AXPress",)])
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend._settle_menus(
+            _snapshot(), 0, 0, "Savings ending 1111", expect_menu=True
+        )
+    assert "has 2 items named 'Savings ending 1111'" in exc.value.message
+    assert len([c for c in calls if c[2:] == ("AXPress",)]) == presses
 
 
 def test_settle_menus_reports_a_failed_press(open_menu, calls):

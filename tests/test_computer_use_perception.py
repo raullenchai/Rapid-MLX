@@ -1640,6 +1640,13 @@ def test_key_chords_take_the_hotkey_route_and_keep_every_guard(session, screen):
     session.act("key", None, key="+", window_id="cg:1")
     assert screen.calls[-1][0] == "press_key"
     assert perception._is_combo("Shift+Return") and not perception._is_combo("+")
+    # A chord whose key is "+" is a chord: it takes the hotkey route.
+    for chord in ("cmd++", "shift++"):
+        assert perception._is_combo(chord)
+        session.observe("Chrome", "cg:1")
+        session.act("key", None, key=chord, window_id="cg:1")
+        assert screen.calls[-1][0] == "hotkey"
+        assert screen.calls[-1][1]["args"] == ("Chrome", chord)
     assert perception._activating("cmd+Return") and perception._activating(" ")
 
 
@@ -1952,6 +1959,7 @@ def test_diffs_skip_browser_noise_and_show_where_long_labels_differ(session, scr
     long_new = "Organic Large Brown Eggs, 24 count, cage free, grade A — $8.99"
     screen.show(
         [
+            E("bar", "AXTextField", "Address and search bar", web=False),
             E("tab", "AXRadioButton", "Shop", web=False),
             E("hover", "AXRadioButton", "Shop - Memory usage - 160 MB"),
             E("ext", "AXPopUpButton", "Grammarly has access to this site"),
@@ -1962,6 +1970,7 @@ def test_diffs_skip_browser_noise_and_show_where_long_labels_differ(session, scr
     session.observe("Chrome", "cg:1")
     screen.show(
         [
+            E("bar", "AXTextField", "Address and search bar", web=False),
             E("tab", "AXRadioButton", "Mart", web=False),
             E("hover", "AXRadioButton", "Shop - Memory usage - 171 MB"),
             E("ext", "AXPopUpButton", "Grammarly wants access to this site"),
@@ -1977,13 +1986,14 @@ def test_diffs_skip_browser_noise_and_show_where_long_labels_differ(session, scr
     assert 'label "…rade A — $7.49" -> "…rade A — $8.99"' in joined
     # Switching tabs is an outcome even when the pages look alike.
     tabs = [
+        E("bar", "AXTextField", "Address and search bar", web=False),
         E("t1", "AXRadioButton", "Mart", states=("selected",), web=False),
         E("t2", "AXRadioButton", "Mart", web=False),
         E("body", "AXStaticText", "Mart", web=True),
     ]
     screen.show(tabs, wid="cg:3")
     session.observe("Chrome", "cg:3")
-    tabs[0]["states"], tabs[1]["states"] = [], ["selected"]
+    tabs[1]["states"], tabs[2]["states"] = [], ["selected"]
     switched = session.observe("Chrome", "cg:3")
     assert switched.change_counts == (0, 0, 2)
     assert all("label" not in line for line in switched.changes)
@@ -2004,6 +2014,19 @@ def test_diffs_skip_browser_noise_and_show_where_long_labels_differ(session, scr
     native[1]["label"] = "Advanced"
     native[2]["label"] = "Job - Memory usage - 2 GB"
     assert session.observe("Settings", "cg:2").change_counts == (0, 0, 3)
+    # So are those beside a web view the app embeds (no address bar above it).
+    embedded = [
+        E("r1", "AXTab", "Inbox", web=False),
+        E("r2", "AXRadioButton", "Plain text", value="0", web=False),
+        E("body", "AXStaticText", "Welcome", web=True),
+    ]
+    screen.show(embedded, wid="cg:4")
+    session.observe("Mail", "cg:4")
+    embedded[0]["label"], embedded[1]["value"] = "Inbox (3)", "1"
+    changed = session.observe("Mail", "cg:4")
+    assert changed.change_counts == (0, 0, 2)
+    assert any('label "Inbox" -> "Inbox (3)"' in line for line in changed.changes)
+    assert any("value '0' -> '1'" in line for line in changed.changes)
     assert perception._where_differ("abc", "abd") == ("abc", "abd")
     assert perception._where_differ("x" * 45, "x" * 46, 40) == (
         "…" + "x" * 10,

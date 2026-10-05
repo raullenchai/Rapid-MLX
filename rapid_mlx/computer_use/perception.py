@@ -67,6 +67,7 @@ _EXTENSION_BUTTON = re.compile(r"(has|wants) access to this site$|^extensions$",
 _ADDRESS_BAR = re.compile(
     r"address and search|address bar|smart search|search or enter", re.I
 )
+_ADDRESS_BAR_ROLES = {"AXTextField", "AXComboBox"}
 # A tab's hover card renames its tab ("Shop - Memory usage - 160 MB").
 _TAB_HOVER = re.compile(r" - (?:memory usage|high memory usage) - ", re.I)
 _TAB_ROLES = {"AXRadioButton", "AXTab"}
@@ -111,8 +112,9 @@ class Row:
     def is_tab_strip(self, in_browser: bool) -> bool:
         """A browser tab: its title and hover card change with every page.
 
-        ``in_browser``: the window shows web content, so a tab outside it is
-        the browser's (a native app's tabs and radio buttons are its own).
+        ``in_browser``: the window is a browser's (:func:`_shows_browser`),
+        so a tab outside the page is the browser's (a native app's tabs and
+        radio buttons are its own, embedded web view or not).
         """
         return (
             in_browser
@@ -681,8 +683,7 @@ class PerceptionSession:
                 (
                     row
                     for row in obs.rows
-                    if row.role in {"AXTextField", "AXComboBox"}
-                    and _ADDRESS_BAR.search(row.label)
+                    if row.role in _ADDRESS_BAR_ROLES and _ADDRESS_BAR.search(row.label)
                 ),
                 None,
             )
@@ -1324,13 +1325,27 @@ class PerceptionSession:
         return obs
 
 
+def _shows_browser(rows: list[Row]) -> bool:
+    """Whether ``rows`` are a browser window: a page under an address bar.
+
+    Web content alone does not say so: a native app embeds web views (a help
+    pane, a sign-in sheet) beside tabs and radio buttons of its own.
+    """
+    return any(row.web for row in rows) and any(
+        row.web is not True
+        and row.role in _ADDRESS_BAR_ROLES
+        and _ADDRESS_BAR.search(row.label)
+        for row in rows
+    )
+
+
 def _diff(
     previous: Observation | None, rows: list[Row]
 ) -> tuple[list[str], tuple[int, int, int]]:
     if previous is None:
         return [], (0, 0, 0)
 
-    in_browser = any(row.web for row in [*previous.rows, *rows])
+    in_browser = _shows_browser([*previous.rows, *rows])
 
     def counted(row: Row) -> bool:
         # Extension buttons renaming themselves are the browser's, not an
@@ -1602,7 +1617,7 @@ def _activating(key: object) -> bool:
 
 def _is_combo(key: str) -> bool:
     """Whether ``key`` is a chord ("cmd+w"), not one key ("+" or "Return")."""
-    return len([part for part in key.split("+") if part.strip()]) >= 2
+    return bool(_split_key(key)[0])
 
 
 def _user_only(row: Row) -> bool:

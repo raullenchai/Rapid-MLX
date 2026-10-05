@@ -5075,8 +5075,8 @@ def _match_menu_item(
 ) -> tuple[object | None, str | None]:
     """The item ``wanted`` names, and why none was taken when it is None.
 
-    An exact title (case, a trailing ellipsis aside) wins; otherwise the one
-    title holding it ("checking" or "6789" for "Checking ending 6789 (no
+    The one exact title (case, a trailing ellipsis aside) wins, and two items
+    sharing it are ambiguous; otherwise the one title holding it ("checking" or "6789" for "Checking ending 6789 (no
     fee)"). Two or more titles holding it are ambiguous, even when only one
     starts with it ("card": "Card settings", "Gift card"), and nothing is
     chosen.
@@ -5084,8 +5084,10 @@ def _match_menu_item(
     key = _menu_title_key(wanted)
     keys = [_menu_title_key(t) for t in titles]
     exact = [item for item, k in zip(items, keys) if k == key]
-    if exact:
+    if len(exact) == 1:
         return exact[0], None
+    if exact:
+        return None, f"has {len(exact)} items named"
     # A letter names too little to choose by (a typo would pick); two
     # letters only as the start of a title.
     if len(key) >= 3:
