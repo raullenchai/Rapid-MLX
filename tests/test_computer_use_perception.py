@@ -527,6 +527,10 @@ def test_fill_is_confirmed_by_the_observed_value_even_if_the_route_refused(
     assert out["receipt"]["effect"] == "confirmed"
     assert out["receipt"]["error"]["code"] == "action_failed"
     assert out["receipt"]["settled"] is True
+    # A value that was already there confirms nothing: the refusal stands.
+    screen.handlers["set_value"] = _raise("action_failed", "refused")
+    out = session.act("fill", _ref(out["observation"], "Search"), text="milk")
+    assert out["receipt"]["effect"] == "refused"
 
 
 def test_refused_action_is_reported_not_unresolved(session, screen):

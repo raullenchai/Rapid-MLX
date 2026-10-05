@@ -1053,14 +1053,17 @@ class PerceptionSession:
             if row is None
             else target_after is None or target_after.signature() != row.signature()
         )
-        # Deliberately not gated on ``error``: a route can refuse after its
-        # first attempt landed, and the observation is what counts.
         observed_match = (
             expected is not None
             and target_after is not None
             and target_after.value is not None
             and target_after.value.strip() == expected.strip()
         )
+        if observed_match and error is not None and row is not None:
+            # A route can refuse after its first attempt landed: the value
+            # it wrote confirms it. A value that was there before confirms
+            # nothing, and the refusal stands.
+            observed_match = (row.value or "").strip() != (expected or "").strip()
         if observed_match:
             # The observation shows exactly what was asked for, whatever the
             # transport reported (it can refuse after its first route landed).
