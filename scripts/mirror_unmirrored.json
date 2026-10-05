@@ -100,11 +100,6 @@
       "hf_path": "rickylin20260522/Wan2.2-T2V-A14B-mlx",
       "reason": "large variant; HF fallback; mirror cost not justified",
       "since": "2026-10-05"
-    },
-    {
-      "hf_path": "stabilityai/stable-diffusion-xl-base-1.0",
-      "reason": "pinned image runtime downloads from HF directly; the mirror is never consulted",
-      "since": "2026-10-05"
     }
   ]
 }

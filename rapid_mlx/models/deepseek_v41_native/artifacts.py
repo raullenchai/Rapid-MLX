@@ -161,11 +161,11 @@ def verify_mtp_snapshot(snapshot: str | Path) -> Path:
 
 def download_mtp_snapshot() -> Path:
     """Resolve only the 4.62 GB data subset needed by the owned runtime."""
-    from huggingface_hub import snapshot_download
+    from ..._mirror import pinned_snapshot_download
 
-    path = snapshot_download(
+    path = pinned_snapshot_download(
         MTP_REPO,
-        revision=MTP_REVISION,
+        MTP_REVISION,
         allow_patterns=list(MTP_ALLOW_PATTERNS),
     )
     return verify_mtp_snapshot(path)
@@ -173,6 +173,6 @@ def download_mtp_snapshot() -> Path:
 
 def download_target_snapshot() -> Path:
     """Resolve the exact target checkpoint revision; never follow moving main."""
-    from huggingface_hub import snapshot_download
+    from ..._mirror import pinned_snapshot_download
 
-    return Path(snapshot_download(TARGET_REPO, revision=TARGET_REVISION))
+    return Path(pinned_snapshot_download(TARGET_REPO, TARGET_REVISION))

@@ -45,13 +45,13 @@ class QualifiedPairArtifacts:
 def download_qualified_pair() -> QualifiedPairArtifacts:
     """Resolve the product pair into the default HF cache at immutable SHAs."""
 
-    from huggingface_hub import snapshot_download
+    from .._mirror import pinned_snapshot_download
 
-    target = snapshot_download(
-        SUPPORTED_TARGET, revision=next(iter(SUPPORTED_TARGET_REVISIONS))
+    target = pinned_snapshot_download(
+        SUPPORTED_TARGET, next(iter(SUPPORTED_TARGET_REVISIONS))
     )
-    drafter = snapshot_download(
-        SUPPORTED_DRAFTER, revision=next(iter(SUPPORTED_DRAFTER_REVISIONS))
+    drafter = pinned_snapshot_download(
+        SUPPORTED_DRAFTER, next(iter(SUPPORTED_DRAFTER_REVISIONS))
     )
     validate_pair(Path(target), Path(drafter))
     return QualifiedPairArtifacts(target_path=target, drafter_path=drafter)

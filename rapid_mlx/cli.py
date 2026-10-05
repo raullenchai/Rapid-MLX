@@ -2549,6 +2549,13 @@ def _ensure_model_downloaded(
             )
             raise
     if mirror_ok:
+        if pinned_image_revision is not None:
+            # Same ref transaction as the pinned HF download below: the
+            # warm-cache gate reads ``refs/main``, which a SHA-addressed
+            # snapshot never writes on its own.
+            from rapid_mlx._download_gate import pin_main_ref
+
+            pin_main_ref(model_name, pinned_image_revision)
         if mirror_out.get("network_fetch") is True:
             _emit_completed_model_pull(
                 model_name,
@@ -10201,8 +10208,20 @@ def _pull_repository(
     # ``https://models.rapidmlx.com``; set ``RAPID_MLX_MODEL_MIRROR=""``
     # to force HF only. The function prints its own progress + summary.
     try:
-        mirror_ok = revision_override is None and _try_mirror_prefetch(
-            repo_id, allow_patterns=variant_allow, out=_mirror_out
+        # A pinned revision goes through the mirror too: the mirror accepts a
+        # file for an exact commit only when its bytes are proven identical
+        # to that commit, and falls back to HF per file otherwise.
+        mirror_ok = (
+            _try_mirror_prefetch(
+                repo_id,
+                allow_patterns=variant_allow,
+                out=_mirror_out,
+                revision=revision_override,
+            )
+            if revision_override
+            else _try_mirror_prefetch(
+                repo_id, allow_patterns=variant_allow, out=_mirror_out
+            )
         )
     except Exception as exc:
         if emit_lifecycle_event:
@@ -10224,7 +10243,12 @@ def _pull_repository(
         owner, _, repo = repo_id.partition("/")
         repo_root = cache_root / f"models--{owner}--{repo}"
         try:
-            rev = (repo_root / "refs" / "main").read_text().strip()
+            # A pinned pull lands in ``snapshots/<sha>`` and writes no ref.
+            rev = (
+                revision_override
+                if revision_override and revision_override != "main"
+                else (repo_root / "refs" / "main").read_text().strip()
+            )
             snapshot_dir = repo_root / "snapshots" / rev
             print(f"  Cached at: {snapshot_dir}")
         except OSError:
@@ -10393,6 +10417,14 @@ def _pull_repository(
     )
 
 
+def _pinned_checkpoint_revision(repo_id: str) -> str | None:
+    """Commit an image/video checkpoint is served from, or ``None``."""
+    from rapid_mlx._download_gate import IMAGE_MODEL_REVISIONS
+    from rapid_mlx.video.wan import WAN_REVISIONS
+
+    return IMAGE_MODEL_REVISIONS.get(repo_id) or WAN_REVISIONS.get(repo_id)
+
+
 def pull_command(args):
     """Download a model and prepare every catalog-declared requirement."""
 
@@ -10453,6 +10485,11 @@ def pull_command(args):
             allow_patterns_override=list(IMAGE_MODEL_DATA_FILES[primary_repo]),
             revision_override=IMAGE_MODEL_REVISIONS[primary_repo],
         )
+    elif (pinned_revision := _pinned_checkpoint_revision(primary_repo)) is not None:
+        # Image and video checkpoints are served from their pinned commit, so
+        # pull exactly that commit (mirror first, proven per file) rather
+        # than moving ``main``, which a later serve would not use.
+        _pull_repository(primary_args, revision_override=pinned_revision)
     else:
         _pull_repository(primary_args)
     if primary_repo == TARGET_REPO:

@@ -735,18 +735,25 @@ def test_non_hidream_pull_keeps_the_generic_download_path(
     assert calls == [((args,), {})]
 
 
-def test_pinned_pull_bypasses_mirror_and_pins_snapshot_download(
+def test_pinned_pull_tries_the_mirror_at_the_pin_then_hf(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """The lower-level pull path must enforce, not merely receive, the pin."""
+    """The lower-level pull path must enforce, not merely receive, the pin.
+
+    The mirror is asked for the exact pinned commit (it proves every file
+    against HF's metadata at that commit); when it cannot complete, the HF
+    download is pinned to the same commit.
+    """
     from rapid_mlx import cli
 
+    mirror_calls = []
     calls = []
-    monkeypatch.setattr(
-        cli,
-        "_try_mirror_prefetch",
-        lambda *_args, **_kwargs: pytest.fail("pinned pulls cannot use mutable main"),
-    )
+
+    def fake_mirror(repo_id, **kwargs):
+        mirror_calls.append((repo_id, kwargs.get("revision")))
+        return False
+
+    monkeypatch.setattr(cli, "_try_mirror_prefetch", fake_mirror)
     monkeypatch.setattr(cli, "_blob_identifier", lambda _root: ())
     monkeypatch.setattr(cli, "_print_pull_summary", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
@@ -764,6 +771,7 @@ def test_pinned_pull_bypasses_mirror_and_pins_snapshot_download(
         revision_override=REVISION,
     )
 
+    assert mirror_calls == [(REPO, REVISION)]
     assert calls == [
         (
             REPO,
@@ -773,3 +781,31 @@ def test_pinned_pull_bypasses_mirror_and_pins_snapshot_download(
             },
         )
     ]
+
+
+def test_pinned_pull_served_by_the_mirror_reports_the_pinned_snapshot(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys
+) -> None:
+    from huggingface_hub import constants
+
+    from rapid_mlx import cli
+
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(tmp_path))
+    monkeypatch.setattr(cli, "_try_mirror_prefetch", lambda _repo, **_kw: True)
+    monkeypatch.setattr(cli, "_print_pull_summary", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        _download_gate, "reap_orphan_incomplete_blobs", lambda _repo: (0, 0)
+    )
+    monkeypatch.setattr(
+        "huggingface_hub.snapshot_download",
+        lambda *_a, **_k: pytest.fail("the mirror already completed the pull"),
+    )
+    args = SimpleNamespace(model=REPO, bits=None, format=None, json=True)
+    cli._pull_repository(
+        args,
+        allow_patterns_override=list(_download_gate.HIDREAM_O1_DATA_FILES),
+        revision_override=REVISION,
+    )
+    expected = tmp_path / f"models--{REPO.replace('/', '--')}" / "snapshots" / REVISION
+    assert args._telemetry_pull_snapshot_dir == expected
+    assert f"Cached at: {expected}" in capsys.readouterr().out
