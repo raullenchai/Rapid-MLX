@@ -2739,6 +2739,14 @@ def _menu_items_under(element: object | None) -> list[object]:
     return found
 
 
+def _cancel_menu(perform: Any, menu_element: object) -> None:
+    """AXCancel a menu; a failure only leaves the Escape fallback to close it."""
+    try:
+        perform(menu_element, "AXCancel")
+    except Exception:  # noqa: BLE001 - the caller escapes and confirms closure
+        pass
+
+
 def _close_menus(pid: int, before: int, element: object | None) -> bool:
     """Close menus that appeared since ``before``; True once they are gone."""
     if element is not None:
@@ -2746,7 +2754,7 @@ def _close_menus(pid: int, before: int, element: object | None) -> bool:
 
         for child in ax_driver._as_list(ax_driver._get(element, "AXChildren")):
             if ax_driver._get(child, "AXRole") == "AXMenu":
-                AXUIElementPerformAction(child, "AXCancel")
+                _cancel_menu(AXUIElementPerformAction, child)
     deadline = time.monotonic() + 1.5
     escaped = 0
     while True:
@@ -3491,7 +3499,7 @@ def _close_menu(live: object, menu_element: object, pid: int) -> bool:
     """
     from ApplicationServices import AXUIElementPerformAction
 
-    AXUIElementPerformAction(menu_element, "AXCancel")
+    _cancel_menu(AXUIElementPerformAction, menu_element)
     escapes = 0
     deadline = time.monotonic() + 0.5
     while _open_menu_of(live, timeout=0) is not None:

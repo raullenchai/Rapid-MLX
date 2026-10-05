@@ -1237,6 +1237,17 @@ def test_semantic_click_error_after_opening_a_menu_settles_it(
     assert not [c for c in calls if c[0] == "click"]  # not clicked again
 
 
+def test_cancel_menu_swallows_an_axcancel_exception():
+    seen = []
+
+    def perform(element, action):
+        seen.append((element, action))
+        raise RuntimeError("pyobjc bridge error")
+
+    backend._cancel_menu(perform, "menu")  # Escape fallback still runs after it
+    assert seen == [("menu", "AXCancel")]
+
+
 def test_choose_from_ax_menu_closes_a_menu_its_failed_press_opened(
     monkeypatch, native_popup, calls
 ):
