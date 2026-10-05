@@ -1800,14 +1800,16 @@ def test_an_action_that_closes_its_window_returns_a_receipt(
     assert err.value.code == "stale_ref"
 
 
-def test_a_closing_action_keeps_its_transport_error(session, screen, monkeypatch):
+def test_a_refused_action_in_a_window_that_closed_stays_refused(
+    session, screen, monkeypatch
+):
     screen.show([E("x", "AXButton", "Close")])
     obs = session.observe("Chrome", "cg:1")
     monkeypatch.setattr(perception.backend, "get_app_state", _raise("ax_unavailable"))
     monkeypatch.setattr(perception, "_window_exists", lambda wid: False)
     screen.handlers["click"] = _raise("action_failed", "AXPress returned an error")
     receipt = session.act("click", _ref(obs, "Close"))["receipt"]
-    assert receipt["effect"] == "window_closed"
+    assert receipt["effect"] == "refused" and receipt["window_closed"] is True
     assert receipt["error"]["code"] == "action_failed"
 
 
