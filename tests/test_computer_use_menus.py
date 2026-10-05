@@ -340,6 +340,24 @@ def test_settle_menus_closes_the_menu_when_reading_it_fails(
     assert exc.value.code == "stale_snapshot"
     # No element to cancel through: closed by Escape to the owning pid.
     assert ("press_key", (4, backend.KEY_ALIASES["escape"])) in calls
+    # The menu ignored the Escapes, and the error says so (once).
+    assert exc.value.message.count("may still be open") == 1
+    assert str(exc.value) == exc.value.message
+
+
+def test_settle_menus_wraps_an_unexpected_failure_when_the_menu_stays_open(
+    monkeypatch, open_menu, calls
+):
+    monkeypatch.setattr(backend, "_live_element", lambda *a, **k: 1 / 0)
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend._settle_menus(_snapshot(), 0, 0, None, expect_menu=True)
+    assert exc.value.code == "action_failed"
+    assert "may still be open" in exc.value.message
+    assert isinstance(exc.value.__cause__, ZeroDivisionError)
+    # A failure whose menu did close propagates unchanged.
+    monkeypatch.setattr(backend, "_close_menus", lambda *a: True)
+    with pytest.raises(ZeroDivisionError):
+        backend._settle_menus(_snapshot(), 0, 0, None, expect_menu=True)
 
 
 def test_settle_menus_warns_when_the_menu_stays_open(monkeypatch, open_menu, calls):
@@ -434,6 +452,11 @@ def test_click_argument_errors(calls):
     with pytest.raises(errors.ComputerUseError) as exc:
         backend.click("App", element_index=0, expected_snapshot=snap, modifiers="hyper")
     assert exc.value.code == "unsupported_key"
+    # A bare point has no element to read a menu under: refused before acting.
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend.click("App", x=10, y=10, expected_snapshot=snap, menu_item="A")
+    assert exc.value.code == "invalid_argument"
+    assert calls == []
 
 
 def test_modifier_flags_parse_lists_and_chords():
@@ -1001,7 +1024,8 @@ def test_choose_from_ax_menu_never_leaves_its_menu_open(
 def test_choose_from_ax_menu_closes_a_menu_that_opens_late(
     monkeypatch, native_popup, calls
 ):
-    menus = iter([None, None, "menu"])
+    # teardown wait, lingering check, open timeout, then the late look.
+    menus = iter([None, None, None, "menu"])
     monkeypatch.setattr(backend, "_open_menu_of", lambda live, timeout: next(menus))
     closed = []
     monkeypatch.setattr(
@@ -1013,11 +1037,26 @@ def test_choose_from_ax_menu_closes_a_menu_that_opens_late(
     assert "may still be open" not in exc.value.message
     assert closed == ["menu"]
     # A late menu that cannot be closed is called out.
-    menus = iter([None, None, "menu"])
+    # teardown wait, lingering check, open timeout, then the late look.
+    menus = iter([None, None, None, "menu"])
     monkeypatch.setattr(backend, "_close_menu", lambda live, menu, pid: False)
     with pytest.raises(errors.ComputerUseError) as exc:
         backend._choose_from_ax_menu("popup", "B", 4)
     assert "may still be open" in exc.value.message
+
+
+def test_choose_from_ax_menu_closes_a_previous_menu_before_pressing(
+    monkeypatch, native_popup, calls
+):
+    # The previous menu outlives the teardown wait.
+    menus = iter(["old"] * 40)
+    monkeypatch.setattr(backend, "_open_menu_of", lambda live, timeout: next(menus))
+    monkeypatch.setattr(backend, "_close_menu", lambda live, menu, pid: False)
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend._choose_from_ax_menu("popup", "B", 4)
+    assert exc.value.code == "action_failed"
+    assert "previous menu did not close" in exc.value.message
+    assert not [c for c in calls if c[0] == "ax"]
 
 
 def test_open_menu_of_times_out(attrs, clock):

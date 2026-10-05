@@ -2793,14 +2793,23 @@ def _settle_menus(
         }
     try:
         return _read_choose_and_close(snapshot, element_index, before, choose)
-    except BaseException:
+    except BaseException as exc:
         # Whatever went wrong (drift, an AX error), the menu must not stay
         # open; error paths that already closed it make this a cheap recount.
         try:
-            _close_menus(pid, before, None)
+            closed = _close_menus(pid, before, None)
         except Exception:  # noqa: BLE001 - the original error is the one to report
-            pass
-        raise
+            closed = False
+        if closed or not isinstance(exc, Exception):
+            raise
+        if isinstance(exc, ComputerUseError):
+            if _MENU_LEFT_OPEN not in exc.message:
+                exc.message += _MENU_LEFT_OPEN
+                exc.args = (exc.message,)
+            raise
+        raise ComputerUseError(
+            "action_failed", f"reading the menu failed: {exc}{_MENU_LEFT_OPEN}"
+        ) from exc
 
 
 def _read_choose_and_close(
@@ -3167,6 +3176,12 @@ def _click(
         raise ComputerUseError(
             "invalid_argument", "click requires --element-index or both --x and --y"
         )
+    if menu_item is not None:
+        # The menu's items are read under the clicked element; a bare point
+        # has none, so the choice could never be made.
+        raise ComputerUseError(
+            "invalid_argument", "menu_item requires an element index, not x/y"
+        )
     snapshot = expected_snapshot or get_app_state(
         app,
         screenshot=False,
@@ -3174,9 +3189,7 @@ def _click(
         window_id=window_id,
         activate=OBSERVE_BY_ROUTE,
     )
-    menus_before = _menus_before(
-        snapshot, menu_item, expect_menu=mouse_button == "right"
-    )
+    menus_before = _menus_before(snapshot, None, expect_menu=mouse_button == "right")
     with background_input.GESTURE_LOCK:
         delivery = _pixel_click(
             snapshot,
@@ -3470,6 +3483,12 @@ def _choose_from_ax_menu(live: object, value: str, pid: int) -> str | None:
     deadline = time.monotonic() + 0.75
     while _open_menu_of(live, timeout=0) is not None and time.monotonic() < deadline:
         time.sleep(0.05)
+    lingering = _open_menu_of(live, timeout=0)
+    if lingering is not None and not _close_menu(live, lingering, pid):
+        raise ComputerUseError(
+            "action_failed",
+            f"the popup's previous menu did not close{_MENU_LEFT_OPEN}",
+        )
     time.sleep(0.15)
     if AXUIElementPerformAction(live, "AXPress") != 0:
         raise ComputerUseError("accessibility_error", "popup could not be opened")
