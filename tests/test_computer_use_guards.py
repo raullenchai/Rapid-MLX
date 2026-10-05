@@ -46,7 +46,18 @@ def test_money_commits():
         "Accept store credit",
     ):
         assert not commit(label), label
-    assert not commit("Place order", role="AXStaticText")
+    # Whatever is pressed is checked: a "Place order" div commits as surely
+    # as a button. A paragraph that mentions the button, or a field, does not.
+    for role in ("AXStaticText", "AXGroup", "AXCheckBox", "AXCell"):
+        assert commit("Place order", role=role), role
+    assert not commit(
+        "By clicking Place order you agree to the conditions of use and sale.",
+        role="AXStaticText",
+    )
+    assert commit(
+        "By clicking Place order you agree to the conditions of use and sale."
+    )  # a button's whole name is still its name
+    assert not commit("Place order", role="AXTextField")
 
 
 def test_money_context_joins_table_cells():
@@ -188,3 +199,176 @@ def test_priced_lines_name_each_amount_and_context_says_what_it_is_for():
     )
     # The same line said twice (two cells, or a heading) is listed once.
     assert context == ["For: Your order", "Order total: $48.14", "Item: Bananas: $0.29"]
+
+
+# -- held-out generality: other languages, other phrasings, other roles ------
+
+
+def test_secret_fields_in_other_languages_and_phrasings():
+    for label in (
+        "Contraseña",
+        "Senha",
+        "Passwort",
+        "Kennwort",
+        "Mot de passe",
+        "Wachtwoord",
+        "密码",
+        "密碼",
+        "パスワード",
+        "비밀번호",
+        "Código de verificación",
+        "Código de segurança",
+        "Bestätigungscode",
+        "Sicherheitscode",
+        "Code de vérification",
+        "Codice di verifica",
+        "验证码",
+        "驗證碼",
+        "認証コード",
+        "인증번호",
+        "Kartennummer",
+        "Numéro de carte",
+        "Número de tarjeta",
+        "Número do cartão",
+        "Numero della carta",
+        "卡号",
+        "カード番号",
+        "카드 번호",
+        "暗証番号",
+        "PIN码",
+        "安全码",
+        "Enter the 6-digit code we sent",
+        "six digit code",
+        "6-stelliger Code",
+        "Saisissez le code à 6 chiffres",
+        "Código de 6 dígitos",
+        "6桁のコード",
+        "6자리 코드",
+    ):
+        assert guards.needs_human_input("AXTextField", "", label), label
+    for label in (
+        "Palabra clave",
+        "Promo code",
+        "Gift card code",
+        "Zip code",
+        "Enter your 10-digit phone number",
+        "Nachricht",
+        "地址",
+        "メッセージ",
+        "검색",
+        "Nombre",
+    ):
+        assert guards.needs_human_input("AXTextField", "", label) is None, label
+
+
+def test_commit_buttons_in_other_languages():
+    for label in (
+        "Comprar ahora",
+        "Realizar pedido",
+        "Confirmar compra",
+        "Finalizar compra",
+        "Comprar agora",
+        "Pagar R$ 30",
+        "Jetzt kaufen",
+        "Zahlungspflichtig bestellen",
+        "Bestellung abschicken",
+        "Kaufen",
+        "Payer 25,00 €",
+        "Passer la commande",
+        "Confirmer la commande",
+        "Acheter maintenant",
+        "Acquista ora",
+        "Conferma ordine",
+        "Bestelling plaatsen",
+        "立即购买",
+        "立即購買",
+        "提交订单",
+        "确认付款",
+        "支付 ¥199",
+        "注文を確定する",
+        "今すぐ購入",
+        "구매하기",
+        "결제하기",
+        "Pay 20 dollars",
+    ):
+        assert guards.is_money_commit("AXButton", label), label
+    for label in (
+        "In den Warenkorb",
+        "Zur Kasse",
+        "Añadir al carrito",
+        "Weiter einkaufen",
+        "Bestellung überprüfen",
+        "Ver pedido",
+        "加入购物车",
+        "去结算",
+        "カートに入れる",
+        "注文履歴",
+        "장바구니 담기",
+        "Abonnieren",
+        "订阅",
+    ):
+        assert not guards.is_money_commit("AXButton", label), label
+
+
+def test_commits_need_money_not_just_a_verb():
+    commit = guards.is_money_commit
+    # Bare, these verbs are a settings pane, a newsletter, a channel.
+    for label in ("Transfer or Reset", "Subscribe to our newsletter", "Subscribe"):
+        assert not commit("AXButton", label), label
+    for label in ("Confirm and pay", "Complete purchase", "Book", "Purchase", "Pay"):
+        assert commit("AXButton", label), label
+    # Moving to the page that pays commits nothing; its pay button is gated.
+    for label in (
+        "Checkout",
+        "Check out",
+        "Proceed to checkout",
+        "Continue to payment",
+        "Book a demo",
+    ):
+        assert not commit("AXButton", label), label
+    # A price on the button, or around it, makes these verbs spend.
+    assert commit("AXButton", "Subscribe for $9.99/mo")
+    assert commit("AXButton", "Subscribe", ["Premium: $9.99/mo"])
+    assert commit("AXButton", "Transfer", ["Amount: 500 dollars"])
+    assert commit("AXButton", "Book", ["From 209 US dollars"])
+    assert commit("AXButton", "Subscribe to Premium", ["$9.99/mo"])
+    assert not commit("AXButton", "Subscribe to our newsletter", ["$9.99"])
+    # A choice of panes, or a long name, is not a call to pay.
+    assert not commit("AXButton", "Transfer or Reset", ["$9.99"])
+    assert not commit("AXButton", "Book your next stay with us", ["$9.99"])
+    assert not commit("AXButton", "Transfer", ["Ships Friday"])
+    assert not commit("AXButton", "Monday, October 26, 2026 , 209 US dollars")
+
+
+def test_written_out_and_local_amounts():
+    assert guards.amounts(
+        [
+            "From 209 US dollars.",
+            "20 dollars",
+            "10 Euros",
+            "Rs. 500",
+            "kr 99",
+            "99 kr",
+            "zł 10",
+            "10 zł",
+            "199元",
+            "500円",
+            "10,000원",
+        ]
+    ) == (
+        "209USdollars",
+        "20dollars",
+        "10Euros",
+        "Rs.500",
+        "kr99",
+        "99kr",
+        "zł10",
+        "10zł",
+        "199元",
+        "500円",
+        "10,000원",
+    )
+    # Inside a word, as a weight, or as a verb, it is not money.
+    assert guards.amounts(["Rskr 9", "5 pounds", "Try 3 times", "10 dollarstore"]) == ()
+    assert guards.priced_lines(["Fare", "209 US dollars"]) == ["Fare: 209 US dollars"]
+    assert guards.money_context(["Total", "Rs. 500"]) == ["Total: Rs. 500"]

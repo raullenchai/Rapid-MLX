@@ -12,6 +12,9 @@ import pytest
 from rapid_mlx.computer_use import perception
 from rapid_mlx.computer_use.errors import ComputerUseError
 
+# The live focus check, before the ``screen`` fixture stubs it out.
+_REAL_FOCUSED_SECRET = perception._focused_secret
+
 
 def _element(index, role, label, value=None, width=100, height=20):
     return {
@@ -724,13 +727,28 @@ def test_focused_secret_reads_names_never_values(monkeypatch):
     # Nothing has focus: typing goes nowhere.
     focus["element"] = None
     assert perception._focused_secret({"pid": 7}) is None
-    # Focus, or a name of the focused element, that cannot be read is not
-    # assumed harmless.
+    # Focus, or the role or subrole of the focused element, that cannot be
+    # read is not assumed harmless.
     focus.update(readable=False, element="focused")
     assert perception._focused_secret({"pid": 7}) == unchecked
     focus["readable"] = True
-    failing.add("AXTitle")
-    assert perception._focused_secret({"pid": 7}) == unchecked
+    for attribute in ("AXRole", "AXSubrole"):
+        failing.clear()
+        failing.add(attribute)
+        assert perception._focused_secret({"pid": 7}) == unchecked, attribute
+    # A name that cannot be read is absent (TextEdit's NSTextView fails
+    # AXDescription with kAXErrorFailure); the names that are read still count.
+    attrs.update(AXRole="AXTextArea", AXSubrole="", AXTitle="")
+    failing.clear()
+    failing.update({"AXDescription", "AXTitle", "AXPlaceholderValue"})
+    assert perception._focused_secret({"pid": 7}) is None
+    failing.discard("AXPlaceholderValue")
+    attrs.update(AXRole="AXTextField", AXPlaceholderValue="Contraseña")
+    assert perception._focused_secret({"pid": 7}).startswith("a secret field")
+    # A secure subrole is a password field whatever its names read.
+    failing.update({"AXPlaceholderValue"})
+    attrs.update(AXSubrole="AXSecureTextField")
+    assert perception._focused_secret({"pid": 7}) == "a password field"
     monkeypatch.setattr(
         perception.backend,
         "_pid_app_element",
@@ -962,6 +980,82 @@ def test_commit_by_key_or_action_needs_approval_too(session, screen):
     assert not screen.calls
     session.act("key", None, key="Tab", window_id="cg:1")
     assert [c[0] for c in screen.calls] == ["press_key"]
+
+
+def test_any_pressed_role_with_a_commit_name_needs_approval(session, screen):
+    # Real checkouts make "Place order" a styled div or text; a click on it
+    # commits all the same. A paragraph about it is content.
+    note = "By clicking Place order you agree to the conditions of use and sale."
+    for role in ("AXGroup", "AXStaticText"):
+        screen.show(
+            [*_checkout()[:3], E("go", role, "Place order"), E("n", role, note)]
+        )
+        obs = session.observe("Chrome", "cg:1")
+        with pytest.raises(ComputerUseError) as err:
+            session.act("click", _ref(obs, "Place order"))
+        assert err.value.code == "needs_approval", role
+        session.act("click", _ref(obs, note))
+        session.observe("Chrome", "cg:1")
+    assert [c[0] for c in screen.calls] == ["click", "click"]
+
+
+def test_a_verb_that_can_be_free_needs_a_price_around_it(session, screen):
+    screen.show(
+        [
+            E("fare", "AXGroup", "Nonstop JetBlue", path=[0, 0]),
+            E("price", "AXStaticText", "From 209 US dollars", path=[0, 0, 0]),
+            E("book", "AXButton", "Book", path=[0, 0, 1]),
+            E("sub", "AXButton", "Subscribe", path=[0, 0, 2]),
+            E("news", "AXButton", "Subscribe to our newsletter", path=[0, 1, 0]),
+            E("reset", "AXButton", "Transfer or Reset", path=[0, 1, 1]),
+        ]
+    )
+    obs = session.observe("Chrome", "cg:1")
+    for label in ("Book", "Subscribe"):
+        with pytest.raises(ComputerUseError) as err:
+            session.act("click", _ref(obs, label))
+        assert err.value.code == "needs_approval", label
+        # The written-out fare is what the user is asked to approve.
+        assert "209 US dollars" in err.value.message
+    for label in ("Subscribe to our newsletter", "Transfer or Reset"):
+        session.act("click", _ref(obs, label))
+        session.observe("Chrome", "cg:1")
+    assert [c[0] for c in screen.calls] == ["click", "click"]
+
+
+def test_typing_into_a_native_text_view_whose_name_fails_to_read(
+    session, screen, monkeypatch
+):
+    # TextEdit's NSTextView answers AXDescription with kAXErrorFailure: the
+    # field is plainly not secure, so typing into it goes through, as a fill
+    # of the same field does. A field whose role cannot be read still stops.
+    from rapid_mlx.computer_use import ax_driver
+
+    monkeypatch.setattr(perception, "_focused_secret", _REAL_FOCUSED_SECRET)
+    monkeypatch.setattr(perception.backend, "_pid_app_element", lambda info: "app")
+    unreadable = {"AXDescription", "AXTitle"}
+
+    def get_checked(element, attribute):
+        if element == "app":
+            return True, "view"
+        if attribute in unreadable:
+            return False, None
+        return True, {"AXRole": "AXTextArea", "AXSubrole": ""}.get(attribute)
+
+    monkeypatch.setattr(ax_driver, "_get_checked", get_checked)
+    screen.show([E("doc", "AXTextArea", "", value="", states=("focused",))])
+    obs = session.observe("Chrome", "cg:1")
+    session.act("type", None, text="Held-out line one", window_id="cg:1")
+    session.observe("Chrome", "cg:1")
+    session.act("fill", obs.rows[0].ref, text="Held-out line one")
+    assert [c[0] for c in screen.calls] == ["type_text", "set_value"]
+    unreadable.add("AXRole")
+    session.observe("Chrome", "cg:1")
+    with pytest.raises(ComputerUseError) as err:
+        session.act("type", None, text="more", window_id="cg:1")
+    assert err.value.code == "needs_human" and "could not be checked" in str(
+        err.value.message
+    )
 
 
 def test_deny_and_unknown_approvals(session, screen):
