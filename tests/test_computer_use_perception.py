@@ -1884,6 +1884,23 @@ def test_a_rerendered_page_keeps_its_refs_and_the_receipt_shows_the_new_state(
     )
     again = session.observe("Chrome", "cg:1")
     assert not {row.ref for row in again.rows} & removes
+    # A list that put another item's "Delete" in the same place is not the
+    # old control: the row beside it names a different item.
+    screen.show(
+        [
+            E("i1", "AXStaticText", "Eggs", path=[0, 0]),
+            E("d1", "AXButton", "Delete", path=[0, 1]),
+        ]
+    )
+    listed = session.observe("Chrome", "cg:1")
+    screen.show(
+        [
+            E("i2", "AXStaticText", "Milk", path=[0, 0]),
+            E("d2", "AXButton", "Delete", path=[0, 1]),
+        ]
+    )
+    scrolled = session.observe("Chrome", "cg:1")
+    assert _ref(scrolled, "Delete") != _ref(listed, "Delete")
 
 
 def test_settled_observation_reports_its_walk_time(session, screen, monkeypatch):
@@ -1958,6 +1975,18 @@ def test_diffs_skip_browser_noise_and_show_where_long_labels_differ(session, scr
     assert "Memory usage" not in joined and "Grammarly" not in joined
     assert "Mart" not in joined
     assert 'label "…rade A — $7.49" -> "…rade A — $8.99"' in joined
+    # Switching tabs is an outcome even when the pages look alike.
+    tabs = [
+        E("t1", "AXRadioButton", "Mart", states=("selected",), web=False),
+        E("t2", "AXRadioButton", "Mart", web=False),
+        E("body", "AXStaticText", "Mart", web=True),
+    ]
+    screen.show(tabs, wid="cg:3")
+    session.observe("Chrome", "cg:3")
+    tabs[0]["states"], tabs[1]["states"] = [], ["selected"]
+    switched = session.observe("Chrome", "cg:3")
+    assert switched.change_counts == (0, 0, 2)
+    assert all("label" not in line for line in switched.changes)
     # A row that was new when last seen is shown removed without the marker.
     screen.show([E("p", "AXStaticText", long_new, web=True)])
     gone = session.observe("Chrome", "cg:1")

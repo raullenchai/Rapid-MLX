@@ -1333,9 +1333,16 @@ def _diff(
     in_browser = any(row.web for row in [*previous.rows, *rows])
 
     def counted(row: Row) -> bool:
-        # Extension buttons renaming themselves and a tab's title or hover
-        # card are the browser's, not an outcome of the action.
-        return not row.is_browser_noise() and not row.is_tab_strip(in_browser)
+        # Extension buttons renaming themselves are the browser's, not an
+        # outcome of the action.
+        return not row.is_browser_noise()
+
+    def signature(row: Row) -> tuple:
+        # A browser tab's title and hover card change with every page; only
+        # whether it is selected (a tab switch) is an outcome.
+        if row.is_tab_strip(in_browser):
+            return (row.role, row.states)
+        return row.signature()
 
     before = {row.ref: row for row in previous.rows if counted(row)}
     now = {row.ref: row for row in rows if counted(row)}
@@ -1344,16 +1351,17 @@ def _diff(
     changed = [
         (before[row.ref], row)
         for row in now.values()
-        if row.ref in before and before[row.ref].signature() != row.signature()
+        if row.ref in before and signature(before[row.ref]) != signature(row)
     ]
     lines: list[str] = []
     for old, new in changed:
         parts = []
-        if old.value != new.value:
+        tab = new.is_tab_strip(in_browser)
+        if old.value != new.value and not tab:
             parts.append(f"value {old.value!r} -> {new.value!r}")
         if old.states != new.states:
             parts.append(f"[{','.join(old.states)}] -> [{','.join(new.states)}]")
-        if old.label != new.label:
+        if old.label != new.label and not tab:
             was, is_now = _where_differ(old.label, new.label)
             parts.append(f'label "{was}" -> "{is_now}"')
         lines.append(
@@ -1377,28 +1385,38 @@ def _rebind(
 ) -> dict[int, str]:
     """Refs for re-rendered controls: position -> the previous row's ref.
 
-    A control matches when its role, name and tree path are those of exactly
-    one row of the previous observation whose element is gone, and of no
-    other element now (a re-render that rebuilt the DOM in place).
+    A control matches when its role, name, tree path and the names of the
+    rows on either side of it are those of exactly one row of the previous
+    observation whose element is gone, and of no other element now (a
+    re-render that rebuilt the DOM in place). The neighbours keep a list that
+    put another item's "Delete" in the same place from passing for the old
+    one.
     """
     if previous is None:
         return {}
 
-    def key(role: str, label: str, path: Any) -> tuple:
-        return (role, label, tuple(path))
+    def key(labels: list[str], position: int, role: str, path: Any) -> tuple:
+        before_it = labels[position - 1] if position > 0 else None
+        after_it = labels[position + 1] if position + 1 < len(labels) else None
+        return (role, labels[position], tuple(path), before_it, after_it)
 
+    old_labels = [row.label for row in previous.rows]
     before: dict[tuple, list[Row]] = {}
-    for row in previous.rows:
+    for position, row in enumerate(previous.rows):
         if row.path:
-            before.setdefault(key(row.role, row.label, row.path), []).append(row)
+            before.setdefault(key(old_labels, position, row.role, row.path), []).append(
+                row
+            )
+    labels = [
+        str(element.get("field_name") or "") or str(element.get("label") or "")
+        for element in elements
+    ]
     now: dict[tuple, list[int]] = {}
     for position, element in enumerate(elements):
         if element.get("path"):
-            label = str(element.get("field_name") or "") or str(
-                element.get("label") or ""
-            )
             now.setdefault(
-                key(str(element.get("role") or ""), label, element["path"]), []
+                key(labels, position, str(element.get("role") or ""), element["path"]),
+                [],
             ).append(position)
     out: dict[int, str] = {}
     for k, positions in now.items():
