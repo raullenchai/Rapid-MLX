@@ -3259,6 +3259,29 @@ class MemoryAwarePrefixCache:
                     if any(isinstance(c, QuantizedKVCache) for c in entry.cache)
                     else entry.cache
                 )
+                # Record the per-layer cache class names so loaders can
+                # gate on cache-type compatibility (#198 BUG B). Read from
+                # ``persist_cache`` (post-dequantize), not ``entry.cache``,
+                # so the index reflects what's actually on disk — otherwise
+                # a saved-while-quantized entry would be rejected on a
+                # subsequent unquantized startup despite being loadable.
+                cache_types = [
+                    type(layer).__name__ for layer in persist_cache if layer is not None
+                ]
+                # Built before anything is written so admission can charge
+                # this entry its own ``index.json`` row; ``checkpoints`` is
+                # settled once the sidecar write has run (``false`` is the
+                # longer spelling, so the size below is an upper bound).
+                index_row: dict[str, Any] = {
+                    "index": i,
+                    "num_tokens": len(tokens_key),
+                    "memory_bytes": entry.memory_bytes,
+                    "cache_types": cache_types,
+                    "message_boundary": entry.message_boundary,
+                    "message_boundary_sequence": (entry.message_boundary_sequence),
+                    "checkpoints": False,
+                }
+                index_row_bytes = _persist_index_row_bytes(index_row)
                 # Free-disk admission. Sized from ``persist_cache`` (what
                 # lands on disk — dequantized entries are larger than
                 # ``entry.memory_bytes``) and re-measured per entry, so the
@@ -3272,7 +3295,10 @@ class MemoryAwarePrefixCache:
                     free_bytes = _free_disk_bytes(new_dir)
                     if (
                         free_bytes is not None
-                        and free_bytes - persist_bytes - index_owed_bytes
+                        and free_bytes
+                        - persist_bytes
+                        - index_row_bytes
+                        - index_owed_bytes
                         < min_free_disk
                     ):
                         disk_skipped += 1
@@ -3320,30 +3346,8 @@ class MemoryAwarePrefixCache:
                 has_checkpoints = _save_checkpoints_sidecar(
                     _checkpoints_sidecar_path(entry_path), persist_cache
                 )
-
-                # Record the per-layer cache class names so loaders can
-                # gate on cache-type compatibility (#198 BUG B). Read from
-                # ``persist_cache`` (post-dequantize), not ``entry.cache``,
-                # so the index reflects what's actually on disk — otherwise
-                # a saved-while-quantized entry would be rejected on a
-                # subsequent unquantized startup despite being loadable.
-                cache_types = [
-                    type(layer).__name__ for layer in persist_cache if layer is not None
-                ]
-
-                index_row: dict[str, Any] = {
-                    "index": i,
-                    "num_tokens": len(tokens_key),
-                    "memory_bytes": entry.memory_bytes,
-                    "cache_types": cache_types,
-                    "message_boundary": entry.message_boundary,
-                    "message_boundary_sequence": (entry.message_boundary_sequence),
-                    "checkpoints": has_checkpoints,
-                }
-                index["entries"].append(index_row)
-                saved_lru_rank[i] = lru_rank[tokens_key]
-                index_owed_bytes += _persist_index_row_bytes(index_row)
-                saved += 1
+                index_row["checkpoints"] = has_checkpoints
+                entry_lru_rank = lru_rank[tokens_key]
                 # Feed the throughput estimator. We measure including
                 # both the safetensors write and the tokens sidecar so
                 # the next entry's prediction reflects the full per-
@@ -3358,6 +3362,12 @@ class MemoryAwarePrefixCache:
                     f"{entry.memory_bytes / _BYTES_PER_MB:.1f}MB KV, "
                     f"file={entry_path}"
                 )
+                # Bookkeeping last: nothing after this point can raise, so
+                # the cleanup below never removes files of a recorded entry.
+                index["entries"].append(index_row)
+                saved_lru_rank[i] = entry_lru_rank
+                index_owed_bytes += index_row_bytes
+                saved += 1
             except Exception as e:
                 logger.warning(f"[cache_persist] failed to save entry {i}: {e}")
                 # Drop the partial files now rather than at the orphan sweep:

@@ -986,6 +986,7 @@ def test_free_disk_admission_counts_the_checkpoint_sidecar(tmp_path, monkeypatch
     saved, snap = save(reserve + bare_bytes, reserve, "tight")
     assert saved is False
     assert not (snap / "entry_0_ckpt.safetensors").exists()
-    saved, snap = save(reserve + persist_bytes, reserve, "roomy")
+    # 4 KiB on top covers the entry's own ``index.json`` row.
+    saved, snap = save(reserve + persist_bytes + 4096, reserve, "roomy")
     assert saved is True
     assert (snap / "entry_0_ckpt.safetensors").exists()

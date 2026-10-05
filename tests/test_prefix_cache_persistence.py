@@ -3318,7 +3318,12 @@ def test_quantized_entry_admitted_by_persisted_size(tmp_path, monkeypatch):
     assert cache.save_to_disk(str(tmp_path / "tight")) is False
     assert not (tmp_path / "tight").exists()
 
-    monkeypatch.setattr(mc, "_free_disk_bytes", lambda _d: reserve + on_disk)
+    # The entry also pays for its own ``index.json`` row.
+    row = 512
+    monkeypatch.setattr(mc, "_persist_index_row_bytes", lambda _row: row)
+    monkeypatch.setattr(mc, "_free_disk_bytes", lambda _d: reserve + on_disk + row - 1)
+    assert cache.save_to_disk(str(tmp_path / "no-row")) is False
+    monkeypatch.setattr(mc, "_free_disk_bytes", lambda _d: reserve + on_disk + row)
     assert cache.save_to_disk(str(tmp_path / "fits")) is True
 
 
@@ -3333,7 +3338,9 @@ def test_free_space_is_reread_as_the_save_consumes_it(tmp_path, monkeypatch):
     entry_bytes = mc._persist_entry_disk_bytes(make_kvcache(num_tokens=11), 11)
 
     reserve = 1000
-    budget = reserve + entry_bytes  # exactly one entry
+    row = 512
+    monkeypatch.setattr(mc, "_persist_index_row_bytes", lambda _row: row)
+    budget = reserve + entry_bytes + row  # exactly one entry and its index row
     readings = []
 
     def depleting_free(_d):
@@ -3391,10 +3398,13 @@ def test_admission_keeps_room_for_index_rows_already_owed(tmp_path, monkeypatch)
     entry_bytes = mc._persist_entry_disk_bytes(first, 11)
 
     reserve = 1000
+    row = 512
+    row_bytes = mc._persist_index_row_bytes
+    monkeypatch.setattr(mc, "_persist_index_row_bytes", lambda _row: row)
     monkeypatch.setenv(mc.PREFIX_CACHE_MIN_FREE_DISK_BYTES_ENV, str(reserve))
-    # Exactly one entry's worth of room on every reading: the second entry
-    # has the bytes for its own files but not for the first one's index row.
-    monkeypatch.setattr(mc, "_free_disk_bytes", lambda _d: reserve + entry_bytes)
+    # Exactly one entry and its row on every reading: the second entry has
+    # the bytes for its own files and row, but not for the first one's row.
+    monkeypatch.setattr(mc, "_free_disk_bytes", lambda _d: reserve + entry_bytes + row)
     snap = tmp_path / "snap"
     assert cache.save_to_disk(str(snap)) is True
     index = json.loads((snap / "index.json").read_text())
@@ -3406,7 +3416,7 @@ def test_admission_keeps_room_for_index_rows_already_owed(tmp_path, monkeypatch)
     assert cache.save_to_disk(str(full)) is True
     rows = json.loads((full / "index.json").read_text())["entries"]
     assert len(rows) == 2
-    owed = sum(mc._persist_index_row_bytes(row) for row in rows)
+    owed = sum(row_bytes(saved_row) for saved_row in rows)
     header_only = dict(json.loads((full / "index.json").read_text()), entries=[])
     assert (full / "index.json").stat().st_size <= owed + len(
         json.dumps(header_only, indent=2)
