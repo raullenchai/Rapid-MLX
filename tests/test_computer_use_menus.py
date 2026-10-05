@@ -328,6 +328,20 @@ def test_settle_menus_errors_say_when_the_menu_stayed_open(
     assert "may still be open" in exc.value.message
 
 
+def test_settle_menus_closes_the_menu_when_reading_it_fails(
+    monkeypatch, open_menu, calls
+):
+    def drifted(*a, **k):
+        raise errors.ComputerUseError("stale_snapshot", "element moved")
+
+    monkeypatch.setattr(backend, "_live_element", drifted)
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend._settle_menus(_snapshot(), 0, 0, None, expect_menu=True)
+    assert exc.value.code == "stale_snapshot"
+    # No element to cancel through: closed by Escape to the owning pid.
+    assert ("press_key", (4, backend.KEY_ALIASES["escape"])) in calls
+
+
 def test_settle_menus_warns_when_the_menu_stays_open(monkeypatch, open_menu, calls):
     monkeypatch.setattr(backend, "_open_menu_count", lambda pid: 1)
     report = backend._settle_menus(_snapshot(), None, 0, None, expect_menu=False)
@@ -524,9 +538,18 @@ def test_menu_uses_the_key_equivalent_while_the_app_is_active(
     monkeypatch.setattr(backend, "_process_is_active", lambda snap: True)
     clip = iter([7, 8])
     monkeypatch.setattr(backend, "_clipboard_change_count", lambda: next(clip))
+    finished = {}
+    monkeypatch.setattr(
+        backend,
+        "_finish_action",
+        lambda app, snap, d, **k: finished.update(k) or d,
+    )
     result = backend.menu("App", "Edit > Copy", expected_snapshot=_snapshot())
     assert result["mode"] == "SkyLight-menu-chord"
     assert result["clipboard_changed"] is True
+    # The chord route is not claimed as an Accessibility press, nor verified.
+    assert finished["verified"] is None
+    assert "key equivalent" in finished["verification"]
     keycode = ax_driver._keycode_for("c")
     assert ("press_key", (4, keycode, backend.MODIFIER_FLAGS["cmd"])) in calls
 
@@ -972,6 +995,28 @@ def test_choose_from_ax_menu_never_leaves_its_menu_open(
     # Unknown option with a menu that will not close: the error says so.
     with pytest.raises(errors.ComputerUseError) as exc:
         backend._choose_from_ax_menu("popup", "Z", 4)
+    assert "may still be open" in exc.value.message
+
+
+def test_choose_from_ax_menu_closes_a_menu_that_opens_late(
+    monkeypatch, native_popup, calls
+):
+    menus = iter([None, None, "menu"])
+    monkeypatch.setattr(backend, "_open_menu_of", lambda live, timeout: next(menus))
+    closed = []
+    monkeypatch.setattr(
+        backend, "_close_menu", lambda live, menu, pid: closed.append(menu) or True
+    )
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend._choose_from_ax_menu("popup", "B", 4)
+    assert exc.value.code == "action_failed"
+    assert "may still be open" not in exc.value.message
+    assert closed == ["menu"]
+    # A late menu that cannot be closed is called out.
+    menus = iter([None, None, "menu"])
+    monkeypatch.setattr(backend, "_close_menu", lambda live, menu, pid: False)
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend._choose_from_ax_menu("popup", "B", 4)
     assert "may still be open" in exc.value.message
 
 

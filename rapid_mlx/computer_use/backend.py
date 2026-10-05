@@ -2791,6 +2791,22 @@ def _settle_menus(
                 "another Space); pass menu_item=<option> to choose one"
             ),
         }
+    try:
+        return _read_choose_and_close(snapshot, element_index, before, choose)
+    except BaseException:
+        # Whatever went wrong (drift, an AX error), the menu must not stay
+        # open; error paths that already closed it make this a cheap recount.
+        try:
+            _close_menus(pid, before, None)
+        except Exception:  # noqa: BLE001 - the original error is the one to report
+            pass
+        raise
+
+
+def _read_choose_and_close(
+    snapshot: dict, element_index: int | None, before: int, choose: str | None
+) -> dict:
+    pid = int(snapshot["app"]["pid"])
     element = (
         _live_element(snapshot, element_index, validate_point=False)
         if element_index is not None
@@ -3459,7 +3475,14 @@ def _choose_from_ax_menu(live: object, value: str, pid: int) -> str | None:
         raise ComputerUseError("accessibility_error", "popup could not be opened")
     menu_element = _open_menu_of(live, timeout=1.5)
     if menu_element is None:
-        raise ComputerUseError("action_failed", "popup opened no menu")
+        # A menu arriving just after the timeout would track the keyboard;
+        # look once more and close it before giving up.
+        late = _open_menu_of(live, timeout=0.3)
+        closed = late is None or _close_menu(live, late, pid)
+        raise ComputerUseError(
+            "action_failed",
+            "popup opened no menu" + ("" if closed else _MENU_LEFT_OPEN),
+        )
     items = [
         item
         for item in ax_driver._as_list(ax_driver._get(menu_element, "AXChildren"))
@@ -4992,7 +5015,11 @@ def _press_menu_item(
         snapshot,
         delivery,
         verified=None,
-        verification="menu command pressed through Accessibility; outcome not asserted",
+        verification=(
+            "menu key equivalent sent to the key target; outcome not asserted"
+            if chord is not None
+            else "menu command pressed through Accessibility; outcome not asserted"
+        ),
         include_post_state=include_post_state,
     )
 
