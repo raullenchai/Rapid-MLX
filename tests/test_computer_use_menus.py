@@ -684,6 +684,25 @@ def test_hotkey_presses_the_resolved_menu_item_of_an_inactive_app(
     assert not [c for c in calls if c[0] == "press_key"]
 
 
+def test_hotkey_sends_an_unresolvable_menu_chord_to_the_keyed_target_of_an_active_app(
+    monkeypatch, menubar, calls
+):
+    _ax_actions(monkeypatch, calls)
+    monkeypatch.setattr(backend, "get_app_state", lambda *a, **k: _snapshot())
+    monkeypatch.setattr(backend, "_process_is_active", lambda snap: True)
+    # An unreadable menu may hold Cmd+Z: not ruled out, and not resolvable.
+    menubar["bar"]["AXChildren"] = ["edit-title", "view-title"]
+    menubar["view-title"] = {"AXRole": "AXMenuBarItem", "AXChildren": _UNREADABLE}
+    backend.hotkey("App", "cmd+z", window_id="cg:101")
+    keycode = ax_driver._keycode_for("z")
+    assert ("press_key", (4, keycode, backend.MODIFIER_FLAGS["cmd"])) in calls
+    assert not [c for c in calls if c[0] == "ax"]
+    # Delivered only after the exact target window was validated.
+    names = [c[0] for c in calls]
+    assert names.index("validate") < names.index("press_key")
+    assert calls[names.index("validate")][2] == EXACT
+
+
 def test_menu_equivalent_lookup_keeps_scanning_past_unreadable_modifiers(
     menubar,
 ):
@@ -1139,6 +1158,7 @@ def test_set_value_chooses_a_native_popup_through_its_menu(
     )
     result = backend.set_value("App", 0, "b", expected_snapshot=snap)
     assert result["mode"] == "AXMenuChoose" and result["actual"] == "B"
+    assert "focus_restored" in result  # always reported, None when focus never moved
     # A case-insensitive choice that landed is verified, not reported as a miss.
     assert result["verified"] is True
 
@@ -1484,3 +1504,151 @@ def test_scroll_uses_ax_for_a_window_that_is_not_composited(monkeypatch, scrolle
         "App", "down", x=10, y=10, expected_snapshot=_scroll_snapshot()
     )
     assert result["mode"] == "SkyLight-scroll" and len(wheels) == 1
+
+
+# --- remaining branches ------------------------------------------------------------
+
+
+def test_keyed_target_waits_while_ax_focus_trails_key_status(monkeypatch, calls):
+    monkeypatch.setattr(backend, "_frontmost_window", lambda: (4, 555))
+    trailing = {"left": 1}
+
+    def validate(snap, *a, **k):
+        calls.append(("validate", a, k))
+        if trailing["left"]:
+            trailing["left"] -= 1
+            raise errors.ComputerUseError("stale_snapshot", "focused window trails")
+
+    monkeypatch.setattr(backend, "_validate_focused_window", validate)
+    with backend._keyed_target(_snapshot()):
+        calls.append(("body",))
+    names = [c[0] for c in calls]
+    assert names.count("validate") == 2
+    assert names[-2:] == ["body", "restore"]
+
+
+def test_settle_menus_reports_a_close_that_raises(monkeypatch, open_menu, calls):
+    def drifted(*a, **k):
+        raise errors.ComputerUseError("stale_snapshot", "element moved")
+
+    def broken_close(*a):
+        raise RuntimeError("window list unavailable")
+
+    monkeypatch.setattr(backend, "_live_element", drifted)
+    monkeypatch.setattr(backend, "_close_menus", broken_close)
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend._settle_menus(_snapshot(), 0, 0, None, expect_menu=True)
+    assert exc.value.code == "stale_snapshot"
+    assert "may still be open" in exc.value.message
+
+
+def test_right_click_at_a_point_settles_its_context_menu(monkeypatch, open_menu, calls):
+    open_menu.state["open"] = 0
+
+    def pixel_click(snapshot, x, y, **kwargs):
+        open_menu.state["open"] = 1
+        return {"mode": "SkyLight-click"}
+
+    monkeypatch.setattr(backend, "_pixel_click", pixel_click)
+    result = backend.click(
+        "App", x=10, y=10, mouse_button="right", expected_snapshot=_snapshot()
+    )
+    # No element to read items under: closed by Escape (which this fake
+    # menu ignores, so the report says it stayed open).
+    assert result["menu"]["closed"] is False and "warning" in result["menu"]
+    assert ("press_key", (4, backend.KEY_ALIASES["escape"])) in calls
+
+
+def test_choose_from_ax_menu_closes_the_menu_when_the_option_press_fails(
+    monkeypatch, native_popup, calls
+):
+    real = sys.modules["ApplicationServices"].AXUIElementPerformAction
+
+    def perform(element, action):
+        if (element, action) == ("b", "AXPress"):
+            calls.append(("ax", element, action))
+            return -25200
+        return real(element, action)
+
+    sys.modules["ApplicationServices"].AXUIElementPerformAction = perform
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend._choose_from_ax_menu("popup", "B", 4)
+    assert exc.value.code == "accessibility_error"
+    assert "may still be open" not in exc.value.message
+    assert native_popup["open"] is False and native_popup["value"] == "A"
+
+
+def test_choose_from_ax_menu_waits_for_the_value_to_land(
+    monkeypatch, native_popup, calls
+):
+    values = iter(["A", "A", "B"])
+    monkeypatch.setattr(backend, "_read_value", lambda live: next(values))
+    assert backend._choose_from_ax_menu("popup", "B", 4) == "B"
+
+
+def test_press_menu_item_reports_an_unsynthesized_chord(monkeypatch, menubar, calls):
+    monkeypatch.setattr(backend, "_process_is_active", lambda snap: True)
+    monkeypatch.setattr(background_input, "press_key", lambda *a, **k: False)
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend._press_menu_item("App", _snapshot(), "copy", "Copy", False)
+    assert exc.value.code == "action_failed"
+    assert calls[-1][0] == "restore"
+
+
+def test_menu_item_chord_without_a_keycode(monkeypatch, attrs):
+    attrs["a"] = {"AXMenuItemCmdChar": "S", "AXMenuItemCmdModifiers": 0}
+    monkeypatch.setattr(ax_driver, "_keycode_for", lambda char: None)
+    assert backend._menu_item_chord("a") is None
+
+
+def test_ax_scroll_target_skips_nodes_without_a_frame(monkeypatch, attrs):
+    frames = {"s": (0.0, 0.0, 100.0, 300.0), "b": (0.0, 200.0, 100.0, 200.0)}
+    attrs["s"] = {"AXChildren": ["a", "b"]}
+    monkeypatch.setattr(ax_driver, "_point_size", frames.get)
+    assert backend._ax_scroll_target("s", True, True, 300.0)[2] == "b"
+
+
+def test_ax_scroll_skips_unusable_scrollers(monkeypatch, attrs, clock):
+    snap = _scroll_snapshot()
+    monkeypatch.setattr(backend, "_live_element", lambda *a, **k: None)
+    assert backend._ax_scroll(snap, (10.0, 10.0), "down", 1.0) is None
+    monkeypatch.setattr(backend, "_live_element", lambda *a, **k: "s")
+    monkeypatch.setattr(ax_driver, "_point_size", lambda e: None)
+    assert backend._ax_scroll(snap, (10.0, 10.0), "down", 1.0) is None
+    # A scroller with nothing past either edge moves in neither direction.
+    frames = {"s": (0.0, 0.0, 100.0, 300.0)}
+    monkeypatch.setattr(ax_driver, "_point_size", frames.get)
+    monkeypatch.setattr(
+        ax_driver, "AXUIElementPerformAction", lambda *a: pytest.fail("scrolled")
+    )
+    assert backend._ax_scroll(snap, (10.0, 10.0), "down", 1.0) is None
+    assert backend._ax_scroll(snap, (10.0, 10.0), "up", 1.0) is None
+
+
+def test_collect_wakes_a_hidden_renderer_once(monkeypatch, clock):
+    monkeypatch.setattr(ax_driver, "_app_element", lambda *a, **k: "app")
+    monkeypatch.setattr(ax_driver, "_app_windows", lambda app: ["win"])
+    walks = {"n": 0}
+
+    def walk(element, depth, out, counter, seen=None):
+        walks["n"] += 1
+        role = "AXWebArea" if walks["n"] > 1 else "AXGroup"
+        if seen is not None:
+            seen.add(role)
+        out.append({"role": role, "element": element})
+        counter[0] += 1
+
+    events = []
+    monkeypatch.setattr(ax_driver, "_walk", walk)
+    monkeypatch.setattr(ax_driver, "_wake_hidden_renderer", lambda w: True)
+    monkeypatch.setattr(ax_driver, "_restart_exposure", lambda a: events.append("x"))
+    monkeypatch.setattr(ax_driver, "_mark_woken", lambda a: events.append("w"))
+    collected = ax_driver.collect("A", retry_web_content=True)
+    assert [e["role"] for e in collected] == ["AXWebArea"]
+    assert events == ["x", "w"]
+    # Nothing to wake: no marks, the plain retry wait.
+    walks["n"] = 0
+    events.clear()
+    monkeypatch.setattr(ax_driver, "_wake_hidden_renderer", lambda w: False)
+    ax_driver.collect("A", retry_web_content=True)
+    assert events == []

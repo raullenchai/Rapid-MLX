@@ -3324,9 +3324,8 @@ def set_value(
                 "mode": "AXMenuChoose",
                 "element_index": element_index,
                 "actual": readback,
+                **_focus_fields(guard),
             }
-            if "focus_restored" in guard:
-                delivery["focus_restored"] = guard["focus_restored"]
             return _finish_action(
                 app,
                 snapshot,
