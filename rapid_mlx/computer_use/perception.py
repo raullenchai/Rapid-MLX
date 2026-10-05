@@ -707,7 +707,11 @@ class PerceptionSession:
         _require_display_awake()
         started = time.perf_counter()
         snapshot = backend.get_app_state(
-            app, screenshot=False, use_cache=False, window_id=window_id
+            app,
+            screenshot=False,
+            use_cache=False,
+            window_id=window_id,
+            activate=backend.OBSERVE_BY_ROUTE,
         )
         elapsed_ms = round((time.perf_counter() - started) * 1000)
         wid = str(snapshot["window_id"])
@@ -1069,7 +1073,11 @@ class PerceptionSession:
         last_signature: tuple | None = None
         while True:
             snapshot = backend.get_app_state(
-                app, screenshot=False, use_cache=False, window_id=wid
+                app,
+                screenshot=False,
+                use_cache=False,
+                window_id=wid,
+                activate=backend.OBSERVE_BY_ROUTE,
             )
             signature: tuple | None = tuple(
                 (
