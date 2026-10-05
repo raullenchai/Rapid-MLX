@@ -478,13 +478,21 @@ def _read_batch(element: object, attributes: tuple[str, ...]) -> dict[str, objec
     }
 
 
-# What a secure field may be asked for: its name and how many characters it
-# holds, never its value or title (some apps mirror the contents there).
+# What a secure field may be asked for: its name, the element that labels it
+# (a reference, not text) and how many characters it holds; never its value
+# or title (some apps mirror the contents there).
 _SECURE_NAME_ATTRIBUTES = (
     "AXDescription",
     "AXPlaceholderValue",
     "AXNumberOfCharacters",
+    "AXTitleUIElement",
 )
+# A secure field's label element (an HTML <label>, a native text label) is
+# read for its text only once its own role shows it holds no typed input.
+_LABEL_KIND_ATTRIBUTES = ("AXRole", "AXSubrole")
+_LABEL_TEXT_ATTRIBUTES = ("AXValue", "AXTitle", "AXDescription")
+# A static text this long is a paragraph, not the name of the field after it.
+MAX_FIELD_LABEL_CHARS = 80
 # Web dialogs (role=dialog / alertdialog) and native sheets: the walk keeps
 # them as rows even unnamed, so an observation can say one is open.
 DIALOG_SUBROLES = frozenset(
@@ -512,12 +520,68 @@ def _read_node(element: object) -> dict[str, object]:
     return node
 
 
-def _secure_name(node: dict[str, object]) -> str:
-    for attribute in ("AXDescription", "AXPlaceholderValue"):
-        value = node.get(attribute)
-        if isinstance(value, str) and value.strip():
-            return value.strip().replace("\n", " ")[:160]
+def _clean_name(value: object) -> str:
+    if isinstance(value, str) and value.strip():
+        return value.strip().replace("\n", " ")[:160]
     return ""
+
+
+def _secure_name(element: object, node: dict[str, object]) -> str:
+    """A secure field's name, read without touching its value or title.
+
+    Its label element first (Chrome exposes an HTML <label> only there),
+    then its description, then its placeholder.
+    """
+    return (
+        _label_element_text(element, node.get("AXTitleUIElement"))
+        or _clean_name(node.get("AXDescription"))
+        or _clean_name(node.get("AXPlaceholderValue"))
+    )
+
+
+def _label_element_text(field: object, label: object) -> str:
+    """The text of the element that labels ``field``.
+
+    The label is a different element: its role is read first, and its text
+    only when that role is not one that holds typed input (a field that
+    names another field, or the field itself, is never read).
+    """
+    if label is None or label == field:
+        return ""
+    try:
+        AS.AXUIElementSetMessagingTimeout(label, NODE_MESSAGING_TIMEOUT_S)
+    except Exception:  # pyobjc variants / test doubles
+        pass
+    kind = _read_batch(label, _LABEL_KIND_ATTRIBUTES)
+    role = kind.get("AXRole")
+    if (
+        not isinstance(role, str)
+        or not role
+        or role in EDITABLE_ROLES
+        or _is_secure_node(kind)
+    ):
+        return ""
+    text = _read_batch(label, _LABEL_TEXT_ATTRIBUTES)
+    for attribute in _LABEL_TEXT_ATTRIBUTES:
+        name = _clean_name(text.get(attribute))
+        if name:
+            return name
+    return ""
+
+
+def _preceding_label(out: list[dict], path: tuple[int, ...]) -> str:
+    """The static text just before a field in its own group ("Password").
+
+    Only when nothing else came between them (a label two controls up
+    names something else), and only a short text in the field's parent.
+    """
+    if not out or out[-1].get("role") != "AXStaticText":
+        return ""
+    parent = list(path[:-1])
+    text = str(out[-1].get("text") or "")
+    if out[-1].get("path", [])[: len(parent)] != parent:
+        return ""
+    return text if 0 < len(text) <= MAX_FIELD_LABEL_CHARS else ""
 
 
 def _secure_filled(node: dict[str, object]) -> bool | None:
@@ -695,7 +759,9 @@ def _walk(
         }
         if secure_text:
             # Its name and whether it holds anything; never what it holds.
-            target["field_name"] = _secure_name(node)
+            target["field_name"] = _secure_name(element, node) or (
+                _preceding_label(out, path)
+            )
             target["filled"] = _secure_filled(node)
         out.append(target)
     children = _child_elements(node, role)
