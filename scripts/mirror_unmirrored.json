@@ -67,11 +67,6 @@
       "since": "2026-10-05"
     },
     {
-      "hf_path": "mlx-community/gpt-oss-120b-MXFP4-Q4",
-      "reason": "large variant; HF fallback; mirror cost not justified",
-      "since": "2026-10-05"
-    },
-    {
       "hf_path": "mlx-community/Hy3-preview-4bit",
       "reason": "large variant; HF fallback; mirror cost not justified",
       "since": "2026-10-05"
