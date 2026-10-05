@@ -315,6 +315,19 @@ def test_settle_menus_reports_a_failed_press(open_menu, calls):
     assert ("ax", "menu", "AXCancel") in calls
 
 
+def test_settle_menus_errors_say_when_the_menu_stayed_open(
+    monkeypatch, open_menu, calls
+):
+    monkeypatch.setattr(backend, "_open_menu_count", lambda pid: 1)
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend._settle_menus(_snapshot(), 0, 0, "Delete", expect_menu=True)
+    assert "may still be open" in exc.value.message
+    open_menu.results[("copy", "AXPress")] = -25200
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend._settle_menus(_snapshot(), 0, 0, "Copy", expect_menu=True)
+    assert "may still be open" in exc.value.message
+
+
 def test_settle_menus_warns_when_the_menu_stays_open(monkeypatch, open_menu, calls):
     monkeypatch.setattr(backend, "_open_menu_count", lambda pid: 1)
     report = backend._settle_menus(_snapshot(), None, 0, None, expect_menu=False)
@@ -918,8 +931,48 @@ def test_close_menu_escapes_a_menu_that_ignores_cancel(monkeypatch, calls, attrs
     attrs["popup"] = {"AXChildren": ["menu"]}
     attrs["menu"] = {"AXRole": "AXMenu"}
     _ax_actions(monkeypatch, calls)
-    backend._close_menu("popup", "menu", 4)
-    assert calls[-1] == ("press_key", (4, backend.KEY_ALIASES["escape"], 0))
+    # The menu ignores everything: two bounded Escapes, then report it open.
+    assert backend._close_menu("popup", "menu", 4) is False
+    escape = ("press_key", (4, backend.KEY_ALIASES["escape"], 0))
+    assert calls.count(escape) == 2
+    # An Escape that closes it is confirmed.
+    calls.clear()
+    monkeypatch.setattr(
+        background_input,
+        "press_key",
+        lambda *a, **k: calls.append(("press_key", a)) or attrs["popup"].clear(),
+    )
+    attrs["popup"] = {"AXChildren": ["menu"]}
+    assert backend._close_menu("popup", "menu", 4) is True
+    assert calls.count(escape) == 1
+
+
+def test_choose_from_ax_menu_never_leaves_its_menu_open(
+    monkeypatch, native_popup, calls, attrs
+):
+    real = sys.modules["ApplicationServices"].AXUIElementPerformAction
+    stuck = {"on": False}
+
+    def perform(element, action):
+        result = real(element, action)
+        if element == "b" and action == "AXPress":
+            stuck["on"] = True
+        if stuck["on"]:
+            attrs["popup"]["AXChildren"] = ["menu"]
+        return result
+
+    monkeypatch.setattr(
+        sys.modules["ApplicationServices"], "AXUIElementPerformAction", perform
+    )
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend._choose_from_ax_menu("popup", "B", 4)
+    assert exc.value.code == "action_failed"
+    assert "stayed open" in exc.value.message
+    assert ("ax", "menu", "AXCancel") in calls
+    # Unknown option with a menu that will not close: the error says so.
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend._choose_from_ax_menu("popup", "Z", 4)
+    assert "may still be open" in exc.value.message
 
 
 def test_open_menu_of_times_out(attrs, clock):

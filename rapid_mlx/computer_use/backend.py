@@ -2805,18 +2805,21 @@ def _settle_menus(
             (i for i, t in zip(items, titles) if _menu_title_key(t) == wanted), None
         )
         if match is None or ax_driver._get(match, "AXEnabled") is False:
-            _close_menus(pid, before, element)
+            closed = _close_menus(pid, before, element)
             shown = ", ".join(t for t in titles if t)[:400]
             raise ComputerUseError(
                 "element_not_found",
-                f"menu has no enabled item {choose!r} (items: {shown})",
+                f"menu has no enabled item {choose!r} (items: {shown})"
+                + ("" if closed else _MENU_LEFT_OPEN),
             )
         from ApplicationServices import AXUIElementPerformAction
 
         if AXUIElementPerformAction(match, "AXPress") != 0:
-            _close_menus(pid, before, element)
+            closed = _close_menus(pid, before, element)
             raise ComputerUseError(
-                "accessibility_error", f"menu item {choose!r} could not be pressed"
+                "accessibility_error",
+                f"menu item {choose!r} could not be pressed"
+                + ("" if closed else _MENU_LEFT_OPEN),
             )
         chosen = _menu_item_title(match)
         time.sleep(0.15)
@@ -3109,18 +3112,25 @@ def _click(
                 "synthetic_input_blocked",
                 "transient companion target is not exactly pressable or focused",
             )
-        delivery = _pixel_click(
-            snapshot,
-            float(center[0]),
-            float(center[1]),
-            button=mouse_button,
-            count=click_count,
-            flags=flags,
-        )
-        delivery.update({"element_index": element_index, "at": center})
-        menu = _settle_menus(
-            snapshot, element_index, menus_before, menu_item, expect_menu=opens_menu
-        )
+        # The lock spans the click and the menu it opens, so no other
+        # gesture lands between opening the menu and closing it.
+        with background_input.GESTURE_LOCK:
+            delivery = _pixel_click(
+                snapshot,
+                float(center[0]),
+                float(center[1]),
+                button=mouse_button,
+                count=click_count,
+                flags=flags,
+            )
+            delivery.update({"element_index": element_index, "at": center})
+            menu = _settle_menus(
+                snapshot,
+                element_index,
+                menus_before,
+                menu_item,
+                expect_menu=opens_menu,
+            )
         if menu is not None:
             delivery["menu"] = menu
         return _finish_action(
@@ -3151,18 +3161,23 @@ def _click(
     menus_before = _menus_before(
         snapshot, menu_item, expect_menu=mouse_button == "right"
     )
-    delivery = _pixel_click(
-        snapshot,
-        float(x),
-        float(y),
-        button=mouse_button,
-        count=click_count,
-        flags=flags,
-    )
-    delivery["at"] = [x, y]
-    menu = _settle_menus(
-        snapshot, None, menus_before, menu_item, expect_menu=mouse_button == "right"
-    )
+    with background_input.GESTURE_LOCK:
+        delivery = _pixel_click(
+            snapshot,
+            float(x),
+            float(y),
+            button=mouse_button,
+            count=click_count,
+            flags=flags,
+        )
+        delivery["at"] = [x, y]
+        menu = _settle_menus(
+            snapshot,
+            None,
+            menus_before,
+            menu_item,
+            expect_menu=mouse_button == "right",
+        )
     if menu is not None:
         delivery["menu"] = menu
     return _finish_action(
@@ -3398,18 +3413,29 @@ def _open_menu_of(live: object, timeout: float = 1.0) -> object | None:
         time.sleep(0.05)
 
 
-def _close_menu(live: object, menu_element: object, pid: int) -> None:
-    """Close a popup's menu; a menu left open tracks the keyboard system-wide."""
+def _close_menu(live: object, menu_element: object, pid: int) -> bool:
+    """Close a popup's menu; a menu left open tracks the keyboard system-wide.
+
+    Returns whether the menu is confirmed gone.
+    """
     from ApplicationServices import AXUIElementPerformAction
 
     AXUIElementPerformAction(menu_element, "AXCancel")
+    escapes = 0
     deadline = time.monotonic() + 0.5
     while _open_menu_of(live, timeout=0) is not None:
         if time.monotonic() > deadline:
+            if escapes >= 2:
+                return False
             # Escape goes to the menu's tracking loop in the owning process.
             _synthesize(background_input.press_key, pid, KEY_ALIASES["escape"], 0)
-            return
+            escapes += 1
+            deadline = time.monotonic() + 0.5
         time.sleep(0.05)
+    return True
+
+
+_MENU_LEFT_OPEN = "; a menu may still be open and take the user's typing"
 
 
 def _choose_from_ax_menu(live: object, value: str, pid: int) -> str | None:
@@ -3444,23 +3470,34 @@ def _choose_from_ax_menu(live: object, value: str, pid: int) -> str | None:
         (i for i in items if _menu_title_key(_menu_item_title(i)) == wanted), None
     )
     if match is None or ax_driver._get(match, "AXEnabled") is False:
-        _close_menu(live, menu_element, pid)
+        closed = _close_menu(live, menu_element, pid)
         titles = ", ".join(t for t in (_menu_item_title(i) for i in items) if t)[:400]
         raise ComputerUseError(
             "value_not_settable",
-            f"popup has no enabled option {value!r} (options: {titles})",
+            f"popup has no enabled option {value!r} (options: {titles})"
+            + ("" if closed else _MENU_LEFT_OPEN),
         )
     if AXUIElementPerformAction(match, "AXPress") != 0:
-        _close_menu(live, menu_element, pid)
+        closed = _close_menu(live, menu_element, pid)
         raise ComputerUseError(
-            "accessibility_error", f"option {value!r} could not be pressed"
+            "accessibility_error",
+            f"option {value!r} could not be pressed"
+            + ("" if closed else _MENU_LEFT_OPEN),
         )
     deadline = time.monotonic() + 1.0
     while True:
         readback = _read_value(live)
         if _menu_title_key(readback) == wanted or time.monotonic() > deadline:
-            return readback
+            break
         time.sleep(0.05)
+    # Pressing an item normally dismisses the menu; never leave one open.
+    still_open = _open_menu_of(live, timeout=0)
+    if still_open is not None and not _close_menu(live, still_open, pid):
+        raise ComputerUseError(
+            "action_failed",
+            f"chose {value!r} but the popup's menu stayed open{_MENU_LEFT_OPEN}",
+        )
+    return readback
 
 
 def _choose_by_typeahead(
