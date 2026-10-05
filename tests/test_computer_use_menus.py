@@ -1,0 +1,1144 @@
+"""Menus, modifier clicks, the focus guard, Electron, hidden renderers, AX scroll.
+
+Everything here runs without a screen: the AX server, SkyLight and Quartz are
+replaced by fakes, the same way test_computer_use_offspace.py does it.
+"""
+
+# ruff: noqa: N802 - PyObjC test doubles intentionally mirror Objective-C names.
+
+import sys
+import time
+import types
+
+import pytest
+
+from rapid_mlx.computer_use import ax_driver, backend, background_input, errors
+
+
+def _snapshot(*, elements=None, bundle="com.google.chrome"):
+    window = {
+        "index": 0,
+        "window_id": "cg:101",
+        "title": "Main",
+        "x": 0,
+        "y": 0,
+        "width": 400,
+        "height": 300,
+    }
+    return {
+        "snapshot_id": "s1",
+        "observed_at": time.time(),
+        "app": {"name": "App", "bundleId": bundle, "pid": 4},
+        "window_index": 0,
+        "window_id": "cg:101",
+        "window": window,
+        "elements": elements or [],
+    }
+
+
+def _install_module(monkeypatch, name, **attrs):
+    module = types.ModuleType(name)
+    module.__dict__.update(attrs)
+    monkeypatch.setitem(sys.modules, name, module)
+    return module
+
+
+class _Clock:
+    def __init__(self):
+        self.now = 0.0
+        self.time = time.time
+        self.time_ns = time.time_ns
+
+    def sleep(self, seconds):
+        self.now += max(float(seconds), 0.01)
+
+    def monotonic(self):
+        return self.now
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    fake = _Clock()
+    monkeypatch.setattr(backend, "time", fake)
+    monkeypatch.setattr(background_input, "time", fake)
+    monkeypatch.setattr(ax_driver, "time", fake)
+    return fake
+
+
+@pytest.fixture
+def attrs(monkeypatch):
+    """Dict-backed AX attributes: ``attrs[element][attribute]``."""
+    table: dict = {}
+    monkeypatch.setattr(ax_driver, "_get", lambda e, a: table.get(e, {}).get(a))
+    return table
+
+
+@pytest.fixture
+def calls(monkeypatch, clock):
+    """Background delivery with recorded focus moves, validations and AX actions."""
+    log: list[tuple] = []
+    monkeypatch.setenv(background_input.DELIVERY_ENV, "background")
+    monkeypatch.setattr(background_input, "skylight_available", lambda: True)
+    monkeypatch.setattr(backend, "_frontmost_window", lambda: (999, 555))
+    monkeypatch.setattr(backend, "_key_window_id", lambda pid: 101)
+    monkeypatch.setattr(backend, "_sheet_owner_id", lambda pid: None)
+    monkeypatch.setattr(
+        background_input,
+        "activate_without_raise",
+        lambda *a, **k: log.append(("activate", a)) or True,
+    )
+    monkeypatch.setattr(
+        backend, "_restore_user_focus", lambda *a: log.append(("restore", a)) or True
+    )
+    monkeypatch.setattr(
+        backend,
+        "_validate_focused_window",
+        lambda snap, *a, **k: log.append(("validate", a, k)),
+    )
+    monkeypatch.setattr(
+        background_input,
+        "press_key",
+        lambda *a, **k: log.append(("press_key", a)) or True,
+    )
+    monkeypatch.setattr(backend, "_finish_action", lambda app, snap, d, **k: d)
+    monkeypatch.setattr(backend, "_clipboard_change_count", lambda: None)
+    return log
+
+
+def _ax_actions(monkeypatch, log, results=None):
+    """Install ApplicationServices with a recording AXUIElementPerformAction."""
+    results = {} if results is None else results
+
+    def perform(element, action):
+        log.append(("ax", element, action))
+        return results.get((element, action), 0)
+
+    _install_module(
+        monkeypatch,
+        "ApplicationServices",
+        kAXErrorSuccess=0,
+        AXUIElementPerformAction=perform,
+    )
+    monkeypatch.setattr(ax_driver, "AXUIElementPerformAction", perform)
+    return perform
+
+
+EXACT = {"require_active_app": False, "require_exact_window_id": True}
+
+
+# --- menu titles and item discovery ------------------------------------------------
+
+
+def test_menu_title_key_ignores_case_and_trailing_ellipsis():
+    assert backend._menu_title_key(" Save As… ") == "save as"
+    assert backend._menu_title_key("Find...") == "find"
+    assert backend._menu_title_key(None) == ""
+
+
+def test_menu_item_title_falls_back_to_value_then_description(attrs):
+    attrs["a"] = {"AXTitle": "Copy"}
+    attrs["b"] = {"AXTitle": "", "AXValue": "Option 2"}
+    attrs["c"] = {"AXDescription": "Zoom"}
+    assert [backend._menu_item_title(x) for x in "abcd"] == [
+        "Copy",
+        "Option 2",
+        "Zoom",
+        "",
+    ]
+
+
+def test_menu_items_under_searches_a_few_levels(attrs):
+    attrs["popup"] = {"AXChildren": ["menu", "label"]}
+    attrs["menu"] = {"AXRole": "AXMenu", "AXChildren": ["one", "group"]}
+    attrs["label"] = {"AXRole": "AXStaticText"}
+    attrs["one"] = {"AXRole": "AXMenuItem"}
+    attrs["group"] = {"AXRole": "AXGroup", "AXChildren": ["two"]}
+    attrs["two"] = {"AXRole": "AXMenuItem"}
+    assert sorted(backend._menu_items_under("popup")) == ["one", "two"]
+    assert backend._menu_items_under(None) == []
+
+
+# --- open-menu counting -----------------------------------------------------------
+
+
+def _quartz_windows(monkeypatch, windows):
+    return _install_module(
+        monkeypatch,
+        "Quartz",
+        CGWindowListCopyWindowInfo=lambda *a: windows(),
+        kCGNullWindowID=0,
+        kCGWindowListOptionAll=0,
+    )
+
+
+def test_open_menu_count_counts_menu_layer_windows_of_the_pid(monkeypatch):
+    _quartz_windows(
+        monkeypatch,
+        lambda: [
+            {"kCGWindowOwnerPID": 4, "kCGWindowLayer": 101},
+            {"kCGWindowOwnerPID": 4, "kCGWindowLayer": 0},
+            {"kCGWindowOwnerPID": 9, "kCGWindowLayer": 101},
+        ],
+    )
+    assert backend._open_menu_count(4) == 1
+    assert backend._menus_opened(4, 0) and not backend._menus_opened(4, 1)
+
+
+def test_open_menu_count_is_none_when_unreadable(monkeypatch):
+    _quartz_windows(monkeypatch, lambda: 1 / 0)
+    assert backend._open_menu_count(4) is None
+    assert not backend._menus_opened(4, 0)
+
+
+def test_menus_before_skips_foreground_and_fails_closed_for_a_choice(monkeypatch):
+    monkeypatch.setattr(backend, "_background_delivery", lambda s: False)
+    monkeypatch.setattr(backend, "_open_menu_count", lambda pid: None)
+    assert backend._menus_before(_snapshot(), None) is None
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend._menus_before(_snapshot(), "Copy")
+    assert exc.value.code == "action_failed"
+    monkeypatch.setattr(backend, "_open_menu_count", lambda pid: 2)
+    assert backend._menus_before(_snapshot(), "Copy") == 2
+
+
+# --- closing and settling menus ---------------------------------------------------
+
+
+def test_close_menus_cancels_then_escapes_until_gone(monkeypatch, calls, attrs):
+    _ax_actions(monkeypatch, calls)
+    attrs["popup"] = {"AXChildren": ["menu"]}
+    attrs["menu"] = {"AXRole": "AXMenu"}
+    counts = iter([1, 1, 1, 1, 1, 1, 1, 1, 1, 0])
+    monkeypatch.setattr(backend, "_open_menu_count", lambda pid: next(counts, 0))
+    assert backend._close_menus(4, 0, "popup") is True
+    assert calls[0] == ("ax", "menu", "AXCancel")
+    assert ("press_key", (4, backend.KEY_ALIASES["escape"])) in calls
+
+
+def test_close_menus_reports_a_menu_that_stays_open(monkeypatch, calls):
+    monkeypatch.setattr(backend, "_open_menu_count", lambda pid: 1)
+    assert backend._close_menus(4, 0, None) is False
+    escapes = [c for c in calls if c[0] == "press_key"]
+    assert len(escapes) == 2  # bounded
+    monkeypatch.setattr(backend, "_open_menu_count", lambda pid: None)
+    assert backend._close_menus(4, 0, None) is False
+
+
+def test_close_menus_escape_spi_error_is_action_failed(monkeypatch, calls):
+    monkeypatch.setattr(backend, "_open_menu_count", lambda pid: 1)
+    monkeypatch.setattr(
+        background_input, "press_key", lambda *a: (_ for _ in ()).throw(OSError())
+    )
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend._close_menus(4, 0, None)
+    assert exc.value.code == "action_failed"
+
+
+def test_settle_menus_without_a_menu(monkeypatch, calls):
+    monkeypatch.setattr(backend, "_open_menu_count", lambda pid: 0)
+    snap = _snapshot()
+    assert backend._settle_menus(snap, 0, None, None, expect_menu=True) is None
+    assert backend._settle_menus(snap, 0, 0, None, expect_menu=False) is None
+    report = backend._settle_menus(snap, 0, 0, None, expect_menu=True)
+    assert report["opened"] is False
+    with pytest.raises(backend._NoMenuOpenedError) as exc:
+        backend._settle_menus(snap, 3, 0, "Copy", expect_menu=True)
+    assert exc.value.code == "element_not_found"
+    assert exc.value.snapshot is snap and exc.value.element_index == 3
+
+
+@pytest.fixture
+def open_menu(monkeypatch, calls, attrs):
+    """A popup whose menu (Copy, Paste[disabled]) is open until cancelled."""
+    state = {"open": 1}
+    monkeypatch.setattr(backend, "_open_menu_count", lambda pid: state["open"])
+    monkeypatch.setattr(backend, "_live_element", lambda *a, **k: "popup")
+    attrs["popup"] = {"AXChildren": ["menu"]}
+    attrs["menu"] = {"AXRole": "AXMenu", "AXChildren": ["copy", "paste"]}
+    attrs["copy"] = {"AXRole": "AXMenuItem", "AXTitle": "Copy"}
+    attrs["paste"] = {"AXRole": "AXMenuItem", "AXTitle": "Paste", "AXEnabled": False}
+    results: dict = {}
+
+    def perform(element, action):
+        calls.append(("ax", element, action))
+        if action == "AXCancel":
+            state["open"] = 0
+        return results.get((element, action), 0)
+
+    _install_module(
+        monkeypatch,
+        "ApplicationServices",
+        kAXErrorSuccess=0,
+        AXUIElementPerformAction=perform,
+    )
+    return types.SimpleNamespace(results=results, state=state)
+
+
+def test_settle_menus_reads_and_closes_an_opened_menu(open_menu, calls):
+    report = backend._settle_menus(_snapshot(), 0, 0, None, expect_menu=True)
+    assert report["closed"] is True
+    assert report["items"] == ["Copy", "Paste"]
+    assert ("ax", "menu", "AXCancel") in calls
+    assert not any(c[2] == "AXPress" for c in calls if c[0] == "ax")
+
+
+def test_settle_menus_chooses_an_item_and_closes(open_menu, calls):
+    report = backend._settle_menus(_snapshot(), 0, 0, "copy", expect_menu=True)
+    assert report == {"closed": True, "chosen": "Copy"}
+    assert ("ax", "copy", "AXPress") in calls
+
+
+def test_settle_menus_refuses_a_missing_or_disabled_item(open_menu, calls):
+    for wanted in ("Paste", "Delete"):
+        open_menu.state["open"] = 1
+        with pytest.raises(errors.ComputerUseError) as exc:
+            backend._settle_menus(_snapshot(), 0, 0, wanted, expect_menu=True)
+        assert exc.value.code == "element_not_found"
+        assert "Copy" in exc.value.message
+    assert not any(c[2] == "AXPress" for c in calls if c[0] == "ax")
+
+
+def test_settle_menus_reports_a_failed_press(open_menu, calls):
+    open_menu.results[("copy", "AXPress")] = -25200
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend._settle_menus(_snapshot(), 0, 0, "Copy", expect_menu=True)
+    assert exc.value.code == "accessibility_error"
+    assert ("ax", "menu", "AXCancel") in calls
+
+
+def test_settle_menus_warns_when_the_menu_stays_open(monkeypatch, open_menu, calls):
+    monkeypatch.setattr(backend, "_open_menu_count", lambda pid: 1)
+    report = backend._settle_menus(_snapshot(), None, 0, None, expect_menu=False)
+    assert report["closed"] is False and "warning" in report
+
+
+# --- click: menu_item, modifiers ------------------------------------------------
+
+
+def _popup_snapshot(role="AXPopUpButton"):
+    return _snapshot(
+        elements=[
+            {
+                "index": 0,
+                "role": role,
+                "center": [10, 10],
+                "actions": ["AXPress"],
+            }
+        ]
+    )
+
+
+def test_click_with_menu_item_presses_then_chooses(monkeypatch, open_menu, calls):
+    monkeypatch.setattr(backend, "_open_menu_count", lambda pid: 0)
+    real_perform = sys.modules["ApplicationServices"].AXUIElementPerformAction
+
+    def perform(element, action):
+        result = real_perform(element, action)
+        if (element, action) == ("popup", "AXPress"):
+            monkeypatch.setattr(backend, "_open_menu_count", lambda pid: 1)
+        if action == "AXCancel":
+            monkeypatch.setattr(backend, "_open_menu_count", lambda pid: 0)
+        return result
+
+    sys.modules["ApplicationServices"].AXUIElementPerformAction = perform
+    result = backend.click(
+        "App", element_index=0, expected_snapshot=_popup_snapshot(), menu_item="Copy"
+    )
+    assert result["mode"] == "AXPress"
+    assert result["menu"] == {"closed": True, "chosen": "Copy"}
+    pressed = [c[1] for c in calls if c[0] == "ax" and c[2] == "AXPress"]
+    assert pressed == ["popup", "copy"]
+
+
+def test_click_menu_item_on_a_popup_without_menu_sets_the_value(
+    monkeypatch, open_menu, calls
+):
+    monkeypatch.setattr(backend, "_open_menu_count", lambda pid: 0)
+    seen = {}
+
+    def set_value(app, index, value, **kwargs):
+        seen.update(index=index, value=value, snapshot=kwargs["expected_snapshot"])
+        return {"mode": "AXValue", "warning": None}
+
+    monkeypatch.setattr(backend, "set_value", set_value)
+    snap = _popup_snapshot()
+    result = backend.click(
+        "App", element_index=0, expected_snapshot=snap, menu_item="B"
+    )
+    assert seen == {"index": 0, "value": "B", "snapshot": snap}
+    assert result["warning"] == "the popup opened no menu; its value was set instead"
+
+
+def test_click_menu_item_on_a_non_popup_without_menu_is_refused(
+    monkeypatch, open_menu, calls
+):
+    monkeypatch.setattr(backend, "_open_menu_count", lambda pid: 0)
+    monkeypatch.setattr(
+        backend, "set_value", lambda *a, **k: pytest.fail("set_value on a button")
+    )
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend.click(
+            "App",
+            element_index=0,
+            expected_snapshot=_popup_snapshot("AXMenuButton"),
+            menu_item="B",
+        )
+    assert exc.value.code == "element_not_found"
+
+
+def test_click_argument_errors(calls):
+    snap = _popup_snapshot()
+    for kwargs in (
+        {"focus_only": True, "modifiers": "shift"},
+        {"focus_only": True, "menu_item": "A"},
+    ):
+        with pytest.raises(errors.ComputerUseError) as exc:
+            backend.click("App", element_index=0, expected_snapshot=snap, **kwargs)
+        assert exc.value.code == "invalid_argument"
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend.click("App", element_index=0, expected_snapshot=snap, modifiers="hyper")
+    assert exc.value.code == "unsupported_key"
+
+
+def test_modifier_flags_parse_lists_and_chords():
+    flags = backend.MODIFIER_FLAGS
+    assert backend._modifier_flags(None) == 0
+    assert backend._modifier_flags("Shift+cmd") == flags["shift"] | flags["cmd"]
+    assert backend._modifier_flags(["option", " ", "ctrl"]) == (
+        flags["option"] | flags["ctrl"]
+    )
+
+
+def test_modifier_click_takes_the_pixel_route_with_flags(monkeypatch, calls):
+    monkeypatch.setattr(backend, "_open_menu_count", lambda pid: 0)
+    _ax_actions(monkeypatch, calls)
+    seen = {}
+
+    def pixel_click(snapshot, x, y, **kwargs):
+        seen.update(kwargs)
+        return {"mode": "SkyLight-click"}
+
+    monkeypatch.setattr(backend, "_pixel_click", pixel_click)
+    backend.click(
+        "App",
+        element_index=0,
+        expected_snapshot=_popup_snapshot("AXButton"),
+        modifiers=["cmd"],
+    )
+    assert seen["flags"] == backend.MODIFIER_FLAGS["cmd"]
+    assert not [c for c in calls if c[0] == "ax"]  # no AXPress with modifiers
+
+
+def test_foreground_modifier_click_is_refused(monkeypatch):
+    monkeypatch.setattr(backend, "_background_delivery", lambda s: False)
+    monkeypatch.setattr(
+        ax_driver, "_cg_click", lambda *a, **k: pytest.fail("held user modifiers")
+    )
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend._pixel_click(_snapshot(), 1.0, 1.0, flags=1 << 17)
+    assert exc.value.code == "synthetic_input_blocked"
+
+
+# --- menu-bar commands ------------------------------------------------------------
+
+
+@pytest.fixture
+def menubar(monkeypatch, attrs):
+    monkeypatch.setattr(backend, "_pid_app_element", lambda app: "app")
+    attrs["app"] = {"AXMenuBar": "bar"}
+    attrs["bar"] = {"AXChildren": ["edit-title"]}
+    attrs["edit-title"] = {"AXTitle": "Edit", "AXChildren": ["edit-menu"]}
+    attrs["edit-menu"] = {"AXRole": "AXMenu", "AXChildren": ["copy", "find"]}
+    attrs["copy"] = {
+        "AXTitle": "Copy",
+        "AXMenuItemCmdChar": "C",
+        "AXMenuItemCmdModifiers": 0,
+    }
+    attrs["find"] = {"AXTitle": "Find", "AXChildren": ["find-menu"]}
+    attrs["find-menu"] = {"AXRole": "AXMenu", "AXChildren": ["find-item"]}
+    attrs["find-item"] = {"AXTitle": "Find…"}
+    return attrs
+
+
+def test_menu_item_by_path_resolves_and_reports_the_failing_step(menubar):
+    app = {"pid": 4}
+    assert backend._menu_item_by_path(app, ["edit", "Find", "find..."]) == "find-item"
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend._menu_item_by_path(app, ["Edit", "Paste"])
+    assert exc.value.code == "element_not_found"
+    assert "under Edit" in exc.value.message and "Copy" in exc.value.message
+    menubar["app"] = {}
+    with pytest.raises(errors.ComputerUseError):
+        backend._menu_item_by_path(app, ["Edit", "Copy"])
+
+
+def test_menu_rejects_short_paths_and_submenus(monkeypatch, menubar, calls):
+    monkeypatch.setattr(backend, "get_app_state", lambda *a, **k: _snapshot())
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend.menu("App", "Edit")
+    assert exc.value.code == "invalid_argument"
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend.menu("App", "Edit > Find")
+    assert exc.value.code == "invalid_argument"
+    assert calls == []
+
+
+def test_menu_presses_through_ax_with_the_target_forced_key(
+    monkeypatch, menubar, calls
+):
+    _ax_actions(monkeypatch, calls)
+    monkeypatch.setattr(backend, "_process_is_active", lambda snap: False)
+    result = backend.menu("App", ["Edit", "Copy"], expected_snapshot=_snapshot())
+    assert result["mode"] == "AXMenuPress" and result["menu_item"] == "Edit > Copy"
+    assert result["focus_restored"] is True
+    # Forced even though AX already names 101 as the key window.
+    assert [c[0] for c in calls] == ["activate", "validate", "ax", "restore"]
+    assert calls[1] == ("validate", (), EXACT)
+
+
+def test_menu_uses_the_key_equivalent_while_the_app_is_active(
+    monkeypatch, menubar, calls
+):
+    monkeypatch.setattr(backend, "_process_is_active", lambda snap: True)
+    clip = iter([7, 8])
+    monkeypatch.setattr(backend, "_clipboard_change_count", lambda: next(clip))
+    result = backend.menu("App", "Edit > Copy", expected_snapshot=_snapshot())
+    assert result["mode"] == "SkyLight-menu-chord"
+    assert result["clipboard_changed"] is True
+    keycode = ax_driver._keycode_for("c")
+    assert ("press_key", (4, keycode, backend.MODIFIER_FLAGS["cmd"])) in calls
+
+
+def test_menu_in_the_foreground_borrows_then_validates_exactly(
+    monkeypatch, menubar, calls
+):
+    _ax_actions(monkeypatch, calls)
+    monkeypatch.setattr(backend, "_background_delivery", lambda s: False)
+    monkeypatch.setattr(
+        backend, "_borrow_foreground", lambda snap: calls.append(("borrow",))
+    )
+    backend.menu("App", "Edit > Copy", expected_snapshot=_snapshot())
+    assert [c[0] for c in calls] == ["borrow", "validate", "ax"]
+    assert calls[1] == ("validate", (), {"require_exact_window_id": True})
+
+
+def test_press_menu_item_refuses_disabled_and_reports_errors(
+    monkeypatch, menubar, calls
+):
+    results: dict = {}
+    _ax_actions(monkeypatch, calls, results)
+    monkeypatch.setattr(backend, "_process_is_active", lambda snap: False)
+    snap = _snapshot()
+    menubar["copy"]["AXEnabled"] = False
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend._press_menu_item("App", snap, "copy", "Copy", False)
+    assert exc.value.code == "synthetic_input_blocked"
+    assert calls[-1][0] == "restore"  # focus handed back on refusal
+    menubar["copy"]["AXEnabled"] = True
+    results[("copy", "AXPress")] = -25204  # ran a modal loop
+    result = backend._press_menu_item("App", snap, "copy", "Copy", False)
+    assert "still running" in result["warning"]
+    results[("copy", "AXPress")] = -25200
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend._press_menu_item("App", snap, "copy", "Copy", False)
+    assert exc.value.code == "accessibility_error"
+
+
+def test_menu_item_chord_maps_modifiers_and_skips_glyph_keys(attrs):
+    flags = backend.MODIFIER_FLAGS
+    attrs["a"] = {"AXMenuItemCmdChar": "S", "AXMenuItemCmdModifiers": 0x1 | 0x2 | 0x4}
+    assert backend._menu_item_chord("a") == (
+        ax_driver._keycode_for("s"),
+        flags["cmd"] | flags["shift"] | flags["option"] | flags["ctrl"],
+    )
+    attrs["b"] = {"AXMenuItemCmdChar": "K", "AXMenuItemCmdModifiers": 0x8}
+    attrs["c"] = {"AXMenuItemCmdChar": "", "AXMenuItemCmdModifiers": 0}
+    attrs["d"] = {"AXMenuItemCmdChar": "S"}
+    assert [backend._menu_item_chord(x) for x in "bcd"] == [None, None, None]
+
+
+def test_clipboard_change_count_is_optional(monkeypatch):
+    _install_module(
+        monkeypatch,
+        "AppKit",
+        NSPasteboard=types.SimpleNamespace(
+            generalPasteboard=lambda: types.SimpleNamespace(changeCount=lambda: 3)
+        ),
+    )
+    assert backend._clipboard_change_count() == 3
+    monkeypatch.setitem(sys.modules, "AppKit", None)
+    assert backend._clipboard_change_count() is None
+
+
+def test_hotkey_presses_the_resolved_menu_item_of_an_inactive_app(
+    monkeypatch, menubar, calls
+):
+    _ax_actions(monkeypatch, calls)
+    monkeypatch.setattr(backend, "get_app_state", lambda *a, **k: _snapshot())
+    monkeypatch.setattr(backend, "_process_is_active", lambda snap: False)
+    result = backend.hotkey("App", "cmd+c", window_id="cg:101")
+    assert result["mode"] == "AXMenuPress" and result["menu_item"] == "cmd+c (Copy)"
+    assert [c[0] for c in calls] == ["activate", "validate", "ax", "restore"]
+    assert not [c for c in calls if c[0] == "press_key"]
+
+
+def test_menu_equivalent_lookup_keeps_scanning_past_unreadable_modifiers(
+    menubar,
+):
+    cmd = backend.MODIFIER_FLAGS["cmd"]
+    menubar["edit-menu"]["AXChildren"] = ["odd", "copy"]
+    menubar["odd"] = {"AXMenuItemCmdChar": "C"}  # unreadable modifiers
+    assert backend._menu_equivalent_lookup({"pid": 4}, "c", cmd) == (True, "copy")
+    menubar["edit-menu"]["AXChildren"] = ["odd"]
+    assert backend._menu_equivalent_lookup({"pid": 4}, "c", cmd) == (True, None)
+    assert backend._menu_equivalent_lookup({"pid": 4}, "z", cmd) == (False, None)
+
+
+# --- focus guard and keyed target ------------------------------------------------
+
+
+def test_guard_user_focus_restores_only_a_move_into_the_target(monkeypatch, calls):
+    fronts = iter([(999, 555), (4, 101)])
+    monkeypatch.setattr(backend, "_frontmost_window", lambda: next(fronts))
+    with backend._guard_user_focus(_snapshot()) as state:
+        pass
+    assert state == {"focus_restored": True}
+    # The user switched to another app meanwhile: theirs to keep.
+    fronts = iter([(999, 555), (77, 1)])
+    with backend._guard_user_focus(_snapshot()) as state:
+        pass
+    assert state == {}
+    # Unchanged focus: nothing to do.
+    fronts = iter([(999, 555), (999, 555)])
+    with backend._guard_user_focus(_snapshot()) as state:
+        pass
+    assert state == {}
+    assert [c[0] for c in calls] == ["restore"]
+
+
+def test_guard_user_focus_reports_a_failed_restore(monkeypatch, calls):
+    fronts = iter([(999, 555), (4, 101)])
+    monkeypatch.setattr(backend, "_frontmost_window", lambda: next(fronts))
+    monkeypatch.setattr(
+        backend, "_restore_user_focus", lambda *a: (_ for _ in ()).throw(OSError())
+    )
+    with backend._guard_user_focus(_snapshot()) as state:
+        pass
+    assert state == {"focus_restored": False}
+    assert backend._focus_fields(state)["warning"]
+
+
+def test_guard_user_focus_is_inert_in_the_foreground(monkeypatch):
+    monkeypatch.setattr(backend, "_background_delivery", lambda s: False)
+    monkeypatch.setattr(
+        backend, "_frontmost_window", lambda: pytest.fail("probed focus")
+    )
+    with backend._guard_user_focus(_snapshot()) as state:
+        pass
+    assert state == {}
+
+
+def test_keyed_target_reposts_after_an_appkit_bounce_back(monkeypatch, calls):
+    monkeypatch.setattr(backend, "_frontmost_window", lambda: (4, 555))
+    # Key moves to 101 only after a second switch.
+    keys = iter([555] + [555] * 20 + [101] * 5)
+    monkeypatch.setattr(backend, "_key_window_id", lambda pid: next(keys, 101))
+    with backend._keyed_target(_snapshot()):
+        calls.append(("body",))
+    names = [c[0] for c in calls]
+    assert names.count("activate") >= 2
+    assert names[-3:] == ["validate", "body", "restore"]
+    assert names.count("validate") == 1
+
+
+def test_keyed_target_falls_back_to_a_final_exact_validation(monkeypatch, calls):
+    monkeypatch.setattr(backend, "_key_window_id", lambda pid: 555)
+    with backend._keyed_target(_snapshot()):
+        calls.append(("body",))
+    names = [c[0] for c in calls]
+    assert names.count("activate") == 4  # first switch + 3 bounded reposts
+    assert names[-3:] == ["validate", "body", "restore"]
+
+
+# --- focus without commit ---------------------------------------------------------
+
+
+def test_focus_without_commit_polls_and_accepts_electron_element_focus(
+    monkeypatch, attrs, clock
+):
+    monkeypatch.setattr(ax_driver, "kAXErrorSuccess", 0, raising=False)
+    monkeypatch.setattr(ax_driver, "AXUIElementSetAttributeValue", lambda *a: 0)
+    focused = iter([None, None, "live"])
+    monkeypatch.setattr(backend, "_focused_ax_element", lambda app: next(focused))
+    assert backend._focus_without_commit(_snapshot(), "live") == "AXFocused"
+    # No app-level focused element: the element's own AXFocused counts.
+    monkeypatch.setattr(backend, "_focused_ax_element", lambda app: None)
+    attrs["live"] = {"AXFocused": True}
+    assert backend._focus_without_commit(_snapshot(), "live") == "AXFocused"
+    attrs["live"] = {}
+    assert backend._focus_without_commit(_snapshot(), "live") is None
+
+
+# --- Electron and hidden renderers ------------------------------------------------
+
+
+def test_is_electron_detects_the_framework_once_per_process(monkeypatch, tmp_path):
+    bundle = tmp_path / "Slack.app"
+    (bundle / "Contents/Frameworks/Electron Framework.framework").mkdir(parents=True)
+    lookups = []
+
+    def running(pid):
+        lookups.append(pid)
+        path = bundle if pid == 4 else tmp_path / "Native.app"
+        return types.SimpleNamespace(
+            bundleURL=lambda: types.SimpleNamespace(path=lambda: str(path))
+        )
+
+    monkeypatch.setattr(backend, "_ELECTRON_BY_PID", {})
+    monkeypatch.setattr(ax_driver, "_application_for_pid", running)
+    slack = {"pid": 4, "bundleId": "com.tinyspeck.slackmacgap"}
+    assert backend._is_electron(slack) and backend._is_electron(slack)
+    assert lookups == [4]
+    assert backend._needs_web_content_retry(slack)
+    assert not backend._is_electron({"pid": 5, "bundleId": "com.apple.TextEdit"})
+    assert not backend._is_electron({"pid": "x"})
+    monkeypatch.setattr(ax_driver, "_application_for_pid", lambda pid: 1 / 0)
+    assert not backend._is_electron({"pid": 6})
+
+
+def test_await_ax_actions_ready_waits_out_the_chromium_warmup(monkeypatch, clock):
+    ages = {4: 0.5}
+    monkeypatch.setattr(ax_driver, "exposure_age", lambda pid: ages.get(pid))
+    backend._await_ax_actions_ready({"pid": 4, "bundleId": "com.google.chrome"})
+    assert clock.now == pytest.approx(1.5)
+    backend._await_ax_actions_ready({"pid": 9, "bundleId": "com.google.chrome"})
+    monkeypatch.setattr(backend, "_ELECTRON_BY_PID", {(4, None): False})
+    backend._await_ax_actions_ready({"pid": 4, "bundleId": "com.apple.TextEdit"})
+    assert clock.now == pytest.approx(1.5)
+
+
+def test_rouse_woken_renderer_scrolls_the_target_once(monkeypatch, clock):
+    performed = []
+    monkeypatch.setattr(
+        ax_driver, "AXUIElementPerformAction", lambda e, a: performed.append((e, a))
+    )
+    monkeypatch.setattr(ax_driver, "_WOKEN_PIDS", {4})
+    backend._rouse_woken_renderer(_snapshot(), "live")
+    backend._rouse_woken_renderer(_snapshot(), "live")
+    assert performed == [("live", "AXScrollToVisible")]
+    assert not ax_driver.renderer_was_woken(4)
+
+
+def test_exposure_clock_and_woken_marks(monkeypatch, clock):
+    monkeypatch.setattr(ax_driver, "_EXPOSED", {})
+    monkeypatch.setattr(ax_driver, "_WOKEN_PIDS", set())
+
+    class App:
+        def processIdentifier(self):
+            return 4
+
+        def launchDate(self):
+            return types.SimpleNamespace(timeIntervalSince1970=lambda: 100.0)
+
+    assert ax_driver.exposure_age(4) is None
+    assert ax_driver.first_exposure(App())
+    clock.now += 3.0
+    assert ax_driver.exposure_age(4) == pytest.approx(3.0)
+    monkeypatch.setattr(ax_driver, "_pid_of", lambda e: 4)
+    ax_driver._restart_exposure("app")
+    assert ax_driver.exposure_age(4) == pytest.approx(0.0)
+    ax_driver._mark_woken("app")
+    assert ax_driver.renderer_was_woken(4)
+    ax_driver.clear_woken(4)
+    assert not ax_driver.renderer_was_woken(4)
+    # An unreadable pid changes nothing.
+    monkeypatch.setattr(ax_driver, "_pid_of", lambda e: None)
+    clock.now += 1.0
+    ax_driver._restart_exposure("app")
+    ax_driver._mark_woken("app")
+    assert ax_driver.exposure_age(4) == pytest.approx(1.0)
+    assert not ax_driver.renderer_was_woken(4)
+
+
+def _quartz_window_info(monkeypatch, info):
+    return _install_module(
+        monkeypatch,
+        "Quartz",
+        CGWindowListCopyWindowInfo=lambda option, wid: info(wid),
+        kCGWindowListOptionIncludingWindow=8,
+    )
+
+
+def test_window_is_onscreen(monkeypatch):
+    _quartz_window_info(
+        monkeypatch, lambda wid: [{"kCGWindowIsOnscreen": wid == 1}] if wid else []
+    )
+    assert ax_driver.window_is_onscreen(1) is True
+    assert ax_driver.window_is_onscreen(2) is False
+    assert ax_driver.window_is_onscreen(0) is None
+
+
+def test_wake_hidden_renderer_grows_and_restores_an_offscreen_window(monkeypatch):
+    sizes = []
+    monkeypatch.setattr(
+        ax_driver,
+        "AS",
+        types.SimpleNamespace(
+            kAXValueCGSizeType=2,
+            AXValueCreate=lambda kind, size: size,
+            AXUIElementSetAttributeValue=lambda w, a, v: sizes.append((a, v)) or 0,
+        ),
+    )
+    monkeypatch.setattr(background_input, "ax_window_id", lambda w: 7)
+    monkeypatch.setattr(ax_driver, "_point_size", lambda w: (0, 0, 300.0, 200.0))
+    monkeypatch.setattr(ax_driver, "window_is_onscreen", lambda wid: False)
+    assert ax_driver._wake_hidden_renderer("win")
+    assert sizes == [("AXSize", (301.0, 200.0)), ("AXSize", (300.0, 200.0))]
+    # Visible (or unknown) windows are never touched.
+    sizes.clear()
+    for onscreen in (True, None):
+        monkeypatch.setattr(ax_driver, "window_is_onscreen", lambda wid, o=onscreen: o)
+        assert not ax_driver._wake_hidden_renderer("win")
+    assert sizes == []
+    monkeypatch.setattr(ax_driver, "window_is_onscreen", lambda wid: False)
+    monkeypatch.setattr(
+        ax_driver.AS, "AXUIElementSetAttributeValue", lambda w, a, v: -25200
+    )
+    assert not ax_driver._wake_hidden_renderer("win")
+
+
+# --- native popups ------------------------------------------------------------------
+
+
+@pytest.fixture
+def native_popup(monkeypatch, calls, attrs):
+    state = {"open": False, "value": "A"}
+    attrs["popup"] = {}
+
+    def refresh():
+        attrs["popup"] = {
+            "AXChildren": ["menu"] if state["open"] else [],
+            "AXValue": state["value"],
+        }
+
+    attrs["menu"] = {"AXRole": "AXMenu", "AXChildren": ["a", "b", "c"]}
+    attrs["a"] = {"AXRole": "AXMenuItem", "AXTitle": "A"}
+    attrs["b"] = {"AXRole": "AXMenuItem", "AXTitle": "B"}
+    attrs["c"] = {"AXRole": "AXMenuItem", "AXTitle": "C", "AXEnabled": False}
+    refresh()
+
+    def perform(element, action):
+        calls.append(("ax", element, action))
+        if element == "popup" and action == "AXPress":
+            state["open"] = True
+        elif action == "AXCancel":
+            state["open"] = False
+        elif action == "AXPress" and element in ("a", "b"):
+            state["open"] = False
+            state["value"] = attrs[element]["AXTitle"]
+        refresh()
+        return 0
+
+    _install_module(
+        monkeypatch,
+        "ApplicationServices",
+        kAXErrorSuccess=0,
+        AXUIElementPerformAction=perform,
+    )
+    return state
+
+
+def test_choose_from_ax_menu_presses_the_item_and_reads_back(native_popup, calls):
+    assert backend._choose_from_ax_menu("popup", "b", 4) == "B"
+    assert [c[1:] for c in calls] == [("popup", "AXPress"), ("b", "AXPress")]
+
+
+def test_choose_from_ax_menu_cancels_an_unknown_or_disabled_option(native_popup, calls):
+    for value in ("C", "Z"):
+        with pytest.raises(errors.ComputerUseError) as exc:
+            backend._choose_from_ax_menu("popup", value, 4)
+        assert exc.value.code == "value_not_settable"
+        assert "A, B" in exc.value.message
+        assert calls[-1][1:] == ("menu", "AXCancel")
+    assert native_popup["value"] == "A"
+
+
+def test_close_menu_escapes_a_menu_that_ignores_cancel(monkeypatch, calls, attrs):
+    attrs["popup"] = {"AXChildren": ["menu"]}
+    attrs["menu"] = {"AXRole": "AXMenu"}
+    _ax_actions(monkeypatch, calls)
+    backend._close_menu("popup", "menu", 4)
+    assert calls[-1] == ("press_key", (4, backend.KEY_ALIASES["escape"], 0))
+
+
+def test_open_menu_of_times_out(attrs, clock):
+    attrs["popup"] = {"AXChildren": ["label"]}
+    assert backend._open_menu_of("popup", timeout=0.2) is None
+
+
+def test_set_value_chooses_a_native_popup_through_its_menu(
+    monkeypatch, native_popup, calls
+):
+    snap = _snapshot(
+        bundle="com.apple.TextEdit",
+        elements=[{"index": 0, "role": "AXPopUpButton", "center": [1, 1]}],
+    )
+    monkeypatch.setattr(backend, "_ELECTRON_BY_PID", {(4, None): False})
+    monkeypatch.setattr(backend, "_live_element", lambda *a, **k: "popup")
+    _install_module(
+        monkeypatch,
+        "ApplicationServices",
+        kAXErrorSuccess=0,
+        kAXValueAttribute="AXValue",
+        AXUIElementSetAttributeValue=lambda *a: pytest.fail("set a native popup"),
+        AXUIElementPerformAction=sys.modules[
+            "ApplicationServices"
+        ].AXUIElementPerformAction,
+    )
+    result = backend.set_value("App", 0, "B", expected_snapshot=snap)
+    assert result["mode"] == "AXMenuChoose" and result["actual"] == "B"
+
+
+# --- perform_secondary_action -----------------------------------------------------
+
+
+def test_show_menu_action_never_leaves_the_menu_open(monkeypatch, open_menu, calls):
+    snap = _snapshot(
+        elements=[{"index": 0, "role": "AXButton", "actions": ["AXShowMenu"]}]
+    )
+    monkeypatch.setattr(backend, "get_app_state", lambda *a, **k: snap)
+    monkeypatch.setattr(backend, "_open_menu_count", lambda pid: 0)
+    real = sys.modules["ApplicationServices"].AXUIElementPerformAction
+
+    def perform(element, action):
+        result = real(element, action)
+        if action == "AXShowMenu":
+            monkeypatch.setattr(backend, "_open_menu_count", lambda pid: 1)
+        if action == "AXCancel":
+            monkeypatch.setattr(backend, "_open_menu_count", lambda pid: 0)
+        return result
+
+    sys.modules["ApplicationServices"].AXUIElementPerformAction = perform
+    result = backend.perform_secondary_action("App", 0, "AXShowMenu")
+    assert result["menu"]["closed"] is True
+    assert result["menu"]["items"] == ["Copy", "Paste"]
+
+
+# --- window titles without Screen Recording ---------------------------------------
+
+
+def test_ax_window_titles_map_cg_ids(monkeypatch, attrs):
+    monkeypatch.setattr(ax_driver, "AS", object())
+    monkeypatch.setattr(ax_driver, "AXUIElementCreateApplication", lambda pid: "app")
+    attrs["app"] = {"AXWindows": ["w1", "w2", "w3"]}
+    attrs["w1"] = {"AXTitle": "Inbox"}
+    attrs["w2"] = {"AXTitle": None}
+    ids = {"w1": 11, "w2": 12}
+    monkeypatch.setattr(background_input, "ax_window_id", lambda w: ids.get(w))
+    assert backend._ax_window_titles(4) == {11: "Inbox"}
+    monkeypatch.setattr(
+        background_input, "ax_window_id", lambda w: (_ for _ in ()).throw(OSError())
+    )
+    assert backend._ax_window_titles(4) == {}
+    monkeypatch.setattr(ax_driver, "AS", None)
+    assert backend._ax_window_titles(4) == {}
+
+
+def test_cg_window_names_visible_follows_screen_capture_access(monkeypatch):
+    _install_module(monkeypatch, "Quartz", CGPreflightScreenCaptureAccess=lambda: False)
+    assert backend._cg_window_names_visible() is False
+    _install_module(monkeypatch, "Quartz")
+    assert backend._cg_window_names_visible() is True
+
+
+def test_window_records_fill_titles_from_ax(monkeypatch):
+    _install_module(
+        monkeypatch,
+        "Quartz",
+        CGWindowListCopyWindowInfo=lambda *a: [
+            {
+                "kCGWindowNumber": 101,
+                "kCGWindowOwnerPID": 4,
+                "kCGWindowLayer": 0,
+                "kCGWindowBounds": {"X": 0, "Y": 0, "Width": 500, "Height": 400},
+            }
+        ],
+        kCGNullWindowID=0,
+        kCGWindowListExcludeDesktopElements=1,
+        kCGWindowListOptionOnScreenOnly=2,
+    )
+    monkeypatch.setattr(backend, "_ax_window_titles", lambda pid: {101: "Inbox"})
+    monkeypatch.setattr(backend, "_offscreen_ax_windows", lambda app, seen: [])
+    records = backend._window_records({"pid": 4, "name": "App"})
+    assert [r["title"] for r in records] == ["Inbox"]
+
+
+def test_offscreen_candidates_use_size_when_titles_are_hidden(monkeypatch, attrs):
+    cg = [
+        {
+            "kCGWindowNumber": number,
+            "kCGWindowOwnerPID": 4,
+            "kCGWindowLayer": 0,
+            "kCGWindowBounds": {"X": 0, "Y": 0, "Width": w, "Height": h},
+        }
+        for number, w, h in ((303, 800, 600), (404, 1, 1), (505, 900, 20))
+    ]
+    _install_module(
+        monkeypatch,
+        "Quartz",
+        CGWindowListCopyWindowInfo=lambda *a: cg,
+        kCGNullWindowID=0,
+        kCGWindowListOptionAll=0,
+    )
+    monkeypatch.setattr(backend, "_cg_window_names_visible", lambda: False)
+    monkeypatch.setattr(ax_driver, "AXUIElementCreateApplication", lambda pid: "app")
+    monkeypatch.setattr(ax_driver, "_app_windows", lambda app: [])
+    scans = []
+    monkeypatch.setattr(
+        ax_driver,
+        "discover_remote_windows",
+        lambda pid, wanted: scans.append(set(wanted)) or set(),
+    )
+    monkeypatch.setattr(backend, "_REMOTE_SCANNED", {})
+    backend._offscreen_ax_windows_unchecked({"pid": 4}, set())
+    assert scans == [{303}]
+
+
+# --- AX scroll of a window the window server is not compositing --------------------
+
+
+class _Scroller:
+    """A scroll view whose rows move by ``offset`` when scrolled into view."""
+
+    def __init__(self, attrs, rows=10, row_height=100.0, viewport=300.0):
+        self.attrs = attrs
+        self.offset = 0.0
+        self.rows = [f"row{i}" for i in range(rows)]
+        self.row_height = row_height
+        self.viewport = viewport
+        attrs["scroller"] = {"AXChildren": list(self.rows)}
+
+    def frame(self, element):
+        if element == "scroller":
+            return (0.0, 0.0, 400.0, self.viewport)
+        if element in self.rows:
+            i = self.rows.index(element)
+            return (0.0, i * self.row_height - self.offset, 400.0, self.row_height)
+        return None
+
+    def scroll_to(self, element):
+        _, y, _, h = self.frame(element)
+        if y + h > self.viewport:
+            self.offset += y + h - self.viewport
+        elif y < 0:
+            self.offset += y
+
+
+@pytest.fixture
+def scroller(monkeypatch, attrs, clock):
+    view = _Scroller(attrs)
+    monkeypatch.setattr(ax_driver, "_point_size", view.frame)
+    monkeypatch.setattr(
+        ax_driver,
+        "AXUIElementPerformAction",
+        lambda e, a: view.scroll_to(e) if a == "AXScrollToVisible" else None,
+    )
+    monkeypatch.setattr(backend, "_live_element", lambda *a, **k: "scroller")
+    return view
+
+
+def _scroll_snapshot():
+    return _snapshot(
+        elements=[
+            {
+                "index": 0,
+                "role": "AXGroup",
+                "x": 0,
+                "y": 0,
+                "width": 800,
+                "height": 900,
+            },
+            {
+                "index": 1,
+                "role": "AXScrollArea",
+                "x": 0,
+                "y": 0,
+                "width": 400,
+                "height": 300,
+            },
+            {
+                "index": 2,
+                "role": "AXButton",
+                "x": 500,
+                "y": 0,
+                "width": 10,
+                "height": 10,
+            },
+        ]
+    )
+
+
+def test_ax_scroll_target_prefers_the_furthest_row_within_reach(scroller):
+    lo, hi, node = backend._ax_scroll_target("scroller", True, True, 300.0)
+    assert (lo, hi, node) == (0.0, 300.0, "row5")
+    assert backend._ax_scroll_target("scroller", True, True, 50.0)[2] == "row3"
+    assert backend._ax_scroll_target("scroller", True, False, 300.0) is None
+    assert backend._ax_scroll_target("missing", True, True, 300.0) is None
+
+
+def test_ax_scroll_target_takes_clipped_rows_in_document_order(monkeypatch, attrs):
+    frames = {"s": (0.0, 0.0, 100.0, 300.0), "a": (0.0, 300.0, 100.0, 0.0)}
+    frames["b"] = (0.0, 300.0, 100.0, 0.0)
+    attrs["s"] = {"AXChildren": ["a", "b"]}
+    monkeypatch.setattr(ax_driver, "_point_size", frames.get)
+    assert backend._ax_scroll_target("s", True, True, 300.0)[2] == "a"
+
+
+def test_ax_scroll_moves_about_a_page_on_the_smallest_scroller(scroller):
+    moved = backend._ax_scroll(_scroll_snapshot(), (10.0, 10.0), "down", 1.0)
+    assert moved["scroller"] == 1
+    assert 250 <= moved["points"] <= 350
+    assert scroller.offset > 0
+    back = backend._ax_scroll(_scroll_snapshot(), (10.0, 10.0), "up", 5.0)
+    assert back is not None and scroller.offset == 0
+
+
+def test_ax_scroll_returns_none_when_nothing_moves(monkeypatch, scroller):
+    monkeypatch.setattr(ax_driver, "AXUIElementPerformAction", lambda e, a: None)
+    assert backend._ax_scroll(_scroll_snapshot(), (10.0, 10.0), "down", 1.0) is None
+    # An element that drifted is skipped, not acted on.
+    monkeypatch.setattr(
+        backend,
+        "_live_element",
+        lambda *a, **k: (_ for _ in ()).throw(
+            errors.ComputerUseError("target_drift", "moved")
+        ),
+    )
+    assert backend._ax_scroll(_scroll_snapshot(), (10.0, 10.0), "down", 1.0) is None
+
+
+def test_scroll_uses_ax_for_a_window_that_is_not_composited(monkeypatch, scroller):
+    monkeypatch.setenv(background_input.DELIVERY_ENV, "background")
+    monkeypatch.setattr(background_input, "skylight_available", lambda: True)
+    monkeypatch.setattr(
+        backend, "_validate_snapshot_window", lambda snap, **k: snap["window"]
+    )
+    monkeypatch.setattr(backend, "_finish_action", lambda app, snap, d, **k: d)
+    monkeypatch.setattr(
+        background_input, "scroll", lambda *a, **k: pytest.fail("wheel posted")
+    )
+    monkeypatch.setattr(ax_driver, "window_is_onscreen", lambda wid: False)
+    result = backend.scroll(
+        "App", "down", x=10, y=10, expected_snapshot=_scroll_snapshot()
+    )
+    assert result["mode"] == "AX-scroll" and result["scroller"] == 1
+    # A composited window keeps the wheel route.
+    wheels = []
+    monkeypatch.setattr(ax_driver, "window_is_onscreen", lambda wid: True)
+    monkeypatch.setattr(
+        background_input, "scroll", lambda *a, **k: wheels.append(a) or True
+    )
+    result = backend.scroll(
+        "App", "down", x=10, y=10, expected_snapshot=_scroll_snapshot()
+    )
+    assert result["mode"] == "SkyLight-scroll" and len(wheels) == 1
