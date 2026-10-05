@@ -40,6 +40,7 @@ class ValidationPolicy:
     lanes: Lanes
     linux_matrix_mode: LinuxMatrixMode
     linux_matrix_reason: str
+    source_canary_tests: tuple[str, ...] = ()
 
     def as_outputs(self) -> dict[str, str]:
         outputs = self.lanes.as_outputs()
@@ -50,6 +51,8 @@ class ValidationPolicy:
                 "test_matrix": json.dumps(
                     linux_test_matrix(self.linux_matrix_mode), separators=(",", ":")
                 ),
+                "source_canary": str(bool(self.source_canary_tests)).lower(),
+                "source_canary_tests": " ".join(self.source_canary_tests),
             }
         )
         return outputs
@@ -123,6 +126,57 @@ _PY311_TEST_PATHS = {
     "tests/test_telemetry_registry.py",
     "tests/test_telemetry_registry_drift.py",
 }
+
+# Exact presentation/metadata contracts only. Shared CLI parsing, engine,
+# authentication, model downloads and test support never enter this route.
+_SOURCE_CANARY_AREAS = (
+    (
+        {"rapid_mlx/cli_help.py", "tests/test_cli_help_groups.py"},
+        (
+            "tests/test_cli_help_groups.py",
+            "tests/test_cli_parser_snapshot.py",
+            "tests/test_cli_parser_types.py",
+        ),
+    ),
+    (
+        {"rapid_mlx/_banner.py", "tests/test_cli_cheetah_banner.py"},
+        (
+            "tests/test_cli_cheetah_banner.py",
+            "tests/test_cli_help_groups.py",
+            "tests/test_cli_parser_snapshot.py",
+        ),
+    ),
+    (
+        {"rapid_mlx/telemetry/chip.py", "tests/test_telemetry_chip.py"},
+        (
+            "tests/test_telemetry_chip.py",
+            "tests/test_chip_tier.py",
+            "tests/test_telemetry_registry_drift.py",
+        ),
+    ),
+    (
+        _PY311_ENGINE_PATHS | _PY311_TEST_PATHS,
+        ("tests/test_telemetry_registry.py", "tests/test_telemetry_registry_drift.py"),
+    ),
+)
+
+
+def source_canary_tests(paths: set[str]) -> tuple[str, ...]:
+    allowed = set().union(*(area for area, _tests in _SOURCE_CANARY_AREAS))
+    if not paths or not paths <= allowed:
+        return ()
+    return tuple(
+        sorted(
+            {
+                test
+                for area, tests in _SOURCE_CANARY_AREAS
+                if paths & area
+                for test in tests
+            }
+        )
+    )
+
+
 _FULL_MATRIX_REASONS = {
     ".github": "ci-control",
     "config": "dependency-or-policy",
@@ -243,13 +297,17 @@ def classify_policy(
     *,
     force_full: bool = False,
     force_reason: str = "promoted-head",
+    source_canary: bool = False,
 ) -> ValidationPolicy:
     normalized = _normalized_paths(paths)
     lanes = classify(normalized)
     mode, reason = _linux_matrix_decision(normalized, lanes)
     if force_full:
         mode, reason = "full", force_reason
-    return ValidationPolicy(lanes, mode, reason)
+    tests = source_canary_tests(normalized) if source_canary and not force_full else ()
+    if source_canary and not force_full and not tests:
+        mode, reason = "full", "source-canary-unmapped"
+    return ValidationPolicy(lanes, mode, reason, tests)
 
 
 def main() -> int:
@@ -259,13 +317,17 @@ def main() -> int:
     parser.add_argument("--github-output", type=argparse.FileType("a"))
     parser.add_argument("--force-full", action="store_true")
     parser.add_argument("--force-reason", default="promoted-head")
+    parser.add_argument("--source-canary", action="store_true")
     args = parser.parse_args()
 
     paths = list(args.paths)
     if args.paths_file:
         paths.extend(args.paths_file.read().splitlines())
     outputs = classify_policy(
-        paths, force_full=args.force_full, force_reason=args.force_reason
+        paths,
+        force_full=args.force_full,
+        force_reason=args.force_reason,
+        source_canary=args.source_canary,
     ).as_outputs()
 
     if args.github_output:
