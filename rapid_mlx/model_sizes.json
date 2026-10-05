@@ -4,7 +4,6 @@
     "Anes1032/Wan2.2-I2V-A14B-mlx-q8": 42681013381,
     "Anes1032/Wan2.2-TI2V-5B-mlx-q8": 19580244943,
     "Jackrong/MLX-Qwopus3.5-27B-v3-4bit": 15153228040,
-    "Jackrong/MLX-Qwopus3.5-27B-v3-8bit": null,
     "Jackrong/MLX-Qwopus3.5-9B-v3-4bit": 5058235850,
     "LiquidAI/LFM2.5-2.6B-MLX": 1601103345,
     "MrMofer/ltx-2.5-mlx-q8": 67695751883,
@@ -242,6 +241,6 @@
     "unsloth/Qwen3.6-27B-UD-MLX-4bit": 26210992727,
     "unsloth/Qwen3.6-27B-UD-MLX-6bit": 30522606211,
     "unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit": 21655301364,
-    "windowsxp811203/Qwen3.8-27B-Abliterated-MLX-MTP": 16998733375
+    "windowsxp811203/Qwen3.8-27B-Abliterated-MLX-oQ4e-mtp": 16998733375
   }
 }

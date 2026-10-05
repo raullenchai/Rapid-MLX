@@ -123,8 +123,7 @@ def test_legacy_projection_is_complete_deduplicated_and_schema_valid() -> None:
     ]
     assert abliterated_model["source"] == {
         "provider": "huggingface",
-        "repo_id": "windowsxp811203/Qwen3.8-27B-Abliterated-MLX-MTP",
-        "subfolder": "oQ4e",
+        "repo_id": "windowsxp811203/Qwen3.8-27B-Abliterated-MLX-oQ4e-mtp",
     }
     assert abliterated_model["estimated_download_size_bytes"] == 16_998_733_375
     assert aliases["flux2-klein-4b"]["capabilities"]["operation_modes"] == [

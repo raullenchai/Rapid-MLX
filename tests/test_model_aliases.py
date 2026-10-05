@@ -26,6 +26,17 @@ def test_broken_ministral_3b_alias_is_rejected_before_loading():
         resolve_model(retired)
 
 
+def test_unavailable_qwopus_8bit_alias_is_retired_with_migration_note():
+    """#4141: the upstream repository is gone, so a cold pull can only fail."""
+    retired = "qwopus-27b-8bit"
+    assert retired not in list_aliases()
+    with pytest.raises(RetiredModelAliasError, match="no longer accessible") as exc:
+        resolve_model(retired)
+    assert "'qwopus-27b-4bit'" in str(exc.value)
+    # The migration target must stay a live catalog alias.
+    assert resolve_model("qwopus-27b-4bit") == "Jackrong/MLX-Qwopus3.5-27B-v3-4bit"
+
+
 def test_retired_alias_full_hf_path_remains_available_for_text_only_testing():
     hf_path = "mlx-community/Ministral-3-3B-Instruct-2512-4bit"
     assert resolve_model(hf_path) == hf_path

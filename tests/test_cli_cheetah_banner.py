@@ -73,6 +73,23 @@ def test_banner_does_not_duplicate_when_printed_twice():
     assert a == b
 
 
+@pytest.mark.parametrize("first_color", [False, True])
+def test_banner_mixed_renders_preserve_artwork_and_plain_footer(first_color):
+    """Rendering another version or color must not mutate shared artwork."""
+    import re
+
+    mono = render_banner("0.15.6", color=False)
+    first = render_banner("0.15.6", color=first_color)
+    other = render_banner("0.15.7", color=not first_color)
+    strip_ansi = re.compile(r"\x1b\[[0-9;]*m").sub
+
+    assert strip_ansi("", first) == mono
+    assert strip_ansi("", other).splitlines()[:-1] == mono.splitlines()[:-1]
+    assert other.splitlines()[-2:] == ["r a p i d - m l x", "Rapid-MLX 0.15.7"]
+    assert render_banner("0.15.6", color=False) == mono
+    assert render_banner("0.15.6", color=first_color) == first
+
+
 # ---------------------------------------------------------------------------
 # Interactive-only gating (the suppression contract)
 # ---------------------------------------------------------------------------
