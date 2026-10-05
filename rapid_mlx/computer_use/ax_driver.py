@@ -152,7 +152,7 @@ INTERESTING_ROLES = {
 }
 EDITABLE_ROLES = {"AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"}
 # Shown instead of what the user typed into a field only they may fill
-# (kept equal to guards.USER_VALUE).
+# (kept equal to privacy.USER_VALUE).
 USER_VALUE = "[entered by the user]"
 # Controls whose AXValue is their state (a select's choice, a stepper's number).
 VALUE_ROLES = {
@@ -706,10 +706,10 @@ def _walk(
     user_only = False
     if role in EDITABLE_ROLES and not secure_text:
         # Imported here so `python ax_driver.py` keeps working as a script.
-        from . import guards
+        from . import privacy
 
         name = _field_name(node)
-        if name and guards.needs_human_input(role, subrole, name):
+        if name and privacy.user_only_field(role, subrole, name):
             label, user_only = name, True
     actions = _action_names(element)
     geom = _frame_of(node)

@@ -7,6 +7,7 @@ alternatives considered, consequences, owner, and date.
 
 | Date | Decision | Status |
 | --- | --- | --- |
+| 2026-10-05 | [CUA approvals belong to the brain, not the hands](2026-10-05-cua-approvals-belong-to-the-brain.md) | Accepted |
 | 2026-09-27 | [Agent-session prefix reuse on 16-32 GB Macs](2026-09-27-agent-session-prefix-cache.md) | Accepted |
 | 2026-09-24 | [Native System One server boundary](2026-09-24-system-one-server.md) | Accepted for implementation |
 | 2026-09-15 | [Community Benchmark read-API seam](2026-09-15-community-benchmark-read-api-seam.md) | Implemented; aggregate gaps documented |

@@ -8,7 +8,7 @@ import types
 
 import pytest
 
-from rapid_mlx.computer_use import ax_driver, backend, guards
+from rapid_mlx.computer_use import ax_driver, backend, privacy
 
 
 class FakeAS:
@@ -114,7 +114,7 @@ def test_fields_only_the_user_fills_are_named_and_never_show_their_value(tree):
     )
     out = _walk("win")
     assert "482913" not in repr(out)
-    assert ax_driver.USER_VALUE == guards.USER_VALUE
+    assert ax_driver.USER_VALUE == privacy.USER_VALUE
     assert [(t["text"], t["value"]) for t in out] == [
         ("Verification code", "[entered by the user]"),
         ("PIN", ""),
