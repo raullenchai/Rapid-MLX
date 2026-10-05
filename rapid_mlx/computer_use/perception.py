@@ -51,6 +51,7 @@ MAX_FOLD_SECTIONS = 12
 # Refusals that mean "the page moved under the snapshot", not "the target is gone".
 _SHIFTED = {"element_not_found", "stale_observation"}
 MAX_FIND_HITS = 25
+SECRET_VALUE = "[entered by the user]"
 # Live AX elements remembered for ref stability; past this, elements no
 # current observation shows are forgotten.
 MAX_REMEMBERED_ELEMENTS = 20000
@@ -355,11 +356,14 @@ class PerceptionSession:
                 f"the user is working in window {obs.window_id} "
                 f"({self._with_human[obs.window_id]}); wait for the handoff to finish",
             )
-        if op in {"fill", "type"}:
+        # A printable key is typing too: a password spelled key by key is
+        # still the user's.
+        typing = op == "type" or (op == "key" and _is_text_key(kw.get("key")))
+        if op == "fill" or typing:
             # Typed text goes to the focused element whatever ref was named,
             # so a focused secret field is guarded the same as a named one.
             targets = [row] if row is not None else []
-            if op == "type":
+            if typing:
                 targets += [r for r in obs.rows if "focused" in r.states]
             for target in targets:
                 why = guards.needs_human_input(
@@ -371,7 +375,7 @@ class PerceptionSession:
                         f"{target.ref} is {why}; the user types it. Use handoff "
                         "with a reason, then continue when it returns.",
                     )
-            if op == "type":
+            if typing:
                 # Focus can move after the observation (a page that focuses
                 # its password box on load): ask the app what has it now.
                 why = _focused_secret(obs.snapshot.get("app") or {})
@@ -724,6 +728,15 @@ class PerceptionSession:
                     self._refs[live] = (ref, role, label)
             used.add(ref)
             value = element.get("value")
+            if (
+                isinstance(value, str)
+                and value
+                and guards.needs_human_input(
+                    role, str(element.get("subrole") or ""), label
+                )
+            ):
+                # What the user typed into a secret field is theirs.
+                value = SECRET_VALUE
             center = element.get("center") or [0, 0]
             # The driver clips frames to the window: a scrolled-away element
             # (below the fold, a carousel's hidden slide) comes back empty, and
@@ -1163,6 +1176,14 @@ def _content(obs: Observation) -> frozenset[tuple[str, str]]:
     )
 
 
+def _is_text_key(key: object) -> bool:
+    """Whether pressing ``key`` types a character ("a", "shift+7")."""
+    name = str(key or "")
+    while name.lower().startswith("shift+"):
+        name = name[6:]
+    return len(name) == 1 and name.isprintable()
+
+
 def _focused_secret(app_info: dict) -> str | None:
     """Why the app's focused element is for the user only, read live.
 
@@ -1189,8 +1210,8 @@ def _focused_secret(app_info: dict) -> str | None:
                 label = value.strip()
                 break
         return guards.needs_human_input(role, subrole, label)
-    except Exception:  # noqa: BLE001 - no AX here; the observed focus still guards
-        return None
+    except Exception:  # noqa: BLE001 - focus could not be inspected: fail closed
+        return "a field whose focus could not be checked"
 
 
 def _window_owner(window_id: str | int) -> str | None:
