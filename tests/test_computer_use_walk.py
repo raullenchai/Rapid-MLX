@@ -290,6 +290,71 @@ def test_web_content_keeps_document_order_and_native_groups_put_controls_first(t
     assert _walk("page")[1]["parent_role"] == "AXWebArea"
 
 
+def test_walk_records_tree_paths_page_membership_and_dialogs(tree):
+    nodes, _ = tree
+    nodes.update(
+        {
+            # Few siblings outside the page: read up front and sorted (the
+            # toolbar first), but each keeps its own child position.
+            "win": {"AXRole": "AXWindow", "AXChildren": ["web", "toolbar"]},
+            "toolbar": {"AXRole": "AXToolbar", "AXChildren": ["back"]},
+            "back": {"AXRole": "AXButton", "AXTitle": "Back"},
+            "web": {"AXRole": "AXWebArea", "AXChildren": ["dlg", "buy"]},
+            "dlg": {
+                "AXRole": "AXGroup",
+                "AXSubrole": "AXApplicationDialog",
+                "AXChildren": ["x"],
+            },
+            "x": {"AXRole": "AXButton", "AXTitle": "Close"},
+            "buy": {"AXRole": "AXButton", "AXTitle": "Buy"},
+        }
+    )
+    out = {t["text"] or t["subrole"]: t for t in _walk("win")}
+    assert out["Back"]["path"] == [1, 0] and out["Back"]["web"] is False
+    # An unnamed web dialog is still a row, so an observation can say so.
+    assert out["AXApplicationDialog"]["path"] == [0, 0]
+    assert out["Close"]["path"] == [0, 0, 0] and out["Close"]["web"] is True
+    assert out["Buy"]["path"] == [0, 1]
+
+
+def test_secure_field_is_named_and_says_whether_it_is_filled(tree):
+    nodes, fake = tree
+    nodes.update(
+        {
+            "win": {"AXRole": "AXWindow", "AXChildren": ["pw", "pin"]},
+            "pw": {
+                "AXRole": "AXTextField",
+                "AXSubrole": "AXSecureTextField",
+                "AXDescription": "Password",
+                "AXTitle": "hunter2",  # some apps mirror the contents here
+                "AXValue": "hunter2",
+                "AXNumberOfCharacters": 7,
+            },
+            "pin": {
+                "AXRole": "AXTextField",
+                "AXSubrole": "AXSecureTextField",
+                "AXPlaceholderValue": "PIN",
+                "AXNumberOfCharacters": 0,
+            },
+        }
+    )
+    pw, pin = _walk("win")
+    assert "hunter2" not in repr([pw, pin])
+    assert (pw["text"], pw["field_name"], pw["filled"]) == (
+        "[secure text redacted]",
+        "Password",
+        True,
+    )
+    assert (pin["field_name"], pin["filled"]) == ("PIN", False)
+    for element, attrs in fake.requests:
+        if element in {"pw", "pin"}:
+            assert "AXValue" not in attrs and "AXTitle" not in attrs
+    nodes["pw"]["AXNumberOfCharacters"] = None
+    nodes["pw"]["AXDescription"] = None
+    pw = _walk("pw")[0]
+    assert (pw["field_name"], pw["filled"]) == ("", None)
+
+
 def test_walk_marks_truncation_at_every_cap(tree, monkeypatch):
     nodes, _ = tree
     nodes.update(
@@ -460,12 +525,24 @@ def test_get_app_state_exposes_states_placeholders_and_live_refs(monkeypatch):
         "placeholder": "Search Mart",
         "source_window_id": "cg:5",
         "element": "live-field",
+        "path": [0, 2],
+        "web": True,
+    }
+    secure = {
+        "target_id": "t001",
+        "role": "AXTextField",
+        "subrole": "AXSecureTextField",
+        "text": "[secure text redacted]",
+        "actions": [],
+        "rect": (10, 40, 100, 20),
+        "field_name": "Password",
+        "filled": True,
     }
 
     def collect(*a, collection_status=None, **k):
         collection_status["partial"] = True
         collection_status["budget_exhausted"] = True
-        return [target]
+        return [target, secure]
 
     monkeypatch.setattr(backend, "_resolve_app", lambda *a, **k: (object(), app_info))
     monkeypatch.setattr(backend, "_select_window", lambda *a, **k: window)
@@ -475,7 +552,16 @@ def test_get_app_state_exposes_states_placeholders_and_live_refs(monkeypatch):
     element = snapshot["elements"][0]
     assert element["states"] == ["focused"] and element["placeholder"] == "Search Mart"
     assert snapshot["budget_exhausted"] is True and snapshot["truncated"] is True
-    assert backend.live_elements(snapshot) == ["live-field"]
+    assert backend.live_elements(snapshot) == ["live-field", None]
+    assert (element["path"], element["web"]) == ([0, 2], True)
+    assert "field_name" not in element
+    hidden = snapshot["elements"][1]
+    assert (hidden["label"], hidden["field_name"], hidden["filled"]) == (
+        "[secure text redacted]",
+        "Password",
+        True,
+    )
+    assert "path" not in hidden
 
 
 def test_collect_watchdog_marks_a_budget_cut_walk_partial(monkeypatch):

@@ -371,6 +371,36 @@ def test_settle_menus_refuses_a_missing_or_disabled_item(open_menu, calls):
     assert not any(c[2] == "AXPress" for c in calls if c[0] == "ax")
 
 
+def test_settle_menus_matches_a_unique_start_or_part_and_refuses_ambiguity(
+    open_menu, calls, attrs
+):
+    attrs["menu"]["AXChildren"] = ["visa", "checking", "savings", "add"]
+    attrs["visa"] = {"AXRole": "AXMenuItem", "AXTitle": "Visa ending 4242 (2.95% fee)"}
+    attrs["checking"] = {
+        "AXRole": "AXMenuItem",
+        "AXTitle": "Checking ending 6789 (no fee)",
+    }
+    attrs["savings"] = {"AXRole": "AXMenuItem", "AXTitle": "Savings ending 1111"}
+    attrs["add"] = {"AXRole": "AXMenuItem", "AXTitle": "Add a new payment method…"}
+    report = backend._settle_menus(_snapshot(), 0, 0, "checking", expect_menu=True)
+    assert report["chosen"] == "Checking ending 6789 (no fee)"
+    open_menu.state["open"] = 1
+    report = backend._settle_menus(_snapshot(), 0, 0, "6789", expect_menu=True)
+    assert report["chosen"] == "Checking ending 6789 (no fee)"
+    for wanted, why in (
+        ("ending", "has 3 items matching"),  # in three titles
+        ("c", "has no enabled item"),  # too short to choose by
+        ("Mastercard", "has no enabled item"),
+    ):
+        open_menu.state["open"] = 1
+        presses = len([c for c in calls if c[2:] == ("AXPress",)])
+        with pytest.raises(errors.ComputerUseError) as exc:
+            backend._settle_menus(_snapshot(), 0, 0, wanted, expect_menu=True)
+        assert exc.value.code == "element_not_found"
+        assert why in exc.value.message and "Savings ending 1111" in exc.value.message
+        assert len([c for c in calls if c[2:] == ("AXPress",)]) == presses
+
+
 def test_settle_menus_reports_a_failed_press(open_menu, calls):
     open_menu.results[("copy", "AXPress")] = -25200
     with pytest.raises(errors.ComputerUseError) as exc:

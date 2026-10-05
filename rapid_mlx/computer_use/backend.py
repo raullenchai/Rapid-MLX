@@ -854,8 +854,16 @@ def get_app_state(
     for target in targets:
         index = int(target["target_id"][1:])
         rect = target.get("rect") or [0, 0, 0, 0]
+        # Tree position and page membership (perception keys refs and names
+        # containers with them); a secure field's name and fill state only.
+        extra = {
+            key: target[key]
+            for key in ("path", "web", "field_name", "filled")
+            if key in target
+        }
         elements.append(
             {
+                **extra,
                 "index": index,
                 "role": target["role"],
                 "subrole": target.get("subrole") or "",
@@ -2945,16 +2953,13 @@ def _read_choose_and_close(
     titles = [_menu_item_title(i) for i in items]
     chosen = None
     if choose is not None:
-        wanted = _menu_title_key(choose)
-        match = next(
-            (i for i, t in zip(items, titles) if _menu_title_key(t) == wanted), None
-        )
+        match, why = _match_menu_item(items, titles, choose)
         if match is None or ax_driver._get(match, "AXEnabled") is False:
             closed = _close_menus(pid, before, element)
             shown = ", ".join(t for t in titles if t)[:400]
             raise ComputerUseError(
                 "element_not_found",
-                f"menu has no enabled item {choose!r} (items: {shown})"
+                f"menu {why or 'has no enabled item'} {choose!r} (items: {shown})"
                 + ("" if closed else _MENU_LEFT_OPEN),
             )
         from ApplicationServices import AXUIElementPerformAction
@@ -5063,6 +5068,33 @@ def _is_menu_equivalent(
 
 def _menu_title_key(title: object) -> str:
     return str(title or "").strip().rstrip("…").rstrip(".").strip().casefold()
+
+
+def _match_menu_item(
+    items: list[object], titles: list[str], wanted: str
+) -> tuple[object | None, str | None]:
+    """The item ``wanted`` names, and why none was taken when it is None.
+
+    An exact title (case, a trailing ellipsis aside) wins; otherwise one
+    title starting with it ("Checking" for "Checking ending 6789 (no fee)"),
+    otherwise one containing it. Two or more candidates are ambiguous and
+    nothing is chosen.
+    """
+    key = _menu_title_key(wanted)
+    keys = [_menu_title_key(t) for t in titles]
+    exact = [item for item, k in zip(items, keys) if k == key]
+    if exact:
+        return exact[0], None
+    # A letter or two names too little to choose by (a typo would pick).
+    for test, shortest in ((str.startswith, 2), (str.__contains__, 3)):
+        if len(key) < shortest:
+            continue
+        found = [item for item, k in zip(items, keys) if k and test(k, key)]
+        if len(found) == 1:
+            return found[0], None
+        if found:
+            return None, f"has {len(found)} items matching"
+    return None, None
 
 
 def _menu_item_by_path(app_info: dict, path: list[str]) -> object:
