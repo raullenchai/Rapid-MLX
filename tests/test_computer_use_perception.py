@@ -716,8 +716,8 @@ def test_secrets_cannot_be_spelled_key_by_key(session, screen, monkeypatch):
     session.observe("Chrome", "cg:1")
     session.act("key", _ref(obs, "Search"), key="backspace")
     assert [c[0] for c in screen.calls] == ["press_key"] * 3
-    assert perception._is_text_key("shift+shift+1")
-    assert not perception._is_text_key(None)
+    assert perception._key_text("shift+shift+1") == "1"
+    assert perception._key_text(None) is None
 
 
 def test_values_the_user_typed_into_secret_fields_are_not_shown(session, screen):
@@ -746,6 +746,32 @@ def test_card_numbers_are_never_typed(session, screen):
             )
         assert err.value.code == "sensitive_data"
     assert not screen.calls
+
+
+def test_a_card_number_split_across_typing_is_still_refused(session, screen):
+    screen.show([E("n", "AXTextArea", "Message", value="4242 4242 4242 ")])
+    obs = session.observe("Chrome", "cg:1")
+    with pytest.raises(ComputerUseError) as err:
+        session.act("type", _ref(obs, "Message"), text="4242")
+    assert err.value.code == "sensitive_data"
+    screen.show(
+        [E("n", "AXTextArea", "Message", value="4242424242424", states=("focused",))]
+    )
+    session.observe("Chrome", "cg:1")
+    with pytest.raises(ComputerUseError) as err:
+        session.act("key", None, key="2", window_id="cg:1")
+    assert err.value.code == "sensitive_data"
+    # A fill replaces the value, so only its own text counts.
+    session.act("fill", _ref(obs, "Message"), text="4242")
+    assert [c[0] for c in screen.calls] == ["set_value"]
+
+
+def test_card_number_fields_are_the_users(session, screen):
+    screen.show([E("cc", "AXTextField", "Card number")])
+    obs = session.observe("Chrome", "cg:1")
+    with pytest.raises(ComputerUseError) as err:
+        session.act("fill", _ref(obs, "Card number"), text="hello")
+    assert err.value.code == "needs_human"
 
 
 # -- guards: money commits ---------------------------------------------------
@@ -924,9 +950,9 @@ def test_handoff_blocks_the_agent_until_the_user_is_done(session, screen, monkey
 
     session.on_event = on_event
     out = session.handoff("cg:1", "sign in to your account", timeout=5)
-    assert out["met"] is True
+    assert out["met"] is True and out["front"] is False
     assert fronted == [("Chrome", "cg:1")]
-    assert notified == [("Your turn", "sign in to your account")]
+    assert notified == [("Your turn", "sign in to your account (Shop)")]
     assert refusals == ["with_human"]
     assert events[0] == "handoff" and events[-1] == "handoff_done"
     assert session._with_human == {}

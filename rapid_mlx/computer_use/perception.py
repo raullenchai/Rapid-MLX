@@ -51,7 +51,6 @@ MAX_FOLD_SECTIONS = 12
 # Refusals that mean "the page moved under the snapshot", not "the target is gone".
 _SHIFTED = {"element_not_found", "stale_observation"}
 MAX_FIND_HITS = 25
-SECRET_VALUE = "[entered by the user]"
 # Live AX elements remembered for ref stability; past this, elements no
 # current observation shows are forgotten.
 MAX_REMEMBERED_ELEMENTS = 20000
@@ -358,7 +357,8 @@ class PerceptionSession:
             )
         # A printable key is typing too: a password spelled key by key is
         # still the user's.
-        typing = op == "type" or (op == "key" and _is_text_key(kw.get("key")))
+        key_text = _key_text(kw.get("key")) if op == "key" else None
+        typing = op == "type" or key_text is not None
         if op == "fill" or typing:
             # Typed text goes to the focused element whatever ref was named,
             # so a focused secret field is guarded the same as a named one.
@@ -385,7 +385,20 @@ class PerceptionSession:
                         f"the focused field is {why}; the user types it. Use "
                         "handoff with a reason, then continue when it returns.",
                     )
-            if guards.contains_card_number(str(kw.get("text", ""))):
+            text = key_text if key_text is not None else str(kw.get("text", ""))
+            if typing:
+                # Typing appends: a card number split across calls is
+                # still a card number in the field.
+                field = row or next(
+                    (r for r in obs.rows if "focused" in r.states), None
+                )
+                if (
+                    field is not None
+                    and field.value
+                    and field.value != guards.USER_VALUE
+                ):
+                    text = field.value + text
+            if guards.contains_card_number(text):
                 raise ComputerUseError(
                     "sensitive_data",
                     "the text contains a card number; it was not typed",
@@ -559,11 +572,12 @@ class PerceptionSession:
         """
         with self._lock:
             obs = self._window_obs(window_id)
-            self.take_front(obs.app, obs.window_id)
+            front = self.take_front(obs.app, obs.window_id) or {}
             self._with_human[obs.window_id] = reason
             self._human_done.discard(obs.window_id)
         self._emit("handoff", {"window": obs.window_id, "reason": reason})
-        _notify("Your turn", reason)
+        # Name the window, so a user whose front did not switch knows where.
+        _notify("Your turn", f"{reason} ({obs.title})" if obs.title else reason)
         try:
             out = self.wait(
                 obs.window_id,
@@ -576,6 +590,7 @@ class PerceptionSession:
             with self._lock:
                 self._with_human.pop(obs.window_id, None)
         self._emit("handoff_done", {"window": obs.window_id, "met": out["met"]})
+        out["front"] = bool(front.get("front"))
         return out
 
     # -- browsing ----------------------------------------------------------
@@ -736,7 +751,7 @@ class PerceptionSession:
                 )
             ):
                 # What the user typed into a secret field is theirs.
-                value = SECRET_VALUE
+                value = guards.USER_VALUE
             center = element.get("center") or [0, 0]
             # The driver clips frames to the window: a scrolled-away element
             # (below the fold, a carousel's hidden slide) comes back empty, and
@@ -1176,12 +1191,12 @@ def _content(obs: Observation) -> frozenset[tuple[str, str]]:
     )
 
 
-def _is_text_key(key: object) -> bool:
-    """Whether pressing ``key`` types a character ("a", "shift+7")."""
+def _key_text(key: object) -> str | None:
+    """The character pressing ``key`` types ("a", "shift+7"), or None."""
     name = str(key or "")
     while name.lower().startswith("shift+"):
         name = name[6:]
-    return len(name) == 1 and name.isprintable()
+    return name if len(name) == 1 and name.isprintable() else None
 
 
 def _focused_secret(app_info: dict) -> str | None:

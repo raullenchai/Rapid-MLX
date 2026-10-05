@@ -151,6 +151,9 @@ INTERESTING_ROLES = {
     "AXSearchField",
 }
 EDITABLE_ROLES = {"AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"}
+# Shown instead of what the user typed into a field only they may fill
+# (kept equal to guards.USER_VALUE).
+USER_VALUE = "[entered by the user]"
 # Controls whose AXValue is their state (a select's choice, a stepper's number).
 VALUE_ROLES = {
     "AXPopUpButton",
@@ -512,6 +515,14 @@ def _label_of(node: dict[str, object]) -> str:
     return ""
 
 
+def _field_name(node: dict[str, object]) -> str:
+    for attribute in ("AXDescription", "AXTitle", "AXPlaceholderValue"):
+        value = node.get(attribute)
+        if isinstance(value, str) and value.strip():
+            return value.strip().replace("\n", " ")[:160]
+    return ""
+
+
 def _states_of(node: dict[str, object], role: str) -> list[str]:
     states = []
     if node.get("AXEnabled") is False:
@@ -583,6 +594,17 @@ def _walk(
     # planner context, traces, or an HTTP observation.
     secure_text = _is_secure_node(node)
     label = "[secure text redacted]" if secure_text else _label_of(node)
+    # A text field without a name of its own is labelled by its value, so a
+    # field only the user may fill is named by its description, title or
+    # placeholder, and what was typed into it is never shown.
+    user_only = False
+    if role in EDITABLE_ROLES and not secure_text:
+        # Imported here so `python ax_driver.py` keeps working as a script.
+        from . import guards
+
+        name = _field_name(node)
+        if name and guards.needs_human_input(role, subrole, name):
+            label, user_only = name, True
     actions = _action_names(element)
     geom = _frame_of(node)
     actionable = "AXPress" in actions or "AXPick" in actions or "AXIncrement" in actions
@@ -601,7 +623,11 @@ def _walk(
         value = None
         if (editable or role in VALUE_ROLES) and not secure_text:
             raw_value = node.get("AXValue")
-            if isinstance(raw_value, (int, float)) and not isinstance(raw_value, bool):
+            if user_only:
+                value = USER_VALUE if isinstance(raw_value, str) and raw_value else ""
+            elif isinstance(raw_value, (int, float)) and not isinstance(
+                raw_value, bool
+            ):
                 value = f"{raw_value:g}"
             elif (
                 isinstance(raw_value, str)

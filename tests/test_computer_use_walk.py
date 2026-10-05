@@ -8,7 +8,7 @@ import types
 
 import pytest
 
-from rapid_mlx.computer_use import ax_driver, backend
+from rapid_mlx.computer_use import ax_driver, backend, guards
 
 
 class FakeAS:
@@ -94,6 +94,32 @@ def test_secure_field_text_is_never_requested(tree):
     )
     assert out[1]["placeholder"] == "Full name"
     assert ("pw", ax_driver.NODE_MESSAGING_TIMEOUT_S) in fake.timeouts
+
+
+def test_fields_only_the_user_fills_are_named_and_never_show_their_value(tree):
+    nodes, _ = tree
+    nodes.update(
+        {
+            "win": {"AXRole": "AXWindow", "AXChildren": ["otp", "pin", "q"]},
+            # No name of its own: without the placeholder, the label would be
+            # the code the user typed.
+            "otp": {
+                "AXRole": "AXTextField",
+                "AXValue": "482913",
+                "AXPlaceholderValue": "Verification code",
+            },
+            "pin": {"AXRole": "AXTextField", "AXTitle": "PIN", "AXValue": ""},
+            "q": {"AXRole": "AXSearchField", "AXValue": "milk"},
+        }
+    )
+    out = _walk("win")
+    assert "482913" not in repr(out)
+    assert ax_driver.USER_VALUE == guards.USER_VALUE
+    assert [(t["text"], t["value"]) for t in out] == [
+        ("Verification code", "[entered by the user]"),
+        ("PIN", ""),
+        ("milk", None),
+    ]
 
 
 def test_unbatched_reads_fall_back_per_attribute_and_still_skip_secrets(
