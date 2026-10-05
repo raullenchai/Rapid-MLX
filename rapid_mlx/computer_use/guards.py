@@ -17,11 +17,13 @@ from collections.abc import Sequence
 
 TEXT_ROLES = {"AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"}
 SECURE_LABEL = "[secure text redacted]"
+# Shown instead of what the user typed into a field only they may fill.
+USER_VALUE = "[entered by the user]"
 
 _SECRET_LABEL = re.compile(
     r"password|passcode|\bpin\b|one[- ]time|verification code|security code|"
     r"\bcvv\b|\bcvc\b|\b2fa\b|two[- ]factor|authenticat(?:ion|or) code|"
-    r"social security|\bssn\b",
+    r"social security|\bssn\b|card number|\bcard no\b|credit card|debit card",
     re.I,
 )
 
