@@ -6,6 +6,7 @@ replaced by fakes, the same way test_computer_use_background.py does it.
 
 # ruff: noqa: N802 - PyObjC test doubles intentionally mirror Objective-C names.
 
+import ctypes
 import sys
 import time
 import types
@@ -330,6 +331,37 @@ def test_remote_element_builds_token_and_hands_ownership_to_the_bridge(monkeypat
     assert ax_driver._remote_element(4, 9) is None
     monkeypatch.setattr(ax_driver, "_remote_factory", lambda: False)
     assert ax_driver._remote_element(4, 9) is None
+
+
+def test_remote_factory_binds_the_spi_once_and_caches_a_missing_symbol(monkeypatch):
+    class _Fn:
+        restype = argtypes = None
+
+    class _CF:
+        def __init__(self):
+            self.CFDataCreate, self.CFRelease = _Fn(), _Fn()
+
+    spi, cf = types.SimpleNamespace(_AXUIElementCreateWithRemoteToken=_Fn()), _CF()
+    opened = []
+
+    def cdll(path):
+        opened.append(path)
+        return spi if path.endswith("HIServices") else cf
+
+    monkeypatch.setattr(ctypes, "CDLL", cdll)
+    monkeypatch.setattr(ax_driver, "_remote_create", None)
+    fn, bound_cf = ax_driver._remote_factory()
+    assert fn is spi._AXUIElementCreateWithRemoteToken and bound_cf is cf
+    assert fn.restype is ctypes.c_void_p and fn.argtypes == [ctypes.c_void_p]
+    assert cf.CFDataCreate.restype is ctypes.c_void_p
+    assert ax_driver._remote_factory() == (fn, cf)
+    assert len(opened) == 2  # bound once, then cached
+    # An OS without the private symbol is remembered as unavailable.
+    monkeypatch.setattr(ax_driver, "_remote_create", None)
+    spi = types.SimpleNamespace()
+    assert ax_driver._remote_factory() is False
+    assert ax_driver._remote_factory() is False
+    assert len(opened) == 4
 
 
 def test_first_exposure_is_per_process_launch(monkeypatch):
@@ -1124,6 +1156,28 @@ def test_dismiss_lingering_popup_is_a_no_op_otherwise(monkeypatch, keyboard):
     backend._dismiss_lingering_popup(_snapshot(), {1})
 
 
+def test_dismiss_lingering_popup_stops_when_escape_or_probe_fails(
+    monkeypatch, keyboard
+):
+    monkeypatch.setattr(backend, "_live_front_pid", lambda: 999)
+    _install_module(
+        monkeypatch,
+        "Quartz",
+        CGWindowListCopyWindowInfo=lambda *a: [_cg(1, layer=101)],
+        kCGNullWindowID=0,
+        kCGWindowListOptionOnScreenOnly=2,
+    )
+    waits = []
+    monkeypatch.setattr(backend.time, "monotonic", lambda: waits.append(1) or 0.0)
+    # An Escape that cannot be delivered ends the attempt without waiting.
+    monkeypatch.setattr(backend, "_synthesize", lambda *a, **k: False)
+    backend._dismiss_lingering_popup(_snapshot(), {1})
+    assert waits == []
+    # A failing front-app probe never turns the successful pick into an error.
+    monkeypatch.setattr(backend, "_live_front_pid", lambda: 1 / 0)
+    backend._dismiss_lingering_popup(_snapshot(), {1})
+
+
 def test_menu_item_press_dismisses_a_lingering_popup(monkeypatch, keyboard):
     dismissed = []
     snapshot = _snapshot(
@@ -1305,6 +1359,18 @@ def test_is_menu_equivalent_fails_closed_on_unreadable_or_truncated_menus(
     attrs["app"] = {"AXMenuBar": "bar"}
     attrs["save"]["AXMenuItemCmdModifiers"] = None  # unreadable modifiers
     assert backend._is_menu_equivalent(chord["app"], "s", cmd | 0x20000)
+
+
+def test_is_menu_equivalent_maps_control_and_unreadable_modifiers(chord, attrs):
+    app, cmd = chord["app"], backend.MODIFIER_FLAGS["cmd"]
+    ctrl = backend.MODIFIER_FLAGS["ctrl"]
+    attrs["file"]["AXChildren"].append("ctrl-k")
+    attrs["ctrl-k"] = {"AXMenuItemCmdChar": "J", "AXMenuItemCmdModifiers": 0x4}
+    assert backend._is_menu_equivalent(app, "j", cmd | ctrl)
+    assert not backend._is_menu_equivalent(app, "j", cmd)
+    # A matching key whose modifiers cannot be read could be the command.
+    attrs["ctrl-k"]["AXMenuItemCmdModifiers"] = None
+    assert backend._is_menu_equivalent(app, "j", cmd)
 
 
 def test_is_menu_equivalent_fails_closed_when_menu_children_are_unreadable(
