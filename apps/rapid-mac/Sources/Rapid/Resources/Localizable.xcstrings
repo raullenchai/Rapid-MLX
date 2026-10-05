@@ -8139,6 +8139,16 @@
           }
         }
       }
+    },
+    "%lld MB" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld MB"
+          }
+        }
+      }
     }
   }
 }
