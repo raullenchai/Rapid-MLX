@@ -418,11 +418,19 @@ def _wake_hidden_renderer(window: object) -> bool:
     if window_id is None or frame is None or window_is_onscreen(window_id) is not False:
         return False
     _, _, width, height = frame
-    for size in ((width + 1.0, height), (width, height)):
+
+    def resize(size: tuple[float, float]) -> bool:
         value = AS.AXValueCreate(AS.kAXValueCGSizeType, size)
-        if AS.AXUIElementSetAttributeValue(window, "AXSize", value) != 0:
-            return False
-    return True
+        return bool(AS.AXUIElementSetAttributeValue(window, "AXSize", value) == 0)
+
+    if not resize((width + 1.0, height)):
+        return False
+    # Never leave the user's window a point larger: retry the restore.
+    for _ in range(3):
+        if resize((width, height)):
+            return True
+        time.sleep(0.05)
+    return False
 
 
 def _label(element: object) -> str:

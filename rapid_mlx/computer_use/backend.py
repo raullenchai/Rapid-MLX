@@ -1170,9 +1170,15 @@ def _rouse_woken_renderer(snapshot: dict, live: object) -> None:
     pid = int(snapshot["app"]["pid"])
     if live is None or not ax_driver.renderer_was_woken(pid):
         return
-    ax_driver.clear_woken(pid)
-    ax_driver.AXUIElementPerformAction(live, "AXScrollToVisible")
-    time.sleep(0.2)
+    try:
+        err = ax_driver.AXUIElementPerformAction(live, "AXScrollToVisible")
+    except Exception:  # noqa: BLE001 - keep the mark; the next action retries
+        return
+    if err in (None, 0):
+        # Cleared only once the renderer took the action; otherwise the next
+        # AX action tries again.
+        ax_driver.clear_woken(pid)
+        time.sleep(0.2)
 
 
 def _read_value(live_element: object) -> str | None:
@@ -1641,14 +1647,13 @@ def _guard_user_focus(snapshot: dict):
             yield state
         finally:
             current = _frontmost_window() if previous is not None else None
-            # Only a move into the target's process is the action's doing; a
-            # switch the user made elsewhere meanwhile is theirs to keep.
+            # Only key status landing on the exact target window is the
+            # action's doing; any other switch meanwhile is the user's to keep.
             if (
                 previous is not None
                 and tuple(previous) != (pid, window_id)
                 and current is not None
-                and tuple(current) != tuple(previous)
-                and current[0] == pid
+                and tuple(current) == (pid, window_id)
             ):
                 try:
                     state["focus_restored"] = _restore_user_focus(
@@ -2678,17 +2683,23 @@ def _menus_opened(pid: int, before: int) -> bool:
     return count is not None and count > before
 
 
-def _menus_before(snapshot: dict, menu_item: str | None) -> int | None:
+def _menus_before(
+    snapshot: dict, menu_item: str | None, *, expect_menu: bool = False
+) -> int | None:
     """Menu count before an action that may open one, or None to skip
     settling. ``menu_item`` needs the count (the choice is made from the
-    menu the action opens), so an unreadable count fails before acting."""
-    if menu_item is None and not _background_delivery(snapshot):
+    menu the action opens), and so does a background action expected to open
+    a menu (it must be closed again), so an unreadable count fails before
+    acting."""
+    background = _background_delivery(snapshot)
+    if menu_item is None and not background:
         return None
     before = _open_menu_count(int(snapshot["app"]["pid"]))
-    if before is None and menu_item is not None:
+    if before is None and (menu_item is not None or (background and expect_menu)):
         raise ComputerUseError(
             "action_failed",
-            "open menus could not be counted; cannot choose a menu item safely",
+            "open menus could not be counted; a menu this action opens "
+            "could not be closed safely",
         )
     return before
 
@@ -2959,10 +2970,14 @@ def _click(
             activate=OBSERVE_BY_ROUTE,
         )
         entry = _element(snapshot, element_index)
-        menus_before = None if focus_only else _menus_before(snapshot, menu_item)
         opens_menu = mouse_button == "right" or entry.get("role") in (
             "AXPopUpButton",
             "AXMenuButton",
+        )
+        menus_before = (
+            None
+            if focus_only
+            else _menus_before(snapshot, menu_item, expect_menu=opens_menu)
         )
         is_transient = entry.get(
             "source_window_id", snapshot.get("window_id")
@@ -3133,7 +3148,9 @@ def _click(
         window_id=window_id,
         activate=OBSERVE_BY_ROUTE,
     )
-    menus_before = _menus_before(snapshot, menu_item)
+    menus_before = _menus_before(
+        snapshot, menu_item, expect_menu=mouse_button == "right"
+    )
     delivery = _pixel_click(
         snapshot,
         float(x),
@@ -3220,7 +3237,7 @@ def set_value(
                 app,
                 snapshot,
                 delivery,
-                verified=readback == value,
+                verified=_menu_title_key(readback) == _menu_title_key(value),
                 verification="popup value read back after choosing the menu item",
                 include_post_state=include_post_state,
             )
@@ -3441,7 +3458,7 @@ def _choose_from_ax_menu(live: object, value: str, pid: int) -> str | None:
     deadline = time.monotonic() + 1.0
     while True:
         readback = _read_value(live)
-        if readback == value or time.monotonic() > deadline:
+        if _menu_title_key(readback) == wanted or time.monotonic() > deadline:
             return readback
         time.sleep(0.05)
 
@@ -5313,8 +5330,7 @@ def perform_secondary_action(
             f"action {action!r} not advertised on element {element_index} "
             f"(advertised: {entry['actions']})",
         )
-    background = _background_delivery(snapshot)
-    menus_before = _open_menu_count(int(snapshot["app"]["pid"])) if background else None
+    menus_before = _menus_before(snapshot, None, expect_menu=action == "AXShowMenu")
     with _guard_user_focus(snapshot) as guard:
         err = AXUIElementPerformAction(live, action)
         # AXShowMenu and friends open menus; never leave one taking the keys.

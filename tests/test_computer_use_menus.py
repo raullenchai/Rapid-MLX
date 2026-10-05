@@ -201,6 +201,15 @@ def test_menus_before_skips_foreground_and_fails_closed_for_a_choice(monkeypatch
     assert backend._menus_before(_snapshot(), "Copy") == 2
 
 
+def test_menus_before_fails_closed_for_a_background_menu_gesture(monkeypatch):
+    monkeypatch.setattr(backend, "_background_delivery", lambda s: True)
+    monkeypatch.setattr(backend, "_open_menu_count", lambda pid: None)
+    assert backend._menus_before(_snapshot(), None) is None
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend._menus_before(_snapshot(), None, expect_menu=True)
+    assert exc.value.code == "action_failed"
+
+
 # --- closing and settling menus ---------------------------------------------------
 
 
@@ -603,11 +612,13 @@ def test_guard_user_focus_restores_only_a_move_into_the_target(monkeypatch, call
     with backend._guard_user_focus(_snapshot()) as state:
         pass
     assert state == {"focus_restored": True}
-    # The user switched to another app meanwhile: theirs to keep.
-    fronts = iter([(999, 555), (77, 1)])
-    with backend._guard_user_focus(_snapshot()) as state:
-        pass
-    assert state == {}
+    # The user switched to another app, or to another window of the target's
+    # app, meanwhile: theirs to keep.
+    for moved_to in ((77, 1), (4, 202)):
+        fronts = iter([(999, 555), moved_to])
+        with backend._guard_user_focus(_snapshot()) as state:
+            pass
+        assert state == {}
     # Unchanged focus: nothing to do.
     fronts = iter([(999, 555), (999, 555)])
     with backend._guard_user_focus(_snapshot()) as state:
@@ -729,6 +740,16 @@ def test_rouse_woken_renderer_scrolls_the_target_once(monkeypatch, clock):
     assert not ax_driver.renderer_was_woken(4)
 
 
+def test_rouse_woken_renderer_keeps_the_mark_when_the_scroll_fails(monkeypatch, clock):
+    monkeypatch.setattr(ax_driver, "_WOKEN_PIDS", {4})
+    monkeypatch.setattr(ax_driver, "AXUIElementPerformAction", lambda e, a: -25200)
+    backend._rouse_woken_renderer(_snapshot(), "live")
+    assert ax_driver.renderer_was_woken(4)
+    monkeypatch.setattr(ax_driver, "AXUIElementPerformAction", lambda e, a: 1 / 0)
+    backend._rouse_woken_renderer(_snapshot(), "live")
+    assert ax_driver.renderer_was_woken(4)
+
+
 def test_exposure_clock_and_woken_marks(monkeypatch, clock):
     monkeypatch.setattr(ax_driver, "_EXPOSED", {})
     monkeypatch.setattr(ax_driver, "_WOKEN_PIDS", set())
@@ -807,6 +828,35 @@ def test_wake_hidden_renderer_grows_and_restores_an_offscreen_window(monkeypatch
     assert not ax_driver._wake_hidden_renderer("win")
 
 
+def test_wake_hidden_renderer_retries_restoring_the_size(monkeypatch, clock):
+    results = iter([0, -25200, 0])
+    sizes = []
+
+    def set_size(window, attribute, value):
+        sizes.append(value)
+        return next(results, -1)
+
+    monkeypatch.setattr(
+        ax_driver,
+        "AS",
+        types.SimpleNamespace(
+            kAXValueCGSizeType=2,
+            AXValueCreate=lambda kind, size: size,
+            AXUIElementSetAttributeValue=set_size,
+        ),
+    )
+    monkeypatch.setattr(background_input, "ax_window_id", lambda w: 7)
+    monkeypatch.setattr(ax_driver, "_point_size", lambda w: (0, 0, 300.0, 200.0))
+    monkeypatch.setattr(ax_driver, "window_is_onscreen", lambda wid: False)
+    assert ax_driver._wake_hidden_renderer("win")
+    assert sizes == [(301.0, 200.0), (300.0, 200.0), (300.0, 200.0)]
+    # A restore that never lands is retried a bounded number of times, then reported.
+    results = iter([0])
+    sizes.clear()
+    assert not ax_driver._wake_hidden_renderer("win")
+    assert sizes == [(301.0, 200.0)] + [(300.0, 200.0)] * 3
+
+
 # --- native popups ------------------------------------------------------------------
 
 
@@ -849,6 +899,7 @@ def native_popup(monkeypatch, calls, attrs):
 
 
 def test_choose_from_ax_menu_presses_the_item_and_reads_back(native_popup, calls):
+    # Titles match case-insensitively; the readback is the item's own title.
     assert backend._choose_from_ax_menu("popup", "b", 4) == "B"
     assert [c[1:] for c in calls] == [("popup", "AXPress"), ("b", "AXPress")]
 
@@ -895,11 +946,32 @@ def test_set_value_chooses_a_native_popup_through_its_menu(
             "ApplicationServices"
         ].AXUIElementPerformAction,
     )
-    result = backend.set_value("App", 0, "B", expected_snapshot=snap)
+    monkeypatch.setattr(
+        backend,
+        "_finish_action",
+        lambda app, snap, d, **k: {**d, "verified": k["verified"]},
+    )
+    result = backend.set_value("App", 0, "b", expected_snapshot=snap)
     assert result["mode"] == "AXMenuChoose" and result["actual"] == "B"
+    # A case-insensitive choice that landed is verified, not reported as a miss.
+    assert result["verified"] is True
 
 
 # --- perform_secondary_action -----------------------------------------------------
+
+
+def test_show_menu_is_refused_when_menus_cannot_be_counted(monkeypatch, calls):
+    snap = _snapshot(
+        elements=[{"index": 0, "role": "AXButton", "actions": ["AXShowMenu"]}]
+    )
+    monkeypatch.setattr(backend, "get_app_state", lambda *a, **k: snap)
+    monkeypatch.setattr(backend, "_live_element", lambda *a, **k: "live")
+    monkeypatch.setattr(backend, "_open_menu_count", lambda pid: None)
+    _ax_actions(monkeypatch, calls)
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend.perform_secondary_action("App", 0, "AXShowMenu")
+    assert exc.value.code == "action_failed"
+    assert not [c for c in calls if c[0] == "ax"]
 
 
 def test_show_menu_action_never_leaves_the_menu_open(monkeypatch, open_menu, calls):

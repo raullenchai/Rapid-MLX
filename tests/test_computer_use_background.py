@@ -578,6 +578,8 @@ def test_element_click_prefers_advertised_semantic_action(
     )
     performed = []
     monkeypatch.setattr(backend, "_live_element", lambda *a, **k: "live")
+    # No menus open (menu-capable gestures count them before acting).
+    monkeypatch.setattr(backend, "_open_menu_count", lambda pid: 0)
     _install_module(
         monkeypatch,
         "ApplicationServices",
@@ -608,6 +610,7 @@ def test_element_without_semantic_action_gets_routed_pixel_gesture(
     monkeypatch.setattr(
         backend, "_validate_snapshot_window", lambda snap, **k: snap["window"]
     )
+    monkeypatch.setattr(backend, "_open_menu_count", lambda pid: 0)
     result = backend.click(
         "App", element_index=0, expected_snapshot=snapshot, mouse_button="right"
     )
