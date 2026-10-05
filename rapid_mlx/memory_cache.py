@@ -666,7 +666,8 @@ def _probe_write_bytes_per_sec(directory: str) -> float:
 # a tight disk to 0 bytes free (multi-GB snapshots are routine). Each entry is
 # now admitted only if writing it leaves at least this much free; the default
 # matches the "very low" disk threshold ``rapid-mlx doctor`` reports. ``0``
-# disables the check.
+# disables the check. Best effort: space is measured before each write, not
+# reserved, so another writer can still take it while an entry is written.
 PREFIX_CACHE_MIN_FREE_DISK_BYTES_ENV = "RAPID_MLX_PREFIX_CACHE_MIN_FREE_DISK_BYTES"
 _DEFAULT_PERSIST_MIN_FREE_DISK_BYTES = 5 * 1024 * _BYTES_PER_MB
 
