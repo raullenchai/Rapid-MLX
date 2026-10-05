@@ -13,8 +13,8 @@ struct SettingsMemoryPanel: View {
         @Bindable var store = memoryStore
         VStack(alignment: .leading, spacing: RapidTheme.Space.xl) {
             SectionHeader(
-                "Memory",
-                subtitle: "The assistant learns your preferences across conversations. It never sends data off this Mac.",
+                String(localized: "Memory"),
+                subtitle: String(localized: "The assistant learns your preferences across conversations. It never sends data off this Mac."),
                 emphasis: .page
             )
 

@@ -641,7 +641,7 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.xl) {
             SectionHeader(
                 String(localized: "Privacy"),
-                subtitle: "Rapid-MLX is local-first. Prompts, attachments, and model responses never leave your Mac. Anonymous metadata telemetry is on by default; turn it off here, with rapid-mlx telemetry off, or at https://rapidmlx.com/docs/telemetry.",
+                subtitle: String(localized: "Rapid-MLX is local-first. Prompts, attachments, and model responses never leave your Mac. Anonymous metadata telemetry is on by default; turn it off here, with rapid-mlx telemetry off, or at https://rapidmlx.com/docs/telemetry."),
                 emphasis: .page
             )
 
@@ -649,7 +649,7 @@ struct SettingsView: View {
             Toggle(isOn: telemetryEnabledBinding) {
                 SettingsRowLabel(
                     title: String(localized: "Send anonymous usage data"),
-                    description: "Versions, Mac hardware tier, public model and feature names, coarse performance, redacted crash diagnostics, and error categories. For each first successful text chat reply, dictation, or generated image, only the milestone name and “Desktop” are sent. This version does not send a vision-reply milestone. Rapid sends these metadata-only events: the app's to rapidmlx.com's telemetry service, the bundled engine's to PostHog Cloud (US)—never your IP or a per-person profile; the app's collector keeps only a coarse country code. Never prompts, responses, attachments, keys, account details, or unredacted user paths."
+                    description: String(localized: "Versions, Mac hardware tier, public model and feature names, coarse performance, redacted crash diagnostics, and error categories. For each first successful text chat reply, dictation, or generated image, only the milestone name and “Desktop” are sent. This version does not send a vision-reply milestone. Rapid sends these metadata-only events: the app's to rapidmlx.com's telemetry service, the bundled engine's to PostHog Cloud (US)—never your IP or a per-person profile; the app's collector keeps only a coarse country code. Never prompts, responses, attachments, keys, account details, or unredacted user paths.")
                 )
             }
             .toggleStyle(TrailingSettingsToggleStyle())
@@ -690,7 +690,7 @@ struct SettingsView: View {
 
             SettingsRowLabel(
                 title: String(localized: "Where the data goes"),
-                description: "telemetry.rapidmlx.com — a Cloudflare Worker that strips client IPs before writing to storage. Source is open at github.com/raullenchai/rapidmlx.com under telemetry-worker/."
+                description: String(localized: "telemetry.rapidmlx.com — a Cloudflare Worker that strips client IPs before writing to storage. Source is open at github.com/raullenchai/rapidmlx.com under telemetry-worker/.")
             )
             }
 
@@ -867,7 +867,7 @@ struct SettingsView: View {
     private var setupSection: some View {
         SettingsSection(
             String(localized: "Setup"),
-            subtitle: "Run the guided model setup again. Your settings, conversations, downloaded models, and telemetry choice stay untouched."
+            subtitle: String(localized: "Run the guided model setup again. Your settings, conversations, downloaded models, and telemetry choice stay untouched.")
         ) {
             HStack {
                 Spacer(minLength: 0)

@@ -1029,7 +1029,7 @@ struct ModelPickerBar: View {
     /// title survives the NSMenu collapse and, unlike a bare tick, says
     /// what it means: this is the current model.
     static func currentSelectionTitle(_ title: String) -> String {
-        "\(title) (current)"
+        String(localized: "\(title) (current)")
     }
 
     /// Pure helper so tests can pin the "should this recommended row paint

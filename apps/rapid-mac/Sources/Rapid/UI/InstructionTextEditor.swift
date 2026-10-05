@@ -89,7 +89,7 @@ struct InstructionEditorSection<Content: View>: View {
             SectionHeader(title, subtitle: subtitle, emphasis: .section) {
                 QuietIconButton(
                     symbol: "trash",
-                    label: "Clear global system prompt",
+                    label: String(localized: "Clear global system prompt"),
                     action: onClear
                 )
                 .disabled(!clearEnabled)
@@ -118,7 +118,7 @@ struct ConversationInstructionsPopover: View {
             }
             InstructionTextEditor(
                 text: $draft,
-                placeholder: "Add a system prompt for this conversation.",
+                placeholder: String(localized: "Add a system prompt for this conversation."),
                 height: 160,
                 accessibilityIdentifier: "ChatView.ConversationInstructions.Editor",
                 autoFocus: true

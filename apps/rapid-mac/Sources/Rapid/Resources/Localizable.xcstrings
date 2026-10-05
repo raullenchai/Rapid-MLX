@@ -7219,6 +7219,926 @@
           }
         }
       }
+    },
+    " with %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "（%@）"
+          }
+        }
+      }
+    },
+    "%@ (current)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@（当前）"
+          }
+        }
+      }
+    },
+    "%@ · not downloaded" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ · 未下载"
+          }
+        }
+      }
+    },
+    "A key is stored for %@." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已为 %@ 存储密钥。"
+          }
+        }
+      }
+    },
+    "Accelerated text mode is active. %@ require normal mode%@. Turn off acceleration below and restart the model to use them." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "加速文本模式已启用。%@需要普通模式%@。如需使用，请在下方关闭加速并重新启动模型。"
+          }
+        }
+      }
+    },
+    "Active runtime" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当前运行时"
+          }
+        }
+      }
+    },
+    "Add a system prompt for this conversation." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "为此对话添加系统提示词。"
+          }
+        }
+      }
+    },
+    "Automatic uses about 20% of RAM. A larger budget holds more prefixes; it never changes output." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "“自动”约使用 20% 的内存。预算越大，可保留的前缀越多；它不会改变输出。"
+          }
+        }
+      }
+    },
+    "Available tools" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "可用工具"
+          }
+        }
+      }
+    },
+    "Browse Web Page" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "浏览网页"
+          }
+        }
+      }
+    },
+    "Browse pages" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "浏览网页"
+          }
+        }
+      }
+    },
+    "Browsing" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "网页浏览"
+          }
+        }
+      }
+    },
+    "Checking saved key…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在检查已保存的密钥…"
+          }
+        }
+      }
+    },
+    "Choose which model owns these settings. It does not need to be running." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "选择这些设置所属的模型。该模型不需要处于运行状态。"
+          }
+        }
+      }
+    },
+    "Clear global system prompt" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "清除全局系统提示词"
+          }
+        }
+      }
+    },
+    "Costs memory, never changes output. Turning it off is mainly useful for measuring what it buys you." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "会占用内存，但不会改变输出。关闭它主要用于衡量它带来的收益。"
+          }
+        }
+      }
+    },
+    "Could not restart this model with its speculative-decoding setting." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法按推测解码设置重新启动此模型。"
+          }
+        }
+      }
+    },
+    "Couldn't write to the Keychain. Try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法写入钥匙串。请重试。"
+          }
+        }
+      }
+    },
+    "Creates or replaces one text file after showing the exact path and content for approval." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在展示确切路径和内容并获得批准后，创建或替换一个文本文件。"
+          }
+        }
+      }
+    },
+    "Daily" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "每天"
+          }
+        }
+      }
+    },
+    "Drafts candidate tokens and verifies them with the full model." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "先草拟候选 token，再由完整模型验证。"
+          }
+        }
+      }
+    },
+    "Embedded API key rotation" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "内置 API 密钥轮换"
+          }
+        }
+      }
+    },
+    "Embedded API security" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "内置 API 安全"
+          }
+        }
+      }
+    },
+    "Enabled by default for this qualified model. It accelerates text generation; turn it off and restart to use photo input." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此模型已通过验证，默认启用。它可加速文本生成；如需使用照片输入，请关闭并重新启动。"
+          }
+        }
+      }
+    },
+    "Every start" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "每次启动"
+          }
+        }
+      }
+    },
+    "Gets the current weather for a place you name." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "获取你指定地点的当前天气。"
+          }
+        }
+      }
+    },
+    "How the model's attention cache is stored. Lower precision means less memory and faster long-context decoding." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型注意力缓存的存储方式。精度越低，占用内存越少，长上下文解码越快。"
+          }
+        }
+      }
+    },
+    "Key removed." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "密钥已移除。"
+          }
+        }
+      }
+    },
+    "Looks up current information on the web when a question needs it." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在问题需要时上网查找最新信息。"
+          }
+        }
+      }
+    },
+    "MTP accelerates text generation on this model; turn it off and restart to use photo input." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "MTP 可加速此模型的文本生成；如需使用照片输入，请关闭并重新启动。"
+          }
+        }
+      }
+    },
+    "MTP requires Engine default or Full precision (bf16) KV cache. It turns back on automatically when that cache mode is selected." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "MTP 需要 KV 缓存使用“引擎默认值”或“全精度 (bf16)”。选择该缓存模式后它会自动重新开启。"
+          }
+        }
+      }
+    },
+    "Models smaller than 3B may contradict themselves in multi-turn chat. Good for testing or single-shot Q&A. Try qwen3.5-4b or larger for serious use." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "小于 3B 的模型在多轮对话中可能前后矛盾。适合测试或单轮问答。正式使用请尝试 qwen3.5-4b 或更大的模型。"
+          }
+        }
+      }
+    },
+    "Move File to Trash" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "将文件移到废纸篓"
+          }
+        }
+      }
+    },
+    "Move file to Trash" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "将文件移到废纸篓"
+          }
+        }
+      }
+    },
+    "Moves one file to Trash after approval. It never removes folders or permanently deletes files." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "获得批准后将一个文件移到废纸篓。它不会移除文件夹，也不会永久删除文件。"
+          }
+        }
+      }
+    },
+    "No key stored — %@ works without one; a free key lifts the shared rate limit." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未存储密钥：%@ 无需密钥即可使用；添加免费密钥可解除共享的速率限制。"
+          }
+        }
+      }
+    },
+    "No key stored — searches fall back to Keenable until you save one." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未存储密钥：在你保存密钥之前，搜索会回退到 Keenable。"
+          }
+        }
+      }
+    },
+    "No usable saved key was found, so this model started with a one-time key." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未找到可用的已保存密钥，因此此模型使用一次性密钥启动。"
+          }
+        }
+      }
+    },
+    "Off by default. It can improve generation speed on some Macs, but may be slower on others; accepted output remains token-exact." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "默认关闭。它在部分 Mac 上可以提升生成速度，在另一些 Mac 上可能更慢；被接受的输出在 token 级别保持一致。"
+          }
+        }
+      }
+    },
+    "Off by default. This qualified text-only mode uses a paired draft model and one request at a time. To use tools, turn acceleration off and restart the model." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "默认关闭。这种经过验证的纯文本模式使用配对的草稿模型，且一次只处理一个请求。如需使用工具，请关闭加速并重新启动模型。"
+          }
+        }
+      }
+    },
+    "Opens a web page you or the model names and reads it. You approve each page." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开你或模型指定的网页并读取内容。每个页面都需要你批准。"
+          }
+        }
+      }
+    },
+    "Prefix cache" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "前缀缓存"
+          }
+        }
+      }
+    },
+    "Rapid-MLX is local-first. Prompts, attachments, and model responses never leave your Mac. Anonymous metadata telemetry is on by default; turn it off here, with rapid-mlx telemetry off, or at https://rapidmlx.com/docs/telemetry." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rapid-MLX 以本地优先。提示词、附件和模型回复绝不会离开你的 Mac。匿名元数据遥测默认开启；可以在这里关闭，也可以运行 rapid-mlx telemetry off，或参阅 https://rapidmlx.com/docs/telemetry。"
+          }
+        }
+      }
+    },
+    "Read Attached Document" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "读取附加的文档"
+          }
+        }
+      }
+    },
+    "Read Local File" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "读取本地文件"
+          }
+        }
+      }
+    },
+    "Read attached document" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "读取附加的文档"
+          }
+        }
+      }
+    },
+    "Read local file" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "读取本地文件"
+          }
+        }
+      }
+    },
+    "Reads a UTF-8 text file you approve inside your home folder." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "读取个人文件夹中经你批准的 UTF-8 文本文件。"
+          }
+        }
+      }
+    },
+    "Reads the rest of a PDF, CSV, or text file you attached. Only files you attach; never other files on your Mac. The full text is kept on this Mac for %lld days, and is deleted when you remove the attachment or delete the conversation." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "读取你所附加的 PDF、CSV 或文本文件的其余部分。仅限你附加的文件，绝不读取 Mac 上的其他文件。全文会在这台 Mac 上保留 %lld 天，并在你移除附件或删除对话时删除。"
+          }
+        }
+      }
+    },
+    "Reload %@ to apply. Other resident models will stay available." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "重新加载 %@ 以应用。其他常驻模型仍可使用。"
+          }
+        }
+      }
+    },
+    "Reload model" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "重新加载模型"
+          }
+        }
+      }
+    },
+    "Restart %@ to apply speculative decoding. Other resident models will unload; downloaded weights and conversations stay available." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "重新启动 %@ 以应用推测解码。其他常驻模型将被卸载；已下载的权重和对话仍然保留。"
+          }
+        }
+      }
+    },
+    "Restart model" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "重新启动模型"
+          }
+        }
+      }
+    },
+    "Reuses computation for a prompt prefix the model has already seen. Speeds up multi-turn chat and repeated system prompts." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "复用模型已处理过的提示词前缀的计算结果。可加快多轮对话和重复的系统提示词。"
+          }
+        }
+      }
+    },
+    "Run Development Command" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "运行开发命令"
+          }
+        }
+      }
+    },
+    "Run development command" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "运行开发命令"
+          }
+        }
+      }
+    },
+    "Run the guided model setup again. Your settings, conversations, downloaded models, and telemetry choice stay untouched." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "重新运行模型设置向导。你的设置、对话、已下载的模型和遥测选择都不会受影响。"
+          }
+        }
+      }
+    },
+    "Runs an approved development command without a shell, with a 30-second limit." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "不经 shell 运行经批准的开发命令，时限 30 秒。"
+          }
+        }
+      }
+    },
+    "Saved to your Keychain." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已保存到你的钥匙串。"
+          }
+        }
+      }
+    },
+    "Search Local Files" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "搜索本地文件"
+          }
+        }
+      }
+    },
+    "Search local files" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "搜索本地文件"
+          }
+        }
+      }
+    },
+    "Searches filenames and text under a folder you approve on this Mac." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在这台 Mac 上经你批准的文件夹内搜索文件名和文本。"
+          }
+        }
+      }
+    },
+    "Secure key generation failed, so the model was not started." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "安全密钥生成失败，因此未启动模型。"
+          }
+        }
+      }
+    },
+    "Skips the confirmation for unattended use. Private and local addresses stay blocked either way." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "跳过确认，适用于无人值守的场景。私有地址和本地地址无论如何都会被拦截。"
+          }
+        }
+      }
+    },
+    "Speculative decoding" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "推测解码"
+          }
+        }
+      }
+    },
+    "Start a model to configure its performance settings." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "启动一个模型以配置其性能设置。"
+          }
+        }
+      }
+    },
+    "The Desktop engine always requires a bearer key and stays bound to 127.0.0.1. Choose when that key rotates." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "桌面引擎始终要求 bearer 密钥，并且只绑定到 127.0.0.1。选择该密钥的轮换时机。"
+          }
+        }
+      }
+    },
+    "The Keychain couldn’t store a new key, so this model started with a one-time key. Restart the model to try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "钥匙串无法存储新密钥，因此此模型使用一次性密钥启动。重新启动模型可再次尝试。"
+          }
+        }
+      }
+    },
+    "The Keychain is unavailable, so this model started with a one-time key." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "钥匙串不可用，因此此模型使用一次性密钥启动。"
+          }
+        }
+      }
+    },
+    "The assistant learns your preferences across conversations. It never sends data off this Mac." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "助手会在多次对话中了解你的偏好。数据绝不会离开这台 Mac。"
+          }
+        }
+      }
+    },
+    "The engine picks a precision measured for this model." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "引擎会选用针对此模型实测得出的精度。"
+          }
+        }
+      }
+    },
+    "The saved credential was malformed, so this model started with a one-time key." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已保存的凭据格式有误，因此此模型使用一次性密钥启动。"
+          }
+        }
+      }
+    },
+    "The saved key can’t be accessed. Enter it again and save to replace it." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法访问已保存的密钥。请重新输入并保存以替换它。"
+          }
+        }
+      }
+    },
+    "The saved key couldn’t be removed from your Keychain. Retry cleanup before relying on Every start storage." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法从钥匙串中移除已保存的密钥。在依赖“每次启动”的存储方式之前，请先重试清理。"
+          }
+        }
+      }
+    },
+    "These settings change speed and memory use, and some can change what the model writes. They apply to one model at a time and take effect when that model next starts." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这些设置会影响速度和内存占用，其中一些还可能改变模型的输出。它们每次只作用于一个模型，并在该模型下次启动时生效。"
+          }
+        }
+      }
+    },
+    "This alias does not declare a verified speculative-decoding preset." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此别名未声明经过验证的推测解码预设。"
+          }
+        }
+      }
+    },
+    "This bundled model server cannot reload one resident model." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此内置模型服务器无法单独重新加载某个常驻模型。"
+          }
+        }
+      }
+    },
+    "Tools the model can call during a chat. Turn one off and it is never offered — and never runs, even if the model asks for it by name." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型在对话中可以调用的工具。关闭某个工具后，它不会再提供给模型，即使模型点名请求也不会运行。"
+          }
+        }
+      }
+    },
+    "Until I rotate" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "直到我手动轮换"
+          }
+        }
+      }
+    },
+    "Values the engine actually started with, including where each one came from." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "引擎实际启动时使用的值，以及每个值的来源。"
+          }
+        }
+      }
+    },
+    "Versions, Mac hardware tier, public model and feature names, coarse performance, redacted crash diagnostics, and error categories. For each first successful text chat reply, dictation, or generated image, only the milestone name and “Desktop” are sent. This version does not send a vision-reply milestone. Rapid sends these metadata-only events: the app's to rapidmlx.com's telemetry service, the bundled engine's to PostHog Cloud (US)—never your IP or a per-person profile; the app's collector keeps only a coarse country code. Never prompts, responses, attachments, keys, account details, or unredacted user paths." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "版本、Mac 硬件档位、公开的模型和功能名称、粗略的性能数据、脱敏的崩溃诊断以及错误类别。对于首次成功的文本对话回复、听写或图像生成，只发送里程碑名称和“Desktop”。此版本不发送视觉回复里程碑。Rapid 只发送这些元数据事件：应用的事件发往 rapidmlx.com 的遥测服务，内置引擎的事件发往 PostHog Cloud（美国），绝不包含你的 IP 或个人画像；应用的收集端只保留粗略的国家代码。绝不包含提示词、回复、附件、密钥、账号信息或未脱敏的用户路径。"
+          }
+        }
+      }
+    },
+    "Weather" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "天气"
+          }
+        }
+      }
+    },
+    "Web search" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "网页搜索"
+          }
+        }
+      }
+    },
+    "Which backend `web_search` queries. Keenable works with no account; add a free key (Parallel recommended) for the best results. Keys stay in your Keychain." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "`web_search` 查询所使用的后端。Keenable 无需账号即可使用；添加免费密钥（推荐 Parallel）可获得最佳结果。密钥保存在你的钥匙串中。"
+          }
+        }
+      }
+    },
+    "Write Local File" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "写入本地文件"
+          }
+        }
+      }
+    },
+    "Write local file" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "写入本地文件"
+          }
+        }
+      }
+    },
+    "`browse` fetches a page and hands its text to the model. The model picks the URL, so by default you approve each destination first." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "`browse` 会抓取网页并把文本交给模型。URL 由模型选择，因此默认情况下每个目标地址都需要你先批准。"
+          }
+        }
+      }
+    },
+    "photos" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "照片"
+          }
+        }
+      }
+    },
+    "structured output" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "结构化输出"
+          }
+        }
+      }
+    },
+    "telemetry.rapidmlx.com — a Cloudflare Worker that strips client IPs before writing to storage. Source is open at github.com/raullenchai/rapidmlx.com under telemetry-worker/." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "telemetry.rapidmlx.com 是一个 Cloudflare Worker，在写入存储前会去除客户端 IP。源代码公开在 github.com/raullenchai/rapidmlx.com 的 telemetry-worker/ 目录下。"
+          }
+        }
+      }
+    },
+    "· small" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "· 小型"
+          }
+        }
+      }
+    },
+    "· tiny" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "· 微型"
+          }
+        }
+      }
     }
   }
 }

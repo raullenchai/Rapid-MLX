@@ -2877,10 +2877,12 @@ flow_model_crash_recovery() {
         || die "server did not respawn after the simulated crash"
     for _ in {1..80}; do
         see_main "$OUT/crash-ready.json"
-        if [[ "$(element_field "$OUT/crash-ready.json" ChatView.SendOrStopButton description)" == "Send message" ]]; then break; fi
+        crash_send_label="$(element_field "$OUT/crash-ready.json" ChatView.SendOrStopButton description)"
+        if [[ "$crash_send_label" == "Send message" || "$crash_send_label" == "发送消息" ]]; then break; fi
         sleep 0.25
     done
-    [[ "$(element_field "$OUT/crash-ready.json" ChatView.SendOrStopButton description)" == "Send message" ]] \
+    crash_send_label="$(element_field "$OUT/crash-ready.json" ChatView.SendOrStopButton description)"
+    [[ "$crash_send_label" == "Send message" || "$crash_send_label" == "发送消息" ]] \
         || die "model was not ready after crash recovery"
     jq -n --argjson starts "$(grep -c '"event": "server_started"' "$OUT/fake-events.jsonl")" \
         '{success: true, assertion: "sidecar crashed once, respawned, and returned to ready", server_starts: $starts}' \

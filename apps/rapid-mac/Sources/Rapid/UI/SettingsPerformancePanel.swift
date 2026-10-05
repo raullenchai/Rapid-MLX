@@ -89,8 +89,8 @@ struct SettingsPerformancePanel: View {
         ScrollView {
             VStack(alignment: .leading, spacing: RapidTheme.Space.xl) {
                 SectionHeader(
-                    "Performance",
-                    subtitle: "These settings change speed and memory use, and some can change what the model writes. They apply to one model at a time and take effect when that model next starts.",
+                    String(localized: "Performance"),
+                    subtitle: String(localized: "These settings change speed and memory use, and some can change what the model writes. They apply to one model at a time and take effect when that model next starts."),
                     emphasis: .page
                 )
                 modelSection
@@ -163,14 +163,14 @@ struct SettingsPerformancePanel: View {
     ) -> some View {
         let names = unsupported.map {
             switch $0 {
-            case "media": "photos"
-            case "grammar": "structured output"
+            case "media": String(localized: "photos")
+            case "grammar": String(localized: "structured output")
             default: $0
             }
         }.joined(separator: ", ")
-        let normal = profile.fallbackModel.map { " with \($0)" } ?? ""
+        let normal = profile.fallbackModel.map { String(localized: " with \($0)") } ?? ""
         return InlineNotice(
-            message: "Accelerated text mode is active. \(names.capitalized) require normal mode\(normal). Turn off acceleration below and restart the model to use them.",
+            message: String(localized: "Accelerated text mode is active. \(names.capitalized) require normal mode\(normal). Turn off acceleration below and restart the model to use them."),
             tone: .info
         )
         .accessibilityIdentifier("Settings.Performance.AcceleratedModeNotice")
@@ -180,8 +180,8 @@ struct SettingsPerformancePanel: View {
         _ runtime: EffectiveRuntimeConfigSnapshot
     ) -> some View {
         SettingsSection(
-            "Active runtime",
-            subtitle: "Values the engine actually started with, including where each one came from."
+            String(localized: "Active runtime"),
+            subtitle: String(localized: "Values the engine actually started with, including where each one came from.")
         ) {
             VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
                 ForEach(runtime.fields) { item in
@@ -206,8 +206,8 @@ struct SettingsPerformancePanel: View {
 
     private var modelSection: some View {
         SettingsSection(
-            "Model",
-            subtitle: "Choose which model owns these settings. It does not need to be running."
+            String(localized: "Model"),
+            subtitle: String(localized: "Choose which model owns these settings. It does not need to be running.")
         ) {
             if modelChoices.isEmpty {
                 Text("No chat models are available yet.")
@@ -216,7 +216,7 @@ struct SettingsPerformancePanel: View {
             } else {
                 Picker("Model", selection: $selectedAlias) {
                     ForEach(modelChoices) { entry in
-                        Text(entry.cached ? entry.alias : "\(entry.alias) · not downloaded")
+                        Text(entry.cached ? entry.alias : String(localized: "\(entry.alias) · not downloaded"))
                             .tag(Optional(entry.alias))
                     }
                 }
@@ -227,7 +227,7 @@ struct SettingsPerformancePanel: View {
 
     private var noModelNotice: some View {
         InlineNotice(
-            message: "Start a model to configure its performance settings.",
+            message: String(localized: "Start a model to configure its performance settings."),
             tone: .info
         )
         .accessibilityIdentifier("Settings.Performance.NoModel")
@@ -241,10 +241,10 @@ struct SettingsPerformancePanel: View {
             != server.hasAppliedSpeculativeDecoding(forAlias: alias)
         return InlineNotice(
             message: speculativeChanged
-                ? "Restart \(alias) to apply speculative decoding. Other resident models will unload; downloaded weights and conversations stay available."
-                : "Reload \(alias) to apply. Other resident models will stay available.",
+                ? String(localized: "Restart \(alias) to apply speculative decoding. Other resident models will unload; downloaded weights and conversations stay available.")
+                : String(localized: "Reload \(alias) to apply. Other resident models will stay available."),
             tone: .warning,
-            actionTitle: isReloading ? "Restarting…" : (speculativeChanged ? "Restart model" : "Reload model"),
+            actionTitle: isReloading ? String(localized: "Restarting…") : (speculativeChanged ? String(localized: "Restart model") : String(localized: "Reload model")),
             actionIdentifier: "Settings.Performance.ReloadModel",
             action: { reload(alias: alias) }
         )
@@ -254,8 +254,8 @@ struct SettingsPerformancePanel: View {
 
     private func kvSection(alias: String) -> some View {
         SettingsSection(
-            "KV cache precision",
-            subtitle: "How the model's attention cache is stored. Lower precision means less memory and faster long-context decoding."
+            String(localized: "KV cache precision"),
+            subtitle: String(localized: "How the model's attention cache is stored. Lower precision means less memory and faster long-context decoding.")
         ) {
             VStack(alignment: .leading, spacing: 10) {
                 // One picker, not two. The engine resolves --kv-cache-dtype
@@ -281,7 +281,7 @@ struct SettingsPerformancePanel: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 } else {
-                    tradeOffLine("The engine picks a precision measured for this model.", warns: false)
+                    tradeOffLine(String(localized: "The engine picks a precision measured for this model."), warns: false)
                 }
             }
         }
@@ -289,8 +289,8 @@ struct SettingsPerformancePanel: View {
 
     private func prefixSection(alias: String) -> some View {
         SettingsSection(
-            "Prefix cache",
-            subtitle: "Reuses computation for a prompt prefix the model has already seen. Speeds up multi-turn chat and repeated system prompts."
+            String(localized: "Prefix cache"),
+            subtitle: String(localized: "Reuses computation for a prompt prefix the model has already seen. Speeds up multi-turn chat and repeated system prompts.")
         ) {
             VStack(alignment: .leading, spacing: 10) {
                 RapidSegmentedControl(
@@ -300,12 +300,12 @@ struct SettingsPerformancePanel: View {
                         .init(value: Bool?.some(true), title: "On", identifier: "Settings.Performance.Prefix.On"),
                         .init(value: Bool?.some(false), title: "Off", identifier: "Settings.Performance.Prefix.Off"),
                     ],
-                    accessibilityLabel: "Prefix cache"
+                    accessibilityLabel: String(localized: "Prefix cache")
                 )
                 .accessibilityIdentifier("Settings.Performance.PrefixCache")
 
                 tradeOffLine(
-                    "Costs memory, never changes output. Turning it off is mainly useful for measuring what it buys you.",
+                    String(localized: "Costs memory, never changes output. Turning it off is mainly useful for measuring what it buys you."),
                     warns: false
                 )
 
@@ -321,13 +321,13 @@ struct SettingsPerformancePanel: View {
         let kvCompatible = perf.config(forAlias: alias).isContinuousMTPKVCompatible
             || preset?.method != .mtp
         return SettingsSection(
-            "Speculative decoding",
-            subtitle: "Drafts candidate tokens and verifies them with the full model."
+            String(localized: "Speculative decoding"),
+            subtitle: String(localized: "Drafts candidate tokens and verifies them with the full model.")
         ) {
             VStack(alignment: .leading, spacing: 10) {
                 Toggle(
-                    preset.map { "Enable \($0.displayName)" }
-                        ?? "No verified preset for this model",
+                    preset.map { String(localized: "Enable \($0.displayName)") }
+                        ?? String(localized: "No verified preset for this model"),
                     isOn: speculativeDecodingBinding(alias: alias, preset: preset)
                 )
                     .toggleStyle(.switch)
@@ -335,16 +335,16 @@ struct SettingsPerformancePanel: View {
                     .accessibilityIdentifier("Settings.Performance.SpeculativeDecoding.Enabled")
                 tradeOffLine(
                     preset == nil
-                        ? "This alias does not declare a verified speculative-decoding preset."
+                        ? String(localized: "This alias does not declare a verified speculative-decoding preset.")
                         : !kvCompatible
-                            ? "MTP requires Engine default or Full precision (bf16) KV cache. It turns back on automatically when that cache mode is selected."
+                            ? String(localized: "MTP requires Engine default or Full precision (bf16) KV cache. It turns back on automatically when that cache mode is selected.")
                         : preset?.method == .mtp
                             ? preset?.isDefaultEnabled == true
-                                ? "Enabled by default for this qualified model. It accelerates text generation; turn it off and restart to use photo input."
-                                : "MTP accelerates text generation on this model; turn it off and restart to use photo input."
+                                ? String(localized: "Enabled by default for this qualified model. It accelerates text generation; turn it off and restart to use photo input.")
+                                : String(localized: "MTP accelerates text generation on this model; turn it off and restart to use photo input.")
                             : preset?.method == .dflash
-                                ? "Off by default. This qualified text-only mode uses a paired draft model and one request at a time. To use tools, turn acceleration off and restart the model."
-                                : "Off by default. It can improve generation speed on some Macs, but may be slower on others; accepted output remains token-exact.",
+                                ? String(localized: "Off by default. This qualified text-only mode uses a paired draft model and one request at a time. To use tools, turn acceleration off and restart the model.")
+                                : String(localized: "Off by default. It can improve generation speed on some Macs, but may be slower on others; accepted output remains token-exact."),
                     warns: false
                 )
             }
@@ -358,7 +358,7 @@ struct SettingsPerformancePanel: View {
                 Text("Cache budget")
                     .font(RapidFont.bodyEmphasis)
                 Spacer()
-                Text(config.cacheMemoryMB.map { "\($0) MB" } ?? "Automatic")
+                Text(config.cacheMemoryMB.map { String(localized: "\($0) MB") } ?? String(localized: "Automatic"))
                     .font(RapidFont.metric)
                     .foregroundStyle(RapidTheme.textSecondary)
             }
@@ -378,7 +378,7 @@ struct SettingsPerformancePanel: View {
                 }
             }
             tradeOffLine(
-                "Automatic uses about 20% of RAM. A larger budget holds more prefixes; it never changes output.",
+                String(localized: "Automatic uses about 20% of RAM. A larger budget holds more prefixes; it never changes output."),
                 warns: false
             )
         }
@@ -521,7 +521,7 @@ struct SettingsPerformancePanel: View {
                 if restarted {
                     launchedFlags = perf.launchFlags(forAlias: alias)
                 } else {
-                    applyError = "Could not restart this model with its speculative-decoding setting."
+                    applyError = String(localized: "Could not restart this model with its speculative-decoding setting.")
                 }
                 isReloading = false
                 return
@@ -535,7 +535,7 @@ struct SettingsPerformancePanel: View {
             } else if case .rejected(let message) = result {
                 applyError = message
             } else {
-                applyError = "This bundled model server cannot reload one resident model."
+                applyError = String(localized: "This bundled model server cannot reload one resident model.")
             }
             isReloading = false
         }
