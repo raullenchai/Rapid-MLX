@@ -12,10 +12,10 @@ enum ModelKind: String, Sendable, Hashable, CaseIterable, Identifiable {
     /// Tab label in Model Management.
     var tabLabel: String {
         switch self {
-        case .chat: return "Chat"
-        case .image: return "Image"
-        case .audio: return "Audio"
-        case .video: return "Video"
+        case .chat: return String(localized: "Chat models")
+        case .image: return String(localized: "Image models")
+        case .audio: return String(localized: "Audio models")
+        case .video: return String(localized: "Video models")
         }
     }
 }

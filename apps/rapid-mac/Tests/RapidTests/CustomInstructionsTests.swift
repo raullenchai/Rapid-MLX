@@ -202,7 +202,7 @@ struct CustomInstructionsTests {
     @Test("System prompt UI names global and conversation precedence explicitly")
     func systemPromptTerminologyAndPreviewWiring() throws {
         let settings = try Self.source("Sources/Rapid/UI/SettingsView.swift")
-        #expect(settings.contains("case .instructions: return \"System Prompt\""))
+        #expect(settings.contains("case .instructions: return String(localized: \"System Prompt\")"))
         #expect(settings.contains("\"Global default\""))
         #expect(settings.contains("Conversation prompts can override it."))
         #expect(settings.contains("Settings.SystemPrompt.EffectivePreview"))

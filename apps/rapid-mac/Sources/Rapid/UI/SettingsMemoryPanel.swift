@@ -35,7 +35,9 @@ struct SettingsMemoryPanel: View {
 
             if memoryStore.isEnabled && !memoryStore.entries.isEmpty {
                 HStack {
-                    Text("\(memoryStore.entries.count) saved memor\(memoryStore.entries.count == 1 ? "y" : "ies")")
+                    Text(memoryStore.entries.count == 1
+                        ? String(localized: "1 saved memory")
+                        : String(localized: "\(memoryStore.entries.count) saved memories"))
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                     Spacer()
