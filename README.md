@@ -1,7 +1,7 @@
 <h1 align="center">Rapid-MLX</h1>
 
 <p align="center">
-  <strong>Rapid-MLX is an open-source (Apache 2.0) OpenAI- and Anthropic-compatible LLM inference server and Mac app for Apple Silicon, built on MLX, focused on reliable tool calling for coding agents.</strong>
+  <strong>Rapid-MLX is an open-source (Apache 2.0) OpenAI- and Anthropic-compatible LLM inference server for Apple Silicon, built on MLX, focused on reliable tool calling for coding agents.</strong>
   <br>
   <strong>Up to 4× faster than Apple's MLX (mlx-lm), 1.5× on a typical task — same model, same weights.</strong>
   <br>
@@ -681,12 +681,6 @@ Top three things that go wrong:
 → [All troubleshooting entries](https://rapidmlx.com/docs/troubleshooting.html) (OOM, empty responses, slow TTFT, port taken, shell completion, HF cache, and more)
 
 ---
-
-## See it in action
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/raullenchai/Rapid-MLX/main/docs/assets/demo.gif" alt="Rapid-MLX demo — install, serve Gemma 4, chat, tool calling" width="700">
-</p>
 
 ## Community & Support
 
