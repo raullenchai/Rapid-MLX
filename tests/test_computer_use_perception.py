@@ -1647,6 +1647,14 @@ def test_key_chords_take_the_hotkey_route_and_keep_every_guard(session, screen):
     receipt = session.act("key", _ref(obs, "Note"), key="cmd+a")["receipt"]
     assert receipt["error"]["code"] == "synthetic_input_blocked"
     assert screen.calls[-1][0] == "click"  # no chord went to the old focus
+    # Any other failure to focus (a stale target) is that failure, not a click.
+    screen.handlers["click"] = _raise("target_drift")
+    session.observe("Chrome", "cg:1")
+    before = len(screen.calls)
+    receipt = session.act("key", _ref(obs, "Note"), key="cmd+a")["receipt"]
+    assert receipt["error"]["code"] == "target_drift"
+    assert [c[0] for c in screen.calls[before:]].count("click") == 1
+    assert "hotkey" not in [c[0] for c in screen.calls[before:]]
     del screen.handlers["click"]
     session.observe("Chrome", "cg:1")
     receipt = session.act("key", _ref(obs, "Help"), key="cmd+a")["receipt"]
