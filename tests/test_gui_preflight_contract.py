@@ -1286,7 +1286,7 @@ def test_wait_send_idle_follows_an_intentionally_deferred_auto_start(tmp_path):
     helper = f"wait_send_idle() {{{helper_body}\n}}"
 
     assert 'identifier == "Readiness.Action"' in helper
-    assert 'and .description == "Start"' in helper
+    assert 'and (.description == "Start" or .description == "启动")' in helper
     assert "and .enabled == true" in helper
     assert '"$AX_DRIVER" click-center "$APP_PID" Readiness.Action' in helper
     assert "follow_memory_confirmation_edge" in helper
