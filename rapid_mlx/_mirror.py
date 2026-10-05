@@ -549,6 +549,58 @@ def _is_mirrored(entry: dict[str, Any]) -> bool:
     return str(entry.get("status", "")).lower() == "mirrored"
 
 
+def _is_commit_sha(revision: str | None) -> bool:
+    """True for a full 40-hex git commit id (an immutable revision)."""
+    return (
+        isinstance(revision, str)
+        and len(revision) == 40
+        and all(c in "0123456789abcdefABCDEF" for c in revision)
+    )
+
+
+def _git_blob_oid(path: Path) -> str:
+    """Git blob id of a file: SHA-1 over ``blob <size>\0`` + its bytes."""
+    import hashlib
+
+    size = path.stat().st_size
+    hasher = hashlib.sha1(f"blob {size}\0".encode(), usedforsecurity=False)
+    with path.open("rb") as fh:
+        while True:
+            blk = fh.read(_CHUNK_BYTES)
+            if not blk:
+                break
+            hasher.update(blk)
+    return hasher.hexdigest()
+
+
+def pinned_snapshot_download(
+    repo_id: str,
+    revision: str,
+    *,
+    allow_patterns: list[str] | None = None,
+) -> str:
+    """``snapshot_download(repo_id, revision=revision)``, mirror first.
+
+    Every file the mirror can prove identical to ``revision`` (see
+    :func:`download_with_mirror_fallback`) comes from the mirror; the rest,
+    and the whole repository whenever the mirror path cannot complete, come
+    from Hugging Face at exactly ``revision``. Returns the snapshot directory.
+    """
+    if _is_commit_sha(revision) and download_with_mirror_fallback(
+        repo_id, revision=revision, allow_patterns=allow_patterns
+    ):
+        owner, _, name = repo_id.partition("/")
+        return str(
+            _hf_cache_root() / f"models--{owner}--{name}" / "snapshots" / revision
+        )
+    from huggingface_hub import snapshot_download
+
+    kwargs: dict[str, Any] = {"revision": revision}
+    if allow_patterns is not None:
+        kwargs["allow_patterns"] = list(allow_patterns)
+    return snapshot_download(repo_id, **kwargs)
+
+
 def _hf_cache_root() -> Path:
     """Resolve the HF cache root, honoring ``HF_HUB_CACHE`` / ``HF_HOME``."""
     try:
@@ -621,6 +673,7 @@ def _download_one_from_r2(
     expected_size: int | None,
     *,
     expected_sha256: str | None = None,
+    expected_git_oid: str | None = None,
     sidecar_dir: Path,
     sidecar_key: str,
     repo_root: Path | None = None,
@@ -680,6 +733,7 @@ def _download_one_from_r2(
             tmp,
             expected_size,
             expected_sha256=expected_sha256,
+            expected_git_oid=expected_git_oid,
             repo_root=repo_root,
             progress_tracker=progress_tracker,
         )
@@ -694,6 +748,7 @@ def _do_r2_download(
     expected_size: int | None,
     *,
     expected_sha256: str | None = None,
+    expected_git_oid: str | None = None,
     repo_root: Path | None = None,
     progress_tracker: _ProgressTracker | None = None,
 ) -> tuple[bool, str]:
@@ -980,6 +1035,32 @@ def _do_r2_download(
         _safe_unlink(tmp)
         _rollback_credits(progress_tracker, chunks_credited)
         return False, "empty-response-no-size"
+
+    # Pinned-revision non-LFS files: the git blob id is the only digest HF
+    # publishes for them, so recompute it over the downloaded bytes. A
+    # same-size file from a different commit fails here and falls back to HF.
+    if expected_git_oid is not None:
+        try:
+            got_oid = _git_blob_oid(tmp)
+        except OSError as e:
+            _safe_unlink(tmp)
+            _rollback_credits(progress_tracker, chunks_credited)
+            return False, f"oid-read:{type(e).__name__}"
+        if got_oid != expected_git_oid.lower():
+            _safe_unlink(tmp)
+            _rollback_credits(progress_tracker, chunks_credited)
+            return False, f"git-oid-mismatch:{got_oid[:8]}…!={expected_git_oid[:8]}…"
+        if repo_root is not None:
+            # Same cache layout HF uses for a non-LFS file: the bytes live at
+            # ``blobs/<git blob id>`` and the snapshot entry links to them.
+            # Readiness gates that require snapshot files to resolve inside
+            # the repo's blob store (Wan) depend on it.
+            ok, reason = _install_lfs_blob_and_symlink(tmp, target, repo_root, got_oid)
+            if not ok:
+                _safe_unlink(tmp)
+                _rollback_credits(progress_tracker, chunks_credited)
+                return False, reason
+            return True, ""
 
     # Issue #652: for LFS files (``expected_sha256`` known) land the
     # verified bytes at ``repo_root/blobs/<sha>`` and symlink the
@@ -1498,15 +1579,18 @@ def download_with_mirror_fallback(
     we did fetch are valid HF-cache entries that ``snapshot_download``
     will skip.
 
-    Codex round-9 BLOCKING #2: ``revision`` is reserved for future
-    use. Today this function only handles the default branch (HEAD of
-    ``main``) — the catalog and the R2 mirror are built from default-
-    branch snapshots, and ``refs/main`` is the only ref we write. If a
-    caller passes a non-default revision (e.g. ``snapshot_download(...,
-    revision="<sha>")``), return False so the caller's
-    ``snapshot_download`` runs and pins the right revision instead of us
-    silently overwriting ``refs/main`` with HEAD. ``revision=None`` and
-    ``revision="main"`` both mean default branch and are accepted.
+    ``revision``: ``None`` or ``"main"`` pulls the default branch and pins
+    ``refs/main`` to it. A full 40-hex commit SHA pulls exactly that commit
+    into ``snapshots/<sha>/`` and writes no ref, matching
+    ``snapshot_download(revision=<sha>)``. The mirror stores one build of each
+    file, which may come from a different commit, so for a pinned commit a
+    mirror object is accepted only when its bytes are proven identical to the
+    pinned file: the size from HF's metadata AT that commit, plus the LFS
+    SHA-256 (weights) or the git blob id (other files), both recomputed over
+    the downloaded bytes. A file lacking that metadata, or failing either
+    check, comes from HF at the pinned commit instead. Any other revision
+    (branch or tag name) returns False so the caller's ``snapshot_download``
+    resolves it.
 
     ``on_pull_start`` is an optional zero-arg hook fired exactly once, right
     before the first ``Pulling`` line is printed (i.e. after the size/catalog
@@ -1540,8 +1624,11 @@ def download_with_mirror_fallback(
         # Local paths fall here too. Defer to caller's HF path.
         return False
 
-    # Codex round-9 BLOCKING #2: explicit non-default revision → bail.
-    if revision is not None and revision != "main":
+    # An explicit revision is served only when it is an immutable commit SHA
+    # (the form every pinned catalog download uses). A branch or tag name can
+    # move under us, so it keeps the historical bail to ``snapshot_download``.
+    pinned = revision is not None and revision != "main"
+    if pinned and not _is_commit_sha(revision):
         return False
 
     # HF model_info gives us the canonical revision + per-file sizes.
@@ -1571,8 +1658,14 @@ def download_with_mirror_fallback(
         # than failing over to HF. ``TimeoutError`` is already in the except
         # tuple below, so a lapsed deadline falls through to
         # ``snapshot_download`` exactly like any other mirror miss.
+        # A pinned pull reads HF's metadata AT the pinned commit: those are
+        # the sizes and digests every mirror object must match byte-for-byte.
         info = call_with_deadline(
-            model_info, _HF_RESOLVE_TIMEOUT_SECONDS, repo_id, files_metadata=True
+            model_info,
+            _HF_RESOLVE_TIMEOUT_SECONDS,
+            repo_id,
+            files_metadata=True,
+            **({"revision": revision} if pinned else {}),
         )
     except (
         EntryNotFoundError,
@@ -1587,8 +1680,17 @@ def download_with_mirror_fallback(
     # input parameter has already been validated above (``None`` or
     # ``"main"``); from here on ``revision`` always means the concrete
     # commit hash we'll write under ``snapshots/<sha>/``.
+    requested_revision = revision
     revision = getattr(info, "sha", None)
+    if pinned and revision != requested_revision:
+        # The Hub answered for a different commit than the one pinned; none
+        # of its metadata can vouch for the pinned bytes.
+        return False
     siblings = getattr(info, "siblings", None) or []
+    # Git blob ids (SHA-1 of ``blob <len>\0<bytes>``) for every listed file.
+    # A pinned pull uses them to prove a non-LFS mirror object is the exact
+    # file at the pinned commit; size alone cannot.
+    git_oids: dict[str, str | None] = {}
     # Each file: (relative_path, expected_size, lfs_sha256).
     # - ``expected_size`` from HF's siblings metadata (None if HF didn't
     #   expose it; use ``size is not None`` to distinguish 0 from
@@ -1623,6 +1725,8 @@ def download_with_mirror_fallback(
         sha256 = getattr(lfs, "sha256", None) if lfs is not None else None
         sha256 = sha256 if isinstance(sha256, str) and len(sha256) == 64 else None
         files.append((rname, size, sha256))
+        oid = getattr(s, "blob_id", None)
+        git_oids[rname] = oid if isinstance(oid, str) and len(oid) == 40 else None
     if not revision or not files:
         return False
 
@@ -1776,6 +1880,30 @@ def download_with_mirror_fallback(
     # summary needs the fresh-only count so a warm pull says "already
     # cached / nothing to download" truthfully (issue #2349).
     transferred_bytes = 0
+
+    def _warm_file_proven(target: Path, fname: str) -> bool:
+        """A pinned snapshot proves a warm non-LFS file by its git blob id.
+
+        Whatever left a file in ``snapshots/<pin>`` (an interrupted run, a
+        default-branch pull of the same commit, corruption), it is kept only
+        when its bytes hash to the pinned blob id. Without a pin or a
+        published blob id the historical acceptance stands.
+        """
+        expected = git_oids.get(fname) if pinned else None
+        if expected is None:
+            return True
+        try:
+            if _git_blob_oid(target) != expected:
+                return False
+        except OSError:
+            return False
+        if target.is_symlink():
+            return True
+        # A proven regular file (e.g. left by an earlier default-branch
+        # mirror pull of the same commit) moves into the HF blob layout so
+        # readiness gates that require ``blobs/`` containment (Wan) agree.
+        ok, _reason = _install_lfs_blob_and_symlink(target, target, repo_root, expected)
+        return ok
 
     def _do_file(
         item: tuple[str, int | None, str | None],
@@ -1938,12 +2066,17 @@ def download_with_mirror_fallback(
                                 return fname, "cached", cached_size
                             # Stale / corrupted cache — drop + refetch.
                             _safe_unlink(target)
-                    else:
+                    elif _warm_file_proven(target, fname):
                         return fname, "cached", cached_size
+                    else:
+                        _safe_unlink(target)
                 elif expected_size is None and cached_size > 0:
                     # HF didn't expose a size — accept any non-empty
-                    # file as cached (matches pre-#650 behavior).
-                    return fname, "cached", cached_size
+                    # file as cached (matches pre-#650 behavior), unless a
+                    # pinned snapshot can prove it by blob id and it fails.
+                    if _warm_file_proven(target, fname):
+                        return fname, "cached", cached_size
+                    _safe_unlink(target)
         except OSError:
             # Target is a broken symlink / permission denied / etc.
             # Try to remove it (best-effort) and fall through. The
@@ -1951,7 +2084,20 @@ def download_with_mirror_fallback(
             # fresh file at the path.
             _safe_unlink(target)
 
-        if use_r2:
+        # The mirror holds one build of each file. For a pinned commit it may
+        # serve a file only when the bytes can be proven identical to that
+        # commit: the exact size, plus the LFS SHA-256 (weights) or the git
+        # blob id (everything else), both checked on the downloaded bytes.
+        # Without both pieces of metadata the file goes straight to HF.
+        expected_git_oid = git_oids.get(fname) if pinned else None
+        r2_eligible = use_r2 and (
+            not pinned
+            or (
+                expected_size is not None
+                and (expected_sha256 is not None or expected_git_oid is not None)
+            )
+        )
+        if r2_eligible:
             # ``dub`` is set above to either the catalog's
             # download_url_base (default mirror) or the synthetic
             # ``/<owner>/<repo>/`` (custom mirror / catalog absent).
@@ -1961,6 +2107,7 @@ def download_with_mirror_fallback(
                 target,
                 expected_size,
                 expected_sha256=expected_sha256,
+                expected_git_oid=None if expected_sha256 else expected_git_oid,
                 sidecar_dir=sidecar_dir,
                 sidecar_key=_sidecar_key_for(fname),
                 repo_root=repo_root,
@@ -2200,15 +2347,19 @@ def download_with_mirror_fallback(
     # stale ref left over from a manual ``snapshot_download(revision=
     # "<sha>")`` would otherwise survive our pull, breaking the cache
     # contract for the loader.
-    try:
-        # Codex round-13 NIT #3: write the ref in deterministic UTF-8
-        # rather than the platform default encoding. SHA hashes are
-        # ASCII so the bytes are the same in practice, but matching
-        # the HF cache writer's encoding keeps cross-platform reads
-        # bit-identical.
-        (refs_dir / "main").write_text(revision, encoding="utf-8")
-    except OSError:
-        return False
+    # A pinned commit is addressed by its SHA, exactly as
+    # ``snapshot_download(revision=<sha>)`` leaves it: no ref is written, and
+    # ``refs/main`` keeps pointing wherever the default branch was cached.
+    if not pinned:
+        try:
+            # Codex round-13 NIT #3: write the ref in deterministic UTF-8
+            # rather than the platform default encoding. SHA hashes are
+            # ASCII so the bytes are the same in practice, but matching
+            # the HF cache writer's encoding keeps cross-platform reads
+            # bit-identical.
+            (refs_dir / "main").write_text(revision, encoding="utf-8")
+        except OSError:
+            return False
 
     mb = total_bytes / 1e6
     # Issue #651 follow-up: surface elapsed time + throughput so users

@@ -1877,10 +1877,12 @@ def test_custom_mirror_catalog_4xx_uses_direct_layout(
 # ---------------------------------------------------------------------------
 
 
-def test_non_default_revision_skips_mirror_entirely(
+def test_moving_non_default_revision_skips_mirror_entirely(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
+    """A branch or tag name can move, so only an exact commit SHA may use the
+    mirror (see ``test_mirror_pinned_revision.py``); anything else bails."""
     repo_id = "mlx-community/Qwen3-0.6B-4bit"
 
     router = _UrlRouter()
@@ -1893,7 +1895,7 @@ def test_non_default_revision_skips_mirror_entirely(
         patch("huggingface_hub.hf_hub_download") as hf_mock,
     ):
         ok = _mirror.download_with_mirror_fallback(
-            repo_id, cache_dir=tmp_path, revision="abcd" * 10
+            repo_id, cache_dir=tmp_path, revision="release-2026"
         )
 
     assert ok is False

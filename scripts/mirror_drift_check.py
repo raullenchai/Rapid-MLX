@@ -12,6 +12,9 @@ The allow-list mirrors the client's selection contract in ``rapid_mlx/_mirror.py
 causes the client to pass ``allow_patterns=["<subfolder>/*"]``. Consequently,
 non-selected quantisation folders such as ``5bit/``, ``6bit/`` and ``8bit/``
 must not be reported missing when the selected/default quant is elsewhere.
+A repository whose loader fetches a pinned file list (see
+``scripts/mirror_runtime_files.py``) is audited at that pin against that list,
+and every listed file must exist upstream at the pin.
 
 Public requests are cache-busted after every redirect and carry
 ``Cache-Control: no-cache``. This is essential because the CDN has served an
@@ -51,8 +54,9 @@ from pathlib import Path
 from typing import Any
 
 if __package__:
-    from . import mirror_unmirrored
+    from . import mirror_runtime_files, mirror_unmirrored
 else:
+    import mirror_runtime_files
     import mirror_unmirrored
 
 UnmirroredEntry = mirror_unmirrored.UnmirroredEntry
@@ -572,13 +576,15 @@ def _valid_repo_id(repo_id: str) -> bool:
     return bool(owner and separator and name and "/" not in name)
 
 
-def _model_info(repo_id: str) -> Any:
+def _model_info(repo_id: str, revision: str | None = None) -> Any:
     from huggingface_hub import model_info
 
-    return model_info(repo_id, files_metadata=True)
+    if revision is None:
+        return model_info(repo_id, files_metadata=True)
+    return model_info(repo_id, revision=revision, files_metadata=True)
 
 
-def _hf_repo(repo_id: str) -> HfRepo:
+def _hf_repo(repo_id: str, revision: str | None = None) -> HfRepo:
     """Fetch one complete HF repository description, with paced retries."""
     from huggingface_hub.errors import HfHubHTTPError
 
@@ -589,7 +595,11 @@ def _hf_repo(repo_id: str) -> HfRepo:
             _request_counts["hf"] += 1
         delay = float(2**attempt)
         try:
-            info = _model_info(repo_id)
+            info = (
+                _model_info(repo_id)
+                if revision is None
+                else _model_info(repo_id, revision)
+            )
             break
         except HfHubHTTPError as error:
             response = getattr(error, "response", None)
@@ -1017,13 +1027,25 @@ def audit(
     repos: dict[str, HfRepo] = {}
     repo_errors: dict[str, str] = {}
     unique_repos = {spec.hf_path for spec in selected}
+    # A loader that fetches a pinned file list is audited at its pin, against
+    # exactly that list (see scripts/mirror_runtime_files.py).
+    runtime_pins = {
+        repo_id: pin
+        for repo_id in unique_repos
+        if (pin := mirror_runtime_files.pinned_runtime_files(repo_id)) is not None
+    }
     if progress is not None:
         progress.repos_total = len(unique_repos)
         progress.emit("catalog-listed")
     hf_started = time.monotonic()
     with ThreadPoolExecutor(max_workers=min(pool_size, HF_MAX_WORKERS)) as hf_pool:
         hf_futures = {
-            hf_pool.submit(_hf_repo, repo_id): repo_id for repo_id in unique_repos
+            (
+                hf_pool.submit(_hf_repo, repo_id)
+                if repo_id not in runtime_pins
+                else hf_pool.submit(_hf_repo, repo_id, runtime_pins[repo_id][0])
+            ): repo_id
+            for repo_id in unique_repos
         }
         for hf_future in as_completed(hf_futures):
             repo_id = hf_futures[hf_future]
@@ -1056,6 +1078,18 @@ def audit(
             files = []
         else:
             files = _selected_files(repos[spec.hf_path].files, spec.subfolder)
+            pin = runtime_pins.get(spec.hf_path)
+            if pin is not None:
+                files = [item for item in files if item.path in pin[1]]
+                for path in sorted(pin[1] - {item.path for item in files}):
+                    report.findings.append(
+                        Finding(
+                            "hf_missing_runtime_file",
+                            "error",
+                            path,
+                            f"absent upstream at pinned revision {pin[0]}",
+                        )
+                    )
         report.checked_files = len(files)
         in_progress = _sync_in_progress(entry)
         report_context.append((report, spec, entry, files, in_progress))

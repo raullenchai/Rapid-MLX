@@ -132,16 +132,20 @@ class FileMeta:
     lfs_sha256: str | None = None  # HF's LFS sha256 for weight shards; None otherwise
 
 
-def _hf_files(repo_id: str) -> list[FileMeta]:
+def _hf_files(repo_id: str, revision: str | None = None) -> list[FileMeta]:
     """Enumerate expected files via HF ``model_info(files_metadata=True)``.
 
     Returns a list of ``FileMeta`` — one per sibling. Fails hard on any
-    HF-side error (fail-fast per G8 root-cause discipline).
+    HF-side error (fail-fast per G8 root-cause discipline). ``revision``
+    lists the files at that commit instead of the default branch.
     """
     from huggingface_hub import HfApi
 
     api = HfApi()
-    info = api.model_info(repo_id, files_metadata=True)
+    if revision is None:
+        info = api.model_info(repo_id, files_metadata=True)
+    else:
+        info = api.model_info(repo_id, revision=revision, files_metadata=True)
     files: list[FileMeta] = []
     for s in info.siblings or []:
         rname = getattr(s, "rfilename", None)
@@ -255,6 +259,37 @@ def _select_subfolder(files: list[FileMeta], subfolder: str) -> list[FileMeta]:
 
     roots = [f for f in files if "/" not in f.relpath and _is_root_keep(f.relpath)]
     return roots + selected
+
+
+def _select_included(files: list[FileMeta], include: list[str]) -> list[FileMeta]:
+    """Keep files matching any ``include`` glob, plus repo-root terms.
+
+    Refuses an empty selection, and any pattern naming a literal file the
+    repository does not have, so a typo can never verify an incomplete set.
+    """
+    from fnmatch import fnmatchcase
+
+    present = {f.relpath for f in files}
+    literal_missing = sorted(
+        pattern
+        for pattern in include
+        if not any(ch in pattern for ch in "*?[") and pattern not in present
+    )
+    if literal_missing:
+        raise ValueError(
+            f"--include names files the repository lacks: {literal_missing}"
+        )
+    selected = [
+        f
+        for f in files
+        if any(fnmatchcase(f.relpath, pattern) for pattern in include)
+        or ("/" not in f.relpath and _is_root_keep(f.relpath))
+    ]
+    if not any(
+        any(fnmatchcase(f.relpath, pattern) for pattern in include) for f in selected
+    ):
+        raise ValueError(f"--include {include} matched no files")
+    return selected
 
 
 def _r2_client(endpoint_url: str, profile: str) -> Any:
@@ -395,7 +430,9 @@ def _upload_one(
     )
 
 
-def _download_one_hf(repo_id: str, relpath: str, tmp_dir: Path) -> Path:
+def _download_one_hf(
+    repo_id: str, relpath: str, tmp_dir: Path, revision: str | None = None
+) -> Path:
     """Download a single HF file into ``tmp_dir`` (flat, no snapshot layout).
 
     Passing ``local_dir=tmp_dir`` puts the file directly under ``tmp_dir``
@@ -413,6 +450,7 @@ def _download_one_hf(repo_id: str, relpath: str, tmp_dir: Path) -> Path:
             repo_id=repo_id,
             filename=relpath,
             local_dir=str(tmp_dir),
+            **({"revision": revision} if revision is not None else {}),
         )
     )
 
@@ -555,6 +593,8 @@ def mirror_repo(
     subfolder: str | None = None,
     force_unmirrored: bool = False,
     unmirrored_path: Path = UNMIRRORED_PATH,
+    revision: str | None = None,
+    include: list[str] | None = None,
 ) -> int:
     """Mirror one HF repo to R2. Return process exit code (0 = ok).
 
@@ -562,6 +602,12 @@ def mirror_repo(
     ``_select_subfolder``. Omitted, the whole repo is mirrored, which is
     correct for the one-quantisation-per-repo layout every other upstream
     we mirror uses.
+
+    ``revision`` mirrors the files of that exact commit (a pinned catalog
+    download proves every mirror object against HF's metadata at its pin, so
+    the mirror must hold the pinned bytes). ``include`` keeps only files
+    matching one of its globs, plus repo-root licence/readme files: a pinned
+    download that fetches a declared file list needs nothing else.
     """
     unmirrored = load_unmirrored(unmirrored_path, ALIASES_PATH, AUDIO_ALIASES_PATH).get(
         repo_id
@@ -591,7 +637,12 @@ def mirror_repo(
             flush=True,
         )
 
-    files = _hf_files(repo_id)
+    if revision is not None:
+        print(f"   revision: {revision}", flush=True)
+    files = _hf_files(repo_id) if revision is None else _hf_files(repo_id, revision)
+    if include is not None:
+        files = _select_included(files, include)
+        print(f"   include:  {len(files)} files match {include}", flush=True)
     # ``is not None``, not truthiness: ``--subfolder ""`` (an unset shell
     # variable expanding to nothing) is a caller mistake, and treating it
     # as "no filter" silently mirrors the full 20 GB repo the flag exists
@@ -673,7 +724,11 @@ def mirror_repo(
                     flush=True,
                 )
                 t0 = time.monotonic()
-                local = _download_one_hf(repo_id, f.relpath, tmp_dir)
+                local = (
+                    _download_one_hf(repo_id, f.relpath, tmp_dir)
+                    if revision is None
+                    else _download_one_hf(repo_id, f.relpath, tmp_dir, revision)
+                )
                 # Codex round-3 BLOCKING: stat BEFORE cleanup — the
                 # ``finally`` below deletes ``local``, so a later
                 # ``local.stat()`` in the summary path would race and
@@ -843,6 +898,20 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--revision",
+        default=None,
+        help="Mirror the files of this exact commit instead of the default branch.",
+    )
+    p.add_argument(
+        "--include",
+        action="append",
+        default=None,
+        help=(
+            "Mirror only files matching this glob (repeatable); repo-root "
+            "LICENSE/NOTICE/README are always kept."
+        ),
+    )
+    p.add_argument(
         "--tmp-dir",
         default=None,
         help="Scratch dir for per-file downloads (default: /tmp/mirror-<pid>)",
@@ -864,6 +933,8 @@ def main(argv: list[str] | None = None) -> int:
         verify_only=args.verify_only,
         force_unmirrored=args.force_unmirrored,
         tmp_dir=tmp,
+        revision=args.revision,
+        include=args.include,
     )
 
 
