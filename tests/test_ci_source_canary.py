@@ -229,3 +229,34 @@ def test_red_pending_missing_or_wrong_base_anchor_is_not_eligible(tmp_path):
             text=True,
         )
         assert (result.returncode == 0) == eligible
+
+
+@pytest.mark.parametrize("force_full", [False, True])
+def test_cli_flags_and_output_preserve_source_vs_promoted_scope(
+    tmp_path, monkeypatch, force_full
+):
+    import scripts.classify_ci_changes as classifier
+
+    paths = tmp_path / "paths"
+    output = tmp_path / "outputs"
+    paths.write_text("rapid_mlx/cli_help.py\n")
+    arguments = [
+        "classifier",
+        "--source-canary",
+        "--paths-file",
+        str(paths),
+        "--github-output",
+        str(output),
+    ]
+    if force_full:
+        arguments += ["--force-full", "--force-reason", "promoted-head"]
+    monkeypatch.setattr(sys, "argv", arguments)
+    assert classifier.main() == 0
+    outputs = dict(line.split("=", 1) for line in output.read_text().splitlines())
+    assert outputs["source_canary"] == str(not force_full).lower()
+    if force_full:
+        assert outputs["linux_matrix_mode"] == "full"
+        assert outputs["linux_matrix_reason"] == "promoted-head"
+        assert outputs["source_canary_tests"] == ""
+    else:
+        assert "tests/test_cli_help_groups.py" in outputs["source_canary_tests"].split()
