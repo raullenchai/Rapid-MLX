@@ -158,6 +158,125 @@ struct LocalizationTests {
         }
     }
 
+    /// The surfaces a Chinese-locale user reported as English: sidebar
+    /// destinations, the chat hero and composer, the Settings rail, and the
+    /// model list. Each key is spelled exactly as the call site spells it,
+    /// including the format specifier an interpolation compiles to.
+    @Test("Sidebar, chat hero, Settings rail and model list keys carry zh-Hans")
+    func reportedSurfacesTranslated() throws {
+        let json = try loadCatalog()
+        let strings = try #require(json["strings"] as? [String: Any])
+
+        let mustHaveZH: [String] = [
+            "New Chat", "Images", "Audio", "Agent",
+            "Ask anything", "Send a message…", "Chatting with %@",
+            "Model Management", "System Prompt", "Memory", "Tools",
+            "Performance", "Experimental", "Appearance", "Privacy", "App",
+            "Recommended for your %@", "Best pick", "Faster", "In use",
+            "Download", "All models", "All", "Cached", "Not cached"
+        ]
+
+        for key in mustHaveZH {
+            let entry = try #require(
+                strings[key] as? [String: Any],
+                "Missing catalog entry for key: \(key)"
+            )
+            let localizations = try #require(entry["localizations"] as? [String: Any])
+            let zh = try #require(
+                localizations["zh-Hans"] as? [String: Any],
+                "Missing zh-Hans for key: \(key)"
+            )
+            let unit = try #require(zh["stringUnit"] as? [String: Any])
+            #expect(!(unit["value"] as? String ?? "").isEmpty, "Empty zh-Hans for key: \(key)")
+        }
+    }
+
+    /// A translation that drops, adds, or retypes a format argument renders
+    /// garbage (or reads a wrong-typed vararg) only in that language, where
+    /// no English-run test would see it.
+    @Test("Every zh-Hans value keeps the format arguments of its source string")
+    func translationsPreserveFormatArguments() throws {
+        let json = try loadCatalog()
+        let strings = try #require(json["strings"] as? [String: Any])
+
+        for (key, raw) in strings {
+            guard
+                let entry = raw as? [String: Any],
+                let localizations = entry["localizations"] as? [String: Any],
+                let zhUnit = (localizations["zh-Hans"] as? [String: Any])?["stringUnit"] as? [String: Any],
+                let zhValue = zhUnit["value"] as? String
+            else {
+                continue
+            }
+            // Symbolic keys ("image_input.unavailable…") carry their English
+            // in an explicit `en` value; everything else is keyed by it. A
+            // symbolic key with no `en` value has its source in code, out of
+            // this test's reach.
+            let enUnit = (localizations["en"] as? [String: Any])?["stringUnit"] as? [String: Any]
+            let enValue = enUnit?["value"] as? String
+            if enValue == nil, key.wholeMatch(of: /[a-z0-9_]+(\.[a-z0-9_]+)+/) != nil { continue }
+            let source = enValue ?? key
+            #expect(
+                Self.formatArguments(in: zhValue) == Self.formatArguments(in: source),
+                "zh-Hans format arguments diverge from the source for key: \(key)"
+            )
+        }
+    }
+
+    /// Position-resolved argument types of a format string, so a translation
+    /// may reorder arguments with `%2$@` but not change what they are.
+    private static func formatArguments(in format: String) -> [String] {
+        let pattern = /%(?:(\d+)\$)?(lld|ld|d|@|\.\d+f|f|%)/
+        var implicitPosition = 0
+        var arguments: [(Int, String)] = []
+        for match in format.matches(of: pattern) {
+            let type = String(match.output.2)
+            guard type != "%" else { continue }
+            implicitPosition += 1
+            let position = match.output.1.flatMap { Int($0) } ?? implicitPosition
+            arguments.append((position, type))
+        }
+        return arguments.sorted { $0.0 < $1.0 }.map { "\($0.0):\($0.1)" }
+    }
+
+    /// Catalog keys for interpolated copy are whatever the compiler derives
+    /// from the call site ("Chatting with \(alias)" -> "Chatting with %@").
+    /// Resolving real interpolations against the compiled table proves the
+    /// hand-written keys match that derivation instead of merely existing.
+    @Test("Interpolated call-site strings resolve against the compiled zh-Hans table")
+    func compiledCatalogLocalizesInterpolatedCopy() async throws {
+        let output = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rapid-localization-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: output) }
+
+        let compiler = try await TestSubprocess.run(
+            executableURL: URL(fileURLWithPath: "/usr/bin/xcrun"),
+            arguments: [
+                "xcstringstool", "compile", try catalogURL().path,
+                "--output-directory", output.path,
+                "--serialization-format", "binary"
+            ]
+        )
+        #expect(
+            compiler.terminationStatus == 0,
+            "xcstringstool failed: \(String(decoding: compiler.standardError, as: UTF8.self))"
+        )
+        let zhBundle = try #require(
+            Bundle(url: output.appendingPathComponent("zh-Hans.lproj", isDirectory: true)),
+            "xcstringstool did not emit a loadable zh-Hans localization bundle"
+        )
+
+        let alias = "qwen3.8-27b-4bit"
+        let count = 3
+        #expect(String(localized: "New Chat", bundle: zhBundle) == "新对话")
+        #expect(String(localized: "Model Management", bundle: zhBundle) == "模型管理")
+        #expect(String(localized: "Chatting with \(alias)", bundle: zhBundle) == "正在与 qwen3.8-27b-4bit 对话")
+        #expect(String(localized: "Download \(alias) first", bundle: zhBundle) == "请先下载 qwen3.8-27b-4bit")
+        #expect(String(localized: "Archived (\(count))", bundle: zhBundle) == "已归档 (3)")
+        #expect(String(localized: "\(count) models", bundle: zhBundle) == "3 个模型")
+    }
+
     @Test("Compiled zh-Hans catalog resolves through the production photo-hint path")
     func compiledCatalogLocalizesPhotoHints() async throws {
         let output = FileManager.default.temporaryDirectory

@@ -12,10 +12,10 @@ enum ModelKind: String, Sendable, Hashable, CaseIterable, Identifiable {
     /// Tab label in Model Management.
     var tabLabel: String {
         switch self {
-        case .chat: return "Chat"
-        case .image: return "Image"
-        case .audio: return "Audio"
-        case .video: return "Video"
+        case .chat: return String(localized: "Chat models")
+        case .image: return String(localized: "Image models")
+        case .audio: return String(localized: "Audio models")
+        case .video: return String(localized: "Video models")
         }
     }
 }
@@ -81,9 +81,9 @@ enum ImageModelCapability: String, Sendable, Hashable {
     var supportsEditing: Bool { self != .generation }
     var label: String {
         switch self {
-        case .generation: return "Image generation"
-        case .editing: return "Image editing"
-        case .generationAndEditing: return "Image generation and editing"
+        case .generation: return String(localized: "Image generation")
+        case .editing: return String(localized: "Image editing")
+        case .generationAndEditing: return String(localized: "Image generation and editing")
         }
     }
 }
@@ -210,7 +210,7 @@ struct SpeculativeDecodingPreset: Codable, Sendable, Hashable {
         switch method {
         case .mtp: return "MTP"
         case .dflash: return "DFlash"
-        case .suffix: return "Suffix decoding"
+        case .suffix: return String(localized: "Suffix decoding")
         }
     }
 

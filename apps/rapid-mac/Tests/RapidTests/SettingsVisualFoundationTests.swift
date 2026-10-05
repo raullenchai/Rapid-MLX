@@ -201,7 +201,7 @@ struct SettingsVisualFoundationTests {
         let settings = try strippedSource("Sources/Rapid/UI/SettingsView.swift")
         let snapshots = try strippedSource("Sources/Rapid/DevSnapshot.swift")
         #expect(!SettingsView.Category.allCases.map(\.rawValue).contains("connectors"))
-        #expect(settings.contains("title:\"EnableMCPConnectors\""))
+        #expect(settings.contains("title:String(localized:\"EnableMCPConnectors\")"))
         #expect(settings.contains("SettingsConnectorsPanel()"))
         #expect(settings.contains("$mcpConfig.isEnabled"))
         #expect(

@@ -10,20 +10,20 @@ enum EmbeddedBearerLifetime: String, CaseIterable, Equatable, Sendable {
 
     var displayName: String {
         switch self {
-        case .perLaunch: return "Every start"
-        case .daily: return "Daily"
-        case .explicit: return "Until I rotate"
+        case .perLaunch: return String(localized: "Every start")
+        case .daily: return String(localized: "Daily")
+        case .explicit: return String(localized: "Until I rotate")
         }
     }
 
     var summary: String {
         switch self {
         case .perLaunch:
-            return "Generate a one-time key for every model start instead of reusing a saved key."
+            return String(localized: "Generate a one-time key for every model start instead of reusing a saved key.")
         case .daily:
-            return "Keep one Keychain-backed key for 24 hours across model starts and app restarts."
+            return String(localized: "Keep one Keychain-backed key for 24 hours across model starts and app restarts.")
         case .explicit:
-            return "Keep one Keychain-backed key until you rotate it or change this setting."
+            return String(localized: "Keep one Keychain-backed key until you rotate it or change this setting.")
         }
     }
 }

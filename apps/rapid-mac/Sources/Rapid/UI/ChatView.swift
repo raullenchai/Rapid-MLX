@@ -447,7 +447,7 @@ struct ChatView: View {
                 // user staged in the meantime.
                 setPersonalIntelligence(false)
                 attachmentDraft.notice =
-                    "Personal Intelligence stayed off because this conversation has attachments."
+                    String(localized: "Personal Intelligence stayed off because this conversation has attachments.")
             }
         }
         .onChange(of: photoAvailability) { _, availability in
@@ -823,7 +823,7 @@ struct ChatView: View {
     private var heroBlock: some View {
         VStack(spacing: RapidTheme.Space.lg) {
             EmptyState(
-                title: "Ask anything",
+                title: String(localized: "Ask anything"),
                 message: emptyStateSubtitle,
                 hint: downloadHint,
                 // No disc. The plate was framing an illustration that already
@@ -1033,9 +1033,9 @@ struct ChatView: View {
                     .disabled(!supportsImageInput)
                     .help(
                         supportsImageInput
-                            ? "Upload photo"
+                            ? String(localized: "Upload photo")
                             : imageInputUnavailableMessage
-                                ?? "Current model doesn't support photos"
+                                ?? String(localized: "Current model doesn't support photos")
                     )
                     .accessibilityHint(
                         supportsImageInput ? "" : imageInputUnavailableMessage ?? ""
@@ -1087,7 +1087,7 @@ struct ChatView: View {
                     personalIntelligencePopoverShowsActions = true
                     showsPersonalIntelligenceInfo = true
                 } else if !agentModeEnabled, attachmentDraft.hasAttachments {
-                    attachmentDraft.notice = "Remove attachments before turning on Personal Intelligence."
+                    attachmentDraft.notice = String(localized: "Remove attachments before turning on Personal Intelligence.")
                 } else {
                     setPersonalIntelligence(!agentModeEnabled, updatesPreference: true)
                     attachmentDraft.notice = nil
@@ -1135,7 +1135,7 @@ struct ChatView: View {
                 )
             }
             .accessibilityLabel("Personal Intelligence")
-            .accessibilityValue(agentModeEnabled ? "On" : "Off")
+            .accessibilityValue(agentModeEnabled ? String(localized: "On") : String(localized: "Off"))
             .accessibilityIdentifier("ChatView.PersonalIntelligence.Toggle")
             Spacer(minLength: 0)
             if let speculativeAvailability {
@@ -1263,7 +1263,7 @@ struct ChatView: View {
     }
 
     nonisolated static func composerResidentUnloadTitle(modelCount: Int) -> String {
-        modelCount > 1 ? "Unload all" : "Unload"
+        modelCount > 1 ? String(localized: "Unload all") : String(localized: "Unload")
     }
 
     /// Resolve status from the engine's live policy and the exact tool list the
@@ -1375,7 +1375,7 @@ struct ChatView: View {
         // tooltip carries.
         guard acknowledgeIfNotReady() else { return }
         if agentModeEnabled, attachmentDraft.hasAttachments {
-            attachmentDraft.notice = "Personal Intelligence currently supports text-only tasks. Remove the attachments or turn it off."
+            attachmentDraft.notice = String(localized: "Personal Intelligence currently supports text-only tasks. Remove the attachments or turn it off.")
             return
         }
         photoCapabilityNotice.dismiss()
@@ -1400,7 +1400,7 @@ struct ChatView: View {
     @discardableResult
     private func startAgentTurn(_ text: String) -> Bool {
         guard !attachmentDraft.hasAttachments else {
-            attachmentDraft.notice = "Personal Intelligence currently supports text-only tasks. Remove the attachments or turn it off."
+            attachmentDraft.notice = String(localized: "Personal Intelligence currently supports text-only tasks. Remove the attachments or turn it off.")
             return false
         }
         let goal = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1476,7 +1476,7 @@ struct ChatView: View {
     private func acceptPersonalIntelligenceIntroduction() {
         guard !attachmentDraft.hasAttachments else {
             attachmentDraft.notice =
-                "Remove attachments before turning on Personal Intelligence."
+                String(localized: "Remove attachments before turning on Personal Intelligence.")
             showsPersonalIntelligenceInfo = false
             personalIntelligencePopoverShowsActions = false
             return
@@ -1497,13 +1497,13 @@ struct ChatView: View {
     }
 
     private var agentApprovalTitle: String {
-        guard let action = agentSession.pendingApproval else { return "Allow agent action?" }
+        guard let action = agentSession.pendingApproval else { return String(localized: "Allow agent action?") }
         return AgentApprovalPresentation.title(for: action)
     }
 
     private var agentApprovalMessage: String {
         guard let action = agentSession.pendingApproval else {
-            return "Review this action before it runs."
+            return String(localized: "Review this action before it runs.")
         }
         return AgentApprovalPresentation.message(for: action)
     }
@@ -1518,7 +1518,7 @@ struct ChatView: View {
         case .failed:
             showsAgentApproval = false
             viewModel.failAgentTurn(
-                agentSession.errorMessage ?? "The agent task could not be completed."
+                agentSession.errorMessage ?? String(localized: "The agent task could not be completed.")
             )
         case .cancelled:
             showsAgentApproval = false
@@ -1651,7 +1651,7 @@ struct ChatView: View {
     @discardableResult
     private func addAttachmentURLs(_ urls: [URL]) -> Bool {
         guard !agentModeEnabled else {
-            attachmentDraft.notice = "Personal Intelligence currently supports text-only tasks. Turn it off to attach files or photos."
+            attachmentDraft.notice = String(localized: "Personal Intelligence currently supports text-only tasks. Turn it off to attach files or photos.")
             return false
         }
         guard !attachmentDraft.isImportingFiles else { return false }
@@ -1665,8 +1665,8 @@ struct ChatView: View {
         let (urls, duplicates) = attachmentDraft.filteringAlreadyAttached(urls)
         guard !urls.isEmpty else {
             attachmentDraft.notice = duplicates == 1
-                ? "That file is already attached."
-                : "Those files are already attached."
+                ? String(localized: "That file is already attached.")
+                : String(localized: "Those files are already attached.")
             return false
         }
         var imageURLs: [URL] = []
@@ -1695,7 +1695,7 @@ struct ChatView: View {
             accepted = addFileURLs(fileURLs) || accepted
         }
         if unsupported {
-            attachmentDraft.notice = "Choose PDF, CSV, TXT, PNG, JPEG, or GIF files."
+            attachmentDraft.notice = String(localized: "Choose PDF, CSV, TXT, PNG, JPEG, or GIF files.")
         }
         return accepted
     }
@@ -1758,7 +1758,7 @@ struct ChatView: View {
             existingCount: attachmentDraft.files.count
         )
         guard !selection.accepted.isEmpty else {
-            attachmentDraft.notice = "Attach up to \(ChatFileAttachment.maxAttachmentsPerMessage) PDF, CSV, or TXT files per message."
+            attachmentDraft.notice = String(localized: "Attach up to \(ChatFileAttachment.maxAttachmentsPerMessage) PDF, CSV, or TXT files per message.")
             return false
         }
         guard let importRequest = attachmentDrafts.beginFileImport(
@@ -1770,7 +1770,7 @@ struct ChatView: View {
             }.value
 
             let notice = selection.rejectedCount > 0
-                ? "Attach up to \(ChatFileAttachment.maxAttachmentsPerMessage) PDF, CSV, or TXT files per message."
+                ? String(localized: "Attach up to \(ChatFileAttachment.maxAttachmentsPerMessage) PDF, CSV, or TXT files per message.")
                 : outcome.1
             let adopted = attachmentDrafts.finishFileImport(
                 request: importRequest,
@@ -1886,7 +1886,7 @@ struct ChatView: View {
         let pastedImage = NSImage(pasteboard: pasteboard)
         guard !urls.isEmpty || pastedImage != nil else { return false }
         guard !agentModeEnabled else {
-            attachmentDraft.notice = "Personal Intelligence currently supports text-only tasks. Turn it off to attach files or photos."
+            attachmentDraft.notice = String(localized: "Personal Intelligence currently supports text-only tasks. Turn it off to attach files or photos.")
             return true
         }
         if !urls.isEmpty {
@@ -1917,7 +1917,7 @@ struct ChatView: View {
 
     private func rejectImageInputForCurrentModel() {
         let message = imageInputUnavailableMessage
-            ?? "This model doesn't support photos. Choose a vision-capable model to add one."
+            ?? String(localized: "This model doesn't support photos. Choose a vision-capable model to add one.")
         // The newest attempt owns the single notice slot. Leaving an older
         // attachment error in place would make VoiceOver announce one fact
         // while sighted users keep seeing another.
@@ -1973,7 +1973,7 @@ private struct MessageRow: View {
     var retryEnabled: Bool = true
     /// The one sentence explaining a disabled Retry. Same string the
     /// Send button uses, so both channels say the same thing.
-    var retryTooltip: String = "Retry response"
+    var retryTooltip: String = String(localized: "Retry response")
     /// This turn's position among its alternatives, 1-based, or ``nil`` when
     /// it has none. Drives the `‹ 2/3 ›` switcher — absent means the control
     /// is not rendered at all, so a transcript that was never regenerated
@@ -2142,7 +2142,7 @@ private struct MessageRow: View {
             if isEditing {
                 QuietIconButton(
                     symbol: "xmark",
-                    label: "Cancel editing",
+                    label: String(localized: "Cancel editing"),
                     size: RapidTheme.ControlHeight.mini
                 ) {
                     cancelEditing()
@@ -2150,7 +2150,7 @@ private struct MessageRow: View {
                 .accessibilityIdentifier(actionIdentifier("CancelEdit"))
                 QuietIconButton(
                     symbol: "checkmark",
-                    label: "Save edited message",
+                    label: String(localized: "Save edited message"),
                     size: RapidTheme.ControlHeight.mini
                 ) {
                     saveEditing()
@@ -2168,11 +2168,11 @@ private struct MessageRow: View {
                 // Editing a prompt branches too, so the same switcher applies
                 // here — it is what makes the pre-edit wording reachable.
                 branchSwitcher
-                copyButton(text: message.content, label: "Copy message")
+                copyButton(text: message.content, label: String(localized: "Copy message"))
                 selectTextButton(text: message.content)
                 QuietIconButton(
                     symbol: "pencil",
-                    label: "Edit message",
+                    label: String(localized: "Edit message"),
                     size: RapidTheme.ControlHeight.mini
                 ) {
                     editDraft = message.content
@@ -2222,7 +2222,7 @@ private struct MessageRow: View {
     private func selectTextButton(text: String) -> some View {
         QuietIconButton(
             symbol: "text.cursor",
-            label: "Select text",
+            label: String(localized: "Select text"),
             size: RapidTheme.ControlHeight.mini
         ) {
             selectTextPresented = true
@@ -2340,8 +2340,8 @@ private struct MessageRow: View {
         if let impact = deletionImpact, impact > 0 {
             QuietIconButton(
                 symbol: "trash",
-                label: "Delete message",
-                help: "Delete message",
+                label: String(localized: "Delete message"),
+                help: String(localized: "Delete message"),
                 size: RapidTheme.ControlHeight.mini
             ) {
                 deleteConfirmationPresented = true
@@ -2375,12 +2375,12 @@ private struct MessageRow: View {
     private var assistantActions: some View {
         HStack(spacing: 2) {
             branchSwitcher
-            copyButton(text: assistantCopyText, label: "Copy response")
+            copyButton(text: assistantCopyText, label: String(localized: "Copy response"))
             selectTextButton(text: assistantCopyText)
             QuietIconButton(
                 symbol: "arrow.clockwise",
-                label: "Retry response",
-                help: retryEnabled ? "Retry response" : retryTooltip,
+                label: String(localized: "Retry response"),
+                help: retryEnabled ? String(localized: "Retry response") : retryTooltip,
                 size: RapidTheme.ControlHeight.mini
             ) {
                 _ = onRetry()
@@ -2418,12 +2418,23 @@ private struct MessageRow: View {
             // "Response" on an assistant row, "Version" on a user one — the
             // alternatives under a prompt are rewordings of what the user
             // said, not answers.
-            let noun = message.role == .user ? "version" : "response"
+            // Whole phrases per role, not a spliced noun: a translator
+            // cannot inflect a fragment.
+            let isUserRow = message.role == .user
+            let previousLabel = isUserRow
+                ? String(localized: "Previous version")
+                : String(localized: "Previous response")
+            let nextLabel = isUserRow
+                ? String(localized: "Next version")
+                : String(localized: "Next response")
+            let positionLabel = isUserRow
+                ? String(localized: "Version \(branch.index) of \(branch.count)")
+                : String(localized: "Response \(branch.index) of \(branch.count)")
             HStack(spacing: 1) {
                 QuietIconButton(
                     symbol: "chevron.left",
-                    label: "Previous \(noun)",
-                    help: "Previous \(noun)",
+                    label: previousLabel,
+                    help: previousLabel,
                     size: RapidTheme.ControlHeight.mini
                 ) {
                     onSelectBranch(-1)
@@ -2442,13 +2453,13 @@ private struct MessageRow: View {
                     // One label for the pair: VoiceOver reads "Response 2 of
                     // 3" instead of spelling out a bare fraction between two
                     // unexplained chevrons.
-                    .accessibilityLabel("\(noun.capitalized) \(branch.index) of \(branch.count)")
+                    .accessibilityLabel(positionLabel)
                     .accessibilityIdentifier(actionIdentifier("BranchPosition"))
 
                 QuietIconButton(
                     symbol: "chevron.right",
-                    label: "Next \(noun)",
-                    help: "Next \(noun)",
+                    label: nextLabel,
+                    help: nextLabel,
                     size: RapidTheme.ControlHeight.mini
                 ) {
                     onSelectBranch(1)
@@ -2527,7 +2538,7 @@ private struct MessageRow: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         } label: {
             HStack(spacing: RapidTheme.Space.xs) {
-                Label(message.reasoningTruncated ? "Thinking trace (cut off)" : reasoningTitle,
+                Label(message.reasoningTruncated ? String(localized: "Thinking trace (cut off)") : reasoningTitle,
                       systemImage: "brain")
                 if reasoningInProgress {
                     ProgressView()
@@ -2558,12 +2569,12 @@ private struct MessageRow: View {
     }
 
     private var reasoningTitle: String {
-        reasoningInProgress ? "Reasoning…" : "Reasoning"
+        reasoningInProgress ? String(localized: "Reasoning…") : String(localized: "Reasoning")
     }
 
     private var reasoningAccessibilityLabel: String {
-        if message.reasoningTruncated { return "Thinking trace, cut off" }
-        return reasoningInProgress ? "Reasoning in progress" : "Reasoning"
+        if message.reasoningTruncated { return String(localized: "Thinking trace, cut off") }
+        return reasoningInProgress ? String(localized: "Reasoning in progress") : String(localized: "Reasoning")
     }
 
     private var showTypingIndicator: Bool {
@@ -2578,7 +2589,7 @@ private struct MessageRow: View {
     }
 
     private var failureCaption: some View {
-        Text(message.errorMessage ?? "The model couldn't complete that request.")
+        Text(message.errorMessage ?? String(localized: "The model couldn't complete that request."))
             .font(.footnote)
             .foregroundStyle(failureCaptionTint)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -2618,7 +2629,7 @@ private struct MessageRow: View {
         // is rejected there, and rendering it here anyway would print
         // "1.2 s to first token · 1.0 s".
         if let ttft = stats.validTimeToFirstToken {
-            parts.append("\(AssistantStatsFormatter.formatElapsed(ttft)) to first token")
+            parts.append(String(localized: "\(AssistantStatsFormatter.formatElapsed(ttft)) to first token"))
         }
         parts.append(AssistantStatsFormatter.formatElapsed(stats.elapsedSeconds))
         return parts.joined(separator: " · ")
@@ -2672,7 +2683,7 @@ private struct ToolCallChip: View {
     /// not — smaller models occasionally drop unparseable junk in here.
     private var prettyArguments: String {
         let raw = call.function.arguments
-        guard !raw.isEmpty else { return "(no arguments)" }
+        guard !raw.isEmpty else { return String(localized: "(no arguments)") }
         guard let data = raw.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: data),
               let pretty = try? JSONSerialization.data(
@@ -2854,7 +2865,7 @@ struct ComposeField: View {
     /// "Model is loading…" while the not-ready gate is active so a
     /// user who clicks into the empty editor sees the WHY before
     /// they type a single character (cycle-13 P3).
-    var placeholder: String = "Send a message…"
+    var placeholder: String = String(localized: "Send a message…")
     var onSubmit: () -> Void
     /// Called when the user presses Esc while a stream is in flight.
     /// No-op (returns control to AppKit's default Esc handling)
@@ -3142,9 +3153,9 @@ final class AutosizingTextView: NSTextView {
     /// ``ComposeTextEditor.makeNSView``) lets an isolated unit test
     /// guard against a future refactor accidentally dropping them and
     /// breaking external tooling that depends on the IDs.
-    static let composeAccessibilityLabel = "Message compose field"
+    static let composeAccessibilityLabel = String(localized: "Message compose field")
     static let composeAccessibilityIdentifier = "rapid.chat.compose"
-    static let composeAccessibilityRoleDescription = "Chat message input"
+    static let composeAccessibilityRoleDescription = String(localized: "Chat message input")
 
     /// The Images tab reuses ``ComposeField``, so before these existed its
     /// editor announced itself as the CHAT compose field: one identifier on
@@ -3153,9 +3164,9 @@ final class AutosizingTextView: NSTextView {
     /// and the scroll area — not to the NSTextView — so anything driving the
     /// prompt by identifier (VoiceOver, cliclick, the GUI golden flows) either
     /// hit the wrong element or had to pretend the Images tab was chat.
-    static let imagePromptAccessibilityLabel = "Image prompt field"
+    static let imagePromptAccessibilityLabel = String(localized: "Image prompt field")
     static let imagePromptAccessibilityIdentifier = "rapid.images.compose"
-    static let imagePromptAccessibilityRoleDescription = "Image prompt input"
+    static let imagePromptAccessibilityRoleDescription = String(localized: "Image prompt input")
 
     static func applyComposeAccessibility(
         _ tv: NSTextView,
@@ -3803,7 +3814,7 @@ private struct CodeBlockWithCopy: View {
             HStack(spacing: 4) {
                 Image(systemName: copiedRecently ? "checkmark" : "doc.on.doc")
                     .font(.system(size: 11, weight: .medium))
-                Text(copiedRecently ? "Copied" : "Copy")
+                Text(copiedRecently ? String(localized: "Copied") : String(localized: "Copy"))
                     .font(.caption2.weight(.medium))
             }
             .padding(.horizontal, 8)
@@ -3869,15 +3880,15 @@ enum AssistantStatsFormatter {
     static func accessibilityCaption(for stats: MessageStats) -> String {
         var parts: [String] = []
         if let tps = stats.reportedTokensPerSecond {
-            parts.append("\(formatTPS(tps)) tokens per second")
+            parts.append(String(localized: "\(formatTPS(tps)) tokens per second"))
         } else if let est = stats.estimatedTokensPerSecond {
-            parts.append("approximately \(formatTPS(est)) tokens per second")
+            parts.append(String(localized: "approximately \(formatTPS(est)) tokens per second"))
         }
         if let ttft = stats.validTimeToFirstToken {
-            parts.append("\(formatElapsed(ttft)) to the first token")
+            parts.append(String(localized: "\(formatElapsed(ttft)) to the first token"))
         }
         if stats.elapsedSeconds > 0 {
-            parts.append("took \(formatElapsed(stats.elapsedSeconds))")
+            parts.append(String(localized: "took \(formatElapsed(stats.elapsedSeconds))"))
         }
         return parts.joined(separator: ", ")
     }

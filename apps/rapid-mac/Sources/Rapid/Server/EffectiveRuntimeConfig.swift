@@ -29,11 +29,11 @@ enum EffectiveRuntimeValue: Codable, Equatable, Sendable {
 
     var displayText: String {
         switch self {
-        case .bool(let value): value ? "On" : "Off"
+        case .bool(let value): value ? String(localized: "On") : String(localized: "Off")
         case .int(let value): String(value)
         case .double(let value): String(format: "%.2f", value)
         case .string(let value): value
-        case .null: "Automatic"
+        case .null: String(localized: "Automatic")
         }
     }
 }
@@ -76,11 +76,11 @@ struct EffectiveRuntimeField: Codable, Equatable, Sendable, Identifiable {
 
     var provenanceText: String {
         switch source {
-        case "global_default": "Default"
-        case "performance_profile": "Model profile"
-        case "user_override": "Your setting"
-        case "compatibility": "Compatibility fallback"
-        case "safety": "Safety fallback"
+        case "global_default": String(localized: "Default")
+        case "performance_profile": String(localized: "Model profile")
+        case "user_override": String(localized: "Your setting")
+        case "compatibility": String(localized: "Compatibility fallback")
+        case "safety": String(localized: "Safety fallback")
         default: sourceID
         }
     }
