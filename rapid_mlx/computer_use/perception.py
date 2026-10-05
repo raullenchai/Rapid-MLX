@@ -285,9 +285,15 @@ class PerceptionSession:
             self._awake = None
 
     def release_awake(self) -> None:
-        if self._awake is not None and self._awake.poll() is None:
-            self._awake.terminate()
-        self._awake = None
+        awake, self._awake = self._awake, None
+        if awake is None or awake.poll() is not None:
+            return
+        awake.terminate()
+        try:
+            awake.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            awake.kill()
+            awake.wait()
 
     # -- handover ----------------------------------------------------------
 
@@ -410,9 +416,7 @@ class PerceptionSession:
         # Pressing a control is a click, its AX action, or an activating key.
         # A key goes to the focused control whatever ref was named, so the
         # focused controls are guarded as well as the named one.
-        activating_key = (
-            op == "key" and str(kw.get("key", "")).lower() in _ACTIVATING_KEYS
-        )
+        activating_key = op == "key" and _activating(kw.get("key"))
         if op in {"click", "action"} or activating_key:
             pressed = [row] if row is not None else []
             if activating_key:
@@ -1206,12 +1210,34 @@ def _content(obs: Observation) -> frozenset[tuple[str, str]]:
     )
 
 
-def _key_text(key: object) -> str | None:
-    """The character pressing ``key`` types ("a", "shift+7"), or None."""
+def _split_key(key: object) -> tuple[frozenset[str], str]:
+    """``(modifiers, base key)`` of a chord: "cmd+shift+Return" ->
+    ({"cmd", "shift"}, "Return"); a bare "+" is its own base key."""
     name = str(key or "")
-    while name.lower().startswith("shift+"):
-        name = name[6:]
-    return name if len(name) == 1 and name.isprintable() else None
+    head, sep, base = name.rpartition("+")
+    if sep and not base:  # "cmd++" or "+": the base key is "+"
+        head, base = head[:-1] if head.endswith("+") else head, "+"
+    modifiers = frozenset(m.lower() for m in head.split("+") if m)
+    return modifiers, base
+
+
+# Modifiers that still type a character: shift+7 is "&", option+a is "å".
+_TYPING_MODIFIERS = frozenset({"shift", "option", "alt"})
+
+
+def _key_text(key: object) -> str | None:
+    """The character pressing ``key`` types ("a", "shift+7", "option+a"), or
+    None. With option the character differs from the base key, which stands
+    in for it."""
+    modifiers, base = _split_key(key)
+    if not modifiers <= _TYPING_MODIFIERS:
+        return None
+    return base if len(base) == 1 and base.isprintable() else None
+
+
+def _activating(key: object) -> bool:
+    """Whether ``key`` presses the focused control, with any modifiers."""
+    return _split_key(key)[1].lower() in _ACTIVATING_KEYS
 
 
 def _focused_secret(app_info: dict) -> str | None:
@@ -1311,8 +1337,15 @@ def _frontmost_bundle() -> str | None:
 
 
 def _approval_key(obs: Observation, row: Row) -> tuple:
-    """What an approval binds to: window, control and every amount on screen."""
-    return (obs.window_id, row.ref, row.label, guards.amounts(obs.texts()))
+    """What an approval binds to: window, control, every amount on screen and
+    every chosen option (delivery slot, plan, payment method, ...)."""
+    return (
+        obs.window_id,
+        row.ref,
+        row.label,
+        guards.amounts(obs.texts()),
+        tuple(obs.choices()),
+    )
 
 
 def _public(pending: dict) -> dict:

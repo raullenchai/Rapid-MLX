@@ -730,7 +730,7 @@ def test_secrets_cannot_be_spelled_key_by_key(session, screen, monkeypatch):
         ]
     )
     obs = session.observe("Chrome", "cg:1")
-    for key in ("4", "shift+a", "A"):
+    for key in ("4", "shift+a", "A", "option+a", "alt+shift+2"):
         with pytest.raises(ComputerUseError) as err:
             session.act("key", None, key=key, window_id="cg:1")
         assert err.value.code == "needs_human"
@@ -746,6 +746,14 @@ def test_secrets_cannot_be_spelled_key_by_key(session, screen, monkeypatch):
     assert [c[0] for c in screen.calls] == ["press_key"] * 3
     assert perception._key_text("shift+shift+1") == "1"
     assert perception._key_text(None) is None
+    assert perception._key_text("+") == "+" and perception._key_text("shift++") == "+"
+    assert (
+        perception._key_text("cmd++") is None and perception._key_text("ctrl+a") is None
+    )
+    assert perception._split_key("cmd+shift+Return") == (
+        frozenset({"cmd", "shift"}),
+        "Return",
+    )
 
 
 def test_pasting_into_a_secret_field_is_the_users(session, screen):
@@ -889,6 +897,23 @@ def test_approval_binds_to_every_amount_on_screen(session, screen):
     assert not screen.calls
 
 
+def test_approval_binds_to_every_chosen_option(session, screen):
+    def page(method):
+        return [*_checkout(), E("m", "AXPopUpButton", "Pay with", value=method)]
+
+    screen.show(page("Visa 4242"))
+    obs = session.observe("Chrome", "cg:1")
+    with pytest.raises(ComputerUseError):
+        session.act("click", _ref(obs, "Place order"))
+    session.approve("a1")
+    screen.show(page("Amex 1005"))  # same total, another payment method
+    obs = session.observe("Chrome", "cg:1")
+    with pytest.raises(ComputerUseError) as err:
+        session.act("click", _ref(obs, "Place order"))
+    assert "approval a2" in err.value.message
+    assert not screen.calls
+
+
 def test_refused_commit_click_keeps_the_approval(session, screen):
     events = []
     session.on_event = lambda kind, payload: events.append(kind)
@@ -946,6 +971,11 @@ def test_commit_by_key_or_action_needs_approval_too(session, screen):
     with pytest.raises(ComputerUseError) as err:
         session.act("key", harmless.ref, key="Return")
     assert err.value.code == "needs_approval" and "Place order" in str(err.value)
+    # A modified Return or Space still presses the focused control.
+    for chord in ("cmd+Return", "shift+return", "ctrl+space"):
+        with pytest.raises(ComputerUseError) as err:
+            session.act("key", None, key=chord, window_id="cg:1")
+        assert err.value.code == "needs_approval"
     assert not screen.calls
     session.act("key", None, key="Tab", window_id="cg:1")
     assert [c[0] for c in screen.calls] == ["press_key"]
@@ -1279,8 +1309,34 @@ class _Popen:
     def poll(self):
         return None if self.alive else 0
 
+    stubborn = False
+
     def terminate(self):
+        self.alive = self.stubborn
+
+    def kill(self):
         self.alive = False
+
+    def wait(self, timeout=None):
+        if self.alive:
+            raise perception.subprocess.TimeoutExpired("caffeinate", timeout)
+        self.reaped = True
+        return 0
+
+
+def test_release_awake_reaps_and_kills_a_stubborn_caffeinate(monkeypatch):
+    _Popen.started = []
+    monkeypatch.setattr(perception.subprocess, "Popen", _Popen)
+    s = perception.PerceptionSession()
+    s.release_awake()  # nothing held
+    s.keep_awake()
+    s.release_awake()
+    assert _Popen.started[0].reaped
+    s.keep_awake()
+    _Popen.started[1].stubborn = True
+    s.release_awake()
+    assert _Popen.started[1].alive is False and _Popen.started[1].reaped
+    assert s._awake is None
 
 
 def test_keep_awake_holds_one_assertion_until_released(monkeypatch):
