@@ -149,7 +149,7 @@ class PrefixCacheManager:
         path = []
 
         # Traverse trie following token sequence
-        for i, tok in enumerate(tokens):
+        for _i, tok in enumerate(tokens):
             if tok not in current:
                 # No match for this token
                 # Check if we have a shorter prefix with cache

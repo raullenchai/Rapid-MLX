@@ -103,14 +103,14 @@ def should_show_banner(
       * ``version`` / ``help`` subcommands are byte-clean (see
         ``_BYTE_CLEAN_SUBCOMMANDS``), matching the argparse ``--version`` /
         ``-h`` paths that exit before this gate runs.
-      * bare ``rapid-mlx`` requires stdin to be a terminal too — the
-        nameplate block it precedes only prints when BOTH streams are ttys,
-        so ``rapid-mlx </dev/null`` must not get a banner-then-help splice.
+      * bare ``rapid-mlx`` never shows it: the front door
+        (``rapid_mlx/front_door.py``) is a one-screen menu with its own
+        one-line header, and a 13-row banner would push its actions off a
+        short terminal.
     """
+    del stdin_isatty  # kept in the signature for callers; no rule needs it now
     if no_banner or json_output or not stdout_isatty:
         return False
     if command in _BYTE_CLEAN_SUBCOMMANDS:
         return False
-    if command is None and not stdin_isatty:
-        return False
-    return True
+    return command is not None

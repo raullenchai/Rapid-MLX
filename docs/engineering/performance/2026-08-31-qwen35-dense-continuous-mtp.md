@@ -15,6 +15,9 @@ MTP remains available for every existing alias regardless of this tier.
 
 When no speculative configuration is supplied, a `verified` artifact now
 selects its declared MTP preset and the continuous scheduler automatically.
+(Superseded 2026-10-02: the continuous scheduler is an explicit opt-in and
+concurrency batches through ordinary decode; see
+[MTP under concurrency on an M4 Pro](2026-10-02-mtp-concurrency-m4-pro.md).)
 `--no-spec-decode` remains the user-facing opt-out for MTP, while an explicit
 `"continuous_batching": false` keeps MTP enabled on its ordinary scheduler.
 `blocked` and `unknown` artifacts remain unchanged unless an operator

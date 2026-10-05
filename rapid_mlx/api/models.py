@@ -2231,10 +2231,23 @@ class SpeculativeDecodingMetrics(BaseModel):
     drafted_by_depth: list[int] = Field(default_factory=list)
 
 
+class PromptCompressionMetrics(BaseModel):
+    """PFlash prompt compression applied to this request (#4092).
+
+    Present only when compression actually dropped prompt tokens. The
+    model saw ``kept_tokens`` of the ``original_tokens`` the client sent;
+    ``usage.prompt_tokens`` keeps reporting the client-visible count.
+    """
+
+    original_tokens: int
+    kept_tokens: int
+
+
 class PerRequestMetrics(BaseModel):
     """Optional engine metrics carried only on a terminal response."""
 
     speculative_decoding: SpeculativeDecodingMetrics | None = None
+    prompt_compression: PromptCompressionMetrics | None = None
     time_to_first_token_ms: float | None = Field(
         default=None, ge=0, allow_inf_nan=False
     )

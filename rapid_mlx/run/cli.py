@@ -43,7 +43,7 @@ if TYPE_CHECKING:  # pragma: no cover - import-time only
 def register(subparsers) -> None:
     """Register the ``start`` subparser (deferred-import from ``cli.py``)."""
     from rapid_mlx._completion import alias_completer  # noqa: PLC0415
-    from rapid_mlx.cli import _port_arg  # noqa: PLC0415
+    from rapid_mlx.cli_parser import _port_arg  # noqa: PLC0415
 
     parser = subparsers.add_parser(
         "start",
@@ -613,7 +613,8 @@ def _attach_and_configure(base_url, model, profile, args) -> int:
         return 0 if _print_instructions(profile, api_base_url, model) else 1
 
     cfg = profile.get_config_for_version(None)
-    needs_context = bool(cfg and cfg.template and "{context_length}" in cfg.template)
+    requires_context = bool(cfg and cfg.template and "{context_length}" in cfg.template)
+    needs_context = profile.name == "claude-code" or requires_context
     if needs_context and not args.dry_run:
         from rapid_mlx.agents.adapter import fetch_context_window
 
@@ -624,7 +625,7 @@ def _attach_and_configure(base_url, model, profile, args) -> int:
     else:
         context_length = _cached_context_window(model) if needs_context else None
 
-    if args.dry_run and needs_context and context_length is None:
+    if args.dry_run and requires_context and context_length is None:
         print(
             "  Configuration preview deferred: the model's context window "
             "is not available in the local cache."

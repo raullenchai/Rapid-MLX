@@ -240,7 +240,7 @@ def test_force_mask_released_when_think_end_observed():
     _ = proc([1, 10], mx.random.normal((128,)))  # 1/1 → force → mask allocated
     assert proc._force_logits is not None  # mask cached during forcing
     # Next step the sampler picked </think>; the processor sees it in the tail.
-    out = proc([1, 10, THINK_END], mx.random.normal((128,)))
+    proc([1, 10, THINK_END], mx.random.normal((128,)))
     assert proc._ended is True
     assert proc._force_logits is None  # released promptly, not retained
     assert proc._force_width is None

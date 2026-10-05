@@ -495,6 +495,10 @@ def _video_download_worker(
         _download_video_artifact_unbounded(base_url, job_id, destination_path)
         sender.send(("ok", None))
     except BaseException as exc:
+        try:
+            os.unlink(destination_path)
+        except OSError:
+            pass
         message = (
             str(exc)
             if isinstance(exc, RuntimeError)

@@ -101,7 +101,12 @@ class GenerationOutput:
     # on the terminal output when MTP actually verified at least one draft.
     # Appended last to preserve positional compatibility.
     spec_decode_metrics: dict[str, int | list[int]] | None = None
+    # PFlash prompt compression applied to this request (#4092). Populated
+    # only on the terminal output when compression dropped prompt tokens:
+    # ``{"original_tokens": N, "kept_tokens": M}``. Appended last.
+    prompt_compression: dict[str, int] | None = None
     # Frozen scheduler timings for a successful terminal text generation.
+    # Appended after prompt_compression to preserve its positional index.
     timing_metrics: dict[str, float] | None = None
 
 

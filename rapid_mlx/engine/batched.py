@@ -3033,6 +3033,7 @@ class BatchedEngine(BaseEngine):
             # ``finish_reason="stop"``).
             matched_stop=getattr(output, "matched_stop", None),
             spec_decode_metrics=getattr(output, "spec_decode_metrics", None),
+            prompt_compression=getattr(output, "prompt_compression", None),
             timing_metrics=getattr(output, "timing_metrics", None),
         )
 
@@ -3293,6 +3294,7 @@ class BatchedEngine(BaseEngine):
                     # stop string for the Anthropic adapter.
                     matched_stop=getattr(output, "matched_stop", None),
                     spec_decode_metrics=getattr(output, "spec_decode_metrics", None),
+                    prompt_compression=getattr(output, "prompt_compression", None),
                     timing_metrics=getattr(output, "timing_metrics", None),
                 )
         finally:
@@ -3960,6 +3962,7 @@ class BatchedEngine(BaseEngine):
             # for /v1/messages stop_sequence surfacing.
             matched_stop=source.matched_stop,
             spec_decode_metrics=source.spec_decode_metrics,
+            prompt_compression=source.prompt_compression,
             timing_metrics=source.timing_metrics if finished else None,
         )
 
@@ -3980,6 +3983,7 @@ class BatchedEngine(BaseEngine):
             # streams (harmony / gemma4).
             matched_stop=source.matched_stop,
             spec_decode_metrics=source.spec_decode_metrics,
+            prompt_compression=source.prompt_compression,
             timing_metrics=source.timing_metrics,
         )
 

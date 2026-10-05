@@ -41,7 +41,7 @@ def list_integration_targets() -> list[IntegrationTarget]:
     """
     targets: list[IntegrationTarget] = []
     seen: set[str] = set()
-    for target_id, adapter in ADAPTERS.items():
+    for target_id, _adapter in ADAPTERS.items():
         targets.append(
             IntegrationTarget(
                 id=target_id,

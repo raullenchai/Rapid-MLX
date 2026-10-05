@@ -46,6 +46,7 @@ from ..api.models import (
     CompletionTokensDetails,
     FunctionCall,
     PerRequestMetrics,
+    PromptCompressionMetrics,
     PromptTokensDetails,
     SpeculativeDecodingMetrics,
     TokenLogProb,
@@ -60,7 +61,7 @@ from ..api.utils import (
 )
 from ..config import get_config
 from ..engine import BaseEngine, GenerationOutput
-from ..errors import BackpressureError
+from ..errors import BackpressureError, MetalMemoryBackpressureError
 from ..tool_parsers import ToolParserManager
 from ..utils.chat_template import (
     detect_native_reasoning_effort_levels,
@@ -244,15 +245,22 @@ def _raise_backpressure_503(exc: Exception) -> None:
     sees an opaque ``Internal server error`` body, defeating the
     point of admission control.
     """
+    # The Metal-memory gate and the concurrency gate both raise
+    # ``BackpressureError``; label the 503 by its actual cause (#4108 — an
+    # idle server at its memory limit used to claim "max concurrent
+    # requests reached").
+    if isinstance(exc, MetalMemoryBackpressureError):
+        reason = "Server is at its Metal memory limit."
+    elif "max_concurrent_requests=" in str(exc):
+        reason = "Server is busy (max concurrent requests reached)."
+    else:
+        reason = "Server is busy."
     raise HTTPException(
         status_code=503,
         # 1s is a sensible default — the cap usually clears within
         # a few tokens of decode on the saturated batch.
         headers={"Retry-After": "1"},
-        detail=(
-            "Server is busy (max concurrent requests reached). "
-            f"Retry after the Retry-After delay. ({exc})"
-        ),
+        detail=f"{reason} Retry after the Retry-After delay. ({exc})",
     )
 
 
@@ -2791,10 +2799,43 @@ def reasoning_stop_scope_kwargs(engine: Any, request: Any) -> dict:
 # ── Usage / logprobs ───────────────────────────────────────────────
 
 
+# Response header naming a PFlash-compressed prompt (#4092). Value is
+# ``<kept>/<original>`` prompt tokens. Only set on non-streaming responses:
+# a streaming response's headers are sent before the scheduler decides.
+PROMPT_COMPRESSED_HEADER = "X-Rapid-MLX-Prompt-Compressed"
+
+
+def _build_prompt_compression(output: Any) -> PromptCompressionMetrics | None:
+    """Return the PFlash compression block when this request was compressed.
+
+    Fails closed on anything that is not the scheduler's plain, valid dict
+    (mock outputs, engines that predate the field, malformed adapters) so a
+    non-schema attribute can never break a completed response or leak onto
+    the wire.
+    """
+    raw = getattr(output, "prompt_compression", None)
+    if not isinstance(raw, dict):
+        return None
+    original_tokens = raw.get("original_tokens")
+    kept_tokens = raw.get("kept_tokens")
+    if (
+        type(original_tokens) is not int
+        or type(kept_tokens) is not int
+        or original_tokens <= 0
+        or kept_tokens < 0
+        or kept_tokens >= original_tokens
+    ):
+        return None
+    return PromptCompressionMetrics(
+        original_tokens=original_tokens,
+        kept_tokens=kept_tokens,
+    )
+
+
 def _build_response_metrics(
     output: Any, *, include_timing: bool = True
 ) -> PerRequestMetrics | None:
-    """Build the optional metrics from one completed engine generation."""
+    """Build optional metrics from one completed engine generation."""
     metrics = getattr(output, "spec_decode_metrics", None)
     timing = getattr(output, "timing_metrics", None) if include_timing else None
     speculative = (
@@ -2802,12 +2843,26 @@ def _build_response_metrics(
         if isinstance(metrics, (dict, SpeculativeDecodingMetrics))
         else None
     )
-    if speculative is None and not isinstance(timing, dict):
+    compression = _build_prompt_compression(output)
+    if speculative is None and compression is None and not isinstance(timing, dict):
         return None
     return PerRequestMetrics(
         speculative_decoding=speculative,
+        prompt_compression=compression,
         **(timing if isinstance(timing, dict) else {}),
     )
+
+
+def prompt_compression_headers(metrics: PerRequestMetrics | None) -> dict[str, str]:
+    """Response headers announcing PFlash compression; empty when none ran."""
+    compression = None if metrics is None else metrics.prompt_compression
+    if compression is None:
+        return {}
+    return {
+        PROMPT_COMPRESSED_HEADER: (
+            f"{compression.kept_tokens}/{compression.original_tokens}"
+        )
+    }
 
 
 def _merge_response_metrics(outputs: list[Any]) -> PerRequestMetrics | None:
@@ -2817,8 +2872,20 @@ def _merge_response_metrics(outputs: list[Any]) -> PerRequestMetrics | None:
     if len(outputs) == 1:
         return _build_response_metrics(outputs[0])
     merged: SpeculativeDecodingMetrics | None = None
+    compression: PromptCompressionMetrics | None = None
     for output in outputs:
         envelope = _build_response_metrics(output)
+        if envelope is not None and envelope.prompt_compression is not None:
+            current_compression = envelope.prompt_compression
+            if compression is None:
+                compression = current_compression
+            else:
+                compression = PromptCompressionMetrics(
+                    original_tokens=compression.original_tokens
+                    + current_compression.original_tokens,
+                    kept_tokens=compression.kept_tokens
+                    + current_compression.kept_tokens,
+                )
         current = None if envelope is None else envelope.speculative_decoding
         if current is None:
             continue
@@ -2838,7 +2905,11 @@ def _merge_response_metrics(outputs: list[Any]) -> PerRequestMetrics | None:
                 merged.drafted_by_depth[depth] += current.drafted_by_depth[depth]
             if depth < len(current.accepted_by_depth):
                 merged.accepted_by_depth[depth] += current.accepted_by_depth[depth]
-    return None if merged is None else PerRequestMetrics(speculative_decoding=merged)
+    if merged is None and compression is None:
+        return None
+    return PerRequestMetrics(
+        speculative_decoding=merged, prompt_compression=compression
+    )
 
 
 def _aggregate_generation_attempts(
@@ -2863,6 +2934,11 @@ def _aggregate_generation_attempts(
         spec_decode_metrics=(
             metrics.speculative_decoding.model_dump()
             if metrics is not None and metrics.speculative_decoding is not None
+            else None
+        ),
+        prompt_compression=(
+            metrics.prompt_compression.model_dump()
+            if metrics is not None and metrics.prompt_compression is not None
             else None
         ),
     )

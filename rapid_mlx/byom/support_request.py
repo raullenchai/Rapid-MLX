@@ -114,31 +114,48 @@ def fallback_link(payload: dict[str, Any]) -> str:
     return f"{ISSUE_FORM}?{query}"
 
 
-def _wants_request(args: Any) -> bool:
+# Closed outcomes of :func:`offer`, recorded as the ``support_request``
+# telemetry property (enum ``support_request_outcome`` in events.json).
+NOT_ELIGIBLE = "not_eligible"
+NON_INTERACTIVE = "non_interactive"
+DECLINED = "declined"
+NO_ANSWER = "no_answer"
+SENT = "sent"
+UNREACHABLE = "unreachable"
+
+
+def _wants_request(args: Any) -> str | None:
+    """``None`` to send, else the closed reason nothing is sent."""
     if getattr(args, "request", False):
-        return True
+        return None
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         print(
             "  Ask us to support it: re-run with --request "
             "(sends the repo id, architecture, format and version).",
             file=sys.stderr,
         )
-        return False
+        return NON_INTERACTIVE
     try:
         answer = input(CONSENT_PROMPT)
     except (EOFError, KeyboardInterrupt):
         print(file=sys.stderr)
-        return False
-    return answer.strip().lower() in {"y", "yes"}
+        return NO_ANSWER
+    return None if answer.strip().lower() in {"y", "yes"} else DECLINED
 
 
 def offer(
     args: Any, inspection: pf.Inspection, verdict: pf.Verdict, version: str
-) -> None:
-    """Offer (or, with ``--request``, send) a support request. Never raises."""
+) -> str:
+    """Offer (or, with ``--request``, send) a support request. Never raises.
+
+    Returns the closed outcome (``support_request_outcome``) for telemetry.
+    """
     payload = request_payload(inspection, verdict, version)
-    if payload is None or not _wants_request(args):
-        return
+    if payload is None:
+        return NOT_ELIGIBLE
+    declined = _wants_request(args)
+    if declined is not None:
+        return declined
     result = _post(payload)
     if result == BUSY:
         print(
@@ -146,14 +163,14 @@ def offer(
             "in a minute to add your vote.",
             file=sys.stderr,
         )
-        return
+        return BUSY
     if not isinstance(result, dict):
         print(
             "  Couldn't reach rapidmlx.com. Open the request yourself (prefilled):",
             file=sys.stderr,
         )
         print(f"    {fallback_link(payload)}", file=sys.stderr)
-        return
+        return UNREACHABLE
     votes = result["votes"]
     if result.get("created"):
         print("  ✓ Opened a support request:", file=sys.stderr)
@@ -167,3 +184,4 @@ def offer(
         )
     print(f"    {result['issue_url']}", file=sys.stderr)
     print("  Follow it there to hear when it ships.", file=sys.stderr)
+    return SENT

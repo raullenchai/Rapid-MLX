@@ -253,7 +253,7 @@ class TestDeterministicConcurrentRequests:
 
         # Run twice to verify determinism
         all_results = []
-        for run in range(2):
+        for _run in range(2):
             async with AsyncEngineCore(
                 model, tokenizer, config, executor=mlx_executor
             ) as engine:

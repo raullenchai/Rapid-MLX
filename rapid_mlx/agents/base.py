@@ -10,6 +10,7 @@ breaking the old one.
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field, replace
 
@@ -183,6 +184,7 @@ class AgentProfile:
         cfg = self.get_config_for_version(agent_version)
         base_url_no_v1 = base_url.rstrip("/").removesuffix("/v1")
         ctx_str = str(context_length if context_length is not None else 32768)
+        has_rapid_key = bool(os.environ.get("RAPID_MLX_API_KEY"))
 
         def _sub(text: str) -> str:
             return (
@@ -190,6 +192,18 @@ class AgentProfile:
                 .replace("{model_id}", model_id)
                 .replace("{base_url_no_v1}", base_url_no_v1)
                 .replace("{context_length}", ctx_str)
+                .replace(
+                    "{codex_auth_line}",
+                    'env_key = "RAPID_MLX_API_KEY"' if has_rapid_key else "",
+                )
+                .replace(
+                    "{rapid_api_key}",
+                    "{env:RAPID_MLX_API_KEY}" if has_rapid_key else "not-needed",
+                )
+                .replace(
+                    "{pi_api_key}",
+                    "$RAPID_MLX_API_KEY" if has_rapid_key else "not-needed",
+                )
             )
 
         if cfg.type == "env":

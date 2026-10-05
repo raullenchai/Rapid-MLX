@@ -134,6 +134,7 @@ from ..service.helpers import (
     maybe_apply_reasoning_effort,
     maybe_auto_disable_thinking_for_casual_chat,
     maybe_auto_disable_thinking_for_tools,
+    prompt_compression_headers,
     reasoning_stop_scope_kwargs,
     repair_messages_fit_context,
     served_chat_template,
@@ -6829,6 +6830,11 @@ async def _create_chat_completion_impl(
     response_headers = enable_thinking_warning_header(
         request, getattr(cfg, "reasoning_parser_name", None)
     )
+    # #4092: tell the client when PFlash shortened its prompt.
+    response_headers = {
+        **response_headers,
+        **prompt_compression_headers(chat_response.metrics),
+    }
 
     # Serialize the response FIRST so a serialization failure surfaces as an
     # error the client sees — not as a "successful inference" we already
@@ -6919,10 +6925,15 @@ async def _stream_buffered_chat_response(
     if response.metrics is not None:
         terminal.timing_metrics = (
             response.metrics.model_dump(
-                exclude_none=True, exclude={"speculative_decoding"}
+                exclude_none=True,
+                exclude={"speculative_decoding", "prompt_compression"},
             )
             or None
         )
+        if response.metrics.prompt_compression is not None:
+            terminal.prompt_compression = (
+                response.metrics.prompt_compression.model_dump()
+            )
     if response.usage.prompt_tokens_details is not None:
         terminal.cached_tokens = response.usage.prompt_tokens_details.cached_tokens
     if (

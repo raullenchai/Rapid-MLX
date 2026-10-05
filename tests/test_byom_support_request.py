@@ -288,3 +288,36 @@ def test_unknown_vote_count_is_not_invented(wire, monkeypatch, capsys):
     err = capsys.readouterr().err
     assert "✓ Added your vote to an existing request:" in err
     assert "so far" not in err
+
+
+@pytest.mark.parametrize(
+    "tty,request_flag,answer,body,expected",
+    [
+        (True, False, "y", None, sr.SENT),
+        (True, False, "", None, sr.DECLINED),
+        (True, False, "n", None, sr.DECLINED),
+        (True, False, EOFError(), None, sr.NO_ANSWER),
+        (True, False, KeyboardInterrupt(), None, sr.NO_ANSWER),
+        (False, False, None, None, sr.NON_INTERACTIVE),
+        (False, True, None, OSError("down"), sr.UNREACHABLE),
+        (False, True, None, "busy", sr.BUSY),
+    ],
+)
+def test_offer_returns_the_closed_outcome(
+    wire, monkeypatch, tty, request_flag, answer, body, expected
+):
+    _tty(monkeypatch, tty, tty, answer=answer)
+    if body == "busy":
+        wire[1]["body"] = _http_error(409)
+    elif body is not None:
+        wire[1]["body"] = body
+    insp = _arch_insp()
+    args = argparse.Namespace(request=request_flag)
+    assert sr.offer(args, insp, _verdict(insp), "0.15.5") == expected
+
+
+def test_offer_ineligible_outcome(wire, monkeypatch):
+    _tty(monkeypatch, True, True, answer=AssertionError("must not prompt"))
+    insp = _arch_insp(public=False)
+    args = argparse.Namespace(request=True)
+    assert sr.offer(args, insp, _verdict(insp), "0.15.5") == sr.NOT_ELIGIBLE
