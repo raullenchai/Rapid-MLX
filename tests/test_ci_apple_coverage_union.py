@@ -277,6 +277,37 @@ def test_coverage_data_is_commit_bound_and_fail_closed() -> None:
     )
 
 
+def test_codecov_is_advisory_while_local_coverage_gates_fail_closed() -> None:
+    _, workflow = _workflow()
+    jobs = workflow["jobs"]
+    linux_steps = jobs["linux-coverage"]["steps"]
+
+    combine = next(
+        step
+        for step in linux_steps
+        if step.get("name") == "Combine Linux shard coverage"
+    )
+    codecov = next(
+        step
+        for step in linux_steps
+        if step.get("name") == "Upload combined coverage to Codecov"
+    )
+    artifact = next(
+        step
+        for step in linux_steps
+        if step.get("name") == "Upload combined Linux coverage data"
+    )
+
+    assert codecov["continue-on-error"] is True
+    assert "continue-on-error" not in combine
+    assert "continue-on-error" not in artifact
+    assert artifact["with"]["if-no-files-found"] == "error"
+
+    changed_lines = jobs["changed-lines-coverage"]
+    assert "continue-on-error" not in changed_lines
+    assert "--fail-under 100" in changed_lines["steps"][-1]["run"]
+
+
 def test_coverage_paths_are_portable_across_runner_operating_systems() -> None:
     config = (WORKFLOW.parents[2] / ".coveragerc").read_text()
     assert "relative_files = True" in config
