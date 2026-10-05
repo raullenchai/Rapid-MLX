@@ -556,15 +556,19 @@ def _unstart_global_server_app_after_each_test():
     """
     import sys
 
-    server = sys.modules.get("rapid_mlx.server")
-    app = getattr(server, "app", None)
-    before = list(app.user_middleware) if app is not None else None
+    def _global_app():
+        # Tests swap in stand-in modules and stand-in ``app`` objects; only
+        # a real Starlette application has middleware state to reset.
+        app = getattr(sys.modules.get("rapid_mlx.server"), "app", None)
+        return app if hasattr(app, "user_middleware") else None
+
+    before_app = _global_app()
+    before = list(before_app.user_middleware) if before_app is not None else None
     yield
-    server = sys.modules.get("rapid_mlx.server")
-    app = getattr(server, "app", None)
+    app = _global_app()
     if app is None:
         return
-    if before is not None:
+    if app is before_app and before is not None:
         app.user_middleware[:] = before
     app.middleware_stack = None
 
