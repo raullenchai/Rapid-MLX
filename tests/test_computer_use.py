@@ -6533,6 +6533,8 @@ def test_ax_driver_limits_menu_bar_and_old_unicode(monkeypatch):
 def test_ax_driver_cli_main_modes(monkeypatch, capsys, tmp_path):
     target = {k: v for k, v in _target().items() if k != "element"}
     monkeypatch.setattr(ax_driver, "collect", lambda app: [target])
+    # ``main`` sets the module-global cap from ``--max-nodes``; restore it.
+    monkeypatch.setattr(ax_driver, "MAX_NODES", ax_driver.MAX_NODES)
 
     monkeypatch.setattr(sys, "argv", ["ax_driver", "--app", "A", "--dump", "-"])
     ax_driver.main()
