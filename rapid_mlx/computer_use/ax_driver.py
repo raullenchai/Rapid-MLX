@@ -151,8 +151,22 @@ INTERESTING_ROLES = {
     "AXSearchField",
 }
 EDITABLE_ROLES = {"AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"}
-MAX_NODES = 600
-MAX_DEPTH = 22
+# Shown instead of what the user typed into a field only they may fill
+# (kept equal to guards.USER_VALUE).
+USER_VALUE = "[entered by the user]"
+# Controls whose AXValue is their state (a select's choice, a stepper's number).
+VALUE_ROLES = {
+    "AXPopUpButton",
+    "AXIncrementor",
+    "AXSlider",
+    "AXProgressIndicator",
+    "AXLevelIndicator",
+    "AXValueIndicator",
+}
+# Web pages nest deep: a Walmart result grid sits ~30 levels under the window,
+# and a whole results page is ~800 nodes.
+MAX_NODES = 4000
+MAX_DEPTH = 60
 CLICKABLE_SUBSTRINGS = ("button", "link", "menuitem", "tab", "checkbox", "radio")
 PRIORITY_CONTAINER_ROLES = {"AXToolbar", "AXTabGroup", "AXMenuBar"}
 PRIORITY_CONTROL_ROLES = {
@@ -348,28 +362,6 @@ def _action_names(element: object) -> list[str]:
     return list(names) if err == kAXErrorSuccess and names else []
 
 
-def _priority_children(element: object) -> list[object]:
-    """Return stable, bounded region ordering with navigation before tables."""
-
-    children = _as_list(_get(element, "AXChildren"))
-    if len(children) < 2 or len(children) > PRIORITY_SORT_MAX_CHILDREN:
-        return children
-
-    def priority(child: object) -> int:
-        role = _get(child, "AXRole")
-        if role in PRIORITY_CONTAINER_ROLES:
-            return 0
-        if role in PRIORITY_CONTROL_ROLES:
-            return 1
-        if role in REPETITIVE_CONTAINER_ROLES:
-            return 3
-        return 2
-
-    # Python's stable sort preserves the original AX order inside each region,
-    # so repeated observations of an unchanged tree keep identical target IDs.
-    return sorted(children, key=priority)
-
-
 def _point_size(element: object) -> tuple[float, float, float, float] | None:
     pos = _get(element, "AXPosition")
     size = _get(element, "AXSize")
@@ -433,12 +425,161 @@ def _wake_hidden_renderer(window: object) -> bool:
     return False
 
 
-def _label(element: object) -> str:
+# Batched reads per node (AXUIElementCopyMultipleAttributeValues) instead of
+# one IPC round trip per attribute; Finder's file list walked 15.7k single
+# reads (8.3 s) before this. Text attributes are a second batch, read only
+# once the node is known not to be a secure field: a password's AXValue must
+# never be copied into this process.
+_WALK_ATTRIBUTES = (
+    "AXRole",
+    "AXSubrole",
+    "AXPosition",
+    "AXSize",
+    "AXChildren",
+    "AXVisibleRows",
+    "AXEnabled",
+    "AXFocused",
+    "AXSelected",
+    "AXExpanded",
+)
+_TEXT_ATTRIBUTES = ("AXDescription", "AXTitle", "AXValue", "AXPlaceholderValue")
+# AX messaging timeouts are per element (not inherited), so each node gets one
+# before its first read: a wedged node costs this, not the 6 s default.
+NODE_MESSAGING_TIMEOUT_S = 0.25
+# Whole-walk time budget; a walk that runs out returns what it has, marked
+# truncated, instead of blocking the step.
+WALK_BUDGET_S = 3.0
+
+
+def _is_ax_error(value: object) -> bool:
+    try:
+        from CoreFoundation import CFGetTypeID  # type: ignore[import-untyped]
+
+        return bool(
+            CFGetTypeID(value) == AS.AXValueGetTypeID()
+            and AS.AXValueGetType(value) == AS.kAXValueAXErrorType
+        )
+    except Exception:  # pragma: no cover - non-CF values
+        return False
+
+
+def _read_batch(element: object, attributes: tuple[str, ...]) -> dict[str, object]:
+    try:
+        err, values = AS.AXUIElementCopyMultipleAttributeValues(
+            element, list(attributes), 0, None
+        )
+    except Exception:  # pyobjc variants / test doubles
+        err, values = -1, None
+    if err != kAXErrorSuccess or values is None or len(values) != len(attributes):
+        return {attribute: _get(element, attribute) for attribute in attributes}
+    return {
+        attribute: (None if value is None or _is_ax_error(value) else value)
+        for attribute, value in zip(attributes, values)
+    }
+
+
+def _is_secure_node(node: dict[str, object]) -> bool:
+    return "AXSecureTextField" in (node.get("AXRole"), node.get("AXSubrole"))
+
+
+# Roles a secure text field can report alongside an ``AXSecureTextField``
+# subrole; for these a missing subrole must be a verified absence.
+_TEXT_ENTRY_ROLES = frozenset({"AXTextField", "AXTextArea", "AXComboBox"})
+
+
+def _known_not_secure(element: object, node: dict[str, object]) -> bool:
+    """Whether the element is verifiably not a secure text field.
+
+    A batch maps a failed read to ``None``, which must not pass for "not
+    secure": an unreadable role, or an unreadable subrole on a text-entry
+    role, fails closed so the field's value is never requested.
+    """
+    role = node.get("AXRole")
+    if not isinstance(role, str) or _is_secure_node(node):
+        return False
+    if role in _TEXT_ENTRY_ROLES and node.get("AXSubrole") is None:
+        readable, subrole = _get_checked(element, "AXSubrole")
+        return readable and subrole != "AXSecureTextField"
+    return True
+
+
+def _read_node(element: object) -> dict[str, object]:
+    """The walk's attributes for one element in two bounded requests."""
+    try:
+        AS.AXUIElementSetMessagingTimeout(element, NODE_MESSAGING_TIMEOUT_S)
+    except Exception:  # pyobjc variants / test doubles
+        pass
+    node = _read_batch(element, _WALK_ATTRIBUTES)
+    if _known_not_secure(element, node):
+        node.update(_read_batch(element, _TEXT_ATTRIBUTES))
+    return node
+
+
+def _frame_of(node: dict[str, object]) -> tuple[float, float, float, float] | None:
+    pos, size = node.get("AXPosition"), node.get("AXSize")
+    if pos is None or size is None:
+        return None
+    try:
+        _, point = AXValueGetValue(pos, AS.kAXValueCGPointType, None)
+        _, sz = AXValueGetValue(size, AS.kAXValueCGSizeType, None)
+        return float(point.x), float(point.y), float(sz.width), float(sz.height)
+    except Exception:  # pragma: no cover - pyobjc variants
+        return None
+
+
+def _label_of(node: dict[str, object]) -> str:
+    cap = 300 if node.get("AXRole") == "AXStaticText" else 160
     for attribute in ("AXDescription", "AXTitle", "AXValue"):
-        value = _get(element, attribute)
+        value = node.get(attribute)
+        if isinstance(value, str) and value.strip():
+            return value.strip().replace("\n", " ")[:cap]
+    return ""
+
+
+def _field_name(node: dict[str, object]) -> str:
+    for attribute in ("AXDescription", "AXTitle", "AXPlaceholderValue"):
+        value = node.get(attribute)
         if isinstance(value, str) and value.strip():
             return value.strip().replace("\n", " ")[:160]
     return ""
+
+
+def _states_of(node: dict[str, object], role: str) -> list[str]:
+    states = []
+    if node.get("AXEnabled") is False:
+        states.append("disabled")
+    if node.get("AXFocused") is True:
+        states.append("focused")
+    if node.get("AXSelected") is True:
+        states.append("selected")
+    if node.get("AXExpanded") is True:
+        states.append("expanded")
+    if role in {"AXCheckBox", "AXRadioButton"}:
+        value = node.get("AXValue")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            states.append(
+                "checked" if value == 1 else "mixed" if value == 2 else "unchecked"
+            )
+    return states
+
+
+def _child_elements(node: dict[str, object], role: str) -> list[object]:
+    """Children to descend into; a list or table contributes only the rows on
+    screen (AXVisibleRows), since scrolled-away rows cannot be acted on and a
+    long list would otherwise eat the whole budget."""
+    if role in REPETITIVE_CONTAINER_ROLES:
+        rows = _as_list(node.get("AXVisibleRows"))
+        if rows:
+            return rows
+    return _as_list(node.get("AXChildren"))
+
+
+def _out_of_time(budget: dict[str, Any] | None) -> bool:
+    if budget is None or time.monotonic() <= budget["deadline"]:
+        return False
+    budget["truncated"] = True
+    budget["deadline_hit"] = True
+    return True
 
 
 def _walk(
@@ -447,25 +588,46 @@ def _walk(
     out: list[dict],
     counter: list[int],
     roles_seen: set[str] | None = None,
+    *,
+    node: dict[str, object] | None = None,
+    parent_role: str = "",
+    budget: dict[str, Any] | None = None,
+    in_web: bool = False,
 ) -> None:
     if depth > MAX_DEPTH or counter[0] >= MAX_NODES:
+        if budget is not None:
+            budget["truncated"] = True  # never drop content silently
+            if depth > MAX_DEPTH:
+                budget["depth_cap"] = True
         return
-    raw_role = _get(element, "AXRole")
+    if _out_of_time(budget):
+        return
+    if node is None:
+        node = _read_node(element)
+    raw_role = node.get("AXRole")
     role = raw_role if isinstance(raw_role, str) else ""
     if roles_seen is not None:
         roles_seen.add(role)
-    raw_subrole = _get(element, "AXSubrole")
+    raw_subrole = node.get("AXSubrole")
     subrole = raw_subrole if isinstance(raw_subrole, str) else ""
-    parent = _get(element, "AXParent")
-    raw_parent_role = _get(parent, "AXRole") if parent is not None else None
-    parent_role = raw_parent_role if isinstance(raw_parent_role, str) else ""
     # Never read AXDescription/AXTitle/AXValue from a secure field. Redacting
-    # after _label() would already have copied a credential into process memory,
+    # after _label_of() would already have copied a credential into process memory,
     # planner context, traces, or an HTTP observation.
-    secure_text = role == "AXSecureTextField" or subrole == "AXSecureTextField"
-    label = "[secure text redacted]" if secure_text else _label(element)
+    secure_text = _is_secure_node(node)
+    label = "[secure text redacted]" if secure_text else _label_of(node)
+    # A text field without a name of its own is labelled by its value, so a
+    # field only the user may fill is named by its description, title or
+    # placeholder, and what was typed into it is never shown.
+    user_only = False
+    if role in EDITABLE_ROLES and not secure_text:
+        # Imported here so `python ax_driver.py` keeps working as a script.
+        from . import guards
+
+        name = _field_name(node)
+        if name and guards.needs_human_input(role, subrole, name):
+            label, user_only = name, True
     actions = _action_names(element)
-    geom = _point_size(element)
+    geom = _frame_of(node)
     actionable = "AXPress" in actions or "AXPick" in actions or "AXIncrement" in actions
     editable = role in EDITABLE_ROLES
     interesting = (
@@ -480,9 +642,19 @@ def _walk(
     if interesting and (label or actionable or editable):
         counter[0] += 1
         value = None
-        if editable and not secure_text:
-            raw_value = _get(element, "AXValue")
-            if isinstance(raw_value, str) and raw_value.strip() != label.strip():
+        if (editable or role in VALUE_ROLES) and not secure_text:
+            raw_value = node.get("AXValue")
+            if user_only:
+                value = USER_VALUE if isinstance(raw_value, str) and raw_value else ""
+            elif isinstance(raw_value, (int, float)) and not isinstance(
+                raw_value, bool
+            ):
+                value = f"{raw_value:g}"
+            elif (
+                isinstance(raw_value, str)
+                and raw_value.strip() != label.strip()
+                and (editable or raw_value.strip())
+            ):
                 value = raw_value[:120]
         out.append(
             {
@@ -494,11 +666,58 @@ def _walk(
                 "value": value,
                 "actions": actions[:6],
                 "rect": geom,
+                "states": _states_of(node, role),
+                "placeholder": (
+                    node.get("AXPlaceholderValue")
+                    if isinstance(node.get("AXPlaceholderValue"), str)
+                    else None
+                ),
                 "element": element,  # live ref, popped before serialization
             }
         )
-    for child in _priority_children(element):
-        _walk(child, depth + 1, out, counter, roles_seen)
+    children = _child_elements(node, role)
+    # A web page is laid out in document order; sorting its controls ahead of
+    # their labels and text would scramble what the model reads.
+    in_web = in_web or role == "AXWebArea"
+    if not in_web and 2 <= len(children) <= PRIORITY_SORT_MAX_CHILDREN:
+        # Read small sibling groups up front: the reads are needed anyway and
+        # their roles order navigation before tables.
+        read = []
+        for child in children:
+            if _out_of_time(budget):
+                return  # wedged siblings must not outlast the walk budget
+            read.append((child, _read_node(child)))
+
+        def priority(entry: tuple[object, dict[str, object]]) -> int:
+            child_role = entry[1].get("AXRole")
+            if child_role in PRIORITY_CONTAINER_ROLES:
+                return 0
+            if child_role in PRIORITY_CONTROL_ROLES:
+                return 1
+            if child_role in REPETITIVE_CONTAINER_ROLES:
+                return 3
+            return 2
+
+        # Python's stable sort preserves the original AX order inside each
+        # region, so repeated observations of an unchanged tree keep
+        # identical target IDs.
+        ordered: list[tuple[object, dict[str, object] | None]] = [
+            (child, child_node) for child, child_node in sorted(read, key=priority)
+        ]
+    else:
+        ordered = [(child, None) for child in children]
+    for child, child_node in ordered:
+        _walk(
+            child,
+            depth + 1,
+            out,
+            counter,
+            roles_seen,
+            node=child_node,
+            parent_role=role,
+            budget=budget,
+            in_web=in_web,
+        )
         if counter[0] >= MAX_NODES:
             return
 
@@ -711,6 +930,8 @@ def collect(
     expected_pid: int | None = None,
     retry_web_content: bool = False,
     partial_out: list[dict] | None = None,
+    budget_s: float | None = None,
+    walk_status: dict[str, Any] | None = None,
 ) -> list[dict]:
     if window_index < 0:
         raise ValueError("window_index must be non-negative")
@@ -752,10 +973,19 @@ def collect(
         targets.clear()
         counter = [0]
         roles_seen: set[str] = set()
+        budget: dict[str, Any] = {
+            "deadline": time.monotonic()
+            + (WALK_BUDGET_S if budget_s is None else budget_s),
+            "truncated": False,
+        }
         for window in selected_windows:
-            _walk(window, 0, targets, counter, roles_seen)
+            _walk(window, 0, targets, counter, roles_seen, budget=budget)
             if counter[0] >= MAX_NODES:
                 break
+        if walk_status is not None:
+            walk_status["budget_exhausted"] = bool(budget.get("deadline_hit"))
+            walk_status["depth_cap"] = bool(budget.get("depth_cap"))
+            walk_status["node_cap"] = counter[0] >= MAX_NODES
         # AXWebArea is structural (never a target), so look at what was walked.
         if (
             not retry_web_content

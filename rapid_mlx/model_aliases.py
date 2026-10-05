@@ -116,6 +116,11 @@ _RETIRED_MODEL_ALIASES: dict[str, str] = {
         "text-only testing, use 'mlx-community/Ministral-3-3B-Instruct-2512-4bit' "
         "with --no-mllm."
     ),
+    "qwopus-27b-8bit": (
+        "The 'qwopus-27b-8bit' alias was retired because its upstream "
+        "repository is no longer accessible. Use 'qwopus-27b-4bit' for the "
+        "same Qwopus3.5 27B v3 model from the same publisher."
+    ),
 }
 
 

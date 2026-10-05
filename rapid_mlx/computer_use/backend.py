@@ -743,6 +743,22 @@ def _topmost_window_id_at(x: float, y: float) -> int | None:
 OBSERVE_BY_ROUTE: Literal["route"] = "route"
 
 
+# Live AX refs of recent snapshots, by snapshot id, for callers that track
+# element identity across observations (perception). Not serialized.
+_LIVE_ELEMENTS: dict[str, list[object]] = {}
+_LIVE_ELEMENTS_KEEP = 16
+
+
+def _remember_live_elements(snapshot_id: str, elements: list[object]) -> None:
+    _LIVE_ELEMENTS[snapshot_id] = elements
+    while len(_LIVE_ELEMENTS) > _LIVE_ELEMENTS_KEEP:
+        _LIVE_ELEMENTS.pop(next(iter(_LIVE_ELEMENTS)))
+
+
+def live_elements(snapshot: dict) -> list[object] | None:
+    return _LIVE_ELEMENTS.get(str(snapshot.get("snapshot_id")))
+
+
 def get_app_state(
     app: str,
     window_index: int = 0,
@@ -854,8 +870,11 @@ def get_app_state(
                 "center": target.get("center")
                 or [round(rect[0] + rect[2] / 2), round(rect[1] + rect[3] / 2)],
                 "source_window_id": target["source_window_id"],
+                "states": target.get("states") or [],
+                "placeholder": target.get("placeholder"),
             }
         )
+    live_elements = [target.get("element") for target in targets]
     tree_lines = [
         f"[{e['index']}] {e['role']}{'*' if 'AXPress' in e['actions'] else ''} {e['label'][:90]}"
         + (f" = {e['value']!r}" if e.get("value") is not None else "")
@@ -874,12 +893,14 @@ def get_app_state(
         "tree_text": "\n".join(tree_lines),
         "truncated": collection_status.get("partial", False)
         or len(elements) >= ax_driver.MAX_NODES,
+        "budget_exhausted": bool(collection_status.get("budget_exhausted")),
         "visible_window_ids": [
             str(record["window_id"]) for record in _window_records(app_info)
         ],
     }
     if transient_window is not None:
         snapshot["transient_window"] = transient_window
+    _remember_live_elements(snapshot["snapshot_id"], live_elements)
     png = (
         screenshot_window(
             app_info["name"] or app,
@@ -990,6 +1011,7 @@ def _collect_with_timeout(
     retry_web_content: bool = False,
     collection_status: dict[str, bool] | None = None,
     window_frame_tolerance: float = 0.5,
+    budget_s: float | None = None,
 ) -> list[dict]:
     """ax_driver.collect with a watchdog.
 
@@ -1005,6 +1027,8 @@ def _collect_with_timeout(
     timeout_s = AX_COLLECT_TIMEOUT_S if timeout_s is None else timeout_s
     outcome: dict[str, Any] = {}
     partial_targets: list[dict] = []
+
+    walk_status: dict[str, Any] = {}
 
     def worker() -> None:
         try:
@@ -1027,6 +1051,8 @@ def _collect_with_timeout(
                 expected_pid=expected_pid,
                 retry_web_content=retry_web_content,
                 partial_out=partial_targets,
+                budget_s=budget_s,
+                walk_status=walk_status,
             )
         except ax_driver.AppNotFoundError as exc:
             outcome["error"] = ComputerUseError("app_not_found", str(exc))
@@ -1066,7 +1092,17 @@ def _collect_with_timeout(
             "ax_unavailable",
             f"accessibility tree collection for {app_name!r} failed: {error}",
         ) from error
+    if collection_status is not None:
+        if walk_status.get("budget_exhausted") or walk_status.get("depth_cap"):
+            collection_status["partial"] = True  # content was left unwalked
+        if walk_status.get("budget_exhausted"):
+            collection_status["budget_exhausted"] = True
     return cast(list[dict], outcome.get("value", []))
+
+
+# An action re-walks the tree to find its target; it may take longer than an
+# observation, because a target the observation saw must be found again.
+ACTION_WALK_BUDGET_S = 4.0
 
 
 def _live_element(
@@ -1121,6 +1157,7 @@ def _live_element(
         expected_pid=int(snapshot["app"]["pid"]),
         retry_web_content=_needs_web_content_retry(snapshot["app"]),
         window_frame_tolerance=4.0 if is_transient else 0.5,
+        budget_s=ACTION_WALK_BUDGET_S,
     )
     for target in fresh:
         fresh_index = int(target["target_id"][1:])
@@ -1179,6 +1216,41 @@ def _rouse_woken_renderer(snapshot: dict, live: object) -> None:
         # AX action tries again.
         ax_driver.clear_woken(pid)
         time.sleep(0.2)
+
+
+def _numeric_request(current: object, value: str) -> float | None:
+    """The number to write when the control holds a number (a stepper)."""
+    if not isinstance(current, (int, float)) or isinstance(current, bool):
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
+# Chromium applies an accepted AX write asynchronously; reading back at once
+# misses it, and the typing fallback then applies the value a second time
+# ("2" became "22"). A write is given this long to show.
+AX_WRITE_READBACK_S = 0.5
+
+
+def _await_readback(live: object, value: str, numeric: float | None) -> str | None:
+    deadline = time.monotonic() + AX_WRITE_READBACK_S
+    while True:
+        if numeric is None:
+            text = _read_value(live)
+        else:
+            raw = ax_driver._get(live, "AXValue")
+            if (
+                isinstance(raw, (int, float))
+                and not isinstance(raw, bool)
+                and raw == numeric
+            ):
+                return value
+            text = raw if isinstance(raw, str) else None
+        if text == value or time.monotonic() > deadline:
+            return text
+        time.sleep(0.05)
 
 
 def _read_value(live_element: object) -> str | None:
@@ -3339,9 +3411,21 @@ def set_value(
                 verification="popup value read back after choosing the menu item",
                 include_post_state=include_post_state,
             )
-        err = AXUIElementSetAttributeValue(live, kAXValueAttribute, value)
+        # Only a control whose value is a number (a stepper, a slider) is
+        # read first; a text field's value is text, and a secure field's
+        # contents are never read.
+        numeric = (
+            None
+            if entry.get("role") in ax_driver.EDITABLE_ROLES
+            or entry.get("role") == "AXSecureTextField"
+            or entry.get("subrole") == "AXSecureTextField"
+            else _numeric_request(ax_driver._get(live, kAXValueAttribute), value)
+        )
+        err = AXUIElementSetAttributeValue(
+            live, kAXValueAttribute, value if numeric is None else numeric
+        )
         if err == 0:
-            readback = _read_value(live)
+            readback = _await_readback(live, value, numeric)
             if readback == value:
                 if is_finder_item:
                     actual_path = _finder_file_reference_path(finder_file_reference)
@@ -5451,11 +5535,18 @@ def perform_secondary_action(
     action: str,
     window_id: int | str | None = None,
     include_post_state: bool = False,
+    expected_snapshot: dict | None = None,
 ) -> dict:
+    """Perform an advertised AX action on an element.
+
+    With ``expected_snapshot`` the index names the element of that
+    observation (its live element), as for :func:`click`; without it, the
+    index is resolved in a fresh snapshot.
+    """
     import ApplicationServices as AS  # type: ignore[import-untyped]  # noqa: N813, N817  # camelcase pyobjc module, alias is conventional
     from ApplicationServices import AXUIElementPerformAction
 
-    snapshot = get_app_state(
+    snapshot = expected_snapshot or get_app_state(
         app,
         screenshot=False,
         use_cache=False,

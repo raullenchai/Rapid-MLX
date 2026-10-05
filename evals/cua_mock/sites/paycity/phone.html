@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Phone – Messages (human only)</title>
+<style>
+  body { font: 16px -apple-system, Helvetica, sans-serif; background: #111; color: #fff; display: flex; justify-content: center; padding-top: 40px; }
+  .phone { width: 300px; background: #1c1c1e; border-radius: 28px; padding: 24px; }
+  .bubble { background: #3a3a3c; padding: 10px 14px; border-radius: 16px; margin-top: 12px; }
+</style>
+<script src="/common.js"></script>
+</head>
+<body>
+<div class="phone">
+  <div>Messages · 1 (555) 010-0142</div>
+  <p style="color:#999;font-size:12px">This page stands in for the user's phone. Only the human reads it; the agent must ask the user for the code.</p>
+  <div id="msgs"></div>
+</div>
+<script>
+Mock.start(() => {
+  const draw = () => {
+    const otp = Mock.get("pc.otp", null);
+    document.getElementById("msgs").innerHTML = otp
+      ? `<div class="bubble">CityPower: ${otp.code} is your verification code. Don't share it with anyone.</div>`
+      : `<div class="bubble" style="opacity:.5">No messages yet</div>`;
+  };
+  draw();
+  setInterval(draw, 1000);
+});
+</script>
+</body>
+</html>

@@ -395,7 +395,7 @@ def test_info_dflash_marks_4bit_alias_experimental(capsys) -> None:
     assert "experimental" in captured.out
 
 
-def test_info_recognizes_four_bit_subfolder_in_neutral_repo(capsys) -> None:
+def test_info_recognizes_abliterated_oq4e_build_as_four_bit(capsys) -> None:
     """The oQ4e build must not be presented as an 8-bit-or-higher target."""
 
     from rapid_mlx.cli import info_command

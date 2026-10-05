@@ -171,10 +171,9 @@ decoding remains disabled pending separate evidence.
 
 ### Experimental research model: Qwen3.8 27B Abliterated
 
-`qwen3.8-27b-abliterated-4bit` serves the `oQ4e/` Apple-Silicon build of
-[`windowsxp811203/Qwen3.8-27B-Abliterated-MLX-MTP`](https://huggingface.co/windowsxp811203/Qwen3.8-27B-Abliterated-MLX-MTP).
-The alias downloads only that 16.99 GB checkpoint rather than every build in
-the multi-quant repository. It supports text and image input and is deliberately
+`qwen3.8-27b-abliterated-4bit` serves the oQ4e Apple-Silicon build
+[`windowsxp811203/Qwen3.8-27B-Abliterated-MLX-oQ4e-mtp`](https://huggingface.co/windowsxp811203/Qwen3.8-27B-Abliterated-MLX-oQ4e-mtp),
+a 16.99 GB checkpoint. It supports text and image input and is deliberately
 not a Smart/Fast default.
 
 ```bash
