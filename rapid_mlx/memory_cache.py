@@ -677,7 +677,10 @@ def _resolve_persist_min_free_disk_bytes() -> int:
     if raw is None or not raw.strip():
         return _DEFAULT_PERSIST_MIN_FREE_DISK_BYTES
     try:
-        return max(0, int(raw.strip()))
+        value = int(raw.strip())
+        if value < 0:
+            raise ValueError(raw)
+        return value
     except ValueError:
         logger.warning(
             f"[cache_persist] invalid {PREFIX_CACHE_MIN_FREE_DISK_BYTES_ENV}="
@@ -3148,11 +3151,14 @@ class MemoryAwarePrefixCache:
         min_free_disk = _resolve_persist_min_free_disk_bytes()
         # The probe is a real write: skip it when it would itself cross the
         # free-disk reserve (the fixed floor then stands in for it).
-        probe_free = _free_disk_bytes(new_dir) if min_free_disk > 0 else None
-        probe_fits = (
-            probe_free is None or probe_free - _THROUGHPUT_PROBE_BYTES >= min_free_disk
-        )
-        if should_abort is not None and probe_fits:
+        probe_fits = should_abort is not None
+        if probe_fits and min_free_disk > 0:
+            probe_free = _free_disk_bytes(new_dir)
+            probe_fits = (
+                probe_free is None
+                or probe_free - _THROUGHPUT_PROBE_BYTES >= min_free_disk
+            )
+        if probe_fits:
             # Budgeted (shutdown) save: calibrate the first prediction
             # against the real disk instead of the fixed floor. The floor
             # still wins on a disk slower than it (the historical contract).

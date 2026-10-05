@@ -3322,6 +3322,37 @@ def test_quantized_entry_admitted_by_persisted_size(tmp_path, monkeypatch):
     assert cache.save_to_disk(str(tmp_path / "fits")) is True
 
 
+def test_free_space_is_reread_as_the_save_consumes_it(tmp_path, monkeypatch):
+    """Admission follows the volume as the save itself fills it: room for
+    one entry at the start is not room for two."""
+    import rapid_mlx.memory_cache as mc
+
+    snap = tmp_path / "snap"
+    staging = tmp_path / "snap.new"
+    cache = _three_entry_cache()
+    entry_bytes = mc._persist_entry_disk_bytes(make_kvcache(num_tokens=11), 11)
+
+    reserve = 1000
+    budget = reserve + entry_bytes  # exactly one entry
+    readings = []
+
+    def depleting_free(_d):
+        used = sum(p.stat().st_size for p in staging.iterdir())
+        readings.append(budget - used)
+        return readings[-1]
+
+    monkeypatch.setenv(mc.PREFIX_CACHE_MIN_FREE_DISK_BYTES_ENV, str(reserve))
+    monkeypatch.setattr(mc, "_free_disk_bytes", depleting_free)
+
+    assert cache.save_to_disk(str(snap)) is True
+
+    # One reading per entry, each lower than the first once a write landed.
+    assert len(readings) == 3
+    assert readings[0] == budget and readings[1] < budget
+    index = json.loads((snap / "index.json").read_text())
+    assert [e["index"] for e in index["entries"]] == [0]
+
+
 def test_admission_counts_every_file_of_the_entry(tmp_path, monkeypatch):
     """Room for the cache arrays alone is not room for the entry: its token
     file, headers and index row land on the same volume."""
@@ -3391,13 +3422,17 @@ def test_persist_min_free_disk_env_parsing(monkeypatch, caplog):
     default = mc._DEFAULT_PERSIST_MIN_FREE_DISK_BYTES
     monkeypatch.delenv(mc.PREFIX_CACHE_MIN_FREE_DISK_BYTES_ENV, raising=False)
     assert mc._resolve_persist_min_free_disk_bytes() == default == 5 * 1024**3
-    for raw, expected in ((" ", default), ("123", 123), ("0", 0), ("-5", 0)):
+    for raw, expected in ((" ", default), ("123", 123), ("0", 0)):
         monkeypatch.setenv(mc.PREFIX_CACHE_MIN_FREE_DISK_BYTES_ENV, raw)
         assert mc._resolve_persist_min_free_disk_bytes() == expected
-    monkeypatch.setenv(mc.PREFIX_CACHE_MIN_FREE_DISK_BYTES_ENV, "5GB")
-    with caplog.at_level(logging.WARNING, logger="rapid_mlx.memory_cache"):
-        assert mc._resolve_persist_min_free_disk_bytes() == default
-    assert any("5GB" in r.message for r in caplog.records)
+    # Only an explicit 0 turns the safeguard off; anything else that is not
+    # a byte count keeps the default and says so.
+    for raw in ("5GB", "-5"):
+        caplog.clear()
+        monkeypatch.setenv(mc.PREFIX_CACHE_MIN_FREE_DISK_BYTES_ENV, raw)
+        with caplog.at_level(logging.WARNING, logger="rapid_mlx.memory_cache"):
+            assert mc._resolve_persist_min_free_disk_bytes() == default
+        assert any(repr(raw) in r.message for r in caplog.records)
 
 
 def test_free_disk_bytes_reads_volume_and_tolerates_missing_path(tmp_path):
