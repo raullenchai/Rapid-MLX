@@ -407,19 +407,16 @@ class PerceptionSession:
                     "sensitive_data",
                     "the text contains a card number; it was not typed",
                 )
-        # Pressing a control is a click, its AX action, or an activating key
-        # on it (or on the focused control when no ref is named).
+        # Pressing a control is a click, its AX action, or an activating key.
+        # A key goes to the focused control whatever ref was named, so the
+        # focused controls are guarded as well as the named one.
         activating_key = (
             op == "key" and str(kw.get("key", "")).lower() in _ACTIVATING_KEYS
         )
         if op in {"click", "action"} or activating_key:
-            pressed = (
-                [row]
-                if row is not None
-                else [r for r in obs.rows if "focused" in r.states]
-                if activating_key
-                else []
-            )
+            pressed = [row] if row is not None else []
+            if activating_key:
+                pressed += [r for r in obs.rows if "focused" in r.states]
             for target in pressed:
                 if guards.is_money_commit(target.role, target.label):
                     return self._require_approval(obs, target)

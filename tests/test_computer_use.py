@@ -6345,6 +6345,11 @@ def test_ax_walk_keeps_blank_editable_control_without_adding_empty_structure(
         "_get",
         lambda element, attribute: attributes.get(element, {}).get(attribute),
     )
+    monkeypatch.setattr(
+        ax_driver,
+        "_get_checked",
+        lambda element, attribute: (True, attributes.get(element, {}).get(attribute)),
+    )
     monkeypatch.setattr(ax_driver, "_action_names", lambda _element: [])
     monkeypatch.setattr(
         ax_driver,

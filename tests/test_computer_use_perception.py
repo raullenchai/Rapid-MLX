@@ -941,6 +941,11 @@ def test_commit_by_key_or_action_needs_approval_too(session, screen):
     with pytest.raises(ComputerUseError) as err:
         session.act("action", _ref(obs, "Place order"), name="AXPress")
     assert err.value.code == "needs_approval"
+    # A harmless ref does not hide the focused commit the key would press.
+    harmless = next(r for r in obs.rows if r.label != "Place order")
+    with pytest.raises(ComputerUseError) as err:
+        session.act("key", harmless.ref, key="Return")
+    assert err.value.code == "needs_approval" and "Place order" in str(err.value)
     assert not screen.calls
     session.act("key", None, key="Tab", window_id="cg:1")
     assert [c[0] for c in screen.calls] == ["press_key"]

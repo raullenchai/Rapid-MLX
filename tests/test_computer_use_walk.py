@@ -55,6 +55,9 @@ def tree(monkeypatch):
         ax_driver, "_action_names", lambda e: list(nodes.get(e, {}).get("actions", []))
     )
     monkeypatch.setattr(ax_driver, "_get", lambda e, a: nodes.get(e, {}).get(a))
+    monkeypatch.setattr(
+        ax_driver, "_get_checked", lambda e, a: (True, nodes.get(e, {}).get(a))
+    )
     _geometry(monkeypatch)
     return nodes, fake
 
@@ -138,6 +141,43 @@ def test_unbatched_reads_fall_back_per_attribute_and_still_skip_secrets(
     )
     assert _walk("pw")[0]["text"] == "[secure text redacted]"
     assert "AXValue" not in read and "AXRole" in read
+
+
+def test_unreadable_role_or_subrole_never_requests_a_fields_text(tree, monkeypatch):
+    nodes, fake = tree
+    nodes.update(
+        {
+            # The role read failed (a batch maps it to None).
+            "no-role": {"AXValue": "hunter2"},
+            # A text field whose subrole read failed: it may be secure.
+            "pw": {"AXRole": "AXTextField", "AXValue": "hunter2"},
+            # A text field verified to have no subrole is read as usual.
+            "name": {"AXRole": "AXTextField", "AXValue": "Ada"},
+            # A late subrole read that finds the secure subrole.
+            "late": {"AXRole": "AXTextField", "AXValue": "hunter2"},
+            # A non-text role needs no subrole check.
+            "b": {"AXRole": "AXButton", "AXTitle": "Go"},
+        }
+    )
+    checked = []
+
+    def get_checked(element, attribute):
+        checked.append((element, attribute))
+        if element == "pw":
+            return False, None
+        if element == "late":
+            return True, "AXSecureTextField"
+        return True, None
+
+    monkeypatch.setattr(ax_driver, "_get_checked", get_checked)
+    for element in ("no-role", "pw", "late"):
+        assert "AXValue" not in ax_driver._read_node(element)
+        assert all(
+            "AXValue" not in attrs for el, attrs in fake.requests if el == element
+        )
+    assert ax_driver._read_node("name")["AXValue"] == "Ada"
+    assert ax_driver._read_node("b")["AXTitle"] == "Go"
+    assert ("b", "AXSubrole") not in checked and ("no-role", "AXSubrole") not in checked
 
 
 def test_read_node_survives_a_messaging_timeout_failure(tree, monkeypatch):

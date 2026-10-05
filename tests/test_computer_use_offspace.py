@@ -73,6 +73,9 @@ def attrs(monkeypatch):
     """Dict-backed AX attributes: ``attrs[element][attribute]``."""
     table: dict = {}
     monkeypatch.setattr(ax_driver, "_get", lambda e, a: table.get(e, {}).get(a))
+    monkeypatch.setattr(
+        ax_driver, "_get_checked", lambda e, a: (True, table.get(e, {}).get(a))
+    )
     return table
 
 

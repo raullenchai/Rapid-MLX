@@ -482,6 +482,27 @@ def _is_secure_node(node: dict[str, object]) -> bool:
     return "AXSecureTextField" in (node.get("AXRole"), node.get("AXSubrole"))
 
 
+# Roles a secure text field can report alongside an ``AXSecureTextField``
+# subrole; for these a missing subrole must be a verified absence.
+_TEXT_ENTRY_ROLES = frozenset({"AXTextField", "AXTextArea", "AXComboBox"})
+
+
+def _known_not_secure(element: object, node: dict[str, object]) -> bool:
+    """Whether the element is verifiably not a secure text field.
+
+    A batch maps a failed read to ``None``, which must not pass for "not
+    secure": an unreadable role, or an unreadable subrole on a text-entry
+    role, fails closed so the field's value is never requested.
+    """
+    role = node.get("AXRole")
+    if not isinstance(role, str) or _is_secure_node(node):
+        return False
+    if role in _TEXT_ENTRY_ROLES and node.get("AXSubrole") is None:
+        readable, subrole = _get_checked(element, "AXSubrole")
+        return readable and subrole != "AXSecureTextField"
+    return True
+
+
 def _read_node(element: object) -> dict[str, object]:
     """The walk's attributes for one element in two bounded requests."""
     try:
@@ -489,7 +510,7 @@ def _read_node(element: object) -> dict[str, object]:
     except Exception:  # pyobjc variants / test doubles
         pass
     node = _read_batch(element, _WALK_ATTRIBUTES)
-    if not _is_secure_node(node):
+    if _known_not_secure(element, node):
         node.update(_read_batch(element, _TEXT_ATTRIBUTES))
     return node
 

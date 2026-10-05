@@ -151,6 +151,13 @@ def test_priced_actions_and_amounts():
         "30R$",
         "$5",
     )
+    # A longer designator sharing a first letter is kept whole.
+    assert guards.amounts(["CA$5", "AU$12.50", "SG$ 3", "NT$100"]) == (
+        "CA$5",
+        "AU$12.50",
+        "SG$3",
+        "NT$100",
+    )
     assert guards.amounts(["Total $1,204.50 and €3", "", None, "£ 7"]) == (
         "$1,204.50",
         "€3",
