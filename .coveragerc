@@ -2,6 +2,9 @@
 relative_files = True
 source = rapid_mlx
 omit =
+    # Exact Cloudflare release source, guarded by a SHA-256 parity contract;
+    # Rapid-owned Clef media, backend, schema, and routes remain measured.
+    rapid_mlx/clef/vendor/joint_schema_model.py
     # Third-party numerical implementation retained close to its pinned source.
     # Rapid-owned runtime.py stays measured; the adapter, engine, download, and
     # catalog contracts must still reach 100% changed-line coverage.

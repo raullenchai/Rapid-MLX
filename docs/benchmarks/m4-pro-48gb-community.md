@@ -72,6 +72,8 @@ The fixed protocol above is the comparable baseline. A separate serving-path
 A/B measured what a user gets from the normal `qwen3.8-27b-4bit` alias on this
 Mac. The alias selected its pinned MTP model, loaded all 31 MTP tensors and
 activated the continuous MTP scheduler with a maximum draft depth of three.
+(Since 2026-10-02 the continuous cohort is an explicit opt-in; see
+[MTP under concurrency on an M4 Pro](../engineering/performance/2026-10-02-mtp-concurrency-m4-pro.md).)
 Both sides used the same `rapid-mlx bench ... --tier speed` workload and model;
 only speculative decoding changed.
 

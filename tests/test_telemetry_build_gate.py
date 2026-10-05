@@ -144,7 +144,7 @@ def site_packages_install(monkeypatch, tmp_path):
     thereby isolated from THIS worktree's real source tree and from the
     test venv's own (editable, other-worktree) metadata.
     """
-    package_dir = _point_module_at(monkeypatch, tmp_path)
+    _point_module_at(monkeypatch, tmp_path)
     monkeypatch.setattr(
         build_gate,
         "distributions",

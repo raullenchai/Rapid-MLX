@@ -614,7 +614,7 @@ def test_h10_repro_repetition_penalty_negative_rejected_on_completions(
 def _burst_bad_payloads() -> list[tuple[str, str, dict]]:
     """Build a 50+ bad-payload sequence drawn from the full matrix."""
     seq: list[tuple[str, str, dict]] = []
-    for logical_field, wire_field, _label, value, route in BAD_FLOAT_CASES[:50]:
+    for _logical_field, wire_field, _label, value, route in BAD_FLOAT_CASES[:50]:
         if route == "chat":
             body = _base_chat_body()
         elif route == "completions":

@@ -41,6 +41,16 @@ class ArrayOps(Protocol):
 
     def argmax_int(self, logprobs: Any) -> int: ...
 
+    # Batched greedy surface.  These keep token selection on the device so a
+    # whole draft/verify cycle needs exactly one host synchronization instead
+    # of one per (lane, position).
+
+    def argmax_rows(self, logprobs: Any) -> Any: ...
+
+    def gather_positions(self, values: Any, positions: Sequence[int]) -> Any: ...
+
+    def to_host(self, ids: Any, *, materialize: Sequence[Any] = ()) -> list: ...
+
 
 class _MLXArrayOps:
     """Lazy production adapter; construction is the first MLX import."""
@@ -67,6 +77,21 @@ class _MLXArrayOps:
 
     def argmax_int(self, logprobs: Any) -> int:
         return int(self.mx.argmax(logprobs, axis=-1).item())
+
+    def argmax_rows(self, logprobs: Any) -> Any:
+        return self.mx.argmax(logprobs, axis=-1).astype(self.mx.uint32)
+
+    def gather_positions(self, values: Any, positions: Sequence[int]) -> Any:
+        mx = self.mx
+        rows = mx.arange(len(positions))
+        picked = values[rows, mx.array(list(positions), dtype=mx.int32)]
+        return mx.expand_dims(picked, 1)
+
+    def to_host(self, ids: Any, *, materialize: Sequence[Any] = ()) -> list:
+        # One evaluation for the selected ids and every array the caller is
+        # about to hand out (the verify log-probabilities), then one copy.
+        self.mx.eval(ids, *materialize)
+        return list(ids.tolist())
 
 
 @dataclass(frozen=True)
@@ -354,6 +379,10 @@ class RapidMLXSelfMTPBackend:
         self.draft_depth = draft_depth
         self._proposal_boundaries: dict[int, _ProposalBoundary] = {}
         self._proposal_lock = Lock()
+        self._batched_greedy = all(
+            callable(getattr(self.ops, name, None))
+            for name in ("argmax_rows", "gather_positions", "to_host")
+        )
 
     def _cache(self, existing: Any, factory: Callable[[], Any] | None, name: str):
         value = existing
@@ -552,6 +581,13 @@ class RapidMLXSelfMTPBackend:
                 ),
             )
 
+        if self._batched_greedy and not any(
+            lane.sampling.has_logits_processors for lane in lanes
+        ):
+            return self._propose_greedy(
+                lanes, target, draft_cache, forwards, depths, boundary_key
+            )
+
         drafts: list[list[int]] = [[] for _ in lanes]
         draft_hidden = [lane.seed_hidden for lane in lanes]
 
@@ -599,7 +635,7 @@ class RapidMLXSelfMTPBackend:
             )
         finally:
             _finalize_group(draft_cache)
-        for row, (lane, depth, valid) in enumerate(zip(lanes, depths, first_lengths)):
+        for row, (lane, _depth, valid) in enumerate(zip(lanes, depths, first_lengths)):
             position = valid - 1
             token, _ = self._distribution(
                 lane,
@@ -703,6 +739,158 @@ class RapidMLXSelfMTPBackend:
                 old_curs=tuple(lane.cur for lane in lanes),
                 old_seed_hidden=tuple(lane.seed_hidden for lane in lanes),
                 drafts=tuple(tuple(row) for row in drafts),
+                verify_hidden=tuple(hidden_rows),
+                bonuses=tuple(bonuses),
+            ),
+        )
+
+    def _draft_inputs(self, lanes: Sequence[SelfMTPLane]) -> tuple[Any, Any, list]:
+        """Build the right-padded first-draft batch and each row's length."""
+        lengths = [len(lane.pending_tokens) + 1 for lane in lanes]
+        width = max(lengths)
+        hidden_rows = []
+        token_rows = []
+        for lane, valid in zip(lanes, lengths):
+            hidden = lane.seed_hidden
+            if lane.pending_hidden is not None:
+                if len(lane.pending_tokens) == 0:
+                    raise RuntimeError("pending hidden has no pending tokens")
+                hidden = self.ops.concatenate(
+                    [lane.pending_hidden, lane.seed_hidden], axis=1
+                )
+            elif lane.pending_tokens:
+                raise RuntimeError("pending tokens have no pending hidden")
+            tokens = self.ops.uint32([lane.pending_tokens + [lane.cur]])
+            hidden_rows.append(
+                self.ops.pad(hidden, [(0, 0), (0, width - valid), (0, 0)])
+            )
+            token_rows.append(self.ops.pad(tokens, [(0, 0), (0, width - valid)]))
+        return (
+            self.ops.concatenate(hidden_rows, axis=0),
+            self.ops.concatenate(token_rows, axis=0),
+            lengths,
+        )
+
+    def _propose_greedy(
+        self,
+        lanes: Sequence[SelfMTPLane],
+        target: list[Any],
+        draft_cache: list[Any],
+        forwards: RapidForwardSeams,
+        depths: tuple[int, ...],
+        boundary_key: int,
+    ) -> CycleComputation:
+        """Greedy draft/verify with one host synchronization per cycle.
+
+        Semantics match the per-row path exactly: every draft and verify token
+        is the argmax of the same log-probabilities, the verify block has the
+        same uniform width, and acceptance is the same longest-prefix match.
+        The difference is placement: drafts feed the next draft and the verify
+        block as device arrays, and all selected ids plus the verify
+        log-probabilities are materialized together once the target forward
+        has been issued.  The per-row path pays one GPU round trip per
+        (lane, position); at four lanes that is about twenty stalls a cycle.
+        """
+        depth = depths[0]
+        batch = len(lanes)
+        hidden_batch, token_batch, first_lengths = self._draft_inputs(lanes)
+        positions = [valid - 1 for valid in first_lengths]
+        _prepare_group(draft_cache, first_lengths)
+        try:
+            if forwards.split_draft:
+                # Only each row's last valid position is drafted from, so
+                # project just those rows through the vocabulary head.
+                first_hidden = forwards.draft_hidden(
+                    hidden_batch, token_batch, draft_cache
+                )
+                selected_hidden = self.ops.gather_positions(first_hidden, positions)
+                selected_logits = forwards.draft_logits(selected_hidden)
+            else:
+                first_logits, first_hidden = self._forward_pair(
+                    forwards.draft(hidden_batch, token_batch, draft_cache),
+                    "MTP forward",
+                )
+                selected_hidden = self.ops.gather_positions(first_hidden, positions)
+                selected_logits = self.ops.gather_positions(first_logits, positions)
+        finally:
+            _finalize_group(draft_cache)
+        first_draft = self.ops.argmax_rows(self.ops.logprobs(selected_logits))
+        draft_columns = [first_draft]
+        if depth > 1:
+            _prepare_group(draft_cache, [1] * batch)
+            try:
+                second_logits, _ = self._forward_pair(
+                    forwards.draft(selected_hidden, first_draft, draft_cache),
+                    "MTP forward",
+                )
+            finally:
+                _finalize_group(draft_cache)
+            draft_columns.append(
+                self.ops.argmax_rows(self.ops.logprobs(second_logits[:, -1:]))
+            )
+        for lane in lanes:
+            lane.pending_hidden = None
+            lane.pending_tokens = []
+
+        current = self.ops.uint32([[lane.cur] for lane in lanes])
+        verify_ids = self.ops.concatenate([current, *draft_columns], axis=1)
+        _prepare_group(target, [depth + 1] * batch)
+        try:
+            target_logits, target_hidden = self._forward_pair(
+                forwards.target(verify_ids, target, n_confirmed=depth),
+                "target forward",
+            )
+        finally:
+            _finalize_group(target)
+        target_logprobs = self.ops.logprobs(target_logits)
+        target_ids = self.ops.argmax_rows(target_logprobs)
+        host = self.ops.to_host(
+            self.ops.concatenate([*draft_columns, target_ids], axis=1),
+            materialize=(target_logprobs,),
+        )
+
+        accepted: list[int] = []
+        bonuses: list[int] = []
+        drafts: list[tuple[int, ...]] = []
+        output_rows: list[tuple[MTPToken, ...]] = []
+        hidden_rows = []
+        for row in range(batch):
+            values = [int(value) for value in host[row]]
+            row_drafts = values[:depth]
+            target_tokens = values[depth:]
+            n_accept = 0
+            while n_accept < depth and target_tokens[n_accept] == row_drafts[n_accept]:
+                n_accept += 1
+            bonus = target_tokens[n_accept]
+            accepted.append(n_accept)
+            bonuses.append(bonus)
+            drafts.append(tuple(row_drafts))
+            output_rows.append(
+                tuple(
+                    [
+                        MTPToken(
+                            row_drafts[position], target_logprobs[row, position], True
+                        )
+                        for position in range(n_accept)
+                    ]
+                    + [MTPToken(bonus, target_logprobs[row, n_accept], False)]
+                )
+            )
+            hidden_rows.append(target_hidden[row : row + 1, : depth + 1])
+
+        accepted_tuple = tuple(accepted)
+        return CycleComputation(
+            lane_uids=tuple(lane.uid for lane in lanes),
+            draft_depths=depths,
+            accepted_lengths=accepted_tuple,
+            target_drops=tuple(depth - count for count in accepted_tuple),
+            draft_drops=depths,
+            outputs=tuple(output_rows),
+            payload=_CyclePayload(
+                boundary_key=boundary_key,
+                old_curs=tuple(lane.cur for lane in lanes),
+                old_seed_hidden=tuple(lane.seed_hidden for lane in lanes),
+                drafts=tuple(drafts),
                 verify_hidden=tuple(hidden_rows),
                 bonuses=tuple(bonuses),
             ),

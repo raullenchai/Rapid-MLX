@@ -3544,6 +3544,7 @@ def test_dflash_slow_prompt_render_is_charged_against_deadline(monkeypatch) -> N
     # render pool (offloaded), so the event loop stays free to enforce the
     # deadline via ``asyncio.wait_for``. Uses an event so the test controls
     # exactly when the (uncancellable, already-running) render finishes.
+    import concurrent.futures
     import threading
     import time
 
@@ -3554,12 +3555,22 @@ def test_dflash_slow_prompt_render_is_charged_against_deadline(monkeypatch) -> N
     from rapid_mlx.speculative.dflash.server import _build_app
 
     render_may_finish = threading.Event()
+    render_started = threading.Event()
 
     def _slow_render(*_args, **_kwargs) -> str:
+        render_started.set()
         render_may_finish.wait(timeout=5)
         return "rendered"
 
     monkeypatch.setattr(srv, "_render_prompt", _slow_render)
+    # This assertion is specifically about an already-running render. Give it
+    # a fresh executor so work left by another test cannot keep this render
+    # queued until after its deadline, where cancellation and immediate slot
+    # release are the correct behavior.
+    render_executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=1, thread_name_prefix="dflash-render-test"
+    )
+    monkeypatch.setattr(srv, "_dflash_render_executor", render_executor)
 
     app = _build_app(
         model=MagicMock(),
@@ -3586,6 +3597,7 @@ def test_dflash_slow_prompt_render_is_charged_against_deadline(monkeypatch) -> N
                 "timeout": 0.05,
             },
         )
+        assert render_started.is_set(), "test render never entered the worker"
         assert r.status_code == 504, r.text
         # codex round-7 #2: the render is STILL running (uncancellable), so the
         # admission slot is HELD — not freed — until it drains. This is what
@@ -3597,6 +3609,7 @@ def test_dflash_slow_prompt_render_is_charged_against_deadline(monkeypatch) -> N
     finally:
         # Let the render finish; the deferred callback then releases the slot.
         render_may_finish.set()
+        render_executor.shutdown(wait=True, cancel_futures=True)
 
     for _ in range(300):
         if admission._reservations == 0:

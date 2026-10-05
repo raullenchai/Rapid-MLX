@@ -320,7 +320,6 @@ def test_fetch_expert_bundle_direct_layout_resolves_shard_via_index_json(tmp_pat
     ``disk_stream_patch.install`` actually receives from the real CLI flow
     (``_resolve_model_path`` returns a directory, not a file).
     """
-    adapter = _direct_fixture_adapter()
     name = "model.layers.3.mlp.experts.2.gate_proj.weight"
     other_name = "model.layers.3.mlp.experts.2.up_proj.weight"
 

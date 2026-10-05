@@ -62,6 +62,31 @@ class _NumpyOps:
     def argmax_int(logprobs):
         return int(np.argmax(logprobs, axis=-1))
 
+    @staticmethod
+    def argmax_rows(logprobs):
+        return np.argmax(logprobs, axis=-1).astype(np.uint32)
+
+    @staticmethod
+    def gather_positions(values, positions):
+        values = np.asarray(values)
+        return values[np.arange(len(positions)), list(positions)][:, None]
+
+    @staticmethod
+    def to_host(ids, *, materialize=()):
+        del materialize
+        return np.asarray(ids).tolist()
+
+
+class _PerRowNumpyOps:
+    """The pre-batched surface: no device-side argmax, one sync per token."""
+
+    uint32 = staticmethod(_NumpyOps.uint32)
+    concatenate = staticmethod(_NumpyOps.concatenate)
+    pad = staticmethod(_NumpyOps.pad)
+    expand_dims = staticmethod(_NumpyOps.expand_dims)
+    logprobs = staticmethod(_NumpyOps.logprobs)
+    argmax_int = staticmethod(_NumpyOps.argmax_int)
+
 
 class _LayerCache:
     def __init__(self, label, rows=None):
@@ -805,3 +830,353 @@ def test_ragged_adapter_default_hooks_and_nested_speculation_lifecycle():
     backend_module._set_cache_speculation([nested], on=False)
     assert ("start_speculation",) in leaf.events
     assert ("stop_speculation",) in leaf.events
+
+
+class _ParityForwards:
+    """Deterministic model whose drafts are right about two thirds of the time.
+
+    The target's greedy successor of ``t`` is ``(5 * t + 3) % 37``; the drafter
+    agrees except when ``t % 3 == 0``.  Rows therefore accept 0, 1 or 2 drafts
+    on different cycles, which exercises ragged pending-pair widths, every
+    acceptance length, and the near-terminal depth reductions.
+    """
+
+    vocab = 37
+
+    def __init__(self):
+        self.calls = []
+
+    @classmethod
+    def _logits(cls, tokens, successor):
+        batch, width = tokens.shape
+        logits = np.full((batch, width, cls.vocab), -10.0)
+        for row in range(batch):
+            for position in range(width):
+                token = int(tokens[row, position])
+                logits[row, position, successor(token)] = 10.0
+                # A runner-up keeps the log-softmax non-degenerate.
+                logits[row, position, (successor(token) + 1) % cls.vocab] = 9.0
+        return logits
+
+    def target(self, inputs, *, cache, return_hidden, n_confirmed):
+        tokens = np.asarray(inputs)
+        self.calls.append(("target", tokens.tolist(), n_confirmed))
+        hidden = np.repeat(tokens[..., None].astype(float), 4, axis=-1)
+        logits = self._logits(tokens, lambda t: (5 * t + 3) % self.vocab)
+        return logits, hidden
+
+    def draft(self, hidden, token_ids, cache, *, return_hidden):
+        tokens = np.asarray(token_ids)
+        self.calls.append(("draft", tokens.tolist()))
+
+        def successor(token):
+            right = (5 * token + 3) % self.vocab
+            return right if token % 3 else (right + 7) % self.vocab
+
+        post = np.repeat(tokens[..., None].astype(float) + 0.5, 4, axis=-1)
+        return self._logits(tokens, successor), post
+
+
+def _parity_runtime(ops):
+    forward = _ParityForwards()
+    backend = RapidMLXSelfMTPBackend(
+        target_cache_factory=lambda: [_LayerCache("target")],
+        draft_cache_factory=lambda: [_LayerCache("draft")],
+        array_ops=ops,
+        prefill_step_size=8,
+    )
+    runtime = ContinuousSelfMTPRuntime(
+        config=ContinuousSelfMTPConfig(enabled=True),
+        capabilities=ContinuousSelfMTPCapabilities(
+            target_return_hidden=True,
+            mtp_return_hidden=True,
+            confirmed_target_forward=True,
+            ragged_rollback=True,
+            atomic_cache_commit=True,
+        ),
+        forwards=RapidForwardSeams(forward.target, forward.draft),
+        compute=backend,
+        caches=RapidRaggedCacheAdapter(
+            preflight=lambda *a, **k: None, trim=lambda *a, **k: None
+        ),
+    )
+    return runtime, forward, backend
+
+
+def _drive_to_completion(ops, prompts, max_tokens):
+    runtime, forward, backend = _parity_runtime(ops)
+    prepared = [
+        prepare_self_mtp_lane(
+            SelfMTPLaneSpec(uid=uid, prompt=prompt, max_tokens=max_tokens, num_draft=2),
+            runtime,
+        )
+        for uid, prompt in enumerate(prompts)
+    ]
+    batch = attach_self_mtp_lanes(None, [lane for lane, _first in prepared])
+    streams = {uid: [first.token] for uid, (_lane, first) in enumerate(prepared)}
+    cycles = []
+    while batch.lanes and any(lane.ntoks < lane.max_tokens for lane in batch.lanes):
+        proposal = propose_batched_self_mtp(batch)
+        counts = []
+        terminal = []
+        for lane, outputs in zip(batch.lanes, proposal.outputs):
+            remaining = lane.max_tokens - lane.ntoks
+            delivered = outputs[:remaining]
+            counts.append(len(delivered))
+            terminal.append(len(delivered) == remaining)
+            streams[lane.uid].extend(token.token for token in delivered)
+        cycles.append(
+            (
+                proposal.draft_depths,
+                proposal.accepted_lengths,
+                [[token.from_draft for token in row] for row in proposal.outputs],
+                [
+                    [np.asarray(token.logprobs).tolist() for token in row]
+                    for row in proposal.outputs
+                ],
+            )
+        )
+        commit_batched_self_mtp(
+            batch, proposal, emitted_counts=counts, terminal=terminal
+        )
+        if any(terminal):
+            # A fixed cohort turns over at its first terminal row.
+            break
+    return streams, cycles, forward.calls, backend
+
+
+@pytest.mark.parametrize("max_tokens", [3, 5, 10, 14, 15])
+def test_batched_greedy_cycle_matches_per_row_reference(max_tokens):
+    prompts = [[1, 2], [4, 9, 11], [6]]
+    fast = _drive_to_completion(_NumpyOps(), prompts, max_tokens)
+    reference = _drive_to_completion(_PerRowNumpyOps(), prompts, max_tokens)
+    assert fast[3]._batched_greedy is True
+    assert reference[3]._batched_greedy is False
+    fast_streams, fast_cycles, fast_calls, _ = fast
+    ref_streams, ref_cycles, ref_calls, _ = reference
+    assert fast_streams == ref_streams
+    assert fast_cycles == ref_cycles
+    # Same draft and verify inputs, in the same order: the batched path changes
+    # where tokens are selected, never which tokens are fed to either model.
+    normalize = [
+        (call[0], [list(map(int, row)) for row in call[1]], *call[2:])
+        for call in fast_calls
+    ]
+    assert normalize == [
+        (call[0], [list(map(int, row)) for row in call[1]], *call[2:])
+        for call in ref_calls
+    ]
+    # Every emitted token carries the same target distribution row/position
+    # on both paths (accepted drafts included), not merely a normalized one.
+    for fast_cycle, ref_cycle in zip(fast_cycles, ref_cycles):
+        assert fast_cycle[3] == ref_cycle[3]
+    depths = {depth for depths, *_ in fast_cycles for depth in depths}
+    accepted = {length for _d, lengths, *_ in fast_cycles for length in lengths}
+    if max_tokens >= 14:
+        assert accepted == {0, 1, 2}
+    if max_tokens in (3, 10, 15):
+        # The near-terminal companion caps the cohort at a one-draft verify.
+        assert 1 in depths
+    assert depths <= {0, 1, 2}
+
+
+def test_batched_greedy_verify_logprobs_are_the_target_distribution():
+    prompts = [[1, 2], [4, 9, 11]]
+    runtime, _forward, _backend = _parity_runtime(_NumpyOps())
+    lanes = [
+        prepare_self_mtp_lane(
+            SelfMTPLaneSpec(uid=uid, prompt=prompt, max_tokens=8, num_draft=2),
+            runtime,
+        )[0]
+        for uid, prompt in enumerate(prompts)
+    ]
+    batch = attach_self_mtp_lanes(None, lanes)
+    proposal = propose_batched_self_mtp(batch)
+    for row in proposal.outputs:
+        for token in row:
+            logprobs = np.asarray(token.logprobs)
+            assert logprobs.shape == (_ParityForwards.vocab,)
+            assert int(np.argmax(logprobs)) == token.token or token.from_draft
+            assert np.isclose(np.exp(logprobs).sum(), 1.0)
+
+
+class _SplitParityForwards(_ParityForwards):
+    """The same model exposed through the split head/projection seam."""
+
+    def __init__(self):
+        super().__init__()
+        self.projected_rows = []
+
+    def draft_hidden(self, hidden, token_ids, cache):
+        tokens = np.asarray(token_ids)
+        self.calls.append(("draft", tokens.tolist()))
+        # The hidden carries the token so the projection can recover it.
+        return tokens[..., None].astype(float)
+
+    def draft_logits(self, mtp_hidden):
+        tokens = np.asarray(mtp_hidden)[..., 0].astype(np.int64)
+        self.projected_rows.append(tokens.shape)
+
+        def successor(token):
+            right = (5 * token + 3) % self.vocab
+            return right if token % 3 else (right + 7) % self.vocab
+
+        return self._logits(tokens, successor)
+
+
+def test_split_head_projects_only_each_rows_drafting_position():
+    prompts = [[1, 2], [4, 9, 11], [6]]
+    reference = _drive_to_completion(_NumpyOps(), prompts, 14)
+
+    split = _SplitParityForwards()
+    backend = RapidMLXSelfMTPBackend(
+        target_cache_factory=lambda: [_LayerCache("target")],
+        draft_cache_factory=lambda: [_LayerCache("draft")],
+        array_ops=_NumpyOps(),
+        prefill_step_size=8,
+    )
+    runtime = ContinuousSelfMTPRuntime(
+        config=ContinuousSelfMTPConfig(enabled=True),
+        capabilities=ContinuousSelfMTPCapabilities(
+            target_return_hidden=True,
+            mtp_return_hidden=True,
+            confirmed_target_forward=True,
+            ragged_rollback=True,
+            atomic_cache_commit=True,
+        ),
+        forwards=RapidForwardSeams(
+            split.target,
+            split.draft,
+            mtp_hidden=split.draft_hidden,
+            mtp_logits=split.draft_logits,
+        ),
+        compute=backend,
+        caches=RapidRaggedCacheAdapter(
+            preflight=lambda *a, **k: None, trim=lambda *a, **k: None
+        ),
+    )
+    prepared = [
+        prepare_self_mtp_lane(
+            SelfMTPLaneSpec(uid=uid, prompt=prompt, max_tokens=14, num_draft=2),
+            runtime,
+        )
+        for uid, prompt in enumerate(prompts)
+    ]
+    batch = attach_self_mtp_lanes(None, [lane for lane, _ in prepared])
+    streams = {uid: [first.token] for uid, (_lane, first) in enumerate(prepared)}
+    while True:
+        proposal = propose_batched_self_mtp(batch)
+        counts, terminal = [], []
+        for lane, outputs in zip(batch.lanes, proposal.outputs):
+            remaining = lane.max_tokens - lane.ntoks
+            delivered = outputs[:remaining]
+            counts.append(len(delivered))
+            terminal.append(len(delivered) == remaining)
+            streams[lane.uid].extend(token.token for token in delivered)
+        commit_batched_self_mtp(
+            batch, proposal, emitted_counts=counts, terminal=terminal
+        )
+        if any(terminal):
+            break
+
+    assert streams == reference[0]
+    # Every first-draft projection saw exactly one position per row, even when
+    # pending pairs made the head input several positions wide.
+    assert split.projected_rows
+    assert all(shape == (len(prompts), 1) for shape in split.projected_rows)
+    widths = [len(call[1][0]) for call in split.calls if call[0] == "draft"]
+    assert max(widths) > 1
+
+
+def test_mlx_array_adapter_batched_greedy_surface_on_real_mlx():
+    mx = pytest.importorskip("mlx.core")
+    ops = backend_module._MLXArrayOps()
+    logits = mx.array(
+        [
+            [[0.0, 3.0, 1.0], [5.0, 0.0, 0.0]],
+            [[0.0, 0.0, 2.0], [1.0, 4.0, 0.0]],
+        ]
+    )
+    picked = ops.gather_positions(logits, [1, 0])
+    assert picked.shape == (2, 1, 3)
+    ids = ops.argmax_rows(ops.logprobs(picked))
+    assert ids.dtype == mx.uint32 and ids.shape == (2, 1)
+    lps = ops.logprobs(logits)
+    host = ops.to_host(
+        ops.concatenate([ids, ops.argmax_rows(lps)], axis=1), materialize=(lps,)
+    )
+    assert host == [[0, 1, 0], [2, 2, 1]]
+
+
+def test_batched_greedy_cycle_matches_per_row_reference_on_real_mlx():
+    """The production MLX adapter, end to end, against the per-row path."""
+    mx = pytest.importorskip("mlx.core")
+
+    class _MLXParityForwards(_ParityForwards):
+        def target(self, inputs, *, cache, return_hidden, n_confirmed):
+            logits, hidden = super().target(
+                np.asarray(inputs),
+                cache=cache,
+                return_hidden=return_hidden,
+                n_confirmed=n_confirmed,
+            )
+            return mx.array(logits.astype(np.float32)), mx.array(hidden)
+
+        def draft(self, hidden, token_ids, cache, *, return_hidden):
+            logits, post = super().draft(
+                np.asarray(hidden),
+                np.asarray(token_ids),
+                cache,
+                return_hidden=return_hidden,
+            )
+            return mx.array(logits.astype(np.float32)), mx.array(post)
+
+    def drive(per_row):
+        forward = _MLXParityForwards()
+        backend = RapidMLXSelfMTPBackend(
+            target_cache_factory=lambda: [_LayerCache("target")],
+            draft_cache_factory=lambda: [_LayerCache("draft")],
+            prefill_step_size=8,
+        )
+        if per_row:
+            backend._batched_greedy = False
+        runtime = ContinuousSelfMTPRuntime(
+            config=ContinuousSelfMTPConfig(enabled=True),
+            capabilities=ContinuousSelfMTPCapabilities(
+                target_return_hidden=True,
+                mtp_return_hidden=True,
+                confirmed_target_forward=True,
+                ragged_rollback=True,
+                atomic_cache_commit=True,
+            ),
+            forwards=RapidForwardSeams(forward.target, forward.draft),
+            compute=backend,
+            caches=RapidRaggedCacheAdapter(
+                preflight=lambda *a, **k: None, trim=lambda *a, **k: None
+            ),
+        )
+        prepared = [
+            prepare_self_mtp_lane(
+                SelfMTPLaneSpec(uid=uid, prompt=prompt, max_tokens=14, num_draft=2),
+                runtime,
+            )
+            for uid, prompt in enumerate([[1, 2], [4, 9, 11], [6]])
+        ]
+        batch = attach_self_mtp_lanes(None, [lane for lane, _ in prepared])
+        streams = {uid: [first.token] for uid, (_lane, first) in enumerate(prepared)}
+        while True:
+            proposal = propose_batched_self_mtp(batch)
+            counts, terminal = [], []
+            for lane, outputs in zip(batch.lanes, proposal.outputs):
+                remaining = lane.max_tokens - lane.ntoks
+                delivered = outputs[:remaining]
+                counts.append(len(delivered))
+                terminal.append(len(delivered) == remaining)
+                streams[lane.uid].extend(token.token for token in delivered)
+            commit_batched_self_mtp(
+                batch, proposal, emitted_counts=counts, terminal=terminal
+            )
+            if any(terminal):
+                return streams, forward.calls
+
+    assert drive(per_row=False) == drive(per_row=True)

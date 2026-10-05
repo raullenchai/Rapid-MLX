@@ -11,6 +11,7 @@ The scheduler follows vLLM's design with:
 - Continuous batching via BatchGenerator
 """
 
+import gc
 import inspect
 import logging
 import math
@@ -48,7 +49,11 @@ from ._sampler_fast_path import (  # noqa: E402
     make_fused_top_p_temp_sampler,
 )
 from ._seeded_sampler import make_seeded_sampler  # noqa: E402
-from .errors import BackpressureError, PagedCacheUnsupportedLayoutError  # noqa: E402
+from .errors import (  # noqa: E402
+    BackpressureError,
+    MetalMemoryBackpressureError,
+    PagedCacheUnsupportedLayoutError,
+)
 from .kv_estimation import (  # noqa: E402
     KVFootprintEstimate,
     _cfg_get,
@@ -2239,6 +2244,9 @@ def _install_mtp_vendored(
                 "primed": True,
                 "request_id": _first_call_req_id,
                 "sampling_fingerprint": sampling_options["fingerprint"],
+                # The primed first token came from mlx-lm's plain step and is
+                # not yet in the cache: a token boundary (see below).
+                "last_from_draft": False,
             }
             _lock_singleton_admission(uid)
             _stats["vendored_steps"] += 1
@@ -2265,6 +2273,7 @@ def _install_mtp_vendored(
             try:
                 tok_int, lp_arr, _from_draft = next(gen)
                 queue.append((int(tok_int), lp_arr))
+                state["last_from_draft"] = bool(_from_draft)
             except StopIteration:
                 _stats["gen_exhausted"] += 1
                 # Codex round-G BLOCKING #2: preserve the terminal
@@ -2428,6 +2437,187 @@ def _install_mtp_vendored(
             "[MTP-vendored] BatchGenerator has no remove(); abort-path "
             "state reaping is not installed (mlx-lm version mismatch?)."
         )
+
+    def _at_token_boundary(uid: int) -> bool:
+        """Whether ``uid``'s caches end exactly before its last emitted token.
+
+        The generator yields a round's accepted drafts first and its target
+        token (bonus or residual) last; that final token is the next round's
+        input and is not in the target cache yet.  So once every queued token
+        is delivered and the last one was not a draft, the target cache holds
+        exactly the delivered prefix minus that token.  Mid-round, the cache
+        already contains accepted drafts the caller has not received.
+        """
+        if uid != _admission_owner_uid:
+            return False
+        if uid in _terminal_uids or uid in _disabled_uids:
+            return False
+        state = _state.get(uid)
+        return bool(
+            state is not None
+            and not state.get("queue")
+            and state.get("last_from_draft") is False
+        )
+
+    def _positional_offsets(values: Any) -> list[Any]:
+        """Offsets of every positional (attention) leaf cache.
+
+        Recurrent leaves carry no ``offset`` and are exempt; any other
+        offset is returned as-is so the caller can refuse non-integers.
+        """
+        offsets: list[Any] = []
+        for value in values or ():
+            children = getattr(value, "caches", None)
+            if isinstance(children, (list, tuple)):
+                offsets.extend(_positional_offsets(children))
+            elif hasattr(value, "offset"):
+                offsets.append(value.offset)
+        return offsets
+
+    def _requeue_owner_at_boundary() -> bool:
+        """Hand the singleton back to mlx-lm's queue as a resumable prompt.
+
+        The singleton verifier owns the generation batch exclusively, so a
+        request that arrives a moment after another used to wait for that
+        whole generation.  At a token boundary the owner's target cache holds
+        exactly ``prompt + emitted[:-1]``: a prefix-cache hit whose remaining
+        prompt is the last emitted token.  mlx-lm resumes that without replay
+        -- its prompt step feeds the token and samples the next one -- so the
+        owner can join the waiting requests in one batch.  A request that is
+        alone again later re-enters this verifier through the ordinary
+        first-call path.  Every refusal leaves the singleton untouched.
+        """
+        owner = _admission_owner_uid
+        if owner is None or not _at_token_boundary(owner):
+            return False
+        if list(getattr(gb, "uids", ()) or ()) != [owner]:
+            return False
+        try:
+            emitted = int(gb._num_tokens[0])
+            remaining = int(gb.max_tokens[0]) - emitted
+            last_token = int(gb.tokens[0][-1])
+        except (AttributeError, IndexError, TypeError, ValueError):
+            return False
+        request = None
+        if uid_to_request_id is not None and requests is not None:
+            request_id = uid_to_request_id.get(owner)
+            request = requests.get(request_id) if request_id is not None else None
+        prompt_ids = getattr(request, "prompt_token_ids", None)
+        if emitted < 1 or remaining < 1 or not prompt_ids:
+            return False
+        # The verifier launches its next draft chain before yielding a
+        # round's last token, consuming request-local RNG keys.  A seeded
+        # sampled request must not depend on whether another request
+        # arrived, so it keeps the singleton verifier.
+        params = getattr(request, "sampling_params", None)
+        if (
+            getattr(params, "seed", None) is not None
+            and float(getattr(params, "temperature", 0.0) or 0.0) > 0.0
+        ):
+            return False
+        try:
+            cache = gb.extract_cache(0)
+        except Exception as exc:  # noqa: BLE001 - optional handoff fails closed
+            logger.debug("[MTP-vendored] singleton cache extract refused: %s", exc)
+            return False
+        # Fail closed unless the cache provably ends at the boundary: every
+        # positional (attention) layer holds exactly prompt + emitted - 1
+        # positions, and there is at least one such layer to check.
+        expected_offset = len(prompt_ids) + emitted - 1
+        offsets = _positional_offsets(cache)
+        if not offsets or any(
+            isinstance(offset, bool)
+            or not isinstance(offset, int)
+            or offset != expected_offset
+            for offset in offsets
+        ):
+            return False
+
+        def _row(values: Any, default: Any) -> Any:
+            return values[0] if values else default
+
+        # A resumed row starts its stop matcher afresh, so yield only while
+        # the matcher sits at its initial state's root: never mid-way through
+        # a multi-token stop sequence or inside a non-initial state.
+        # A row with a stop matcher whose live state cannot be read or
+        # compared refuses too.
+        machine = _row(getattr(gb, "state_machines", None), None)
+        if machine is not None:
+            matcher_states = getattr(gb, "_matcher_states", None)
+            make_state = getattr(machine, "make_state", None)
+            if not matcher_states or not callable(make_state):
+                return False
+            live, fresh = matcher_states[0], make_state()
+            if not (
+                isinstance(live, tuple)
+                and isinstance(fresh, tuple)
+                and len(live) == len(fresh)
+                and len(live) >= 2
+                and live[0] == fresh[0]
+                and all(
+                    part is fresh_part
+                    for part, fresh_part in zip(live[1:], fresh[1:], strict=True)
+                )
+            ):
+                return False
+        sequence = (
+            owner,
+            [[last_token]],
+            remaining,
+            cache,
+            # The token context logits processors see: exactly the row's
+            # history minus the token about to be re-fed, so penalties continue
+            # from the same window they would have without the yield.
+            list(gb.tokens[0][:-1]),
+            _row(getattr(gb, "samplers", None), None),
+            _row(getattr(gb, "logits_processors", None), []),
+            machine,
+        )
+        try:
+            # Reaps the request's verifier state and releases the admission
+            # lock without emitting anything.
+            batch_gen.remove([owner])
+        except Exception as exc:  # noqa: BLE001 - optional handoff fails closed
+            if owner in list(getattr(gb, "uids", ()) or ()):
+                logger.warning("[MTP-vendored] singleton requeue refused: %s", exc)
+                return False
+            # The row already left the batch, but the wrapper may not have
+            # reaped it before the error.  Reap here (idempotent) so the
+            # verifier state and admission lock are released, then requeue
+            # so the request resumes instead of being orphaned.
+            _reap_uid(owner)
+            logger.warning(
+                "[MTP-vendored] singleton removal raised after departure; "
+                "requeueing uid=%d: %s",
+                owner,
+                exc,
+            )
+        batch_gen._unprocessed_sequences.appendleft(sequence)
+        logger.info(
+            "[MTP-vendored] uid=%d yielded the singleton verifier at a token "
+            "boundary (emitted=%d remaining=%d) to batch with waiting requests",
+            owner,
+            emitted,
+            remaining,
+        )
+        return True
+
+    def _others_waiting() -> bool:
+        queue = getattr(batch_gen, "_unprocessed_sequences", None)
+        prompt_batch = getattr(batch_gen, "_prompt_batch", None)
+        return bool(queue) or bool(getattr(prompt_batch, "uids", None))
+
+    _base_next = getattr(batch_gen, "next", None)
+
+    def _yielding_next(*args, **kwargs):
+        if _admission_owner_uid is not None and _others_waiting():
+            _requeue_owner_at_boundary()
+        return _base_next(*args, **kwargs)
+
+    if callable(_base_next) and hasattr(batch_gen, "_unprocessed_sequences"):
+        batch_gen.next = _yielding_next
+        batch_gen._mtp_vendored_requeue_owner = _requeue_owner_at_boundary
+    batch_gen._mtp_vendored_at_token_boundary = _at_token_boundary
     batch_gen._mtp_vendored_stats = _stats
     gb._mtp_vendored_state = _state
     gb._mtp_vendored_disabled_uids = _disabled_uids
@@ -5078,6 +5268,12 @@ class Scheduler:
             request = self.requests.get(request_id)
             if not request or not request.prompt_token_ids:
                 return
+            # A request that already produced output and is re-promoted (the
+            # speculative singleton yielding at a token boundary) carries
+            # prompt + output in its cache; storing that under the prompt key
+            # would poison exact-prompt hits.  Completion stores it correctly.
+            if getattr(request, "output_token_ids", None):
+                return
             # PFlash bypass: see scheduler.add_request — compressed
             # prompt_token_ids are not positionally faithful so storing
             # KV under this key would poison the trie.
@@ -5356,6 +5552,9 @@ class Scheduler:
             request = self.requests.get(request_id) if request_id else None
             if request is None or _pflash_compressed(request):
                 continue
+            # Prompt-relative positions do not describe a resumed generation.
+            if getattr(request, "output_token_ids", None):
+                continue
             position = int(request.cached_tokens or 0) + int(progress[0])
             holders = self._hybrid_checkpoints.get(resp.uid)
             if holders:
@@ -5474,7 +5673,7 @@ class Scheduler:
             if not request_id:
                 continue
             request = self.requests.get(request_id)
-            if not request:
+            if not request or getattr(request, "output_token_ids", None):
                 continue
             snapshot_boundary = getattr(
                 request,
@@ -6188,6 +6387,21 @@ class Scheduler:
             self._resolve_metal_cap_bytes(), self._current_metal_active_bytes()
         )
 
+    def _log_admission_fallback(self, key: str, message: str) -> None:
+        """Debug-log a memory-estimator fallback once per scheduler.
+
+        The admission estimators below degrade silently (0 bytes, RSS, an
+        fp32 dtype guess) so a rejected or over-admitted request would
+        otherwise be undiagnosable even at ``--log-level DEBUG``. Once per
+        key keeps per-step callers from flooding DEBUG output. Must be
+        called from inside the ``except`` block so ``exc_info`` is attached.
+        """
+        logged = self.__dict__.setdefault("_admission_fallbacks_logged", set())
+        if key in logged:
+            return
+        logged.add(key)
+        logger.debug(message, exc_info=True)
+
     def _current_metal_active_bytes(self) -> int:
         """Best-effort snapshot of MLX-reported Metal active memory.
 
@@ -6197,6 +6411,11 @@ class Scheduler:
         try:
             return int(mx.get_active_memory())
         except Exception:
+            self._log_admission_fallback(
+                "metal_active",
+                "Metal active-memory probe failed; admission treats MLX "
+                "active memory as 0 bytes",
+            )
             return 0
 
     def _current_process_resident_bytes(self) -> int:
@@ -6213,12 +6432,20 @@ class Scheduler:
             if footprint > 0:
                 return footprint
         except Exception:
-            pass
+            self._log_admission_fallback(
+                "phys_footprint",
+                "phys_footprint probe failed; falling back to RSS for "
+                "process memory pressure",
+            )
         try:
             import psutil
 
             return int(psutil.Process().memory_info().rss)
         except Exception:
+            self._log_admission_fallback(
+                "process_rss",
+                "RSS probe failed; admission treats process footprint as 0 bytes",
+            )
             return 0
 
     def _continuous_mtp_free_bytes(self) -> int:
@@ -6451,7 +6678,11 @@ class Scheduler:
                 if n > 0:
                     return n
         except Exception:
-            pass
+            self._log_admission_fallback(
+                "kv_dtype",
+                "KV dtype inference from the model config failed; assuming "
+                "fp32 (4 bytes) for KV admission estimates",
+            )
         # Default: assume the LARGEST plausible dtype (fp32 = 4) so we
         # over-estimate KV usage and err toward rejection rather than
         # admitting a request that exceeds the cap. Reached only when
@@ -7013,7 +7244,11 @@ class Scheduler:
             try:
                 mx.clear_cache()
             except Exception:
-                pass
+                self._log_admission_fallback(
+                    "preflight_clear_cache",
+                    "mx.clear_cache() failed during Metal admission preflight; "
+                    "re-reading active memory without releasing allocator cache",
+                )
             active = self._current_metal_active_bytes()
         if active + smallest_kv < cap:
             return
@@ -7137,6 +7372,22 @@ class Scheduler:
         if active < cap and (active + reserved_kv + projected_kv) < cap:
             return
 
+        # Over the cap: first return memory nothing references any more. A
+        # cache caught in a reference cycle stays resident until a full
+        # cyclic collection, which the server's raised GC thresholds make
+        # rare — #4108 wedged an idle server with an empty prefix cache at
+        # 37 GB this way. Collecting is non-destructive, so it runs before
+        # the warm prefix cache is evicted. It is limited to the cases where
+        # garbage can be the cause and the pause costs nobody much: active
+        # memory itself at the cap, or no request in flight. An ordinary
+        # projection/reservation rejection under load never pauses the
+        # step loop for a full collection.
+        if (active >= cap or not self.requests) and self._reclaim_unreachable_metal():
+            active = self._current_metal_active_bytes()
+            reserved_kv = self._sum_in_flight_kv_bytes()
+            if active < cap and (active + reserved_kv + projected_kv) < cap:
+                return
+
         # The memory-aware prefix cache holds finished requests' KV in Metal
         # memory. It is reclaimable by definition, so it must yield to a live
         # request instead of turning a warm cache into a 503 — this is what
@@ -7241,7 +7492,24 @@ class Scheduler:
                 "length or max_tokens, lower concurrency, or restart "
                 "with a higher --gpu-memory-utilization."
             )
-        raise BackpressureError(
+        if not self.requests and active >= cap:
+            # Nothing is in flight to drain, so "retry after in-flight
+            # requests drain" would never come true (#4108).
+            restart_advice = " Restart the server to release it."
+            if self._metal_cap_effective_utilization < MAX_UTILIZATION:
+                restart_advice = (
+                    " Restart the server to release it, or restart with a "
+                    "higher --gpu-memory-utilization."
+                )
+            raise MetalMemoryBackpressureError(
+                f"Metal memory in use is {active / 1e9:.1f} GB with no "
+                f"request running (reserved KV {reserved_kv / 1e9:.1f} GB + "
+                f"projected KV {projected_kv / 1e9:.1f} GB for this request), "
+                f"but the current limit is {cap / 1e9:.1f} GB (D-METAL-CAP). "
+                "Retrying will not help: the memory is held by the server, "
+                "not by other requests." + restart_advice
+            )
+        raise MetalMemoryBackpressureError(
             f"This request needs approximately "
             f"{(reserved_kv + projected_kv) / 1e9:.1f} GB of Metal memory "
             f"on top of {active / 1e9:.1f} GB already in use "
@@ -7249,6 +7517,44 @@ class Scheduler:
             f"{projected_kv / 1e9:.1f} GB), but the current limit is "
             f"{cap / 1e9:.1f} GB (D-METAL-CAP)." + raise_advice
         )
+
+    # #4108: minimum spacing between two over-cap garbage reclaims. The
+    # collector and the Metal allocator are process-wide, so the limiter is
+    # too (shared by every resident model's scheduler).
+    _METAL_GC_RECLAIM_INTERVAL_S = 1.0
+    _metal_gc_reclaim_lock = threading.Lock()
+    _last_metal_gc_reclaim_at = float("-inf")
+
+    def _reclaim_unreachable_metal(self) -> bool:
+        """Collect cyclic garbage and flush the allocator; True if active fell.
+
+        Rate-limited process-wide so a sustained over-cap admission storm pays
+        for at most one full collection per ``_METAL_GC_RECLAIM_INTERVAL_S``.
+        """
+        cls = type(self)
+        with cls._metal_gc_reclaim_lock:
+            now = time.monotonic()
+            if now - cls._last_metal_gc_reclaim_at < cls._METAL_GC_RECLAIM_INTERVAL_S:
+                return False
+            cls._last_metal_gc_reclaim_at = now
+        before = self._current_metal_active_bytes()
+        collected = gc.collect()
+        try:
+            mx.clear_cache()
+        except Exception:
+            pass
+        after = self._current_metal_active_bytes()
+        if after >= before:
+            return False
+        logger.warning(
+            "[D-METAL-CAP-gc-reclaim] released %.1f GB of unreachable Metal "
+            "memory (%d objects collected, %.0f ms) before admission; it was "
+            "held by garbage, not by live requests or the prefix cache",
+            (before - after) / 1e9,
+            collected,
+            (time.monotonic() - now) * 1000.0,
+        )
+        return True
 
     def _resolve_pressure_evict_fraction(self) -> float:
         """Return the clamped ``(0, 1]`` fraction used for pressure thresholds.
@@ -7820,7 +8126,9 @@ class Scheduler:
                     f"compressed {metadata['original_tokens']} -> "
                     f"{metadata['kept_tokens']} tokens "
                     f"ratio={metadata['compression_ratio']:.3f} "
-                    f"scoring_ms={metadata['scoring_seconds'] * 1000.0:.2f}"
+                    f"scoring_ms={metadata['scoring_seconds'] * 1000.0:.2f} "
+                    "(lossy: middle of prompt dropped, prefix cache bypassed; "
+                    "--pflash off disables)"
                 )
             else:
                 logger.debug(
@@ -8758,6 +9066,13 @@ class Scheduler:
             router_config = getattr(router, "config", None)
             runtime_capabilities = getattr(runtime, "capabilities", None)
             if router_config is None or runtime_capabilities is None:
+                # The singleton verifier yields to waiting requests at its
+                # next token boundary, after which the batch decodes them
+                # together; admitting them is therefore safe at full width.
+                if callable(
+                    getattr(batch_generator, "_mtp_vendored_requeue_owner", None)
+                ):
+                    return self.config.max_num_seqs
                 return 1
             fixed_core = all(
                 getattr(runtime_capabilities, name, False) is True
@@ -9513,6 +9828,16 @@ class Scheduler:
                     output.spec_decode_metrics = (
                         request_mtp_counter.snapshot().response_metrics()
                     )
+                # #4092: surface PFlash compression on the terminal output so
+                # the API layer can tell the client its prompt was shortened.
+                pflash_metadata = request.pflash_metadata
+                if pflash_metadata is not None and pflash_metadata.get(
+                    "compressed", False
+                ):
+                    output.prompt_compression = {
+                        "original_tokens": pflash_metadata["original_tokens"],
+                        "kept_tokens": pflash_metadata["kept_tokens"],
+                    }
                 if repetition_error is not None:
                     output.error = repetition_error
                     # Mark this abort as the graceful repetition-guard stop so

@@ -96,8 +96,10 @@ def test_show_on_interactive_subcommand():
     )
 
 
-def test_show_on_bare_interactive_launcher():
-    assert should_show_banner(
+def test_bare_front_door_never_shows_the_banner():
+    # The bare command's front door is a one-screen menu with its own header;
+    # the 13-row banner would push its actions off a short terminal.
+    assert not should_show_banner(
         command=None,
         json_output=False,
         no_banner=False,
@@ -111,7 +113,7 @@ def test_show_on_bare_interactive_launcher():
     [
         # pipe / redirect: stdout is not a terminal
         dict(command="serve", stdout_isatty=False, stdin_isatty=True),
-        # bare launcher with stdin piped (nameplate itself needs a tty stdin)
+        # bare launcher with stdin piped
         dict(command=None, stdout_isatty=True, stdin_isatty=False),
         # explicit --no-banner opt-out, still a terminal
         dict(command="serve", no_banner=True, stdout_isatty=True, stdin_isatty=True),

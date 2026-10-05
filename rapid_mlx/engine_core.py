@@ -1485,6 +1485,10 @@ class EngineCore:
                 req_output.spec_decode_metrics
                 or (buf.spec_decode_metrics if buf is not None else None)
             ),
+            prompt_compression=(
+                req_output.prompt_compression
+                or (buf.prompt_compression if buf is not None else None)
+            ),
         )
 
     async def stream_outputs(

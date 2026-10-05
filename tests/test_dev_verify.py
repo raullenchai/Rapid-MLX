@@ -537,8 +537,6 @@ def test_shell_routing_env_cannot_leak_into_a_journey(tmp_path: Path, monkeypatc
     monkeypatch.setenv("RAPID_GUI_SOURCE_APP", "/some/stale.app")
     captured: dict[str, str] = {}
 
-    original_run = dev_verify.subprocess.run
-
     def spy_run(*args, **kwargs):
         captured.update(kwargs["env"])
         return type("Proc", (), {"returncode": 0})()
@@ -613,7 +611,6 @@ def test_plan_only_result_is_never_a_pass(tmp_path: Path):
 def test_ten_representative_reports_route_as_recorded():
     reports = yaml.safe_load(FIXTURES.read_text())
     assert len(reports) == 10
-    expected = {entry["issue"]: entry for entry in reports}
 
     for entry in reports:
         plan = plan_for(area=entry["area"])
