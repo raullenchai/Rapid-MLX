@@ -355,6 +355,104 @@ def test_secure_field_is_named_and_says_whether_it_is_filled(tree):
     assert (pw["field_name"], pw["filled"]) == ("", None)
 
 
+def _secure_pw(**attrs):
+    return {
+        "AXRole": "AXTextField",
+        "AXSubrole": "AXSecureTextField",
+        "AXTitle": "hunter2",  # some apps mirror the contents here
+        "AXValue": "hunter2",
+        "AXNumberOfCharacters": 7,
+        **attrs,
+    }
+
+
+def test_secure_field_is_named_by_its_label_element_never_its_own_text(tree):
+    nodes, fake = tree
+    nodes.update(
+        {
+            # Chrome: <label for=pw>Password</label> is the field's
+            # AXTitleUIElement; the field has no description or placeholder.
+            "pw": _secure_pw(AXTitleUIElement="lbl"),
+            "lbl": {"AXRole": "AXStaticText", "AXValue": "Password"},
+        }
+    )
+    (pw,) = _walk("pw")
+    assert pw["field_name"] == "Password" and "hunter2" not in repr(pw)
+    for element, attrs in fake.requests:
+        if element == "pw":
+            assert "AXValue" not in attrs and "AXTitle" not in attrs
+    # The label's role is read before any of its text.
+    label_reads = [attrs for element, attrs in fake.requests if element == "lbl"]
+    assert label_reads[0] == ("AXRole", "AXSubrole")
+    # A label element with a title, or with no text (then the description).
+    nodes["lbl"] = {"AXRole": "AXGroup", "AXTitle": "Bank password"}
+    assert _walk("pw")[0]["field_name"] == "Bank password"
+    nodes["lbl"] = {"AXRole": "AXGroup"}
+    nodes["pw"]["AXDescription"] = "Password"
+    assert _walk("pw")[0]["field_name"] == "Password"
+
+
+def test_a_label_element_that_holds_input_is_never_read(tree, monkeypatch):
+    nodes, fake = tree
+    nodes.update(
+        {
+            "pw": _secure_pw(AXTitleUIElement="other", AXPlaceholderValue="PIN"),
+            "pw2": {"AXRole": "AXTextField", "AXSubrole": "AXSecureTextField"},
+        }
+    )
+    cases = [
+        {"AXRole": "AXTextField", "AXValue": "a typed value"},  # a field
+        {"AXRole": "AXGroup", "AXSubrole": "AXSecureTextField", "AXTitle": "x"},
+        {"AXTitle": "no role"},  # unknown: not trusted
+    ]
+    for label in cases:
+        nodes["other"] = label
+        fake.requests.clear()
+        assert _walk("pw")[0]["field_name"] == "PIN"
+        assert [a for e, a in fake.requests if e == "other"] == [
+            ("AXRole", "AXSubrole")
+        ]
+    # The field named as its own label is not read either.
+    nodes["pw"]["AXTitleUIElement"] = "pw"
+    assert _walk("pw")[0]["field_name"] == "PIN"
+    # A label whose read timeout cannot be set is still read.
+    nodes["pw"]["AXTitleUIElement"] = "lbl"
+    nodes["lbl"] = {"AXRole": "AXStaticText", "AXValue": "Password"}
+
+    def no_timeout(element, seconds):
+        if element == "lbl":
+            raise RuntimeError("unsupported")
+
+    monkeypatch.setattr(fake, "AXUIElementSetMessagingTimeout", no_timeout)
+    assert _walk("pw")[0]["field_name"] == "Password"
+
+
+def test_secure_field_without_a_label_takes_the_text_just_before_it(tree):
+    nodes, _ = tree
+    nodes.update(
+        {
+            "win": {"AXRole": "AXWebArea", "AXChildren": ["form"]},  # page order
+            "form": {"AXRole": "AXGroup", "AXChildren": ["txt", "pw"]},
+            "txt": {"AXRole": "AXStaticText", "AXValue": "Password"},
+            "pw": _secure_pw(),
+        }
+    )
+    assert _walk("win")[-1]["field_name"] == "Password"
+    # Anything else in between, another group, a paragraph, or nothing
+    # before it: no name.
+    nodes["form"]["AXChildren"] = ["txt", "btn", "pw"]
+    nodes["btn"] = {"AXRole": "AXButton", "AXTitle": "Show"}
+    assert _walk("win")[-1]["field_name"] == ""
+    nodes["win"]["AXChildren"] = ["txt", "form"]
+    nodes["form"]["AXChildren"] = ["pw"]
+    assert _walk("win")[-1]["field_name"] == ""
+    nodes["win"]["AXChildren"] = ["form"]
+    nodes["form"]["AXChildren"] = ["txt", "pw"]
+    nodes["txt"]["AXValue"] = "x" * (ax_driver.MAX_FIELD_LABEL_CHARS + 1)
+    assert _walk("win")[-1]["field_name"] == ""
+    assert _walk("pw")[0]["field_name"] == ""
+
+
 def test_walk_marks_truncation_at_every_cap(tree, monkeypatch):
     nodes, _ = tree
     nodes.update(
