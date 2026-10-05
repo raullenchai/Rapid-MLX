@@ -1614,7 +1614,7 @@ def _activating(key: object) -> bool:
     return _split_key(key)[1].lower() in _ACTIVATING_KEYS
 
 
-def _focus_field(app: str, index: int, snapshot: dict, wid: str) -> None:
+def _focus_field(app: str, index: int | None, snapshot: dict, wid: str) -> None:
     """Give a text field keyboard focus, or raise: a chord sent after a focus
     change that did not take lands on whatever held focus before.
 
