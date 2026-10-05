@@ -356,13 +356,11 @@ class PerceptionSession:
                 f"({self._with_human[obs.window_id]}); wait for the handoff to finish",
             )
         if op in {"fill", "type"}:
-            # Typing without a ref goes to the focused element, so a focused
-            # secret field is guarded the same as one named by ref.
-            targets = (
-                [row]
-                if row is not None
-                else [r for r in obs.rows if "focused" in r.states]
-            )
+            # Typed text goes to the focused element whatever ref was named,
+            # so a focused secret field is guarded the same as a named one.
+            targets = [row] if row is not None else []
+            if op == "type":
+                targets += [r for r in obs.rows if "focused" in r.states]
             for target in targets:
                 why = guards.needs_human_input(
                     target.role, target.subrole, target.label
@@ -373,7 +371,7 @@ class PerceptionSession:
                         f"{target.ref} is {why}; the user types it. Use handoff "
                         "with a reason, then continue when it returns.",
                     )
-            if row is None and op == "type":
+            if op == "type":
                 # Focus can move after the observation (a page that focuses
                 # its password box on load): ask the app what has it now.
                 why = _focused_secret(obs.snapshot.get("app") or {})
@@ -612,7 +610,15 @@ class PerceptionSession:
                 ("key", None, {"key": "Return", "window_id": obs.window_id}),
             ):
                 self._unresolved.pop(obs.window_id, None)
-                self._act(op, ref, by_human=False, **kw)
+                step = self._act(op, ref, by_human=False, **kw)["receipt"]
+                if step["effect"] == "refused":
+                    # Never press Return on an address the bar did not take.
+                    error = step.get("error") or {}
+                    raise ComputerUseError(
+                        str(error.get("code") or "action_failed"),
+                        f"open_url stopped at {step['action']}: "
+                        + str(error.get("message") or "refused"),
+                    )
             self._unresolved.pop(obs.window_id, None)
         deadline = time.monotonic() + OPEN_URL_WAIT_S
         while True:
@@ -635,6 +641,10 @@ class PerceptionSession:
                 obs, settled_obs.rows
             )
             settled_obs.previous = obs.obs_id
+            if not loaded:
+                # No load seen: like any action without a visible outcome,
+                # it blocks further input until the window is observed.
+                self._unresolved[obs.window_id] = f"open_url {url}"
         receipt = {
             "action": f"open_url {url}",
             "effect": "confirmed" if loaded else "unverifiable",
@@ -642,6 +652,10 @@ class PerceptionSession:
             "observation": settled_obs.obs_id,
             "title": settled_obs.title,
         }
+        if not loaded:
+            receipt["unresolved"] = (
+                "load not confirmed; observe before sending more input"
+            )
         return {"receipt": receipt, "observation": settled_obs}
 
     def _emit(self, kind: str, payload: dict) -> None:

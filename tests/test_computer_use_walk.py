@@ -240,7 +240,8 @@ def test_walk_marks_truncation_at_every_cap(tree, monkeypatch):
     monkeypatch.setattr(ax_driver, "MAX_DEPTH", 1)
     budget = {"deadline": time.monotonic() + 60, "truncated": False}
     assert [t["text"] for t in _walk("win", budget=budget)] == ["A"]
-    assert budget["truncated"] is True
+    assert budget["truncated"] is True and budget["depth_cap"] is True
+    assert "deadline_hit" not in budget
 
     monkeypatch.setattr(ax_driver, "MAX_DEPTH", 60)
     monkeypatch.setattr(ax_driver, "MAX_NODES", 1)
@@ -255,6 +256,30 @@ def test_walk_marks_truncation_at_every_cap(tree, monkeypatch):
     monkeypatch.setattr(ax_driver, "MAX_NODES", 4000)
     budget = {"deadline": time.monotonic() - 1, "truncated": False}
     assert _walk("win", budget=budget) == [] and budget["truncated"] is True
+    assert budget["deadline_hit"] is True and "depth_cap" not in budget
+
+
+def test_wedged_siblings_cannot_outlast_the_walk_budget(tree, monkeypatch):
+    nodes, _ = tree
+    nodes["win"] = {"AXRole": "AXWindow", "AXChildren": ["a", "b", "c", "d"]}
+    for key in "abcd":
+        nodes[key] = {"AXRole": "AXButton", "AXTitle": key.upper()}
+    clock = [0.0]
+    reads = []
+
+    def slow_read(element):
+        reads.append(element)
+        clock[0] += 1.0  # each wedged node costs its messaging timeout
+        return dict(nodes[element])
+
+    monkeypatch.setattr(ax_driver, "_read_node", slow_read)
+    monkeypatch.setattr(
+        ax_driver, "time", types.SimpleNamespace(monotonic=lambda: clock[0])
+    )
+    budget = {"deadline": 2.5, "truncated": False}
+    out = _walk("win", budget=budget)
+    assert out == [] and reads == ["win", "a", "b"]
+    assert budget["truncated"] is True and budget["deadline_hit"] is True
 
 
 def test_the_caps_fit_a_whole_web_page():
@@ -282,13 +307,18 @@ def test_collect_reports_an_exhausted_budget(monkeypatch):
         )
         counter[0] += 1
         budget["truncated"] = True
+        budget["deadline_hit"] = True
 
     monkeypatch.setattr(ax_driver, "_walk", walk)
     status: dict = {}
     collected = ax_driver.collect(
         "A", keep_elements=True, budget_s=0.5, walk_status=status
     )
-    assert collected and status == {"budget_exhausted": True, "node_cap": False}
+    assert collected and status == {
+        "budget_exhausted": True,
+        "depth_cap": False,
+        "node_cap": False,
+    }
     assert 0 < seen["remaining"] <= 0.5
     monkeypatch.setattr(ax_driver, "MAX_NODES", 1)
     ax_driver.collect("A", keep_elements=True, walk_status=status)
@@ -375,6 +405,15 @@ def test_collect_watchdog_marks_a_budget_cut_walk_partial(monkeypatch):
         "A", timeout_s=2, collection_status=status, budget_s=1.5
     )
     assert status == {"partial": True, "budget_exhausted": True}
+
+    def deep(*args, walk_status, budget_s, **kwargs):
+        walk_status["depth_cap"] = True
+        return [{"target_id": "t000"}]
+
+    monkeypatch.setattr(backend.ax_driver, "collect", deep)
+    status = {}
+    backend._collect_with_timeout("A", timeout_s=2, collection_status=status)
+    assert status == {"partial": True}
 
 
 def test_numeric_controls_are_written_as_numbers():
