@@ -630,6 +630,12 @@ def mirror_repo(
         )
 
     if revision is not None:
+        # Only an immutable commit: a branch or tag could move between the
+        # listing and the downloads and publish a mixed set of files.
+        if len(revision) != 40 or any(c not in "0123456789abcdef" for c in revision):
+            raise ValueError(
+                f"--revision must be a full 40-hex commit SHA: {revision!r}"
+            )
         print(f"   revision: {revision}", flush=True)
     files = _hf_files(repo_id) if revision is None else _hf_files(repo_id, revision)
     if include is not None:

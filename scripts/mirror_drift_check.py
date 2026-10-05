@@ -1081,7 +1081,8 @@ def audit(
             pin = runtime_pins.get(spec.hf_path)
             if pin is not None:
                 files = [item for item in files if item.path in pin[1]]
-                for path in sorted(pin[1] - {item.path for item in files}):
+                upstream = {item.path for item in repos[spec.hf_path].files}
+                for path in sorted(pin[1] - upstream):
                     report.findings.append(
                         Finding(
                             "hf_missing_runtime_file",

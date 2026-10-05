@@ -252,3 +252,43 @@ def test_hf_helpers_forward_the_revision(monkeypatch, tmp_path):
         ("dl", None),
         ("dl", PIN),
     ]
+
+
+def test_revision_must_be_an_immutable_commit(monkeypatch):
+    monkeypatch.setattr(mirror, "_hf_files", lambda *_a: pytest.fail("listed"))
+    with pytest.raises(ValueError, match="40-hex commit"):
+        mirror.mirror_repo(REPO, revision="main")
+
+
+def test_runtime_files_outside_an_alias_subfolder_are_not_reported_missing(
+    monkeypatch, tmp_path
+):
+    """Upstream existence is checked against the whole pinned listing."""
+    main = tmp_path / "main.json"
+    audio = tmp_path / "audio.json"
+    main.write_text(json.dumps({"pinned": {"hf_path": REPO, "subfolder": "unet"}}))
+    audio.write_text("{}")
+    monkeypatch.setattr(
+        drift, "_hf_repo", lambda repo, revision=None: drift.HfRepo(revision, LISTING)
+    )
+    monkeypatch.setattr(
+        drift,
+        "_public_probe",
+        lambda _r, item: drift.MirrorProbe(
+            200, item.size, f'"{item.sha256}"', item.oid
+        ),
+    )
+    monkeypatch.setattr(drift, "_maybe_r2_client", lambda: None)
+    monkeypatch.setattr(
+        drift,
+        "_catalog_entries",
+        lambda: [{"alias": "pinned", "hf_path": REPO, "status": "mirrored"}],
+    )
+    monkeypatch.setattr(
+        drift.mirror_runtime_files,
+        "pinned_runtime_files",
+        lambda repo: (PIN, LIST) if repo == REPO else None,
+    )
+    [report] = drift.audit(main, audio, unmirrored_path=None)
+    assert report.findings == []
+    assert report.checked_files == 1
