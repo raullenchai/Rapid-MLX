@@ -380,3 +380,28 @@ def test_token_list_generation_prompt_keeps_full_variant_encodes():
     )
     assert boundary == _reference_boundary(messages, real)
     assert engine._prompt_host_cache.stats()["stores"] == 0
+
+
+def test_scheduler_still_exposes_the_shared_encoder():
+    """``encode_prompt_text`` reaches into the scheduler by name.
+
+    The scheduler module needs MLX, so check its source: a rename would
+    otherwise silently turn the shared encode back into three.
+    """
+    import ast
+    from pathlib import Path
+
+    import rapid_mlx
+
+    source = Path(rapid_mlx.__file__).with_name("scheduler.py").read_text()
+    scheduler = next(
+        node
+        for node in ast.parse(source).body
+        if isinstance(node, ast.ClassDef) and node.name == "Scheduler"
+    )
+    methods = {
+        node.name: [arg.arg for arg in node.args.args]
+        for node in scheduler.body
+        if isinstance(node, ast.FunctionDef)
+    }
+    assert methods.get("_encode_prompt_string") == ["self", "prompt"]
