@@ -549,9 +549,20 @@ def discover(client: GitHubClient, scope: str, main_sha: str) -> DiscoveryProbe:
                 if (
                     attestation.get("path") != ATTESTATION_WORKFLOW
                     or attestation.get("event") != "workflow_run"
-                    or attestation.get("status") != "completed"
-                    or attestation.get("conclusion") != "success"
                     or attestation.get("repository", {}).get("full_name") != client.repo
+                ):
+                    return DiscoveryProbe(None, False)
+                # The index is the producer's last step, before workflow cleanup.
+                # Wait within the caller's existing deadline; unfinished proof
+                # never permits reuse, and terminal failure never retries.
+                if (
+                    attestation.get("status") in {"queued", "in_progress"}
+                    and attestation.get("conclusion") is None
+                ):
+                    return DiscoveryProbe(None, True)
+                if (
+                    attestation.get("status") != "completed"
+                    or attestation.get("conclusion") != "success"
                 ):
                     return DiscoveryProbe(None, False)
                 return DiscoveryProbe(
