@@ -59,7 +59,6 @@ def test_prefilter_runs_all_three_unit_shards_without_claiming_full(path):
         ["uv.lock"],
         ["new-root/thing.py"],
         ["rapid_mlx/server.py", "apps/rapid-mac/App.swift"],
-        ["rapid_mlx/server.py", "README.md"],
         ["rapid_mlx/server.py", ".coveragerc"],
     ],
 )
@@ -290,3 +289,86 @@ def test_controller_and_collection_regressions_keep_full_source_in_actual_cli(
     outputs = dict(line.split("=", 1) for line in output.read_text().splitlines())
     assert outputs["source_preflight"] == "false"
     assert len(json.loads(outputs["test_matrix"])["include"]) == 9
+
+
+@pytest.mark.parametrize(
+    "doc",
+    [
+        "README.md",
+        "AGENTS.md",
+        "CONTRIBUTING.md",
+        "CODE_OF_CONDUCT.md",
+        "SECURITY.md",
+        "LICENSE",
+        "docs/usage/community-model.md",
+    ],
+)
+def test_documentation_does_not_duplicate_feature_source_full_checks(tmp_path, doc):
+    paths = ["rapid_mlx/server.py", doc]
+    assert classify_policy(paths, source_preflight=True).source_preflight
+    doc_only = classify_policy([doc], source_preflight=True)
+    assert not doc_only.source_preflight
+    assert not doc_only.lanes.engine
+    promoted = classify_policy(paths, source_preflight=True, force_full=True)
+    assert not promoted.source_preflight
+    assert len(json.loads(promoted.as_outputs()["test_matrix"])["include"]) == 9
+    script = next(
+        s["run"] for s in jobs()["changes"]["steps"] if s.get("id") == "policy"
+    )
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    git = bindir / "git"
+    git.write_text("#!/bin/sh\ncat <<'PATHS'\n" + "\n".join(paths) + "\nPATHS\n")
+    git.chmod(0o755)
+    (bindir / "python").symlink_to(sys.executable)
+    output = tmp_path / "output"
+    script = script.replace("/tmp/changed-paths", str(tmp_path / "paths"))
+    env = dict(
+        os.environ,
+        PATH=f"{bindir}:{os.environ['PATH']}",
+        GITHUB_OUTPUT=str(output),
+        EVENT_NAME="pull_request",
+        HEAD_REPO="owner/repo",
+        REPO="owner/repo",
+        HEAD_REF="feature/server",
+        PR_BASE_SHA="a" * 40,
+        GITHUB_SHA="b" * 40,
+        CANARY_ENABLED="false",
+        SOURCE_PREFLIGHT_ENABLED="true",
+        CANDIDATE_SHADOW_ENABLED="false",
+    )
+    result = subprocess.run(
+        ["bash", "-c", script], cwd=ROOT, env=env, capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stderr
+    outputs = dict(line.split("=", 1) for line in output.read_text().splitlines())
+    assert outputs["source_preflight"] == "true"
+    assert outputs["source_canary"] == "false"
+    assert len(json.loads(outputs["test_matrix"])["include"]) == 3
+
+
+@pytest.mark.parametrize(
+    "other",
+    [
+        "../docs/setup.md",
+        "docs/../scripts/classify_ci_changes.py",
+        "/docs/setup.md",
+        "new-docs/setup.md",
+        ".github/workflows/ci.yml",
+        "tests/test_mergify_mlx_attestation.py",
+        "tests/conftest.py",
+        "apps/rapid-mac/App.swift",
+        "pyproject.toml",
+    ],
+)
+def test_documentation_cannot_neutralize_invalid_control_or_cross_product(other):
+    paths = ["rapid_mlx/server.py", "README.md", other]
+    policy = classify_policy(paths, source_preflight=True)
+    assert not policy.source_preflight
+    assert policy.linux_matrix_mode == "full"
+
+
+def test_documentation_does_not_expand_the_mapped_source_namespace():
+    policy = classify_policy(["rapid_mlx/_banner.py", "README.md"], source_canary=True)
+    assert not policy.source_canary_tests
+    assert policy.linux_matrix_mode == "full"

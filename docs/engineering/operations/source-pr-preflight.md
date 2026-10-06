@@ -18,10 +18,13 @@ The full evidence validator still requires nine CPU and five model identities,
 Apple success and candidate coverage. Candidate, main and release policy are
 unchanged by this source-only option.
 
-Only diffs confined to `rapid_mlx/` and ordinary top-level `tests/test_*.py`
-files qualify. Source controllers, CI tests, collection support, dependencies,
-unknown paths, cross-product changes and mixed documentation retain the full
-source route. Runtime hot paths can receive this CPU prefilter because their
+Diffs confined to `rapid_mlx/` and ordinary top-level `tests/test_*.py`
+files qualify, including their accompanying documentation. Existing documentation
+paths (`docs/`, README, contributor/agent/security guides and license) do not
+broaden source CPU preflight into the full source route. Documentation alone
+retains the existing documentation lane and cannot select engine preflight. Source controllers, CI tests, collection support, dependencies,
+unknown paths and cross-product changes retain the full source route. Invalid
+or traversal paths fail closed even when they resemble documentation. Runtime hot paths can receive this CPU prefilter because their
 combined candidate still requires full execution before merge. Forks, promoted
 `train/*` or managed queue branches, merge groups and main retain full validation.
 The existing mapped source canary takes precedence when its own exact-base

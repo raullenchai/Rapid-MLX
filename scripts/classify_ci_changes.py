@@ -337,7 +337,11 @@ def _source_preflight_paths(paths: set[str], lanes: Lanes) -> bool:
         return False
     for path in paths:
         pure = PurePosixPath(path)
-        if pure.is_absolute() or ".." in pure.parts or len(pure.parts) < 2:
+        if not pure.parts or pure.is_absolute() or ".." in pure.parts:
+            return False
+        if path in _DOC_FILES or pure.parts[0] in _DOC_ROOTS:
+            continue
+        if len(pure.parts) < 2:
             return False
         if pure.parts[0] == "rapid_mlx":
             continue
