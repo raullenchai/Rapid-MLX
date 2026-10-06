@@ -149,6 +149,26 @@ so that flag exits with a pointer to `qwen3.8-flash-next-4bit` instead.
 Measurements are in the
 [qualification record](../engineering/performance/2026-10-06-tensorfold-family-profiles-qualification.md).
 
+### Experimental Ternary Bonsai 2 accelerated profile
+
+`bonsai2-27b-tensorfold` is an experimental, text-only profile that pairs
+`prism-ml/Ternary-Bonsai-2-27B-mlx-2bit` with the `z-lab/Qwen3.8-27B-DFlash2`
+draft model on the same TensorFold runtime. It requires 96 GB of unified
+memory and was measured only on an M3 Ultra; on an M4 Pro the same pairing was
+slower than `bonsai2-27b-2bit`, so the floor keeps smaller Macs on the
+ordinary alias.
+
+```bash
+python -m pip install "tensorfold @ git+https://github.com/ashhart/TensorFold.git@cb2ebf0540f42604e2759b2ddef497861e928248"
+rapid-mlx serve bonsai2-27b-tensorfold
+```
+
+Tools, images, grammar constraints, and general batching fail explicitly. The
+alias has no ordinary mode of its own: `--no-spec-decode` exits with a pointer
+to `bonsai2-27b-2bit`, which keeps image input and tool calling. Measurements
+are in the
+[qualification record](../engineering/performance/2026-10-06-tensorfold-bonsai2-qualification.md).
+
 ### Experimental Chat candidate: NeoHorse 1 9B
 
 `neohorse-9b-4bit` is an opt-in, text-only Chat model for Macs with at

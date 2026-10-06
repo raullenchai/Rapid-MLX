@@ -14,6 +14,8 @@ from rapid_mlx.speculative import tensorfold_families as families
 from rapid_mlx.speculative.tensorfold_qwen27 import TensorFoldUnavailable
 
 PROFILE_IDS = sorted(families.PROFILES)
+MTP_IDS = [pid for pid in PROFILE_IDS if families.PROFILES[pid].method == "mtp"]
+PAIRED_IDS = [pid for pid in PROFILE_IDS if families.PROFILES[pid].drafter]
 REPO_ROOT = Path(__file__).parents[1]
 DRAFT_REVISION = "a" * 40
 
@@ -55,17 +57,35 @@ def test_catalog_alias_matches_the_registered_profile(profile_id: str) -> None:
     alias = resolve_profile(profile_id)
     assert families.profile_for(profile_id) is profile
     assert alias.hf_path == profile.target
-    assert alias.tensorfold_mtp is True
-    assert alias.tensorfold_target_revision == profile.target_revision
-    assert alias.tensorfold_runtime_revision == SUPPORTED_REVISION
+    if profile.drafter is None:
+        assert alias.tensorfold_mtp is True
+        assert alias.tensorfold_target_revision == profile.target_revision
+        assert alias.tensorfold_runtime_revision == SUPPORTED_REVISION
+        expected = '{"method":"mtp","backend":"tensorfold"}'
+    else:
+        assert alias.dflash_backend == "tensorfold"
+        assert alias.dflash_target_revision == profile.target_revision
+        assert alias.dflash_draft_model == profile.drafter
+        assert alias.dflash_draft_revision == profile.drafter_revision
+        assert alias.dflash_algorithm == profile.algorithm
+        expected = json.dumps(
+            {"method": "dflash", "backend": "tensorfold", "model": profile.drafter},
+            separators=(",", ":"),
+        )
     assert alias.min_memory_gb == profile.min_memory_gb
     assert resolve_profile(profile.fallback_model) is not None
 
+    # main() resolves the alias to its repository before normalization, and a
+    # repository can back more than one alias.
     args = SimpleNamespace(
-        model=profile_id, speculative_config=None, no_spec_decode=False, mllm=False
+        model=profile.target,
+        _original_alias=profile_id,
+        speculative_config=None,
+        no_spec_decode=False,
+        mllm=False,
     )
     cli._normalize_speculative_config_or_exit(args)
-    assert args.speculative_config == '{"method":"mtp","backend":"tensorfold"}'
+    assert args.speculative_config == expected
 
 
 def test_profile_lookup_ignores_unregistered_aliases() -> None:
@@ -75,7 +95,9 @@ def test_profile_lookup_ignores_unregistered_aliases() -> None:
 
 @pytest.mark.parametrize("profile_id", PROFILE_IDS)
 def test_target_gates_fail_closed(profile_id: str, tmp_path: Path) -> None:
-    profile = families.PROFILES[profile_id]
+    profile = dataclasses.replace(
+        families.PROFILES[profile_id], drafter=None, drafter_revision=None
+    )
     families.validate_artifacts(profile, _target(tmp_path / "ok", profile), None)
 
     with pytest.raises(TensorFoldUnavailable, match="pinned Hugging Face snapshot"):
@@ -106,7 +128,7 @@ def test_target_gates_fail_closed(profile_id: str, tmp_path: Path) -> None:
 
 
 def test_paired_drafter_gates_fail_closed(tmp_path: Path) -> None:
-    profile = _paired(families.PROFILES[PROFILE_IDS[0]])
+    profile = _paired(families.PROFILES[MTP_IDS[0]])
     target = _target(tmp_path, profile)
     drafter = _snapshot(
         tmp_path, "drafter", DRAFT_REVISION, {"architectures": ["DFlashDraftModel"]}
@@ -128,7 +150,7 @@ def test_paired_drafter_gates_fail_closed(tmp_path: Path) -> None:
 def test_download_resolves_only_pinned_snapshots(monkeypatch, tmp_path: Path) -> None:
     from rapid_mlx import _mirror
 
-    profile = families.PROFILES[PROFILE_IDS[0]]
+    profile = families.PROFILES[MTP_IDS[0]]
     paired = _paired(profile)
     target = _target(tmp_path, profile)
     drafter = _snapshot(
@@ -153,7 +175,7 @@ def test_download_resolves_only_pinned_snapshots(monkeypatch, tmp_path: Path) ->
 
 
 def test_memory_gate_uses_the_profile_floor(monkeypatch) -> None:
-    profile = families.PROFILES[PROFILE_IDS[0]]
+    profile = families.PROFILES[MTP_IDS[0]]
     families.require_memory(profile, memory_gb=profile.min_memory_gb)
     with pytest.raises(TensorFoldUnavailable, match=f"{profile.min_memory_gb} GB Mac"):
         families.require_memory(profile, memory_gb=profile.min_memory_gb - 1)
@@ -226,7 +248,7 @@ def _install_fake_tensorfold(monkeypatch, family, seen: dict) -> None:
 def test_loader_follows_the_upstream_serve_construction(
     monkeypatch, tmp_path: Path, paired: bool
 ) -> None:
-    profile = families.PROFILES[PROFILE_IDS[0]]
+    profile = families.PROFILES[MTP_IDS[0]]
     if paired:
         profile = _paired(profile)
     seen: dict = {}
@@ -406,7 +428,7 @@ def test_server_wrapper_declares_product_metadata(monkeypatch, profile_id: str) 
     assert captured["main_model_repo"] == "/target"
 
 
-@pytest.mark.parametrize("profile_id", PROFILE_IDS)
+@pytest.mark.parametrize("profile_id", MTP_IDS)
 def test_cli_dispatches_family_profile(monkeypatch, profile_id: str) -> None:
     from rapid_mlx import cli
 
@@ -548,6 +570,20 @@ def test_default_configuration_stays_on_the_family_lane(profile_id: str) -> None
 def test_only_the_measured_fallback_is_declared() -> None:
     ordinary = {p.profile_id for p in families.PROFILES.values() if p.ordinary_engine}
     assert ordinary == {"nemotron-3.5-lightning-tensorfold"}
+
+
+@pytest.mark.parametrize("profile_id", PAIRED_IDS)
+def test_paired_profile_pins_a_real_drafter_layout(
+    profile_id: str, tmp_path: Path
+) -> None:
+    profile = families.PROFILES[profile_id]
+    drafter = _snapshot(
+        tmp_path,
+        "drafter",
+        profile.drafter_revision,
+        {"architectures": [profile.drafter_architecture]},
+    )
+    families.validate_artifacts(profile, _target(tmp_path, profile), drafter)
 
 
 def test_models_reference_documents_every_family_profile() -> None:

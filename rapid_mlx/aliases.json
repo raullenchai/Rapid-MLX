@@ -1803,6 +1803,23 @@
       "top_k": 20
     }
   },
+  "bonsai2-27b-tensorfold": {
+    "hf_path": "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": true,
+    "is_hybrid_explicit": true,
+    "is_text_only": true,
+    "supports_spec_decode": false,
+    "supports_dflash": true,
+    "dflash_draft_model": "z-lab/Qwen3.8-27B-DFlash2",
+    "dflash_target_revision": "fcba37d2117a7077eac6b613b2668d14d9779edd",
+    "dflash_draft_revision": "50307d4c4cde6860d4eee73e2547cd786fe8e8a4",
+    "dflash_algorithm": "dflash2",
+    "dflash_backend": "tensorfold",
+    "min_memory_gb": 96,
+    "enforce_min_memory": true,
+    "experimental": true
+  },
   "smollm3-3b-4bit": {
     "hf_path": "mlx-community/SmolLM3-3B-4bit",
     "tool_call_parser": "hermes",
