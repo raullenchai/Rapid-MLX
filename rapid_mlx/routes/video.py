@@ -933,7 +933,7 @@ def _probe_extension_video(path: Path) -> tuple[int, int, int]:
                 "-select_streams",
                 "v:0",
                 "-show_entries",
-                "stream=width,height,avg_frame_rate,r_frame_rate,nb_frames:format=format_name,duration",
+                "stream=width,height,avg_frame_rate,r_frame_rate,nb_frames:format=format_name,duration:format_tags=major_brand",
                 "-of",
                 "json",
                 str(path),
@@ -950,6 +950,7 @@ def _probe_extension_video(path: Path) -> tuple[int, int, int]:
         frame_rate = Fraction(stream["avg_frame_rate"])
         runtime_frame_rate = Fraction(stream["r_frame_rate"])
         formats = details["format"]["format_name"].split(",")
+        major_brand = details["format"].get("tags", {}).get("major_brand", "").strip()
         # Match the pinned runtime's metadata count, including its duration
         # fallback, so inference and the API agree on the source workload.
         # A missing count falls back to duration; a literal "N/A" is invalid
@@ -970,7 +971,11 @@ def _probe_extension_video(path: Path) -> tuple[int, int, int]:
         subprocess.SubprocessError,
     ) as exc:
         raise HTTPException(status_code=400, detail="invalid input_video") from exc
-    if "mp4" not in formats:
+    # The MOV demuxer names several containers, even when the input is a
+    # QuickTime file. Its concrete brand must identify an MP4 container.
+    mp4_brands = {"isom", "mp41", "mp42", "avc1", "dash", "M4V", "MSNV"}
+    mp4_brands.update(f"iso{version}" for version in range(2, 10))
+    if "mp4" not in formats or major_brand not in mp4_brands:
         raise HTTPException(status_code=400, detail="input_video must be MP4")
     # The pinned runtime reads r_frame_rate. Checking only the average
     # permits variable-rate inputs whose generated output is not 24 fps.

@@ -179,7 +179,10 @@ def test_extension_probe_rejects_dimensions_before_frame_decode(
                             "r_frame_rate": "24/1",
                         }
                     ],
-                    "format": {"format_name": "mov,mp4,m4a,3gp,3g2,mj2"},
+                    "format": {
+                        "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+                        "tags": {"major_brand": "isom"},
+                    },
                 }
             )
         )
@@ -316,7 +319,11 @@ def test_extension_probe_runtime_metadata_compatibility(
             if "-count_frames" in command
             else {
                 "streams": [stream],
-                "format": {"format_name": "mov,mp4", "duration": "0.375"},
+                "format": {
+                    "format_name": "mov,mp4",
+                    "duration": "0.375",
+                    "tags": {"major_brand": "isom"},
+                },
             }
         )
         return SimpleNamespace(stdout=json.dumps(details), stderr="")
@@ -328,6 +335,35 @@ def test_extension_probe_runtime_metadata_compatibility(
             video._probe_extension_video(Path("source.mp4"))
     else:
         assert video._probe_extension_video(Path("source.mp4")) == (256, 256, 9)
+
+
+def test_extension_probe_rejects_quicktime_container(tmp_path: Path) -> None:
+    ffmpeg = shutil.which("ffmpeg")
+    ffprobe = shutil.which("ffprobe")
+    if ffmpeg is None or ffprobe is None:
+        pytest.skip("ffmpeg and ffprobe are required")
+    source = tmp_path / "source.mp4"
+    # Use the accepted filename with an actual QuickTime container.
+    subprocess.run(
+        [
+            ffmpeg,
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=blue:s=256x256:r=24",
+            "-frames:v",
+            "9",
+            "-f",
+            "mov",
+            "-y",
+            str(source),
+        ],
+        check=True,
+    )
+    with pytest.raises(HTTPException, match="must be MP4"):
+        video._probe_extension_video(source)
 
 
 @pytest.mark.asyncio
