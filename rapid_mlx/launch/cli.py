@@ -119,6 +119,27 @@ def _start_server_background(model: str, port: int, api_key: str | None = None) 
     return proc.pid
 
 
+def _print_preview(
+    name: str, adapter: object, server_url: str, model: str, api_key: str | None
+) -> None:
+    """Print the redacted diff ``launch <client>`` would apply (dry run).
+
+    Only adapters that can compute their change without side effects expose
+    ``preview``; the rest keep the path-only dry-run line above.
+    """
+    preview = getattr(adapter, "preview", None)
+    if preview is None:
+        return
+    try:
+        _path, diff, notes = preview(server_url, model, api_key or "sk-noop")
+    except (OSError, ValueError) as exc:
+        print(f"[dry-run] {name}: cannot preview — {exc}")
+        return
+    for note in notes:
+        print(f"[dry-run] {name}: note: {note}")
+    print(diff if diff else f"[dry-run] {name}: already configured; no changes")
+
+
 def launch_command(args: argparse.Namespace) -> None:
     """Argparse entry point for ``rapid-mlx launch``.
 
@@ -231,6 +252,7 @@ def launch_command(args: argparse.Namespace) -> None:
             path = adapter.current_config_path()
             installed = adapter.detect()
             print(f"[dry-run] {name}: detected={installed} would-patch={path}")
+            _print_preview(name, adapter, server_url, model, api_key)
         if args.start_server:
             print(f"[dry-run] would spawn: rapid-mlx serve {model} --port {args.port}")
         return
@@ -276,6 +298,10 @@ def launch_command(args: argparse.Namespace) -> None:
             failures.append(name)
             continue
         print(f"  Patched {name} config at {path}")
+        notes = getattr(adapter, "post_setup_notes", None)
+        if notes is not None:
+            for line in notes(server_url, model, api_key):
+                print(f"    {line}")
 
     succeeded = [n for n in targets if n not in failures]
 

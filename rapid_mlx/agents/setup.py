@@ -44,6 +44,11 @@ class SetupPlan:
     credentials_path: Path | None = None
     credentials_before: dict[str, Any] | None = None
     credentials_after: dict[str, Any] | None = None
+    # A source file the plan reads but never writes (Continue's config.json
+    # when config.yaml is first created from it); re-checked before applying.
+    migrated_from: Path | None = None
+    migrated_from_before: dict[str, Any] | None = None
+    notes: tuple[str, ...] = ()
 
     @property
     def changed(self) -> bool:
@@ -53,6 +58,17 @@ class SetupPlan:
         )
 
     def diff(self) -> str:
+        if self.agent == "continue" and isinstance(self.after, dict):
+            # Migrated or patched Continue configs can hold real keys for
+            # other providers; the preview hides them like Claude's.
+            diff = launch_common.unified_diff(
+                _serialize(launch_common.redact_secrets(self.before), "yaml")
+                if self.before
+                else "",
+                _serialize(launch_common.redact_secrets(self.after), "yaml"),
+                self.path,
+            )
+            return "\n".join([diff, *(f"  Note: {note}" for note in self.notes)])
         before_data = self.before
         after_data = self.after
         secret_changed = False
@@ -274,12 +290,27 @@ def build_setup_plan(
             "claude-code", "Claude Code", path, before, after, base_url, model
         )
     if agent in {"continue", "continue-dev"}:
-        path = continue_dev.current_config_path()
-        assert path is not None
-        before = launch_common.load_json_lenient(path)
-        after = continue_dev.patched_config(before, base_url, model)
+        # Continue reads config.yaml (the cn CLI reads nothing else). A plan
+        # that creates it from a populated config.json carries the converted
+        # JSON settings over and leaves config.json itself untouched.
+        try:
+            continue_plan = continue_dev.build_plan(base_url, model)
+        except ValueError:
+            if emit_telemetry:
+                track_agent_configure_failed("config_invalid", "continue")
+            raise
         return SetupPlan(
-            "continue", "Continue.dev", path, before, after, base_url, model
+            "continue",
+            "Continue.dev",
+            continue_plan.path,
+            continue_plan.before,
+            continue_plan.after,
+            base_url,
+            model,
+            "yaml",
+            migrated_from=continue_plan.migrated_from,
+            migrated_from_before=continue_plan.migrated_from_before,
+            notes=continue_plan.notes,
         )
     if agent in {"deepseek-harness", "dsh"}:
         # Resolve each managed file independently before backup + atomic
@@ -420,6 +451,15 @@ def apply_setup_plan(plan: SetupPlan) -> Path:
     if current != plan.before:
         track_agent_configure_failed("config_changed", plan.agent)
         raise RuntimeError(f"{plan.path} changed after preview; re-run --setup")
+    if plan.migrated_from is not None:
+        if (
+            launch_common.load_json_lenient(plan.migrated_from)
+            != plan.migrated_from_before
+        ):
+            track_agent_configure_failed("config_changed", plan.agent)
+            raise RuntimeError(
+                f"{plan.migrated_from} changed after preview; re-run --setup"
+            )
     if plan.credentials_path is not None:
         credentials_current = _load_yaml_mapping(plan.credentials_path, plan.agent)
         if credentials_current != (plan.credentials_before or {}):

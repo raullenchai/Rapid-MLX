@@ -374,7 +374,7 @@ def test_every_agent_profile_emits_one_configured_event(
             monkeypatch.setattr(
                 setup.continue_dev,
                 "current_config_path",
-                lambda: tmp_path / "continue.json",
+                lambda: tmp_path / "config.yaml",
             )
         plan = setup.build_setup_plan(
             agent_name,
@@ -443,7 +443,7 @@ def test_saved_first_class_config_with_dead_server_emits_only_failure(
     loopback_telemetry, tmp_path, monkeypatch
 ):
     monkeypatch.setattr(
-        setup.continue_dev, "current_config_path", lambda: tmp_path / "continue.json"
+        setup.continue_dev, "current_config_path", lambda: tmp_path / "config.yaml"
     )
     monkeypatch.setattr(
         setup.urllib.request,
@@ -483,7 +483,7 @@ def test_first_class_second_identical_setup_emits_nothing(
     loopback_telemetry, tmp_path, monkeypatch
 ):
     monkeypatch.setattr(
-        setup.continue_dev, "current_config_path", lambda: tmp_path / "continue.json"
+        setup.continue_dev, "current_config_path", lambda: tmp_path / "config.yaml"
     )
     args = SimpleNamespace(
         agent_name="continue",
@@ -574,7 +574,7 @@ def test_non_oserror_write_failure_is_not_misclassified(
     plan = setup.SetupPlan(
         "continue",
         "Continue.dev",
-        tmp_path / "continue.json",
+        tmp_path / "config.yaml",
         {},
         {"configured": True},
         "http://127.0.0.1:8000/v1",
@@ -940,7 +940,7 @@ def test_confirm_plan_handles_eof(monkeypatch, tmp_path):
     plan = setup.SetupPlan(
         "continue",
         "Continue.dev",
-        tmp_path / "continue.json",
+        tmp_path / "config.yaml",
         {},
         {},
         "http://127.0.0.1:8000/v1",

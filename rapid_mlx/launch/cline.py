@@ -1,53 +1,84 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Cline (VS Code extension) launch adapter.
+"""Cline (Cline CLI and the VS Code extension) launch adapter.
 
-Cline lives under VS Code's global storage as a single
-``cline_mcp_settings.json``. The relevant keys are the OpenAI-compatible
-provider settings — Cline routes traffic at ``openAiBaseUrl`` and
-authenticates with ``openAiApiKey`` when ``apiProvider`` is
-``"openai"``. Pointing those three at our local server is all that
-``rapid-mlx launch cline`` has to do.
+Where Cline keeps its model provider
+------------------------------------
+Current Cline (CLI 3.x, VS Code extension 4.x) shares one data directory,
+``~/.cline/data`` (``$CLINE_DATA_DIR``, else ``$CLINE_DIR/data``). Provider
+settings live in ``settings/providers.json``, owned by the Cline SDK's
+``ProviderSettingsManager``:
 
-Cline's exact config schema has churned a few times across releases; we
-preserve every existing key and only touch the four we know we own,
-which means a config from a future Cline release still round-trips
-cleanly (the unknown keys come back out untouched on the next save).
+.. code-block:: json
+
+   {
+     "version": 1,
+     "lastUsedProvider": "openai-compatible",
+     "modes": {},
+     "providers": {
+       "openai-compatible": {
+         "settings": {"provider": "openai-compatible", "apiKey": "...",
+                      "model": "...", "baseUrl": "http://127.0.0.1:8000/v1"},
+         "updatedAt": "2026-10-06T18:08:54.038Z",
+         "tokenSource": "manual"
+       }
+     }
+   }
+
+That is exactly what ``cline auth -p openai -b <url> -k <key> -m <model>``
+writes, and the Cline CLI reads it on every run. The VS Code extension uses
+it as well, but its *selected* provider comes from its own UI state first
+(``globalState.json``, which a running VS Code keeps in memory and rewrites),
+so an extension that already has a provider picked must be switched in its
+settings panel — we print the exact steps rather than editing live editor
+state.
+
+``cline_mcp_settings.json`` is Cline's MCP-server list; it never held model
+provider settings, and this adapter does not touch it.
+
+Cline treats a ``providers.json`` that fails its schema as empty and would
+overwrite it on the next save, so we refuse to modify one we cannot parse
+and keep the shape strict (version 1, ISO ``updatedAt`` in UTC with ``Z``).
 """
 
 from __future__ import annotations
 
+import json
+import os
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from . import _common
 
-# VS Code extension id ("publisher.name"). Cline's stable id is
-# ``saoudrizwan.claude-dev`` (the project predates the rename to
-# "Cline" and the extension id never changed). The settings file
-# lives under VS Code's globalStorage tree for that extension.
+# The OpenAI-compatible provider id in the Cline SDK (``cline auth -p openai``
+# stores it under this id).
+_PROVIDER_ID = "openai-compatible"
+
+# Legacy VS Code extension id ("publisher.name"); the extension's
+# ``globalStorage`` dir still exists for installs that predate the shared
+# ``~/.cline`` directory, so it remains a detection signal.
 _EXTENSION_ID = "saoudrizwan.claude-dev"
 
-# The settings filename — same shape across VS Code Stable, Insiders,
-# and VSCodium. We probe all three install roots in priority order so a
-# user on VSCodium isn't penalised for not running upstream VS Code.
-_SETTINGS_FILENAME = "cline_mcp_settings.json"
+
+def _cline_data_dir() -> Path:
+    """Resolve Cline's data dir the way the Cline SDK does
+    (``resolveClineDataDir``): ``$CLINE_DATA_DIR``, else
+    ``$CLINE_DIR/data``, else ``~/.cline/data``."""
+    data_dir = os.environ.get("CLINE_DATA_DIR", "").strip()
+    if data_dir:
+        return Path(data_dir).expanduser()
+    cline_dir = os.environ.get("CLINE_DIR", "").strip()
+    root = Path(cline_dir).expanduser() if cline_dir else Path.home() / ".cline"
+    return root / "data"
 
 
 def _candidate_settings_roots() -> list[Path]:
-    """Per-OS list of VS Code (and forks') ``User/globalStorage`` roots.
-
-    Order is "most likely first" so :func:`current_config_path` returns
-    the canonical Stable path when multiple installs coexist. macOS
-    paths come first because that's the platform rapid-mlx targets
-    (Apple Silicon); Linux paths follow so CI / dev containers still
-    detect a configured Cline install.
-    """
+    """VS Code (and forks') ``User/globalStorage`` roots, macOS first."""
     home = Path.home()
     return [
-        # macOS — VS Code Stable, Insiders, VSCodium.
         home / "Library/Application Support/Code/User/globalStorage",
         home / "Library/Application Support/Code - Insiders/User/globalStorage",
         home / "Library/Application Support/VSCodium/User/globalStorage",
-        # Linux — same three flavours under ~/.config.
         home / ".config/Code/User/globalStorage",
         home / ".config/Code - Insiders/User/globalStorage",
         home / ".config/VSCodium/User/globalStorage",
@@ -55,43 +86,130 @@ def _candidate_settings_roots() -> list[Path]:
 
 
 def detect() -> bool:
-    """Return True when a VS Code-family install has the Cline extension
-    materialised on disk.
+    """Return True when the Cline CLI or the VS Code extension is present.
 
-    We check for the per-extension ``globalStorage`` directory rather
-    than the editor binary alone — a user can have ``code`` on their
-    PATH without having installed Cline, in which case ``launch cline``
-    has nothing useful to do.
+    Signals: ``cline`` on PATH, Cline's data directory, or the extension's
+    ``globalStorage`` directory in a VS Code-family editor.
     """
-    return current_config_path() is not None
+    if _common.which("cline"):
+        return True
+    if _cline_data_dir().exists():
+        return True
+    return any((root / _EXTENSION_ID).exists() for root in _candidate_settings_roots())
 
 
 def current_config_path() -> Path | None:
-    """Return the canonical Cline settings path, or ``None`` if Cline
-    isn't installed.
+    """Return ``<cline data dir>/settings/providers.json``."""
+    return _cline_data_dir() / "settings" / "providers.json"
 
-    "Installed" means *either*:
 
-    * the settings file already exists (Cline has been opened at least
-      once and wrote its initial config), OR
-    * the extension's ``globalStorage`` dir exists (Cline is installed
-      but hasn't created the MCP settings file yet — we'll create it).
+def load_providers(path: Path) -> dict[str, Any]:
+    """Read ``providers.json``; ``{}`` when missing or blank.
 
-    If neither condition holds for any VS Code flavour, return None and
-    the launch dispatcher prints a "Cline not detected — install it
-    from the VS Code marketplace" hint.
+    Raises ``ValueError`` for anything Cline's schema would reject, so we
+    never rewrite (and thereby wipe) a file we do not understand.
     """
-    for root in _candidate_settings_roots():
-        ext_dir = root / _EXTENSION_ID / "settings"
-        candidate = ext_dir / _SETTINGS_FILENAME
-        # Prefer a fully-materialised file. If the dir exists but the
-        # file doesn't, treat as installed-but-uninitialised and
-        # return the canonical path so we can create the file.
-        if candidate.exists():
-            return candidate
-        if ext_dir.exists():
-            return candidate
-    return None
+    try:
+        data = _common.load_json_lenient(path)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{path} is not valid JSON: {exc}") from exc
+    if data == {}:
+        return {}
+    if (
+        not isinstance(data, dict)
+        or data.get("version") != 1
+        or not isinstance(data.get("providers"), dict)
+    ):
+        raise ValueError(
+            f"{path} is not a Cline providers file (version 1) this version of "
+            "rapid-mlx understands; configure Cline with "
+            "`cline auth -p openai -b <url> -k <key> -m <model>` instead"
+        )
+    return data
+
+
+def _now_iso() -> str:
+    now = datetime.now(timezone.utc)
+    return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
+
+
+def _base_url(server_url: str) -> str:
+    base_url = server_url.rstrip("/")
+    if not base_url.endswith("/v1"):
+        base_url = base_url + "/v1"
+    return base_url
+
+
+def patched_config(
+    existing: dict[str, Any],
+    server_url: str,
+    model: str,
+    api_key: str = "sk-noop",
+    *,
+    now: str | None = None,
+) -> dict[str, Any]:
+    """Return the ``providers.json`` we would write, without touching disk.
+
+    Mirrors ``ProviderSettingsManager.saveProviderSettings``: the
+    ``openai-compatible`` entry gets our base URL / key / model (other
+    fields in that entry, e.g. custom headers, are kept), becomes
+    ``lastUsedProvider``, and every other provider is preserved. When the
+    entry already matches, the input is returned unchanged so a re-run is a
+    no-op (no new ``updatedAt``).
+    """
+    # A new file follows Cline's own key order.
+    result = (
+        dict(existing)
+        if existing
+        else {
+            "version": 1,
+            "lastUsedProvider": _PROVIDER_ID,
+            "modes": {},
+            "providers": {},
+        }
+    )
+    result.setdefault("modes", {})
+    providers = dict(result.get("providers") or {})
+    previous = providers.get(_PROVIDER_ID)
+    previous = previous if isinstance(previous, dict) else {}
+    previous_settings = previous.get("settings")
+    previous_settings = previous_settings if isinstance(previous_settings, dict) else {}
+    settings = {
+        **previous_settings,
+        "provider": _PROVIDER_ID,
+        "apiKey": api_key,
+        "model": model,
+        "baseUrl": _base_url(server_url),
+    }
+    if (
+        settings == previous_settings
+        and result.get("lastUsedProvider") == _PROVIDER_ID
+        and result == existing
+    ):
+        return existing
+    providers[_PROVIDER_ID] = {
+        "settings": settings,
+        "updatedAt": now or _now_iso(),
+        "tokenSource": previous.get("tokenSource", "manual"),
+    }
+    result["providers"] = providers
+    result["lastUsedProvider"] = _PROVIDER_ID
+    return result
+
+
+def post_setup_notes(server_url: str, model: str, api_key: str | None) -> list[str]:
+    """Lines ``rapid-mlx launch cline`` prints after configuring Cline,
+    including the exact settings-panel steps for the VS Code extension."""
+    key = "your RAPID_MLX_API_KEY value" if api_key else "any value, e.g. sk-noop"
+    return [
+        'Cline CLI: ready — run `cline "<task>"`.',
+        "Cline in VS Code: if Cline already has a provider selected, open Cline "
+        "> Settings (gear icon) > API Configuration and set:",
+        "    API Provider: OpenAI Compatible",
+        f"    Base URL:     {_base_url(server_url)}",
+        f"    API Key:      {key}",
+        f"    Model ID:     {model}",
+    ]
 
 
 def write_or_patch_config(
@@ -100,48 +218,38 @@ def write_or_patch_config(
     api_key: str = "sk-noop",
     config_path: Path | None = None,
 ) -> Path:
-    """Patch Cline's ``cline_mcp_settings.json`` to route at the local
-    rapid-mlx OpenAI-compatible server.
+    """Point Cline's ``openai-compatible`` provider at the rapid-mlx server
+    and make it the last-used provider.
 
-    Keys we own:
-
-    * ``apiProvider`` → ``"openai"``
-    * ``openAiBaseUrl`` → ``<server_url>/v1``
-    * ``openAiApiKey`` → ``<api_key>`` (default: ``"sk-noop"``,
-      since rapid-mlx defaults to no-auth on loopback)
-    * ``openAiModelId`` → ``<model>``
-
-    Every other key in the existing file is preserved verbatim — the
-    user's MCP tool list, custom instructions, ratelimit prefs all
-    survive a relaunch.
-
-    The ``config_path`` arg is a test/dry-run hook; production callers
-    let :func:`current_config_path` resolve it. Returns the path so the
-    CLI can print "✓ Patched Cline config at <path>".
+    Idempotent (an already-matching file is not rewritten or backed up);
+    otherwise the existing file is backed up to ``providers.json.bak.<ts>``
+    and replaced atomically with owner-only permissions, as Cline does.
     """
     path = config_path or current_config_path()
-    if path is None:
-        raise FileNotFoundError(
-            "Cline does not appear to be installed (no globalStorage dir found). "
-            "Install Cline from the VS Code marketplace and try again."
-        )
-
-    existing = _common.load_json_lenient(path)
+    assert path is not None
+    existing = load_providers(path)
+    updated = patched_config(existing, server_url, model, api_key)
+    if updated is existing and path.exists():
+        return path
     _common.backup_existing(path)
-
-    # ``server_url`` may or may not include the ``/v1`` suffix — match
-    # what the user typed: if they said ``http://127.0.0.1:8000`` we
-    # add ``/v1`` (Cline expects an OpenAI-compatible *base* URL that
-    # ends in ``/v1``); if they already passed ``/v1`` we leave it
-    # alone. Avoids accidentally producing ``/v1/v1``.
-    base_url = server_url.rstrip("/")
-    if not base_url.endswith("/v1"):
-        base_url = base_url + "/v1"
-
-    existing["apiProvider"] = "openai"
-    existing["openAiBaseUrl"] = base_url
-    existing["openAiApiKey"] = api_key
-    existing["openAiModelId"] = model
-
-    _common.atomic_write_json(path, existing)
+    _common.atomic_write_json(path, updated)
     return path
+
+
+def preview(
+    server_url: str, model: str, api_key: str = "sk-noop"
+) -> tuple[Path, str, tuple[str, ...]]:
+    """``(path, redacted diff, notes)`` for ``launch --dry-run``; no writes."""
+    path = current_config_path()
+    assert path is not None
+    existing = load_providers(path)
+    updated = patched_config(existing, server_url, model, api_key)
+    if updated is existing and path.exists():
+        return path, "", ()
+
+    def render(data: dict[str, Any]) -> str:
+        if not data:
+            return ""
+        return json.dumps(_common.redact_secrets(data), indent=2)
+
+    return path, _common.unified_diff(render(existing), render(updated), path), ()

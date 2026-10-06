@@ -169,16 +169,27 @@ def backup_existing(path: Path) -> Path | None:
 def atomic_write_json(path: Path, data: object) -> None:
     """Write ``data`` to ``path`` as pretty-printed JSON atomically.
 
+    JSON is written with a trailing newline to match what every editor's
+    "format on save" produces. See :func:`atomic_write_text` for the
+    atomicity and permission guarantees.
+    """
+    atomic_write_text(path, json.dumps(data, indent=2, sort_keys=False) + "\n")
+
+
+def atomic_write_text(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` atomically with owner-only permissions.
+
     We write to a sibling temp file in the same directory (``rename`` is
     only atomic within a single filesystem) and then ``os.replace`` it
     over the target. A Ctrl-C between the write and the replace leaves
     the temp file behind — recoverable — instead of a half-written
-    config that breaks the client on next launch.
+    config that breaks the client on next launch. ``mkstemp`` creates the
+    file 0600, which the rename keeps: these configs can carry
+    ``RAPID_MLX_API_KEY``.
 
     The directory is mkdir'd with ``parents=True`` so we can patch a
     config for a never-before-run client (e.g. a user who installed
-    Continue but never opened it). JSON is written with a trailing
-    newline to match what every editor's "format on save" produces.
+    Continue but never opened it).
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     # ``delete=False`` so we control the unlink path — the temp file
@@ -191,8 +202,7 @@ def atomic_write_json(path: Path, data: object) -> None:
     )
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, sort_keys=False)
-            f.write("\n")
+            f.write(text)
             # fsync so the bytes hit disk before the rename. Without
             # this an OS crash between rename and flush could leave us
             # with a renamed but empty file on the target.
@@ -260,3 +270,54 @@ def which(cmd: str) -> str | None:
     import shutil
 
     return shutil.which(cmd)
+
+
+# Field names whose values are credentials in the client configs we preview.
+_SECRET_FIELD_MARKERS = ("key", "token", "secret", "password")
+# rapid-mlx's own loopback placeholder carries no secret and is shown as-is.
+_PLACEHOLDER_KEY = "sk-noop"
+
+
+def redact_secrets(data: object) -> object:
+    """Return a copy of ``data`` with credential-looking string values hidden.
+
+    Used for previews only (``--dry-run`` diffs): a config being migrated or
+    patched may hold real keys for unrelated providers, and a preview must
+    never echo them. Any string under a field whose name ends with
+    key/token/secret/password becomes ``<redacted>``, except the
+    ``sk-noop`` placeholder rapid-mlx writes for an unauthenticated server.
+    Matching is on the name's ending so ``apiKey``/``accessToken`` are hidden
+    while ``tokenSource`` or ``maxTokens`` stay readable.
+    """
+    if isinstance(data, dict):
+        result: dict[object, object] = {}
+        for name, value in data.items():
+            lowered = str(name).lower()
+            if (
+                isinstance(value, str)
+                and value
+                and value != _PLACEHOLDER_KEY
+                and lowered.endswith(_SECRET_FIELD_MARKERS)
+            ):
+                result[name] = "<redacted>"
+            else:
+                result[name] = redact_secrets(value)
+        return result
+    if isinstance(data, list):
+        return [redact_secrets(item) for item in data]
+    return data
+
+
+def unified_diff(before: str, after: str, path: Path) -> str:
+    """Unified diff of two serialized configs, labelled with ``path``."""
+    import difflib
+
+    return "\n".join(
+        difflib.unified_diff(
+            before.splitlines(),
+            after.splitlines(),
+            fromfile=str(path),
+            tofile=str(path) + " (proposed)",
+            lineterm="",
+        )
+    )

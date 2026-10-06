@@ -3066,24 +3066,45 @@ def section_optional_tools(
 # ---------------------------------------------------------------------------
 
 
+def _continue_config_path(home: Path) -> Path:
+    """The file Continue reads: config.yaml when present, else config.json
+    (Continue's ``getPrimaryConfigFilePath``), under ``CONTINUE_GLOBAL_DIR``
+    or ``~/.continue``."""
+    configured = os.environ.get("CONTINUE_GLOBAL_DIR", "").strip()
+    root = Path(configured).expanduser() if configured else home / ".continue"
+    yaml_path = root / "config.yaml"
+    return yaml_path if yaml_path.is_file() else root / "config.json"
+
+
+def _cline_providers_path(home: Path) -> Path:
+    """Cline's shared provider settings (CLI and VS Code extension)."""
+    data_dir = os.environ.get("CLINE_DATA_DIR", "").strip()
+    if data_dir:
+        return Path(data_dir).expanduser() / "settings/providers.json"
+    cline_dir = os.environ.get("CLINE_DIR", "").strip()
+    root = Path(cline_dir).expanduser() if cline_dir else home / ".cline"
+    return root / "data/settings/providers.json"
+
+
+def _read_config(path: Path) -> object:
+    text = path.read_text(encoding="utf-8")
+    if path.suffix == ".yaml":
+        import yaml
+
+        try:
+            return yaml.safe_load(text)
+        except yaml.YAMLError as exc:
+            raise ValueError(str(exc)) from exc
+    return json.loads(text)
+
+
 def _agent_integrations(home: Path) -> list[tuple[str, Path, str | None]]:
     """Read the local endpoint selected by each supported agent client."""
     configs = [
         ("Claude Code", home / ".claude/settings.json"),
-        ("Continue.dev", home / ".continue/config.json"),
+        ("Continue.dev", _continue_config_path(home)),
+        ("Cline", _cline_providers_path(home)),
     ]
-    cline_roots = (
-        home / "Library/Application Support/Code/User/globalStorage",
-        home / "Library/Application Support/Code - Insiders/User/globalStorage",
-        home / "Library/Application Support/VSCodium/User/globalStorage",
-        home / ".config/Code/User/globalStorage",
-        home / ".config/Code - Insiders/User/globalStorage",
-        home / ".config/VSCodium/User/globalStorage",
-    )
-    configs.extend(
-        ("Cline", root / "saoudrizwan.claude-dev/settings/cline_mcp_settings.json")
-        for root in cline_roots
-    )
 
     integrations: list[tuple[str, Path, str | None]] = []
     for name, path in configs:
@@ -3091,26 +3112,34 @@ def _agent_integrations(home: Path) -> list[tuple[str, Path, str | None]]:
             continue
         url = None
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = _read_config(path)
             if not isinstance(data, dict):
                 integrations.append((name, path, None))
                 continue
             if name == "Claude Code" and isinstance(data.get("env"), dict):
                 url = data["env"].get("ANTHROPIC_BASE_URL")
             elif name == "Continue.dev" and isinstance(data.get("models"), list):
+                # config.yaml names models ``name``; legacy config.json ``title``.
                 url = next(
                     (
                         model.get("apiBase")
                         for model in data["models"]
                         if isinstance(model, dict)
-                        and model.get("title") == "rapid-mlx"
+                        and (model.get("name") or model.get("title")) == "rapid-mlx"
                         and model.get("provider") == "openai"
                     ),
                     None,
                 )
-            elif name == "Cline" and data.get("apiProvider") == "openai":
-                url = data.get("openAiBaseUrl")
-        except (OSError, UnicodeError, json.JSONDecodeError):
+            elif name == "Cline" and isinstance(data.get("providers"), dict):
+                entry = data["providers"].get("openai-compatible")
+                settings = entry.get("settings") if isinstance(entry, dict) else None
+                if data.get("lastUsedProvider") == "openai-compatible" and isinstance(
+                    settings, dict
+                ):
+                    url = settings.get("baseUrl")
+        except (OSError, UnicodeError, ValueError):
+            # Unreadable or unparsable (JSONDecodeError, wrapped YAMLError):
+            # reported as "not configured".
             pass
         integrations.append((name, path, url if isinstance(url, str) else None))
     return integrations
