@@ -573,6 +573,42 @@ def _git_blob_oid(path: Path) -> str:
     return hasher.hexdigest()
 
 
+def _blob_oid_is(expected: str) -> Callable[[Path], bool]:
+    """Predicate: the file at a path hashes to git blob id ``expected``."""
+
+    def check(path: Path) -> bool:
+        try:
+            return _git_blob_oid(path) == expected
+        except OSError:
+            return False
+
+    return check
+
+
+def _drop_bad_blob(repo_root: Path, oid: str) -> None:
+    """Remove ``blobs/<oid>`` when its bytes do not hash to ``oid``.
+
+    HF names a non-LFS blob by its git blob id and re-links an existing blob
+    by name without downloading. A corrupted one would otherwise survive every
+    HF fallback, so it is removed (under the same lock our installer takes)
+    before the fallback runs. When ``blobs/<oid>`` is a link into a shared
+    store, only this repository's link is removed, never the shared file.
+    """
+    blob = repo_root / "blobs" / oid
+    try:
+        if not blob.is_file():
+            return
+    except OSError:
+        return
+    lock_path = repo_root / "blobs" / f"{oid}.lock"
+    lock_fh = _acquire_part_lock(lock_path)
+    try:
+        if blob.is_file() and not _blob_oid_is(oid)(blob):
+            _safe_unlink(blob)
+    finally:
+        _release_part_lock(lock_fh, lock_path)
+
+
 def pinned_snapshot_download(
     repo_id: str,
     revision: str,
@@ -699,18 +735,19 @@ def _download_one_from_r2(
     Codex round-5 BLOCKING #1: when ``expected_sha256`` is provided
     (HF's LFS sha256 metadata, set on weight shards), the downloaded
     bytes are checked against it before the rename. A mirror serving a
-    same-size but corrupt object is rejected. For non-LFS files (small
-    text assets), there is no LFS sha and the integrity check falls
-    back to size-only — the realistic threat surface for tiny config
-    files is much smaller.
+    same-size but corrupt object is rejected. Non-LFS files (configs,
+    tokenizers, chat templates) have no LFS sha; for them
+    ``expected_git_oid`` (the git blob id HF lists for every file) is
+    recomputed over the downloaded bytes instead, so a same-size file from
+    an older upload is rejected the same way.
 
     Issue #652: when ``expected_sha256`` is provided and ``repo_root``
     is set, the verified bytes land at ``repo_root/blobs/<sha>`` and
     ``target`` becomes a relative symlink to that blob — matching HF's
     own cache layout, so subsequent warm pulls hit the blob-name
     shortcut at the cached-check site (skipping a multi-GB rehash).
-    Non-LFS files (no ``expected_sha256``) stay as regular files at
-    ``target`` for parity with HF's own layout for tiny configs.
+    A non-LFS file proven by ``expected_git_oid`` lands the same way at
+    ``repo_root/blobs/<git blob id>``, which is where HF itself keeps it.
     """
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -1036,9 +1073,10 @@ def _do_r2_download(
         _rollback_credits(progress_tracker, chunks_credited)
         return False, "empty-response-no-size"
 
-    # Pinned-revision non-LFS files: the git blob id is the only digest HF
-    # publishes for them, so recompute it over the downloaded bytes. A
-    # same-size file from a different commit fails here and falls back to HF.
+    # Non-LFS files: the git blob id is the only digest HF publishes for
+    # them, so recompute it over the downloaded bytes. A same-size file from
+    # a different commit (an older upload of a config HF has since updated)
+    # fails here and falls back to HF.
     if expected_git_oid is not None:
         try:
             got_oid = _git_blob_oid(tmp)
@@ -1055,7 +1093,9 @@ def _do_r2_download(
             # ``blobs/<git blob id>`` and the snapshot entry links to them.
             # Readiness gates that require snapshot files to resolve inside
             # the repo's blob store (Wan) depend on it.
-            ok, reason = _install_lfs_blob_and_symlink(tmp, target, repo_root, got_oid)
+            ok, reason = _install_lfs_blob_and_symlink(
+                tmp, target, repo_root, got_oid, existing_ok=_blob_oid_is(got_oid)
+            )
             if not ok:
                 _safe_unlink(tmp)
                 _rollback_credits(progress_tracker, chunks_credited)
@@ -1066,9 +1106,8 @@ def _do_r2_download(
     # verified bytes at ``repo_root/blobs/<sha>`` and symlink the
     # snapshot path at it — matches HF's own layout exactly so the
     # blob-name shortcut at the warm-cache check fires uniformly for
-    # both R2-sourced and HF-sourced cache state. Non-LFS files
-    # (config.json, tokenizer.json, etc.) stay as regular files at
-    # ``target``; HF does the same for those.
+    # both R2-sourced and HF-sourced cache state. (Non-LFS files took the
+    # git-blob-id branch above and land in ``blobs/`` the same way.)
     if expected_sha256 is not None and repo_root is not None:
         ok, reason = _install_lfs_blob_and_symlink(
             tmp, target, repo_root, expected_sha256
@@ -1093,6 +1132,8 @@ def _install_lfs_blob_and_symlink(
     target: Path,
     repo_root: Path,
     expected_sha256: str,
+    *,
+    existing_ok: Callable[[Path], bool] | None = None,
 ) -> tuple[bool, str]:
     """Land verified LFS bytes at ``blobs/<sha>`` and symlink ``target``.
 
@@ -1117,6 +1158,10 @@ def _install_lfs_blob_and_symlink(
       we acquired the lock, just symlink to it and drop our ``tmp``
       (size+sha are already validated upstream, so any existing blob
       with that name has the same content).
+    * ``existing_ok``, when given, must also accept that existing blob;
+      otherwise our verified bytes replace it under the lock. Non-LFS
+      files pass a git-blob-id check (cheap: HF keeps them small), so a
+      corrupted ``blobs/<blob id>`` is never trusted by name.
     """
     blobs_dir = repo_root / "blobs"
     blob_path = blobs_dir / expected_sha256
@@ -1136,7 +1181,11 @@ def _install_lfs_blob_and_symlink(
         # check and now. If it's there with content, drop our tmp and
         # just symlink. sha+size were validated by the caller, so any
         # blob already at the canonical name has identical bytes.
-        if blob_path.exists() and not blob_path.is_symlink():
+        if (
+            blob_path.exists()
+            and not blob_path.is_symlink()
+            and (existing_ok is None or existing_ok(blob_path))
+        ):
             _safe_unlink(tmp)
         else:
             # Atomic install: write to a ``.tmp`` sibling first so a
@@ -1579,6 +1628,14 @@ def download_with_mirror_fallback(
     we did fetch are valid HF-cache entries that ``snapshot_download``
     will skip.
 
+    Every mirror object must be proven to be the file HF lists at the
+    resolved commit before it is used: the LFS SHA-256 for weights, the git
+    blob id for every other file (configs, tokenizers, chat templates), both
+    recomputed over the downloaded bytes. The mirror holds one upload of
+    each file, and HF may have changed a config since, often without changing
+    its size. A file whose digest is missing from HF's metadata, or that
+    fails the check, or that the mirror lacks, comes from HF instead.
+
     ``revision``: ``None`` or ``"main"`` pulls the default branch and pins
     ``refs/main`` to it. A full 40-hex commit SHA pulls exactly that commit
     into ``snapshots/<sha>/`` and writes no ref, matching
@@ -1688,17 +1745,16 @@ def download_with_mirror_fallback(
         return False
     siblings = getattr(info, "siblings", None) or []
     # Git blob ids (SHA-1 of ``blob <len>\0<bytes>``) for every listed file.
-    # A pinned pull uses them to prove a non-LFS mirror object is the exact
-    # file at the pinned commit; size alone cannot.
+    # They prove a non-LFS mirror object is the exact file at the resolved
+    # commit (pinned or the current ``main``); size alone cannot.
     git_oids: dict[str, str | None] = {}
     # Each file: (relative_path, expected_size, lfs_sha256).
     # - ``expected_size`` from HF's siblings metadata (None if HF didn't
     #   expose it; use ``size is not None`` to distinguish 0 from
     #   unknown).
     # - ``lfs_sha256`` only present for LFS-tracked files (the big
-    #   weight shards). Code paths that need stronger-than-size
-    #   integrity check the hash; non-LFS files (small text assets) keep
-    #   the size-only check. Codex round-5 BLOCKING #1.
+    #   weight shards), checked over the bytes. Non-LFS files are checked
+    #   by their git blob id (``git_oids``) instead.
     files: list[tuple[str, int | None, str | None]] = []
     for s in siblings:
         rname = getattr(s, "rfilename", None)
@@ -1882,36 +1938,43 @@ def download_with_mirror_fallback(
     transferred_bytes = 0
 
     def _warm_file_proven(target: Path, fname: str) -> bool:
-        """A pinned snapshot proves a warm non-LFS file by its git blob id.
+        """Prove a warm non-LFS file by its git blob id.
 
-        Whatever left a file in ``snapshots/<pin>`` (an interrupted run, a
-        default-branch pull of the same commit, corruption), it is kept only
-        when its bytes hash to the pinned blob id; without a published blob
-        id it is refetched. Default-branch pulls keep the historical
-        acceptance.
+        Whatever left a file in ``snapshots/<sha>`` (an interrupted run, an
+        older client that accepted a same-size mirror config, corruption),
+        it is kept only when its bytes hash to the blob id HF lists at that
+        commit. Without a published blob id, a pinned snapshot refetches the
+        file from HF like a cold one; a default-branch snapshot keeps the
+        historical acceptance (nothing can prove or disprove those bytes, and
+        HF's own ``snapshot_download`` accepts them the same way).
         """
-        if not pinned:
-            return True
         expected = git_oids.get(fname)
         if expected is None:
-            # No published digest: nothing can prove the warm bytes, so the
-            # file is refetched from HF at the pin, like a cold one.
-            return False
+            return not pinned
         try:
-            if _git_blob_oid(target) != expected:
-                return False
+            proven = _git_blob_oid(target) == expected
         except OSError:
             return False
+        if not proven:
+            # The refetch replaces a bad ``blobs/<expected>`` under its lock
+            # (see ``existing_ok`` in ``_install_lfs_blob_and_symlink``).
+            return False
+        if target.is_symlink() and not pinned:
+            # Bytes proven; the link already passed the containment checks
+            # in ``_do_file`` (this repo's blobs or the Hub's shared store).
+            return True
         if target.is_symlink():
             # Keep only the HF layout readiness gates expect; any other link
             # (even to identical bytes) is dropped and refetched.
             resolved = target.resolve(strict=False)
             blobs = (repo_root / "blobs").resolve(strict=False)
             return resolved.parent == blobs and resolved.name == expected
-        # A proven regular file (e.g. left by an earlier default-branch
-        # mirror pull of the same commit) moves into the HF blob layout so
-        # readiness gates that require ``blobs/`` containment (Wan) agree.
-        ok, _reason = _install_lfs_blob_and_symlink(target, target, repo_root, expected)
+        # A proven regular file (left by an older client, which kept mirror
+        # configs as plain files) moves into the HF blob layout so readiness
+        # gates that require ``blobs/`` containment (Wan) agree.
+        ok, _reason = _install_lfs_blob_and_symlink(
+            target, target, repo_root, expected, existing_ok=_blob_oid_is(expected)
+        )
         return ok
 
     def _do_file(
@@ -2093,18 +2156,18 @@ def download_with_mirror_fallback(
             # fresh file at the path.
             _safe_unlink(target)
 
-        # The mirror holds one build of each file. For a pinned commit it may
-        # serve a file only when the bytes can be proven identical to that
-        # commit: the exact size, plus the LFS SHA-256 (weights) or the git
-        # blob id (everything else), both checked on the downloaded bytes.
-        # Without both pieces of metadata the file goes straight to HF.
-        expected_git_oid = git_oids.get(fname) if pinned else None
-        r2_eligible = use_r2 and (
-            not pinned
-            or (
-                expected_size is not None
-                and (expected_sha256 is not None or expected_git_oid is not None)
-            )
+        # The mirror holds one build of each file, uploaded at some earlier
+        # commit. It may serve a file only when the bytes can be proven
+        # identical to the resolved commit: the LFS SHA-256 (weights) or the
+        # git blob id (everything else), checked on the downloaded bytes. A
+        # file HF lists no digest for goes straight to HF: size alone cannot
+        # tell a current config from a stale same-size one. A pinned commit
+        # also requires the exact size, as before.
+        expected_git_oid = git_oids.get(fname)
+        r2_eligible = (
+            use_r2
+            and (expected_sha256 is not None or expected_git_oid is not None)
+            and (not pinned or expected_size is not None)
         )
         if r2_eligible:
             # ``dub`` is set above to either the catalog's
@@ -2149,6 +2212,8 @@ def download_with_mirror_fallback(
         #     post-lock path starts a transfer, so no shared-directory diff,
         #     mtime guess, private cache path, or extra metadata request is
         #     needed.
+        if expected_sha256 is None and expected_git_oid is not None:
+            _drop_bad_blob(repo_root, expected_git_oid)
         blob_already_local = False
         if expected_sha256 is not None:
             try:
