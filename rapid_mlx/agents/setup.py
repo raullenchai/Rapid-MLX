@@ -234,12 +234,19 @@ def _qwen_code_settings_path() -> Path:
     from rapid_mlx.agents.adapter import _resolve_config_path
 
     cfg = _qwen_code_profile().get_config_for_version(None)
-    if cfg.type != "json" or not cfg.path or not cfg.template:
+    if (
+        cfg.type != "json"
+        or not (isinstance(cfg.path, str) and cfg.path)
+        or not (isinstance(cfg.template, str) and cfg.template)
+    ):
         raise ValueError(
             "the installed qwen-code profile does not describe a JSON settings "
             "file; fix or remove its override in ~/.rapid-mlx/agents"
         )
-    return _resolve_config_path(cfg).resolve()
+    try:
+        return _resolve_config_path(cfg).resolve()
+    except RuntimeError as exc:  # a symlink loop, before Python 3.13
+        raise ValueError(f"cannot resolve the Qwen Code settings path: {exc}") from exc
 
 
 def _pi_models_path() -> Path:

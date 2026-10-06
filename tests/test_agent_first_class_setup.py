@@ -209,6 +209,8 @@ def test_qwen_code_plan_reports_an_unreadable_settings_file(tmp_path, monkeypatc
         {"template": '{"model": {"name": "{model_id}"}}'},
         {"template": '{"modelProviders": {"openai": [{"name": "no id"}]}}'},
         {"template": "[]"},
+        {"template": {"modelProviders": {"openai": [{"id": "{model_id}"}]}}},
+        {"path": ["~/.qwen/settings.json"]},
     ],
 )
 def test_qwen_code_plan_refuses_a_shadowing_profile_it_cannot_merge(
@@ -225,6 +227,23 @@ def test_qwen_code_plan_refuses_a_shadowing_profile_it_cannot_merge(
 
     with pytest.raises(ValueError, match="installed qwen-code profile"):
         build_setup_plan("qwen-code", "http://localhost:8000/v1", "local-model")
+
+    assert not (tmp_path / ".qwen").exists()
+
+
+def test_qwen_code_plan_refuses_an_unresolvable_settings_path(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    def symlink_loop(self, strict=False):
+        raise RuntimeError(f"Symlink loop from {str(self)!r}")
+
+    # Raised by Path.resolve() on a symlink loop before Python 3.13.
+    with monkeypatch.context() as scoped:
+        scoped.setattr(Path, "resolve", symlink_loop)
+        with pytest.raises(ValueError, match="cannot resolve"):
+            build_setup_plan("qwen-code", "http://localhost:8000/v1", "local-model")
 
     assert not (tmp_path / ".qwen").exists()
 
