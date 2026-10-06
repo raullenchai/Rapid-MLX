@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -115,7 +116,7 @@ def load_providers(path: Path) -> dict[str, Any]:
         raise ValueError(f"{path} is not valid JSON: {exc}") from exc
     if data == {}:
         return {}
-    if not _matches_cline_schema(data):
+    if not is_valid_providers_file(data):
         raise ValueError(
             f"{path} is not a Cline providers file (version 1) this version of "
             "rapid-mlx understands; configure Cline with "
@@ -125,9 +126,11 @@ def load_providers(path: Path) -> dict[str, Any]:
 
 
 _TOKEN_SOURCES = {"manual", "oauth", "migration"}
+# zod's ``z.string().datetime()`` default: UTC with a ``Z``, optional fraction.
+_ISO_UTC = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z")
 
 
-def _matches_cline_schema(data: object) -> bool:
+def is_valid_providers_file(data: object) -> bool:
     """The structural part of Cline's ``StoredProviderSettingsSchema`` (zod)
     that a rewrite would carry forward: anything failing it is read by Cline
     as an empty file and would be lost on its next save."""
@@ -154,7 +157,8 @@ def _matches_cline_schema(data: object) -> bool:
             settings.get("provider"), str
         ):
             return False
-        if not isinstance(entry.get("updatedAt"), str):
+        updated_at = entry.get("updatedAt")
+        if not isinstance(updated_at, str) or not _ISO_UTC.fullmatch(updated_at):
             return False
         if entry.get("tokenSource", "manual") not in _TOKEN_SOURCES:
             return False

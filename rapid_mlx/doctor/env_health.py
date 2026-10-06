@@ -3086,6 +3086,13 @@ def _cline_providers_path(home: Path) -> Path:
     return root / "data/settings/providers.json"
 
 
+def _cline_file_is_valid(data: object) -> bool:
+    """Cline reads a providers.json failing its schema as empty."""
+    from rapid_mlx.launch.cline import is_valid_providers_file
+
+    return is_valid_providers_file(data)
+
+
 def _read_config(path: Path) -> object:
     text = path.read_text(encoding="utf-8")
     if path.suffix == ".yaml":
@@ -3130,7 +3137,7 @@ def _agent_integrations(home: Path) -> list[tuple[str, Path, str | None]]:
                     ),
                     None,
                 )
-            elif name == "Cline" and isinstance(data.get("providers"), dict):
+            elif name == "Cline" and _cline_file_is_valid(data):
                 entry = data["providers"].get("openai-compatible")
                 settings = entry.get("settings") if isinstance(entry, dict) else None
                 if data.get("lastUsedProvider") == "openai-compatible" and isinstance(

@@ -754,7 +754,8 @@ def test_agent_integrations_read_continue_yaml_and_cline_providers(
     cline.parent.mkdir(parents=True)
     cline.write_text(
         '{"version":1,"lastUsedProvider":"openai-compatible","providers":'
-        '{"openai-compatible":{"settings":{"baseUrl":"http://localhost:8002/v1"}}}}'
+        '{"openai-compatible":{"settings":{"provider":"openai-compatible",'
+        '"baseUrl":"http://localhost:8002/v1"},"updatedAt":"2026-10-06T00:00:00Z"}}}'
     )
 
     assert eh._agent_integrations(tmp_path) == [

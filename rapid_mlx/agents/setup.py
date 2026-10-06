@@ -452,10 +452,12 @@ def apply_setup_plan(plan: SetupPlan) -> Path:
         track_agent_configure_failed("config_changed", plan.agent)
         raise RuntimeError(f"{plan.path} changed after preview; re-run --setup")
     if plan.migrated_from is not None:
-        if (
-            launch_common.load_json_lenient(plan.migrated_from)
-            != plan.migrated_from_before
-        ):
+        try:
+            source_current: Any = launch_common.load_json_lenient(plan.migrated_from)
+        except (OSError, ValueError):
+            # Unreadable now (e.g. a half-saved edit): it changed after preview.
+            source_current = None
+        if source_current != plan.migrated_from_before:
             track_agent_configure_failed("config_changed", plan.agent)
             raise RuntimeError(
                 f"{plan.migrated_from} changed after preview; re-run --setup"

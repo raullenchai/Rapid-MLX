@@ -171,11 +171,10 @@ def convert_legacy_config(legacy: dict[str, Any]) -> dict[str, Any]:
     result matches what the "Convert to config.yaml" command in the IDE
     produces, with the v1 schema header Continue writes for new files.
     """
+    # A legacy ``rapid-mlx`` entry is converted like any other; the patch
+    # then updates it in place, keeping fields we do not own.
     models: list[Any] = [
-        _convert_model(m, ["chat"])
-        for m in legacy.get("models") or []
-        # Our own legacy entry is replaced by the current one.
-        if not (isinstance(m, dict) and m.get("title") == _MODEL_ENTRY_NAME)
+        _convert_model(m, ["chat"]) for m in legacy.get("models") or []
     ]
     autocomplete = legacy.get("tabAutocompleteModel")
     if isinstance(autocomplete, list):

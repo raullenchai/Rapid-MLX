@@ -224,6 +224,8 @@ class TestCline:
             '{"version": 1, "providers": {"x": {"updatedAt": "t"}}}',
             '{"version": 1, "providers": {"x": {"settings": {"provider": "x"}}}}',
             '{"version": 1, "providers": {"x": {"settings": {"provider": "x"},'
+            ' "updatedAt": "2026-01-01T00:00:00+02:00"}}}',
+            '{"version": 1, "providers": {"x": {"settings": {"provider": "x"},'
             ' "updatedAt": "t", "tokenSource": "stolen"}}}',
         ],
     )
@@ -432,13 +434,12 @@ class TestContinueDev:
         """Golden: Continue's own ``convertJsonToYamlConfig``
         (@continuedev/config-yaml 1.42.0) on the same input. We differ only
         by the v1 header Continue writes for new files and by dropping our
-        own legacy entry (it is replaced, not duplicated)."""
+        is the v1 header Continue writes for new files."""
         legacy = json.loads((FIXTURES / "continue_legacy_config.json").read_text())
         upstream = json.loads(
             (FIXTURES / "continue_legacy_converted_upstream.json").read_text()
         )
         upstream.update(name="Local Config", version="1.0.0", schema="v1")
-        upstream["models"] = [m for m in upstream["models"] if m["name"] != "rapid-mlx"]
         assert continue_dev.convert_legacy_config(legacy) == upstream
 
     def test_migrates_legacy_json_without_touching_it(self, fake_home, capsys):

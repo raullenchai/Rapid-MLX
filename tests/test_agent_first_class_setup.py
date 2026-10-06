@@ -172,6 +172,19 @@ def test_continue_apply_refuses_legacy_json_changed_after_preview(setup_paths):
     assert not continue_path.exists()
 
 
+def test_continue_apply_treats_unreadable_legacy_json_as_changed(setup_paths):
+    _, continue_path = setup_paths
+    legacy = continue_path.with_name("config.json")
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text('{"models": [{"title": "A", "provider": "ollama"}]}')
+    plan = build_setup_plan("continue", "http://localhost:8000", "model")
+    legacy.write_text('{"models": [')
+
+    with pytest.raises(RuntimeError, match="changed after preview"):
+        apply_setup_plan(plan)
+    assert not continue_path.exists()
+
+
 def test_continue_plan_reports_invalid_yaml_as_value_error(setup_paths):
     _, continue_path = setup_paths
     continue_path.parent.mkdir(parents=True)

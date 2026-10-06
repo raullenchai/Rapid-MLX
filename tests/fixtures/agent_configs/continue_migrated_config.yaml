@@ -2,11 +2,6 @@ name: Local Config
 version: 1.0.0
 schema: v1
 models:
-- name: rapid-mlx
-  provider: openai
-  model: qwen3.5-4b-4bit
-  apiBase: http://127.0.0.1:8000/v1
-  apiKey: sk-noop
 - name: Claude
   provider: anthropic
   model: claude-sonnet
@@ -17,6 +12,13 @@ models:
     timeout: 30
   defaultCompletionOptions:
     temperature: 0.2
+- name: rapid-mlx
+  provider: openai
+  model: qwen3.5-4b-4bit
+  apiKey: sk-noop
+  apiBase: http://127.0.0.1:8000/v1
+  roles:
+  - chat
 - name: Ollama Llama
   provider: ollama
   model: llama3
