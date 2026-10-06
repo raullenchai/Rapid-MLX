@@ -496,6 +496,16 @@ class TestContinueDev:
         assert len(data["models"]) == 2
         assert len(list(cont.glob("config.yaml.bak.*"))) == 1
 
+    def test_existing_entry_without_chat_role_gains_it(self):
+        existing = {
+            "models": [
+                {"name": "rapid-mlx", "provider": "openai", "roles": ["autocomplete"]}
+            ]
+        }
+        after = continue_dev.patched_config(existing, "http://h", "m")
+        assert after["models"][0]["roles"] == ["chat", "autocomplete"]
+        assert existing["models"][0]["roles"] == ["autocomplete"]
+
     def test_rerun_is_a_no_op(self, fake_home):
         (fake_home / ".continue").mkdir()
         continue_dev.write_or_patch_config("http://127.0.0.1:8000", "model-a")

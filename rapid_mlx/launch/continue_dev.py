@@ -305,7 +305,14 @@ def patched_config(
         # Entries can also be hub references (``uses: ...``); only a mapping
         # carrying our name is ours to update.
         if isinstance(entry, dict) and entry.get("name") == _MODEL_ENTRY_NAME:
-            models[i] = {**entry, **ours}
+            updated = {**entry, **ours}
+            roles = entry.get("roles")
+            # No ``roles`` means Continue's defaults (chat included); an
+            # explicit list must offer chat, or setup would leave the model
+            # out of the chat picker.
+            if isinstance(roles, list) and "chat" not in roles:
+                updated["roles"] = ["chat", *roles]
+            models[i] = updated
             break
     else:
         models.insert(0, ours)
