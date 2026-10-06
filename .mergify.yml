@@ -44,6 +44,7 @@ queue_rules:
       - check-success = @github-actions/desktop-tests
       - check-success = @github-actions/version-bump-guard
     merge_conditions:
+      - check-success = @github-actions/candidate-admission/ci
       - check-success = @github-actions/tests
       - check-success = @github-actions/desktop-tests
       - check-success = @github-actions/version-bump-guard
@@ -70,6 +71,7 @@ queue_rules:
       - check-success = @github-actions/desktop-tests
       - check-success = @github-actions/version-bump-guard
     merge_conditions:
+      - check-success = @github-actions/candidate-admission/ci
       - check-success = @github-actions/tests
       - check-success = @github-actions/desktop-tests
       - check-success = @github-actions/version-bump-guard
