@@ -544,33 +544,61 @@ def scheduler_config_stub(monkeypatch):
         sys.modules.pop("rapid_mlx.turboquant", None)
 
 
+def _called_while_importing_the_server_module() -> bool:
+    """True when the current call stack is ``rapid_mlx.server``'s own import."""
+    import sys
+
+    frame = sys._getframe(1)
+    while frame is not None:
+        if (
+            frame.f_code.co_name == "<module>"
+            and frame.f_globals.get("__name__") == "rapid_mlx.server"
+        ):
+            return True
+        frame = frame.f_back
+    return False
+
+
 @pytest.fixture(autouse=True)
-def _unstart_global_server_app_after_each_test():
+def _unstart_global_server_app_after_each_test(monkeypatch):
     """Keep the process-global FastAPI app configurable across tests.
 
     The first request through ``rapid_mlx.server.app`` builds its middleware
     stack, after which ``add_middleware`` raises. Without this, any test that
     drives the real ``serve`` path (which configures CORS on that app) fails
     whenever an earlier test in the same process sent a request through it.
-    Middleware a test registered is dropped again so it cannot leak either.
+
+    Middleware a test registers is dropped again so it cannot leak either.
+    What the server module installs while it is being imported is part of
+    the app and is kept, including when that first import happens inside a
+    test.
     """
     import sys
 
-    def _global_app():
-        # Tests swap in stand-in modules and stand-in ``app`` objects; only
-        # a real Starlette application has middleware state to reset.
-        app = getattr(sys.modules.get("rapid_mlx.server"), "app", None)
-        return app if hasattr(app, "user_middleware") else None
-
-    before_app = _global_app()
-    before = list(before_app.user_middleware) if before_app is not None else None
-    yield
-    app = _global_app()
-    if app is None:
+    try:
+        from starlette.applications import Starlette
+    except ImportError:  # pragma: no cover - starlette is a core dependency
+        yield
         return
-    if app is before_app and before is not None:
-        app.user_middleware[:] = before
-    app.middleware_stack = None
+
+    added: list[tuple[object, object]] = []
+    original = Starlette.add_middleware
+
+    def _recording_add_middleware(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+        if not _called_while_importing_the_server_module():
+            # Starlette prepends, so the new entry is the first one.
+            added.append((self, self.user_middleware[0]))
+
+    monkeypatch.setattr(Starlette, "add_middleware", _recording_add_middleware)
+    yield
+    for owner, entry in added:
+        owner.user_middleware[:] = [m for m in owner.user_middleware if m is not entry]
+    # Tests swap in stand-in modules and stand-in ``app`` objects; only a
+    # real Starlette application has a started state to reset.
+    app = getattr(sys.modules.get("rapid_mlx.server"), "app", None)
+    if isinstance(app, Starlette):
+        app.middleware_stack = None
 
 
 @pytest.fixture(autouse=True)
