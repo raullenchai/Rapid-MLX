@@ -3,6 +3,7 @@
 
 import dataclasses
 import json
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -433,3 +434,28 @@ def test_models_reference_documents_every_family_profile() -> None:
     reference = (REPO_ROOT / "docs" / "reference" / "models.md").read_text()
     for profile_id in PROFILE_IDS:
         assert f"`{profile_id}`" in reference
+
+
+def test_preload_probes_leave_mlx_unimported_for_family_env() -> None:
+    """The family's MLX settings are read once, at MLX import.
+
+    The probes that run ahead of them must therefore never import MLX.
+    """
+    script = (
+        "import sys\n"
+        "import rapid_mlx.cli\n"
+        "import rapid_mlx.speculative.tensorfold_qwen27_server\n"
+        "from rapid_mlx.speculative import tensorfold_families as families\n"
+        "from rapid_mlx.speculative.tensorfold_qwen27 import SUPPORTED_MLX_VERSION\n"
+        "families.require_environment(\n"
+        "    mlx_version=SUPPORTED_MLX_VERSION, machine='arm64'\n"
+        ")\n"
+        "families.require_memory(\n"
+        "    families.PROFILES['nemotron-3.5-lightning-tensorfold'], memory_gb=512\n"
+        ")\n"
+        "sys.exit(1 if 'mlx.core' in sys.modules else 0)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=120
+    )
+    assert result.returncode == 0, result.stderr

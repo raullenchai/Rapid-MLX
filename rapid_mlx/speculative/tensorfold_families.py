@@ -192,8 +192,9 @@ class TensorFoldFamilyBackend(TensorFoldQwen27Backend):
             raise TensorFoldUnavailable(
                 f"TensorFold did not select the {profile.label} family"
             )
-        # MLX reads these once, so they are set before it is imported. Like
-        # upstream's serve, an operator's explicit value takes precedence.
+        # MLX reads these once, at import. Nothing above imports MLX (the
+        # probes read package metadata only), so they still take effect here.
+        # Like upstream's serve, an operator's explicit value takes precedence.
         for key, value in getattr(package, "MLX_ENV", {}).items():
             os.environ.setdefault(key, value)
 
