@@ -956,3 +956,124 @@ def test_newest_tree_api_error_cannot_fall_back_to_historical_full(scope):
     assert evidence.discover(client, scope, MAIN) == evidence.DiscoveryProbe(
         None, False
     )
+
+
+@pytest.mark.parametrize("scope", ["mac", "ci"])
+@pytest.mark.parametrize("status", ["queued", "in_progress"])
+def test_discover_waits_for_trusted_index_target_completion(scope, status):
+    client = _configured_client()
+    client.responses[
+        f"repos/{REPO}/actions/workflows/{evidence.WORKFLOWS[scope]}/runs"
+    ] = {"workflow_runs": [_run(10, evidence.WORKFLOW_PATHS[scope])]}
+    client.responses[f"repos/{REPO}/commits/{CANDIDATE}/statuses"] = [
+        {
+            "context": evidence.CONTEXTS[scope],
+            "state": "success",
+            "target_url": f"https://github.com/{REPO}/actions/runs/30",
+        }
+    ]
+    target = {
+        "path": evidence.ATTESTATION_WORKFLOW,
+        "event": "workflow_run",
+        "repository": {"full_name": REPO},
+        "status": status,
+        "conclusion": None,
+    }
+    client.responses[f"repos/{REPO}/actions/runs/30"] = target
+    assert evidence.discover(client, scope, MAIN) == evidence.DiscoveryProbe(None, True)
+    target.update(status="completed", conclusion="success")
+    probe = evidence.discover(client, scope, MAIN)
+    assert probe.evidence is not None and probe.evidence.attestation_run_id == 30
+    assert probe.retryable is False
+
+
+@pytest.mark.parametrize("settles", [True, False])
+def test_discover_cli_bounds_wait_for_published_unfinished_target(
+    monkeypatch, capsys, settles
+):
+    client = _configured_client()
+    client.responses[f"repos/{REPO}/actions/workflows/{evidence.MAC_WORKFLOW}/runs"] = {
+        "workflow_runs": [_run(10, evidence.MAC_WORKFLOW_PATH)]
+    }
+    client.responses[f"repos/{REPO}/commits/{CANDIDATE}/statuses"] = [
+        {
+            "context": evidence.MAC_CONTEXT,
+            "state": "success",
+            "target_url": f"https://github.com/{REPO}/actions/runs/30",
+        }
+    ]
+    target = {
+        "path": evidence.ATTESTATION_WORKFLOW,
+        "event": "workflow_run",
+        "repository": {"full_name": REPO},
+        "status": "in_progress",
+        "conclusion": None,
+    }
+    client.responses[f"repos/{REPO}/actions/runs/30"] = target
+    clock = [0.0]
+
+    def sleep(seconds):
+        clock[0] += seconds
+        if settles:
+            target.update(status="completed", conclusion="success")
+
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+    monkeypatch.setattr(evidence, "GitHubClient", lambda repo: client)
+    monkeypatch.setattr(evidence.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(evidence.time, "sleep", sleep)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "queue_tree_evidence",
+            "--repo",
+            REPO,
+            "discover",
+            "--scope",
+            "mac",
+            "--main-sha",
+            MAIN,
+            "--wait-seconds",
+            "60",
+        ],
+    )
+    assert evidence.main() == 0
+    output = capsys.readouterr().out
+    assert f"found={str(settles).lower()}" in output
+    assert clock[0] == (15 if settles else 60)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("path", ".github/workflows/untrusted.yml"),
+        ("event", "pull_request"),
+        ("repository", {"full_name": "foreign/repo"}),
+        ("status", "waiting"),
+        ("conclusion", "failure"),
+    ],
+)
+def test_discover_unfinished_target_does_not_retry_untrusted_metadata(field, value):
+    client = _configured_client()
+    client.responses[f"repos/{REPO}/actions/workflows/{evidence.MAC_WORKFLOW}/runs"] = {
+        "workflow_runs": [_run(10, evidence.MAC_WORKFLOW_PATH)]
+    }
+    client.responses[f"repos/{REPO}/commits/{CANDIDATE}/statuses"] = [
+        {
+            "context": evidence.MAC_CONTEXT,
+            "state": "success",
+            "target_url": f"https://github.com/{REPO}/actions/runs/30",
+        }
+    ]
+    target = {
+        "path": evidence.ATTESTATION_WORKFLOW,
+        "event": "workflow_run",
+        "repository": {"full_name": REPO},
+        "status": "in_progress",
+        "conclusion": None,
+    }
+    target[field] = value
+    client.responses[f"repos/{REPO}/actions/runs/30"] = target
+    assert evidence.discover(client, "mac", MAIN) == evidence.DiscoveryProbe(
+        None, False
+    )
