@@ -2,6 +2,7 @@
 """Pytest configuration and shared fixtures."""
 
 import argparse
+import contextlib
 import importlib.util
 import ipaddress
 import os
@@ -559,19 +560,18 @@ def _called_while_importing_the_server_module() -> bool:
     return False
 
 
-@pytest.fixture(autouse=True)
-def _unstart_global_server_app_after_each_test(monkeypatch):
-    """Keep the process-global FastAPI app configurable across tests.
+@contextlib.contextmanager
+def server_app_state_isolated():
+    """Undo, on exit, what the enclosed code did to Starlette app state.
 
-    The first request through ``rapid_mlx.server.app`` builds its middleware
-    stack, after which ``add_middleware`` raises. Without this, any test that
-    drives the real ``serve`` path (which configures CORS on that app) fails
-    whenever an earlier test in the same process sent a request through it.
+    The first request through an app builds its middleware stack, after which
+    ``add_middleware`` raises. On exit every middleware registered inside the
+    block is removed from its app, and that app's built stack is discarded;
+    the process-global ``rapid_mlx.server.app`` is always left un-started.
 
-    Middleware a test registers is dropped again so it cannot leak either.
     What the server module installs while it is being imported is part of
-    the app and is kept, including when that first import happens inside a
-    test.
+    the app and is kept, including when that first import happens inside the
+    block.
     """
     import sys
 
@@ -590,17 +590,34 @@ def _unstart_global_server_app_after_each_test(monkeypatch):
             # Starlette prepends, so the new entry is the first one.
             added.append((self, self.user_middleware[0]))
 
-    monkeypatch.setattr(Starlette, "add_middleware", _recording_add_middleware)
-    yield
-    for owner, entry in added:
-        owner.user_middleware[:] = [m for m in owner.user_middleware if m is not entry]
-        # A stack built with that entry must not outlive it.
-        owner.middleware_stack = None
-    # Tests swap in stand-in modules and stand-in ``app`` objects; only a
-    # real Starlette application has a started state to reset.
-    app = getattr(sys.modules.get("rapid_mlx.server"), "app", None)
-    if isinstance(app, Starlette):
-        app.middleware_stack = None
+    Starlette.add_middleware = _recording_add_middleware
+    try:
+        yield
+    finally:
+        Starlette.add_middleware = original
+        for owner, entry in added:
+            owner.user_middleware[:] = [
+                m for m in owner.user_middleware if m is not entry
+            ]
+            # A stack built with that entry must not outlive it.
+            owner.middleware_stack = None
+        # Tests swap in stand-in modules and stand-in ``app`` objects; only
+        # a real Starlette application has a started state to reset.
+        app = getattr(sys.modules.get("rapid_mlx.server"), "app", None)
+        if isinstance(app, Starlette):
+            app.middleware_stack = None
+
+
+@pytest.fixture(autouse=True)
+def _unstart_global_server_app_after_each_test():
+    """Keep the process-global FastAPI app configurable across tests.
+
+    Without this, any test that drives the real ``serve`` path (which
+    configures CORS on ``rapid_mlx.server.app``) fails whenever an earlier
+    test in the same process sent a request through that app.
+    """
+    with server_app_state_isolated():
+        yield
 
 
 @pytest.fixture(autouse=True)
