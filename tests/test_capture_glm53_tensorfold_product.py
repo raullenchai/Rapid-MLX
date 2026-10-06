@@ -397,7 +397,7 @@ def test_runtime_contract_requires_exact_noneditable_vcs_revision(monkeypatch) -
     model = capture.model_contract()
     valid = {
         "installed": True,
-        "version": "0.6.0",
+        "version": "0.6.6",
         "editable": False,
         "vcs": {"type": "git", "commit_id": model["runtime_revision"]},
     }

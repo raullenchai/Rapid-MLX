@@ -1139,14 +1139,14 @@ def require_qualified_runtime(model: dict[str, Any]) -> None:
     runtime = package_provenance("tensorfold")
     vcs = runtime.get("vcs") or {}
     if (
-        runtime.get("version") != "0.6.0"
+        runtime.get("version") != "0.6.6"
         or vcs.get("type") != "git"
         or vcs.get("commit_id") != model["runtime_revision"]
         or runtime.get("editable") is True
     ):
         raise CaptureError(
             "installed TensorFold runtime is not the exact qualified, non-editable "
-            "0.6.0 git revision"
+            "0.6.6 git revision"
         )
 
 

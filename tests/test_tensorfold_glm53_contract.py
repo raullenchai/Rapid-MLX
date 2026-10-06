@@ -197,8 +197,8 @@ def test_glm_runtime_and_platform_gates(monkeypatch) -> None:
 
     from rapid_mlx.speculative import tensorfold_glm53 as adapter
 
-    adapter.require_runtime("0.6.0", direct_url=_qualified_direct_url())
-    monkeypatch.setattr(adapter.importlib.metadata, "version", lambda _name: "0.6.0")
+    adapter.require_runtime("0.6.6", direct_url=_qualified_direct_url())
+    monkeypatch.setattr(adapter.importlib.metadata, "version", lambda _name: "0.6.6")
     monkeypatch.setattr(
         adapter.importlib.metadata,
         "distribution",
@@ -234,13 +234,13 @@ def test_glm_runtime_and_platform_gates(monkeypatch) -> None:
         },
     ):
         with pytest.raises(adapter.TensorFoldUnavailable, match="exact qualified"):
-            adapter.require_runtime("0.6.0", direct_url=provenance)
+            adapter.require_runtime("0.6.6", direct_url=provenance)
     monkeypatch.setattr(
         adapter.importlib.metadata,
         "version",
         lambda _name: (_ for _ in ()).throw(PackageNotFoundError()),
     )
-    with pytest.raises(adapter.TensorFoldUnavailable, match="tensorfold==0.6.0"):
+    with pytest.raises(adapter.TensorFoldUnavailable, match="tensorfold==0.6.6"):
         adapter.require_runtime()
     monkeypatch.setattr(adapter.sys, "platform", "darwin")
     with pytest.raises(adapter.TensorFoldUnavailable, match="Apple Silicon"):
