@@ -349,7 +349,10 @@ def build_plan(
     # symlinked into a dotfiles repo keeps its link.
     path = logical.resolve()
     before = load_yaml_config(path)
-    if path.exists() and before:
+    if path.exists():
+        # Any existing config.yaml (even blank, which Continue refills with
+        # its default) is what Continue reads; config.json is then ignored
+        # and must not be migrated.
         return ContinuePlan(
             path, before, patched_config(before, server_url, model, api_key)
         )

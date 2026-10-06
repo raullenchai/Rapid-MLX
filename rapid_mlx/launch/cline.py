@@ -225,6 +225,8 @@ def patched_config(
     ):
         return existing
     providers[_PROVIDER_ID] = {
+        # Entry-level fields we do not own survive, as in Cline's own save.
+        **previous,
         "settings": settings,
         "updatedAt": now or _now_iso(),
         "tokenSource": previous.get("tokenSource", "manual"),

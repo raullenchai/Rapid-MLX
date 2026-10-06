@@ -178,6 +178,7 @@ class TestCline:
                     },
                     "updatedAt": "2026-01-01T00:00:00.000Z",
                     "tokenSource": "migration",
+                    "note": "kept",
                 },
             },
         }
@@ -197,6 +198,7 @@ class TestCline:
             "headers": {"X-Team": "a"},
         }
         assert entry["tokenSource"] == "migration"
+        assert entry["note"] == "kept"
         assert entry["updatedAt"].endswith("Z")
         assert data["lastUsedProvider"] == "openai-compatible"
         backups = list(settings_dir.glob("providers.json.bak.*"))
@@ -569,6 +571,21 @@ class TestContinueDev:
         with pytest.raises(ValueError):
             continue_dev.write_or_patch_config("http://127.0.0.1:8000", "m")
         assert sorted(p.name for p in cont.iterdir()) == [name]
+
+    @pytest.mark.parametrize("content", ["", "{}\n"])
+    def test_existing_empty_yaml_wins_over_legacy_json(self, fake_home, content):
+        import yaml
+
+        cont = fake_home / ".continue"
+        cont.mkdir()
+        (cont / "config.yaml").write_text(content)
+        # Continue ignores config.json once config.yaml exists, so even a
+        # broken legacy file must not be read or migrated.
+        (cont / "config.json").write_text("{broken")
+        path = continue_dev.write_or_patch_config("http://127.0.0.1:8000", "m")
+        data = yaml.safe_load(path.read_text())
+        assert [m["name"] for m in data["models"]] == ["rapid-mlx"]
+        assert (cont / "config.json").read_text() == "{broken"
 
     def test_blank_yaml_is_treated_as_new(self, fake_home):
         cont = fake_home / ".continue"
