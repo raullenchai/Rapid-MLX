@@ -37,17 +37,20 @@ class _SectionTokenizer:
     shortcut must detect.
     """
 
-    def __init__(self, *, bos: bool = False, split_added: bool = True):
+    def __init__(
+        self, *, bos: bool = False, split_added: bool = True, markers=_MARKERS
+    ):
         self.bos = bos
         self.split_added = split_added
+        self.markers = tuple(markers)
         self.encoded_chars = 0
         self.encode_calls = 0
         self._vocab: dict[str, int] = {
-            marker: i + 10 for i, marker in enumerate(_MARKERS)
+            marker: i + 10 for i, marker in enumerate(self.markers)
         }
 
     def get_added_vocab(self):
-        return {marker: self._vocab[marker] for marker in _MARKERS}
+        return {marker: self._vocab[marker] for marker in self.markers}
 
     def _id(self, piece: str) -> int:
         return self._vocab.setdefault(piece, len(self._vocab) + 100)
@@ -55,11 +58,13 @@ class _SectionTokenizer:
     def encode(self, text, add_special_tokens=True):
         self.encode_calls += 1
         self.encoded_chars += len(text)
-        pattern = "(" + "|".join(re.escape(m) for m in _MARKERS) + ")"
+        # Longest added token first, like a real added-token matcher.
+        ordered = sorted(self.markers, key=len, reverse=True)
+        pattern = "(" + "|".join(re.escape(m) for m in ordered) + ")"
         sections = re.split(pattern, text) if self.split_added else [text]
         tokens = [1] if (self.bos and add_special_tokens) else []
         for section in sections:
-            if section in _MARKERS and self.split_added:
+            if section in self.markers and self.split_added:
                 tokens.append(self._vocab[section])
                 continue
             tokens.extend(
@@ -222,6 +227,31 @@ def test_shared_head_encoding_refuses_unproven_shortcuts():
         raise ValueError("tokenizer failure")
 
     assert attempt(encode_tail=explode) is None
+
+
+def test_shared_head_encoding_refuses_cut_inside_a_longer_added_token():
+    """A longer added token may swallow the cut on the variant side only."""
+    short, long = "<A>", "<A>" + "x" * 30 + "Y"
+    tokenizer = _SectionTokenizer(markers=(short, long))
+    real = "<A>" + "x" * 30 + "Z"
+    variant = long
+    reused = encode_sharing_head(
+        real,
+        tokenizer.encode(real),
+        variant,
+        encode_tail=lambda tail: tokenizer.encode(tail, add_special_tokens=False),
+        markers=added_token_markers(tokenizer),
+    )
+    assert reused is None
+    # The same cut with no overlapping token is still taken.
+    plain = _SectionTokenizer(markers=(short,))
+    assert encode_sharing_head(
+        real,
+        plain.encode(real),
+        "<A>" + "x" * 30 + "Y",
+        encode_tail=lambda tail: plain.encode(tail, add_special_tokens=False),
+        markers=(short,),
+    ) == plain.encode("<A>" + "x" * 30 + "Y")
 
 
 def test_warm_turn_tokenizes_the_full_prompt_once():

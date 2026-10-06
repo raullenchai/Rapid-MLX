@@ -73,6 +73,25 @@ def _last_marker_end(text: str, limit: int, markers: Sequence[str]) -> int:
     return best
 
 
+def _marker_spans(text: str, cut: int, markers: Sequence[str]) -> bool:
+    """Whether some marker occurrence starts before ``cut`` and ends after it.
+
+    Added tokens are matched longest-first, so a longer added token that
+    starts inside the head could swallow characters past the cut on one
+    text and not on the other.  Such a cut does not split both texts the
+    same way and must not be used.
+    """
+
+    for marker in markers:
+        width = len(marker)
+        index = text.find(marker, max(0, cut - width + 1), cut + width - 1)
+        while 0 <= index < cut:
+            if index + width > cut:
+                return True
+            index = text.find(marker, index + 1, cut + width - 1)
+    return False
+
+
 def encode_sharing_head(
     real_text: str,
     real_tokens: Sequence[int],
@@ -98,6 +117,10 @@ def encode_sharing_head(
     # the prefix of a longer added token on one side only.
     cut = _last_marker_end(real_text, shared - 1, markers)
     if cut <= 0:
+        return None
+    if _marker_spans(real_text, cut, markers) or _marker_spans(
+        variant_text, cut, markers
+    ):
         return None
     try:
         real_tail = [int(token) for token in encode_tail(real_text[cut:])]
