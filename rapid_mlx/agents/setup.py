@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from rapid_mlx.agents.config_merge import deep_merge, merge_patch_layers
+from rapid_mlx.agents.config_merge import deep_merge, merge_by_id, merge_patch_layers
 from rapid_mlx.agents.telemetry import (
     track_agent_configure_failed,
 )
@@ -25,7 +25,7 @@ from rapid_mlx.launch import claude_code, continue_dev
 # diff preview, consent (or --yes), a timestamped backup of the existing file
 # and an atomic write. Every CLI entry point routes on this one set.
 FIRST_CLASS_SETUP_AGENTS = frozenset(
-    {"claude-code", "continue", "deepseek-harness", "pi"}
+    {"claude-code", "continue", "deepseek-harness", "pi", "qwen-code"}
 )
 
 
@@ -209,6 +209,22 @@ def _pi_profile() -> Any:
     profile = get_profile("pi")
     assert profile is not None, "the pi profile ships with rapid-mlx"
     return profile
+
+
+def _qwen_code_profile() -> Any:
+    from rapid_mlx.agents import get_profile
+
+    profile = get_profile("qwen-code")
+    assert profile is not None, "the qwen-code profile ships with rapid-mlx"
+    return profile
+
+
+def _qwen_code_settings_path() -> Path:
+    """Qwen Code's settings file, resolved like the generic setup writer."""
+    from rapid_mlx.agents.adapter import _resolve_config_path
+
+    profile = _qwen_code_profile()
+    return _resolve_config_path(profile.get_config_for_version(None)).resolve()
 
 
 def _pi_models_path() -> Path:
@@ -396,6 +412,47 @@ def build_setup_plan(
             path,
             loaded_pi,
             deep_merge(loaded_pi, template),
+            base_url,
+            model,
+        )
+    if agent == "qwen-code":
+        path = _qwen_code_settings_path()
+        try:
+            loaded_qwen = launch_common.load_json_lenient(path)
+        except json.JSONDecodeError:
+            if emit_telemetry:
+                track_agent_configure_failed("config_invalid", "qwen-code")
+            raise
+        if not isinstance(loaded_qwen, dict):
+            if emit_telemetry:
+                track_agent_configure_failed("config_invalid", "qwen-code")
+            raise ValueError(f"{path} must contain a JSON object")
+        profile = _qwen_code_profile()
+        template = json.loads(
+            profile.render_config(base_url, model, context_length=context_length)
+        )
+        after = deep_merge(loaded_qwen, template)
+
+        # ``modelProviders.openai`` is an id-keyed registry shared with the
+        # user's other OpenAI-compatible endpoints. Generic setup replaces
+        # lists, so preserve existing entries and update only our model id.
+        existing_providers = loaded_qwen.get("modelProviders")
+        existing_openai = (
+            existing_providers.get("openai")
+            if isinstance(existing_providers, dict)
+            else None
+        )
+        incoming_openai = template["modelProviders"]["openai"]
+        if isinstance(existing_openai, list):
+            after["modelProviders"]["openai"] = merge_by_id(
+                existing_openai, incoming_openai
+            )
+        return SetupPlan(
+            "qwen-code",
+            "Qwen Code",
+            path,
+            loaded_qwen,
+            after,
             base_url,
             model,
         )

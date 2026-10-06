@@ -118,6 +118,50 @@ def test_continue_apply_preserves_models_and_creates_backup(setup_paths):
     assert len(list(continue_path.parent.glob("config.json.bak.*"))) == 1
 
 
+def test_qwen_code_apply_preserves_providers_and_creates_backup(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    settings_path = tmp_path / ".qwen" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text(
+        json.dumps(
+            {
+                "modelProviders": {
+                    "openai": [
+                        {"id": "existing", "name": "Existing provider"},
+                        {
+                            "id": "local-model",
+                            "name": "Custom name",
+                            "custom": True,
+                        },
+                    ]
+                },
+                "custom": {"preserved": True},
+            }
+        )
+    )
+
+    plan = build_setup_plan(
+        "qwen-code",
+        "http://localhost:8000/v1",
+        "local-model",
+        context_length=131072,
+    )
+
+    assert json.loads(settings_path.read_text())["custom"] == {"preserved": True}
+    providers = plan.after["modelProviders"]["openai"]
+    assert [provider["id"] for provider in providers] == ["existing", "local-model"]
+    rapid = providers[1]
+    assert rapid["custom"] is True
+    assert rapid["name"] == "local-model (Rapid-MLX)"
+    assert rapid["baseUrl"] == "http://localhost:8000/v1"
+    assert rapid["generationConfig"]["contextWindowSize"] == 131072
+
+    apply_setup_plan(plan)
+
+    assert json.loads(settings_path.read_text()) == plan.after
+    assert len(list(settings_path.parent.glob("settings.json.bak.*"))) == 1
+
+
 def test_apply_refuses_file_changed_after_preview(setup_paths):
     claude_path, _ = setup_paths
     claude_path.parent.mkdir(parents=True)
