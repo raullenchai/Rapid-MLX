@@ -84,3 +84,15 @@ def test_add_middleware_is_restored_when_the_block_raises():
         raise ValueError("boom")
     assert Starlette.add_middleware is original
     assert app.user_middleware == []
+
+
+def test_every_test_already_runs_inside_the_isolation_block(request):
+    """The tests above enter the block themselves so each holds alone; this
+    one pins that the autouse fixture wraps ordinary tests in the same
+    block, without relying on test order."""
+    assert "_unstart_global_server_app_after_each_test" in request.fixturenames
+    # Inside the block ``add_middleware`` is the recording wrapper.
+    assert Starlette.add_middleware.__name__ == "_recording_add_middleware"
+    app = Starlette()
+    app.add_middleware(GZipMiddleware)
+    assert [m.cls for m in app.user_middleware] == [GZipMiddleware]
