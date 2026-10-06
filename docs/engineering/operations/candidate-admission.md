@@ -1,7 +1,7 @@
 # Trusted candidate admission deployment
 
-`Candidate admission` consumes only the successful trusted qualification
-workflow. It reads one bounded exact producer artifact identity, requires the
+`Candidate admission` starts on successful own queue CI completion in parallel
+with qualification, and retains successful qualification notifications. It reads one bounded exact producer artifact identity, requires the
 candidate's newest qualification index to bind that same producer run, and
 calls the full consumer twice to revalidate the archive, actual full CI jobs,
 current attempt, open candidate, first-parent base/tree and current main.
@@ -28,3 +28,17 @@ This slice does not enable mapped routing, change full-main reuse/backstop,
 activate variables, or modify Mergify/protection. Local fixtures establish the
 consumer contract, not hosted behavior or speedup. During observer rollout,
 rollback may disable the workflow without changing existing full checks.
+
+## Observer bootstrap timing
+
+Before enrollment, normal merging may advance main before a chained observer
+finishes. The CI completion trigger starts trusted checkout alongside the producer,
+then waits up to 45 seconds for its owned completed qualification index. This wait
+never replaces full consumption: both archive validations and final producer/index
+reads still run, and their source run/attempt must match the triggering CI exactly.
+Missing or pending producer, API failure, wrong trigger, source retry, closed
+candidate or changed main cannot publish positive admission. The later producer
+notification remains available; neither trigger can use historical proof as live
+merge authority. No queue hold, check reset, replay or gate waiver is introduced.
+A slow runner can still miss the live candidate window; inspect actual upload and
+index outcomes rather than treating a green observer aggregate as positive proof.

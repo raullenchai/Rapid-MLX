@@ -2,7 +2,7 @@ name: Candidate admission
 
 on:
   workflow_run:
-    workflows: [Candidate qualification]
+    workflows: [CI, Candidate qualification]
     types: [completed]
 
 permissions:
@@ -14,7 +14,13 @@ permissions:
 # Candidate code/artifacts are never executed in this privileged workflow.
 jobs:
   admit:
-    if: github.event.workflow_run.conclusion == 'success'
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      (github.event.workflow_run.name == 'Candidate qualification' ||
+       (github.event.workflow_run.name == 'CI' &&
+        github.event.workflow_run.event == 'pull_request' &&
+        startsWith(github.event.workflow_run.head_branch, 'mergify/merge-queue/') &&
+        github.event.workflow_run.head_repository.full_name == github.repository))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -27,11 +33,18 @@ jobs:
         id: result
         env:
           GH_TOKEN: ${{ github.token }}
-          PRODUCER_RUN: ${{ github.event.workflow_run.id }}
+          TRIGGER_RUN: ${{ github.event.workflow_run.id }}
+          TRIGGER_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          TRIGGER_NAME: ${{ github.event.workflow_run.name }}
         run: |
           set -euo pipefail
+          if [ "$TRIGGER_NAME" = "CI" ]; then
+            identity=(--source-run-id "$TRIGGER_RUN" --source-attempt "$TRIGGER_ATTEMPT")
+          else
+            identity=(--producer-run-id "$TRIGGER_RUN")
+          fi
           python -m scripts.ci_candidate_admission \
-            --repo "$GITHUB_REPOSITORY" --producer-run-id "$PRODUCER_RUN" \
+            --repo "$GITHUB_REPOSITORY" "${identity[@]}" \
             --github-output "$GITHUB_OUTPUT" \
             --output "$RUNNER_TEMP/candidate-admission.json"
       - name: Upload admission evidence

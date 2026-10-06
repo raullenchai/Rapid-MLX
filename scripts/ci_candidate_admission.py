@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import re
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -106,19 +108,106 @@ def verify_admission(
     return result
 
 
+def verify_source_admission(
+    client: evidence.GitHubClient, source_run_id: int, source_attempt: int
+) -> dict[str, Any]:
+    """Start alongside qualification; only its completed real proof can admit."""
+    rejected = {
+        "verified": False,
+        "authorizes_merge": False,
+        "authorizes_reduced_ci": False,
+    }
+    try:
+        if any(type(v) is not int or v < 1 for v in (source_run_id, source_attempt)):
+            raise evidence.EvidenceError("invalid triggering CI identity/attempt")
+        source = copy.deepcopy(
+            client.json(f"repos/{client.repo}/actions/runs/{source_run_id}")
+        )
+        sha = source.get("head_sha")
+        evidence._require_sha(sha)
+        if (
+            type(source.get("id")) is not int
+            or type(source.get("run_attempt")) is not int
+            or source.get("id") != source_run_id
+            or source.get("run_attempt") != source_attempt
+            or source.get("path") != evidence.CI_WORKFLOW_PATH
+            or source.get("event") != "pull_request"
+            or source.get("repository", {}).get("full_name") != client.repo
+            or source.get("head_repository", {}).get("full_name") != client.repo
+            or not evidence.CANDIDATE_RE.fullmatch(str(source.get("head_branch", "")))
+            or source.get("status") != "completed"
+            or source.get("conclusion") != "success"
+        ):
+            raise evidence.EvidenceError("trigger is not the current successful own CI")
+        deadline = time.monotonic() + 45
+        while True:
+            try:
+                status = consumer._status(client, sha)
+            except evidence.EvidenceError as exc:
+                if str(exc) != "qualification status is absent":
+                    raise
+                status = None
+            if status:
+                target = evidence.RUN_URL_RE.fullmatch(
+                    str(status.get("target_url", ""))
+                )
+                if not target or target.group("repo") != client.repo:
+                    raise evidence.EvidenceError("unknown source producer target")
+                result = verify_admission(client, int(target.group("run_id")))
+                if result.get("verified") is True:
+                    if (
+                        result.get("candidate_sha") != sha
+                        or result.get("source_run_id") != source_run_id
+                        or result.get("source_attempt") != source_attempt
+                        or client.json(
+                            f"repos/{client.repo}/actions/runs/{source_run_id}"
+                        )
+                        != source
+                    ):
+                        raise evidence.EvidenceError("admission changed triggering CI")
+                    return result
+                rejected["reason"] = result.get("reason", "producer not ready")
+            if time.monotonic() >= deadline:
+                rejected["reason"] = "producer wait expired: " + rejected.get(
+                    "reason", "qualification status is absent"
+                )
+                return rejected
+            time.sleep(1)
+    except (
+        evidence.EvidenceError,
+        KeyError,
+        TypeError,
+        ValueError,
+        AttributeError,
+        OSError,
+        subprocess.SubprocessError,
+    ) as exc:
+        rejected["reason"] = str(exc)[:500]
+        return rejected
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", required=True)
-    parser.add_argument("--producer-run-id", type=int, required=True)
+    identity = parser.add_mutually_exclusive_group(required=True)
+    identity.add_argument("--producer-run-id", type=int)
+    identity.add_argument("--source-run-id", type=int)
+    parser.add_argument("--source-attempt", type=int)
     parser.add_argument("--github-output", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    result = verify_admission(evidence.GitHubClient(args.repo), args.producer_run_id)
+    client = evidence.GitHubClient(args.repo)
+    result = (
+        verify_source_admission(client, args.source_run_id, args.source_attempt)
+        if args.source_run_id is not None
+        else verify_admission(client, args.producer_run_id)
+    )
     args.output.write_text(json.dumps(result, indent=2) + "\n")
     with args.github_output.open("a") as output:
         output.write("verified=" + str(result["verified"]).lower() + "\n")
         if result["verified"]:
             output.write("candidate_sha=" + result["candidate_sha"] + "\n")
+            output.write("producer_run_id=" + str(result["producer_run_id"]) + "\n")
     print(json.dumps(result))
 
 
