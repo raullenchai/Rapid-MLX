@@ -1,0 +1,55 @@
+name: Candidate admission
+
+on:
+  workflow_run:
+    workflows: [Candidate qualification]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+  statuses: write
+
+# Deploy and validate this observer before making its context a queue condition.
+# Candidate code/artifacts are never executed in this privileged workflow.
+jobs:
+  admit:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out trusted admission consumer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Revalidate full candidate qualification
+        id: result
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRODUCER_RUN: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          python -m scripts.ci_candidate_admission \
+            --repo "$GITHUB_REPOSITORY" --producer-run-id "$PRODUCER_RUN" \
+            --github-output "$GITHUB_OUTPUT" \
+            --output "$RUNNER_TEMP/candidate-admission.json"
+      - name: Upload admission evidence
+        if: steps.result.outputs.verified == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: candidate-admission-ci-${{ steps.result.outputs.candidate_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/candidate-admission.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Index verified full admission
+        if: steps.result.outputs.verified == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_SHA: ${{ steps.result.outputs.candidate_sha }}
+        run: |
+          set -euo pipefail
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$CANDIDATE_SHA" \
+            -f state=success -f context=candidate-admission/ci \
+            -f description='Revalidated trusted full candidate; queue enrollment unchanged' \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
