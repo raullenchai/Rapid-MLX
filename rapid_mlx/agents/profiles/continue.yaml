@@ -4,10 +4,12 @@ repo: "continuedev/continue"
 stars: 30000
 
 # Setup is handled by agents.setup because Continue's model list needs an
-# update-in-place operation rather than a generic dict deep merge.
+# update-in-place operation rather than a generic dict deep merge. Continue
+# (IDE extensions and the cn CLI) reads ~/.continue/config.yaml; the legacy
+# config.json is only read while no config.yaml exists.
 config:
-  type: json
-  path: "~/.continue/config.json"
+  type: yaml
+  path: "~/.continue/config.yaml"
 
 models:
   recommended:

@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "lastUsedProvider": "openai-compatible",
+  "modes": {},
+  "providers": {
+    "openai-compatible": {
+      "settings": {
+        "provider": "openai-compatible",
+        "apiKey": "sk-noop",
+        "model": "qwen3.5-4b-4bit",
+        "baseUrl": "http://127.0.0.1:8123/v1"
+      },
+      "updatedAt": "2026-10-06T18:08:54.038Z",
+      "tokenSource": "manual"
+    }
+  }
+}

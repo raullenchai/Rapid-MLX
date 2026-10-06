@@ -19,7 +19,7 @@ from rapid_mlx.launch import claude_code, continue_dev
 @pytest.fixture
 def setup_paths(tmp_path, monkeypatch):
     claude_path = tmp_path / "claude" / "settings.json"
-    continue_path = tmp_path / "continue" / "config.json"
+    continue_path = tmp_path / "continue" / "config.yaml"
     monkeypatch.setattr(claude_code, "current_config_path", lambda: claude_path)
     monkeypatch.setattr(continue_dev, "current_config_path", lambda: continue_path)
     return claude_path, continue_path
@@ -101,21 +101,97 @@ def test_claude_cli_setup_fetches_live_context_for_local_model(
 
 
 def test_continue_apply_preserves_models_and_creates_backup(setup_paths):
+    import yaml
+
     _, continue_path = setup_paths
     continue_path.parent.mkdir(parents=True)
     continue_path.write_text(
-        json.dumps({"models": [{"title": "Existing", "provider": "ollama"}]})
+        "name: Mine\nversion: 1.0.0\nschema: v1\n"
+        "models:\n- name: Existing\n  provider: ollama\n  model: llama3\n"
     )
     plan = build_setup_plan("continue", "http://localhost:8000", "qwen3.5-9b-4bit")
 
     apply_setup_plan(plan)
 
-    data = json.loads(continue_path.read_text())
-    assert any(model["title"] == "Existing" for model in data["models"])
-    rapid = next(model for model in data["models"] if model["title"] == "rapid-mlx")
+    data = yaml.safe_load(continue_path.read_text())
+    assert any(model["name"] == "Existing" for model in data["models"])
+    rapid = next(model for model in data["models"] if model["name"] == "rapid-mlx")
     assert rapid["apiBase"] == "http://localhost:8000/v1"
     assert rapid["model"] == "qwen3.5-9b-4bit"
-    assert len(list(continue_path.parent.glob("config.json.bak.*"))) == 1
+    assert len(list(continue_path.parent.glob("config.yaml.bak.*"))) == 1
+    assert continue_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_continue_plan_migrates_legacy_json_and_leaves_it_untouched(setup_paths):
+    import yaml
+
+    _, continue_path = setup_paths
+    legacy = continue_path.with_name("config.json")
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text(
+        json.dumps(
+            {
+                "models": [
+                    {"title": "Existing", "provider": "anthropic", "apiKey": "real-key"}
+                ],
+                "systemMessage": "be brief",
+            }
+        )
+    )
+    legacy_bytes = legacy.read_bytes()
+
+    plan = build_setup_plan("continue", "http://localhost:8000", "qwen3.5-9b-4bit")
+    preview = plan.diff()
+    assert "real-key" not in preview
+    assert "config.json is left unchanged" in preview
+    assert plan.path == continue_path and plan.migrated_from == legacy
+
+    apply_setup_plan(plan)
+
+    data = yaml.safe_load(continue_path.read_text())
+    assert [m["name"] for m in data["models"]] == ["rapid-mlx", "Existing"]
+    assert data["models"][1]["apiKey"] == "real-key"
+    assert data["rules"] == ["be brief"]
+    assert legacy.read_bytes() == legacy_bytes
+    # Re-running is a no-op plan.
+    assert not build_setup_plan(
+        "continue", "http://localhost:8000", "qwen3.5-9b-4bit"
+    ).changed
+
+
+def test_continue_apply_refuses_legacy_json_changed_after_preview(setup_paths):
+    _, continue_path = setup_paths
+    legacy = continue_path.with_name("config.json")
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text('{"models": [{"title": "A", "provider": "ollama"}]}')
+    plan = build_setup_plan("continue", "http://localhost:8000", "model")
+    legacy.write_text('{"models": [{"title": "B", "provider": "ollama"}]}')
+
+    with pytest.raises(RuntimeError, match="changed after preview"):
+        apply_setup_plan(plan)
+    assert not continue_path.exists()
+
+
+def test_continue_apply_treats_unreadable_legacy_json_as_changed(setup_paths):
+    _, continue_path = setup_paths
+    legacy = continue_path.with_name("config.json")
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text('{"models": [{"title": "A", "provider": "ollama"}]}')
+    plan = build_setup_plan("continue", "http://localhost:8000", "model")
+    legacy.write_text('{"models": [')
+
+    with pytest.raises(RuntimeError, match="changed after preview"):
+        apply_setup_plan(plan)
+    assert not continue_path.exists()
+
+
+def test_continue_plan_reports_invalid_yaml_as_value_error(setup_paths):
+    _, continue_path = setup_paths
+    continue_path.parent.mkdir(parents=True)
+    continue_path.write_text("models: [unclosed\n")
+
+    with pytest.raises(ValueError, match="not valid YAML"):
+        build_setup_plan("continue", "http://localhost:8000", "model")
 
 
 def test_apply_refuses_file_changed_after_preview(setup_paths):

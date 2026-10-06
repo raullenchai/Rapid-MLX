@@ -1,0 +1,9 @@
+name: Local Config
+version: 1.0.0
+schema: v1
+models:
+- name: rapid-mlx
+  provider: openai
+  model: qwen3.5-4b-4bit
+  apiBase: http://127.0.0.1:8000/v1
+  apiKey: sk-noop
