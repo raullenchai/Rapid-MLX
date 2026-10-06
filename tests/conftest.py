@@ -594,6 +594,8 @@ def _unstart_global_server_app_after_each_test(monkeypatch):
     yield
     for owner, entry in added:
         owner.user_middleware[:] = [m for m in owner.user_middleware if m is not entry]
+        # A stack built with that entry must not outlive it.
+        owner.middleware_stack = None
     # Tests swap in stand-in modules and stand-in ``app`` objects; only a
     # real Starlette application has a started state to reset.
     app = getattr(sys.modules.get("rapid_mlx.server"), "app", None)

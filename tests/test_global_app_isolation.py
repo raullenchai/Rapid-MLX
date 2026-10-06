@@ -56,6 +56,8 @@ def test_c_middleware_installed_by_the_server_import_is_not_a_leftover():
         },
     )
     _SCRATCH_APP.add_middleware(GZipMiddleware)
+    TestClient(_SCRATCH_APP).get("/__not_a_route__")
+    assert _SCRATCH_APP.middleware_stack is not None
     assert [m.cls for m in _SCRATCH_APP.user_middleware] == [
         GZipMiddleware,
         TrustedHostMiddleware,
@@ -64,3 +66,5 @@ def test_c_middleware_installed_by_the_server_import_is_not_a_leftover():
 
 def test_d_only_the_import_time_middleware_survives():
     assert [m.cls for m in _SCRATCH_APP.user_middleware] == [TrustedHostMiddleware]
+    # The stack built while the dropped middleware was registered is gone too.
+    assert _SCRATCH_APP.middleware_stack is None
