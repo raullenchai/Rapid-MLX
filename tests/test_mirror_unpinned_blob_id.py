@@ -122,7 +122,8 @@ def _run(tmp_path, monkeypatch, siblings, mirror_files, hf_bytes=None):
         body = hf_bytes.get(filename, b"H")
         blob = _repo_root(Path(cache_dir)) / "blobs" / _oid(body)
         blob.parent.mkdir(parents=True, exist_ok=True)
-        blob.write_bytes(body)
+        if not blob.exists():  # HF re-links an existing blob by name
+            blob.write_bytes(body)
         link = _snap(Path(cache_dir)) / filename
         link.parent.mkdir(parents=True, exist_ok=True)
         if link.is_symlink() or link.exists():
@@ -428,3 +429,43 @@ def test_matching_existing_blob_is_reused(tmp_path, monkeypatch):
 
 def test_blob_oid_predicate_treats_unreadable_as_mismatch(tmp_path):
     assert _mirror._blob_oid_is(_oid(CONFIG))(tmp_path / "missing") is False
+
+
+def test_hf_fallback_never_relinks_a_corrupt_blob(tmp_path, monkeypatch):
+    """Mirror miss + a same-size corrupt blobs/<blob id>: HF must refetch."""
+    blob = _repo_root(tmp_path) / "blobs" / _oid(CONFIG)
+    blob.parent.mkdir(parents=True)
+    blob.write_bytes(STALE_CONFIG)
+    link = _snap(tmp_path) / "config.json"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(os.path.relpath(blob, link.parent))
+    siblings = [_sibling("config.json", CONFIG, lfs=False)]
+    ok, _router, hf_calls, _out = _run(
+        tmp_path,
+        monkeypatch,
+        siblings,
+        {"config.json": 404},
+        hf_bytes={"config.json": CONFIG},
+    )
+    assert ok is True
+    assert hf_calls == [("config.json", MAIN)]
+    _assert_blob_layout(tmp_path, "config.json", CONFIG)
+
+
+def test_drop_bad_blob_keeps_good_and_absent_blobs(tmp_path):
+    root = tmp_path / "repo"
+    good = root / "blobs" / _oid(CONFIG)
+    good.parent.mkdir(parents=True)
+    good.write_bytes(CONFIG)
+    _mirror._drop_bad_blob(root, _oid(CONFIG))
+    assert good.read_bytes() == CONFIG
+    _mirror._drop_bad_blob(root, _oid(TEMPLATE))  # absent: no-op
+    assert not (root / "blobs" / _oid(TEMPLATE)).exists()
+
+
+def test_drop_bad_blob_ignores_an_unstatable_path(tmp_path, monkeypatch):
+    def boom(_self):
+        raise OSError("stat failed")
+
+    monkeypatch.setattr(Path, "is_file", boom)
+    _mirror._drop_bad_blob(tmp_path, _oid(CONFIG))  # must not raise

@@ -585,6 +585,29 @@ def _blob_oid_is(expected: str) -> Callable[[Path], bool]:
     return check
 
 
+def _drop_bad_blob(repo_root: Path, oid: str) -> None:
+    """Remove ``blobs/<oid>`` when its bytes do not hash to ``oid``.
+
+    HF names a non-LFS blob by its git blob id and re-links an existing blob
+    by name without downloading. A corrupted one would otherwise survive every
+    HF fallback, so it is removed (under the same lock our installer takes)
+    before the fallback runs.
+    """
+    blob = repo_root / "blobs" / oid
+    try:
+        if not blob.is_file() or blob.is_symlink():
+            return
+    except OSError:
+        return
+    lock_path = repo_root / "blobs" / f"{oid}.lock"
+    lock_fh = _acquire_part_lock(lock_path)
+    try:
+        if blob.is_file() and not blob.is_symlink() and not _blob_oid_is(oid)(blob):
+            _safe_unlink(blob)
+    finally:
+        _release_part_lock(lock_fh, lock_path)
+
+
 def pinned_snapshot_download(
     repo_id: str,
     revision: str,
@@ -2188,6 +2211,8 @@ def download_with_mirror_fallback(
         #     post-lock path starts a transfer, so no shared-directory diff,
         #     mtime guess, private cache path, or extra metadata request is
         #     needed.
+        if expected_sha256 is None and expected_git_oid is not None:
+            _drop_bad_blob(repo_root, expected_git_oid)
         blob_already_local = False
         if expected_sha256 is not None:
             try:
