@@ -148,6 +148,7 @@ def test_qwen_code_apply_preserves_providers_and_creates_backup(tmp_path, monkey
     )
 
     assert json.loads(settings_path.read_text())["custom"] == {"preserved": True}
+    assert plan.after["custom"] == {"preserved": True}
     providers = plan.after["modelProviders"]["openai"]
     assert [provider["id"] for provider in providers] == ["existing", "local-model"]
     rapid = providers[1]
@@ -158,7 +159,9 @@ def test_qwen_code_apply_preserves_providers_and_creates_backup(tmp_path, monkey
 
     apply_setup_plan(plan)
 
-    assert json.loads(settings_path.read_text()) == plan.after
+    written = json.loads(settings_path.read_text())
+    assert written == plan.after
+    assert written["custom"] == {"preserved": True}
     assert len(list(settings_path.parent.glob("settings.json.bak.*"))) == 1
 
 
