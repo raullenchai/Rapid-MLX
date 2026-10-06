@@ -90,11 +90,11 @@ def _marker_spans(text: str, cut: int, markers: Sequence[str]) -> bool:
 
     for marker in markers:
         width = len(marker)
-        index = text.find(marker, max(0, cut - width + 1), cut + width - 1)
-        while 0 <= index < cut:
-            if index + width > cut:
-                return True
-            index = text.find(marker, index + 1, cut + width - 1)
+        # Any occurrence wholly inside this window starts at or after
+        # ``cut - width + 1`` and ends at or before ``cut + width - 1``, so it
+        # starts before the cut and ends after it.
+        if text.find(marker, max(0, cut - width + 1), cut + width - 1) >= 0:
+            return True
     return False
 
 
