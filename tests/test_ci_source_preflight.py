@@ -1,0 +1,233 @@
+"""Ordinary CPU prefilter never substitutes for combined-candidate evidence."""
+
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+import yaml
+
+from scripts.classify_ci_changes import classify_policy
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def jobs():
+    return yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "rapid_mlx/server.py",
+        "rapid_mlx/scheduler.py",
+        "rapid_mlx/cli.py",
+        "rapid_mlx/telemetry/track.py",
+        "tests/test_telemetry_loop_dedupe.py",
+    ],
+)
+def test_prefilter_runs_all_three_unit_shards_without_claiming_full(path):
+    policy = classify_policy([path], source_preflight=True)
+    assert policy.source_preflight
+    assert policy.linux_matrix_reason == "source-preflight"
+    assert json.loads(policy.as_outputs()["test_matrix"]) == {
+        "include": [{"python-version": "3.11", "shard": i} for i in (1, 2, 3)]
+    }
+    assert policy.as_outputs()["source_canary"] == "false"
+    assert not classify_policy([path]).source_preflight
+    forced = classify_policy([path], source_preflight=True, force_full=True)
+    assert not forced.source_preflight
+    assert len(json.loads(forced.as_outputs()["test_matrix"])["include"]) == 9
+
+
+@pytest.mark.parametrize(
+    "paths",
+    [
+        [],
+        ["../rapid_mlx/server.py"],
+        ["/rapid_mlx/server.py"],
+        ["tests/conftest.py"],
+        ["tests/fixtures/config.py"],
+        ["tests/test_ci_main_qualification.py"],
+        ["tests/test_queue_tree_evidence.py"],
+        ["scripts/classify_ci_changes.py"],
+        [".github/workflows/ci.yml"],
+        ["pyproject.toml"],
+        ["uv.lock"],
+        ["new-root/thing.py"],
+        ["rapid_mlx/server.py", "apps/rapid-mac/App.swift"],
+        ["rapid_mlx/server.py", "README.md"],
+        ["rapid_mlx/server.py", ".coveragerc"],
+    ],
+)
+def test_controls_unknown_collection_and_mixed_diffs_remain_full(paths):
+    policy = classify_policy(paths, source_preflight=True)
+    assert not policy.source_preflight
+    assert policy.linux_matrix_mode == "full"
+
+
+def test_existing_mapped_source_route_takes_precedence():
+    policy = classify_policy(
+        ["rapid_mlx/_banner.py"], source_canary=True, source_preflight=True
+    )
+    assert policy.source_canary_tests
+    assert not policy.source_preflight
+
+
+@pytest.mark.parametrize(
+    ("updates", "passes"),
+    [
+        ({}, True),
+        ({"needs.changes.outputs.source_canary": "true"}, False),
+        ({"needs.test-matrix.result": "failure"}, False),
+        ({"needs.test-matrix.result": "cancelled"}, False),
+        ({"needs.test-matrix.result": "skipped"}, False),
+        ({"needs.linux-coverage.result": ""}, False),
+        ({"needs.linux-coverage.result": "failure"}, False),
+        ({"needs.changes.outputs.full_gate": "true"}, False),
+        ({"needs.changes.outputs.linux_matrix_mode": "full"}, False),
+        ({"github.event_name": "push"}, False),
+        ({"github.event.pull_request.head.repo.full_name": "fork/repo"}, False),
+        ({"needs.lint.result": "failure"}, False),
+        ({"needs.engine-contracts.result": "failure"}, False),
+        ({"needs.type-check.result": "failure"}, False),
+        ({"needs.mlx-bound-guard.result": "failure"}, False),
+        ({"needs.test-apple-silicon.result": "cancelled"}, False),
+        ({"needs.changed-lines-coverage.result": "failure"}, False),
+        ({"needs.source-canary-unit.result": "success"}, False),
+        ({"needs.l1-smoke.result": "success"}, False),
+    ],
+)
+def test_rendered_aggregate_has_no_failure_or_wrong_context_success(updates, passes):
+    values = {
+        "needs.changes.result": "success",
+        "needs.changes.outputs.engine": "true",
+        "needs.changes.outputs.source_preflight": "true",
+        "needs.changes.outputs.source_canary": "false",
+        "needs.changes.outputs.full_gate": "false",
+        "needs.changes.outputs.linux_matrix_mode": "py311",
+        "needs.changes.outputs.reuse_ci": "false",
+        "needs.changes.outputs.candidate_shadow": "false",
+        "github.event_name": "pull_request",
+        "github.repository": "owner/repo",
+        "github.event.pull_request.head.repo.full_name": "owner/repo",
+    }
+    for name in (
+        "lint",
+        "engine-contracts",
+        "mlx-bound-guard",
+        "type-check",
+        "test-matrix",
+        "linux-coverage",
+    ):
+        values[f"needs.{name}.result"] = "success"
+    for name in (
+        "candidate-canary-unit",
+        "source-canary-unit",
+        "test-apple-silicon",
+        "changed-lines-coverage",
+        "l1-smoke",
+    ):
+        values[f"needs.{name}.result"] = "skipped"
+    values.update(updates)
+    script = jobs()["tests"]["steps"][0]["run"]
+    rendered = re.sub(r"\$\{\{\s*(.*?)\s*\}\}", lambda m: values.get(m[1], ""), script)
+    result = subprocess.run(["bash", "-c", rendered], capture_output=True, text=True)
+    assert (result.returncode == 0) == passes, result.stdout + result.stderr
+    if passes:
+        assert "full combined candidate" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("event", "head_repo", "head_ref", "enabled", "expected"),
+    [
+        ("pull_request", "owner/repo", "feature/server", "true", True),
+        ("pull_request", "fork/repo", "feature/server", "true", False),
+        ("pull_request", "owner/repo", "train/feature", "true", False),
+        ("pull_request", "owner/repo", "mergify/merge-queue/0123456789", "true", False),
+        ("pull_request", "owner/repo", "feature/server", "false", False),
+        ("push", "owner/repo", "", "true", False),
+        ("merge_group", "owner/repo", "", "true", False),
+    ],
+)
+def test_actual_workflow_classifier_keeps_candidates_main_and_forks_full(
+    tmp_path,
+    event,
+    head_repo,
+    head_ref,
+    enabled,
+    expected,
+):
+    script = next(
+        s["run"] for s in jobs()["changes"]["steps"] if s.get("id") == "policy"
+    )
+    # Run the workflow itself with only the diff transport stubbed. Classifier
+    # is the real checked-in CLI, not a second implementation of its routing.
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    git = bindir / "git"
+    git.write_text('#!/bin/sh\nprintf "rapid_mlx/server.py\\n"\n')
+    git.chmod(0o755)
+    python = bindir / "python"
+    python.symlink_to(sys.executable)
+    output = tmp_path / "output"
+    script = script.replace("/tmp/changed-paths", str(tmp_path / "paths"))
+    env = dict(
+        os.environ,
+        PATH=f"{bindir}:{os.environ['PATH']}",
+        GITHUB_OUTPUT=str(output),
+        EVENT_NAME=event,
+        HEAD_REPO=head_repo,
+        REPO="owner/repo",
+        HEAD_REF=head_ref,
+        PR_BASE_SHA="a" * 40,
+        GITHUB_SHA="b" * 40,
+        CANARY_ENABLED="false",
+        SOURCE_PREFLIGHT_ENABLED=enabled,
+        CANDIDATE_SHADOW_ENABLED="false",
+    )
+    result = subprocess.run(
+        ["bash", "-c", script], cwd=ROOT, env=env, capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stderr
+    values = dict(line.split("=", 1) for line in output.read_text().splitlines())
+    assert values["source_preflight"] == str(expected).lower()
+    assert len(json.loads(values["test_matrix"])["include"]) == (3 if expected else 9)
+    if head_ref.startswith(("train/", "mergify/")) or event != "pull_request":
+        assert values["full_gate"] == "true"
+        assert len(json.loads(values["l1_matrix"])["include"]) == 5
+
+
+def test_only_source_apple_and_changedlines_deferred_coverage_still_required():
+    workflow = jobs()
+    for name in ("test-apple-silicon", "changed-lines-coverage"):
+        assert (
+            "needs.changes.outputs.source_preflight != 'true'" in workflow[name]["if"]
+        )
+    for name in ("test-matrix", "linux-coverage"):
+        assert "source_preflight" not in workflow[name]["if"]
+    assert "linux-coverage" in workflow["tests"]["needs"]
+    assert "test-apple-silicon" in workflow["tests"]["needs"]
+    assert "changed-lines-coverage" in workflow["tests"]["needs"]
+
+
+def test_real_full_evidence_validator_rejects_source_prefilter_jobs():
+    from scripts import queue_tree_evidence as evidence
+
+    names = ["tests", "linux-coverage", "lint", "engine-contracts", "type-check"]
+    names += [f"test-matrix (3.11, {i})" for i in (1, 2, 3)]
+    records = [
+        dict(id=i, name=name, status="completed", conclusion="success")
+        for i, name in enumerate(names, 1)
+    ]
+
+    class Client:
+        def jobs(self, run_id):
+            assert run_id == 123
+            return records
+
+    with pytest.raises(evidence.EvidenceError):
+        evidence._validate_ci_jobs(Client(), {"id": 123, "run_attempt": 1})

@@ -41,6 +41,7 @@ class ValidationPolicy:
     linux_matrix_mode: LinuxMatrixMode
     linux_matrix_reason: str
     source_canary_tests: tuple[str, ...] = ()
+    source_preflight: bool = False
 
     def as_outputs(self) -> dict[str, str]:
         outputs = self.lanes.as_outputs()
@@ -51,6 +52,7 @@ class ValidationPolicy:
                 "test_matrix": json.dumps(
                     linux_test_matrix(self.linux_matrix_mode), separators=(",", ":")
                 ),
+                "source_preflight": str(self.source_preflight).lower(),
                 "source_canary": str(bool(self.source_canary_tests)).lower(),
                 "source_canary_tests": " ".join(self.source_canary_tests),
             }
@@ -299,12 +301,42 @@ def classify(paths: Iterable[str]) -> Lanes:
     return Lanes(engine=engine, desktop=desktop, docs_only=docs_only)
 
 
+def _source_preflight_paths(paths: set[str], lanes: Lanes) -> bool:
+    """CPU source prefilter only; combined candidates still enforce every gate.
+
+    Restrict the opt-in to engine code and ordinary single-file test changes.
+    Controllers, collection support, cross-product and unknown paths self-check
+    in full. This is deliberately broader than a mapped regression contract.
+    """
+    if not paths or not lanes.engine or lanes.desktop:
+        return False
+    for path in paths:
+        pure = PurePosixPath(path)
+        if pure.is_absolute() or ".." in pure.parts or len(pure.parts) < 2:
+            return False
+        if pure.parts[0] == "rapid_mlx":
+            continue
+        if pure.parts[0] == "tests" and len(pure.parts) == 2:
+            name = pure.name
+            if (
+                name.startswith("test_")
+                and name.endswith(".py")
+                and not name.startswith(
+                    ("test_ci_", "test_classify_ci_", "test_queue_")
+                )
+            ):
+                continue
+        return False
+    return True
+
+
 def classify_policy(
     paths: Iterable[str],
     *,
     force_full: bool = False,
     force_reason: str = "promoted-head",
     source_canary: bool = False,
+    source_preflight: bool = False,
 ) -> ValidationPolicy:
     normalized = _normalized_paths(paths)
     lanes = classify(normalized)
@@ -314,7 +346,15 @@ def classify_policy(
     tests = source_canary_tests(normalized) if source_canary and not force_full else ()
     if source_canary and not force_full and not tests:
         mode, reason = "full", "source-canary-unmapped"
-    return ValidationPolicy(lanes, mode, reason, tests)
+    preflight = (
+        source_preflight
+        and not force_full
+        and not tests
+        and _source_preflight_paths(normalized, lanes)
+    )
+    if preflight:
+        mode, reason = "py311", "source-preflight"
+    return ValidationPolicy(lanes, mode, reason, tests, preflight)
 
 
 def main() -> int:
@@ -325,6 +365,7 @@ def main() -> int:
     parser.add_argument("--force-full", action="store_true")
     parser.add_argument("--force-reason", default="promoted-head")
     parser.add_argument("--source-canary", action="store_true")
+    parser.add_argument("--source-preflight", action="store_true")
     args = parser.parse_args()
 
     paths = list(args.paths)
@@ -335,6 +376,7 @@ def main() -> int:
         force_full=args.force_full,
         force_reason=args.force_reason,
         source_canary=args.source_canary,
+        source_preflight=args.source_preflight,
     ).as_outputs()
 
     if args.github_output:

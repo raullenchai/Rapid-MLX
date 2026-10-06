@@ -117,6 +117,7 @@ jobs:
       linux_matrix_mode: ${{ steps.policy.outputs.linux_matrix_mode }}
       linux_matrix_reason: ${{ steps.policy.outputs.linux_matrix_reason }}
       test_matrix: ${{ steps.policy.outputs.test_matrix }}
+      source_preflight: ${{ steps.policy.outputs.source_preflight }}
       source_canary: ${{ steps.policy.outputs.source_canary }}
       source_canary_base_run: ${{ steps.policy.outputs.source_canary_base_run }}
       source_canary_tests: ${{ steps.policy.outputs.source_canary_tests }}
@@ -132,6 +133,7 @@ jobs:
         id: policy
         env:
           GH_TOKEN: ${{ github.token }}
+          SOURCE_PREFLIGHT_ENABLED: ${{ vars.RAPID_MLX_SOURCE_PREFLIGHT }}
           CANARY_ENABLED: ${{ vars.RAPID_MLX_SOURCE_CANARY }}
           CANDIDATE_SHADOW_ENABLED: ${{ vars.RAPID_MLX_CANDIDATE_SHADOW_EXECUTION }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -191,7 +193,15 @@ jobs:
                   CANARY_ENABLED=false
                 fi
               fi
-              if [ "$CANARY_ENABLED" = true ]; then
+              if [ "$SOURCE_PREFLIGHT_ENABLED" = true ] && [ "$HEAD_REPO" = "$REPO" ]; then
+                preflight_args=(--source-preflight)
+                if [ "$CANARY_ENABLED" = true ]; then
+                  preflight_args+=(--source-canary)
+                fi
+                python scripts/classify_ci_changes.py \
+                  --paths-file /tmp/changed-paths "${preflight_args[@]}" \
+                  --github-output "$GITHUB_OUTPUT"
+              elif [ "$CANARY_ENABLED" = true ]; then
                 python scripts/classify_ci_changes.py \
                   --paths-file /tmp/changed-paths --source-canary \
                   --github-output "$GITHUB_OUTPUT"
@@ -212,6 +222,7 @@ jobs:
               echo 'desktop=true'
               echo 'docs_only=false'
               echo 'full_gate=true'
+              echo 'source_preflight=false'
               echo 'source_canary=false'
               echo 'source_canary_tests='
               echo 'linux_matrix_mode=full'
@@ -798,6 +809,7 @@ jobs:
       needs.changes.result == 'success' &&
       needs.changes.outputs.engine == 'true' &&
       needs.changes.outputs.source_canary != 'true' &&
+      needs.changes.outputs.source_preflight != 'true' &&
       needs.changes.outputs.reuse_ci != 'true'
     runs-on: macos-14
     steps:
@@ -997,6 +1009,7 @@ jobs:
       github.event_name == 'pull_request' &&
       needs.changes.outputs.engine == 'true' &&
       needs.changes.outputs.source_canary != 'true' &&
+      needs.changes.outputs.source_preflight != 'true' &&
       needs.changes.outputs.reuse_ci != 'true' &&
       needs.linux-coverage.result == 'success' &&
       needs.test-apple-silicon.result == 'success'
@@ -1183,6 +1196,11 @@ jobs:
             echo "MLX dependency-bound guard failed"
             exit 1
           fi
+          if [ "${{ needs.changes.outputs.source_preflight }}" = true ] \
+            && [ "${{ needs.changes.outputs.source_canary }}" = true ]; then
+            echo "Conflicting source validation routes"
+            exit 1
+          fi
           if [ "${{ needs.changes.outputs.source_canary }}" = true ]; then
             if [ "${{ needs.changes.outputs.full_gate }}" = true ] \
               || [ "${{ github.event_name }}" != pull_request ] \
@@ -1197,6 +1215,26 @@ jobs:
               fi
             done
             echo "Mapped CPU source proof passed; full integration candidate is still required"
+            exit 0
+          fi
+          if [ "${{ needs.changes.outputs.source_preflight }}" = true ]; then
+            if [ "${{ github.event_name }}" != pull_request ] \
+              || [ "${{ github.event.pull_request.head.repo.full_name }}" != "${{ github.repository }}" ] \
+              || [ "${{ needs.changes.outputs.full_gate }}" != false ] \
+              || [ "${{ needs.changes.outputs.linux_matrix_mode }}" != py311 ] \
+              || [ "${{ needs.changes.outputs.source_canary }}" != false ] \
+              || [ "${{ needs.test-matrix.result }}" != success ] \
+              || [ "${{ needs.linux-coverage.result }}" != success ]; then
+              echo "Invalid or failed source preflight"
+              exit 1
+            fi
+            for result in "${{ needs.source-canary-unit.result }}" "${{ needs.test-apple-silicon.result }}" "${{ needs.changed-lines-coverage.result }}" "${{ needs.l1-smoke.result }}"; do
+              if [ "$result" != skipped ]; then
+                echo "Unexpected deferred-job result in source preflight: $result"
+                exit 1
+              fi
+            done
+            echo "CPU source preflight passed; full combined candidate and changed-line coverage remain required before merge"
             exit 0
           fi
           if [ "${{ needs.source-canary-unit.result }}" != skipped ]; then
