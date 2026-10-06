@@ -605,6 +605,38 @@ def test_cli_reports_saved_config_when_connection_check_fails(
     assert "Setup incomplete" not in output
 
 
+def test_cli_reports_a_failed_config_write_without_a_traceback(
+    setup_paths, monkeypatch, capsys
+):
+    import rapid_mlx.cli as cli
+
+    _, continue_path = setup_paths
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "rapid-mlx",
+            "agents",
+            "continue",
+            "--setup",
+            "--yes",
+            "--no-check",
+            "--model",
+            "qwen3.5-4b-4bit",
+        ],
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.agents.setup.apply_setup_plan",
+        lambda _plan: (_ for _ in ()).throw(PermissionError("read-only directory")),
+    )
+
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main()
+
+    assert exit_info.value.code == 1
+    assert not continue_path.exists()
+    assert "setup failed: read-only directory" in capsys.readouterr().out
+
+
 def test_user_continue_dev_overlay_wins_over_the_builtin_alias(tmp_path, monkeypatch):
     """The ``continue-dev`` -> ``continue`` alias must be a FALLBACK only: a
     user who installs their own ``~/.rapid-mlx/agents/continue-dev.yaml``

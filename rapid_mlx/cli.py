@@ -13000,7 +13000,7 @@ def agents_command(args):
             if plan.changed:
                 try:
                     apply_setup_plan(plan)
-                except RuntimeError as exc:
+                except (OSError, RuntimeError) as exc:
                     print(f"\n  {profile.display_name} setup failed: {exc}\n")
                     sys.exit(1)
                 print(f"\n  Configured {profile.display_name} at {plan.path}.")
