@@ -257,7 +257,8 @@ def test_trusted_engine_policy_exemption_does_not_require_activation(monkeypatch
     assert not rollout.qualify_source(client, 20, TRUSTED)["qualified"]
 
 
-def test_mapped_real_archive_consumption_and_live_revocation(monkeypatch):
+@pytest.mark.parametrize("cached", [False, True])
+def test_mapped_real_archive_consumption_and_live_revocation(monkeypatch, cached):
     import io
     import json
     import zipfile
@@ -311,7 +312,24 @@ def test_mapped_real_archive_consumption_and_live_revocation(monkeypatch):
     record.update(qualified)
     assert not consumer.consume_full(client, CANDIDATE)["verified"]
     assert consumer.consume_qualified(client, CANDIDATE)["kind"] == "mapped"
+    reads = []
+    raw_json = client.json
+
+    def counted(endpoint, *fields, **kwargs):
+        reads.append((endpoint, fields))
+        return raw_json(endpoint, *fields, **kwargs)
+
+    monkeypatch.setattr(client, "json", counted)
+    if cached:
+        client = rollout.ImmutableContentsClient(client)
     accepted = admission.verify_admission(client, 100)
+    assert admission.verify_admission(client, 100) == accepted
+    contents = [r for r in reads if "/contents/" in r[0]]
+    if cached:
+        assert len(contents) == len(set(contents))
+        assert len(contents) < 100
+    else:
+        assert len(contents) > 800
     assert accepted["verified"] and accepted["rollout_generation"]["run_id"] == 300
     generation["status"] = "in_progress"  # Rollback is visible before its job executes.
     assert not consumer.consume_qualified(client, CANDIDATE)["verified"]
@@ -606,3 +624,88 @@ def test_queue_enrollment_parser_rejects_missing_or_malformed_policy(
     monkeypatch.setattr(client, "json", lambda *a, **kw: response)
     with pytest.raises(evidence.EvidenceError):
         rollout.enrolled(client, MAIN)
+
+
+@pytest.mark.parametrize(
+    "endpoint,fields,paginate",
+    [
+        (f"repos/{REPO}/contents/AGENTS.md", ("ref=main",), False),
+        (f"repos/{REPO}/contents/AGENTS.md", (f"ref={MAIN}", "x=y"), False),
+        (f"repos/{REPO}/contents/AGENTS.md", (), False),
+        (f"repos/{REPO}/contents/AGENTS.md", (f"ref={MAIN}",), True),
+        ("repos/other/repo/contents/AGENTS.md", (f"ref={MAIN}",), False),
+        (f"repos/{REPO}/git/ref/heads/main", (f"ref={MAIN}",), False),
+        (f"repos/{REPO}/actions/runs/20", (f"ref={MAIN}",), False),
+        (f"repos/{REPO}/commits/{MAIN}/status", (f"ref={MAIN}",), False),
+    ],
+)
+def test_immutable_cache_never_caches_mutable_or_ambiguous_queries(
+    endpoint, fields, paginate
+):
+    from types import SimpleNamespace
+
+    calls = []
+
+    def read(*args, **kwargs):
+        calls.append((args, kwargs))
+        return {"type": "file", "sha": MAIN, "sequence": len(calls)}
+
+    client = rollout.ImmutableContentsClient(SimpleNamespace(repo=REPO, json=read))
+    assert client.json(endpoint, *fields, paginate=paginate)["sequence"] == 1
+    assert client.json(endpoint, *fields, paginate=paginate)["sequence"] == 2
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        None,
+        [],
+        {},
+        {"type": "dir", "sha": MAIN},
+        {"type": "file", "sha": 1},
+        {"type": "file", "sha": "wrong"},
+        "error",
+    ],
+)
+def test_immutable_cache_does_not_retain_errors_or_invalid_metadata(bad):
+    from types import SimpleNamespace
+
+    calls = []
+
+    def read(*args, **kwargs):
+        calls.append(args)
+        if bad == "error":
+            raise evidence.EvidenceError("temporary API failure")
+        return bad
+
+    client = rollout.ImmutableContentsClient(SimpleNamespace(repo=REPO, json=read))
+    for _ in range(2):
+        if bad == "error":
+            with pytest.raises(evidence.EvidenceError):
+                client.json(f"repos/{REPO}/contents/file", f"ref={MAIN}")
+        else:
+            assert client.json(f"repos/{REPO}/contents/file", f"ref={MAIN}") == bad
+    assert len(calls) == 2
+
+
+def test_immutable_cache_is_process_local_deep_copied_and_commit_bound():
+    from types import SimpleNamespace
+
+    calls = []
+    original = {"type": "file", "sha": MAIN, "nested": {"value": "original"}}
+
+    def read(*args, **kwargs):
+        calls.append(args)
+        return original
+
+    raw = SimpleNamespace(repo=REPO, json=read, jobs=lambda run: [run])
+    client = rollout.ImmutableContentsClient(raw)
+    path = f"repos/{REPO}/contents/file"
+    client.json(path, f"ref={MAIN}")["nested"]["value"] = "modified"
+    assert client.json(path, f"ref={MAIN}")["nested"]["value"] == "original"
+    client.json(path, f"ref={MAIN}")["nested"]["value"] = "again"
+    assert client.json(path, f"ref={MAIN}")["nested"]["value"] == "original"
+    client.json(path, f"ref={CANDIDATE}")
+    rollout.ImmutableContentsClient(raw).json(path, f"ref={MAIN}")
+    assert len(calls) == 3
+    assert client.jobs(20) == [20]

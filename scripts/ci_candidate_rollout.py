@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import copy
 import json
 import subprocess
 import zipfile
@@ -26,6 +27,39 @@ CONTROLS = (
     "scripts/ci_candidate_mapped_transport.py",
     ".github/workflows/candidate-admission.yml",
 )
+
+
+class ImmutableContentsClient:
+    """Reuse commit-pinned file metadata within one CLI; live evidence stays fresh."""
+
+    def __init__(self, client: evidence.GitHubClient) -> None:
+        self._client = client
+        self._contents: dict[tuple[str, str], dict] = {}
+
+    def __getattr__(self, name):
+        return getattr(self._client, name)
+
+    def json(self, endpoint: str, *fields: str, paginate: bool = False):
+        immutable = (
+            endpoint.startswith(f"repos/{self.repo}/contents/")
+            and len(fields) == 1
+            and fields[0].startswith("ref=")
+            and evidence.SHA_RE.fullmatch(fields[0][4:]) is not None
+            and not paginate
+        )
+        key = (endpoint, fields[0]) if immutable else None
+        if key in self._contents:
+            return copy.deepcopy(self._contents[key])
+        value = self._client.json(endpoint, *fields, paginate=paginate)
+        if (
+            immutable
+            and isinstance(value, dict)
+            and value.get("type") == "file"
+            and isinstance(value.get("sha"), str)
+            and evidence.SHA_RE.fullmatch(value["sha"]) is not None
+        ):
+            self._contents[key] = copy.deepcopy(value)
+        return value
 
 
 def enabled(client: evidence.GitHubClient, trusted: str) -> dict:
@@ -259,7 +293,10 @@ def main() -> None:
     parser.add_argument("--github-output", required=True, type=Path)
     args = parser.parse_args()
     result = select_route(
-        evidence.GitHubClient(args.repo), args.run_id, args.head, args.base
+        ImmutableContentsClient(evidence.GitHubClient(args.repo)),
+        args.run_id,
+        args.head,
+        args.base,
     )
     with args.github_output.open("a") as output:
         output.write("candidate_reduced=" + str(result["reduced"]).lower() + "\n")

@@ -386,7 +386,9 @@ def main() -> None:
     parser.add_argument("--github-output", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    client = evidence.GitHubClient(args.repo)
+    from scripts.ci_candidate_rollout import ImmutableContentsClient
+
+    client = ImmutableContentsClient(evidence.GitHubClient(args.repo))
     if args.rollback:
         result = rollback(client, args.publish_target_url)
     elif args.expected:
