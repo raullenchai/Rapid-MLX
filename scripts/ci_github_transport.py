@@ -70,7 +70,30 @@ class PersistentGitHubClient(evidence.GitHubClient):
             if not paginate:
                 return value
             pages.append(value)
-            following = re.findall(r'<([^>]+)>;\s*rel="next"', link)
+            following = []
+            if link:
+                for entry in re.split(r",\s*(?=<)", link.strip()):
+                    match = re.fullmatch(
+                        r'<([^<>]+)>((?:\s*;\s*[\w-]+\s*=\s*(?:"[^"\\]*"|[^;,\s"\\]+))+)\s*',
+                        entry,
+                        re.ASCII,
+                    )
+                    if not match:
+                        raise evidence.EvidenceError("malformed admission API Link")
+                    parameters = re.findall(
+                        r';\s*([\w-]+)\s*=\s*(?:"([^"\\]*)"|([^;,\s"\\]+))',
+                        match[2],
+                        re.ASCII,
+                    )
+                    relations = [
+                        quoted or plain
+                        for key, quoted, plain in parameters
+                        if key.lower() == "rel"
+                    ]
+                    if len(relations) != 1 or not relations[0].strip():
+                        raise evidence.EvidenceError("ambiguous admission API relation")
+                    if "next" in relations[0].lower().split():
+                        following.append(match[1])
             if not following:
                 return pages
             if len(following) != 1:

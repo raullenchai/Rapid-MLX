@@ -82,6 +82,59 @@ def test_all_pages_use_original_repository_and_preserve_filters(monkeypatch, ali
 
 
 @pytest.mark.parametrize(
+    "parameters",
+    [
+        'rel="next"',
+        "rel=next",
+        'type="application/json"; rel="next"',
+        'rel="next"; type="application/json"',
+        'REL="prev next"',
+    ],
+)
+def test_duplicate_required_job_on_next_page_rejects_full_evidence(
+    monkeypatch, parameters
+):
+    raw, _, _, _, _ = setup(monkeypatch)
+    jobs = raw.job_records[20]
+    duplicate = next(job for job in jobs if job["name"] == "tests")
+    path = f"repos/{REPO}/actions/runs/20/jobs"
+    link = f"<https://api.github.com/{path}?page=2>; {parameters}"
+    c, conn, _ = client(
+        monkeypatch,
+        [Response({"jobs": jobs}, link), Response({"jobs": [duplicate]})],
+    )
+    with pytest.raises(evidence.EvidenceError, match="found 2"), c:
+        evidence._validate_ci_jobs(c, raw.responses[f"repos/{REPO}/actions/runs/20"])
+    assert len(conn.requests) == 2
+
+
+@pytest.mark.parametrize(
+    "link",
+    [
+        '<https://evil.example/jobs?page=2; rel="next"',
+        '<https://api.github.com/jobs?page=2>; rel="next" junk',
+        "<https://api.github.com/jobs?page=2>",
+        '<https://api.github.com/jobs?page=2>; rel=""',
+        '<https://api.github.com/jobs?page=2>; rel="prev"; rel="next"',
+        '<https://api.github.com/jobs?page=2>; rel="next", broken',
+    ],
+)
+def test_malformed_or_ambiguous_link_never_accepts_partial_jobs(monkeypatch, link):
+    c, conn, _ = client(monkeypatch, [Response({"jobs": []}, link)])
+    with pytest.raises(evidence.EvidenceError), c:
+        c.jobs(20)
+    assert len(conn.requests) == 1 and conn.closed
+
+
+def test_valid_terminal_relations_end_pagination(monkeypatch):
+    link = '<https://api.github.com/jobs?page=1>; rel="prev last"'
+    c, conn, _ = client(monkeypatch, [Response({"jobs": []}, link)])
+    with c:
+        assert c.jobs(20) == []
+    assert len(conn.requests) == 1
+
+
+@pytest.mark.parametrize(
     "next_url",
     [
         "http://api.github.com/repos/owner/repo/actions/runs?page=2",
