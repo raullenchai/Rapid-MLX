@@ -274,9 +274,12 @@ def test_ambiguous_pages_and_malformed_job_records_reject(monkeypatch):
 
 def test_completed_bad_proof_is_terminal_not_a_readiness_retry(monkeypatch):
     raw, _, _, _, _ = setup(monkeypatch)
+    assert admission.verify_source_admission(raw, 20, 1)["verified"]
     raw.responses[f"repos/{REPO}/git/ref/heads/main"]["object"]["sha"] = "e" * 40
     monkeypatch.setattr(
         admission.time, "sleep", lambda *a: pytest.fail("stale proof retried")
     )
     result = admission.verify_source_admission(raw, 20, 1)
-    assert not result["verified"] and "base is stale" in result["reason"]
+    assert not result["verified"] and result["reason"].startswith(
+        "full admission rejected:"
+    )
