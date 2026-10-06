@@ -4,6 +4,7 @@ import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
+from unittest.mock import patch
 from urllib.request import Request
 
 import pytest
@@ -163,6 +164,58 @@ def test_qwen_code_apply_preserves_providers_and_creates_backup(tmp_path, monkey
     assert written == plan.after
     assert written["custom"] == {"preserved": True}
     assert len(list(settings_path.parent.glob("settings.json.bak.*"))) == 1
+
+
+@pytest.mark.parametrize("content", ["{not json", "[1, 2]"])
+def test_qwen_code_plan_refuses_an_unmergeable_settings_file(
+    tmp_path, monkeypatch, content
+):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    settings_path = tmp_path / ".qwen" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text(content)
+
+    with (
+        patch("rapid_mlx.agents.setup.track_agent_configure_failed") as failed,
+        pytest.raises(ValueError),
+    ):
+        build_setup_plan("qwen-code", "http://localhost:8000/v1", "local-model")
+
+    failed.assert_called_once_with("config_invalid", "qwen-code")
+    assert settings_path.read_text() == content
+    assert not list(settings_path.parent.glob("settings.json.bak.*"))
+
+
+@pytest.mark.parametrize(
+    "existing",
+    [
+        None,
+        {"custom": {"preserved": True}},
+        {"modelProviders": "legacy", "custom": {"preserved": True}},
+        {"modelProviders": {"openai": {"id": "legacy"}, "anthropic": [{"id": "a"}]}},
+    ],
+)
+def test_qwen_code_plan_writes_its_entry_when_no_provider_list_exists(
+    tmp_path, monkeypatch, existing
+):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    settings_path = tmp_path / ".qwen" / "settings.json"
+    if existing is not None:
+        settings_path.parent.mkdir(parents=True)
+        settings_path.write_text(json.dumps(existing))
+
+    plan = build_setup_plan("qwen-code", "http://localhost:8000/v1", "local-model")
+    apply_setup_plan(plan)
+
+    written = json.loads(settings_path.read_text())
+    assert [entry["id"] for entry in written["modelProviders"]["openai"]] == [
+        "local-model"
+    ]
+    assert written["model"] == {"name": "local-model"}
+    if existing and "custom" in existing:
+        assert written["custom"] == {"preserved": True}
+    if existing and isinstance(existing.get("modelProviders"), dict):
+        assert written["modelProviders"]["anthropic"] == [{"id": "a"}]
 
 
 def test_apply_refuses_file_changed_after_preview(setup_paths):
