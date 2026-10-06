@@ -431,6 +431,11 @@ def test_requests_decide_on_the_class_curve_not_the_timings():
     cheap, steep = class_round_costs(False, 2), class_round_costs(True, 2)
     assert cheap[0] == steep[0] == 1.0
     assert cheap[1] < steep[1] and cheap[2] < steep[2]
+    # The default curve is unchanged; on the steep curve a parked round is
+    # pipelined like plain decode, so only drafting rounds carry the
+    # generator's host overhead.
+    assert cheap == (1.0, 1.272, 1.544)
+    assert steep == (1.0, 1.87, 2.49)
     # Depths past the curve read its deepest point.
     assert request_round_cost(cheap, 5) == cheap[-1]
     # Measured costs (for the park verdict) include drafts and overhead.

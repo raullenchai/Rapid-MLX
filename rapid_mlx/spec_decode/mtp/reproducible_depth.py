@@ -77,9 +77,22 @@ CLASS_ROW_COST = {False: 0.2, True: 0.46}
 CLASS_DRAFT_COST = {False: 0.14, True: 0.16}
 
 # The generator's own per-round host work, as a fraction of a one-row step
-# (parked rounds run at ~22 ms against a 17.5 ms forward on an M2 Pro). Added
-# to every round alike, so it dampens the relative cost of wider rounds.
+# (parked rounds ran at ~22 ms against a 17.5 ms forward on an M2 Pro before
+# parked rounds were pipelined). Added to every measured round alike, so it
+# dampens the relative cost of wider rounds.
 ROUND_OVERHEAD = 0.25
+
+# Whether a class's parked round still pays :data:`ROUND_OVERHEAD`. Parked
+# rounds now launch their step ahead of delivery like plain decode, so on a
+# steep host (M2 Pro, 4B) they run at plain-decode speed and only drafting
+# rounds keep that host work: a parked round costs 1.0, a depth-``k`` round
+# ``1 + k * per_depth + ROUND_OVERHEAD``. Charging the overhead to every
+# round there made drafting look ~20% cheaper than it is, and greedy prose
+# drafted where plain steps were faster. The default class keeps its curve:
+# on an M4 Pro the same change costs prose (9B story and summary drafted
+# less and decoded 4-5% slower), because its verify rows are cheap enough
+# that the dampened curve is the better fit.
+CLASS_PARK_PAYS_OVERHEAD = {False: True, True: False}
 
 # Round-robin timing passes: the first compile kernels and are discarded.
 TIMING_WARMUP_ROUNDS = 2
@@ -139,11 +152,23 @@ def round_costs(
 
 def class_round_costs(steep: bool, max_k: int) -> tuple[float, ...]:
     """The class curve a request decides on: depth ``k`` costs ``k`` extra
-    verified rows, ``k`` drafts and the round overhead, in plain rounds."""
+    verified rows, ``k`` drafts and the round overhead, in plain rounds.
+
+    Where a parked round does not pay the overhead
+    (:data:`CLASS_PARK_PAYS_OVERHEAD`), a plain round is one step and only
+    drafting rounds carry it.
+    """
     per_depth = CLASS_ROW_COST[steep] + CLASS_DRAFT_COST[steep]
-    return tuple(
-        round((1.0 + depth * per_depth + ROUND_OVERHEAD) / (1.0 + ROUND_OVERHEAD), 4)
-        for depth in range(max_k + 1)
+    if CLASS_PARK_PAYS_OVERHEAD[steep]:
+        return tuple(
+            round(
+                (1.0 + depth * per_depth + ROUND_OVERHEAD) / (1.0 + ROUND_OVERHEAD), 4
+            )
+            for depth in range(max_k + 1)
+        )
+    return (1.0,) + tuple(
+        round(1.0 + depth * per_depth + ROUND_OVERHEAD, 4)
+        for depth in range(1, max_k + 1)
     )
 
 
