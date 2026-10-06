@@ -453,3 +453,27 @@ def test_actual_rendered_observer_shell_uses_real_verified_cli(
     result = json.loads((tmp_path / "candidate-admission.json").read_text())
     assert result["verified"] and result["source_run_id"] == 20
     assert result["producer_run_id"] == 100 and result["source_attempt"] == 1
+
+
+@pytest.mark.parametrize("change", ["index", "attempt"])
+def test_parallel_final_source_read_cannot_switch_producer_provenance(
+    monkeypatch, change
+):
+    client, _, status, run, _ = setup(monkeypatch)
+    original = admission.verify_admission
+
+    def verify(*args):
+        result = original(*args)
+        assert result["verified"]
+        if change == "index":
+            status["id"] += 1
+        else:
+            run["run_attempt"] = 2
+            for job in client.job_records[100]:
+                job["run_attempt"] = 2
+        return result
+
+    monkeypatch.setattr(admission, "verify_admission", verify)
+    result = admission.verify_source_admission(client, 20, 1)
+    assert not result["verified"]
+    assert result["reason"] == "producer/index changed after source verification"

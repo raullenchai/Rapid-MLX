@@ -142,7 +142,7 @@ def verify_source_admission(
         deadline = time.monotonic() + 45
         while True:
             try:
-                status = consumer._status(client, sha)
+                status = copy.deepcopy(consumer._status(client, sha))
             except evidence.EvidenceError as exc:
                 if str(exc) != "qualification status is absent":
                     raise
@@ -165,6 +165,16 @@ def verify_source_admission(
                         != source
                     ):
                         raise evidence.EvidenceError("admission changed triggering CI")
+                    if (
+                        consumer._producer_run(client, result["producer_run_id"])[
+                            "run_attempt"
+                        ]
+                        != result["producer_attempt"]
+                        or consumer._status(client, sha) != status
+                    ):
+                        raise evidence.EvidenceError(
+                            "producer/index changed after source verification"
+                        )
                     return result
                 rejected["reason"] = result.get("reason", "producer not ready")
             if time.monotonic() >= deadline:
