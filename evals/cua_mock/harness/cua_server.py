@@ -2,11 +2,13 @@
 
 Model channel   POST /       {"op": observe|windows|apps|front|handback|wait|handoff|open_url|
                                click|fill|type|key|scroll|action, ...} -> {"text": ...}
-User channel    POST /human  {"op": pending|approve|deny|fill|type|click|key|done, ...}
+User channel    POST /human  {"op": fill|type|click|key|done, ...}
 
-The user channel stands in for the person at the Mac (a dialog or the app
-UI in the product). The model is never given it. With MOCK_ORACLE set, user
-events are also reported to the mock sites' oracle log for scoring.
+The user channel is the person at the Mac typing during a handoff (a
+password, a code). The model is never given it. Whether to ask the user
+before a commit is the brain's call, made in its reply; the session has no
+approvals. With MOCK_ORACLE set, the user's steps are also reported to the
+mock sites' oracle log for scoring.
 """
 
 import json
@@ -30,7 +32,7 @@ def _report(kind: str, payload: dict) -> None:
     LOG.write(f"EVENT {kind} {json.dumps(payload, ensure_ascii=False)}\n")
     if not ORACLE:
         return
-    path = {"approved": "/api/approve", "human_input": "/api/human"}.get(kind)
+    path = "/api/human" if kind == "human_input" else None
     if kind == "handoff":
         # The user's own typing during a handoff is a human step; the oracle
         # learns what it was for from the reason.
@@ -96,12 +98,6 @@ def handle(req: dict) -> str:
 
 def handle_human(req: dict) -> str:
     op = req.pop("op")
-    if op == "pending":
-        return json.dumps(SESSION.pending_approvals(), ensure_ascii=False, indent=1)
-    if op == "approve":
-        return json.dumps(SESSION.approve(req["id"]))
-    if op == "deny":
-        return json.dumps(SESSION.deny(req["id"]))
     if op == "done":
         SESSION.human_done(req["window_id"])
         return "ok"

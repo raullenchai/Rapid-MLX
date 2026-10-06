@@ -152,7 +152,7 @@ INTERESTING_ROLES = {
 }
 EDITABLE_ROLES = {"AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"}
 # Shown instead of what the user typed into a field only they may fill
-# (kept equal to guards.USER_VALUE).
+# (kept equal to privacy.USER_VALUE).
 USER_VALUE = "[entered by the user]"
 # Controls whose AXValue is their state (a select's choice, a stepper's number).
 VALUE_ROLES = {
@@ -478,6 +478,28 @@ def _read_batch(element: object, attributes: tuple[str, ...]) -> dict[str, objec
     }
 
 
+# What a secure field may be asked for: its name, the element that labels it
+# (a reference, not text) and how many characters it holds; never its value
+# or title (some apps mirror the contents there).
+_SECURE_NAME_ATTRIBUTES = (
+    "AXDescription",
+    "AXPlaceholderValue",
+    "AXNumberOfCharacters",
+    "AXTitleUIElement",
+)
+# A secure field's label element (an HTML <label>, a native text label) is
+# read for its text only once its own role shows it holds no typed input.
+_LABEL_KIND_ATTRIBUTES = ("AXRole", "AXSubrole")
+_LABEL_TEXT_ATTRIBUTES = ("AXValue", "AXTitle", "AXDescription")
+# A static text this long is a paragraph, not the name of the field after it.
+MAX_FIELD_LABEL_CHARS = 80
+# Web dialogs (role=dialog / alertdialog) and native sheets: the walk keeps
+# them as rows even unnamed, so an observation can say one is open.
+DIALOG_SUBROLES = frozenset(
+    {"AXApplicationDialog", "AXApplicationAlertDialog", "AXDialog", "AXSystemDialog"}
+)
+
+
 def _is_secure_node(node: dict[str, object]) -> bool:
     return "AXSecureTextField" in (node.get("AXRole"), node.get("AXSubrole"))
 
@@ -510,9 +532,96 @@ def _read_node(element: object) -> dict[str, object]:
     except Exception:  # pyobjc variants / test doubles
         pass
     node = _read_batch(element, _WALK_ATTRIBUTES)
-    if _known_not_secure(element, node):
-        node.update(_read_batch(element, _TEXT_ATTRIBUTES))
+    # A node not verifiably plain (secure, or an unreadable role/subrole) is
+    # asked only for what names a secure field, never its value or title.
+    node.update(
+        _read_batch(
+            element,
+            _TEXT_ATTRIBUTES
+            if _known_not_secure(element, node)
+            else _SECURE_NAME_ATTRIBUTES,
+        )
+    )
     return node
+
+
+def _clean_name(value: object) -> str:
+    if isinstance(value, str) and value.strip():
+        return value.strip().replace("\n", " ")[:160]
+    return ""
+
+
+def _secure_name(element: object, node: dict[str, object]) -> str:
+    """A secure field's name, read without touching its value or title.
+
+    Its label element first (Chrome exposes an HTML <label> only there),
+    then its description, then its placeholder.
+    """
+    return (
+        _label_element_text(element, node.get("AXTitleUIElement"))
+        or _clean_name(node.get("AXDescription"))
+        or _clean_name(node.get("AXPlaceholderValue"))
+    )
+
+
+def _label_element_text(field: object, label: object) -> str:
+    """The text of the element that labels ``field``.
+
+    The label is a different element: its role is read first, and its text
+    only when that role is not one that holds typed input (a field that
+    names another field, or the field itself, is never read).
+    """
+    if label is None or label == field:
+        return ""
+    try:
+        AS.AXUIElementSetMessagingTimeout(label, NODE_MESSAGING_TIMEOUT_S)
+    except Exception:  # pyobjc variants / test doubles
+        pass
+    kind = _read_batch(label, _LABEL_KIND_ATTRIBUTES)
+    role = kind.get("AXRole")
+    if (
+        not isinstance(role, str)
+        or not role
+        or role in EDITABLE_ROLES
+        or _is_secure_node(kind)
+    ):
+        return ""
+    text = _read_batch(label, _LABEL_TEXT_ATTRIBUTES)
+    for attribute in _LABEL_TEXT_ATTRIBUTES:
+        name = _clean_name(text.get(attribute))
+        if name:
+            return name
+    return ""
+
+
+def _preceding_label(out: list[dict], path: tuple[int, ...]) -> str:
+    """The static text just before a field in its own group ("Password").
+
+    Only when nothing else came between them (a label two controls up
+    names something else), and only a short text that is the field's
+    previous sibling or that sibling's child (a <label> wrapping its text).
+    """
+    if not path or not out or out[-1].get("role") != "AXStaticText":
+        return ""
+    parent = list(path[:-1])
+    text = str(out[-1].get("text") or "")
+    candidate = list(out[-1].get("path") or [])
+    rest = candidate[len(parent) :]
+    if (
+        candidate[: len(parent)] != parent
+        or not 1 <= len(rest) <= 2
+        or rest[0] != path[-1] - 1
+    ):
+        return ""
+    return text if 0 < len(text) <= MAX_FIELD_LABEL_CHARS else ""
+
+
+def _secure_filled(node: dict[str, object]) -> bool | None:
+    """Whether a secure field holds anything (None: it could not be read)."""
+    count = node.get("AXNumberOfCharacters")
+    if isinstance(count, int) and not isinstance(count, bool):
+        return count > 0
+    return None
 
 
 def _frame_of(node: dict[str, object]) -> tuple[float, float, float, float] | None:
@@ -593,6 +702,7 @@ def _walk(
     parent_role: str = "",
     budget: dict[str, Any] | None = None,
     in_web: bool = False,
+    path: tuple[int, ...] = (),
 ) -> None:
     if depth > MAX_DEPTH or counter[0] >= MAX_NODES:
         if budget is not None:
@@ -621,17 +731,19 @@ def _walk(
     user_only = False
     if role in EDITABLE_ROLES and not secure_text:
         # Imported here so `python ax_driver.py` keeps working as a script.
-        from . import guards
+        from . import privacy
 
         name = _field_name(node)
-        if name and guards.needs_human_input(role, subrole, name):
+        if name and privacy.user_only_field(role, subrole, name):
             label, user_only = name, True
     actions = _action_names(element)
     geom = _frame_of(node)
     actionable = "AXPress" in actions or "AXPick" in actions or "AXIncrement" in actions
     editable = role in EDITABLE_ROLES
+    dialog = role == "AXSheet" or (role == "AXGroup" and subrole in DIALOG_SUBROLES)
     interesting = (
         actionable
+        or dialog
         or role in INTERESTING_ROLES
         or (role == "AXStaticText" and label)
         or any(s in role.lower() for s in CLICKABLE_SUBSTRINGS)
@@ -639,7 +751,7 @@ def _walk(
     # Empty editable controls still need a stable target and geometry so a
     # planner can fill a blank document or form. Other empty structural nodes
     # remain excluded to preserve the bounded grounding budget.
-    if interesting and (label or actionable or editable):
+    if interesting and (label or actionable or editable or dialog):
         counter[0] += 1
         value = None
         if (editable or role in VALUE_ROLES) and not secure_text:
@@ -656,25 +768,34 @@ def _walk(
                 and (editable or raw_value.strip())
             ):
                 value = raw_value[:120]
-        out.append(
-            {
-                "target_id": f"t{counter[0] - 1:03d}",
-                "role": role,
-                "subrole": subrole,
-                "parent_role": parent_role,
-                "text": label,
-                "value": value,
-                "actions": actions[:6],
-                "rect": geom,
-                "states": _states_of(node, role),
-                "placeholder": (
-                    node.get("AXPlaceholderValue")
-                    if isinstance(node.get("AXPlaceholderValue"), str)
-                    else None
-                ),
-                "element": element,  # live ref, popped before serialization
-            }
-        )
+        target: dict[str, Any] = {
+            "target_id": f"t{counter[0] - 1:03d}",
+            "role": role,
+            "subrole": subrole,
+            "parent_role": parent_role,
+            "text": label,
+            "value": value,
+            "actions": actions[:6],
+            "rect": geom,
+            "states": _states_of(node, role),
+            "placeholder": (
+                node.get("AXPlaceholderValue")
+                if isinstance(node.get("AXPlaceholderValue"), str)
+                else None
+            ),
+            # Where it sits: child positions from the walk root, and whether
+            # it is page content (inside a web area) or the app's own chrome.
+            "path": list(path),
+            "web": in_web or role == "AXWebArea",
+            "element": element,  # live ref, popped before serialization
+        }
+        if secure_text:
+            # Its name and whether it holds anything; never what it holds.
+            target["field_name"] = _secure_name(element, node) or (
+                _preceding_label(out, path)
+            )
+            target["filled"] = _secure_filled(node)
+        out.append(target)
     children = _child_elements(node, role)
     # A web page is laid out in document order; sorting its controls ahead of
     # their labels and text would scramble what the model reads.
@@ -682,14 +803,14 @@ def _walk(
     if not in_web and 2 <= len(children) <= PRIORITY_SORT_MAX_CHILDREN:
         # Read small sibling groups up front: the reads are needed anyway and
         # their roles order navigation before tables.
-        read = []
-        for child in children:
+        read: list[tuple[int, object, dict[str, object]]] = []
+        for position, child in enumerate(children):
             if _out_of_time(budget):
                 return  # wedged siblings must not outlast the walk budget
-            read.append((child, _read_node(child)))
+            read.append((position, child, _read_node(child)))
 
-        def priority(entry: tuple[object, dict[str, object]]) -> int:
-            child_role = entry[1].get("AXRole")
+        def priority(entry: tuple[int, object, dict[str, object]]) -> int:
+            child_role = entry[2].get("AXRole")
             if child_role in PRIORITY_CONTAINER_ROLES:
                 return 0
             if child_role in PRIORITY_CONTROL_ROLES:
@@ -701,12 +822,12 @@ def _walk(
         # Python's stable sort preserves the original AX order inside each
         # region, so repeated observations of an unchanged tree keep
         # identical target IDs.
-        ordered: list[tuple[object, dict[str, object] | None]] = [
-            (child, child_node) for child, child_node in sorted(read, key=priority)
+        ordered: list[tuple[int, object, dict[str, object] | None]] = [
+            *sorted(read, key=priority)
         ]
     else:
-        ordered = [(child, None) for child in children]
-    for child, child_node in ordered:
+        ordered = [(position, child, None) for position, child in enumerate(children)]
+    for position, child, child_node in ordered:
         _walk(
             child,
             depth + 1,
@@ -717,6 +838,7 @@ def _walk(
             parent_role=role,
             budget=budget,
             in_web=in_web,
+            path=(*path, position),
         )
         if counter[0] >= MAX_NODES:
             return

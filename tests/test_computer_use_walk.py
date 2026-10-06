@@ -8,7 +8,7 @@ import types
 
 import pytest
 
-from rapid_mlx.computer_use import ax_driver, backend, guards
+from rapid_mlx.computer_use import ax_driver, backend, privacy
 
 
 class FakeAS:
@@ -117,7 +117,7 @@ def test_fields_only_the_user_fills_are_named_and_never_show_their_value(tree):
     )
     out = _walk("win")
     assert "482913" not in repr(out)
-    assert ax_driver.USER_VALUE == guards.USER_VALUE
+    assert ax_driver.USER_VALUE == privacy.USER_VALUE
     assert [(t["text"], t["value"]) for t in out] == [
         ("Verification code", "[entered by the user]"),
         ("PIN", ""),
@@ -290,6 +290,181 @@ def test_web_content_keeps_document_order_and_native_groups_put_controls_first(t
     assert _walk("page")[1]["parent_role"] == "AXWebArea"
 
 
+def test_walk_records_tree_paths_page_membership_and_dialogs(tree):
+    nodes, _ = tree
+    nodes.update(
+        {
+            # Few siblings outside the page: read up front and sorted (the
+            # toolbar first), but each keeps its own child position.
+            "win": {"AXRole": "AXWindow", "AXChildren": ["web", "toolbar"]},
+            "toolbar": {"AXRole": "AXToolbar", "AXChildren": ["back"]},
+            "back": {"AXRole": "AXButton", "AXTitle": "Back"},
+            "web": {"AXRole": "AXWebArea", "AXChildren": ["dlg", "buy"]},
+            "dlg": {
+                "AXRole": "AXGroup",
+                "AXSubrole": "AXApplicationDialog",
+                "AXChildren": ["x"],
+            },
+            "x": {"AXRole": "AXButton", "AXTitle": "Close"},
+            "buy": {"AXRole": "AXButton", "AXTitle": "Buy"},
+        }
+    )
+    out = {t["text"] or t["subrole"]: t for t in _walk("win")}
+    assert out["Back"]["path"] == [1, 0] and out["Back"]["web"] is False
+    # An unnamed web dialog is still a row, so an observation can say so.
+    assert out["AXApplicationDialog"]["path"] == [0, 0]
+    assert out["Close"]["path"] == [0, 0, 0] and out["Close"]["web"] is True
+    assert out["Buy"]["path"] == [0, 1]
+
+
+def test_secure_field_is_named_and_says_whether_it_is_filled(tree):
+    nodes, fake = tree
+    nodes.update(
+        {
+            "win": {"AXRole": "AXWindow", "AXChildren": ["pw", "pin"]},
+            "pw": {
+                "AXRole": "AXTextField",
+                "AXSubrole": "AXSecureTextField",
+                "AXDescription": "Password",
+                "AXTitle": "hunter2",  # some apps mirror the contents here
+                "AXValue": "hunter2",
+                "AXNumberOfCharacters": 7,
+            },
+            "pin": {
+                "AXRole": "AXTextField",
+                "AXSubrole": "AXSecureTextField",
+                "AXPlaceholderValue": "PIN",
+                "AXNumberOfCharacters": 0,
+            },
+        }
+    )
+    pw, pin = _walk("win")
+    assert "hunter2" not in repr([pw, pin])
+    assert (pw["text"], pw["field_name"], pw["filled"]) == (
+        "[secure text redacted]",
+        "Password",
+        True,
+    )
+    assert (pin["field_name"], pin["filled"]) == ("PIN", False)
+    for element, attrs in fake.requests:
+        if element in {"pw", "pin"}:
+            assert "AXValue" not in attrs and "AXTitle" not in attrs
+    nodes["pw"]["AXNumberOfCharacters"] = None
+    nodes["pw"]["AXDescription"] = None
+    pw = _walk("pw")[0]
+    assert (pw["field_name"], pw["filled"]) == ("", None)
+
+
+def _secure_pw(**attrs):
+    return {
+        "AXRole": "AXTextField",
+        "AXSubrole": "AXSecureTextField",
+        "AXTitle": "hunter2",  # some apps mirror the contents here
+        "AXValue": "hunter2",
+        "AXNumberOfCharacters": 7,
+        **attrs,
+    }
+
+
+def test_secure_field_is_named_by_its_label_element_never_its_own_text(tree):
+    nodes, fake = tree
+    nodes.update(
+        {
+            # Chrome: <label for=pw>Password</label> is the field's
+            # AXTitleUIElement; the field has no description or placeholder.
+            "pw": _secure_pw(AXTitleUIElement="lbl"),
+            "lbl": {"AXRole": "AXStaticText", "AXValue": "Password"},
+        }
+    )
+    (pw,) = _walk("pw")
+    assert pw["field_name"] == "Password" and "hunter2" not in repr(pw)
+    for element, attrs in fake.requests:
+        if element == "pw":
+            assert "AXValue" not in attrs and "AXTitle" not in attrs
+    # The label's role is read before any of its text.
+    label_reads = [attrs for element, attrs in fake.requests if element == "lbl"]
+    assert label_reads[0] == ("AXRole", "AXSubrole")
+    # A label element with a title, or with no text (then the description).
+    nodes["lbl"] = {"AXRole": "AXGroup", "AXTitle": "Bank password"}
+    assert _walk("pw")[0]["field_name"] == "Bank password"
+    nodes["lbl"] = {"AXRole": "AXGroup"}
+    nodes["pw"]["AXDescription"] = "Password"
+    assert _walk("pw")[0]["field_name"] == "Password"
+
+
+def test_a_label_element_that_holds_input_is_never_read(tree, monkeypatch):
+    nodes, fake = tree
+    nodes.update(
+        {
+            "pw": _secure_pw(AXTitleUIElement="other", AXPlaceholderValue="PIN"),
+            "pw2": {"AXRole": "AXTextField", "AXSubrole": "AXSecureTextField"},
+        }
+    )
+    cases = [
+        {"AXRole": "AXTextField", "AXValue": "a typed value"},  # a field
+        {"AXRole": "AXGroup", "AXSubrole": "AXSecureTextField", "AXTitle": "x"},
+        {"AXTitle": "no role"},  # unknown: not trusted
+    ]
+    for label in cases:
+        nodes["other"] = label
+        fake.requests.clear()
+        assert _walk("pw")[0]["field_name"] == "PIN"
+        assert [a for e, a in fake.requests if e == "other"] == [
+            ("AXRole", "AXSubrole")
+        ]
+    # The field named as its own label is not read either.
+    nodes["pw"]["AXTitleUIElement"] = "pw"
+    assert _walk("pw")[0]["field_name"] == "PIN"
+    # A label whose read timeout cannot be set is still read.
+    nodes["pw"]["AXTitleUIElement"] = "lbl"
+    nodes["lbl"] = {"AXRole": "AXStaticText", "AXValue": "Password"}
+
+    def no_timeout(element, seconds):
+        if element == "lbl":
+            raise RuntimeError("unsupported")
+
+    monkeypatch.setattr(fake, "AXUIElementSetMessagingTimeout", no_timeout)
+    assert _walk("pw")[0]["field_name"] == "Password"
+
+
+def test_secure_field_without_a_label_takes_the_text_just_before_it(tree):
+    nodes, _ = tree
+    nodes.update(
+        {
+            "win": {"AXRole": "AXWebArea", "AXChildren": ["form"]},  # page order
+            "form": {"AXRole": "AXGroup", "AXChildren": ["txt", "pw"]},
+            "txt": {"AXRole": "AXStaticText", "AXValue": "Password"},
+            "pw": _secure_pw(),
+        }
+    )
+    assert _walk("win")[-1]["field_name"] == "Password"
+    # A <label> wrapping its text is the previous sibling too.
+    nodes["form"]["AXChildren"] = ["lab", "pw"]
+    nodes["lab"] = {"AXRole": "AXGroup", "AXChildren": ["txt"]}
+    assert _walk("win")[-1]["field_name"] == "Password"
+    # Text buried deeper in the previous sibling, or in an earlier one with
+    # an unnamed element between, is not its label.
+    nodes["lab"]["AXChildren"] = ["inner"]
+    nodes["inner"] = {"AXRole": "AXGroup", "AXChildren": ["txt"]}
+    assert _walk("win")[-1]["field_name"] == ""
+    nodes["form"]["AXChildren"] = ["txt", "spacer", "pw"]
+    nodes["spacer"] = {"AXRole": "AXGroup"}
+    assert _walk("win")[-1]["field_name"] == ""
+    # Anything else in between, another group, a paragraph, or nothing
+    # before it: no name.
+    nodes["form"]["AXChildren"] = ["txt", "btn", "pw"]
+    nodes["btn"] = {"AXRole": "AXButton", "AXTitle": "Show"}
+    assert _walk("win")[-1]["field_name"] == ""
+    nodes["win"]["AXChildren"] = ["txt", "form"]
+    nodes["form"]["AXChildren"] = ["pw"]
+    assert _walk("win")[-1]["field_name"] == ""
+    nodes["win"]["AXChildren"] = ["form"]
+    nodes["form"]["AXChildren"] = ["txt", "pw"]
+    nodes["txt"]["AXValue"] = "x" * (ax_driver.MAX_FIELD_LABEL_CHARS + 1)
+    assert _walk("win")[-1]["field_name"] == ""
+    assert _walk("pw")[0]["field_name"] == ""
+
+
 def test_walk_marks_truncation_at_every_cap(tree, monkeypatch):
     nodes, _ = tree
     nodes.update(
@@ -460,12 +635,24 @@ def test_get_app_state_exposes_states_placeholders_and_live_refs(monkeypatch):
         "placeholder": "Search Mart",
         "source_window_id": "cg:5",
         "element": "live-field",
+        "path": [0, 2],
+        "web": True,
+    }
+    secure = {
+        "target_id": "t001",
+        "role": "AXTextField",
+        "subrole": "AXSecureTextField",
+        "text": "[secure text redacted]",
+        "actions": [],
+        "rect": (10, 40, 100, 20),
+        "field_name": "Password",
+        "filled": True,
     }
 
     def collect(*a, collection_status=None, **k):
         collection_status["partial"] = True
         collection_status["budget_exhausted"] = True
-        return [target]
+        return [target, secure]
 
     monkeypatch.setattr(backend, "_resolve_app", lambda *a, **k: (object(), app_info))
     monkeypatch.setattr(backend, "_select_window", lambda *a, **k: window)
@@ -475,7 +662,16 @@ def test_get_app_state_exposes_states_placeholders_and_live_refs(monkeypatch):
     element = snapshot["elements"][0]
     assert element["states"] == ["focused"] and element["placeholder"] == "Search Mart"
     assert snapshot["budget_exhausted"] is True and snapshot["truncated"] is True
-    assert backend.live_elements(snapshot) == ["live-field"]
+    assert backend.live_elements(snapshot) == ["live-field", None]
+    assert (element["path"], element["web"]) == ([0, 2], True)
+    assert "field_name" not in element
+    hidden = snapshot["elements"][1]
+    assert (hidden["label"], hidden["field_name"], hidden["filled"]) == (
+        "[secure text redacted]",
+        "Password",
+        True,
+    )
+    assert "path" not in hidden
 
 
 def test_collect_watchdog_marks_a_budget_cut_walk_partial(monkeypatch):

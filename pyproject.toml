@@ -5,14 +5,14 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "rapid-mlx"
 version = "0.15.6"
-description = "Rapid-MLX is an open-source (Apache 2.0) OpenAI- and Anthropic-compatible LLM inference server and Mac app for Apple Silicon, built on MLX, focused on reliable tool calling for coding agents."
+description = "Rapid-MLX is an open-source (Apache 2.0) OpenAI- and Anthropic-compatible LLM inference server for Apple Silicon, built on MLX, focused on reliable tool calling for coding agents; up to 4× faster decoding than Apple's MLX (mlx-lm) on the same weights."
 readme = "README.md"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.10"
 authors = [
     {name = "Rapid-MLX contributors"}
 ]
-keywords = ["llm", "mlx", "apple-silicon", "inference", "transformers"]
+keywords = ["llm", "mlx", "mlx-lm", "apple-silicon", "inference-server", "openai-compatible", "anthropic", "tool-calling", "coding-agents", "local-llm", "macos"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",

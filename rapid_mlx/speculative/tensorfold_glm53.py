@@ -30,9 +30,9 @@ INSTALL_HINT = (
 def download_qualified_target() -> str:
     """Resolve the immutable target through the process-wide Hub cache."""
 
-    from huggingface_hub import snapshot_download
+    from .._mirror import pinned_snapshot_download
 
-    target = snapshot_download(SUPPORTED_TARGET, revision=SUPPORTED_TARGET_REVISION)
+    target = pinned_snapshot_download(SUPPORTED_TARGET, SUPPORTED_TARGET_REVISION)
     validate_target(Path(target))
     return str(target)
 

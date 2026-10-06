@@ -106,8 +106,7 @@ def _resolve_model_path(model_name: str) -> Path:
             "check the server log for the resolved path"
         )
 
-    from huggingface_hub import snapshot_download
-
+    from .._mirror import pinned_snapshot_download
     from ..model_aliases import resolve_model
 
     repository = resolve_model(model_name)
@@ -118,7 +117,7 @@ def _resolve_model_path(model_name: str) -> Path:
             "revision; use a registered alias or RAPID_MLX_WAN_MODEL_DIR"
         )
     try:
-        return Path(snapshot_download(repository, revision=revision))
+        return Path(pinned_snapshot_download(repository, revision))
     except Exception as exc:
         logger.exception("Could not resolve Wan checkpoint %s", repository)
         raise WanBackendError(

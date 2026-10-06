@@ -27,6 +27,16 @@ Artifacts named `source-canary-unit-<sha>` describe `mapped-cpu-only` scope,
 selected suites, source/base SHAs and the qualifying base run. They cannot be
 consumed as `queue-tree-evidence` or release qualification.
 
+Mapped execution also records explicit base collection and current pytest
+execution. Every selected file must collect tests; no base node may disappear
+or be renamed, and each current node must pass setup, call and teardown exactly
+once. Deselection, collection skips, xfail/xpass, missing or duplicate execution
+fail the mapped check. Default `addopts` are cleared for this explicit suite.
+The two collection/execution manifests accompany the source artifact. Changes
+that intentionally remove or rename tests need full validation, rather than
+weaker mapped proof. This contract does not expand the allowlist or qualify a
+reduced integration candidate.
+
 Every promoted train/queue candidate remains full: nine CPU jobs, Apple checks,
 coverage and relevant model checks. Main keeps full validation or authenticated
 identical-tree full candidate reuse. Exact release qualification remains

@@ -408,16 +408,16 @@ class ImageGenerationEngine:
         pinned_revision = IMAGE_MODEL_REVISIONS.get(self.model_name)
         if pinned_revision is None:
             return self.model_name
-        from huggingface_hub import snapshot_download
+        from .._mirror import pinned_snapshot_download
 
-        kwargs = {}
         allow_patterns = IMAGE_MODEL_DATA_FILES.get(self.model_name)
-        if allow_patterns is not None:
-            # Vendored runtimes execute only reviewed local code. Fetch the
-            # pinned model data they consume, never repository scripts.
-            kwargs["allow_patterns"] = list(allow_patterns)
-        downloaded = snapshot_download(
-            self.model_name, revision=pinned_revision, **kwargs
+        # Vendored runtimes execute only reviewed local code. Fetch the pinned
+        # model data they consume, never repository scripts — from the mirror
+        # where its bytes are proven identical to the pin, else from HF.
+        downloaded = pinned_snapshot_download(
+            self.model_name,
+            pinned_revision,
+            allow_patterns=list(allow_patterns) if allow_patterns is not None else None,
         )
         # A pinned cold pull bypasses ``_verify_weights_complete()``'s
         # normal preflight — at the time it ran (in ``_ensure_loaded``,
@@ -679,15 +679,15 @@ class ImageGenerationEngine:
         assets = image_runtime_assets_for(self.model_name)
         if not assets:
             return
-        from huggingface_hub import snapshot_download
+        from .._mirror import pinned_snapshot_download
 
         for repo_id, revision, allow_patterns in assets:
             if pinned_image_snapshot(repo_id) is not None:
                 continue
             try:
-                snapshot_download(
+                pinned_snapshot_download(
                     repo_id,
-                    revision=revision,
+                    revision,
                     allow_patterns=list(allow_patterns),
                 )
             except Exception as exc:  # noqa: BLE001 — clean runtime boundary
