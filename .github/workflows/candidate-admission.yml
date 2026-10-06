@@ -44,7 +44,7 @@ jobs:
             identity=(--producer-run-id "$TRIGGER_RUN")
           fi
           python -m scripts.ci_candidate_admission \
-            --repo "$GITHUB_REPOSITORY" "${identity[@]}" \
+            --repo "$GITHUB_REPOSITORY" --reuse-api-connection "${identity[@]}" \
             --github-output "$GITHUB_OUTPUT" \
             --output "$RUNNER_TEMP/candidate-admission.json"
       - name: Upload admission evidence
