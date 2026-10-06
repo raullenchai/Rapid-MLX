@@ -177,7 +177,10 @@ def _hf_files(repo_id: str, revision: str | None = None) -> list[FileMeta]:
         blob_id = getattr(s, "blob_id", None)
         git_oid = (
             blob_id.lower()
-            if lfs_sha256 is None and isinstance(blob_id, str) and len(blob_id) == 40
+            if lfs_sha256 is None
+            and isinstance(blob_id, str)
+            and len(blob_id) == 40
+            and all(c in "0123456789abcdefABCDEF" for c in blob_id)
             else None
         )
         key = f"{repo_id}/{rname}"

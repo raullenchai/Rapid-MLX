@@ -456,6 +456,7 @@ def test_hf_files_keeps_blob_id_for_non_lfs_files_only(monkeypatch) -> None:
             blob_id="b" * 40,
         ),
         MagicMock(rfilename="odd.txt", size=1, lfs=None, blob_id="short"),
+        MagicMock(rfilename="nonhex.txt", size=1, lfs=None, blob_id="z" * 40),
     ]
 
     class Api:
@@ -467,6 +468,7 @@ def test_hf_files_keeps_blob_id_for_non_lfs_files_only(monkeypatch) -> None:
     assert files["config.json"].git_oid == oid
     assert files["model.safetensors"].git_oid is None
     assert files["odd.txt"].git_oid is None
+    assert files["nonhex.txt"].git_oid is None
 
 
 def _run_blob_repo(monkeypatch, tmp_path, r2_body: bytes, **kwargs):
