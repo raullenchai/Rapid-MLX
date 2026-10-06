@@ -1863,6 +1863,65 @@ def test_chat_command_sigterm_handler_installed_before_spawn(monkeypatch):
     )
 
 
+def test_chat_command_forwards_disk_caches_and_log_target(monkeypatch, capsys):
+    spawn_kwargs: dict = {}
+
+    class _NoopProc:
+        _rapid_mlx_log = None
+        _rapid_mlx_log_path = None
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            pass
+
+        def wait(self, timeout=None):
+            pass
+
+        def kill(self):
+            pass
+
+    def _fake_spawn(*_a, **kwargs):
+        spawn_kwargs.update(kwargs)
+        return _NoopProc(), f"http://127.0.0.1:{port}"
+
+    monkeypatch.delenv("RAPID_MLX_LOG_FILE", raising=False)
+    monkeypatch.setattr(cli, "_spawn_chat_server", _fake_spawn)
+    monkeypatch.setattr(cli, "_ensure_model_downloaded", lambda *_a, **_kw: None)
+    monkeypatch.setattr(cli, "_wait_for_chat_server", lambda *_a, **_kw: True)
+
+    with _fake_server([_delta("ok")]) as (fake_port, _payloads):
+        port = fake_port
+        inputs = iter(["exit"])
+        monkeypatch.setattr("builtins.input", lambda _p="": next(inputs))
+        ns = _ns_for_chat(fake_port)
+        ns.base_url = None
+        ns.port = None
+        ns.disable_disk_caches = True
+        ns.log_file = "/dev/null"
+        cli.chat_command(ns)
+
+    assert spawn_kwargs["disable_disk_caches"] is True
+    assert spawn_kwargs["log_target"] == "/dev/null"
+    assert "log: discarded (/dev/null)" in capsys.readouterr().out
+
+
+def test_chat_command_rejects_unusable_log_file(monkeypatch, tmp_path, capsys):
+    monkeypatch.delenv("RAPID_MLX_LOG_FILE", raising=False)
+    monkeypatch.setattr(
+        cli, "_spawn_chat_server", lambda *_a, **_kw: pytest.fail("must not spawn")
+    )
+    ns = _ns_for_chat(0)
+    ns.base_url = None
+    ns.port = None
+    ns.log_file = str(tmp_path / "missing" / "server.log")
+    with pytest.raises(SystemExit) as exc:
+        cli.chat_command(ns)
+    assert exc.value.code == 2
+    assert "does not exist" in capsys.readouterr().err
+
+
 def test_chat_model_switch_refuses_draft_before_download(monkeypatch, capsys):
     """The in-process /model path must run the draft gate before its own
     prefetch and leave the current server alive."""

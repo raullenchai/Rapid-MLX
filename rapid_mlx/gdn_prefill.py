@@ -36,9 +36,10 @@ kernel unchanged. Set ``RAPID_MLX_GDN_PREFILL=0`` to disable.
 from __future__ import annotations
 
 import logging
-import os
 
 import mlx.core as mx
+
+from ._env import env_falsey
 
 logger = logging.getLogger(__name__)
 
@@ -316,8 +317,8 @@ def install() -> bool:
     global _installed, _original_kernel
     if _installed:
         return True
-    if os.environ.get("RAPID_MLX_GDN_PREFILL", "1") == "0":
-        logger.info("[gdn_prefill] disabled via RAPID_MLX_GDN_PREFILL=0")
+    if env_falsey("RAPID_MLX_GDN_PREFILL"):
+        logger.info("[gdn_prefill] disabled via RAPID_MLX_GDN_PREFILL")
         return False
     if not mx.metal.is_available():
         return False

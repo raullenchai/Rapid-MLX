@@ -1309,12 +1309,15 @@ class MLLMBatchGenerator:
                     # cache, so do not start writing a new home-directory
                     # cache merely because the dependency was upgraded.  An
                     # operator can still opt in explicitly through APC's
-                    # documented environment switch.
+                    # documented environment switch, unless
+                    # --disable-disk-caches overrules it.
                     apc_overrides: dict[str, Any] = {
                         "enabled": True,
                         "num_blocks": 0,
                     }
-                    if "APC_DISK_ENABLED" not in os.environ:
+                    from rapid_mlx import disk_caches
+
+                    if disk_caches.disabled() or "APC_DISK_ENABLED" not in os.environ:
                         apc_overrides["disk_enabled"] = False
                     self._prefix_cache = _apc.from_env(overrides=apc_overrides)
                     self._prefix_cache_mode = mode

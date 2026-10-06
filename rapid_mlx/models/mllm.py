@@ -41,6 +41,7 @@ import numpy as np
 import requests
 from requests.adapters import HTTPAdapter
 
+from rapid_mlx._env import env_truthy
 from rapid_mlx.mllm_cache import MLLMPrefixCacheManager
 from rapid_mlx.model_metadata import MULTIMODAL_TENSOR_PREFIXES
 from rapid_mlx.runtime.optional_runtime import OptionalRuntimeStatus
@@ -981,7 +982,7 @@ def _resolve_local_media(path: str) -> str | None:
     refused. ``RAPID_MLX_DISABLE_LOCAL_MEDIA_PATHS=1`` disables the local-file
     branch entirely.
     """
-    if os.environ.get("RAPID_MLX_DISABLE_LOCAL_MEDIA_PATHS") == "1":
+    if env_truthy("RAPID_MLX_DISABLE_LOCAL_MEDIA_PATHS"):
         return None
     if not path or len(path) >= 4096:
         return None

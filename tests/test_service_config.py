@@ -61,6 +61,8 @@ def test_service_config_round_trip_and_digest(tmp_path):
         ({"host": "192.168.1.20"}, "loopback"),
         ({"host": "inference.example.com"}, "loopback"),
         ({"serve_args": ("--api-key=leak",)}, "API key"),
+        ({"serve_args": ("--log-file", "server.log")}, "absolute"),
+        ({"serve_args": ("--log-file=/Volumes/X/server.log",)}, "/Volumes"),
         ({"log_retention_days": 0}, "at least 1"),
     ],
 )

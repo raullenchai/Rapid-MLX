@@ -36,6 +36,8 @@ import subprocess
 import sys
 from typing import TYPE_CHECKING
 
+from rapid_mlx._env import env_truthy
+
 if TYPE_CHECKING:  # pragma: no cover - import-time only
     from rapid_mlx.agents.base import AgentProfile
 
@@ -43,7 +45,11 @@ if TYPE_CHECKING:  # pragma: no cover - import-time only
 def register(subparsers) -> None:
     """Register the ``start`` subparser (deferred-import from ``cli.py``)."""
     from rapid_mlx._completion import alias_completer  # noqa: PLC0415
-    from rapid_mlx.cli_parser import _port_arg  # noqa: PLC0415
+    from rapid_mlx.cli_parser import (  # noqa: PLC0415
+        _add_disable_disk_caches_arg,
+        _add_log_file_arg,
+        _port_arg,
+    )
 
     parser = subparsers.add_parser(
         "start",
@@ -117,6 +123,8 @@ def register(subparsers) -> None:
         default=600,
         help="Seconds to wait for the spawned server to become ready (default: 600)",
     )
+    _add_disable_disk_caches_arg(parser)
+    _add_log_file_arg(parser)
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +134,16 @@ def register(subparsers) -> None:
 
 def start_command(args) -> int:
     """Resolve, consent, spawn (or reuse), and wait. Returns an exit code."""
+    from rapid_mlx import log_file
     from rapid_mlx.agents import get_profile
+
+    try:
+        args._log_target, _ = log_file.resolve_validated(
+            getattr(args, "log_file", None)
+        )
+    except log_file.LogFileError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
 
     profile_name = args.profile
     profile = get_profile(profile_name) if profile_name else None
@@ -375,8 +392,7 @@ def _confirm_download(model: str, *, no_download: bool, yes: bool) -> bool:
     if is_repo_cached(hf_id):
         return True
 
-    env_val = os.environ.get("RAPID_MLX_AUTO_PULL", "").strip().lower()
-    if env_val in {"1", "true", "yes"} or yes or not sys.stdin.isatty():
+    if env_truthy("RAPID_MLX_AUTO_PULL") or yes or not sys.stdin.isatty():
         return True
 
     size: int | None = None
@@ -400,7 +416,14 @@ def _spawn_foreground_serve(model: str, args) -> subprocess.Popen:
         "--port",
         str(args.port),
     ]
+    if getattr(args, "disable_disk_caches", False):
+        cmd.append("--disable-disk-caches")
     child_env = os.environ.copy()
+    log_target = getattr(args, "_log_target", None)
+    if log_target is not None:
+        from rapid_mlx import log_file
+
+        child_env[log_file.ENV_VAR] = log_target
     # The parent already ran the download-consent gate; suppress the child's
     # own B2 re-prompt (chat spawner pattern).
     child_env["RAPID_MLX_CHAT_SPAWN"] = "1"
