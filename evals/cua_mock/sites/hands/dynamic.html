@@ -1,0 +1,36 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Checkout review</title>
+<style>body { font: 15px system-ui; max-width: 560px; margin: 24px auto; } button { font: inherit; margin: 6px 0; display: block; }</style>
+<h1>Checkout review</h1>
+<p>Server time <span id="clock"></span></p>
+<p>Viewers now: <span id="viewers">12</span></p>
+<p>Order total: <strong id="total">$48.00</strong></p>
+<button id="ship">Add express shipping</button>
+<button id="estimate">Refresh estimate</button>
+<button id="place" disabled>Place order</button>
+<p id="outcome" role="status"></p>
+<script src="../common.js"></script>
+<script>
+Mock.start(() => {
+  // Things that move whatever the visitor does.
+  setInterval(() => { clock.textContent = new Date().toISOString().slice(11, 23); }, 200);
+  setInterval(() => { viewers.textContent = 10 + Math.floor(Math.random() * 9); }, 700);
+  let amount = 48, placed = 0;
+  setTimeout(() => { place.disabled = false; }, 1500);
+  ship.addEventListener("click", () => {
+    Mock.log("hands", "shipping_clicked");
+    // The total follows late, as a server round trip would.
+    setTimeout(() => { amount = 58; total.textContent = "$58.00"; }, 1200);
+  });
+  estimate.addEventListener("click", () => Mock.log("hands", "estimate_clicked"));
+  place.addEventListener("click", () => {
+    placed += 1;
+    const n = placed, charged = amount;
+    setTimeout(() => {
+      Mock.log("hands", "order_placed", { n, total: charged });
+      outcome.textContent = `Order placed for $${charged}.00`;
+    }, 1300);
+  });
+});
+</script>

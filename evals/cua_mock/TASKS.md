@@ -104,3 +104,48 @@ MOCK_ORACLE=http://127.0.0.1:8810 PYTHONPATH=. python evals/cua_mock/harness/cua
 
 With `MOCK_ORACLE` set, user input given on `/human` is reported to the mock
 oracle, so `mockctl.py human` is not needed.
+
+## Hands fixtures (no model)
+
+The task cards above need a brain, so a failed run does not say which layer
+failed. `hands_eval.py` takes the brain out: a fixed script names every
+target by role and label, resolves it from the observation it was just given,
+and an oracle outside the session (the page's event log, the file on disk)
+says what really happened. A failure names its layer: `perception` (the
+target was not in the observation, or was there twice), `targeting` (input
+reached something else), `delivery` (the action was refused or lost),
+`verification` (the receipt or a wait said something the oracle did not).
+
+```sh
+PYTHONPATH=. python evals/cua_mock/hands_eval.py --reps 20 --out report.json
+PYTHONPATH=. python evals/cua_mock/hands_eval.py --only form,twin --reps 3
+```
+
+It starts its own mock server (port 8811), opens its own windows in Google
+Chrome, TextEdit and Finder, and closes them; files go under `--scratch`
+(default `/private/tmp/cua-hands-eval`). It needs the Accessibility grant and
+a Python with PyObjC. Targets and values are drawn per repetition from
+`--seed`, so a run can be repeated exactly.
+
+| Fixture | What it holds the hands to |
+| --- | --- |
+| `form` | Exact values in a 36-field form (Unicode, several lines), a field inside a nested scroller, a popup; one submission, no other field touched |
+| `dynamic` | On a page that moves by itself, a click with no effect is not reported as confirmed; a total that arrives late is read before the commit; one order |
+| `board` | A drag reorders a list; a painted (canvas) control is absent from the observation and receives nothing |
+| `twin` | Two windows with one title: fill, key and click reach only the one named, and the frontmost app never changes |
+| `textedit` | Exact text on disk; a Save panel opened in the background and cancelled; a draft closed and deleted; nothing else written |
+| `finder` | A file scrolled out sideways is brought into view and selected, its sibling is not; Escape gets the window back from the rename editor with nothing renamed |
+
+The report has every step: the observation's size, the route the action took,
+its effect, how long it took. Run it before a change to the hands or the
+perception session is merged, and after: the fixtures are the regression
+suite a model cannot blur.
+
+Outside what the fixtures cover, and not supported by the session today:
+
+- a key combination aimed at a field inside a sheet (Go to Folder in a Save
+  panel), so a Save panel can only save where its "Where:" menu offers;
+- renaming a file in Finder (the inline editor is a window of its own that
+  the session does not show; Escape leaves it);
+- anything painted rather than built (a canvas): the session reports no row
+  for it and sends nothing.
