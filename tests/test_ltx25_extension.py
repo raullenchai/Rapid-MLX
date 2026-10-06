@@ -507,6 +507,7 @@ async def test_extension_route_runs_job_and_removes_source(
         else:
             assert (job_dir / "output.mp4").read_bytes() == b"extended-mp4"
     finally:
+        await video.shutdown_video_jobs()
         video.configure_video_jobs(None)
         video.start_video_jobs()
 
