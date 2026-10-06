@@ -159,6 +159,8 @@ def test_real_required_aggregate_rejects_failed_missing_or_wrong_scope(updates, 
         "needs.changes.outputs.full_gate": "false",
         "github.event_name": "pull_request",
         "needs.source-canary-unit.result": "success",
+        "needs.changes.outputs.candidate_shadow": "false",
+        "needs.candidate-canary-unit.result": "skipped",
     }
     for job in ["lint", "engine-contracts", "type-check", "mlx-bound-guard"]:
         values[f"needs.{job}.result"] = "success"
