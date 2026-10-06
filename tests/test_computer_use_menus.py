@@ -371,6 +371,54 @@ def test_settle_menus_refuses_a_missing_or_disabled_item(open_menu, calls):
     assert not any(c[2] == "AXPress" for c in calls if c[0] == "ax")
 
 
+def test_settle_menus_matches_a_unique_start_or_part_and_refuses_ambiguity(
+    open_menu, calls, attrs
+):
+    attrs["menu"]["AXChildren"] = ["visa", "checking", "savings", "add", "settings"]
+    attrs["settings"] = {"AXRole": "AXMenuItem", "AXTitle": "Payment settings"}
+    attrs["visa"] = {"AXRole": "AXMenuItem", "AXTitle": "Visa ending 4242 (2.95% fee)"}
+    attrs["checking"] = {
+        "AXRole": "AXMenuItem",
+        "AXTitle": "Checking ending 6789 (no fee)",
+    }
+    attrs["savings"] = {"AXRole": "AXMenuItem", "AXTitle": "Savings ending 1111"}
+    attrs["add"] = {"AXRole": "AXMenuItem", "AXTitle": "Add a new payment method…"}
+    report = backend._settle_menus(_snapshot(), 0, 0, "checking", expect_menu=True)
+    assert report["chosen"] == "Checking ending 6789 (no fee)"
+    open_menu.state["open"] = 1
+    report = backend._settle_menus(_snapshot(), 0, 0, "6789", expect_menu=True)
+    assert report["chosen"] == "Checking ending 6789 (no fee)"
+    open_menu.state["open"] = 1
+    report = backend._settle_menus(_snapshot(), 0, 0, "Sa", expect_menu=True)
+    assert report["chosen"] == "Savings ending 1111"
+    for wanted, why in (
+        ("ending", "has 3 items matching"),  # in three titles
+        # One title starts with it, another holds it: still ambiguous.
+        ("pay", "has 2 items matching"),
+        ("ng", "has no enabled item"),  # two letters choose only as a start
+        ("c", "has no enabled item"),  # too short to choose by
+        ("Mastercard", "has no enabled item"),
+    ):
+        open_menu.state["open"] = 1
+        presses = len([c for c in calls if c[2:] == ("AXPress",)])
+        with pytest.raises(errors.ComputerUseError) as exc:
+            backend._settle_menus(_snapshot(), 0, 0, wanted, expect_menu=True)
+        assert exc.value.code == "element_not_found"
+        assert why in exc.value.message and "Savings ending 1111" in exc.value.message
+        assert len([c for c in calls if c[2:] == ("AXPress",)]) == presses
+    # Two items with the very title asked for: neither is chosen.
+    attrs["menu"]["AXChildren"].append("joint")
+    attrs["joint"] = {"AXRole": "AXMenuItem", "AXTitle": "savings ending 1111…"}
+    open_menu.state["open"] = 1
+    presses = len([c for c in calls if c[2:] == ("AXPress",)])
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend._settle_menus(
+            _snapshot(), 0, 0, "Savings ending 1111", expect_menu=True
+        )
+    assert "has 2 items named 'Savings ending 1111'" in exc.value.message
+    assert len([c for c in calls if c[2:] == ("AXPress",)]) == presses
+
+
 def test_settle_menus_reports_a_failed_press(open_menu, calls):
     open_menu.results[("copy", "AXPress")] = -25200
     with pytest.raises(errors.ComputerUseError) as exc:
@@ -674,6 +722,61 @@ def test_press_menu_item_refuses_disabled_and_reports_errors(
     with pytest.raises(errors.ComputerUseError) as exc:
         backend._press_menu_item("App", snap, "copy", "Copy", False)
     assert exc.value.code == "accessibility_error"
+
+
+def test_background_menu_item_is_asked_again_before_it_is_called_disabled(
+    monkeypatch, menubar, calls
+):
+    # An app that is not in front keeps each item's state from its last open
+    # menu: Save… stayed disabled for a new document after a saved one.
+    results: dict = {}
+    perform = _ax_actions(monkeypatch, calls, results)
+    monkeypatch.setattr(backend, "_process_is_active", lambda snap: False)
+    monkeypatch.setattr(backend, "MENU_VALIDATE_S", 0)
+    menubar["edit-title"]["AXRole"] = "AXMenuBarItem"
+    menubar["edit-menu"]["AXParent"] = "edit-title"
+    menubar["copy"].update(AXEnabled=False, AXParent="edit-menu")
+
+    def opening(element, action):
+        if (element, action) == ("edit-title", "AXPress"):
+            menubar["copy"]["AXEnabled"] = True  # validated on opening
+        return perform(element, action)
+
+    monkeypatch.setattr(ax_driver, "AXUIElementPerformAction", opening)
+    result = backend._press_menu_item("App", _snapshot(), "copy", "Copy", False)
+    assert result["mode"] == "AXMenuPress"
+    assert [c[1:] for c in calls if c[0] == "ax"] == [
+        ("edit-title", "AXPress"),
+        ("edit-title", "AXCancel"),
+        ("copy", "AXPress"),
+    ]
+    # Still disabled once asked: refused, and the menu is closed again.
+    calls.clear()
+    menubar["copy"]["AXEnabled"] = False
+    monkeypatch.setattr(ax_driver, "AXUIElementPerformAction", perform)
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend._press_menu_item("App", _snapshot(), "copy", "Copy", False)
+    assert exc.value.code == "synthetic_input_blocked"
+    assert [c[1:] for c in calls if c[0] == "ax"][-1] == ("edit-title", "AXCancel")
+    # A menu that will not open says nothing new.
+    results[("edit-title", "AXPress")] = -25200
+    assert backend._menu_item_revalidated("copy") is False
+
+
+def test_secondary_action_reaches_an_item_outside_the_window_frame(monkeypatch, calls):
+    snap = _snapshot(
+        elements=[{"index": 0, "role": "AXMenuItem", "actions": ["AXPick"]}]
+    )
+    asked = []
+    monkeypatch.setattr(
+        backend,
+        "_live_element",
+        lambda s, i, *, validate_point: asked.append(validate_point) or "live",
+    )
+    monkeypatch.setattr(backend, "_open_menu_count", lambda pid: 0)
+    _ax_actions(monkeypatch, calls)
+    backend.perform_secondary_action("App", 0, "AXPick", expected_snapshot=snap)
+    assert asked == [False]
 
 
 def test_menu_item_chord_maps_modifiers_and_skips_glyph_keys(attrs):
@@ -1703,3 +1806,50 @@ def test_collect_wakes_a_hidden_renderer_once(monkeypatch, clock):
     monkeypatch.setattr(ax_driver, "_wake_hidden_renderer", lambda w: False)
     ax_driver.collect("A", retry_web_content=True)
     assert events == []
+
+
+# --- read_value: the whole of a value the observation cut short ----------------
+
+
+def test_read_value_returns_a_window_of_the_whole_value(monkeypatch, attrs):
+    long = "0123456789" * 50
+    snapshot = _snapshot(
+        elements=[
+            {"index": 0, "role": "AXTextArea", "label": "Note", "value": long[:120]},
+            {"index": 1, "role": "AXTextField", "subrole": "AXSecureTextField"},
+            {"index": 2, "role": "AXTextField", "value": ax_driver.USER_VALUE},
+            {"index": 3, "role": "AXSlider", "label": "Volume"},
+        ]
+    )
+    monkeypatch.setattr(backend, "_live_element", lambda snap, index, **kw: index)
+    attrs[0] = {"AXValue": long}
+    attrs[3] = {"AXValue": 0.5}
+    out = backend.read_value("App", 0, expected_snapshot=snapshot)
+    assert out == {"text": long, "start": 0, "total_chars": 500}
+    out = backend.read_value(
+        "App", 0, start=495, max_chars=10, expected_snapshot=snapshot
+    )
+    assert out["text"] == "56789"
+    # The user's own entries are never read.
+    for index in (1, 2):
+        with pytest.raises(errors.ComputerUseError) as exc:
+            backend.read_value("App", index, expected_snapshot=snapshot)
+        assert exc.value.code == "invalid_argument"
+    # Not text, or unreadable: said so.
+    attrs[4] = {"AXValue": _UNREADABLE}
+    snapshot["elements"].append({"index": 4, "role": "AXTextArea"})
+    for index in (3, 4):
+        with pytest.raises(errors.ComputerUseError) as exc:
+            backend.read_value("App", index, expected_snapshot=snapshot)
+        assert exc.value.code == "accessibility_error"
+    for bad in (
+        {"start": -1},
+        {"max_chars": 0},
+        {"max_chars": backend.MAX_READ_CHARS + 1},
+    ):
+        with pytest.raises(errors.ComputerUseError) as exc:
+            backend.read_value("App", 0, expected_snapshot=snapshot, **bad)
+        assert exc.value.code == "invalid_argument"
+    # Without a snapshot it observes the window itself.
+    monkeypatch.setattr(backend, "get_app_state", lambda *a, **k: snapshot)
+    assert backend.read_value("App", 0, max_chars=3)["text"] == "012"

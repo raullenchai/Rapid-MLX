@@ -17,7 +17,11 @@ One ``PerceptionSession`` tracks what the model has seen:
   transitions;
 * an action whose outcome is unknown blocks further input until the window
   is observed again (Muse's "unresolved outcome" rule, relaxed: a fresh
-  observation clears it).
+  observation clears it);
+* the session executes, it does not judge: whether to confirm with the user
+  before a payment, a deletion or a secret is the brain's decision, and it
+  asks in its reply. Observations never show a secret field's value, and
+  ``handoff`` lets the user type something themselves.
 """
 
 from __future__ import annotations
@@ -31,7 +35,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from . import backend, guards
+from . import backend, privacy
 from .errors import ComputerUseError
 
 MAX_CHANGE_LINES = 20
@@ -42,18 +46,16 @@ SETTLE_MIN_S = 0.3
 SETTLE_CAP_S = 1.5
 SETTLE_CAP_SLOW_S = 5.0
 _SLOW_KEYS = {"return", "enter", "cmd+r", "cmd+l", "cmd+n", "cmd+t", "cmd+w"}
-# Keys that press the focused control.
-_ACTIVATING_KEYS = {"return", "enter", "space", " ", "kp_enter"}
-_PASTE = re.compile(
-    r"^(?:(?:shift|option|alt|ctrl)\+)*(?:cmd|command)\+(?:(?:shift|option|alt)\+)*v$",
-    re.I,
-)
 WAIT_POLL_S = 0.5
 # A bot reply lands in pieces (bubble, then text, then quick replies).
 WAIT_QUIET_S = 2.5
 MAX_FOLD_SECTIONS = 12
 # Refusals that mean "the page moved under the snapshot", not "the target is gone".
 _SHIFTED = {"element_not_found", "stale_observation"}
+# What a control offers beyond a press. Every web node offers a context menu
+# and a scroll-into-view, every native text field a confirm and every menu
+# item a pick and a cancel, which say nothing; these change the control.
+_OFFERED_ACTIONS = ("AXIncrement", "AXDecrement", "AXExpand", "AXCollapse")
 MAX_FIND_HITS = 25
 # Live AX elements remembered for ref stability; past this, elements no
 # current observation shows are forgotten.
@@ -67,6 +69,20 @@ _EXTENSION_BUTTON = re.compile(r"(has|wants) access to this site$|^extensions$",
 _ADDRESS_BAR = re.compile(
     r"address and search|address bar|smart search|search or enter", re.I
 )
+_ADDRESS_BAR_ROLES = {"AXTextField", "AXComboBox"}
+# A tab's hover card renames its tab ("Shop - Memory usage - 160 MB").
+_TAB_HOVER = re.compile(r" - (?:memory usage|high memory usage) - ", re.I)
+_TAB_ROLES = {"AXRadioButton", "AXTab"}
+# Kept equal to ax_driver.DIALOG_SUBROLES (not imported: it needs macOS).
+_DIALOG_SUBROLES = {
+    "AXApplicationDialog",
+    "AXApplicationAlertDialog",
+    "AXDialog",
+    "AXSystemDialog",
+}
+# Rows that name what is around them (a tile's title, a section's heading).
+_NAMING_ROLES = ("AXHeading", "AXStaticText", "AXGroup", "AXCell", "AXRow")
+MAX_CONTEXT_CHARS = 60
 
 
 def _short_role(role: str) -> str:
@@ -86,24 +102,66 @@ class Row:
     subrole: str = ""
     on_screen: bool = True  # inside the window's visible area (not scrolled away)
     sliver: bool = False  # visually hidden (clipped to 1 px), not just scrolled away
+    path: tuple[int, ...] = ()  # child positions from the walk root
+    web: bool | None = None  # page content (True), browser/app chrome (False)
+    secure: bool = False  # a password field: named, its contents never read
+    value_chars: int | None = None  # the whole value's length, when it is cut
+    actions: tuple[str, ...] = ()  # what the action op can do to it
 
     def is_browser_noise(self) -> bool:
         return self.role == "AXPopUpButton" and bool(
             _EXTENSION_BUTTON.search(self.label)
         )
 
+    def is_tab_strip(self, in_browser: bool) -> bool:
+        """A browser tab: its title and hover card change with every page.
+
+        ``in_browser``: the window is a browser's (:func:`_shows_browser`),
+        so a tab outside the page is the browser's (a native app's tabs and
+        radio buttons are its own, embedded web view or not).
+        """
+        return (
+            in_browser
+            and self.role in _TAB_ROLES
+            and self.web is not True  # a page's own tabs are the page's
+            and (self.web is False or bool(_TAB_HOVER.search(self.label)))
+        )
+
+    def is_bare_group(self) -> bool:
+        """A group with no name, value or state of its own."""
+        return (
+            self.role == "AXGroup"
+            and not self.label
+            and self.value is None
+            and not self.states
+            and not self.is_dialog()
+        )
+
+    def is_dialog(self) -> bool:
+        return self.role == "AXSheet" or (
+            self.role == "AXGroup" and self.subrole in _DIALOG_SUBROLES
+        )
+
     def signature(self) -> tuple:
         return (self.role, self.label, self.value, self.states)
 
-    def render(self) -> str:
-        text = f"{'*' if self.new else ' '}{self.ref} {_short_role(self.role)}"
+    def render(self, context: str = "", *, marker: bool = True) -> str:
+        role = "securetextfield" if self.secure else _short_role(self.role)
+        text = f"{'*' if self.new and marker else ' '}{self.ref} {role}"
         if self.label:
             cap = MAX_TEXT_CHARS if self.role == "AXStaticText" else MAX_LABEL_CHARS
             text += f' "{self.label[:cap]}"'
         if self.value is not None:
             text += f" = {self.value[:MAX_LABEL_CHARS]!r}"
+            if self.value_chars is not None:
+                # Cut short: say so, and how to get the rest.
+                text += f" (first {len(self.value)} of {self.value_chars} chars; read)"
         if self.states:
             text += f" [{','.join(self.states)}]"
+        if self.actions:
+            text += f" {{action: {','.join(self.actions)}}}"
+        if context:
+            text += f" (in: {context})"
         return text
 
 
@@ -121,11 +179,17 @@ class Observation:
     elapsed_ms: int
     truncated: bool
     window_ids: list[str] = field(default_factory=list)
+    closed: bool = False  # the window went away (the action closed it)
 
     def by_ref(self) -> dict[str, Row]:
         return {row.ref: row for row in self.rows}
 
     def render(self, *, full: bool = True, everything: bool = False) -> str:
+        if self.closed:
+            return (
+                f"observation {self.obs_id} · {self.app} · window {self.window_id}"
+                f' "{self.title}" · closed (no elements; list windows to go on)'
+            )
         head = (
             f"observation {self.obs_id} · {self.app} · window {self.window_id}"
             f' "{self.title}" · {len(self.rows)} elements · {self.elapsed_ms} ms'
@@ -133,6 +197,12 @@ class Observation:
         if self.truncated:
             head += " · TRUNCATED (budget or cap reached; scroll or narrow)"
         lines = [head]
+        for dialog in [r for r in self.rows if r.is_dialog() and r.on_screen][:3]:
+            name = f' "{dialog.label[:MAX_CONTEXT_CHARS]}"' if dialog.label else ""
+            lines.append(
+                f"modal dialog open: {dialog.ref}{name}; it covers the page "
+                "(act inside it, or close it first)"
+            )
         if self.previous is not None:
             added, removed, changed = self.change_counts
             lines.append(
@@ -143,38 +213,60 @@ class Observation:
             lines.append("elements:")
             rows = [row for row in self.rows if not row.is_browser_noise()]
             noise = len(self.rows) - len(rows)
+            wrappers = 0
+            if not everything:
+                # A nameless group around other rows says nothing the rows
+                # inside it do not; it stays addressable (all=true lists it).
+                holding = {row.path[:n] for row in rows for n in range(len(row.path))}
+                kept = [
+                    r
+                    for r in rows
+                    if not (r.is_bare_group() and r.path and r.path in holding)
+                ]
+                wrappers = len(rows) - len(kept)
+                rows = kept
+            contexts = _contexts(self.rows)
+            # In a browser, the page reads first; the browser's own controls
+            # (toolbar, tabs, its password bubble) follow, marked as such.
+            split = any(r.web for r in rows) and any(r.web is False for r in rows)
+            page = [r for r in rows if r.web is not False] if split else rows
+            chrome = [r for r in rows if r.web is False] if split else []
             if everything:
-                lines.extend(row.render() for row in rows)
+                lines.extend(row.render(contexts.get(row.ref, "")) for row in page)
             else:
                 # The model reads what is on screen, as the user would; a long
                 # page (a buy box after 1,400 carousel nodes) is still walked
                 # whole, so off-screen rows stay addressable and searchable.
-                lines.extend(row.render() for row in rows if row.on_screen)
-                off = [row for row in rows if not row.on_screen]
+                lines.extend(
+                    row.render(contexts.get(row.ref, ""))
+                    for row in page
+                    if row.on_screen
+                )
+                off = [row for row in page if not row.on_screen]
                 if off:
-                    sections: list[str] = []
-                    for row in off:
-                        if (
-                            row.role == "AXHeading"
-                            and not row.sliver
-                            and row.label
-                            and row.label not in sections
-                        ):
-                            sections.append(row.label[:60])
-                    hint = f"  ({len(off)} more elements off screen"
-                    if sections:
-                        shown = " · ".join(
-                            f'"{s}"' for s in sections[:MAX_FOLD_SECTIONS]
-                        )
-                        more = len(sections) - MAX_FOLD_SECTIONS
-                        hint += f"; sections: {shown}" + (
-                            f" +{more} more" if more > 0 else ""
-                        )
-                    lines.append(
-                        hint + "; scroll, or observe with find=<text> or all=true)"
-                    )
+                    lines.append(_off_screen_hint(page, off))
+            if any(
+                row.role == "AXPopUpButton"
+                and row.label not in _BROWSER_POPUPS
+                and (everything or row.on_screen)
+                for row in page
+            ):
+                lines.append(
+                    "  (popup buttons: click one to list its options, or click "
+                    "with menu_item=<option>; a unique start of the option's "
+                    "text is enough)"
+                )
+            if chrome:
+                lines.append("browser (outside the page):")
+                lines.extend(
+                    row.render(contexts.get(row.ref, ""))
+                    for row in chrome
+                    if everything or row.on_screen
+                )
             if noise:
                 lines.append(f"  ({noise} browser-extension buttons hidden)")
+            if wrappers:
+                lines.append(f"  ({wrappers} nameless groups around these not listed)")
         return "\n".join(lines)
 
     def find(self, text: str) -> str:
@@ -186,9 +278,11 @@ class Observation:
             if not row.is_browser_noise()
             and needle in f"{row.label} {row.value or ''}".lower()
         ]
+        contexts = _contexts(self.rows) if hits else {}
         lines = [f"find {text!r} in {self.obs_id}: {len(hits)} matches"]
         lines.extend(
-            row.render() + ("" if row.on_screen else "  (off screen)")
+            row.render(contexts.get(row.ref, ""))
+            + ("" if row.on_screen else "  (off screen)")
             for row in hits[:MAX_FIND_HITS]
         )
         if len(hits) > MAX_FIND_HITS:
@@ -252,11 +346,8 @@ class PerceptionSession:
         self._awake: subprocess.Popen | None = None
         self._handed_from: int | None = None  # pid in front before take_front
         # One lock serializes AX work: a handoff waits on one thread while the
-        # human channel (approvals, human input) arrives on another.
+        # human channel (the user's input during a handoff) arrives on another.
         self._lock = threading.RLock()
-        self._approval_ids = itertools.count(1)
-        self._pending: dict[str, dict] = {}  # approval id -> what was asked
-        self._approved: dict[str, dict] = {}  # approval id -> granted, unused
         self._with_human: dict[str, str] = {}  # window id -> why
         self._human_done: set[str] = set()
         self.on_event = None  # host hook: callable(kind, payload)
@@ -313,7 +404,11 @@ class PerceptionSession:
         front = _frontmost_pid()
         if self._handed_from is None and front is not None:
             self._handed_from = front
-        app_element, info = backend._resolve_app(app, activate=True)
+        # Activate without the resolver's fixed 0.6 s wait: the loop below
+        # polls for the window to be in front.
+        app_element, info = backend._resolve_app(app, activate=False)
+        if info.get("pid") is not None:
+            backend._activate_app(int(info["pid"]))
 
         def matching() -> list:
             return [
@@ -353,143 +448,24 @@ class PerceptionSession:
         self.release_awake()
         return {"restored_pid": pid, "restored": restored}
 
-    # -- what only the user may do -----------------------------------------
+    # -- the user's turn ----------------------------------------------------
+    #
+    # Whether to confirm with the user before an action (a payment, a
+    # deletion) is the brain's decision, made from the user's instructions:
+    # it asks in its reply. The session only executes; ``handoff`` gives the
+    # user a window to do something themselves (a password, a code).
 
-    def _guard(
-        self, op: str, obs: Observation, row: Row | None, kw: dict
-    ) -> tuple | None:
-        """Raise if the agent may not do this; return an approval it used."""
+    def _refuse_while_with_human(self, obs: Observation) -> None:
+        """Refuse agent input to a window the user has been handed."""
         if obs.window_id in self._with_human:
             raise ComputerUseError(
                 "with_human",
                 f"the user is working in window {obs.window_id} "
                 f"({self._with_human[obs.window_id]}); wait for the handoff to finish",
             )
-        # A printable key is typing too: a password spelled key by key is
-        # still the user's.
-        key_text = _key_text(kw.get("key")) if op == "key" else None
-        # A paste enters text the agent never saw (the user's clipboard).
-        pasting = op == "key" and bool(_PASTE.match(str(kw.get("key", ""))))
-        typing = op == "type" or key_text is not None or pasting
-        if op == "fill" or typing:
-            # Typed text goes to the focused element whatever ref was named,
-            # so a focused secret field is guarded the same as a named one.
-            targets = [row] if row is not None else []
-            if typing:
-                targets += [r for r in obs.rows if "focused" in r.states]
-            for target in targets:
-                why = guards.needs_human_input(
-                    target.role, target.subrole, target.label
-                )
-                if why:
-                    raise ComputerUseError(
-                        "needs_human",
-                        f"{target.ref} is {why}; the user types it. Use handoff "
-                        "with a reason, then continue when it returns.",
-                    )
-            if typing:
-                # Focus can move after the observation (a page that focuses
-                # its password box on load): ask the app what has it now.
-                why = _focused_secret(obs.snapshot.get("app") or {})
-                if why:
-                    raise ComputerUseError(
-                        "needs_human",
-                        f"the focused field is {why}; the user types it. Use "
-                        "handoff with a reason, then continue when it returns.",
-                    )
-            text = key_text if key_text is not None else str(kw.get("text", ""))
-            held = [text]
-            if typing:
-                # Typing appends: a card number split across calls is still a
-                # card number in the field. The text may land in the named
-                # field or the focused one, so each is checked.
-                held += [
-                    field.value + text
-                    for field in targets
-                    if field.value and field.value != guards.USER_VALUE
-                ]
-            if any(guards.contains_card_number(t) for t in held):
-                raise ComputerUseError(
-                    "sensitive_data",
-                    "the text contains a card number; it was not typed",
-                )
-        # Pressing a control is a click, its AX action, or an activating key.
-        # A key goes to the focused control whatever ref was named, so the
-        # focused controls are guarded as well as the named one.
-        activating_key = op == "key" and _activating(kw.get("key"))
-        if op in {"click", "action"} or activating_key:
-            pressed = [row] if row is not None else []
-            if activating_key:
-                pressed += [r for r in obs.rows if "focused" in r.states]
-            for target in pressed:
-                if guards.is_money_commit(target.role, target.label):
-                    return self._require_approval(obs, target)
-        return None
 
-    def _require_approval(self, obs: Observation, row: Row) -> tuple[str, dict]:
-        """Let a commit through only with the user's approval of this screen.
-
-        The approval binds to the window, the control and every amount on
-        screen: if a total changes after the user approved, it is a new
-        question. An approval is used once.
-        """
-        texts = obs.texts()
-        key = _approval_key(obs, row)
-        for aid, grant in list(self._approved.items()):
-            if grant["key"] == key:
-                del self._approved[aid]
-                self._emit("approval_used", {"id": aid, "label": row.label})
-                return aid, grant
-        asked = next((a for a, p in self._pending.items() if p["key"] == key), None)
-        aid = asked if asked is not None else f"a{next(self._approval_ids)}"
-        if asked is None:
-            self._pending[aid] = {
-                "key": key,
-                "label": row.label,
-                "window": obs.window_id,
-                "title": obs.title,
-                "context": guards.money_context(texts, obs.choices())
-                + (
-                    ["(the page was only partly read: check every amount on screen)"]
-                    if obs.truncated
-                    else []
-                ),
-            }
-            self._emit("approval_requested", {"id": aid, **_public(self._pending[aid])})
-        pending = self._pending[aid]
-        raise ComputerUseError(
-            "needs_approval",
-            f'"{row.label}" spends money or cannot be undone. Show the user what it '
-            f"commits and wait for approval {aid}; then click it again. On screen: "
-            + " | ".join(pending["context"] or ["(no amounts shown)"]),
-        )
-
-    # The methods below are the user's channel. A host wires them to the
-    # person (a dialog, the app UI, a CLI); they are never model tools.
-
-    def pending_approvals(self) -> dict:
-        return {aid: _public(p) for aid, p in self._pending.items()}
-
-    def approve(self, approval_id: str) -> dict:
-        with self._lock:
-            pending = self._pending.pop(approval_id, None)
-            if pending is None:
-                raise ComputerUseError(
-                    "invalid_argument", f"no pending approval {approval_id}"
-                )
-            self._approved[approval_id] = pending
-            self._emit("approved", {"id": approval_id, "label": pending["label"]})
-            return {"approved": approval_id, "label": pending["label"]}
-
-    def deny(self, approval_id: str) -> dict:
-        with self._lock:
-            pending = self._pending.pop(approval_id, None)
-            if pending is None:
-                raise ComputerUseError(
-                    "invalid_argument", f"no pending approval {approval_id}"
-                )
-            self._emit("denied", {"id": approval_id})
-            return {"denied": approval_id, "label": pending["label"]}
+    # The methods below are the user's channel during a handoff. A host
+    # wires them to the person; they are never model tools.
 
     def human_act(self, op: str, ref: str | None = None, **kwargs: Any) -> dict:
         """Input the user makes through the host (stands in for their keyboard)."""
@@ -536,7 +512,8 @@ class PerceptionSession:
             if until_text is not None:
                 met = until_text.lower() in page
             elif until_gone is not None:
-                met = until_gone.lower() not in page
+                # A partly read page cannot show that a text is gone.
+                met = not obs.truncated and until_gone.lower() not in page
             else:
                 # Only new or changed text counts: focus, a cleared input box
                 # or a button state after sending is not the reply.
@@ -563,7 +540,7 @@ class PerceptionSession:
                 row.new = row.ref not in before
             obs.changes, obs.change_counts = _diff(start, obs.rows)
             obs.previous = start.obs_id
-        return {"met": met, "observation": obs}
+        return {"met": met, "complete": not obs.truncated, "observation": obs}
 
     def handoff(
         self,
@@ -574,12 +551,13 @@ class PerceptionSession:
         until_gone: str | None = None,
         timeout: float = 600.0,
     ) -> dict:
-        """Give the user the front to do what only they may do, then resume.
+        """Give the user the front to do something themselves, then resume.
 
-        Brings the window forward, tells the user why, blocks agent input to
-        that window, and returns when the page shows the condition (or the
-        user says they are done). The agent never sees what they typed into
-        a field only they may fill.
+        The brain calls it when it wants the user to act in the window (type
+        a password or a code, check a page). Brings the window forward, tells
+        the user why, blocks agent input to that window, and returns when the
+        page shows the condition (or the user says they are done). The agent
+        never sees what they typed into a secret field.
         """
         with self._lock:
             obs = self._window_obs(window_id)
@@ -615,8 +593,7 @@ class PerceptionSession:
                 (
                     row
                     for row in obs.rows
-                    if row.role in {"AXTextField", "AXComboBox"}
-                    and _ADDRESS_BAR.search(row.label)
+                    if row.role in _ADDRESS_BAR_ROLES and _ADDRESS_BAR.search(row.label)
                 ),
                 None,
             )
@@ -640,7 +617,11 @@ class PerceptionSession:
                 ("key", None, {"key": "Return", "window_id": obs.window_id}),
             ):
                 self._unresolved.pop(obs.window_id, None)
-                step = self._act(op, ref, by_human=False, **kw)["receipt"]
+                # Each step is checked for refusal only; the load check below
+                # is the outcome, so a step takes one sample, not a settle
+                # (settling on the typed address cost ~5 s: the bar shows
+                # it reformatted).
+                step = self._act(op, ref, by_human=False, quick=True, **kw)["receipt"]
                 if step["effect"] == "refused":
                     # Never press Return on an address the bar did not take.
                     error = step.get("error") or {}
@@ -738,35 +719,52 @@ class PerceptionSession:
     def _rows(self, snapshot: dict, previous: Observation | None) -> list[Row]:
         lives = backend.live_elements(snapshot) or []
         seen_before = set(previous.by_ref()) if previous else set()
-        rows = []
+        elements = snapshot["elements"]
+        refs: list[str | None] = [None] * len(elements)
         used: set[str] = set()
-        for position, element in enumerate(snapshot["elements"]):
+        for position, element in enumerate(elements):
+            live = lives[position] if position < len(lives) else None
+            known = self._refs.get(live) if live is not None else None
+            # Same live element, same role: same ref, so a changed text
+            # reads as a change rather than a removal plus an addition.
+            if (
+                known is not None
+                and known[1] == str(element.get("role") or "")
+                and known[0] not in used
+            ):
+                refs[position] = known[0]
+                used.add(known[0])
+        # A page that re-renders hands out new live elements for the same
+        # controls; one in the same place with the same role and name is the
+        # same control, so it keeps its ref (unique matches only).
+        for position, ref in _rebind(previous, elements, refs, used).items():
+            refs[position] = ref
+            used.add(ref)
+        rows = []
+        for position, element in enumerate(elements):
             live = lives[position] if position < len(lives) else None
             role = str(element.get("role") or "")
             label = str(element.get("label") or "")
-            ref = None
+            subrole = str(element.get("subrole") or "")
+            ref = refs[position] or f"e{next(self._ref_ids)}"
             if live is not None:
-                known = self._refs.get(live)
-                # Same live element, same role: same ref, so a changed text
-                # reads as a change rather than a removal plus an addition.
-                if known is not None and known[1] == role and known[0] not in used:
-                    ref = known[0]
-                    self._refs[live] = (ref, role, label)
-            if ref is None:
-                ref = f"e{next(self._ref_ids)}"
-                if live is not None:
-                    self._refs[live] = (ref, role, label)
-            used.add(ref)
+                self._refs[live] = (ref, role, label)
             value = element.get("value")
-            if (
+            secure = "AXSecureTextField" in (role, subrole) or (
+                label == privacy.SECURE_LABEL
+            )
+            if secure:
+                # Named by its own label; whether it holds anything, never what.
+                label = str(element.get("field_name") or "") or label
+                filled = element.get("filled")
+                value = None if filled is None else privacy.USER_VALUE if filled else ""
+            elif (
                 isinstance(value, str)
                 and value
-                and guards.needs_human_input(
-                    role, str(element.get("subrole") or ""), label
-                )
+                and privacy.user_only_field(role, subrole, label)
             ):
                 # What the user typed into a secret field is theirs.
-                value = guards.USER_VALUE
+                value = privacy.USER_VALUE
             center = element.get("center") or [0, 0]
             # The driver clips frames to the window: a scrolled-away element
             # (below the fold, a carousel's hidden slide) comes back empty, and
@@ -775,7 +773,7 @@ class PerceptionSession:
                 float(element.get("width") or 0),
                 float(element.get("height") or 0),
             )
-            on_screen = width > 1 and height > 1
+            on_screen = width > 1 and height > 1 and _in_window(snapshot, element)
             sliver = not on_screen and width > 0 and height > 0
             rows.append(
                 Row(
@@ -783,18 +781,35 @@ class PerceptionSession:
                     role=role,
                     label=label,
                     value=value if isinstance(value, str) else None,
+                    value_chars=(
+                        int(element["value_chars"])
+                        if element.get("value_chars") and value == element.get("value")
+                        else None
+                    ),
                     states=tuple(element.get("states") or ()),
                     index=int(element["index"]),
                     center=(int(center[0]), int(center[1])),
                     new=previous is not None and ref not in seen_before,
-                    subrole=str(element.get("subrole") or ""),
+                    subrole=subrole,
                     on_screen=on_screen,
                     sliver=sliver,
+                    path=tuple(int(p) for p in element.get("path") or ()),
+                    web=(
+                        bool(element["web"])
+                        if isinstance(element.get("web"), bool)
+                        else None
+                    ),
+                    secure=secure,
+                    actions=tuple(
+                        name
+                        for name in element.get("actions") or ()
+                        if name in _OFFERED_ACTIONS
+                    ),
                 )
             )
         if len(self._refs) > MAX_REMEMBERED_ELEMENTS:
             # This window's previous observation is being replaced.
-            current = set(used)
+            current = {row.ref for row in rows}
             for obs in self._latest.values():
                 if obs is not previous:
                     current.update(row.ref for row in obs.rows)
@@ -856,17 +871,55 @@ class PerceptionSession:
             f"window {window_id} is not observed and could not be found",
         )
 
+    def read(
+        self, ref: str, *, start: int = 0, max_chars: int = backend.MAX_READ_CHARS
+    ) -> dict:
+        """The whole value of a row whose observed value was cut short
+        (``first 120 of N chars``): ``text`` from ``start``, ``total_chars``."""
+        with self._lock:
+            obs, row = self._resolve(ref)
+            if _user_only(row):
+                raise ComputerUseError(
+                    "invalid_argument",
+                    f"{row.ref} is the user's own entry; its value is not read",
+                )
+            return backend.read_value(
+                obs.app,
+                row.index,
+                start=start,
+                max_chars=max_chars,
+                expected_snapshot=obs.snapshot,
+                window_id=obs.window_id,
+            )
+
     def act(self, op: str, ref: str | None = None, **kwargs: Any) -> dict:
         with self._lock:
             return self._act(op, ref, by_human=False, **kwargs)
 
-    def _act(self, op: str, ref: str | None, *, by_human: bool, **kwargs: Any) -> dict:
+    def _act(
+        self,
+        op: str,
+        ref: str | None,
+        *,
+        by_human: bool,
+        quick: bool = False,
+        **kwargs: Any,
+    ) -> dict:
         if ref is not None:
             obs, row = self._resolve(ref)
         else:
             obs, row = self._window_obs(kwargs.pop("window_id", None)), None
-        if obs.window_id in self._with_human and not by_human:
-            self._guard(op, obs, row, kwargs)  # raises with_human
+        if op == "drag" and kwargs.get("to") is not None:
+            # Both ends are elements of one observation of one window.
+            to_obs, to_row = self._resolve(str(kwargs["to"]))
+            if to_obs is not obs:
+                raise ComputerUseError(
+                    "invalid_argument",
+                    "drag needs both refs from the same observation of one window",
+                )
+            kwargs["to"] = to_row
+        if not by_human:
+            self._refuse_while_with_human(obs)
         # The gate stops the agent sending blind input; the user sees the screen.
         if obs.window_id in self._unresolved and not by_human:
             raise ComputerUseError(
@@ -877,8 +930,6 @@ class PerceptionSession:
             )
         self.keep_awake()
         _require_display_awake()
-        # Last before acting, so an approval is used only by an attempt.
-        used = None if by_human else self._guard(op, obs, row, kwargs)
         app, snapshot, wid = obs.app, obs.snapshot, obs.window_id
         front_before = _frontmost_bundle()
         started = time.perf_counter()
@@ -892,38 +943,53 @@ class PerceptionSession:
                 # indexes between observing and acting. The ref follows the
                 # element itself, so when it is still there unchanged, act on
                 # a fresh snapshot once instead of refusing.
-                if exc.code not in _SHIFTED or row is None:
+                # A menu choice fails after its menu was opened: input already
+                # went out, so it is reported, never repeated.
+                if exc.code not in _SHIFTED or row is None or kwargs.get("menu_item"):
                     raise
                 fresh = self._observe(app, wid)
                 again = fresh.by_ref().get(row.ref)
                 if again is None or (again.role, again.label) != (row.role, row.label):
                     raise
-                if used is not None and _approval_key(fresh, again) != used[1]["key"]:
-                    # The approval covered the screen the user saw; a shifted
-                    # page with other amounts is a new question.
-                    raise
                 obs, row, snapshot = fresh, again, fresh.snapshot
                 result = self._dispatch(op, app, snapshot, wid, row, kwargs)
         except ComputerUseError as exc:
             error = exc
-            if used is not None:
-                # The click never happened (stale snapshot, drift): the user's
-                # approval still stands for the same screen.
-                self._approved[used[0]] = used[1]
-                self._emit("approval_kept", {"id": used[0], "label": used[1]["label"]})
         acted_ms = round((time.perf_counter() - started) * 1000)
         slow = op == "key" and str(kwargs.get("key", "")).lower() in _SLOW_KEYS
+        # What the target should show afterwards. A secret field never shows
+        # it (its value is not read), so there is nothing to compare with.
+        expected = None
+        if row is not None and not _user_only(row):
+            if op == "fill":
+                expected = str(kwargs["text"])
+            elif op == "click" and kwargs.get("menu_item"):
+                menu = result.get("menu")
+                chosen = menu.get("chosen") if isinstance(menu, dict) else None
+                expected = str(chosen or kwargs["menu_item"])
         # Background typing into a hidden renderer is consumed long after it
-        # was posted; settle on the requested text rather than on quiet.
-        want = None
-        if op == "fill" and ref is not None:
-            want = (ref, str(kwargs["text"]))
-        elif op == "click" and ref is not None and kwargs.get("menu_item"):
-            want = (ref, str(kwargs["menu_item"]))
-        after, settled = self._settle(
-            app, wid, slow=slow or want is not None, want=want
+        # was posted; settle on the requested text rather than on quiet --
+        # unless the action was refused, when no text is coming.
+        want = (
+            (row.ref, expected)
+            if row and expected and error is None and not quick
+            else None
         )
         description = f"{op} {ref or ''}".strip()
+        try:
+            after, settled = self._settle(
+                app,
+                wid,
+                slow=slow or want is not None,
+                want=want,
+                cap=0.0 if quick else None,
+            )
+        except ComputerUseError:
+            if not _window_gone(wid, app):
+                raise
+            # The action closed its own window (a tab's close button, Cmd+W):
+            # that is its outcome, not a failure to observe.
+            return self._closed_receipt(obs, description, acted_ms, error)
         added, removed, changed = after.change_counts
         target_after = after.by_ref().get(ref) if ref is not None else None
         target_changed = (
@@ -932,11 +998,15 @@ class PerceptionSession:
             else target_after is None or target_after.signature() != row.signature()
         )
         observed_match = (
-            want is not None
+            expected is not None
             and target_after is not None
-            and target_after.value is not None
-            and target_after.value.strip() == want[1].strip()
+            and _holds(target_after, expected)
         )
+        if observed_match and error is not None and row is not None:
+            # A route can refuse after its first attempt landed: the value
+            # it wrote confirms it. A value that was there before confirms
+            # nothing, and the refusal stands.
+            observed_match = not _holds(row, expected or "")
         if observed_match:
             # The observation shows exactly what was asked for, whatever the
             # transport reported (it can refuse after its first route landed).
@@ -950,12 +1020,16 @@ class PerceptionSession:
                     effect = "target_changed"
                 elif added or removed or changed:
                     effect = "other_changes_only"
+                elif op == "scroll" and _shown(obs) != _shown(after):
+                    # Nothing reads differently, but other rows are in view.
+                    effect = "scrolled"
                 elif effect == "unverifiable":
                     effect = "no_visible_change"
         # Something else on the page changing is an outcome (a chat message
         # sent from an already-focused button); only silence is unresolved.
         if effect in {"suspected_noop", "no_visible_change"} or (
-            effect not in {"refused", "confirmed", "other_changes_only"} and not settled
+            effect not in {"refused", "confirmed", "other_changes_only", "scrolled"}
+            and not settled
         ):
             self._unresolved[wid] = description
         new_windows = sorted(set(after.window_ids) - set(obs.window_ids))
@@ -970,13 +1044,16 @@ class PerceptionSession:
         }
         if target_changed is not None:
             receipt["target_changed"] = target_changed
+        if target_after is not None:
+            # The target as it reads now (a box's new checked state).
+            receipt["target"] = target_after.render(marker=False).strip()
         if error:
             receipt["error"] = {"code": error.code, "message": error.message}
         if result.get("verification"):
             receipt["verification"] = result["verification"]
         if result.get("warnings"):
             receipt["warnings"] = result["warnings"]
-        for key in ("menu", "focus_restored", "mode"):
+        for key in ("menu", "focus_restored", "mode", "route"):
             if key in result:
                 receipt[key] = result[key]
         if new_windows:
@@ -988,6 +1065,44 @@ class PerceptionSession:
                 "outcome not confirmed; observe before sending more input"
             )
         return {"receipt": receipt, "observation": after}
+
+    def _closed_receipt(
+        self,
+        obs: Observation,
+        description: str,
+        acted_ms: int,
+        error: ComputerUseError | None,
+    ) -> dict:
+        wid = obs.window_id
+        self._latest.pop(wid, None)  # its refs are stale now
+        self._unresolved.pop(wid, None)
+        closed = Observation(
+            obs_id=f"o{next(self._obs_ids)}",
+            app=obs.app,
+            window_id=wid,
+            title=obs.title,
+            snapshot={},
+            rows=[],
+            changes=[],
+            change_counts=(0, 0, 0),
+            previous=obs.obs_id,
+            elapsed_ms=0,
+            truncated=False,
+            closed=True,
+        )
+        receipt: dict[str, Any] = {
+            "action": description,
+            # A refused action did not close it (something else did): the
+            # refusal stays the outcome; the window is gone either way.
+            "effect": "refused" if error else "window_closed",
+            "window_closed": True,
+            "settled": True,
+            "acted_ms": acted_ms,
+            "observation": closed.obs_id,
+        }
+        if error:
+            receipt["error"] = {"code": error.code, "message": error.message}
+        return {"receipt": receipt, "observation": closed}
 
     def _dispatch(
         self, op: str, app: str, snapshot: dict, wid: str, row: Row | None, kw: dict
@@ -1011,14 +1126,61 @@ class PerceptionSession:
                 app, index, str(kw["text"]), expected_snapshot=snapshot, window_id=wid
             )
         if op == "type":
+            # Typed text goes to the focused element: a named field takes
+            # focus first (provably), anything else named is refused.
+            if row is not None:
+                if row.role not in privacy.TEXT_ROLES:
+                    raise ComputerUseError(
+                        "invalid_argument",
+                        f"typing goes to the focused element; {row.ref} is not a "
+                        "text field (omit ref, or click it first)",
+                    )
+                _focus_field(app, index, snapshot, wid)
             return backend.type_text(app, str(kw["text"]), window_id=wid)
+        if op == "drag":
+            target = kw.get("to")
+            if row is None or not isinstance(target, Row):
+                raise ComputerUseError(
+                    "invalid_argument", "drag needs a ref and a to ref of this window"
+                )
+            return backend.drag(
+                app,
+                *row.center,
+                *target.center,
+                expected_snapshot=snapshot,
+                window_id=wid,
+            )
+        if op == "key" and _is_combo(str(kw["key"])):
+            # Any modified key, shift+a included: the single-key route below
+            # takes no modifiers ("unsupported single key"), and the hotkey
+            # route posts the key with its flags, which types the character.
+            # A chord (Cmd+W, Cmd+V): the backend's hotkey route, which
+            # presses a menu command through its menu item or refuses when it
+            # cannot rule one out. A chord goes to the focused element, so a
+            # named field is focused first; any other target is refused.
+            if row is not None:
+                if row.role not in privacy.TEXT_ROLES:
+                    raise ComputerUseError(
+                        "invalid_argument",
+                        f"a key combination goes to the focused element; {row.ref} "
+                        "is not a text field (omit ref, or click it first)",
+                    )
+                _focus_field(app, index, snapshot, wid)
+            return backend.hotkey(app, str(kw["key"]), window_id=wid)
         if op == "key":
+            # Escape is how a window is got out of whatever it opened over
+            # itself: with the observation the backend lets it through to a
+            # Finder rename editor, which otherwise takes the window's focus
+            # and leaves every later key refused.
+            leaving = str(kw["key"]).lower() in {"escape", "esc"}
             try:
                 return backend.press_key(
                     app,
                     str(kw["key"]),
                     window_id=wid,
-                    expected_snapshot=snapshot if index is not None else None,
+                    expected_snapshot=snapshot
+                    if index is not None or leaving
+                    else None,
                     element_index=index,
                 )
             except ComputerUseError as exc:
@@ -1028,7 +1190,7 @@ class PerceptionSession:
                 if (
                     exc.code != "target_drift"
                     or row is None
-                    or row.role not in guards.TEXT_ROLES
+                    or row.role not in privacy.TEXT_ROLES
                     or str(kw["key"]).lower() not in {"return", "enter"}
                 ):
                     raise
@@ -1062,17 +1224,21 @@ class PerceptionSession:
         *,
         slow: bool,
         want: tuple[str, str] | None = None,
+        cap: float | None = None,
     ) -> tuple[Observation, bool]:
         """Observe until two consecutive samples match (or the cap).
 
-        With ``want`` (ref, text) the target must also show that text.
+        With ``want`` (ref, text) the target must also show that text. A cap
+        of 0 takes one sample (reported as not settled).
         """
-        cap = SETTLE_CAP_SLOW_S if slow else SETTLE_CAP_S
+        if cap is None:
+            cap = SETTLE_CAP_SLOW_S if slow else SETTLE_CAP_S
         started = time.monotonic()
         time.sleep(SETTLE_POLL_S)
         baseline = self._latest[wid]
         last_signature: tuple | None = None
         while True:
+            sampled = time.perf_counter()
             snapshot = backend.get_app_state(
                 app,
                 screenshot=False,
@@ -1080,6 +1246,7 @@ class PerceptionSession:
                 window_id=wid,
                 activate=backend.OBSERVE_BY_ROUTE,
             )
+            walk_ms = round((time.perf_counter() - sampled) * 1000)
             signature: tuple | None = tuple(
                 (
                     e.get("role"),
@@ -1107,11 +1274,11 @@ class PerceptionSession:
         # Turn the settled snapshot into the observation the receipt cites,
         # diffed against the observation the action was taken from.
         self._latest[wid] = baseline
-        obs = self._observe_snapshot(app, snapshot, baseline)
+        obs = self._observe_snapshot(app, snapshot, baseline, elapsed_ms=walk_ms)
         return obs, settled
 
     def _observe_snapshot(
-        self, app: str, snapshot: dict, previous: Observation
+        self, app: str, snapshot: dict, previous: Observation, *, elapsed_ms: int
     ) -> Observation:
         rows = self._rows(snapshot, previous)
         changes, counts = _diff(previous, rows)
@@ -1125,7 +1292,7 @@ class PerceptionSession:
             changes=changes,
             change_counts=counts,
             previous=previous.obs_id,
-            elapsed_ms=0,
+            elapsed_ms=elapsed_ms,  # the walk that produced this snapshot
             truncated=bool(snapshot.get("truncated")),
             window_ids=list(snapshot.get("visible_window_ids") or []),
         )
@@ -1133,39 +1300,304 @@ class PerceptionSession:
         return obs
 
 
+def _shows_browser(rows: list[Row]) -> bool:
+    """Whether ``rows`` are a browser window: a page under an address bar.
+
+    Web content alone does not say so: a native app embeds web views (a help
+    pane, a sign-in sheet) beside tabs and radio buttons of its own.
+    """
+    return any(row.web for row in rows) and any(
+        row.web is not True
+        and row.role in _ADDRESS_BAR_ROLES
+        and _ADDRESS_BAR.search(row.label)
+        for row in rows
+    )
+
+
 def _diff(
     previous: Observation | None, rows: list[Row]
 ) -> tuple[list[str], tuple[int, int, int]]:
     if previous is None:
         return [], (0, 0, 0)
-    before = previous.by_ref()
-    now = {row.ref: row for row in rows}
-    added = [row for row in rows if row.ref not in before]
+
+    in_browser = _shows_browser([*previous.rows, *rows])
+
+    def counted(row: Row) -> bool:
+        # Extension buttons renaming themselves are the browser's, not an
+        # outcome of the action.
+        return not row.is_browser_noise()
+
+    def signature(row: Row) -> tuple:
+        # A browser tab's title and hover card change with every page; only
+        # whether it is selected (a tab switch) is an outcome.
+        if row.is_tab_strip(in_browser):
+            return (row.role, row.states)
+        return row.signature()
+
+    before = {row.ref: row for row in previous.rows if counted(row)}
+    now = {row.ref: row for row in rows if counted(row)}
+    added = [row for row in now.values() if row.ref not in before]
     removed = [row for ref, row in before.items() if ref not in now]
+    tabs_in = [row for row in added if row.is_tab_strip(in_browser)]
+    tabs_out = [row for row in removed if row.is_tab_strip(in_browser)]
+    if tabs_in and len(tabs_in) == len(tabs_out):
+        # As many tabs came as went: the browser rebuilt them under new
+        # titles. A tab opened or closed changes the count and is reported.
+        added = [row for row in added if row not in tabs_in]
+        removed = [row for row in removed if row not in tabs_out]
     changed = [
         (before[row.ref], row)
-        for row in rows
-        if row.ref in before and before[row.ref].signature() != row.signature()
+        for row in now.values()
+        if row.ref in before and signature(before[row.ref]) != signature(row)
     ]
     lines: list[str] = []
     for old, new in changed:
         parts = []
-        if old.value != new.value:
+        tab = new.is_tab_strip(in_browser)
+        if old.value != new.value and not tab:
             parts.append(f"value {old.value!r} -> {new.value!r}")
         if old.states != new.states:
             parts.append(f"[{','.join(old.states)}] -> [{','.join(new.states)}]")
-        if old.label != new.label:
-            parts.append(f'label "{old.label[:40]}" -> "{new.label[:40]}"')
+        if old.label != new.label and not tab:
+            was, is_now = _where_differ(old.label, new.label)
+            parts.append(f'label "{was}" -> "{is_now}"')
         lines.append(
             f'~ {new.ref} {_short_role(new.role)} "{new.label[:40]}" '
             + "; ".join(parts)
         )
     lines.extend(f"+ {row.render().strip()}" for row in added)
-    lines.extend(f"- {row.render().strip()}" for row in removed)
+    # A removed row is no longer new, whatever it was when last seen.
+    lines.extend(f"- {row.render(marker=False).strip()}" for row in removed)
     if len(lines) > MAX_CHANGE_LINES:
         extra = len(lines) - MAX_CHANGE_LINES
         lines = lines[:MAX_CHANGE_LINES] + [f"... {extra} more changes"]
     return lines, (len(added), len(removed), len(changed))
+
+
+def _rebind(
+    previous: Observation | None,
+    elements: list[dict],
+    refs: list[str | None],
+    used: set[str],
+) -> dict[int, str]:
+    """Refs for re-rendered controls: position -> the previous row's ref.
+
+    A control matches when its role, name, tree path and the names of the
+    rows on either side of it are those of exactly one row of the previous
+    observation whose element is gone, and of no other element now (a
+    re-render that rebuilt the DOM in place). The neighbours keep a list that
+    put another item's "Delete" in the same place from passing for the old
+    one. So does the name of the item the control belongs to (the first
+    named row of its container): after a list is re-sorted, the last item's
+    "Delete" sits where another item's was, between the same quantity and
+    footer.
+    """
+    if previous is None:
+        return {}
+
+    def keys(labels: list[str], roles: list[str], paths: list[tuple]) -> list[tuple]:
+        items = _item_names(labels, paths)
+        out = []
+        for position, label in enumerate(labels):
+            before_it = labels[position - 1] if position > 0 else None
+            after_it = labels[position + 1] if position + 1 < len(labels) else None
+            out.append(
+                (
+                    roles[position],
+                    label,
+                    paths[position],
+                    before_it,
+                    after_it,
+                    items[position],
+                )
+            )
+        return out
+
+    old_keys = keys(
+        [row.label for row in previous.rows],
+        [row.role for row in previous.rows],
+        [tuple(row.path) for row in previous.rows],
+    )
+    before: dict[tuple, list[Row]] = {}
+    for row, k in zip(previous.rows, old_keys):
+        if row.path:
+            before.setdefault(k, []).append(row)
+    labels = [
+        str(element.get("field_name") or "") or str(element.get("label") or "")
+        for element in elements
+    ]
+    new_keys = keys(
+        labels,
+        [str(element.get("role") or "") for element in elements],
+        [tuple(element.get("path") or ()) for element in elements],
+    )
+    now: dict[tuple, list[int]] = {}
+    for position, element in enumerate(elements):
+        if element.get("path"):
+            now.setdefault(new_keys[position], []).append(position)
+    out: dict[int, str] = {}
+    for k, positions in now.items():
+        rows = before.get(k) or []
+        if (
+            len(positions) == 1
+            and len(rows) == 1
+            and refs[positions[0]] is None
+            and rows[0].ref not in used
+        ):
+            out[positions[0]] = rows[0].ref
+    return out
+
+
+MAX_ITEM_ROWS = 40
+ITEM_LEVELS = 3
+
+
+def _item_names(labels: list[str], paths: list[tuple]) -> list[str | None]:
+    """For each row, the name of the item it belongs to: the first named row
+    of its nearest container (up to ``ITEM_LEVELS`` up) that holds another
+    named row and no more than ``MAX_ITEM_ROWS`` (a card, a table row; not
+    the page). None when it has no such container."""
+    members: dict[tuple, list[int]] = {}
+    for position, path in enumerate(paths):
+        for depth in range(1, min(ITEM_LEVELS, len(path)) + 1):
+            members.setdefault(path[:-depth], []).append(position)
+    names: list[str | None] = []
+    for position, path in enumerate(paths):
+        name = None
+        for depth in range(1, min(ITEM_LEVELS, len(path)) + 1):
+            group = members[path[:-depth]]
+            named = [p for p in group if labels[p] and p != position]
+            if named and len(group) <= MAX_ITEM_ROWS:
+                name = labels[named[0]]
+                break
+        names.append(name)
+    return names
+
+
+def _where_differ(old: str, new: str, width: int = 40) -> tuple[str, str]:
+    """Both labels cut to ``width``, around where they first differ."""
+    if old[:width] != new[:width]:
+        return old[:width], new[:width]
+    common = next(
+        (i for i, (a, b) in enumerate(zip(old, new)) if a != b), min(len(old), len(new))
+    )
+    start = max(0, common - 10)
+    return "…" + old[start : start + width], "…" + new[start : start + width]
+
+
+def _shown(obs: Observation) -> set[str]:
+    return {row.ref for row in obs.rows if row.on_screen}
+
+
+def _in_window(snapshot: dict, element: dict) -> bool:
+    """Whether an element's centre lies inside its window's frame.
+
+    Native scroll views report the frames of what they scrolled away
+    unclipped (a Finder column pushed out to the right), so size alone calls
+    such a row visible and every action at it is then refused. An open menu
+    and a companion window (a sheet, a popover) extend past the frame and are
+    on screen all the same.
+    """
+    window = snapshot.get("window") or {}
+    frame = [window.get(key) for key in ("x", "y", "width", "height")]
+    center = element.get("center")
+    if (
+        any(not isinstance(v, (int, float)) for v in frame)
+        or not center
+        or element.get("role") in {"AXMenu", "AXMenuItem"}
+        or element.get("source_window_id", snapshot.get("window_id"))
+        != snapshot.get("window_id")
+    ):
+        return True
+    left, top, width, height = (float(v or 0) for v in frame)
+    x, y = float(center[0]), float(center[1])
+    return left <= x < left + width and top <= y < top + height
+
+
+def _off_screen_hint(page: list[Row], off: list[Row]) -> str:
+    """One line for the rows scrolled away: how many, where, which sections."""
+    sections: list[str] = []
+    for row in off:
+        if (
+            row.role == "AXHeading"
+            and not row.sliver
+            and row.label
+            and row.label not in sections
+        ):
+            sections.append(row.label[:60])
+    hint = f"  ({len(off)} more elements off screen"
+    if sections:
+        shown = " · ".join(f'"{s}"' for s in sections[:MAX_FOLD_SECTIONS])
+        more = len(sections) - MAX_FOLD_SECTIONS
+        hint += f"; sections: {shown}" + (f" +{more} more" if more > 0 else "")
+    # The page is in document order: rows before the first one on screen
+    # are above it, rows after the last one below; the rest are hidden in
+    # place (a carousel's other slides, a collapsed panel).
+    shown_at = [i for i, row in enumerate(page) if row.on_screen]
+    first, last = (shown_at[0], shown_at[-1]) if shown_at else (0, -1)
+    where = {"above": 0, "below": 0, "hidden in place": 0}
+    for i, row in enumerate(page):
+        # With nothing on screen there is no above or below to tell.
+        if not row.on_screen and shown_at:
+            side = "above" if i < first else "below" if i > last else "hidden in place"
+            where[side] += 1
+    sides = ", ".join(f"{n} {side}" for side, n in where.items() if n)
+    hint += f"; {sides}" if sides else ""
+    return hint + "; scroll, or observe with find=<text> or all=true)"
+
+
+def _contexts(rows: list[Row]) -> dict[str, str]:
+    """The container name of each control that reads the same as another.
+
+    "Add to cart" on every product tile is ambiguous; the smallest container
+    holding this row and no twin of it names it (the tile's heading).
+    """
+    groups: dict[tuple[str, str], list[Row]] = {}
+    for row in rows:
+        if (
+            row.label
+            and row.path
+            and row.role not in {"AXStaticText", "AXHeading", "AXGroup"}
+            and not row.is_browser_noise()
+        ):
+            groups.setdefault((row.role, row.label), []).append(row)
+    names: dict[tuple[tuple[int, ...], str], str] = {}
+    out: dict[str, str] = {}
+    for (_, label), same in groups.items():
+        if len(same) < 2:
+            continue
+        for row in same:
+            twins = [other.path for other in same if other is not row]
+            for depth in range(len(row.path) - 1, 0, -1):
+                prefix = row.path[:depth]
+                if any(twin[:depth] == prefix for twin in twins):
+                    break  # this container holds a twin too: it names neither
+                key = (prefix, label)
+                if key not in names:
+                    names[key] = _container_name(rows, prefix, label)
+                if names[key]:
+                    out[row.ref] = names[key][:MAX_CONTEXT_CHARS]
+                    break
+    return out
+
+
+def _container_name(rows: list[Row], prefix: tuple[int, ...], label: str) -> str:
+    inside = [
+        row
+        for row in rows
+        if row.path[: len(prefix)] == prefix
+        and row.label
+        and row.label != label
+        and row.role in _NAMING_ROLES
+    ]
+    # A heading names its block; else the first text that is not a price.
+    for row in inside:
+        if row.role == "AXHeading":
+            return row.label
+    for row in inside:
+        if not privacy.is_price(row.label):
+            return row.label
+    return inside[0].label if inside else ""
 
 
 def _shows(baseline: Observation, snapshot: dict, want: tuple[str, str]) -> bool:
@@ -1207,7 +1639,7 @@ def _content(obs: Observation) -> frozenset[tuple[str, str]]:
         (row.role, row.label)
         for row in obs.rows
         if row.label
-        and row.role not in guards.TEXT_ROLES
+        and row.role not in privacy.TEXT_ROLES
         and not row.is_browser_noise()
     )
 
@@ -1223,68 +1655,103 @@ def _split_key(key: object) -> tuple[frozenset[str], str]:
     return modifiers, base
 
 
-# Modifiers that still type a character: shift+7 is "&", option+a is "å".
-_TYPING_MODIFIERS = frozenset({"shift", "option", "alt"})
+def _focus_field(app: str, index: int | None, snapshot: dict, wid: str) -> None:
+    """Give a text field keyboard focus, or raise: a chord sent after a focus
+    change that did not take lands on whatever held focus before.
 
-
-def _key_text(key: object) -> str | None:
-    """The character pressing ``key`` types ("a", "shift+7", "option+a"), or
-    None. With option the character differs from the base key, which stands
-    in for it."""
-    modifiers, base = _split_key(key)
-    if not modifiers <= _TYPING_MODIFIERS:
-        return None
-    return base if len(base) == 1 and base.isprintable() else None
-
-
-def _activating(key: object) -> bool:
-    """Whether ``key`` presses the focused control, with any modifiers."""
-    return _split_key(key)[1].lower() in _ACTIVATING_KEYS
-
-
-def _focused_secret(app_info: dict) -> str | None:
-    """Why the app's focused element is for the user only, read live.
-
-    Reads only role, subrole and naming attributes, never a value.
+    The backend's ``focus_only`` proves the exact element holds focus and never
+    commits. Where it cannot move focus itself (a web field often takes it
+    only from a click), the field is clicked and the proof is asked for again.
     """
-    if app_info.get("pid") is None:
-        return None
-    unchecked = "a field whose focus could not be checked"
-    try:
-        from . import ax_driver
 
-        app_element = backend._pid_app_element(app_info)
-        readable, focused = ax_driver._get_checked(app_element, "AXFocusedUIElement")
-        if not readable:
-            return unchecked
-        if focused is None:
-            return None  # nothing has focus: typed text goes nowhere
-        names: dict[str, str] = {}
-        for attribute in (
-            "AXRole",
-            "AXSubrole",
-            "AXDescription",
-            "AXTitle",
-            "AXPlaceholderValue",
-        ):
-            readable, value = ax_driver._get_checked(focused, attribute)
-            if not readable:
-                return unchecked
-            names[attribute] = value.strip() if isinstance(value, str) else ""
-        role, subrole = names["AXRole"], names["AXSubrole"]
-        if "AXSecureTextField" in (role, subrole):
-            return guards.needs_human_input(role, subrole, "")
-        label = next(
-            (
-                names[a]
-                for a in ("AXDescription", "AXTitle", "AXPlaceholderValue")
-                if names[a]
-            ),
-            "",
+    def focus(focus_only: bool) -> None:
+        backend.click(
+            app,
+            element_index=index,
+            expected_snapshot=snapshot,
+            window_id=wid,
+            focus_only=focus_only,
         )
-        return guards.needs_human_input(role, subrole, label)
-    except Exception:  # noqa: BLE001 - focus could not be inspected: fail closed
-        return unchecked
+
+    try:
+        focus(True)
+        return
+    except ComputerUseError as exc:
+        if exc.code != "synthetic_input_blocked":
+            raise
+    focus(False)
+    focus(True)
+
+
+def _holds(row: Row, expected: str) -> bool:
+    """Whether ``row`` reads as holding ``expected``. A value cut short in the
+    observation matches on what is shown and on the whole value's length."""
+    if row.value is None:
+        return False
+    want = expected.strip()
+    if row.value_chars is None:
+        return row.value.strip() == want
+    return row.value_chars == len(expected) and expected.startswith(row.value)
+
+
+def _is_combo(key: str) -> bool:
+    """Whether ``key`` is a chord ("cmd+w"), not one key ("+" or "Return")."""
+    return bool(_split_key(key)[0])
+
+
+def _user_only(row: Row) -> bool:
+    return row.secure or privacy.user_only_field(row.role, row.subrole, row.label)
+
+
+def _window_gone(window_id: str, app: str | None = None, wait_s: float = 3.0) -> bool:
+    """Whether a CG window no longer exists (allowing for its close animation).
+
+    AppKit keeps the window-server record of a closed document window for a
+    while (an app's last window most of all), so with ``app`` a window the
+    app no longer lists -- on screen or as an Accessibility window on another
+    Space -- is gone too.
+
+    False when that cannot be told (no window list): an observation failure
+    is then reported as it is. Only asked once observing has already failed,
+    so the wait costs a working window nothing; a document window with a
+    sheet takes more than a second to go.
+    """
+    deadline = time.monotonic() + wait_s
+    while True:
+        exists = _window_exists(window_id)
+        if exists is None:
+            return False
+        if not exists or (app is not None and _window_listed(app, window_id) is False):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.1)
+
+
+def _window_listed(app: str, window_id: str) -> bool | None:
+    """Whether the app still has this window; None when that cannot be told."""
+    try:
+        windows = backend.list_windows(app)
+    except ComputerUseError as exc:
+        return False if exc.code == "window_not_found" else None
+    return any(str(w.get("window_id")) == str(window_id) for w in windows)
+
+
+def _window_exists(window_id: str) -> bool | None:
+    try:
+        from Quartz import (  # type: ignore[import-untyped]
+            CGWindowListCopyWindowInfo,
+            kCGNullWindowID,
+            kCGWindowListOptionAll,
+        )
+
+        wanted = backend._cg_window_id(window_id)
+        windows = CGWindowListCopyWindowInfo(kCGWindowListOptionAll, kCGNullWindowID)
+    except Exception:  # noqa: BLE001 - no CG window list, or a malformed id
+        return None
+    if windows is None:
+        return None
+    return any(int(w.get("kCGWindowNumber", -1)) == wanted for w in windows)
 
 
 def _window_owner(window_id: str | int) -> str | None:
@@ -1336,24 +1803,6 @@ def _frontmost_bundle() -> str | None:
         return str(app.bundleIdentifier()) if app is not None else None
     except Exception:  # pragma: no cover
         return None
-
-
-def _approval_key(obs: Observation, row: Row) -> tuple:
-    """What an approval binds to: window, control, every amount on screen,
-    every chosen option (delivery slot, plan, payment method, ...) and what
-    every text field holds (recipient, address, account, quantity)."""
-    return (
-        obs.window_id,
-        row.ref,
-        row.label,
-        guards.amounts(obs.texts()),
-        tuple(obs.choices()),
-        tuple((r.ref, r.value or "") for r in obs.rows if r.role in guards.TEXT_ROLES),
-    )
-
-
-def _public(pending: dict) -> dict:
-    return {k: v for k, v in pending.items() if k != "key"}
 
 
 def _notify(title: str, message: str) -> None:

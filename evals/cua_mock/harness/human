@@ -1,5 +1,5 @@
 #!/bin/sh
-# human <op> [key=value ...]   the user channel: pending | approve id=a1 | fill ref=e9 text=... | done window_id=cg:1
+# human <op> [key=value ...]   the user channel: fill ref=e9 text=... | done window_id=cg:1
 # Values that parse as JSON (numbers, true, lists) are sent as JSON.
 op="$1"; shift
 exec "${CUA_PYTHON:-python3}" - "$op" "$@" <<'EOF'

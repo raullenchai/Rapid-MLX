@@ -1463,6 +1463,7 @@ def _install_mtp_vendored(
         _prompt_lookup_is_enabled,
         mtp_generate_step,
     )
+    from .spec_decode.mtp.reproducible_depth import greedy_schedule
 
     model_max_k = getattr(mtp_model, "mtp_max_speculative_tokens", max_k)
     if max_k > model_max_k:
@@ -2166,6 +2167,19 @@ def _install_mtp_vendored(
                     # one model's learned costs drive another's depth).
                     model_id=controller_key or _derived_controller_key,
                     max_k=max_k,
+                    # Greedy output must not depend on the run: one depth
+                    # per process and model instead of per-round auto-K.
+                    greedy_schedule=(
+                        greedy_schedule(
+                            mtp_model,
+                            controller_key or _derived_controller_key,
+                            max_k,
+                        )
+                        if sampling_options["temp"] == 0
+                        and not disable_auto_k
+                        and sampling_options["lane_rng"] is None
+                        else None
+                    ),
                     # A process-global adaptive controller can begin two
                     # otherwise identical seeded requests at different K,
                     # changing how many proposal/acceptance draws they

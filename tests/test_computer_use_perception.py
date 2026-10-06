@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import itertools
 import sys
+import time
 import types
 
 import pytest
@@ -75,6 +76,68 @@ def test_visually_hidden_sliver_is_folded_off_screen(session, monkeypatch):
     assert "(off screen)" in obs.find("main content")
 
 
+def test_nameless_group_around_other_rows_is_not_listed(session, monkeypatch):
+    def at(index, role, label, path, value=None):
+        return {**_element(index, role, label, value), "path": path}
+
+    _observe_from(
+        session,
+        monkeypatch,
+        [
+            _snapshot(
+                [
+                    at(0, "AXGroup", "", [0]),
+                    at(1, "AXButton", "Buy", [0, 0]),
+                    at(2, "AXGroup", "", [1]),  # holds nothing: may be a target
+                    at(3, "AXGroup", "Cart", [2]),
+                    at(4, "AXLink", "Checkout", [2, 0]),
+                ]
+            )
+        ],
+    )
+    obs = session.observe("Chrome", "cg:1")
+    wrapper, empty = obs.rows[0].ref, obs.rows[2].ref
+    text = obs.render()
+    assert f" {wrapper} group" not in text
+    assert f" {empty} group" in text and 'group "Cart"' in text
+    assert "(1 nameless groups around these not listed)" in text
+    assert f" {wrapper} group" in obs.render(everything=True)
+    assert "not listed" not in obs.render(everything=True)
+
+
+def test_row_names_the_actions_it_offers_beyond_a_press(session, monkeypatch):
+    stepper = {
+        **_element(0, "AXIncrementor", "Quantity", "2"),
+        "actions": ["AXPress", "AXIncrement", "AXDecrement", "AXShowMenu"],
+    }
+    link = {**_element(1, "AXLink", "Home"), "actions": ["AXPress", "AXShowMenu"]}
+    _observe_from(session, monkeypatch, [_snapshot([stepper, link])])
+    text = session.observe("Chrome", "cg:1").render()
+    assert "= '2' {action: AXIncrement,AXDecrement}" in text
+    assert '"Home"\n' in text + "\n" and text.count("{action:") == 1
+
+
+def test_a_row_scrolled_out_sideways_is_off_screen(session, monkeypatch):
+    # A Finder column pushed out to the right keeps its full frame.
+    snapshot = _snapshot(
+        [
+            _element(0, "AXTextField", "inside.txt"),
+            {**_element(1, "AXTextField", "pushed-out.txt"), "center": [900, 20]},
+            {**_element(2, "AXMenuItem", "Open With"), "center": [900, 40]},
+            {
+                **_element(3, "AXButton", "Save"),
+                "center": [900, 60],
+                "source_window_id": "cg:2",
+            },
+        ]
+    )
+    snapshot["window"] = {"title": "t", "x": 0, "y": 0, "width": 400, "height": 300}
+    _observe_from(session, monkeypatch, [snapshot])
+    obs = session.observe("Finder", "cg:1")
+    assert [row.on_screen for row in obs.rows] == [True, False, True, True]
+    assert '"pushed-out.txt"' not in obs.render()
+
+
 def test_wait_ignores_typed_text_and_waits_for_the_reply(session, monkeypatch):
     monkeypatch.setattr(perception, "WAIT_POLL_S", 0.01)
     monkeypatch.setattr(perception, "WAIT_QUIET_S", 0.05)
@@ -133,7 +196,17 @@ def test_return_in_unfocused_web_field_clicks_it_first(session, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def E(key, role, label="", value=None, states=(), width=100, height=20, subrole=""):  # noqa: N802
+def E(  # noqa: N802
+    key,
+    role,
+    label="",
+    value=None,
+    states=(),
+    width=100,
+    height=20,
+    subrole="",
+    **extra,  # path, web, field_name, filled: as the walk reports them
+):
     return {
         "key": key,
         "role": role,
@@ -143,6 +216,7 @@ def E(key, role, label="", value=None, states=(), width=100, height=20, subrole=
         "width": width,
         "height": height,
         "subrole": subrole,
+        **extra,
     }
 
 
@@ -163,11 +237,17 @@ class Screen:
             "set_value",
             "type_text",
             "press_key",
+            "hotkey",
             "scroll",
+            "drag",
+            "read_value",
             "perform_secondary_action",
         ):
             monkeypatch.setattr(backend, op, self._route(op))
         monkeypatch.setattr(perception, "_frontmost_bundle", lambda: self.front[0])
+        monkeypatch.setattr(
+            perception, "_window_listed", lambda app, wid: wid in self.windows
+        )
 
     def show(self, elements, wid="cg:1", title="Shop", truncated=False):
         self.windows[wid] = {
@@ -215,8 +295,6 @@ def screen(monkeypatch, session):
     monkeypatch.setattr(perception, "SETTLE_CAP_S", 0.05)
     monkeypatch.setattr(perception, "SETTLE_CAP_SLOW_S", 0.05)
     monkeypatch.setattr(perception, "WAIT_POLL_S", 0)
-    # The app's live focus is a harmless field unless a test says otherwise.
-    monkeypatch.setattr(perception, "_focused_secret", lambda app_info: None)
     return Screen(monkeypatch)
 
 
@@ -514,6 +592,10 @@ def test_fill_is_confirmed_by_the_observed_value_even_if_the_route_refused(
     assert out["receipt"]["effect"] == "confirmed"
     assert out["receipt"]["error"]["code"] == "action_failed"
     assert out["receipt"]["settled"] is True
+    # A value that was already there confirms nothing: the refusal stands.
+    screen.handlers["set_value"] = _raise("action_failed", "refused")
+    out = session.act("fill", _ref(out["observation"], "Search"), text="milk")
+    assert out["receipt"]["effect"] == "refused"
 
 
 def test_refused_action_is_reported_not_unresolved(session, screen):
@@ -565,6 +647,92 @@ def test_shifted_page_retries_once_on_a_fresh_snapshot(session, screen):
     assert len(attempts) == 2 and attempts[0] != attempts[1]
 
 
+def test_a_failed_menu_choice_is_reported_not_repeated(session, screen):
+    # The menu was opened before the item went missing: input already went out.
+    screen.show([E("p", "AXPopUpButton", "Account", value="Savings")])
+    obs = session.observe("Chrome", "cg:1")
+    screen.handlers["click"] = _raise("element_not_found", "menu has no item")
+    out = session.act("click", _ref(obs, "Account"), menu_item="Chk")
+    assert out["receipt"]["effect"] == "refused"
+    assert [c[0] for c in screen.calls] == ["click"]
+
+
+def test_typing_at_a_ref_needs_a_text_field_that_takes_focus(session, screen):
+    screen.show([E("n", "AXTextField", "Note"), E("b", "AXButton", "Help")])
+    obs = session.observe("Chrome", "cg:1")
+    receipt = session.act("type", _ref(obs, "Help"), text="hi")["receipt"]
+    assert receipt["error"]["code"] == "invalid_argument" and not screen.calls
+    # Focus that cannot be proven: nothing is typed into the old focus.
+    screen.handlers["click"] = lambda *a, **kw: (
+        _raise("synthetic_input_blocked")() if kw.get("focus_only") else {}
+    )
+    session.observe("Chrome", "cg:1")
+    receipt = session.act("type", _ref(obs, "Note"), text="hi")["receipt"]
+    assert receipt["error"]["code"] == "synthetic_input_blocked"
+    assert "type_text" not in [c[0] for c in screen.calls]
+
+
+def test_drag_goes_between_two_refs_of_one_observation(session, screen):
+    screen.show([E("a", "AXImage", "Card A"), E("b", "AXGroup", "Done")])
+    screen.show([E("x", "AXGroup", "Other")], wid="cg:2")
+    obs = session.observe("Chrome", "cg:1")
+    other = session.observe("Chrome", "cg:2")
+    screen.handlers["drag"] = lambda *a, **kw: {"route": "pid_events"}
+    out = session.act("drag", _ref(obs, "Card A"), to=_ref(obs, "Done"))
+    name, call = screen.calls[-1]
+    assert name == "drag" and call["args"] == ("Chrome", 10, 10, 10, 40)
+    assert call["window_id"] == "cg:1"
+    assert out["receipt"]["route"] == "pid_events"
+    session.observe("Chrome", "cg:1")
+    receipt = session.act("drag", _ref(obs, "Card A"))["receipt"]
+    assert receipt["error"]["code"] == "invalid_argument"
+    session.observe("Chrome", "cg:1")
+    with pytest.raises(ComputerUseError) as err:
+        session.act("drag", _ref(obs, "Card A"), to=_ref(other, "Other"))
+    assert err.value.code == "invalid_argument"
+    assert [c[0] for c in screen.calls].count("drag") == 1
+    with pytest.raises(ComputerUseError) as err:
+        session.act("drag", _ref(obs, "Card A"), to="e999")
+    assert err.value.code == "stale_ref"
+
+
+def test_a_cut_value_says_so_reads_whole_and_confirms_a_long_fill(session, screen):
+    long = "line " * 60
+    shown = long[:120]
+    screen.show(
+        [
+            E("n", "AXTextArea", "Note", value=shown, value_chars=len(long)),
+            E("pin", "AXTextField", "PIN", value="1234"),
+        ]
+    )
+    obs = session.observe("Chrome", "cg:1")
+    note = _ref(obs, "Note")
+    assert f"(first 120 of {len(long)} chars; read)" in obs.render()
+    screen.handlers["read_value"] = lambda app, index, **kw: {
+        "text": long[kw["start"] : kw["start"] + kw["max_chars"]],
+        "start": kw["start"],
+        "total_chars": len(long),
+    }
+    assert session.read(note, start=5, max_chars=4)["text"] == long[5:9]
+    with pytest.raises(ComputerUseError) as err:
+        session.read(_ref(obs, "PIN"))
+    assert err.value.code == "invalid_argument" and len(screen.calls) == 1
+    # A fill longer than the observed cut is confirmed by prefix and length.
+    screen.show([E("n", "AXTextArea", "Note")])
+    obs = session.observe("Chrome", "cg:1")
+
+    def set_value(app, index, text, **kw):
+        screen.show([E("n", "AXTextArea", "Note", value=shown, value_chars=len(long))])
+        return {"effect": "unverifiable"}
+
+    screen.handlers["set_value"] = set_value
+    out = session.act("fill", _ref(obs, "Note"), text=long)
+    assert out["receipt"]["effect"] == "confirmed"
+    row = out["observation"].rows[0]
+    assert not perception._holds(row, long + "x")
+    assert not perception._holds(row, "y" + long[1:])
+
+
 def test_shifted_page_without_the_target_is_refused(session, screen):
     screen.show([E("b", "AXButton", "Buy it")])
     obs = session.observe("Chrome", "cg:1")
@@ -587,12 +755,25 @@ def test_other_refusals_are_not_retried(session, screen):
     assert len(screen.calls) == 1
 
 
-# -- guards: secrets and card numbers --------------------------------------------
+# -- the hands execute; whether to ask the user is the brain's call -------------
 
 
-def test_secret_fields_are_handed_to_the_user(session, screen):
+def _checkout(total="$48.14"):
+    return [
+        E("t1", "AXStaticText", "Order total"),
+        E("t2", "AXStaticText", total),
+        E("pay", "AXStaticText", "Visa ending 4242"),
+        E("go", "AXButton", "Place order"),
+    ]
+
+
+def test_commits_and_secret_input_are_executed_not_intercepted(session, screen):
+    # The brain decided (from the user's instructions, or by asking them in
+    # its reply); the session presses, types and fills what it is told.
     screen.show(
         [
+            *_checkout()[:3],
+            E("go", "AXButton", "Place order", states=("focused",)),
             E(
                 "pw",
                 "AXTextField",
@@ -600,170 +781,48 @@ def test_secret_fields_are_handed_to_the_user(session, screen):
                 subrole="AXSecureTextField",
             ),
             E("otp", "AXTextField", "One-time code"),
-            E("name", "AXTextField", "Name"),
+            E("msg", "AXTextArea", "Message"),
         ]
     )
     obs = session.observe("Chrome", "cg:1")
-    for label in ("[secure text redacted]", "One-time code"):
-        for op in ("fill", "type"):
-            with pytest.raises(ComputerUseError) as err:
-                session.act(op, _ref(obs, label), text="123456")
-            assert err.value.code == "needs_human" and "handoff" in err.value.message
-    assert not screen.calls
-    assert session.act("fill", _ref(obs, "Name"), text="Ada")["receipt"][
-        "action"
-    ].startswith("fill")
-
-
-def test_typing_without_a_ref_is_guarded_by_the_focused_field(
-    session, screen, monkeypatch
-):
-    monkeypatch.setattr(perception, "_focused_secret", lambda app_info: None)
-    screen.show(
-        [
-            E("pw", "AXTextField", "Password", states=("focused",)),
-            E("x", "AXLink", "Help"),
-        ]
-    )
+    session.act("click", _ref(obs, "Place order"))
     session.observe("Chrome", "cg:1")
-    with pytest.raises(ComputerUseError) as err:
-        session.act("type", None, text="hunter2", window_id="cg:1")
-    assert err.value.code == "needs_human"
-    screen.show(
-        [
-            E("pw", "AXTextField", "Password"),
-            E("n", "AXTextField", "Note", states=("focused",)),
-        ]
-    )
+    session.act("key", None, key="Return", window_id="cg:1")
     session.observe("Chrome", "cg:1")
-    session.act("type", None, text="hello", window_id="cg:1")
-    assert [c[0] for c in screen.calls] == ["type_text"]
-    # Focus that moved after the observation is read live.
-    monkeypatch.setattr(
-        perception, "_focused_secret", lambda app_info: "a password field"
-    )
+    session.act("action", _ref(obs, "Place order"), name="AXPress")
     session.observe("Chrome", "cg:1")
-    with pytest.raises(ComputerUseError) as err:
-        session.act("type", None, text="hunter2", window_id="cg:1")
-    assert err.value.code == "needs_human" and "focused field" in err.value.message
-    # Naming a harmless ref does not help: typed text goes to the focus.
-    monkeypatch.setattr(perception, "_focused_secret", lambda app_info: None)
-    screen.show(
-        [
-            E("pw", "AXTextField", "Password", states=("focused",)),
-            E("n", "AXTextField", "Note"),
-        ]
-    )
-    obs = session.observe("Chrome", "cg:1")
-    with pytest.raises(ComputerUseError) as err:
-        session.act("type", _ref(obs, "Note"), text="hunter2")
-    assert err.value.code == "needs_human"
-    monkeypatch.setattr(
-        perception, "_focused_secret", lambda app_info: "a password field"
-    )
-    screen.show([E("pw", "AXTextField", "Password"), E("n", "AXTextField", "Note")])
-    obs = session.observe("Chrome", "cg:1")
-    with pytest.raises(ComputerUseError) as err:
-        session.act("type", _ref(obs, "Note"), text="hunter2")
-    assert err.value.code == "needs_human"
-    assert [c[0] for c in screen.calls] == ["type_text"]
-
-
-def test_focused_secret_reads_names_never_values(monkeypatch):
-    attrs = {
-        "AXRole": "AXTextField",
-        "AXSubrole": "AXSecureTextField",
-        "AXValue": "hunter2",
-    }
-    read = []
-
-    def get(element, attribute):
-        read.append(attribute)
-        return attrs.get(attribute)
-
-    from rapid_mlx.computer_use import ax_driver
-
-    focus = {"readable": True, "element": "focused"}
-    failing: set[str] = set()
-
-    def get_checked(element, attribute):
-        if element == "app":
-            return focus["readable"], focus["element"] if focus["readable"] else None
-        read.append(attribute)
-        if attribute in failing:
-            return False, None
-        return True, attrs.get(attribute)
-
-    monkeypatch.setattr(ax_driver, "_get_checked", get_checked)
-    monkeypatch.setattr(perception.backend, "_pid_app_element", lambda info: "app")
-    unchecked = "a field whose focus could not be checked"
-    assert perception._focused_secret({"pid": 7}) == "a password field"
-    attrs.update(AXSubrole="", AXDescription="", AXTitle="Verification code")
-    assert perception._focused_secret({"pid": 7}).startswith("a secret field")
-    attrs.update(AXTitle="Search")
-    assert perception._focused_secret({"pid": 7}) is None
-    assert "AXValue" not in read
-    assert perception._focused_secret({}) is None
-    # Nothing has focus: typing goes nowhere.
-    focus["element"] = None
-    assert perception._focused_secret({"pid": 7}) is None
-    # Focus, or a name of the focused element, that cannot be read is not
-    # assumed harmless.
-    focus.update(readable=False, element="focused")
-    assert perception._focused_secret({"pid": 7}) == unchecked
-    focus["readable"] = True
-    failing.add("AXTitle")
-    assert perception._focused_secret({"pid": 7}) == unchecked
-    monkeypatch.setattr(
-        perception.backend,
-        "_pid_app_element",
-        lambda info: (_ for _ in ()).throw(RuntimeError("no AX")),
-    )
-    assert perception._focused_secret({"pid": 7}) == unchecked
-
-
-def test_secrets_cannot_be_spelled_key_by_key(session, screen, monkeypatch):
-    screen.show(
-        [
-            E("pin", "AXTextField", "PIN", states=("focused",)),
-            E("q", "AXTextField", "Search"),
-        ]
-    )
-    obs = session.observe("Chrome", "cg:1")
-    for key in ("4", "shift+a", "A", "option+a", "alt+shift+2"):
-        with pytest.raises(ComputerUseError) as err:
-            session.act("key", None, key=key, window_id="cg:1")
-        assert err.value.code == "needs_human"
-    with pytest.raises(ComputerUseError) as err:
-        session.act("key", _ref(obs, "PIN"), key="7")
-    assert err.value.code == "needs_human"
-    assert not screen.calls
-    session.act("key", None, key="Tab", window_id="cg:1")
+    session.act("fill", _ref(obs, "[secure text redacted]"), text="hunter2")
     session.observe("Chrome", "cg:1")
-    session.act("key", None, key="cmd+a", window_id="cg:1")
+    session.act("type", _ref(obs, "One-time code"), text="123456")
     session.observe("Chrome", "cg:1")
-    session.act("key", _ref(obs, "Search"), key="backspace")
-    assert [c[0] for c in screen.calls] == ["press_key"] * 3
-    assert perception._key_text("shift+shift+1") == "1"
-    assert perception._key_text(None) is None
-    assert perception._key_text("+") == "+" and perception._key_text("shift++") == "+"
-    assert (
-        perception._key_text("cmd++") is None and perception._key_text("ctrl+a") is None
-    )
-    assert perception._split_key("cmd+shift+Return") == (
-        frozenset({"cmd", "shift"}),
-        "Return",
-    )
+    session.act("type", _ref(obs, "Message"), text="card 4242 4242 4242 4242")
+    # Typing at a named field gives it focus first (never a commit).
+    assert [c[0] for c in screen.calls] == [
+        "click",
+        "press_key",
+        "perform_secondary_action",
+        "set_value",
+        "click",
+        "type_text",
+        "click",
+        "type_text",
+    ]
+    assert [c[1].get("focus_only") for c in screen.calls if c[0] == "click"] == [
+        None,
+        True,
+        True,
+    ]
+    assert not hasattr(session, "pending_approvals")
+    assert not hasattr(session, "approve")
 
 
-def test_pasting_into_a_secret_field_is_the_users(session, screen):
-    screen.show([E("pw", "AXTextField", "Password", states=("focused",))])
+def test_event_hook_failures_never_break_a_task(session, screen, monkeypatch):
+    monkeypatch.setattr(session, "take_front", lambda app, wid: None)
+    monkeypatch.setattr(perception, "_notify", lambda title, msg: None)
+    session.on_event = lambda kind, payload: 1 / 0
+    screen.show([E("m", "AXStaticText", "Welcome back")])
     session.observe("Chrome", "cg:1")
-    for key in ("cmd+v", "shift+cmd+v", "cmd+option+shift+v"):
-        with pytest.raises(ComputerUseError) as err:
-            session.act("key", None, key=key, window_id="cg:1")
-        assert err.value.code == "needs_human"
-    assert not screen.calls
+    assert session.handoff("cg:1", "code", until_gone="the code", timeout=5)["met"]
 
 
 def test_values_the_user_typed_into_secret_fields_are_not_shown(session, screen):
@@ -782,250 +841,10 @@ def test_values_the_user_typed_into_secret_fields_are_not_shown(session, screen)
     assert "'milk'" in text
 
 
-def test_card_numbers_are_never_typed(session, screen):
-    screen.show([E("n", "AXTextArea", "Message")])
-    obs = session.observe("Chrome", "cg:1")
-    for op in ("fill", "type"):
-        with pytest.raises(ComputerUseError) as err:
-            session.act(
-                op, _ref(obs, "Message"), text="card 4242 4242 4242 4242 exp 12/30"
-            )
-        assert err.value.code == "sensitive_data"
-    assert not screen.calls
-
-
-def test_a_card_number_split_across_typing_is_still_refused(session, screen):
-    screen.show([E("n", "AXTextArea", "Message", value="4242 4242 4242 ")])
-    obs = session.observe("Chrome", "cg:1")
-    with pytest.raises(ComputerUseError) as err:
-        session.act("type", _ref(obs, "Message"), text="4242")
-    assert err.value.code == "sensitive_data"
-    screen.show(
-        [E("n", "AXTextArea", "Message", value="4242424242424", states=("focused",))]
-    )
-    session.observe("Chrome", "cg:1")
-    with pytest.raises(ComputerUseError) as err:
-        session.act("key", None, key="2", window_id="cg:1")
-    assert err.value.code == "sensitive_data"
-    # Naming a harmless ref does not hide the focused field the text lands in.
-    screen.show(
-        [
-            E("n", "AXTextArea", "Message", value="4242424242424", states=("focused",)),
-            E("s", "AXSearchField", "Search"),
-        ]
-    )
-    other = session.observe("Chrome", "cg:1")
-    with pytest.raises(ComputerUseError) as err:
-        session.act("type", _ref(other, "Search"), text="242")
-    assert err.value.code == "sensitive_data"
-    # A fill replaces the value, so only its own text counts.
-    session.act("fill", _ref(obs, "Message"), text="4242")
-    assert [c[0] for c in screen.calls] == ["set_value"]
-
-
-def test_card_number_fields_are_the_users(session, screen):
-    screen.show([E("cc", "AXTextField", "Card number")])
-    obs = session.observe("Chrome", "cg:1")
-    with pytest.raises(ComputerUseError) as err:
-        session.act("fill", _ref(obs, "Card number"), text="hello")
-    assert err.value.code == "needs_human"
-
-
-# -- guards: money commits ---------------------------------------------------
-
-
-def _checkout(total="$48.14"):
-    return [
-        E("t1", "AXStaticText", "Order total"),
-        E("t2", "AXStaticText", total),
-        E("pay", "AXStaticText", "Visa ending 4242"),
-        E("go", "AXButton", "Place order"),
-    ]
-
-
-def test_money_commit_needs_one_approval_of_this_exact_screen(session, screen):
-    events = []
-    session.on_event = lambda kind, payload: events.append((kind, payload))
-    screen.show(_checkout())
-    obs = session.observe("Chrome", "cg:1")
-    place = _ref(obs, "Place order")
-    with pytest.raises(ComputerUseError) as err:
-        session.act("click", place)
-    assert err.value.code == "needs_approval"
-    assert (
-        "approval a1" in err.value.message
-        and "Order total: $48.14" in err.value.message
-    )
-    with pytest.raises(ComputerUseError):
-        session.act("click", place)  # same question, same id
-    pending = session.pending_approvals()
-    assert list(pending) == ["a1"] and "key" not in pending["a1"]
-    assert pending["a1"]["context"] == ["Order total: $48.14", "Visa ending 4242"]
-    assert [kind for kind, _ in events] == ["approval_requested"]
-    assert not screen.calls
-
-    assert session.approve("a1") == {"approved": "a1", "label": "Place order"}
-    screen.handlers["click"] = lambda app, **kw: {"effect": "confirmed"}
-    assert session.act("click", place)["receipt"]["effect"] == "confirmed"
-    assert ("approval_used", {"id": "a1", "label": "Place order"}) in events
-    # Used once: the next press is a new question.
-    with pytest.raises(ComputerUseError) as err:
-        session.act("click", place)
-    assert "approval a2" in err.value.message
-
-
-def test_approval_of_a_partly_read_page_says_so(session, screen):
-    screen.show(_checkout(), truncated=True)
-    obs = session.observe("Chrome", "cg:1")
-    with pytest.raises(ComputerUseError) as err:
-        session.act("click", _ref(obs, "Place order"))
-    assert "only partly read" in err.value.message
-    assert "only partly read" in session.pending_approvals()["a1"]["context"][-1]
-
-
-def test_approval_binds_to_every_amount_on_screen(session, screen):
-    screen.show(_checkout("$48.14"))
-    obs = session.observe("Chrome", "cg:1")
-    with pytest.raises(ComputerUseError):
-        session.act("click", _ref(obs, "Place order"))
-    session.approve("a1")
-    screen.show(_checkout("$58.14"))
-    obs = session.observe("Chrome", "cg:1")
-    with pytest.raises(ComputerUseError) as err:
-        session.act("click", _ref(obs, "Place order"))
-    assert "approval a2" in err.value.message
-    assert not screen.calls
-
-
-def test_approval_binds_to_every_chosen_option(session, screen):
-    def page(method):
-        return [*_checkout(), E("m", "AXPopUpButton", "Pay with", value=method)]
-
-    screen.show(page("Visa 4242"))
-    obs = session.observe("Chrome", "cg:1")
-    with pytest.raises(ComputerUseError):
-        session.act("click", _ref(obs, "Place order"))
-    session.approve("a1")
-    screen.show(page("Amex 1005"))  # same total, another payment method
-    obs = session.observe("Chrome", "cg:1")
-    with pytest.raises(ComputerUseError) as err:
-        session.act("click", _ref(obs, "Place order"))
-    assert "approval a2" in err.value.message
-    assert not screen.calls
-
-
-def test_approval_binds_to_what_the_text_fields_hold(session, screen):
-    def page(to):
-        return [*_checkout(), E("to", "AXTextField", "Recipient", value=to)]
-
-    screen.show(page("ada@example.com"))
-    obs = session.observe("Chrome", "cg:1")
-    with pytest.raises(ComputerUseError):
-        session.act("click", _ref(obs, "Place order"))
-    session.approve("a1")
-    screen.show(page("eve@example.com"))  # same total, another recipient
-    obs = session.observe("Chrome", "cg:1")
-    with pytest.raises(ComputerUseError) as err:
-        session.act("click", _ref(obs, "Place order"))
-    assert "approval a2" in err.value.message
-    assert not screen.calls
-
-
-def test_refused_commit_click_keeps_the_approval(session, screen):
-    events = []
-    session.on_event = lambda kind, payload: events.append(kind)
-    screen.show(_checkout())
-    obs = session.observe("Chrome", "cg:1")
-    place = _ref(obs, "Place order")
-    with pytest.raises(ComputerUseError):
-        session.act("click", place)
-    session.approve("a1")
-    screen.handlers["click"] = lambda app, **kw: (_ for _ in ()).throw(
-        ComputerUseError("target_occluded", "x")
-    )
-    assert session.act("click", place)["receipt"]["effect"] == "refused"
-    assert "approval_kept" in events
-    screen.handlers["click"] = lambda app, **kw: {"effect": "confirmed"}
-    assert session.act("click", place)["receipt"]["effect"] == "confirmed"
-
-
-def test_shifted_retry_of_a_commit_needs_the_same_amounts(session, screen):
-    screen.show(_checkout("$48.14"))
-    obs = session.observe("Chrome", "cg:1")
-    place = _ref(obs, "Place order")
-    with pytest.raises(ComputerUseError):
-        session.act("click", place)
-    session.approve("a1")
-    screen.show(_checkout("$99.00"))  # the page moved and the total changed
-    clicks = []
-
-    def click(app, **kw):
-        clicks.append(kw)
-        raise ComputerUseError("element_not_found", "moved")
-
-    screen.handlers["click"] = click
-    assert session.act("click", place)["receipt"]["effect"] == "refused"
-    assert len(clicks) == 1  # not retried on a screen the user did not approve
-    assert "a1" in session._approved  # and the approval still stands for $48.14
-
-
-def test_commit_by_key_or_action_needs_approval_too(session, screen):
-    screen.show(
-        [*_checkout()[:3], E("go", "AXButton", "Place order", states=("focused",))]
-    )
-    obs = session.observe("Chrome", "cg:1")
-    with pytest.raises(ComputerUseError) as err:
-        session.act("key", None, key="Return", window_id="cg:1")
-    assert err.value.code == "needs_approval"
-    with pytest.raises(ComputerUseError) as err:
-        session.act("key", _ref(obs, "Place order"), key="space")
-    assert err.value.code == "needs_approval"
-    with pytest.raises(ComputerUseError) as err:
-        session.act("action", _ref(obs, "Place order"), name="AXPress")
-    assert err.value.code == "needs_approval"
-    # A harmless ref does not hide the focused commit the key would press.
-    harmless = next(r for r in obs.rows if r.label != "Place order")
-    with pytest.raises(ComputerUseError) as err:
-        session.act("key", harmless.ref, key="Return")
-    assert err.value.code == "needs_approval" and "Place order" in str(err.value)
-    # A modified Return or Space still presses the focused control.
-    for chord in ("cmd+Return", "shift+return", "ctrl+space"):
-        with pytest.raises(ComputerUseError) as err:
-            session.act("key", None, key=chord, window_id="cg:1")
-        assert err.value.code == "needs_approval"
-    assert not screen.calls
-    session.act("key", None, key="Tab", window_id="cg:1")
-    assert [c[0] for c in screen.calls] == ["press_key"]
-
-
-def test_deny_and_unknown_approvals(session, screen):
-    events = []
-    session.on_event = lambda kind, payload: events.append(kind)
-    screen.show(_checkout())
-    obs = session.observe("Chrome", "cg:1")
-    with pytest.raises(ComputerUseError):
-        session.act("click", _ref(obs, "Place order"))
-    assert session.deny("a1") == {"denied": "a1", "label": "Place order"}
-    assert "denied" in events and session.pending_approvals() == {}
-    for call in (session.approve, session.deny):
-        with pytest.raises(ComputerUseError) as err:
-            call("a1")
-        assert err.value.code == "invalid_argument"
-
-
-def test_event_hook_failures_never_break_a_task(session, screen):
-    session.on_event = lambda kind, payload: 1 / 0
-    screen.show(_checkout())
-    obs = session.observe("Chrome", "cg:1")
-    with pytest.raises(ComputerUseError) as err:
-        session.act("click", _ref(obs, "Place order"))
-    assert err.value.code == "needs_approval"
-
-
 # -- the user's channel and handoff ------------------------------------------
 
 
-def test_human_input_bypasses_the_agent_guards(session, screen):
+def test_human_input_is_reported_as_the_users(session, screen):
     events = []
     session.on_event = lambda kind, payload: events.append((kind, payload))
     screen.show([*_checkout(), E("pw", "AXTextField", "Password")])
@@ -1034,7 +853,6 @@ def test_human_input_bypasses_the_agent_guards(session, screen):
     session.human_act("click", _ref(obs, "Place order"))
     assert [c[0] for c in screen.calls] == ["set_value", "click"]
     assert ("human_input", {"op": "fill", "label": "Password"}) in events
-    assert session.pending_approvals() == {}
 
 
 def test_handoff_blocks_the_agent_until_the_user_is_done(session, screen, monkeypatch):
@@ -1106,7 +924,13 @@ def test_wait_until_text_and_until_gone(session, screen):
     assert obs.change_counts == (1, 0, 1)
     assert [row.new for row in obs.rows] == [False, True]
     assert 'label "Processing payment" -> "Payment received"' in obs.changes[0]
-    assert session.wait("cg:1", until_gone="processing", timeout=1)["met"] is True
+    out = session.wait("cg:1", until_gone="processing", timeout=1)
+    assert out["met"] is True and out["complete"] is True
+    # A partly read page cannot show that a text is gone.
+    screen.show([E("s", "AXStaticText", "Payment received")], truncated=True)
+    out = session.wait("cg:1", until_gone="processing", timeout=0)
+    assert out["met"] is False and out["complete"] is False
+    assert session.wait("cg:1", until_text="received", timeout=0)["met"] is True
 
 
 def test_wait_holds_while_the_other_side_is_typing(session, screen, monkeypatch):
@@ -1238,14 +1062,6 @@ def test_open_url_stops_when_the_bar_refuses_the_address(session, screen):
         and "open_url stopped at fill" in err.value.message
     )
     assert [c[0] for c in screen.calls] == ["click", "set_value"]  # no Return
-
-
-def test_open_url_will_not_type_a_card_number(session, screen):
-    screen.show([E("bar", "AXTextField", "Address and search bar")])
-    session.observe("Chrome", "cg:1")
-    with pytest.raises(ComputerUseError) as err:
-        session.open_url("cg:1", "x.test/?c=4242424242424242")
-    assert err.value.code == "sensitive_data"
 
 
 # -- windows -------------------------------------------------------------------
@@ -1471,7 +1287,8 @@ def test_take_front_raises_the_exact_window_and_hand_back_restores(ax, monkeypat
     assert ax.actions == [("w9", "AXRaise")]
     s.take_front("Chrome", 9)  # a second take keeps the user's original app
     assert s.hand_back() == {"restored_pid": 11, "restored": True}
-    assert activated == [11] and released == [True]
+    # Each take activates the task's app (42); hand_back the user's (11).
+    assert activated == [42, 42, 11] and released == [True]
     assert s.hand_back() == {"restored_pid": None, "restored": False}
 
 
@@ -1580,3 +1397,590 @@ def test_dispatch_routes_each_op_to_the_backend(session, screen):
                 op, "Chrome", {}, "cg:1", None, {"text": "x", "name": "AXPress"}
             )
         assert err.value.code == "invalid_argument"
+
+
+# -- live-regression fixes: chords, secure fields, waits, closed windows ------
+
+
+def _raise(code, message="x"):
+    def fail(*args, **kwargs):
+        raise ComputerUseError(code, message)
+
+    return fail
+
+
+def test_key_chords_take_the_hotkey_route(session, screen):
+    screen.show(
+        [
+            E("n", "AXTextField", "Note", states=("focused",)),
+            E("b", "AXButton", "Help"),
+        ]
+    )
+    obs = session.observe("Chrome", "cg:1")
+    session.act("key", None, key="cmd+w", window_id="cg:1")
+    assert screen.calls[-1][0] == "hotkey"
+    assert screen.calls[-1][1]["args"] == ("Chrome", "cmd+w")
+    assert screen.calls[-1][1]["window_id"] == "cg:1"
+    # A chord named at a text field focuses it first; at anything else it is
+    # refused (it would land on whatever has focus).
+    session.observe("Chrome", "cg:1")
+    session.act("key", _ref(obs, "Note"), key="cmd+a")
+    assert [c[0] for c in screen.calls[-2:]] == ["click", "hotkey"]
+    assert screen.calls[-2][1].get("focus_only") is True  # proven, never commits
+    # Where focus needs a click, the chord goes only once the field has it.
+    proofs = iter([_raise("synthetic_input_blocked"), lambda *a, **k: {}])
+
+    def click(*args, **kw):
+        return next(proofs)() if kw.get("focus_only") else {}
+
+    screen.handlers["click"] = click
+    session.observe("Chrome", "cg:1")
+    session.act("key", _ref(obs, "Note"), key="cmd+a")
+    assert [c[0] for c in screen.calls[-4:]] == ["click", "click", "click", "hotkey"]
+    assert [c[1].get("focus_only") for c in screen.calls[-4:-1]] == [True, False, True]
+    screen.handlers["click"] = lambda *a, **kw: (
+        _raise("synthetic_input_blocked")() if kw.get("focus_only") else {}
+    )
+    session.observe("Chrome", "cg:1")
+    receipt = session.act("key", _ref(obs, "Note"), key="cmd+a")["receipt"]
+    assert receipt["error"]["code"] == "synthetic_input_blocked"
+    assert screen.calls[-1][0] == "click"  # no chord went to the old focus
+    # Any other failure to focus (a stale target) is that failure, not a click.
+    screen.handlers["click"] = _raise("target_drift")
+    session.observe("Chrome", "cg:1")
+    before = len(screen.calls)
+    receipt = session.act("key", _ref(obs, "Note"), key="cmd+a")["receipt"]
+    assert receipt["error"]["code"] == "target_drift"
+    assert [c[0] for c in screen.calls[before:]].count("click") == 1
+    assert "hotkey" not in [c[0] for c in screen.calls[before:]]
+    del screen.handlers["click"]
+    session.observe("Chrome", "cg:1")
+    receipt = session.act("key", _ref(obs, "Help"), key="cmd+a")["receipt"]
+    assert receipt["effect"] == "refused"
+    assert receipt["error"]["code"] == "invalid_argument"
+    # The backend's fail-closed refusal of a menu command stays a refusal.
+    screen.handlers["hotkey"] = _raise("synthetic_input_blocked", "menu command")
+    receipt = session.act("key", None, key="cmd+q", window_id="cg:1")["receipt"]
+    assert receipt["error"]["code"] == "synthetic_input_blocked"
+    # One key, "+" itself included, stays on the single-key route.
+    session.act("key", None, key="+", window_id="cg:1")
+    assert screen.calls[-1][0] == "press_key"
+    assert perception._is_combo("Shift+Return") and not perception._is_combo("+")
+
+
+def _secure(key, **extra):
+    return E(
+        key,
+        "AXTextField",
+        "[secure text redacted]",
+        subrole="AXSecureTextField",
+        **extra,
+    )
+
+
+def test_secure_fields_keep_their_name_and_say_only_whether_they_are_filled(
+    session, screen
+):
+    screen.show(
+        [
+            _secure("pw", field_name="Password", filled=True),
+            _secure("pin", field_name="PIN", filled=False),
+            _secure("x"),
+        ]
+    )
+    obs = session.observe("Chrome", "cg:1")
+    text = obs.render()
+    password, pin = _ref(obs, "Password"), _ref(obs, "PIN")
+    assert f"{password} securetextfield \"Password\" = '[entered by the user]'" in text
+    assert f"{pin} securetextfield \"PIN\" = ''" in text
+    # No name to show: it keeps the redaction marker, and no value at all.
+    unnamed = obs.by_ref()[_ref(obs, "[secure text redacted]")]
+    assert unnamed.value is None and unnamed.secure
+    # Filling one when the brain says so: what was typed never comes back.
+    out = session.act("fill", password, text="hunter2")
+    assert [c[0] for c in screen.calls] == ["set_value"]
+    assert "hunter2" not in str(out["receipt"])
+    assert "hunter2" not in out["observation"].render()
+
+
+def _recording_settle(session, monkeypatch):
+    seen = []
+    real = session._settle
+
+    def settle(app, wid, **kw):
+        seen.append(kw)
+        return real(app, wid, **kw)
+
+    monkeypatch.setattr(session, "_settle", settle)
+    return seen
+
+
+def test_secret_fills_and_refused_actions_do_not_wait_for_text(
+    session, screen, monkeypatch
+):
+    seen = _recording_settle(session, monkeypatch)
+    page = [
+        E("otp", "AXTextField", "Verification code", value=""),
+        E("p", "AXPopUpButton", "Account", value="Savings"),
+    ]
+    screen.show(page)
+    obs = session.observe("Chrome", "cg:1")
+
+    def set_value(app, index, text, **kw):
+        screen.show([E("otp", "AXTextField", "Verification code", value=text), page[1]])
+        return {"effect": "confirmed"}
+
+    screen.handlers["set_value"] = set_value
+    out = session.human_act("fill", _ref(obs, "Verification code"), text="397675")
+    assert out["receipt"]["effect"] == "confirmed" and out["receipt"]["settled"]
+    assert seen[-1]["want"] is None and seen[-1]["slow"] is False
+    assert "397675" not in out["observation"].render()
+    screen.handlers["click"] = _raise("element_not_found", "no enabled item 'Chk'")
+    out = session.act("click", _ref(obs, "Account"), menu_item="Chk")
+    assert out["receipt"]["effect"] == "refused"
+    assert seen[-1]["want"] is None and seen[-1]["slow"] is False
+
+
+def test_a_menu_choice_settles_on_the_item_the_backend_chose(
+    session, screen, monkeypatch
+):
+    seen = _recording_settle(session, monkeypatch)
+    screen.show([E("p", "AXPopUpButton", "Account", value="Savings ending 4242")])
+    obs = session.observe("Chrome", "cg:1")
+    account = _ref(obs, "Account")
+    chosen = "Checking ending 6789 (no fee)"
+
+    def click(app, **kw):
+        screen.show([E("p", "AXPopUpButton", "Account", value=chosen)])
+        return {"menu": {"closed": True, "chosen": chosen}}
+
+    screen.handlers["click"] = click
+    out = session.act("click", account, menu_item="checking")
+    assert out["receipt"]["effect"] == "confirmed"
+    assert seen[-1]["want"] == (account, chosen)
+    assert out["receipt"]["target"] == f'{account} popupbutton "Account" = {chosen!r}'
+
+
+def test_an_action_that_closes_its_window_returns_a_receipt(
+    session, screen, monkeypatch
+):
+    screen.show([E("x", "AXButton", "Close"), E("t", "AXStaticText", "Page")])
+    obs = session.observe("Chrome", "cg:1")
+    real = screen.get_app_state
+
+    def get_app_state(app, *, window_id=None, **kw):
+        if "cg:1" not in screen.windows:
+            raise ComputerUseError(
+                "ax_unavailable",
+                "selected CGWindow does not map to exactly one AX window",
+            )
+        return real(app, window_id=window_id, **kw)
+
+    monkeypatch.setattr(perception.backend, "get_app_state", get_app_state)
+    exists = iter([True, False])  # still closing, then gone
+    monkeypatch.setattr(perception, "_window_exists", lambda wid: next(exists))
+    screen.handlers["click"] = lambda app, **kw: screen.windows.pop("cg:1") and {}
+    session._unresolved["cg:1"] = "stale"
+    out = session.human_act("click", _ref(obs, "Close"))
+    receipt = out["receipt"]
+    assert receipt["effect"] == "window_closed" and receipt["window_closed"] is True
+    assert "error" not in receipt and "cg:1" not in session._unresolved
+    closed = out["observation"]
+    assert closed.closed and closed.previous == obs.obs_id
+    assert "closed (no elements; list windows to go on)" in closed.render()
+    with pytest.raises(ComputerUseError) as err:
+        session.act("click", _ref(obs, "Close"))
+    assert err.value.code == "stale_ref"
+
+
+def test_a_refused_action_in_a_window_that_closed_stays_refused(
+    session, screen, monkeypatch
+):
+    screen.show([E("x", "AXButton", "Close")])
+    obs = session.observe("Chrome", "cg:1")
+    monkeypatch.setattr(perception.backend, "get_app_state", _raise("ax_unavailable"))
+    monkeypatch.setattr(perception, "_window_exists", lambda wid: False)
+    screen.handlers["click"] = _raise("action_failed", "AXPress returned an error")
+    receipt = session.act("click", _ref(obs, "Close"))["receipt"]
+    assert receipt["effect"] == "refused" and receipt["window_closed"] is True
+    assert receipt["error"]["code"] == "action_failed"
+
+
+def test_an_observation_failure_with_the_window_still_there_is_raised(
+    session, screen, monkeypatch
+):
+    screen.show([E("b", "AXButton", "Go")])
+    obs = session.observe("Chrome", "cg:1")
+    monkeypatch.setattr(perception.backend, "get_app_state", _raise("ax_unavailable"))
+    clock = itertools.count()
+    real_time = perception.time
+    monkeypatch.setattr(
+        perception,
+        "time",
+        types.SimpleNamespace(
+            sleep=lambda s: None,
+            monotonic=lambda: float(next(clock)),
+            perf_counter=real_time.perf_counter,
+        ),
+    )
+    for exists in (True, None):  # still there past the wait; cannot tell
+        monkeypatch.setattr(perception, "_window_exists", lambda wid, e=exists: e)
+        with pytest.raises(ComputerUseError) as err:
+            session.act("click", _ref(obs, "Go"))
+        assert err.value.code == "ax_unavailable"
+
+
+def test_a_closed_window_the_window_server_still_holds_is_gone(
+    session, screen, monkeypatch
+):
+    # AppKit keeps the record of an app's last document window after Cmd+W.
+    screen.show([E("b", "AXButton", "Go")])
+    obs = session.observe("Chrome", "cg:1")
+    real = screen.get_app_state
+
+    def get_app_state(app, *, window_id=None, **kw):
+        if "cg:1" not in screen.windows:
+            raise ComputerUseError("ax_unavailable", "no AX window for the CGWindow")
+        return real(app, window_id=window_id, **kw)
+
+    monkeypatch.setattr(perception.backend, "get_app_state", get_app_state)
+    monkeypatch.setattr(perception, "_window_exists", lambda wid: True)
+    screen.handlers["hotkey"] = lambda app, key, **kw: screen.windows.pop("cg:1") and {}
+    out = session.act("key", key="cmd+w", window_id=obs.window_id)
+    assert out["receipt"]["effect"] == "window_closed" and out["observation"].closed
+
+
+def test_window_listed_asks_the_backend(monkeypatch):
+    listing = {"value": [{"window_id": "cg:9"}]}
+
+    def list_windows(app):
+        if isinstance(listing["value"], Exception):
+            raise listing["value"]
+        return listing["value"]
+
+    monkeypatch.setattr(perception.backend, "list_windows", list_windows)
+    assert perception._window_listed("TextEdit", "cg:9") is True
+    assert perception._window_listed("TextEdit", "cg:4") is False
+    listing["value"] = ComputerUseError("window_not_found", "no windows")
+    assert perception._window_listed("TextEdit", "cg:9") is False
+    listing["value"] = ComputerUseError("app_not_found", "not running")
+    assert perception._window_listed("TextEdit", "cg:9") is None
+
+
+def test_escape_carries_the_observation_and_a_plain_scroll_is_an_outcome(
+    session, screen
+):
+    rows = [E("a", "AXLink", "Top"), E("b", "AXLink", "Bottom", height=0)]
+    screen.show(rows)
+    session.observe("Chrome", "cg:1")
+    # With the observation the backend lets Escape through to a Finder
+    # rename editor; any other window-level key goes as before.
+    session.act("key", None, key="Escape", window_id="cg:1")
+    assert screen.calls[-1][1]["expected_snapshot"] is not None
+    session.observe("Chrome", "cg:1")
+    session.act("key", None, key="Tab", window_id="cg:1")
+    assert screen.calls[-1][1]["expected_snapshot"] is None
+
+    def scroll(*args, **kw):
+        screen.show([E("a", "AXLink", "Top", height=0), E("b", "AXLink", "Bottom")])
+        return {}
+
+    screen.handlers["scroll"] = scroll
+    session.observe("Chrome", "cg:1")
+    receipt = session.act("scroll", None, window_id="cg:1", direction="down")["receipt"]
+    assert receipt["effect"] == "scrolled" and "unresolved" not in receipt
+
+
+def test_window_exists_reads_the_window_server(monkeypatch):
+    quartz = types.ModuleType("Quartz")
+    quartz.kCGNullWindowID = 0
+    quartz.kCGWindowListOptionAll = 0
+    listed = {"windows": [{"kCGWindowNumber": 9}]}
+    quartz.CGWindowListCopyWindowInfo = lambda *a: listed["windows"]
+    monkeypatch.setitem(sys.modules, "Quartz", quartz)
+    assert perception._window_exists("cg:9") is True
+    assert perception._window_exists("cg:4") is False
+    assert perception._window_exists("junk") is None
+    listed["windows"] = None
+    assert perception._window_exists("cg:9") is None
+
+
+def test_a_rerendered_page_keeps_its_refs_and_the_receipt_shows_the_new_state(
+    session, screen
+):
+    def page(gen, state):
+        return [
+            E(f"{gen}h", "AXHeading", "Cart", path=[0, 0], web=True),
+            E(f"{gen}c", "AXCheckBox", "Add membership", states=(state,), path=[0, 1]),
+            E(f"{gen}a", "AXButton", "Remove", path=[0, 2, 0]),
+            E(f"{gen}b", "AXButton", "Remove", path=[0, 3, 0]),
+        ]
+
+    screen.show(page("g1", "unchecked"))
+    obs = session.observe("Chrome", "cg:1")
+    box = _ref(obs, "Add membership")
+    removes = {row.ref for row in obs.rows if row.label == "Remove"}
+    # Toggling the box re-renders the list: every element is a new one.
+    screen.handlers["click"] = lambda app, **kw: (
+        screen.show(page("g2", "checked")) or {}
+    )
+    out = session.act("click", box)
+    after = out["observation"]
+    assert [row.ref for row in after.rows] == [row.ref for row in obs.rows]
+    assert after.change_counts == (0, 0, 1)
+    assert "[unchecked] -> [checked]" in after.changes[0]
+    assert out["receipt"]["target"] == f'{box} checkbox "Add membership" [checked]'
+    # Two rows with the same role, name and place are not guessed between.
+    screen.show(
+        [
+            E("g3a", "AXButton", "Remove", path=[0, 2, 0]),
+            E("g3b", "AXButton", "Remove", path=[0, 2, 0]),
+        ]
+    )
+    again = session.observe("Chrome", "cg:1")
+    assert not {row.ref for row in again.rows} & removes
+    # A list that put another item's "Delete" in the same place is not the
+    # old control: the row beside it names a different item.
+    screen.show(
+        [
+            E("i1", "AXStaticText", "Eggs", path=[0, 0]),
+            E("d1", "AXButton", "Delete", path=[0, 1]),
+        ]
+    )
+    listed = session.observe("Chrome", "cg:1")
+    screen.show(
+        [
+            E("i2", "AXStaticText", "Milk", path=[0, 0]),
+            E("d2", "AXButton", "Delete", path=[0, 1]),
+        ]
+    )
+    scrolled = session.observe("Chrome", "cg:1")
+    assert _ref(scrolled, "Delete") != _ref(listed, "Delete")
+
+    # Neither is the last item's "Delete" after a re-sort: same place, same
+    # quantity before it and footer after it, another item's card.
+    def cart(gen, names):
+        rows = []
+        for i, name in enumerate(names):
+            rows += [
+                E(f"{gen}n{i}", "AXStaticText", name, path=[0, i, 0]),
+                E(f"{gen}q{i}", "AXStaticText", "Qty 1", path=[0, i, 1]),
+                E(f"{gen}d{i}", "AXButton", "Delete", path=[0, i, 2]),
+            ]
+        return [*rows, E(f"{gen}f", "AXButton", "Checkout", path=[0, 9])]
+
+    screen.show(cart("s1", ["Eggs", "Milk"]))
+    first = session.observe("Chrome", "cg:1")
+    milk_delete = first.rows[5].ref
+    screen.show(cart("s2", ["Eggs", "Milk"]))  # rebuilt in place: refs kept
+    same = session.observe("Chrome", "cg:1")
+    assert [row.ref for row in same.rows] == [row.ref for row in first.rows]
+    screen.show(cart("s3", ["Milk", "Eggs"]))
+    sorted_ = session.observe("Chrome", "cg:1")
+    assert sorted_.rows[5].label == "Delete" and sorted_.rows[5].ref != milk_delete
+    assert perception._item_names(["Solo"], [(0,)]) == [None]
+
+
+def test_settled_observation_reports_its_walk_time(session, screen, monkeypatch):
+    screen.show([E("b", "AXButton", "Go")])
+    obs = session.observe("Chrome", "cg:1")
+    real = screen.get_app_state
+
+    def slow_walk(app, **kw):
+        time.sleep(0.02)
+        return real(app, **kw)
+
+    monkeypatch.setattr(perception.backend, "get_app_state", slow_walk)
+    after = session.act("click", _ref(obs, "Go"))["observation"]
+    assert after.elapsed_ms >= 20 and " · 0 ms" not in after.render()
+
+
+def test_open_url_steps_take_one_sample_each(session, screen, monkeypatch):
+    seen = _recording_settle(session, monkeypatch)
+    screen.show(
+        [E("bar", "AXTextField", "Address and search bar"), E("b", "AXButton", "Back")],
+        title="New Tab",
+    )
+    session.observe("Chrome", "cg:1")
+
+    def set_value(app, index, text, **kw):
+        # The omnibox shows the address reformatted, never the typed text.
+        bar = E("bar", "AXTextField", "Address and search bar", value="mart.test/")
+        screen.show([bar, E("b", "AXButton", "Back")], title="New Tab")
+        return {"effect": "confirmed"}
+
+    def press_key(app, key, **kw):
+        if key == "Return":
+            screen.show([E("h", "AXHeading", "Mart")], title="Mart")
+        return {}
+
+    screen.handlers["set_value"] = set_value
+    screen.handlers["press_key"] = press_key
+    receipt = session.open_url("cg:1", "http://mart.test")["receipt"]
+    assert receipt["effect"] == "confirmed"
+    assert [kw.get("cap") for kw in seen] == [0.0, 0.0, 0.0, 0.0, None]
+    assert all(kw.get("want") is None for kw in seen)
+
+
+# -- reading the page: diffs, chrome, dialogs, containers ---------------------
+
+
+def test_diffs_skip_browser_noise_and_show_where_long_labels_differ(session, screen):
+    long_old = "Organic Large Brown Eggs, 24 count, cage free, grade A — $7.49"
+    long_new = "Organic Large Brown Eggs, 24 count, cage free, grade A — $8.99"
+    screen.show(
+        [
+            E("bar", "AXTextField", "Address and search bar", web=False),
+            E("tab", "AXRadioButton", "Shop", web=False),
+            E("hover", "AXRadioButton", "Shop - Memory usage - 160 MB"),
+            E("ext", "AXPopUpButton", "Grammarly has access to this site"),
+            E("p", "AXStaticText", long_old, web=True),
+            E("gone", "AXLink", "Deals"),
+        ]
+    )
+    session.observe("Chrome", "cg:1")
+    screen.show(
+        [
+            E("bar", "AXTextField", "Address and search bar", web=False),
+            E("tab", "AXRadioButton", "Mart", web=False),
+            E("hover", "AXRadioButton", "Shop - Memory usage - 171 MB"),
+            E("ext", "AXPopUpButton", "Grammarly wants access to this site"),
+            E("p", "AXStaticText", long_new, web=True),
+            E("new", "AXLink", "Offers"),
+        ]
+    )
+    obs = session.observe("Chrome", "cg:1")
+    assert obs.change_counts == (1, 1, 1)
+    joined = "\n".join(obs.changes)
+    assert "Memory usage" not in joined and "Grammarly" not in joined
+    assert "Mart" not in joined
+    assert 'label "…rade A — $7.49" -> "…rade A — $8.99"' in joined
+    # Switching tabs is an outcome even when the pages look alike.
+    tabs = [
+        E("bar", "AXTextField", "Address and search bar", web=False),
+        E("t1", "AXRadioButton", "Mart", states=("selected",), web=False),
+        E("t2", "AXRadioButton", "Mart", web=False),
+        E("body", "AXStaticText", "Mart", web=True),
+    ]
+    screen.show(tabs, wid="cg:3")
+    session.observe("Chrome", "cg:3")
+    tabs[1]["states"], tabs[2]["states"] = [], ["selected"]
+    switched = session.observe("Chrome", "cg:3")
+    assert switched.change_counts == (0, 0, 2)
+    assert all("label" not in line for line in switched.changes)
+    # A tab the browser rebuilt under a new title is no outcome; one more is.
+    tabs[1] = E("t1b", "AXRadioButton", "Cart", web=False)
+    screen.show(tabs, wid="cg:3")
+    assert session.observe("Chrome", "cg:3").change_counts == (0, 0, 0)
+    tabs.insert(2, E("t3", "AXRadioButton", "Help", web=False))
+    screen.show(tabs, wid="cg:3")
+    assert session.observe("Chrome", "cg:3").change_counts == (1, 0, 0)
+    # A row that was new when last seen is shown removed without the marker.
+    screen.show([E("p", "AXStaticText", long_new, web=True)])
+    gone = session.observe("Chrome", "cg:1")
+    assert any(line.startswith("- e") and "Offers" in line for line in gone.changes)
+    assert not any(line.startswith("- *") for line in gone.changes)
+    # A native app's radio buttons and tabs are its own: their changes count.
+    native = [
+        E("r1", "AXRadioButton", "Light", states=("checked",), web=False),
+        E("r2", "AXTab", "General", web=False),
+        E("r3", "AXRadioButton", "Job - Memory usage - 1 GB"),
+    ]
+    screen.show(native, wid="cg:2")
+    session.observe("Settings", "cg:2")
+    native[0]["states"] = ["unchecked"]
+    native[1]["label"] = "Advanced"
+    native[2]["label"] = "Job - Memory usage - 2 GB"
+    assert session.observe("Settings", "cg:2").change_counts == (0, 0, 3)
+    # So are those beside a web view the app embeds (no address bar above it).
+    embedded = [
+        E("r1", "AXTab", "Inbox", web=False),
+        E("r2", "AXRadioButton", "Plain text", value="0", web=False),
+        E("body", "AXStaticText", "Welcome", web=True),
+    ]
+    screen.show(embedded, wid="cg:4")
+    session.observe("Mail", "cg:4")
+    embedded[0]["label"], embedded[1]["value"] = "Inbox (3)", "1"
+    changed = session.observe("Mail", "cg:4")
+    assert changed.change_counts == (0, 0, 2)
+    assert any('label "Inbox" -> "Inbox (3)"' in line for line in changed.changes)
+    assert any("value '0' -> '1'" in line for line in changed.changes)
+    assert perception._where_differ("abc", "abd") == ("abc", "abd")
+    assert perception._where_differ("x" * 45, "x" * 46, 40) == (
+        "…" + "x" * 10,
+        "…" + "x" * 11,
+    )
+
+
+def test_render_puts_the_page_first_and_marks_browser_chrome_and_dialogs(
+    session, screen
+):
+    def web(key, role, label, **kw):
+        return E(key, role, label, web=True, **kw)
+
+    screen.show(
+        [
+            E("back", "AXButton", "Back", web=False, path=[0, 0]),
+            E("save", "AXButton", "Save your password", web=False, path=[0, 1]),
+            web("dlg", "AXGroup", "Membership offer", subrole="AXApplicationDialog"),
+            web("up", "AXButton", "Upgrade for $65"),
+            web("pop", "AXPopUpButton", "Account", value="Savings"),
+            web("hid", "AXButton", "Slide 2", width=0, height=0),
+            web("txt", "AXStaticText", "Fine print"),
+            web("foot", "AXLink", "Terms", width=0, height=0),
+            E("tab", "AXRadioButton", "Shop", web=False, path=[2, 0]),
+        ]
+    )
+    obs = session.observe("Chrome", "cg:1")
+    head, body = obs.render().split("elements:")
+    dialog = _ref(obs, "Membership offer")
+    assert f'modal dialog open: {dialog} "Membership offer"; it covers' in head
+    page, chrome = body.split("browser (outside the page):")
+    assert '"Upgrade for $65"' in page and '"Back"' not in page
+    assert '"Save your password"' in chrome and '"Shop"' in chrome
+    assert "2 more elements off screen; 1 below, 1 hidden in place;" in page
+    assert "popup buttons: click one to list its options" in page
+    everything = obs.render(everything=True)
+    assert '"Slide 2"' in everything.split("browser (outside")[0]
+    # Without page rows nothing is split; rows above are named so.
+    screen.show([E("a", "AXLink", "Top", width=0, height=0), E("b", "AXLink", "Here")])
+    plain = session.observe("Chrome", "cg:1").render()
+    assert "browser (outside" not in plain and "; 1 above;" in plain
+    screen.show([E("a", "AXLink", "Top", width=0, height=0)])
+    # With no row on screen, nothing says which way the hidden one lies.
+    alone = session.observe("Chrome", "cg:1").render()
+    assert "(1 more elements off screen; scroll" in alone
+    # An unnamed dialog is still announced.
+    screen.show([E("d", "AXSheet", "")])
+    sheet = session.observe("Chrome", "cg:1")
+    assert f"modal dialog open: {sheet.rows[0].ref}; it covers" in sheet.render()
+
+
+def test_twin_controls_are_named_by_their_container(session, screen):
+    screen.show(
+        [
+            E("t1", "AXGroup", "", path=[0, 0]),
+            E("h1", "AXHeading", "Organic Large Brown Eggs 24ct", path=[0, 0, 0]),
+            E("p1", "AXStaticText", "$7.49", path=[0, 0, 1]),
+            E("b1", "AXButton", "Add to cart", path=[0, 0, 2]),
+            E("t2", "AXGroup", "", path=[0, 1]),
+            E("p2", "AXStaticText", "$8.99", path=[0, 1, 0]),
+            E("n2", "AXStaticText", "Whole milk, 1 gal", path=[0, 1, 1]),
+            E("b2", "AXButton", "Add to cart", path=[0, 1, 2]),
+            E("t3", "AXGroup", "", path=[0, 2]),
+            E("p3", "AXStaticText", "$1.00", path=[0, 2, 0]),
+            E("b3", "AXButton", "Add to cart", path=[0, 2, 1]),
+            E("t4", "AXGroup", "", path=[0, 3]),
+            E("b4", "AXButton", "Add to cart", path=[0, 3, 0]),
+            E("one", "AXButton", "Checkout", path=[0, 4]),
+        ]
+    )
+    obs = session.observe("Chrome", "cg:1")
+    lines = obs.render().splitlines()
+    adds = [line for line in lines if '"Add to cart"' in line]
+    assert adds[0].endswith("(in: Organic Large Brown Eggs 24ct)")
+    assert adds[1].endswith("(in: Whole milk, 1 gal)")  # not the price
+    assert adds[2].endswith("(in: $1.00)")  # only a price to go by
+    assert "(in:" not in adds[3]  # nothing names its tile
+    assert not any("(in:" in line for line in lines if '"Checkout"' in line)
+    assert "(in: Whole milk, 1 gal)" in obs.find("add to cart")

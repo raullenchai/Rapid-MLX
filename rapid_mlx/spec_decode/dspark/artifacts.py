@@ -19,10 +19,10 @@ def download_companion_artifacts(
 ) -> CompanionDSparkArtifacts:
     """Resolve both qualified snapshots at immutable Hub revisions."""
 
-    from huggingface_hub import snapshot_download
+    from ..._mirror import pinned_snapshot_download
 
-    target_path = snapshot_download(pair.target_repo, revision=pair.target_revision)
-    drafter_path = snapshot_download(pair.drafter_repo, revision=pair.drafter_revision)
+    target_path = pinned_snapshot_download(pair.target_repo, pair.target_revision)
+    drafter_path = pinned_snapshot_download(pair.drafter_repo, pair.drafter_revision)
     validate_companion_artifacts(
         pair, target_path=target_path, drafter_path=drafter_path
     )

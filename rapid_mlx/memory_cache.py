@@ -661,6 +661,85 @@ def _probe_write_bytes_per_sec(directory: str) -> float:
     return _THROUGHPUT_PROBE_BYTES / max(elapsed, 1e-6) * _THROUGHPUT_PROBE_SAFETY
 
 
+# Free-disk reserve for prefix-cache persistence. The save loop used to write
+# every live entry with no look at the volume, so a normal restart could take
+# a tight disk to 0 bytes free (multi-GB snapshots are routine). Each entry is
+# now admitted only if writing it leaves at least this much free; the default
+# matches the "very low" disk threshold ``rapid-mlx doctor`` reports. ``0``
+# disables the check. Best effort: space is measured before each write, not
+# reserved, so another writer can still take it while an entry is written.
+PREFIX_CACHE_MIN_FREE_DISK_BYTES_ENV = "RAPID_MLX_PREFIX_CACHE_MIN_FREE_DISK_BYTES"
+_DEFAULT_PERSIST_MIN_FREE_DISK_BYTES = 5 * 1024 * _BYTES_PER_MB
+
+
+def _resolve_persist_min_free_disk_bytes() -> int:
+    """Free-disk reserve a persist must leave; ``0`` disables the check."""
+    raw = os.environ.get(PREFIX_CACHE_MIN_FREE_DISK_BYTES_ENV)
+    if raw is None or not raw.strip():
+        return _DEFAULT_PERSIST_MIN_FREE_DISK_BYTES
+    try:
+        value = int(raw.strip())
+        if value < 0:
+            raise ValueError(raw)
+        return value
+    except ValueError:
+        logger.warning(
+            f"[cache_persist] invalid {PREFIX_CACHE_MIN_FREE_DISK_BYTES_ENV}="
+            f"{raw!r}; falling back to default "
+            f"{_DEFAULT_PERSIST_MIN_FREE_DISK_BYTES}"
+        )
+        return _DEFAULT_PERSIST_MIN_FREE_DISK_BYTES
+
+
+# Bytes an entry puts on disk beyond its cache arrays: safetensors header,
+# tokens.bin header, its ``index.json`` row and filesystem block rounding.
+_PERSIST_ENTRY_OVERHEAD_BYTES = _BYTES_PER_MB
+
+
+def _persist_entry_disk_bytes(persist_cache: list[Any], num_tokens: int) -> int:
+    """Conservative on-disk size of one persisted entry (all of its files).
+
+    ``estimate_kv_cache_memory`` already charges the entry its hybrid
+    recurrent-state checkpoints, so the checkpoint sidecar is covered.
+    """
+    return (
+        estimate_kv_cache_memory(persist_cache)
+        + 4 * num_tokens
+        + _PERSIST_ENTRY_OVERHEAD_BYTES
+    )
+
+
+def _persist_index_row_bytes(row: dict[str, Any]) -> int:
+    """Upper bound on what one entry row adds to ``index.json``.
+
+    The index is written once, after every entry, so the rows of entries
+    already admitted are still owed to the volume while later entries are
+    being checked. Serialising at the row's nesting depth plus slack for
+    the separator keeps this at or above the bytes the final dump emits.
+    """
+    return len(json.dumps(row, indent=6)) + 16
+
+
+def _free_disk_bytes(directory: str) -> int | None:
+    """Free bytes on the volume holding ``directory``; ``None`` if unknown."""
+    import shutil
+
+    try:
+        return shutil.disk_usage(directory).free
+    except OSError as exc:
+        logger.debug(f"[cache_persist] free-space probe failed: {exc}")
+        return None
+
+
+def _remove_entry_files(*paths: str) -> None:
+    """Best-effort removal of one entry's (possibly partial) files."""
+    for path in paths:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
 def _fsync_file(path: str) -> None:
     """Flush a file's contents to disk.
 
@@ -3085,7 +3164,17 @@ class MemoryAwarePrefixCache:
         # original incident) ~6× safety margin while still catching
         # genuinely-too-large entries.
         _BOOTSTRAP_BYTES_PER_SEC: float = 150 * _BYTES_PER_MB
-        if should_abort is not None:
+        min_free_disk = _resolve_persist_min_free_disk_bytes()
+        # The probe is a real write: skip it when it would itself cross the
+        # free-disk reserve (the fixed floor then stands in for it).
+        probe_fits = should_abort is not None
+        if probe_fits and min_free_disk > 0:
+            probe_free = _free_disk_bytes(new_dir)
+            probe_fits = (
+                probe_free is None
+                or probe_free - _THROUGHPUT_PROBE_BYTES >= min_free_disk
+            )
+        if probe_fits:
             # Budgeted (shutdown) save: calibrate the first prediction
             # against the real disk instead of the fixed floor. The floor
             # still wins on a disk slower than it (the historical contract).
@@ -3125,6 +3214,11 @@ class MemoryAwarePrefixCache:
             )
         total_bytes_written = 0
         total_write_seconds = 0.0
+        disk_skipped = 0
+        disk_skipped_bytes = 0
+        # ``index.json`` rows owed for entries already written (the index
+        # itself lands after the loop); later admissions must leave room.
+        index_owed_bytes = 0
         for i, (tokens_key, entry) in enumerate(entries_to_save):
             if total_write_seconds > 0:
                 observed_bps = total_bytes_written / total_write_seconds
@@ -3165,6 +3259,57 @@ class MemoryAwarePrefixCache:
                     if any(isinstance(c, QuantizedKVCache) for c in entry.cache)
                     else entry.cache
                 )
+                # Record the per-layer cache class names so loaders can
+                # gate on cache-type compatibility (#198 BUG B). Read from
+                # ``persist_cache`` (post-dequantize), not ``entry.cache``,
+                # so the index reflects what's actually on disk — otherwise
+                # a saved-while-quantized entry would be rejected on a
+                # subsequent unquantized startup despite being loadable.
+                cache_types = [
+                    type(layer).__name__ for layer in persist_cache if layer is not None
+                ]
+                # Built before anything is written so admission can charge
+                # this entry its own ``index.json`` row; ``checkpoints`` is
+                # settled once the sidecar write has run (``false`` is the
+                # longer spelling, so the size below is an upper bound).
+                index_row: dict[str, Any] = {
+                    "index": i,
+                    "num_tokens": len(tokens_key),
+                    "memory_bytes": entry.memory_bytes,
+                    "cache_types": cache_types,
+                    "message_boundary": entry.message_boundary,
+                    "message_boundary_sequence": (entry.message_boundary_sequence),
+                    "checkpoints": False,
+                }
+                index_row_bytes = _persist_index_row_bytes(index_row)
+                # Free-disk admission. Sized from ``persist_cache`` (what
+                # lands on disk — dequantized entries are larger than
+                # ``entry.memory_bytes``) and re-measured per entry, so the
+                # old snapshot still sitting in ``cache_dir`` and anything
+                # else filling the volume are both accounted for. A skipped
+                # entry does not end the loop: a smaller one may still fit.
+                if min_free_disk > 0:
+                    persist_bytes = _persist_entry_disk_bytes(
+                        persist_cache, len(tokens_key)
+                    )
+                    free_bytes = _free_disk_bytes(new_dir)
+                    if (
+                        free_bytes is not None
+                        and free_bytes
+                        - persist_bytes
+                        - index_row_bytes
+                        - index_owed_bytes
+                        < min_free_disk
+                    ):
+                        disk_skipped += 1
+                        disk_skipped_bytes += persist_bytes
+                        logger.debug(
+                            f"[cache_persist] skipping entry {i}: "
+                            f"{persist_bytes / _BYTES_PER_MB:.1f}MB would leave "
+                            f"less than the free-disk reserve "
+                            f"({free_bytes / _BYTES_PER_MB:.0f}MB free)"
+                        )
+                        continue
                 _save_prompt_cache_compat(
                     entry_path,
                     persist_cache,
@@ -3201,30 +3346,8 @@ class MemoryAwarePrefixCache:
                 has_checkpoints = _save_checkpoints_sidecar(
                     _checkpoints_sidecar_path(entry_path), persist_cache
                 )
-
-                # Record the per-layer cache class names so loaders can
-                # gate on cache-type compatibility (#198 BUG B). Read from
-                # ``persist_cache`` (post-dequantize), not ``entry.cache``,
-                # so the index reflects what's actually on disk — otherwise
-                # a saved-while-quantized entry would be rejected on a
-                # subsequent unquantized startup despite being loadable.
-                cache_types = [
-                    type(layer).__name__ for layer in persist_cache if layer is not None
-                ]
-
-                index["entries"].append(
-                    {
-                        "index": i,
-                        "num_tokens": len(tokens_key),
-                        "memory_bytes": entry.memory_bytes,
-                        "cache_types": cache_types,
-                        "message_boundary": entry.message_boundary,
-                        "message_boundary_sequence": (entry.message_boundary_sequence),
-                        "checkpoints": has_checkpoints,
-                    }
-                )
-                saved_lru_rank[i] = lru_rank[tokens_key]
-                saved += 1
+                index_row["checkpoints"] = has_checkpoints
+                entry_lru_rank = lru_rank[tokens_key]
                 # Feed the throughput estimator. We measure including
                 # both the safetensors write and the tokens sidecar so
                 # the next entry's prediction reflects the full per-
@@ -3239,8 +3362,31 @@ class MemoryAwarePrefixCache:
                     f"{entry.memory_bytes / _BYTES_PER_MB:.1f}MB KV, "
                     f"file={entry_path}"
                 )
+                # Bookkeeping last: nothing after this point can raise, so
+                # the cleanup below never removes files of a recorded entry.
+                index["entries"].append(index_row)
+                saved_lru_rank[i] = entry_lru_rank
+                index_owed_bytes += index_row_bytes
+                saved += 1
             except Exception as e:
                 logger.warning(f"[cache_persist] failed to save entry {i}: {e}")
+                # Drop the partial files now rather than at the orphan sweep:
+                # after a failed write (typically a full disk) they would
+                # otherwise hold space the remaining entries are measured
+                # against.
+                _remove_entry_files(
+                    entry_path, tokens_path, _checkpoints_sidecar_path(entry_path)
+                )
+
+        if disk_skipped:
+            logger.warning(
+                f"[cache_persist] skipped {disk_skipped}/{total_entries} entries "
+                f"({disk_skipped_bytes / _BYTES_PER_MB:.0f}MB): writing them "
+                f"would leave less than {min_free_disk // _BYTES_PER_MB}MB "
+                f"free on the volume holding {cache_dir}. Free up disk space, "
+                f"or set {PREFIX_CACHE_MIN_FREE_DISK_BYTES_ENV} (bytes, 0 "
+                f"disables the check) to change the reserve."
+            )
 
         if saved == 0:
             shutil.rmtree(new_dir, ignore_errors=True)
@@ -3562,6 +3708,8 @@ class MemoryAwarePrefixCache:
 
         dt = _time.monotonic() - t0
         tail = " (partial — shutdown deadline hit)" if aborted_early else ""
+        if disk_skipped:
+            tail += " (partial — free-disk reserve)"
         if rename_committed:
             logger.info(
                 f"[cache_persist] SAVED {saved}/{total_entries} entries "

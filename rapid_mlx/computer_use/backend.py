@@ -854,14 +854,23 @@ def get_app_state(
     for target in targets:
         index = int(target["target_id"][1:])
         rect = target.get("rect") or [0, 0, 0, 0]
+        # Tree position and page membership (perception keys refs and names
+        # containers with them); a secure field's name and fill state only.
+        extra = {
+            key: target[key]
+            for key in ("path", "web", "field_name", "filled")
+            if key in target
+        }
         elements.append(
             {
+                **extra,
                 "index": index,
                 "role": target["role"],
                 "subrole": target.get("subrole") or "",
                 "parent_role": target.get("parent_role") or "",
                 "label": target["text"],
                 "value": target.get("value"),
+                "value_chars": target.get("value_chars"),
                 "actions": target.get("actions", []),
                 "x": round(rect[0]),
                 "y": round(rect[1]),
@@ -1232,6 +1241,8 @@ def _numeric_request(current: object, value: str) -> float | None:
 # misses it, and the typing fallback then applies the value a second time
 # ("2" became "22"). A write is given this long to show.
 AX_WRITE_READBACK_S = 0.5
+# A menu opened through Accessibility validates its items within this.
+MENU_VALIDATE_S = 0.3
 
 
 def _await_readback(live: object, value: str, numeric: float | None) -> str | None:
@@ -1944,6 +1955,54 @@ def drag(
         verification="synthetic drag emitted; outcome not asserted",
         include_post_state=include_post_state,
     )
+
+
+MAX_READ_CHARS = 20000
+
+
+def read_value(
+    app: str,
+    element_index: int,
+    *,
+    start: int = 0,
+    max_chars: int = MAX_READ_CHARS,
+    expected_snapshot: dict | None = None,
+    window_id: int | str | None = None,
+) -> dict:
+    """The whole value of an element whose observed value was cut short.
+
+    Returns ``text`` (at most ``max_chars`` from ``start``) and the value's
+    ``total_chars``. A secret field's value is never read.
+    """
+    if start < 0 or not 0 < max_chars <= MAX_READ_CHARS:
+        raise ComputerUseError(
+            "invalid_argument", f"start >= 0 and 0 < max_chars <= {MAX_READ_CHARS}"
+        )
+    snapshot = expected_snapshot or get_app_state(
+        app,
+        screenshot=False,
+        use_cache=False,
+        window_id=window_id,
+        activate=OBSERVE_BY_ROUTE,
+    )
+    entry = _element(snapshot, element_index)
+    if entry.get("value") == ax_driver.USER_VALUE or (
+        "AXSecureTextField" in (entry.get("role"), entry.get("subrole"))
+    ):
+        raise ComputerUseError(
+            "invalid_argument", "a secret field's value is the user's; it is not read"
+        )
+    live = _live_element(snapshot, element_index, validate_point=False)
+    readable, raw = ax_driver._get_checked(live, "AXValue")
+    if not readable or not isinstance(raw, str):
+        raise ComputerUseError(
+            "accessibility_error", "the element's value could not be read"
+        )
+    return {
+        "text": raw[start : start + max_chars],
+        "start": start,
+        "total_chars": len(raw),
+    }
 
 
 def _same_process(expected: dict):
@@ -2945,16 +3004,13 @@ def _read_choose_and_close(
     titles = [_menu_item_title(i) for i in items]
     chosen = None
     if choose is not None:
-        wanted = _menu_title_key(choose)
-        match = next(
-            (i for i, t in zip(items, titles) if _menu_title_key(t) == wanted), None
-        )
+        match, why = _match_menu_item(items, titles, choose)
         if match is None or ax_driver._get(match, "AXEnabled") is False:
             closed = _close_menus(pid, before, element)
             shown = ", ".join(t for t in titles if t)[:400]
             raise ComputerUseError(
                 "element_not_found",
-                f"menu has no enabled item {choose!r} (items: {shown})"
+                f"menu {why or 'has no enabled item'} {choose!r} (items: {shown})"
                 + ("" if closed else _MENU_LEFT_OPEN),
             )
         from ApplicationServices import AXUIElementPerformAction
@@ -3371,7 +3427,9 @@ def set_value(
     is_transient = entry.get(
         "source_window_id", snapshot.get("window_id")
     ) != snapshot.get("window_id")
-    live = _live_element(snapshot, element_index, validate_point=not is_transient)
+    # An AX write names the element, not a point: a field scrolled out of
+    # view is written where it is. The typing fallback checks its own point.
+    live = _live_element(snapshot, element_index, validate_point=False)
     if live is not None:
         is_finder_item = (
             is_finder_snapshot(snapshot)
@@ -5065,6 +5123,39 @@ def _menu_title_key(title: object) -> str:
     return str(title or "").strip().rstrip("…").rstrip(".").strip().casefold()
 
 
+def _match_menu_item(
+    items: list[object], titles: list[str], wanted: str
+) -> tuple[object | None, str | None]:
+    """The item ``wanted`` names, and why none was taken when it is None.
+
+    The one exact title (case, a trailing ellipsis aside) wins, and two items
+    sharing it are ambiguous; otherwise the one title holding it ("checking" or "6789" for "Checking ending 6789 (no
+    fee)"). Two or more titles holding it are ambiguous, even when only one
+    starts with it ("card": "Card settings", "Gift card"), and nothing is
+    chosen.
+    """
+    key = _menu_title_key(wanted)
+    keys = [_menu_title_key(t) for t in titles]
+    exact = [item for item, k in zip(items, keys) if k == key]
+    if len(exact) == 1:
+        return exact[0], None
+    if exact:
+        return None, f"has {len(exact)} items named"
+    # A letter names too little to choose by (a typo would pick); two
+    # letters only as the start of a title.
+    if len(key) >= 3:
+        found = [item for item, k in zip(items, keys) if key in k]
+    elif len(key) == 2:
+        found = [item for item, k in zip(items, keys) if k.startswith(key)]
+    else:
+        found = []
+    if len(found) == 1:
+        return found[0], None
+    if found:
+        return None, f"has {len(found)} items matching"
+    return None, None
+
+
 def _menu_item_by_path(app_info: dict, path: list[str]) -> object:
     """Resolve ``["Edit", "Find", "Find…"]`` against the app's menu bar.
 
@@ -5098,6 +5189,31 @@ def _menu_item_by_path(app_info: dict, path: list[str]) -> object:
             )
         node = match
     return node
+
+
+def _menu_item_revalidated(item: object) -> bool:
+    """Whether a menu item read as disabled is enabled once its menu is asked.
+
+    AppKit validates items when their menu opens, so an item of an app that
+    is not in front keeps the state it had for another window (Save… stayed
+    disabled for a new document after a saved one). Opening the item's
+    menu-bar menu through Accessibility validates it against the key window
+    without showing anything or activating the app; it is closed again.
+    """
+    top = item
+    for _ in range(8):
+        if top is None or ax_driver._get(top, "AXRole") == "AXMenuBarItem":
+            break
+        top = ax_driver._get(top, "AXParent")
+    if top is None or ax_driver._get(top, "AXRole") != "AXMenuBarItem":
+        return False
+    if ax_driver.AXUIElementPerformAction(top, "AXPress") != 0:
+        return False
+    time.sleep(MENU_VALIDATE_S)
+    enabled = ax_driver._get(item, "AXEnabled") is not False
+    ax_driver.AXUIElementPerformAction(top, "AXCancel")
+    time.sleep(MENU_VALIDATE_S)
+    return enabled
 
 
 def _press_menu_item(
@@ -5134,7 +5250,9 @@ def _press_menu_item(
                     "action_failed", "menu key equivalent could not be synthesized"
                 )
         else:
-            if ax_driver._get(item, "AXEnabled") is False:
+            if ax_driver._get(item, "AXEnabled") is False and not (
+                background and _menu_item_revalidated(item)
+            ):
                 raise ComputerUseError(
                     "synthetic_input_blocked",
                     f"menu item {label} is disabled for window "
@@ -5554,7 +5672,9 @@ def perform_secondary_action(
         activate=OBSERVE_BY_ROUTE,
     )
     entry = _element(snapshot, element_index)
-    live = _live_element(snapshot, element_index)
+    # An AX action names the element: an open menu's item lies outside the
+    # window's frame and is still the one to act on.
+    live = _live_element(snapshot, element_index, validate_point=False)
     if live is None or action not in entry["actions"]:
         raise ComputerUseError(
             "value_not_settable",

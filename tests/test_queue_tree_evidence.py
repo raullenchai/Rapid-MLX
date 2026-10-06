@@ -877,3 +877,82 @@ def test_full_ci_identity_parity_accepts_dynamic_matrix_and_rejects_drift(
             _assert_full_ci_matrix_identity_contract(source)
     else:
         _assert_full_ci_matrix_identity_contract(source)
+
+
+@pytest.mark.parametrize("scope", ["ci", "mac"])
+def test_discover_cancellation_of_newest_tree_cannot_reuse_old_full(scope):
+    client = _configured_client()
+    path = evidence.WORKFLOW_PATHS[scope]
+    success = _run(10, path)
+    cancelled = _run(11, path) | {"conclusion": "cancelled"}
+    client.responses[
+        f"repos/{REPO}/actions/workflows/{evidence.WORKFLOWS[scope]}/runs"
+    ] = {"workflow_runs": [cancelled, success]}
+    client.responses[f"repos/{REPO}/commits/{CANDIDATE}/statuses"] = [
+        {
+            "id": 1,
+            "context": evidence.CONTEXTS[scope],
+            "state": "success",
+            "target_url": f"https://github.com/{REPO}/actions/runs/30",
+        }
+    ]
+    assert evidence.discover(client, scope, MAIN) == evidence.DiscoveryProbe(
+        None, False
+    )
+
+
+@pytest.mark.parametrize("scope", ["ci", "mac"])
+@pytest.mark.parametrize(
+    "context",
+    ["candidate-qualification/mapped", "source-canary-unit", "candidate-route-shadow"],
+)
+def test_new_reduced_tree_without_full_namespace_forces_backstop(scope, context):
+    client = _configured_client()
+    newer_sha = "e" * 40
+    client.trees[newer_sha] = TREE
+    path = evidence.WORKFLOW_PATHS[scope]
+    newer = _run(21, path) | {"head_sha": newer_sha}
+    old = _run(20, path)
+    client.responses[
+        f"repos/{REPO}/actions/workflows/{evidence.WORKFLOWS[scope]}/runs"
+    ] = {"workflow_runs": [newer, old]}
+    # A separate scoped success never substitutes for complete evidence.
+    client.responses[f"repos/{REPO}/commits/{newer_sha}/statuses"] = [
+        {
+            "id": 2,
+            "context": context,
+            "state": "success",
+            "target_url": f"https://github.com/{REPO}/actions/runs/31",
+        }
+    ]
+    client.responses[f"repos/{REPO}/commits/{CANDIDATE}/statuses"] = [
+        {
+            "id": 1,
+            "context": evidence.CONTEXTS[scope],
+            "state": "success",
+            "target_url": f"https://github.com/{REPO}/actions/runs/30",
+        }
+    ]
+    assert evidence.discover(client, scope, MAIN) == evidence.DiscoveryProbe(None, True)
+
+
+@pytest.mark.parametrize("scope", ["ci", "mac"])
+def test_newest_tree_api_error_cannot_fall_back_to_historical_full(scope):
+    client = _configured_client()
+    newer_sha = "e" * 40
+    client.trees[newer_sha] = TREE
+    path = evidence.WORKFLOW_PATHS[scope]
+    client.responses[
+        f"repos/{REPO}/actions/workflows/{evidence.WORKFLOWS[scope]}/runs"
+    ] = {"workflow_runs": [_run(21, path) | {"head_sha": newer_sha}, _run(20, path)]}
+    original = client.json
+
+    def unavailable(endpoint, *fields, **kwargs):
+        if endpoint.endswith(f"/commits/{newer_sha}/statuses"):
+            raise evidence.EvidenceError("newest candidate status API unavailable")
+        return original(endpoint, *fields, **kwargs)
+
+    client.json = unavailable
+    assert evidence.discover(client, scope, MAIN) == evidence.DiscoveryProbe(
+        None, False
+    )
