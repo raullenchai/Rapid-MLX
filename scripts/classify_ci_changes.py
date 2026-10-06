@@ -346,9 +346,9 @@ def _source_preflight_paths(paths: set[str], lanes: Lanes) -> bool:
             if (
                 name.startswith("test_")
                 and name.endswith(".py")
-                and not name.startswith(
-                    ("test_ci_", "test_classify_ci_", "test_queue_")
-                )
+                and not name.startswith(_SOURCE_PREFLIGHT_CONTROL_TEST_PREFIXES)
+                and not name.endswith(("_workflow.py", "_workflows.py"))
+                and name not in _SOURCE_PREFLIGHT_CONTROL_TESTS
             ):
                 continue
         return False
