@@ -235,6 +235,7 @@ def archive(name="evidence.json", content=b'{"scope":"ci"}'):
         ("evidence.json", b"not-json"),
         ("evidence.json", b"x" * 1_000_001),
     ],
+    ids=("unsafe-member-path", "invalid-json", "oversized-member"),
 )
 def test_artifact_archive_negative_controls(monkeypatch, name, content):
     client = Client()
