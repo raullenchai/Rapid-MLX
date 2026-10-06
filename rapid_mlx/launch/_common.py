@@ -273,12 +273,22 @@ def which(cmd: str) -> str | None:
 
 
 # Field names whose values are credentials in the client configs we preview.
-_SECRET_FIELD_MARKERS = ("key", "token", "secret", "password")
+_SECRET_FIELD_MARKERS = (
+    "key",
+    "token",
+    "secret",
+    "password",
+    "authorization",
+    "cookie",
+)
+# Mappings whose every value may carry a credential under an arbitrary name
+# (HTTP headers, MCP-server environments).
+_SECRET_CONTAINERS = ("headers", "env")
 # rapid-mlx's own loopback placeholder carries no secret and is shown as-is.
 _PLACEHOLDER_KEY = "sk-noop"
 
 
-def redact_secrets(data: object) -> object:
+def redact_secrets(data: object, *, _inside_secret_container: bool = False) -> object:
     """Return a copy of ``data`` with credential-looking string values hidden.
 
     Used for previews only (``--dry-run`` diffs): a config being migrated or
@@ -287,7 +297,8 @@ def redact_secrets(data: object) -> object:
     key/token/secret/password becomes ``<redacted>``, except the
     ``sk-noop`` placeholder rapid-mlx writes for an unauthenticated server.
     Matching is on the name's ending so ``apiKey``/``accessToken`` are hidden
-    while ``tokenSource`` or ``maxTokens`` stay readable.
+    while ``tokenSource`` or ``maxTokens`` stay readable. Every string inside
+    a ``headers`` or ``env`` mapping is hidden whatever its name.
     """
     if isinstance(data, dict):
         result: dict[object, object] = {}
@@ -297,14 +308,23 @@ def redact_secrets(data: object) -> object:
                 isinstance(value, str)
                 and value
                 and value != _PLACEHOLDER_KEY
-                and lowered.endswith(_SECRET_FIELD_MARKERS)
+                and (
+                    _inside_secret_container or lowered.endswith(_SECRET_FIELD_MARKERS)
+                )
             ):
                 result[name] = "<redacted>"
             else:
-                result[name] = redact_secrets(value)
+                result[name] = redact_secrets(
+                    value,
+                    _inside_secret_container=_inside_secret_container
+                    or lowered in _SECRET_CONTAINERS,
+                )
         return result
     if isinstance(data, list):
-        return [redact_secrets(item) for item in data]
+        return [
+            redact_secrets(item, _inside_secret_container=_inside_secret_container)
+            for item in data
+        ]
     return data
 
 

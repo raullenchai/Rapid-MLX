@@ -217,6 +217,14 @@ class TestCline:
             "[]",
             '{"version": 2, "providers": {}}',
             '{"version": 1, "providers": []}',
+            '{"version": true, "providers": {}}',
+            '{"version": 1, "modes": null, "providers": {}}',
+            '{"version": 1, "lastUsedProvider": "", "providers": {}}',
+            '{"version": 1, "providers": {"x": []}}',
+            '{"version": 1, "providers": {"x": {"updatedAt": "t"}}}',
+            '{"version": 1, "providers": {"x": {"settings": {"provider": "x"}}}}',
+            '{"version": 1, "providers": {"x": {"settings": {"provider": "x"},'
+            ' "updatedAt": "t", "tokenSource": "stolen"}}}',
         ],
     )
     def test_refuses_to_rewrite_a_file_cline_would_reject(self, fake_home, content):
@@ -227,6 +235,20 @@ class TestCline:
             cline.write_or_patch_config("http://127.0.0.1:8000", "m")
         assert path.read_text() == content
         assert list(settings_dir.glob("*.bak.*")) == []
+
+    def test_writes_through_a_symlinked_providers_file(self, fake_home):
+        settings_dir = _install_cline(fake_home)
+        real = fake_home / "dotfiles" / "providers.json"
+        real.parent.mkdir()
+        real.write_text('{"version": 1, "providers": {}}')
+        link = settings_dir / "providers.json"
+        link.symlink_to(real)
+
+        cline.write_or_patch_config("http://127.0.0.1:8000", "m")
+
+        assert link.is_symlink()
+        assert _cline_settings(json.loads(real.read_text()))["model"] == "m"
+        assert len(list(real.parent.glob("providers.json.bak.*"))) == 1
 
     def test_never_touches_mcp_settings(self, fake_home):
         mcp = (
@@ -263,6 +285,26 @@ class TestCline:
         assert notes == ()
         assert "real" not in diff and "secret" not in diff
         assert '+  "lastUsedProvider": "openai-compatible"' in diff
+        # A header value is a credential whatever the header is called.
+        path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "providers": {
+                        "openai-compatible": {
+                            "settings": {
+                                "provider": "openai-compatible",
+                                "headers": {"X-Custom": "hdr-secret"},
+                            },
+                            "updatedAt": "2026-01-01T00:00:00.000Z",
+                        }
+                    },
+                }
+            )
+        )
+        before = path.read_text()
+        diff = cline.preview("http://127.0.0.1:8000", "m", "sk-noop")[1]
+        assert "hdr-secret" not in diff and '"X-Custom": "<redacted>"' in diff
         assert path.read_text() == before
         cline.write_or_patch_config("http://127.0.0.1:8000", "m", api_key="secret")
         assert cline.preview("http://127.0.0.1:8000", "m", "secret")[1] == ""
@@ -496,6 +538,20 @@ class TestContinueDev:
         path = continue_dev.write_or_patch_config("http://127.0.0.1:8000", "m")
         assert "name: rapid-mlx" in path.read_text()
 
+    def test_writes_through_a_symlinked_config_yaml(self, fake_home):
+        cont = fake_home / ".continue"
+        cont.mkdir()
+        real = fake_home / "dotfiles" / "config.yaml"
+        real.parent.mkdir()
+        real.write_text("name: Mine\nversion: 1.0.0\nmodels: []\n")
+        (cont / "config.yaml").symlink_to(real)
+
+        continue_dev.write_or_patch_config("http://127.0.0.1:8000", "m")
+
+        assert (cont / "config.yaml").is_symlink()
+        assert "name: rapid-mlx" in real.read_text()
+        assert len(list(real.parent.glob("config.yaml.bak.*"))) == 1
+
     def test_preview_redacts_migrated_keys(self, fake_home):
         cont = fake_home / ".continue"
         cont.mkdir()
@@ -509,6 +565,33 @@ class TestContinueDev:
         assert not path.exists()
         for secret in ("sk-ant-example", "voyage-example", "jira-example"):
             assert secret not in diff
+        (cont / "config.json").write_text(
+            json.dumps(
+                {
+                    "models": [
+                        {
+                            "title": "Proxy",
+                            "provider": "openai",
+                            "requestOptions": {
+                                "headers": {"Authorization": "Bearer hdr-secret"}
+                            },
+                        }
+                    ],
+                    "experimental": {
+                        "modelContextProtocolServers": [
+                            {
+                                "transport": {
+                                    "command": "x",
+                                    "env": {"DATABASE_URL": "postgres://u:pw@h"},
+                                }
+                            }
+                        ]
+                    },
+                }
+            )
+        )
+        diff = continue_dev.preview("http://127.0.0.1:8000", "m")[1]
+        assert "hdr-secret" not in diff and "pw@h" not in diff
         assert "+  apiKey: sk-noop" in diff
         assert len(notes) == 1 and "config.json" in notes[0]
 

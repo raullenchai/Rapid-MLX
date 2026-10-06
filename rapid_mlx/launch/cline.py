@@ -115,17 +115,50 @@ def load_providers(path: Path) -> dict[str, Any]:
         raise ValueError(f"{path} is not valid JSON: {exc}") from exc
     if data == {}:
         return {}
-    if (
-        not isinstance(data, dict)
-        or data.get("version") != 1
-        or not isinstance(data.get("providers"), dict)
-    ):
+    if not _matches_cline_schema(data):
         raise ValueError(
             f"{path} is not a Cline providers file (version 1) this version of "
             "rapid-mlx understands; configure Cline with "
             "`cline auth -p openai -b <url> -k <key> -m <model>` instead"
         )
     return data
+
+
+_TOKEN_SOURCES = {"manual", "oauth", "migration"}
+
+
+def _matches_cline_schema(data: object) -> bool:
+    """The structural part of Cline's ``StoredProviderSettingsSchema`` (zod)
+    that a rewrite would carry forward: anything failing it is read by Cline
+    as an empty file and would be lost on its next save."""
+    if not isinstance(data, dict):
+        return False
+    version = data.get("version")
+    if type(version) is not int or version != 1:  # ``True == 1`` in Python
+        return False
+    if "lastUsedProvider" in data and not (
+        isinstance(data["lastUsedProvider"], str) and data["lastUsedProvider"]
+    ):
+        return False
+    for optional_mapping in ("modes", "repairs"):
+        if optional_mapping in data and not isinstance(data[optional_mapping], dict):
+            return False
+    providers = data.get("providers")
+    if not isinstance(providers, dict):
+        return False
+    for entry in providers.values():
+        if not isinstance(entry, dict):
+            return False
+        settings = entry.get("settings")
+        if not isinstance(settings, dict) or not isinstance(
+            settings.get("provider"), str
+        ):
+            return False
+        if not isinstance(entry.get("updatedAt"), str):
+            return False
+        if entry.get("tokenSource", "manual") not in _TOKEN_SOURCES:
+            return False
+    return True
 
 
 def _now_iso() -> str:
@@ -227,6 +260,9 @@ def write_or_patch_config(
     """
     path = config_path or current_config_path()
     assert path is not None
+    # Write through a symlinked providers.json (e.g. into a dotfiles repo)
+    # instead of replacing the link with a regular file.
+    path = path.resolve()
     existing = load_providers(path)
     updated = patched_config(existing, server_url, model, api_key)
     if updated is existing and path.exists():

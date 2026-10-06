@@ -337,15 +337,18 @@ def build_plan(
     api_key: str = "sk-noop",
     config_path: Path | None = None,
 ) -> ContinuePlan:
-    path = config_path or current_config_path()
-    assert path is not None
+    logical = config_path or current_config_path()
+    assert logical is not None
+    # Backup and the atomic replace target the real file, so a config.yaml
+    # symlinked into a dotfiles repo keeps its link.
+    path = logical.resolve()
     before = load_yaml_config(path)
     if path.exists() and before:
         return ContinuePlan(
             path, before, patched_config(before, server_url, model, api_key)
         )
 
-    legacy_path = legacy_config_path(path)
+    legacy_path = legacy_config_path(logical)
     legacy = load_legacy_config(legacy_path)
     if not legacy:
         return ContinuePlan(
