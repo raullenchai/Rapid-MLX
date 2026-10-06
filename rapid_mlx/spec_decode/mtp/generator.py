@@ -59,7 +59,9 @@ from .prompt_lookup import (
     CopyDraftGate,
     PromptLookupIndex,
     PromptLookupPolicy,
+    verify_cost_estimate,
 )
+from .reproducible_depth import request_depth_controller, request_round_cost
 
 _LEGACY_PROMPT_LOOKUP_POLICY = PromptLookupPolicy()
 
@@ -395,10 +397,14 @@ def mtp_generate_step(
     # persists across requests for the same model+drafter combination.
     # ``max_k`` bounds the depth the controller may pick; the current
     # generator supports K∈[0,max_k], including per-position rollback for
-    # hybrid SSM targets. ``disable_auto_k=True`` fixes depth at max_k.
+    # hybrid SSM targets. ``disable_auto_k=True`` fixes depth at max_k. A
+    # greedy or seeded request never adapts per round (``_reproducible``
+    # below): it runs on ``greedy_schedule`` when the caller measured one
+    # (``reproducible_depth.greedy_schedule``), else at max_k.
     model_id: str | None = None,
     max_k: int = 1,
     disable_auto_k: bool = False,
+    greedy_schedule: Any | None = None,
     # 0.9.13 PR-C EOS holdout. When an accepted draft is a stop token
     # (Gemma 4 ``<end_of_turn>``, tokenizer ``eos_token_id``, or any
     # id in the request's assembled stop set), positions past that
@@ -529,6 +535,22 @@ def mtp_generate_step(
 
     y = prompt.astype(mx.uint32)
     _is_greedy = temp == 0
+    # A greedy or seeded request promises the same output for the same
+    # input, and the target cannot keep that promise on its own: the verify
+    # forward's logits differ in the last bits with the number of rows it
+    # verifies (different matmul, attention and recurrent kernels per
+    # width), so a near-tie argmax -- common in bf16 -- flips with the draft
+    # schedule. The adaptive schedule reads the wall clock (depth
+    # controller cost EWMA, ``CopyDraftGate`` throughput) and a process-wide
+    # controller that earlier requests trained, so two identical requests
+    # verified different widths and diverged. For these requests no round
+    # reads the clock or another request's state: the depth is one value per
+    # process and model (``greedy_schedule``; a seeded request keeps the
+    # ``max_k`` its route already pinned) and the copy gate is charged
+    # ``verify_cost_estimate`` rather than milliseconds.
+    _reproducible = _is_greedy or lane_rng is not None
+    # The host's one-time profile for this request, if the caller measured it.
+    _schedule = greedy_schedule if _reproducible and not disable_auto_k else None
     if prompt_lookup_policy is None:
         prompt_lookup_policy = _effective_prompt_lookup_policy(model)
     requested_prompt_lookup = (
@@ -1090,7 +1112,7 @@ def mtp_generate_step(
     # Hybrid ArraysCache layers retain a per-position recurrent snapshot,
     # allowing the same partial-accept semantics without replay.
     # ------------------------------------------------------------------
-    if not disable_auto_k:
+    if not disable_auto_k and not _reproducible:
         max_k_effective = max(0, max_k)
         _controller: DepthController | None = get_or_create_controller(
             model_id or "__default__", max_k=max_k_effective
@@ -1124,19 +1146,41 @@ def mtp_generate_step(
             authoritative=False,
         )
 
+    if _schedule is not None:
+        # The caller's once-per-process host profile
+        # (``reproducible_depth.greedy_schedule``): never deeper than its
+        # ``depth`` (0 where even fully accepted drafts cannot pay).
+        max_k_effective = max(0, min(int(_schedule.depth), max_k_effective))
+    # Within that, each round's depth comes from this request's own
+    # acceptance on the host's fixed cost curve -- the adaptive controller's
+    # EV rule with nothing from the clock or from other requests
+    # (``reproducible_depth.request_depth_controller``). Without a measured
+    # curve the request drafts at ``max_k_effective`` every round.
+    _request_costs = _schedule.round_costs if _schedule is not None else ()
+    _request_depth = (
+        request_depth_controller(_request_costs, max_k_effective)
+        if _request_costs and max_k_effective > 0
+        else None
+    )
+
     # Whether the controller CHOOSES the depth (as opposed to merely
-    # observing cost/acceptance). False under ``disable_auto_k``.
-    _select_k = not disable_auto_k
+    # observing cost/acceptance). False under ``disable_auto_k`` and for a
+    # reproducible request (see ``_reproducible``).
+    _select_k = not disable_auto_k and not _reproducible
+
+    def _next_depth() -> int:
+        """Depth for the upcoming round."""
+        if _request_depth is not None:
+            return _request_depth.pick_k()
+        if _select_k and _controller is not None:
+            return _controller.pick_k()
+        return max_k_effective
 
     # next_k: the K the controller wants for the UPCOMING round. Determines
     # whether we generate a draft at end of the current round. Bootstrap
     # value is the controller's initial pick_k (0 if fresh, else the
     # scheduled depth from the previous request).
-    next_k = (
-        _controller.pick_k()
-        if _select_k and _controller is not None
-        else max_k_effective
-    )
+    next_k = _next_depth()
 
     # Wall time spent generating the drafts that the NEXT round will
     # consume. Drafting happens at the tail of round N — after round N's
@@ -1242,6 +1286,14 @@ def mtp_generate_step(
             (mx.array(token, mx.uint32), None, None, None) for token in proposed_tokens
         ]
 
+    def _gate_cost(round_ms: float, verify_rows: int) -> float:
+        """What ``CopyDraftGate`` is charged for a round (see ``_reproducible``)."""
+        if not _reproducible:
+            return round_ms
+        return verify_cost_estimate(
+            verify_rows, steep=bool(getattr(_schedule, "steep_verify", False))
+        )
+
     def _record_round(k_used: int, round_wall_ms: float, accepts: list[bool]) -> None:
         """Fold a round outcome into the controller (if enabled).
 
@@ -1252,6 +1304,10 @@ def mtp_generate_step(
         nonlocal pending_draft_ms
         charged = round_wall_ms + pending_draft_ms
         pending_draft_ms = 0.0
+        if _request_depth is not None:
+            _request_depth.record(
+                k_used, request_round_cost(_request_costs, k_used), accepts
+            )
         if _controller is None:
             return
         _controller.record(k_used, charged, accepts)
@@ -1284,7 +1340,9 @@ def mtp_generate_step(
             # One token for the whole forward: the floor a copy-draft has to
             # beat when the controller has parked.
             _copy_draft_gate.observe(
-                is_copy_draft=False, committed=1, round_ms=round_wall_ms
+                is_copy_draft=False,
+                committed=1,
+                round_ms=_gate_cost(round_wall_ms, 1),
             )
 
             ntoks += 1
@@ -1307,11 +1365,7 @@ def mtp_generate_step(
             # (codex #1441 guarded the same invariant when drafting was the
             # last thing a round did).
             if not round_done:
-                next_k = (
-                    _controller.pick_k()
-                    if _select_k and _controller is not None
-                    else max_k_effective
-                )
+                next_k = _next_depth()
 
                 hidden_at_main = hidden[:, -1:, :]
                 lookup_drafts = _prompt_lookup_drafts()
@@ -1549,7 +1603,7 @@ def mtp_generate_step(
                 _copy_draft_gate.observe(
                     is_copy_draft=True,
                     committed=committed_this_round,
-                    round_ms=round_wall_ms,
+                    round_ms=_gate_cost(round_wall_ms, k_len + 1),
                     accepted=accepted_count,
                     proposed=k_len,
                 )
@@ -1558,7 +1612,7 @@ def mtp_generate_step(
                 _copy_draft_gate.observe(
                     is_copy_draft=False,
                     committed=committed_this_round,
-                    round_ms=round_wall_ms + pending_draft_ms,
+                    round_ms=_gate_cost(round_wall_ms + pending_draft_ms, k_len + 1),
                 )
                 _record_round(k_len, round_wall_ms, accepts_for_record)
                 # #3155: per-depth acceptance for /metrics.  ``accepts`` stops
@@ -1718,11 +1772,7 @@ def mtp_generate_step(
                     _restore_processor_state(emissions[-1][2])
                 # Decide K for the next round BEFORE generating the
                 # next chain (a park decision skips drafter cost).
-                next_k = (
-                    _controller.pick_k()
-                    if _select_k and _controller is not None
-                    else max_k_effective
-                )
+                next_k = _next_depth()
                 lookup_drafts = _prompt_lookup_drafts()
                 if lookup_drafts is not None:
                     pending_drafts = lookup_drafts
