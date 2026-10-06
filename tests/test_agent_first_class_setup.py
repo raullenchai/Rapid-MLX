@@ -231,6 +231,53 @@ def test_qwen_code_plan_refuses_a_shadowing_profile_it_cannot_merge(
     assert not (tmp_path / ".qwen").exists()
 
 
+def test_qwen_code_plan_leaves_entries_it_cannot_key_in_place(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    settings_path = tmp_path / ".qwen" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    unkeyed = ["text", 7, None, ["nested"], {"name": "no id"}, {"id": ["odd"]}]
+    settings_path.write_text(json.dumps({"modelProviders": {"openai": unkeyed}}))
+
+    plan = build_setup_plan("qwen-code", "http://localhost:8000/v1", "local-model")
+    apply_setup_plan(plan)
+
+    written = json.loads(settings_path.read_text())["modelProviders"]["openai"]
+    assert written[:-1] == unkeyed
+    assert written[-1]["id"] == "local-model"
+
+
+def test_qwen_code_plan_selects_the_config_for_the_agent_version(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    from rapid_mlx.agents import get_profile
+    from rapid_mlx.agents.base import AgentVersionSpec
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    shipped = get_profile("qwen-code")
+    versioned = replace(
+        shipped,
+        versions=[
+            AgentVersionSpec(
+                version_range=">=9.0",
+                config=replace(shipped.config, path="~/.qwen-next/settings.json"),
+            )
+        ],
+    )
+    monkeypatch.setattr("rapid_mlx.agents.setup._qwen_code_profile", lambda: versioned)
+
+    def plan_path(agent_version):
+        return build_setup_plan(
+            "qwen-code",
+            "http://localhost:8000/v1",
+            "local-model",
+            agent_version=agent_version,
+        ).path
+
+    assert plan_path(None) == (tmp_path / ".qwen" / "settings.json").resolve()
+    assert plan_path("1.0.0") == (tmp_path / ".qwen" / "settings.json").resolve()
+    assert plan_path("9.1.0") == (tmp_path / ".qwen-next" / "settings.json").resolve()
+
+
 def test_qwen_code_plan_refuses_an_unresolvable_settings_path(tmp_path, monkeypatch):
     from pathlib import Path
 

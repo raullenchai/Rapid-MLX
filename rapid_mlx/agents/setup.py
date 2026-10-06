@@ -224,7 +224,7 @@ def _qwen_code_profile() -> Any:
     return profile
 
 
-def _qwen_code_settings_path() -> Path:
+def _qwen_code_settings_path(agent_version: str | None = None) -> Path:
     """Qwen Code's settings file, resolved like the generic setup writer.
 
     A profile in ``~/.rapid-mlx/agents`` may shadow the shipped one. This flow
@@ -233,7 +233,7 @@ def _qwen_code_settings_path() -> Path:
     """
     from rapid_mlx.agents.adapter import _resolve_config_path
 
-    cfg = _qwen_code_profile().get_config_for_version(None)
+    cfg = _qwen_code_profile().get_config_for_version(agent_version)
     if (
         cfg.type != "json"
         or not (isinstance(cfg.path, str) and cfg.path)
@@ -292,6 +292,7 @@ def build_setup_plan(
     supports_reasoning: bool | None = None,
     *,
     emit_telemetry: bool = True,
+    agent_version: str | None = None,
 ) -> SetupPlan:
     """Build a side-effect-free setup plan for a supported client."""
     if agent in {"claude", "claude-code"}:
@@ -438,7 +439,7 @@ def build_setup_plan(
             model,
         )
     if agent == "qwen-code":
-        path = _qwen_code_settings_path()
+        path = _qwen_code_settings_path(agent_version)
         try:
             loaded_qwen = launch_common.load_json_lenient(path)
         except OSError:
@@ -457,12 +458,14 @@ def build_setup_plan(
             raise ValueError(f"{path} must contain a JSON object")
         profile = _qwen_code_profile()
         template = json.loads(
-            profile.render_config(base_url, model, context_length=context_length)
+            profile.render_config(
+                base_url, model, agent_version, context_length=context_length
+            )
         )
         incoming_providers = (
             template.get("modelProviders") if isinstance(template, dict) else None
         )
-        incoming_openai = (
+        incoming_openai: Any = (
             incoming_providers.get("openai")
             if isinstance(incoming_providers, dict)
             else None

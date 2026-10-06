@@ -12980,6 +12980,7 @@ def agents_command(args):
                     context_length=context_length,
                     supports_reasoning=supports_reasoning,
                     emit_telemetry=not args.dry_run,
+                    agent_version=args.agent_version,
                 )
             except (OSError, ValueError) as exc:
                 print(f"\n  {profile.display_name} setup failed: {exc}\n")
