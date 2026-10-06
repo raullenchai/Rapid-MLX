@@ -68,8 +68,8 @@ say, in substance:
 ## Consequences
 
 - The approval API never shipped. The perception session and its gates
-  existed only on the unmerged computer-use PR stack, and no host or brain
-  prompt in this repository drives the session. So there is no compatibility
+  have not been in a release, and no host or brain prompt in this repository
+  drives the session. So there is no compatibility
   period. The one consumer is the mock-eval harness (`evals/cua_mock`), whose
   `/human pending|approve|deny` goes with this change. Only `human_act` and
   `human_done` remain on the user's channel during a handoff.
