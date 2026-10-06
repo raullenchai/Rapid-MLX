@@ -193,7 +193,10 @@ def test_workflow_uses_trusted_checkout_and_indexes_after_upload():
     assert "--publish-target-url" in index["run"]
     validation = next(s for s in steps if s.get("id") == "result")
     assert '--producer-run-id "$TRIGGER_RUN"' in validation["run"]
-    assert '--source-run-id "$TRIGGER_RUN" --source-attempt "$TRIGGER_ATTEMPT"' in validation["run"]
+    assert (
+        '--source-run-id "$TRIGGER_RUN" --source-attempt "$TRIGGER_ATTEMPT"'
+        in validation["run"]
+    )
     assert (root / ".mergify.yml").read_text().count(
         "check-success = @github-actions/candidate-admission/ci"
     ) == 2
@@ -435,7 +438,9 @@ def test_actual_rendered_observer_shell_uses_real_verified_cli(
             / ".github/workflows/candidate-admission.yml"
         ).read_text()
     )
-    shell = workflow["jobs"]["admit"]["steps"][1]["run"]
+    shell = next(
+        s for s in workflow["jobs"]["admit"]["steps"] if s.get("id") == "result"
+    )["run"]
     captured, out = tmp_path / "args", tmp_path / "out"
     env = dict(
         os.environ,
@@ -763,8 +768,9 @@ def test_rollback_does_not_touch_unrelated_prs_or_claim_success_on_malformed_lis
 
 @pytest.mark.parametrize("upload", ["success", "failure", "skipped", "cancelled"])
 @pytest.mark.parametrize("qualified", [True, False])
+@pytest.mark.parametrize("trigger", ["CI", "Candidate qualification"])
 def test_rendered_publication_command_requires_uploaded_evidence_but_preserves_revocation(
-    monkeypatch, tmp_path, upload, qualified
+    monkeypatch, tmp_path, upload, qualified, trigger
 ):
     import os
     import subprocess
@@ -805,10 +811,16 @@ def test_rendered_publication_command_requires_uploaded_evidence_but_preserves_r
         GITHUB_RUN_ID="400",
         GITHUB_OUTPUT=str(tmp_path / "out"),
         EVIDENCE_UPLOADED=str(upload == "success").lower(),
+        VERIFIED_PRODUCER="100" if qualified else "",
+        NOTIFIED_PRODUCER="20" if trigger == "CI" else "100",
+        TRIGGER_NAME=trigger,
         ADMISSION_ARGUMENTS=str(tmp_path / "args"),
     )
     shell = index["run"].replace("${{ github.event.workflow_run.id }}", "100")
     real_run(["bash", "-c", shell], env=env, check=True, capture_output=True, text=True)
+    if trigger == "CI" and not qualified:
+        assert not (tmp_path / "args").exists()
+        return
     args = json.loads((tmp_path / "args").read_text())
     assert args[:2] == ["-m", "scripts.ci_candidate_admission"]
     monkeypatch.setattr(sys, "argv", ["admission", *args[2:]])
