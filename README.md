@@ -1,3 +1,7 @@
+<p align="center">
+  <img width="1200" alt="Rapid-MLX. Local LLM server for Apple Silicon, built for coding agents. Up to 4× faster than Apple's MLX. 1.5× on a typical task — same model, same weights. brew install rapid-mlx" src="https://raw.githubusercontent.com/raullenchai/Rapid-MLX/main/docs/assets/readme-banner.png" />
+</p>
+
 <h1 align="center">Rapid-MLX</h1>
 
 <p align="center">
@@ -209,6 +213,14 @@ With a server running (step 2), this patches Claude Code's local config (`~/.cla
 > **Vision / audio / video / diffusion models?** Base install is text-only (~460 MB). Vision, audio (TTS, STT, voice cloning), video generation, embeddings, and DFlash speculative decoding ship as opt-in extras. → [Optional extras](https://rapidmlx.com/docs/extras.html)
 
 > **Not into the terminal?** [**Rapid-MLX Desktop**](https://rapidmlx.com/desktop) bundles the same engine inside a one-click Mac app.
+
+## See it in action
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/raullenchai/Rapid-MLX/main/docs/assets/demo.gif" alt="Rapid-MLX demo: rapid-mlx serve qwen3.5-4b-4bit until the server is ready, a curl request to /v1/chat/completions, then rapid-mlx agents claude-code --setup --dry-run previewing the Claude Code config" width="760">
+</p>
+
+<sub>Real session on a Mac mini (M2 Pro, 32 GB), rapid-mlx 0.15.6 from PyPI; idle waits shortened. Recording: <a href="https://github.com/raullenchai/Rapid-MLX/blob/main/docs/assets/demo.cast">docs/assets/demo.cast</a>.</sub>
 
 ---
 
