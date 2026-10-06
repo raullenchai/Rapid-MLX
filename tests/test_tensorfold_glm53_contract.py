@@ -590,3 +590,28 @@ def test_glm_server_wrapper_declares_product_metadata(monkeypatch) -> None:
     assert captured["method"] == "mtp"
     assert captured["paired_repository"] is None
     assert captured["supports_reasoning_budget"] is True
+
+
+def test_catalog_runtime_revision_is_the_shared_runtime() -> None:
+    """Every profile is installed from the one revision the code checks."""
+
+    from rapid_mlx.speculative import tensorfold_glm53, tensorfold_qwen27
+    from rapid_mlx.speculative.tensorfold_runtime import (
+        INSTALL_HINT,
+        SUPPORTED_REVISION,
+        SUPPORTED_RUNTIME_URL,
+    )
+
+    aliases = json.loads(
+        (Path(__file__).parents[1] / "rapid_mlx" / "aliases.json").read_text()
+    )
+    pinned = {
+        name: profile["tensorfold_runtime_revision"]
+        for name, profile in aliases.items()
+        if isinstance(profile, dict) and "tensorfold_runtime_revision" in profile
+    }
+    assert pinned == {"glm5.3-flash-tensorfold": SUPPORTED_REVISION}
+    assert tensorfold_glm53.SUPPORTED_RUNTIME_REVISION == SUPPORTED_REVISION
+    assert tensorfold_qwen27.SUPPORTED_REVISION == SUPPORTED_REVISION
+    assert f"git+{SUPPORTED_RUNTIME_URL}@{SUPPORTED_REVISION}" in INSTALL_HINT
+    assert tensorfold_glm53.INSTALL_HINT is tensorfold_qwen27.INSTALL_HINT
