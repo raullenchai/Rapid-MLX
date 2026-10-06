@@ -508,7 +508,11 @@ def test_fresh_publisher_revokes_stale_proof_and_never_overwrites_newer_notice(
     elif boundary == "superseded":
         status["target_url"] = f"https://github.com/{REPO}/actions/runs/200"
     result = admission.publish_admission(
-        client, 100, expected, f"https://github.com/{REPO}/actions/runs/400"
+        client,
+        100,
+        expected,
+        f"https://github.com/{REPO}/actions/runs/400",
+        evidence_uploaded=True,
     )
     if boundary == "superseded":
         assert not result["published"] and not writes
@@ -670,7 +674,11 @@ def test_publisher_last_index_reread_prevents_old_status_mutation(monkeypatch):
         admission, "_write_status", lambda *a: pytest.fail("stale index published")
     )
     assert not admission.publish_admission(
-        client, 100, expected, f"https://github.com/{REPO}/actions/runs/400"
+        client,
+        100,
+        expected,
+        f"https://github.com/{REPO}/actions/runs/400",
+        evidence_uploaded=True,
     )["published"]
 
 
@@ -710,7 +718,7 @@ def test_real_cli_publication_and_rollback_paths(monkeypatch, tmp_path, mode):
     if mode == "publish":
         expected = tmp_path / "expected"
         expected.write_text(json.dumps(admission.verify_admission(client, 100)))
-        args += ["--expected", str(expected)]
+        args += ["--expected", str(expected), "--evidence-uploaded", "true"]
     else:
         args += ["--rollback"]
     monkeypatch.setattr(sys, "argv", args)
@@ -751,3 +759,68 @@ def test_rollback_does_not_touch_unrelated_prs_or_claim_success_on_malformed_lis
     listing[:] = [{"not": "a page"}]
     with pytest.raises(admission.evidence.EvidenceError):
         admission.rollback(client, target)
+
+
+@pytest.mark.parametrize("upload", ["success", "failure", "skipped", "cancelled"])
+@pytest.mark.parametrize("qualified", [True, False])
+def test_rendered_publication_command_requires_uploaded_evidence_but_preserves_revocation(
+    monkeypatch, tmp_path, upload, qualified
+):
+    import os
+    import subprocess
+
+    root = Path(__file__).resolve().parents[1]
+    steps = yaml.safe_load(
+        (root / ".github/workflows/candidate-admission.yml").read_text()
+    )["jobs"]["admit"]["steps"]
+    upload_step, index = steps[-2:]
+    assert upload_step["id"] == "evidence"
+    assert (
+        index["env"]["EVIDENCE_UPLOADED"]
+        == "${{ steps.evidence.outcome == 'success' }}"
+    )
+    assert index["if"] == "always() && steps.result.outcome == 'success'"
+    real_run = subprocess.run
+    client, _, _, run, _ = setup(monkeypatch)
+    if not qualified:
+        run["conclusion"] = "cancelled"
+    expected = admission.verify_admission(client, 100)
+    (tmp_path / "candidate-admission.json").write_text(json.dumps(expected))
+    # Execute the real workflow shell, intercept only its Python process launch;
+    # then feed captured CLI arguments into the real publisher/ZIP consumer.
+    shim = tmp_path / "bin"
+    shim.mkdir()
+    script = shim / "python"
+    script.write_text(
+        "#!/usr/bin/env python3.12\nimport json,os,sys\n"
+        'open(os.environ["ADMISSION_ARGUMENTS"], "w").write(json.dumps(sys.argv[1:]))\n'
+    )
+    script.chmod(0o755)
+    env = dict(
+        os.environ,
+        PATH=str(shim) + os.pathsep + os.environ["PATH"],
+        RUNNER_TEMP=str(tmp_path),
+        GITHUB_REPOSITORY=REPO,
+        GITHUB_SERVER_URL="https://github.com",
+        GITHUB_RUN_ID="400",
+        GITHUB_OUTPUT=str(tmp_path / "out"),
+        EVIDENCE_UPLOADED=str(upload == "success").lower(),
+        ADMISSION_ARGUMENTS=str(tmp_path / "args"),
+    )
+    shell = index["run"].replace("${{ github.event.workflow_run.id }}", "100")
+    real_run(["bash", "-c", shell], env=env, check=True, capture_output=True, text=True)
+    args = json.loads((tmp_path / "args").read_text())
+    assert args[:2] == ["-m", "scripts.ci_candidate_admission"]
+    monkeypatch.setattr(sys, "argv", ["admission", *args[2:]])
+    monkeypatch.setattr(admission.evidence, "GitHubClient", lambda repo: client)
+    writes = []
+    monkeypatch.setattr(
+        admission,
+        "_write_status",
+        lambda client, sha, state, target: writes.append((sha, state)),
+    )
+    admission.main()
+    positive = qualified and upload == "success"
+    assert writes == [(CANDIDATE, "success" if positive else "failure")]
+    result = json.loads((tmp_path / "candidate-admission-publication.json").read_text())
+    assert result["verified"] is positive
