@@ -722,7 +722,9 @@ def test_warm_regular_pinned_file_moves_into_the_blob_layout(tmp_path, monkeypat
 
 def test_blob_install_failure_falls_back_to_hf(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        _mirror, "_install_lfs_blob_and_symlink", lambda *_a: (False, "blob-mkdir:X")
+        _mirror,
+        "_install_lfs_blob_and_symlink",
+        lambda *_a, **_k: (False, "blob-mkdir:X"),
     )
     siblings = [_sibling("config.json", CONFIG, lfs=False)]
     ok, _router, hf_calls, _ = _run(

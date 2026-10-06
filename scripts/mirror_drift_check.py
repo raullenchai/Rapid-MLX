@@ -21,6 +21,12 @@ Public requests are cache-busted after every redirect and carry
 old body and a cached 404 for up to its advertised ``max-age=3600``; the first
 ``models.rapidmlx.com`` redirect also drops the incoming query string.
 
+A non-LFS file whose mirror body differs from HF's blob id is an error when a
+client could serve it: the sizes match (clients that check size alone accept
+it) or HF lists no size. When the sizes differ, every client rejects the body
+and fetches HF's, so that ``content_mismatch`` is a warning; the file's own
+``size_mismatch`` error still fails the audit.
+
 When boto3 and R2 credentials happen to be available, object metadata is also
 compared with Hugging Face's LFS SHA-256. Without credentials that optional
 check is reported as skipped; the normal scheduled audit needs no secrets.
@@ -936,14 +942,29 @@ def _apply_probe_result(
                 )
             )
         elif probe.blob_oid != item.oid:
-            report.findings.append(
-                _file_finding(
-                    "content_mismatch",
-                    item,
-                    f"mirror_blob={probe.blob_oid} hf_blob={item.oid}",
-                    sync_in_progress=sync_in_progress,
-                )
+            detail = f"mirror_blob={probe.blob_oid} hf_blob={item.oid}"
+            finding = _file_finding(
+                "content_mismatch", item, detail, sync_in_progress=sync_in_progress
             )
+            if (
+                finding.severity == "error"
+                and item.size is not None
+                and probe.size != item.size
+            ):
+                # A client serves a stale non-LFS mirror object only when its
+                # size matches HF's: clients before blob-id proof checked size
+                # alone, and current clients prove the blob id. A body whose
+                # size differs is rejected by every client and re-fetched from
+                # HF, so it costs a fallback, not a stale file. The
+                # ``size_mismatch`` error for the same file still fails the
+                # audit; this finding only stops claiming it is served.
+                finding = Finding(
+                    finding.kind,
+                    "warning",
+                    finding.path,
+                    f"{detail}; size differs, every client falls back to HF",
+                )
+            report.findings.append(finding)
     if item.sha256 is not None:
         public_sha = _etag_sha256(probe.etag)
         metadata_sha = metadata.get("hf-sha256") if metadata is not None else None
