@@ -3606,28 +3606,34 @@ class BatchedEngine(BaseEngine):
             # The scheduler tokenizes this exact string next; going through
             # its host-cached encoder lets that call (and the route's
             # context-length count before it) reuse one encode.
-            if isinstance(real_prompt, list):
-                real_tokens = list(real_prompt)
+            real_text: str | None
+            if isinstance(real_prompt, str):
+                real_text = real_prompt
+                encoded = self.encode_prompt_text(real_prompt)
+                real_tokens = (
+                    encoded if encoded is not None else tokenizer.encode(real_prompt)
+                )
             else:
-                real_tokens = self.encode_prompt_text(real_prompt)
-                if real_tokens is None:
-                    real_tokens = tokenizer.encode(real_prompt)
-            markers = (
-                added_token_markers(tokenizer) if isinstance(real_prompt, str) else ()
-            )
+                real_text = None
+                real_tokens = list(real_prompt)
+            markers = () if real_text is None else added_token_markers(tokenizer)
 
             def encode_variant(text: str) -> list[int]:
                 # Variants share all but their last message or two with the
                 # real prompt; re-encode only the differing tail when that
                 # is provably equivalent, else encode in full as before.
-                reused = encode_sharing_head(
-                    real_prompt,
-                    real_tokens,
-                    text,
-                    encode_tail=lambda tail: tokenizer.encode(
-                        tail, add_special_tokens=False
-                    ),
-                    markers=markers,
+                reused = (
+                    None
+                    if real_text is None
+                    else encode_sharing_head(
+                        real_text,
+                        real_tokens,
+                        text,
+                        encode_tail=lambda tail: tokenizer.encode(
+                            tail, add_special_tokens=False
+                        ),
+                        markers=markers,
+                    )
                 )
                 return reused if reused is not None else tokenizer.encode(text)
 
