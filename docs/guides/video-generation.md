@@ -218,6 +218,10 @@ pixel-frames, and a 20 MB upload. The result uses the same asynchronous job and
 download endpoints as `POST /v1/videos`. `GET /v1/videos/capabilities` reports
 these extension limits. The uploaded source is removed after generation.
 
+The server's `--max-request-bytes` also applies to uploads. To allow the full
+20 MiB source plus multipart overhead, start the server with
+`--max-request-bytes 23068672`.
+
 ## CogVideoX-Fun
 
 Rapid-MLX can serve CogVideoX-Fun as an experimental, single-worker video
