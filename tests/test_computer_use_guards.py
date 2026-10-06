@@ -96,10 +96,11 @@ def test_money_context_skips_headings_and_lists_choices():
         "Place order",
     ]
     context = guards.money_context(texts, ["Sat, Oct 10 12–2 PM", "Driver tip: $5"])
+    # The heading "Order total $48.14" and the cells "Order total" + "$48.14"
+    # say the same thing once.
     assert context == [
         "Visa ending 4242",
         "Order total $48.14",
-        "Order total: $48.14",
         "Chosen: Sat, Oct 10 12–2 PM",
         "Chosen: Driver tip: $5",
     ]
@@ -178,3 +179,22 @@ def test_money_context_falls_back_to_amounts_dedupes_and_caps():
         "Total: $5.00",
         "Chosen: Plan: Pro",
     ]
+
+
+def test_priced_lines_name_each_amount_and_context_says_what_it_is_for():
+    # A product name and its price in separate cells read as one line; an
+    # amount with nothing before it stays as it is.
+    texts = ["Bananas", "$0.29", "$65.00/yr", "Ships Friday", "Eggs", "12,50 €"]
+    assert guards.priced_lines(texts) == [
+        "Bananas: $0.29",
+        "$65.00/yr",
+        "Eggs: 12,50 €",
+    ]
+    assert guards.priced_lines(texts, limit=1) == ["Bananas: $0.29"]
+    context = guards.money_context(
+        ["Order total", "$48.14", "Order total $48.14"],
+        items=["Bananas: $0.29", "Order total $48.14"],
+        heading="Your order",
+    )
+    # The same line said twice (two cells, or a heading) is listed once.
+    assert context == ["For: Your order", "Order total: $48.14", "Item: Bananas: $0.29"]
