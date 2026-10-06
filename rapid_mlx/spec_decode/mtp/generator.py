@@ -1504,34 +1504,42 @@ def mtp_generate_step(
                     next_k, deferred_depth = deferred_depth, None
                 else:
                     next_k = _next_depth()
-                plan, plan_arg = _plan_next(next_k)
                 pending_drafts = None
                 pending_is_prompt_lookup = False
-                park_was_chosen = plan == "park"
                 if bet_on_park:
                     # The next round is the step bet on (running already
                     # unless the launch was held). ``_copy_may_follow`` ruled
-                    # out a copy before the bet; a chain is drafted after it.
+                    # out a copy before the bet; a chain the controller asks
+                    # for is planned after that step, against the cache it
+                    # leaves -- never against one a launched step has already
+                    # advanced, or whether the launch was held could change
+                    # the depth the cache admits.
                     prefetched_step = launched
-                    if plan == "mtp":
-                        deferred_depth = plan_arg
-                elif plan == "lookup":
-                    pending_drafts = _lookup_drafts(plan_arg)
-                    pending_is_prompt_lookup = True
-                elif plan == "mtp":
-                    # Chain-of-K: generate ``plan_arg`` drafts cascaded via
-                    # MTP. A depth of 1 is the plain single-draft path.
-                    d_toks, d_lps, d_alps, d_xtcs = _draft_chain_timed(
-                        hidden[:, -1:, :], main_tok, prev_tokens, plan_arg
-                    )
-                    pending_drafts = list(zip(d_toks, d_lps, d_alps, d_xtcs))
-                elif _pipeline_parks and _may_run_ahead():
-                    # Parking again, with the next step launched now so it
-                    # runs while the caller handles this token. Next round
-                    # pays no drafter cost -- the whole point of park.
-                    prefetched_step = _launch_park_step(
-                        main_tok, timed_by_this_round=False
-                    )
+                    park_was_chosen = next_k == 0
+                    if next_k >= 1:
+                        deferred_depth = next_k
+                else:
+                    plan, plan_arg = _plan_next(next_k)
+                    park_was_chosen = plan == "park"
+                    if plan == "lookup":
+                        pending_drafts = _lookup_drafts(plan_arg)
+                        pending_is_prompt_lookup = True
+                    elif plan == "mtp":
+                        # Chain-of-K: generate ``plan_arg`` drafts cascaded
+                        # via MTP. A depth of 1 is the plain single-draft
+                        # path.
+                        d_toks, d_lps, d_alps, d_xtcs = _draft_chain_timed(
+                            hidden[:, -1:, :], main_tok, prev_tokens, plan_arg
+                        )
+                        pending_drafts = list(zip(d_toks, d_lps, d_alps, d_xtcs))
+                    elif _pipeline_parks and _may_run_ahead():
+                        # Parking again, with the next step launched now so
+                        # it runs while the caller handles this token. Next
+                        # round pays no drafter cost -- the whole point of
+                        # park.
+                        prefetched_step = _launch_park_step(
+                            main_tok, timed_by_this_round=False
+                        )
                 y = mx.array([main_tok_id], mx.uint32)
 
             # No guard rewind is needed around this yield the way the verify

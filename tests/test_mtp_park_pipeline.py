@@ -459,3 +459,31 @@ def test_parked_round_cost_excludes_the_callers_time(monkeypatch):
     # the next one it launched); never for the caller's 100 ms.
     assert all(cost <= 2.0 + 1e-6 for _, cost in charged), charged
     assert sum(cost for _, cost in charged) == pytest.approx(10.0)
+
+
+def test_a_held_run_ahead_admits_the_same_depth_near_the_start(monkeypatch):
+    """Rollback admission depends on how far the cache reaches. A depth asked
+    for while a step was bet on is admitted after that step, so a launched
+    step (one row further) and a held one admit the same width -- here, a
+    one-token prompt where depth 3 fits only once three rows are cached."""
+    from rapid_mlx.spec_decode.mtp.reproducible_depth import GreedySchedule
+
+    runs = []
+    for allow in (True, False):
+        # Pre-loop pick, bootstrap (park), then depth 3 on the bet round.
+        _scripted_depths(monkeypatch, iter([0, 0, 3, 3] + [0] * 40))
+        model = _WidthSensitiveTarget(_no_tie)
+        tokens, _ = _run(
+            model,
+            [5],
+            12,
+            max_k=3,
+            greedy_schedule=GreedySchedule(
+                depth=3, steep_verify=False, round_costs=(1.0, 1.1, 1.2, 1.3)
+            ),
+            may_run_ahead=lambda allow=allow: allow,
+        )
+        runs.append((tokens, list(model.widths)))
+    assert runs[0] == runs[1]
+    assert runs[0][0] == _counting(6, 12)
+    assert 4 in runs[0][1], runs[0][1]
