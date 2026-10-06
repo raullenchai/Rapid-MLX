@@ -916,16 +916,24 @@ def _probe_extension_video(path: Path) -> tuple[int, int, int]:
     if ffprobe is None:
         raise HTTPException(status_code=503, detail="video extension requires ffprobe")
     try:
+        command = [
+            ffprobe,
+            "-v",
+            "error",
+            # Uploaded bytes must not select a playlist demuxer or fetch
+            # network resources while we determine whether they are MP4.
+            "-protocol_whitelist",
+            "file",
+            "-format_whitelist",
+            "mov",
+        ]
         result = subprocess.run(
             [
-                ffprobe,
-                "-v",
-                "error",
-                "-count_frames",
+                *command,
                 "-select_streams",
                 "v:0",
                 "-show_entries",
-                "stream=width,height,avg_frame_rate,nb_read_frames:format=format_name",
+                "stream=width,height,avg_frame_rate,r_frame_rate,nb_frames:format=format_name,duration",
                 "-of",
                 "json",
                 str(path),
@@ -939,9 +947,16 @@ def _probe_extension_video(path: Path) -> tuple[int, int, int]:
         stream = details["streams"][0]
         width = int(stream["width"])
         height = int(stream["height"])
-        frames = int(stream["nb_read_frames"])
         frame_rate = Fraction(stream["avg_frame_rate"])
+        runtime_frame_rate = Fraction(stream["r_frame_rate"])
         formats = details["format"]["format_name"].split(",")
+        # Match the pinned runtime's metadata count, including its duration
+        # fallback, so inference and the API agree on the source workload.
+        declared_frames = int(stream.get("nb_frames", 0))
+        if declared_frames == 0:
+            declared_frames = int(
+                float(details["format"].get("duration", 0)) * float(runtime_frame_rate)
+            )
     except (
         OSError,
         ValueError,
@@ -949,12 +964,15 @@ def _probe_extension_video(path: Path) -> tuple[int, int, int]:
         IndexError,
         ZeroDivisionError,
         TypeError,
+        OverflowError,
         subprocess.SubprocessError,
     ) as exc:
         raise HTTPException(status_code=400, detail="invalid input_video") from exc
     if "mp4" not in formats:
         raise HTTPException(status_code=400, detail="input_video must be MP4")
-    if frame_rate != 24:
+    # The pinned runtime reads r_frame_rate. Checking only the average
+    # permits variable-rate inputs whose generated output is not 24 fps.
+    if frame_rate != 24 or runtime_frame_rate != 24:
         raise HTTPException(status_code=400, detail="input_video must be 24 fps")
     if not (256 <= width <= 1920 and 256 <= height <= 1920):
         raise HTTPException(
@@ -964,6 +982,64 @@ def _probe_extension_video(path: Path) -> tuple[int, int, int]:
         raise HTTPException(
             status_code=400, detail="input_video dimensions must be multiples of 32"
         )
+    # Every extension adds at least eight frames. Stop one frame beyond
+    # the largest admissible source instead of decoding an entire long clip.
+    max_source_frames = min(
+        _MAX_EXTEND_OUTPUT_FRAMES - 8,
+        _MAX_EXTEND_PIXEL_FRAMES // (width * height) - 8,
+    )
+    if max_source_frames < 9 or declared_frames > max_source_frames:
+        raise HTTPException(
+            status_code=400, detail="video extension exceeds the supported workload"
+        )
+    if declared_frames < 9 or declared_frames % 8 != 1:
+        raise HTTPException(
+            status_code=400, detail="input_video must contain 8n+1 frames"
+        )
+    # Reject unsafe dimensions before decoding any frames. A small upload
+    # can describe a very large image and exhaust the probe's memory.
+    try:
+        result = subprocess.run(
+            [
+                *command,
+                "-read_intervals",
+                f"%+#{max_source_frames + 1}",
+                "-count_frames",
+                "-count_packets",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=nb_read_frames,nb_read_packets",
+                "-of",
+                "json",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        stream = json.loads(result.stdout)["streams"][0]
+        frames = int(stream["nb_read_frames"])
+        packets = int(stream["nb_read_packets"])
+    except (
+        OSError,
+        ValueError,
+        KeyError,
+        IndexError,
+        TypeError,
+        subprocess.SubprocessError,
+    ) as exc:
+        raise HTTPException(status_code=400, detail="invalid input_video") from exc
+    if packets > max_source_frames or frames > max_source_frames:
+        raise HTTPException(
+            status_code=400, detail="video extension exceeds the supported workload"
+        )
+    # ffprobe can return zero even when decoding corrupt packets. Only
+    # accept an error-free count that agrees with the runtime metadata and
+    # ends before the packet cap, proving we reached the end of the source.
+    if result.stderr.strip() or frames != declared_frames:
+        raise HTTPException(status_code=400, detail="invalid input_video")
     if frames < 9 or frames % 8 != 1:
         raise HTTPException(
             status_code=400, detail="input_video must contain 8n+1 frames"

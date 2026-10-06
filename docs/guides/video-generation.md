@@ -210,6 +210,8 @@ curl http://localhost:8000/v1/videos/extend \
 
 The source must be an MP4 at exactly 24 fps, with dimensions from 256 to 1920
 pixels in multiples of 32 and a decoded frame count of `8n+1` (at least 9).
+Variable-rate files whose nominal and average frame rates disagree, corrupt
+videos, and inconsistent frame-count metadata are rejected before generation.
 `extend_frames` counts **output frames**, must be a multiple of 8, and accepts
 8–48. The endpoint accepts up to 97 total output frames, 24 million
 pixel-frames, and a 20 MB upload. The result uses the same asynchronous job and

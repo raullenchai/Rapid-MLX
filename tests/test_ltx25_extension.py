@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -107,9 +108,198 @@ def test_extension_probe_counts_decoded_frames(tmp_path: Path) -> None:
         video._probe_extension_video(short)
 
 
+def test_extension_probe_rejects_runtime_frame_rate_mismatch(tmp_path: Path) -> None:
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None or shutil.which("ffprobe") is None:
+        pytest.skip("ffmpeg and ffprobe are required")
+    source = tmp_path / "variable-rate.mp4"
+    subprocess.run(
+        [
+            ffmpeg,
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=blue:s=256x256:r=24",
+            "-frames:v",
+            "9",
+            "-vf",
+            r"settb=1/48,setpts=floor(N/2)*4+mod(N\,2)",
+            "-fps_mode",
+            "vfr",
+            "-enc_time_base",
+            "1/48",
+            "-video_track_timescale",
+            "48",
+            "-y",
+            str(source),
+        ],
+        check=True,
+    )
+    details = json.loads(
+        subprocess.check_output(
+            [
+                shutil.which("ffprobe"),
+                "-v",
+                "error",
+                "-show_entries",
+                "stream=avg_frame_rate,r_frame_rate",
+                "-of",
+                "json",
+                str(source),
+            ]
+        )
+    )["streams"][0]
+    assert details == {"avg_frame_rate": "24/1", "r_frame_rate": "48/1"}
+    with pytest.raises(HTTPException, match="24 fps"):
+        video._probe_extension_video(source)
+
+
+@pytest.mark.parametrize("dimensions", [(4096, 4096), (1920, 1920)])
+def test_extension_probe_rejects_dimensions_before_frame_decode(
+    dimensions: tuple[int, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(video.shutil, "which", lambda _: "/ffprobe")
+    calls = []
+
+    def probe(command, **kwargs):
+        calls.append(command)
+        assert "-count_frames" not in command
+        assert command[command.index("-protocol_whitelist") + 1] == "file"
+        assert command[command.index("-format_whitelist") + 1] == "mov"
+        return SimpleNamespace(
+            stdout=json.dumps(
+                {
+                    "streams": [
+                        {
+                            "width": dimensions[0],
+                            "height": dimensions[1],
+                            "avg_frame_rate": "24/1",
+                            "r_frame_rate": "24/1",
+                        }
+                    ],
+                    "format": {"format_name": "mov,mp4,m4a,3gp,3g2,mj2"},
+                }
+            )
+        )
+
+    monkeypatch.setattr(video.subprocess, "run", probe)
+    with pytest.raises(HTTPException) as exc:
+        video._probe_extension_video(Path("source.mp4"))
+    assert exc.value.status_code == 400
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("frames", [89, 97, 1001])
+def test_extension_probe_bounds_counting_with_audio(
+    frames: int, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None or shutil.which("ffprobe") is None:
+        pytest.skip("ffmpeg and ffprobe are required")
+    source = tmp_path / "source.mp4"
+    subprocess.run(
+        [
+            ffmpeg,
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=blue:s=256x256:r=24",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=48000",
+            "-frames:v",
+            str(frames),
+            "-t",
+            str(frames / 24),
+            "-c:a",
+            "aac",
+            "-y",
+            str(source),
+        ],
+        check=True,
+    )
+    run = video.subprocess.run
+    counted = []
+
+    def probe(command, **kwargs):
+        result = run(command, **kwargs)
+        if "-count_frames" in command:
+            counted.append(
+                int(json.loads(result.stdout)["streams"][0]["nb_read_frames"])
+            )
+        return result
+
+    monkeypatch.setattr(video.subprocess, "run", probe)
+    if frames == 89:
+        assert video._probe_extension_video(source) == (256, 256, 89)
+    else:
+        with pytest.raises(HTTPException, match="supported workload"):
+            video._probe_extension_video(source)
+    assert counted == ([89] if frames == 89 else [])
+
+
+def test_extension_probe_rejects_corrupt_decoding(tmp_path: Path) -> None:
+    ffmpeg = shutil.which("ffmpeg")
+    ffprobe = shutil.which("ffprobe")
+    if ffmpeg is None or ffprobe is None:
+        pytest.skip("ffmpeg and ffprobe are required")
+    source = tmp_path / "corrupt.mp4"
+    subprocess.run(
+        [
+            ffmpeg,
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=blue:s=256x256:r=24",
+            "-frames:v",
+            "9",
+            "-c:v",
+            "libx264",
+            "-bf",
+            "0",
+            "-g",
+            "1",
+            "-y",
+            str(source),
+        ],
+        check=True,
+    )
+    packets = json.loads(
+        subprocess.check_output(
+            [
+                ffprobe,
+                "-v",
+                "error",
+                "-show_packets",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "packet=pos,size",
+                "-of",
+                "json",
+                str(source),
+            ]
+        )
+    )["packets"]
+    packet = packets[4]
+    with source.open("r+b") as target:
+        target.seek(int(packet["pos"]))
+        target.write(b"\0" * int(packet["size"]))
+    with pytest.raises(HTTPException, match="invalid input_video"):
+        video._probe_extension_video(source)
+
+
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [False, True])
 async def test_extension_route_runs_job_and_removes_source(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    failure: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     video.configure_video_jobs(tmp_path / "jobs")
     video.start_video_jobs()
@@ -123,6 +313,8 @@ async def test_extension_route_runs_job_and_removes_source(
             assert source_video.read_bytes() == b"uploaded-mp4"
             captured.update(kwargs)
             output_path.write_bytes(b"extended-mp4")
+            if failure:
+                raise RuntimeError("runtime failed after writing partial output")
 
     monkeypatch.setattr(video, "_video_engine", Engine)
     monkeypatch.setattr(video, "_probe_extension_video", lambda _: (256, 256, 9))
@@ -139,14 +331,17 @@ async def test_extension_route_runs_job_and_removes_source(
             if current["status"] in {"completed", "failed"}:
                 break
             await asyncio.sleep(0.01)
-        assert current["status"] == "completed"
+        assert current["status"] == ("failed" if failure else "completed")
         assert current["frames"] == 25
         assert current["fps"] == 24
         assert captured["extend_frames"] == 16
         assert captured["seed"] == 11
         job_dir = video._jobs_root / created["id"]
         assert not (job_dir / "source.mp4").exists()
-        assert (job_dir / "output.mp4").read_bytes() == b"extended-mp4"
+        if failure:
+            assert not job_dir.exists()
+        else:
+            assert (job_dir / "output.mp4").read_bytes() == b"extended-mp4"
     finally:
         video.configure_video_jobs(None)
         video.start_video_jobs()
