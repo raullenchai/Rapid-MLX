@@ -130,6 +130,10 @@ class FileMeta:
     size: int | None  # bytes; None if HF didn't expose it; 0 = real empty
     key: str  # R2 object key = ``<hf-repo-id>/<relpath>``
     lfs_sha256: str | None = None  # HF's LFS sha256 for weight shards; None otherwise
+    # HF's git blob id, kept for non-LFS files only (for an LFS file it names
+    # the pointer, not the bytes). It is the only digest HF publishes for
+    # configs, tokenizers and chat templates.
+    git_oid: str | None = None
 
 
 def _hf_files(repo_id: str, revision: str | None = None) -> list[FileMeta]:
@@ -170,8 +174,22 @@ def _hf_files(repo_id: str, revision: str | None = None) -> list[FileMeta]:
         lfs_sha256 = getattr(lfs, "sha256", None) if lfs is not None else None
         if not (isinstance(lfs_sha256, str) and len(lfs_sha256) == 64):
             lfs_sha256 = None
+        blob_id = getattr(s, "blob_id", None)
+        git_oid = (
+            blob_id.lower()
+            if lfs_sha256 is None and isinstance(blob_id, str) and len(blob_id) == 40
+            else None
+        )
         key = f"{repo_id}/{rname}"
-        files.append(FileMeta(relpath=rname, size=size, key=key, lfs_sha256=lfs_sha256))
+        files.append(
+            FileMeta(
+                relpath=rname,
+                size=size,
+                key=key,
+                lfs_sha256=lfs_sha256,
+                git_oid=git_oid,
+            )
+        )
     return files
 
 
@@ -337,12 +355,42 @@ def _r2_head(client: Any, bucket: str, key: str) -> dict[str, Any] | None:
         raise
 
 
+def _r2_git_oid(client: Any, bucket: str, key: str) -> str:
+    """Git blob id of an R2 object, computed over its bytes (signed GET).
+
+    Only called for non-LFS files, which HF caps at a few MB, so reading the
+    body is cheap. Used both to decide whether a same-size object is stale and
+    to verify a re-upload.
+    """
+    import hashlib
+
+    response = client.get_object(Bucket=bucket, Key=key)
+    body = response["Body"]
+    size = int(response["ContentLength"])
+    hasher = hashlib.sha1(f"blob {size}\0".encode(), usedforsecurity=False)
+    read = 0
+    try:
+        while True:
+            chunk = body.read(1 << 20)
+            if not chunk:
+                break
+            hasher.update(chunk)
+            read += len(chunk)
+    finally:
+        body.close()
+    if read != size:
+        raise OSError(f"short read of {key}: {read} != {size}")
+    return hasher.hexdigest()
+
+
 def should_skip(
     existing_size: int | None,
     expected_size: int | None,
     *,
     existing_sha256: str | None = None,
     expected_sha256: str | None = None,
+    existing_git_oid: str | None = None,
+    expected_git_oid: str | None = None,
 ) -> bool:
     """Skip decision: same size AND (when known) same sha256 = same content.
 
@@ -368,12 +416,12 @@ def should_skip(
     * ``expected_sha256`` present but ``existing_sha256`` missing or
       mismatched: must upload — the R2 object is either an older upload
       pre-metadata, or a different bytes-with-same-length case.
-    * ``expected_sha256 is None`` (non-LFS: config.json, README.md,
-      empty files, etc.): fall back to size-only. Small text files
-      don't get LFS hashes; the practical risk of a same-size-but-
-      corrupt copy is much lower for a 1 KB config than for a 5 GB
-      shard, and forcing users to re-upload every tiny asset on each
-      pass defeats the resumability contract.
+    * ``expected_sha256 is None`` but ``expected_git_oid`` known (non-LFS:
+      config.json, tokenizer files, chat templates): demand that the R2
+      object's git blob id (computed over its bytes) matches. Upstreams
+      edit these files in place, often keeping the byte length, and a
+      size-only skip would keep serving the stale copy forever.
+    * neither digest known: size-only, the strongest check available.
     """
     if existing_size is None:
         return False
@@ -386,6 +434,8 @@ def should_skip(
     # upload) and must be re-uploaded to earn the skip.
     if expected_sha256 is not None:
         return existing_sha256 == expected_sha256
+    if expected_git_oid is not None:
+        return existing_git_oid == expected_git_oid
     return True
 
 
@@ -693,14 +743,32 @@ def mirror_repo(
                     if head is not None
                     else None
                 )
+                # A same-size non-LFS object is read back and its blob id
+                # compared; a size mismatch already forces the upload.
+                head_oid = (
+                    _r2_git_oid(client, bucket, f.key)
+                    if f.git_oid is not None
+                    and f.lfs_sha256 is None
+                    and head_size is not None
+                    and head_size == f.size
+                    else None
+                )
                 if should_skip(
                     head_size,
                     f.size,
                     existing_sha256=head_sha,
                     expected_sha256=f.lfs_sha256,
+                    existing_git_oid=head_oid,
+                    expected_git_oid=f.git_oid,
                 ):
                     skipped += 1
-                    tag = "sha+size" if f.lfs_sha256 else "size-only"
+                    tag = (
+                        "sha+size"
+                        if f.lfs_sha256
+                        else "blob-id+size"
+                        if f.git_oid
+                        else "size-only"
+                    )
                     print(
                         f"[{idx}/{len(files)}] SKIP existing {f.key} "
                         f"({head_size} B, {tag})",
@@ -794,6 +862,15 @@ def mirror_repo(
                 flush=True,
             )
             continue
+        if f.lfs_sha256 is None and f.git_oid is not None:
+            got_oid = _r2_git_oid(client, bucket, f.key)
+            if got_oid != f.git_oid:
+                verify_failed.append((f.key, f"r2-blob-id:{got_oid}!={f.git_oid}"))
+                print(
+                    f"   FAIL {f.key}: R2 blob id {got_oid} != HF blob id {f.git_oid}",
+                    flush=True,
+                )
+                continue
         # Public read.
         # Codex round-2 BLOCKING #3: a 0-byte object cannot satisfy
         # ``Range: bytes=0-0`` — the server correctly returns HTTP 416

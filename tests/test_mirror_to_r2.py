@@ -384,3 +384,127 @@ def test_upload_one_omits_metadata_when_no_sha(tmp_path) -> None:
     extra = client.upload_file.call_args.kwargs["ExtraArgs"]
     assert extra["ContentType"] == "application/json"
     assert "Metadata" not in extra
+
+
+# --------- non-LFS files: git blob id decides skip and verify ---------
+
+_CONFIG = b'{"a": 1}\n'
+_STALE = b'{"a": 2}\n'  # same size, older content
+
+
+def _blob_oid(data: bytes) -> str:
+    import hashlib
+
+    return hashlib.sha1(
+        f"blob {len(data)}\0".encode() + data, usedforsecurity=False
+    ).hexdigest()
+
+
+class _BlobClient:
+    """boto3-shaped stand-in holding one object per key."""
+
+    def __init__(self, objects: dict[str, bytes]):
+        self.objects = objects
+        self.uploads: list[str] = []
+
+    def get_object(self, Bucket, Key):  # noqa: N803 - boto3 signature
+        body = self.objects[Key]
+        return {"Body": io.BytesIO(body), "ContentLength": len(body)}
+
+    def head_object(self, Bucket, Key):  # noqa: N803 - boto3 signature
+        return {"ContentLength": len(self.objects[Key]), "Metadata": {}}
+
+    def upload_file(self, Filename, Bucket, Key, ExtraArgs):  # noqa: N803
+        self.uploads.append(Key)
+        self.objects[Key] = Path(Filename).read_bytes()
+
+
+def test_should_skip_non_lfs_requires_matching_blob_id() -> None:
+    oid = _blob_oid(_CONFIG)
+    assert mirror_to_r2.should_skip(9, 9, existing_git_oid=oid, expected_git_oid=oid)
+    assert not mirror_to_r2.should_skip(
+        9, 9, existing_git_oid=_blob_oid(_STALE), expected_git_oid=oid
+    )
+    assert not mirror_to_r2.should_skip(9, 9, expected_git_oid=oid)
+
+
+def test_r2_git_oid_hashes_the_object_body() -> None:
+    client = _BlobClient({"k": _CONFIG})
+    assert mirror_to_r2._r2_git_oid(client, "b", "k") == _blob_oid(_CONFIG)
+
+
+def test_r2_git_oid_refuses_a_short_body() -> None:
+    client = MagicMock()
+    client.get_object.return_value = {
+        "Body": io.BytesIO(b"abc"),
+        "ContentLength": 10,
+    }
+    with pytest.raises(OSError, match="short read"):
+        mirror_to_r2._r2_git_oid(client, "b", "k")
+
+
+def test_hf_files_keeps_blob_id_for_non_lfs_files_only(monkeypatch) -> None:
+    import huggingface_hub
+
+    oid = _blob_oid(_CONFIG)
+    siblings = [
+        MagicMock(rfilename="config.json", size=9, lfs=None, blob_id=oid.upper()),
+        MagicMock(
+            rfilename="model.safetensors",
+            size=64,
+            lfs=MagicMock(sha256="a" * 64),
+            blob_id="b" * 40,
+        ),
+        MagicMock(rfilename="odd.txt", size=1, lfs=None, blob_id="short"),
+    ]
+
+    class Api:
+        def model_info(self, repo, **kwargs):
+            return MagicMock(siblings=siblings)
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", Api)
+    files = {f.relpath: f for f in mirror_to_r2._hf_files("org/repo")}
+    assert files["config.json"].git_oid == oid
+    assert files["model.safetensors"].git_oid is None
+    assert files["odd.txt"].git_oid is None
+
+
+def _run_blob_repo(monkeypatch, tmp_path, r2_body: bytes, **kwargs):
+    item = mirror_to_r2.FileMeta(
+        "config.json", len(_CONFIG), "org/repo/config.json", None, _blob_oid(_CONFIG)
+    )
+    client = _BlobClient({item.key: r2_body})
+    local = tmp_path / "hf-config.json"
+    monkeypatch.setattr(mirror_to_r2, "load_unmirrored", lambda *_a: {})
+    monkeypatch.setattr(mirror_to_r2, "_hf_files", lambda *_a: [item])
+    monkeypatch.setattr(mirror_to_r2, "_r2_client", lambda *_a: client)
+    monkeypatch.setattr(
+        mirror_to_r2,
+        "_download_one_hf",
+        lambda *_a: (local.write_bytes(_CONFIG), local)[1],
+    )
+    monkeypatch.setattr(mirror_to_r2, "_http_range_get_status", lambda _url: 200)
+    rc = mirror_to_r2.mirror_repo("org/repo", tmp_dir=tmp_path, **kwargs)
+    return rc, client
+
+
+def test_same_size_stale_config_is_reuploaded(monkeypatch, tmp_path, capsys) -> None:
+    rc, client = _run_blob_repo(monkeypatch, tmp_path, _STALE)
+    assert rc == 0
+    assert client.uploads == ["org/repo/config.json"]
+    assert client.objects["org/repo/config.json"] == _CONFIG
+    assert "1 uploaded, 0 skipped" in capsys.readouterr().out
+
+
+def test_current_config_is_skipped_by_blob_id(monkeypatch, tmp_path, capsys) -> None:
+    rc, client = _run_blob_repo(monkeypatch, tmp_path, _CONFIG)
+    assert rc == 0
+    assert client.uploads == []
+    assert "blob-id+size" in capsys.readouterr().out
+
+
+def test_verify_fails_on_a_stale_config(monkeypatch, tmp_path, capsys) -> None:
+    rc, client = _run_blob_repo(monkeypatch, tmp_path, _STALE, verify_only=True)
+    assert rc == 3
+    assert client.uploads == []
+    assert "r2-blob-id:" in capsys.readouterr().err
