@@ -462,8 +462,9 @@ def mtp_generate_step(
             step ahead of delivery. ``False`` holds it, so the target cache
             ends at the delivered tokens when the round yields -- the
             boundary at which the scheduler can hand the request to a batch
-            with newly arrived requests. Only the launch is held; the
-            request's schedule is the same either way.
+            with newly arrived requests. Only the launch is held: the
+            request decides the same way either way (a sampled request's
+            adaptive depth, as always, up to the clock readings it is fed).
     """
     import inspect as _inspect
 
