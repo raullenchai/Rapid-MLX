@@ -105,6 +105,19 @@ no-Mac queue. The singleton candidate still runs only the union selected by its
 real diff: an engine-only candidate does not acquire GUI work, and a
 Desktop-only candidate does not acquire engine work.
 
+On a normal main push, the Desktop workflow also classifies the complete
+`before..after` diff when identical-tree Mac evidence is unavailable. An
+Engine-only or documentation-only landing therefore does not allocate Swift
+or GUI runners. This is a Desktop policy exemption, not reusable full Mac
+evidence. Engine main validation and release validation are unchanged.
+
+The before and after commits must be exact nonzero commit IDs, the checkout
+must match the after commit, the before commit must be its ancestor, and the
+push must not rewrite history. Missing, invalid, empty or rewritten diffs and
+merge groups retain full Desktop validation. Any selected Desktop lane still
+runs the complete main GUI inventory; it does not narrow journeys using the
+push diff. Unknown and workflow paths continue to select both product lanes.
+
 Labeling writes a `merge-ready-head` success status onto that exact pull-request
 head. Both queues require the status before admission, while their synthetic
 combined heads do not. A later push has a different SHA and therefore cannot
