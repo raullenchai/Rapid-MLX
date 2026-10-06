@@ -120,6 +120,8 @@ jobs:
       source_canary: ${{ steps.policy.outputs.source_canary }}
       source_canary_base_run: ${{ steps.policy.outputs.source_canary_base_run }}
       source_canary_tests: ${{ steps.policy.outputs.source_canary_tests }}
+      candidate_shadow: ${{ steps.policy.outputs.candidate_shadow }}
+      candidate_shadow_tests: ${{ steps.policy.outputs.candidate_shadow_tests }}
       reuse_ci: ${{ needs.queue-tree-evidence.outputs.reuse_ci || 'false' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -131,6 +133,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           CANARY_ENABLED: ${{ vars.RAPID_MLX_SOURCE_CANARY }}
+          CANDIDATE_SHADOW_ENABLED: ${{ vars.RAPID_MLX_CANDIDATE_SHADOW_EXECUTION }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           EVENT_NAME: ${{ github.event_name }}
           HEAD_REF: ${{ github.head_ref }}
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
@@ -138,6 +142,8 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
+          echo 'candidate_shadow=false' >> "$GITHUB_OUTPUT"
+          echo 'candidate_shadow_tests=' >> "$GITHUB_OUTPUT"
           if [ "$EVENT_NAME" = "pull_request" ]; then
             # Classify the actual diff before integration promotion. Promotion
             # broadens coverage inside the affected lane; it must not turn an
@@ -159,6 +165,16 @@ jobs:
                 --force-reason promoted-head \
                 --github-output "$GITHUB_OUTPUT"
               echo 'l1_matrix={"include":[{"model":"qwen3.5-4b-4bit","contract_only":"0"},{"model":"llama3-3b-4bit","contract_only":"0"},{"model":"gemma3-4b-qat-4bit","contract_only":"1"},{"model":"qwen3-4b-instruct-2507-4bit","contract_only":"1"},{"model":"qwen3-4b-thinking-2507-4bit","contract_only":"1"}]}' >> "$GITHUB_OUTPUT"
+              # Shadow execution is additive: it never changes full routing.
+              # Only an authenticated Mergify candidate with current full main
+              # and a complete combined-path allowlist may select the extra job.
+              if [ "$CANDIDATE_SHADOW_ENABLED" = true ] && \
+                [[ "$HEAD_REF" =~ ^mergify/merge-queue/[0-9a-f]{10}$ ]]; then
+                python -m scripts.ci_candidate_execution select \
+                  --repo "$REPO" --enabled true --run-id "$GITHUB_RUN_ID" \
+                  --head "$PR_HEAD_SHA" --base "$PR_BASE_SHA" \
+                  --github-output "$GITHUB_OUTPUT"
+              fi
             else
               # Only the latest successful main-push qualification on the
               # exact PR base can anchor a reduced source check. Every miss,
@@ -546,6 +562,82 @@ jobs:
             source-canary-base-collection.json
             source-canary-execution.json
             coverage.xml
+          if-no-files-found: error
+          retention-days: 7
+
+  candidate-canary-unit:
+    needs: changes
+    if: >-
+      always() &&
+      needs.changes.result == 'success' &&
+      needs.changes.outputs.full_gate == 'true' &&
+      needs.changes.outputs.candidate_shadow == 'true' &&
+      github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.11"
+      - name: Install mapped CPU test dependencies
+        run: |
+          pip install -e . --no-deps
+          pip install --requirement config/requirements-ci-linux.txt "diff-cover==8.0.3"
+      - name: Run complete mapped regressions
+        env:
+          MAPPED_TESTS: ${{ needs.changes.outputs.candidate_shadow_tests }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          read -r -a selected <<< "$MAPPED_TESTS"
+          test "${#selected[@]}" -gt 0
+          baseline="$RUNNER_TEMP/candidate-mapped-base"
+          git worktree add --detach "$baseline" "$PR_BASE_SHA"
+          cp scripts/ci_mapped_execution.py "$baseline/scripts/ci_mapped_execution.py"
+          (
+            cd "$baseline"
+            PYTHONPATH="$baseline" python -m pytest "${selected[@]}" -o addopts= \
+              --collect-only -p scripts.ci_mapped_execution \
+              --mapped-execution-manifest "$GITHUB_WORKSPACE/candidate-base-collection.json"
+          )
+          python -m pytest "${selected[@]}" -o addopts= -p scripts.ci_mapped_execution \
+            --mapped-execution-manifest candidate-execution.json \
+            --cov=rapid_mlx --cov-report=xml:candidate-coverage.xml \
+            --junitxml=candidate-junit.xml
+          python scripts/ci_mapped_execution.py \
+            --baseline candidate-base-collection.json \
+            --executed candidate-execution.json --tests "${selected[@]}"
+      - name: Enforce mandatory changed-line coverage
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          python -m diff_cover.diff_cover_tool candidate-coverage.xml \
+            --compare-branch "$PR_BASE_SHA" --show-uncovered --fail-under 100
+      - name: Pack exact candidate input
+        env:
+          MAPPED_TESTS: ${{ needs.changes.outputs.candidate_shadow_tests }}
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          read -r -a selected <<< "$MAPPED_TESTS"
+          python -m scripts.ci_candidate_execution pack \
+            --head "$CANDIDATE_SHA" --base "$PR_BASE_SHA" \
+            --run-id "$GITHUB_RUN_ID" --attempt "$GITHUB_RUN_ATTEMPT" \
+            --tests "${selected[@]}" --baseline candidate-base-collection.json \
+            --executed candidate-execution.json --junit candidate-junit.xml \
+            --coverage candidate-coverage.xml --output candidate-mapped-input.json
+      - name: Upload mapped execution proof
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: candidate-mapped-input-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: candidate-mapped-input.json
           if-no-files-found: error
           retention-days: 7
 
@@ -1035,6 +1127,7 @@ jobs:
       - mlx-bound-guard
       - type-check
       - source-canary-unit
+      - candidate-canary-unit
       - test-matrix
       - linux-coverage
       - test-apple-silicon
@@ -1047,6 +1140,17 @@ jobs:
         run: |
           if [ "${{ needs.changes.result }}" != success ]; then
             echo "CI change classifier failed"
+            exit 1
+          fi
+          if [ "${{ needs.changes.outputs.candidate_shadow }}" = true ]; then
+            if [ "${{ needs.changes.outputs.full_gate }}" != true ] \
+              || [ "${{ github.event_name }}" != pull_request ] \
+              || [ "${{ needs.candidate-canary-unit.result }}" != success ]; then
+              echo "Additive mapped candidate execution failed"
+              exit 1
+            fi
+          elif [ "${{ needs.candidate-canary-unit.result }}" != skipped ]; then
+            echo "Unexpected mapped candidate shadow execution"
             exit 1
           fi
           if [ "${{ needs.changes.outputs.reuse_ci }}" = true ]; then
