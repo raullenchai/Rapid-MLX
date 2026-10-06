@@ -1071,10 +1071,6 @@ def _probe_extension_video(path: Path) -> tuple[int, int, int]:
     # ends before the packet cap, proving we reached the end of the source.
     if result.stderr.strip() or frames != declared_frames:
         raise HTTPException(status_code=400, detail="invalid input_video")
-    if frames < 9 or frames % 8 != 1:
-        raise HTTPException(
-            status_code=400, detail="input_video must contain 8n+1 frames"
-        )
     return width, height, frames
 
 
@@ -1620,10 +1616,8 @@ async def extend_video(
                     if item.status in {"completed", "failed"}
                     and item.generation_finished
                 ]
-                if not finished:
-                    raise HTTPException(
-                        status_code=429, detail="video job queue is full"
-                    )
+                # This upload still owns an admission slot: a full retained
+                # registry must therefore contain at least one finished job.
                 oldest = min(finished, key=lambda item: item.created_at)
                 _jobs.pop(oldest.id, None)
                 evicted_id = oldest.id

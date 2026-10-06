@@ -571,3 +571,254 @@ def test_ltx25_capabilities_expose_extension_limits() -> None:
     assert extension["endpoint"] == "/v1/videos/extend"
     assert extension["added_frames"]["multiple_of"] == 8
     assert extension["maximum_output_frames"] == 97
+
+
+@pytest.mark.parametrize(
+    "case,message",
+    [
+        ("no-probe", "requires ffprobe"),
+        ("quicktime", "must be MP4"),
+        ("variable-rate", "24 fps"),
+        ("unaligned", "multiples of 32"),
+        ("short", "8n\\+1 frames"),
+        ("decode-error", "invalid input_video"),
+        ("packet-cap", "supported workload"),
+        ("count-mismatch", "invalid input_video"),
+        ("decoder-stderr", "invalid input_video"),
+    ],
+)
+def test_extension_probe_rejections_without_media_tools(
+    case: str, message: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exercise rejection contracts even on runners without FFmpeg installed."""
+    monkeypatch.setattr(
+        video.shutil, "which", lambda _: None if case == "no-probe" else "/ffprobe"
+    )
+    stream = {
+        "width": 257 if case == "unaligned" else 256,
+        "height": 256,
+        "avg_frame_rate": "24/1",
+        "r_frame_rate": "48/1" if case == "variable-rate" else "24/1",
+        "nb_frames": "8" if case == "short" else "9",
+    }
+    calls = []
+
+    def probe(command, **kwargs):
+        calls.append(command)
+        assert command[command.index("-protocol_whitelist") + 1] == "file"
+        assert command[command.index("-format_whitelist") + 1] == "mov"
+        if "-count_frames" in command:
+            assert command[command.index("-read_intervals") + 1] == "%+#90"
+            if case == "decode-error":
+                raise subprocess.TimeoutExpired(command, 15)
+            details = {
+                "streams": [
+                    {
+                        "nb_read_frames": "8" if case == "count-mismatch" else "9",
+                        "nb_read_packets": "90" if case == "packet-cap" else "9",
+                    }
+                ]
+            }
+        else:
+            details = {
+                "streams": [stream],
+                "format": {
+                    "format_name": "mov,mp4",
+                    "tags": {"major_brand": "qt  " if case == "quicktime" else "isom"},
+                },
+            }
+        return SimpleNamespace(
+            stdout=json.dumps(details),
+            stderr="corrupt packet" if case == "decoder-stderr" else "",
+        )
+
+    monkeypatch.setattr(video.subprocess, "run", probe)
+    with pytest.raises(HTTPException, match=message) as exc:
+        video._probe_extension_video(Path("source.mp4"))
+    assert exc.value.status_code == (503 if case == "no-probe" else 400)
+    assert len(calls) == (
+        0
+        if case == "no-probe"
+        else 2
+        if case in {"decode-error", "packet-cap", "count-mismatch", "decoder-stderr"}
+        else 1
+    )
+
+
+@pytest.mark.parametrize("case", ["success", "backend-error", "unsupported"])
+def test_extension_runtime_bridge_lifecycle(case: str, tmp_path: Path) -> None:
+    import threading
+
+    from rapid_mlx.runtime.video_lane import VideoEngine, VideoRuntimeError
+
+    engine = VideoEngine.__new__(VideoEngine)
+    engine._generation_lock = threading.Lock()
+    loaded = []
+    engine._emit_model_served = lambda: loaded.append(True)
+    captured = {}
+
+    class Backend:
+        def extend(self, **kwargs):
+            assert engine._generation_lock.locked()
+            captured.update(kwargs)
+            if case == "backend-error":
+                raise ltx25.LTX25BackendError("runtime stopped")
+            kwargs["on_loaded"]()
+
+    engine._ltx25_engine = None if case == "unsupported" else Backend()
+    kwargs = dict(
+        prompt="continue",
+        source_video=tmp_path / "source.mp4",
+        output_path=tmp_path / "output.mp4",
+        extend_frames=16,
+        seed=11,
+    )
+    if case == "success":
+        engine.extend(**kwargs)
+        assert {k: captured[k] for k in kwargs} == kwargs
+        assert loaded == [True]
+    else:
+        with pytest.raises(
+            VideoRuntimeError,
+            match="LTX-2.5" if case == "unsupported" else "runtime stopped",
+        ) as exc:
+            engine.extend(**kwargs)
+        if case == "backend-error":
+            assert isinstance(exc.value.__cause__, ltx25.LTX25BackendError)
+        assert not loaded
+    assert not engine._generation_lock.locked()
+
+
+@pytest.mark.parametrize("frames", [0, 7, 9])
+def test_extension_backend_rejects_non_latent_frame_counts(
+    frames: int, tmp_path: Path
+) -> None:
+    with pytest.raises(ltx25.LTX25BackendError, match="8n added frames"):
+        ltx25.LTX25VideoEngine("ltx-2.5-mlx-q8").extend(
+            prompt="continue",
+            source_video=tmp_path / "source.mp4",
+            output_path=tmp_path / "output.mp4",
+            extend_frames=frames,
+            seed=42,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case",
+    ["family", "model", "blank", "shutdown", "shutdown-during-probe", "upload-limit"],
+)
+async def test_extension_rejection_cleans_admission_and_upload(
+    case: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    video.configure_video_jobs(tmp_path / "jobs")
+    video.start_video_jobs()
+    monkeypatch.setattr(
+        video,
+        "_video_engine",
+        lambda: SimpleNamespace(
+            model_name="MrMofer/ltx-2.5-mlx-q8",
+            video_family="wan" if case == "family" else "ltx-2.5",
+        ),
+    )
+
+    def probe(_):
+        if case == "shutdown-during-probe":
+            video._accepting_jobs = False
+        return 256, 256, 9
+
+    monkeypatch.setattr(video, "_probe_extension_video", probe)
+    if case == "shutdown":
+        monkeypatch.setattr(video, "_accepting_jobs", False)
+    if case == "upload-limit":
+        monkeypatch.setattr(video, "_MAX_REFERENCE_BYTES", 1)
+    upload = Upload(b"source")
+    try:
+        with pytest.raises(HTTPException) as exc:
+            await video.extend_video(
+                prompt="  " if case == "blank" else "continue",
+                model="wrong-model" if case == "model" else "ltx-2.5-mlx-q8",
+                extend_frames=8,
+                seed=42,
+                input_video=upload,
+            )
+        assert exc.value.status_code == (
+            503
+            if case.startswith("shutdown")
+            else 413
+            if case == "upload-limit"
+            else 400
+        )
+        assert not video._jobs and not video._tasks and not video._extension_uploads
+        assert list(video._jobs_root.iterdir()) == []
+        if case in {"family", "model", "blank", "shutdown"}:
+            assert upload.data == b"source"
+    finally:
+        video.configure_video_jobs(None)
+        video.start_video_jobs()
+
+
+@pytest.mark.asyncio
+async def test_extension_retention_evicts_only_after_valid_upload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    video.configure_video_jobs(tmp_path / "jobs")
+    video.start_video_jobs()
+    monkeypatch.setattr(video, "_MAX_JOBS", 1)
+    old = video._VideoJob(
+        id="video_old",
+        model="ltx-2.5-mlx-q8",
+        prompt="old",
+        seconds="1",
+        size="256x256",
+        frames=9,
+        fps=24,
+        created_at=1,
+    )
+    old.status = "completed"
+    old.generation_finished = True
+    video._jobs[old.id] = old
+    old_dir = video._jobs_root / old.id
+    old_dir.mkdir()
+    (old_dir / "output.mp4").write_bytes(b"retained")
+
+    class Engine:
+        model_name = "MrMofer/ltx-2.5-mlx-q8"
+        video_family = "ltx-2.5"
+
+        def extend(self, *, output_path, **kwargs):
+            output_path.write_bytes(b"extended")
+
+    monkeypatch.setattr(video, "_video_engine", Engine)
+
+    def reject(_):
+        raise HTTPException(status_code=400, detail="invalid input_video")
+
+    monkeypatch.setattr(video, "_probe_extension_video", reject)
+
+    async def submit():
+        return await video.extend_video(
+            prompt="continue",
+            model="ltx-2.5-mlx-q8",
+            extend_frames=8,
+            seed=42,
+            input_video=Upload(b"source"),
+        )
+
+    try:
+        with pytest.raises(HTTPException):
+            await submit()
+        assert (
+            video._jobs[old.id] is old
+            and (old_dir / "output.mp4").read_bytes() == b"retained"
+        )
+        monkeypatch.setattr(video, "_probe_extension_video", lambda _: (256, 256, 9))
+        created = await submit()
+        if task := video._tasks.get(created["id"]):
+            await task
+        assert (await video.retrieve_video(created["id"]))["status"] == "completed"
+        assert old.id not in video._jobs and not old_dir.exists()
+        assert not video._extension_uploads
+    finally:
+        video.configure_video_jobs(None)
+        video.start_video_jobs()
