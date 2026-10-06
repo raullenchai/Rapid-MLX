@@ -231,3 +231,62 @@ def test_real_full_evidence_validator_rejects_source_prefilter_jobs():
 
     with pytest.raises(evidence.EvidenceError):
         evidence._validate_ci_jobs(Client(), {"id": 123, "run_attempt": 1})
+
+
+@pytest.mark.parametrize(
+    "control",
+    [
+        "tests/test_check_gha_pinning.py",
+        "tests/test_mergify_mlx_attestation.py",
+        "tests/test_check_release_ci.py",
+        "tests/test_integration_collection_policy.py",
+        "tests/test_pr_validate_runner.py",
+        "tests/test_mirror_drift_workflow.py",
+        "tests/test_dev_test_script.py",
+        "tests/test_train_gates_matches_ci.py",
+        "tests/test_no_mlx_marker_contract.py",
+        "tests/test_mlx_bound_guard.py",
+        "tests/test_desktop_promotion.py",
+        "tests/test_community_benchmark_release_provenance.py",
+    ],
+)
+@pytest.mark.parametrize("with_engine", [False, True])
+def test_controller_and_collection_regressions_keep_full_source_in_actual_cli(
+    tmp_path, control, with_engine
+):
+    paths = [control] + (["rapid_mlx/server.py"] if with_engine else [])
+    policy = classify_policy(paths, source_preflight=True)
+    assert not policy.source_preflight
+    assert policy.linux_matrix_mode == "full"
+    script = next(
+        s["run"] for s in jobs()["changes"]["steps"] if s.get("id") == "policy"
+    )
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    git = bindir / "git"
+    git.write_text("#!/bin/sh\ncat <<'PATHS'\n" + "\n".join(paths) + "\nPATHS\n")
+    git.chmod(0o755)
+    (bindir / "python").symlink_to(sys.executable)
+    output = tmp_path / "output"
+    script = script.replace("/tmp/changed-paths", str(tmp_path / "paths"))
+    env = dict(
+        os.environ,
+        PATH=f"{bindir}:{os.environ['PATH']}",
+        GITHUB_OUTPUT=str(output),
+        EVENT_NAME="pull_request",
+        HEAD_REPO="owner/repo",
+        REPO="owner/repo",
+        HEAD_REF="feature/test",
+        PR_BASE_SHA="a" * 40,
+        GITHUB_SHA="b" * 40,
+        CANARY_ENABLED="false",
+        SOURCE_PREFLIGHT_ENABLED="true",
+        CANDIDATE_SHADOW_ENABLED="false",
+    )
+    result = subprocess.run(
+        ["bash", "-c", script], cwd=ROOT, env=env, capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stderr
+    outputs = dict(line.split("=", 1) for line in output.read_text().splitlines())
+    assert outputs["source_preflight"] == "false"
+    assert len(json.loads(outputs["test_matrix"])["include"]) == 9

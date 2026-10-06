@@ -301,6 +301,31 @@ def classify(paths: Iterable[str]) -> Lanes:
     return Lanes(engine=engine, desktop=desktop, docs_only=docs_only)
 
 
+# Existing controller/collection regressions do not all use a test_ci_ name.
+# Keep their families and the audited standalone guards on full source checks.
+_SOURCE_PREFLIGHT_CONTROL_TEST_PREFIXES = (
+    "test_ci_",
+    "test_classify_ci_",
+    "test_queue_",
+    "test_check_",
+    "test_mergify_",
+    "test_release_",
+    "test_pr_validate_",
+    "test_probe_release_",
+    "test_validate_release_",
+    "test_github_action_",
+)
+_SOURCE_PREFLIGHT_CONTROL_TESTS = {
+    "test_integration_collection_policy.py",
+    "test_dev_test_script.py",
+    "test_train_gates_matches_ci.py",
+    "test_no_mlx_marker_contract.py",
+    "test_mlx_bound_guard.py",
+    "test_desktop_promotion.py",
+    "test_community_benchmark_release_provenance.py",
+}
+
+
 def _source_preflight_paths(paths: set[str], lanes: Lanes) -> bool:
     """CPU source prefilter only; combined candidates still enforce every gate.
 
