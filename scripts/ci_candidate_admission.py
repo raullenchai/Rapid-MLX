@@ -285,7 +285,12 @@ def _notification_sha(client: evidence.GitHubClient, run_id: int) -> str | None:
 
 
 def publish_admission(
-    client: evidence.GitHubClient, producer_run_id: int, expected: dict, target: str
+    client: evidence.GitHubClient,
+    producer_run_id: int,
+    expected: dict,
+    target: str,
+    *,
+    evidence_uploaded: bool = False,
 ) -> dict:
     # Only mutate the SHA selected by an authenticated original notification.
     # An older notification must never overwrite a newer producer's gate.
@@ -302,7 +307,8 @@ def publish_admission(
         return {"published": False, "reason": "notification superseded"}
     current = verify_admission(client, producer_run_id)
     valid = (
-        current.get("verified") is True
+        evidence_uploaded is True
+        and current.get("verified") is True
         and current == expected
         and expected.get("candidate_sha") == sha
     )
@@ -373,6 +379,9 @@ def main() -> None:
     parser.add_argument("--source-attempt", type=int)
     parser.add_argument("--publish-target-url")
     parser.add_argument("--expected", type=Path)
+    parser.add_argument(
+        "--evidence-uploaded", choices=("true", "false"), default="false"
+    )
     parser.add_argument("--rollback", action="store_true")
     parser.add_argument("--github-output", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
@@ -386,6 +395,7 @@ def main() -> None:
             args.producer_run_id,
             json.loads(args.expected.read_text()),
             args.publish_target_url,
+            evidence_uploaded=args.evidence_uploaded == "true",
         )
     elif args.source_run_id is not None:
         result = verify_source_admission(client, args.source_run_id, args.source_attempt)

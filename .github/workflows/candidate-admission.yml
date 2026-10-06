@@ -62,6 +62,7 @@ jobs:
             --github-output "$GITHUB_OUTPUT" \
             --output "$RUNNER_TEMP/candidate-admission.json"
       - name: Upload admission evidence
+        id: evidence
         if: steps.result.outputs.verified == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
@@ -77,6 +78,7 @@ jobs:
           VERIFIED_PRODUCER: ${{ steps.result.outputs.producer_run_id }}
           NOTIFIED_PRODUCER: ${{ github.event.workflow_run.id }}
           TRIGGER_NAME: ${{ github.event.workflow_run.name }}
+          EVIDENCE_UPLOADED: ${{ steps.evidence.outcome == 'success' }}
         run: |
           set -euo pipefail
           producer="$VERIFIED_PRODUCER"
@@ -90,6 +92,7 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --producer-run-id "$producer" \
             --expected "$RUNNER_TEMP/candidate-admission.json" \
+            --evidence-uploaded "$EVIDENCE_UPLOADED" \
             --publish-target-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
             --github-output "$GITHUB_OUTPUT" --output "$RUNNER_TEMP/candidate-admission-publication.json"
   rollback:
