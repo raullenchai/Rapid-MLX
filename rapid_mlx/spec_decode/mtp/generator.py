@@ -1169,7 +1169,11 @@ def mtp_generate_step(
     # (``reproducible_depth.request_depth_controller``). Without a measured
     # curve the request drafts at ``max_k_effective`` every round.
     # Parked rounds run ahead of delivery unless logits processors are active
-    # (see ``_pipeline_parks`` below); the cost curve has to match.
+    # (see ``_pipeline_parks`` below); the cost curve has to match. The
+    # scheduler also holds the run-ahead while another request waits, but
+    # only for the token or two before it hands this request to a batch, and
+    # the curve deliberately ignores that: it must not depend on other
+    # requests (see ``_reproducible``).
     _request_costs = (
         request_round_costs(_schedule, parks_pipelined=not logits_processors)
         if _schedule is not None
