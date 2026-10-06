@@ -1383,7 +1383,8 @@ def mtp_generate_step(
     # that should drive it.
     _pipeline_parks = not logits_processors
     # The next round's launched step: ``(main_tok, main_lp, hidden,
-    # prev_tokens, launched_at)``, or ``None``.
+    # prev_tokens, uncharged_ms)``, or ``None``. ``uncharged_ms`` is the
+    # time spent building it that no round's timer has seen.
     prefetched_step: tuple | None = None
     # Whether the decision that made the upcoming round a park chose to park
     # (as opposed to a decision that had to wait behind a launched step).
@@ -1409,10 +1410,23 @@ def mtp_generate_step(
         mx.async_eval(p_tok, p_lp)
         return p_tok, p_lp, p_hidden, p_prev
 
-    def _launch_park_step(tok):
-        """Start the next round's step on ``tok`` (possibly still lazy)."""
-        launched_at = time.perf_counter()
-        return (*_park_step(tok.reshape(1).astype(mx.uint32)), launched_at)
+    def _launch_park_step(tok, *, timed_by_this_round: bool):
+        """Start the next round's step on ``tok`` (possibly still lazy).
+
+        A round is charged what it costs on the generator's side of the
+        yield, as before pipelining: its build, its wait for the device and
+        its host work -- never the caller's time between tokens, which every
+        depth pays alike. A step launched inside a running round timer is
+        already charged by it (to a parked round, as the step itself will
+        be); one launched after the timer stopped carries its build time to
+        the round that consumes it.
+        """
+        started = time.perf_counter()
+        step = _park_step(tok.reshape(1).astype(mx.uint32))
+        uncharged_ms = (
+            0.0 if timed_by_this_round else (time.perf_counter() - started) * 1000.0
+        )
+        return (*step, uncharged_ms)
 
     def _may_run_ahead() -> bool:
         return may_run_ahead is None or bool(may_run_ahead())
@@ -1430,12 +1444,11 @@ def mtp_generate_step(
             # Round K=0 (either bootstrap or a park). Plain backbone
             # forward emits ONE committed token.
             # -------------------------------------------------------
+            uncharged_ms = 0.0
             if prefetched_step is not None:
-                # Launched by the previous round; charge the round from the
-                # launch, as an unpipelined round is charged from its build.
-                main_tok, main_lp, hidden, prev_tokens, round_start_perf = (
-                    prefetched_step
-                )
+                # Launched by the previous round (see ``_launch_park_step``
+                # for how its build is charged).
+                main_tok, main_lp, hidden, prev_tokens, uncharged_ms = prefetched_step
                 prefetched_step = None
             else:
                 main_tok, main_lp, hidden, prev_tokens = _park_step(y)
@@ -1450,12 +1463,14 @@ def mtp_generate_step(
                 and not _copy_may_follow()
             )
             launched = (
-                _launch_park_step(main_tok)
+                _launch_park_step(main_tok, timed_by_this_round=True)
                 if bet_on_park and _may_run_ahead()
                 else None
             )
             mx.eval(main_tok)
-            round_wall_ms = (time.perf_counter() - round_start_perf) * 1000.0
+            round_wall_ms = (
+                time.perf_counter() - round_start_perf
+            ) * 1000.0 + uncharged_ms
             _record_round(0, round_wall_ms, [])
             # One token for the whole forward: the floor a copy-draft has to
             # beat when the controller has parked.
@@ -1514,7 +1529,9 @@ def mtp_generate_step(
                     # Parking again, with the next step launched now so it
                     # runs while the caller handles this token. Next round
                     # pays no drafter cost -- the whole point of park.
-                    prefetched_step = _launch_park_step(main_tok)
+                    prefetched_step = _launch_park_step(
+                        main_tok, timed_by_this_round=False
+                    )
                 y = mx.array([main_tok_id], mx.uint32)
 
             # No guard rewind is needed around this yield the way the verify
@@ -1928,7 +1945,9 @@ def mtp_generate_step(
                     if _pipeline_parks and _may_run_ahead():
                         # The next round parks; start its step now so it
                         # runs while the caller handles this round's tokens.
-                        prefetched_step = _launch_park_step(y)
+                        prefetched_step = _launch_park_step(
+                            y, timed_by_this_round=False
+                        )
 
             for (
                 _emit_tok_id,

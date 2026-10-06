@@ -407,3 +407,55 @@ def test_a_held_run_ahead_leaves_the_cache_at_the_delivered_tokens():
     assert offsets_at_yield[:5] == [b + 1 for b in delivered_boundary[:5]]
     # The step already in flight is consumed; from then on, at the boundary.
     assert offsets_at_yield[6:] == delivered_boundary[6:], offsets_at_yield
+
+
+def test_parked_round_cost_excludes_the_callers_time(monkeypatch):
+    """The adaptive controller compares depths on what a round costs on the
+    generator's side of the yield. A step launched ahead of delivery runs
+    while the caller works, but the caller's time (a slow client, a long
+    detokenize) is not the step's cost and must not be charged to it."""
+    from rapid_mlx.spec_decode.mtp import generator as generator_mod
+    from tests.test_mtp_greedy_determinism import _install_clock, _VirtualClock
+
+    charged: list[tuple[int, float]] = []
+
+    class _ParkedController:
+        def pick_k(self):
+            return 0
+
+        def record(self, depth, cost_ms, accepts):
+            charged.append((depth, cost_ms))
+
+    monkeypatch.setattr(
+        generator_mod,
+        "get_or_create_controller",
+        lambda *args, **kwargs: _ParkedController(),
+    )
+    clock = _VirtualClock(lambda rows: 0.001)  # a forward's build: 1 ms
+    _install_clock(monkeypatch, clock)
+    model = _WidthSensitiveTarget(_no_tie, clock)
+
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
+
+    delivered = 0
+    for _token in mtp_generate_step(
+        mx.array(PROMPT, dtype=mx.uint32),
+        model,
+        max_tokens=10,
+        prompt_cache=[_CountingKVCache(), _CountingKVCache()],
+        accept_counter=MTPAcceptCounter(),
+        model_id="park-pipeline-test",
+        temp=0.5,
+        max_k=2,
+        prompt_lookup_enabled=False,
+    ):
+        delivered += 1
+        clock.now += 0.1  # the caller takes 100 ms per token
+
+    assert delivered == 10
+    assert [depth for depth, _ in charged] == [0] * 10
+    # Each round pays for building at most two one-row steps (its own, and
+    # the next one it launched); never for the caller's 100 ms.
+    assert all(cost <= 2.0 + 1e-6 for _, cost in charged), charged
+    assert sum(cost for _, cost in charged) == pytest.approx(10.0)
