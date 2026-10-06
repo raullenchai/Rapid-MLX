@@ -166,14 +166,16 @@ def test_qwen_code_apply_preserves_providers_and_creates_backup(tmp_path, monkey
     assert len(list(settings_path.parent.glob("settings.json.bak.*"))) == 1
 
 
-@pytest.mark.parametrize("content", ["{not json", "[1, 2]"])
+@pytest.mark.parametrize(
+    "content", [b"{not json", b"[1, 2]", b"\xff\xfe{}", b"[" * 100_000]
+)
 def test_qwen_code_plan_refuses_an_unmergeable_settings_file(
     tmp_path, monkeypatch, content
 ):
     monkeypatch.setenv("HOME", str(tmp_path))
     settings_path = tmp_path / ".qwen" / "settings.json"
     settings_path.parent.mkdir(parents=True)
-    settings_path.write_text(content)
+    settings_path.write_bytes(content)
 
     with (
         patch("rapid_mlx.agents.setup.track_agent_configure_failed") as failed,
@@ -182,7 +184,70 @@ def test_qwen_code_plan_refuses_an_unmergeable_settings_file(
         build_setup_plan("qwen-code", "http://localhost:8000/v1", "local-model")
 
     failed.assert_called_once_with("config_invalid", "qwen-code")
-    assert settings_path.read_text() == content
+    assert settings_path.read_bytes() == content
+    assert not list(settings_path.parent.glob("settings.json.bak.*"))
+
+
+def test_qwen_code_plan_reports_an_unreadable_settings_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    # A directory where the file belongs exists but cannot be read as text.
+    (tmp_path / ".qwen" / "settings.json").mkdir(parents=True)
+
+    with (
+        patch("rapid_mlx.agents.setup.track_agent_configure_failed") as failed,
+        pytest.raises(OSError),
+    ):
+        build_setup_plan("qwen-code", "http://localhost:8000/v1", "local-model")
+
+    failed.assert_called_once_with("other", "qwen-code")
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"type": "env", "path": None, "template": None},
+        {"template": '{"model": {"name": "{model_id}"}}'},
+        {"template": '{"modelProviders": {"openai": [{"name": "no id"}]}}'},
+        {"template": "[]"},
+    ],
+)
+def test_qwen_code_plan_refuses_a_shadowing_profile_it_cannot_merge(
+    tmp_path, monkeypatch, config
+):
+    from dataclasses import replace
+
+    from rapid_mlx.agents import get_profile
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    shipped = get_profile("qwen-code")
+    shadow = replace(shipped, config=replace(shipped.config, **config))
+    monkeypatch.setattr("rapid_mlx.agents.setup._qwen_code_profile", lambda: shadow)
+
+    with pytest.raises(ValueError, match="installed qwen-code profile"):
+        build_setup_plan("qwen-code", "http://localhost:8000/v1", "local-model")
+
+    assert not (tmp_path / ".qwen").exists()
+
+
+@pytest.mark.parametrize("content", [b"{not json", b"\xff\xfe{}"])
+def test_apply_refuses_file_that_stopped_parsing_after_preview(
+    tmp_path, monkeypatch, content
+):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    settings_path = tmp_path / ".qwen" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text("{}")
+    plan = build_setup_plan("qwen-code", "http://localhost:8000/v1", "local-model")
+    settings_path.write_bytes(content)
+
+    with (
+        patch("rapid_mlx.agents.setup.track_agent_configure_failed") as failed,
+        pytest.raises(RuntimeError, match="changed after preview"),
+    ):
+        apply_setup_plan(plan)
+
+    failed.assert_called_once_with("config_changed", "qwen-code")
+    assert settings_path.read_bytes() == content
     assert not list(settings_path.parent.glob("settings.json.bak.*"))
 
 
