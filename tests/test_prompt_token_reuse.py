@@ -265,17 +265,17 @@ def test_warm_turn_tokenizes_the_full_prompt_once():
     messages = _conversation()
     real = _render(messages)
 
-    assert helpers.count_prompt_tokens(engine, real) == len(tokenizer.encode(real))
+    expected = tokenizer.encode(real)
     tokenizer.encoded_chars = 0
-    helpers.count_prompt_tokens(engine, real)
-    boundary = engine._compute_prefix_boundary(messages, generation_prompt=real)
-    scheduler = engine._engine.engine.scheduler
-    admitted = scheduler._encode_prompt_string(real)
 
-    # Everything after the first count is served by the shared cache or by
-    # tail-only encodes of the probe variants.
-    assert tokenizer.encoded_chars < 400
-    assert admitted == tokenizer.encode(real)
+    # The request's own flow on a cold host cache: guard, probe, admission.
+    assert helpers.count_prompt_tokens(engine, real) == len(expected)
+    boundary = engine._compute_prefix_boundary(messages, generation_prompt=real)
+    admitted = engine._engine.engine.scheduler._encode_prompt_string(real)
+
+    # One full encode (the guard's); the probe variants only encode tails.
+    assert len(real) <= tokenizer.encoded_chars < len(real) + 400
+    assert admitted == expected
 
     # Same boundary as the full-encode path the probe used before.
     assert boundary == _reference_boundary(messages, real)
@@ -339,12 +339,21 @@ def test_dummy_user_fallback_uses_the_shared_head(monkeypatch):
     assert boundary > 0
 
 
-def test_encode_prompt_text_without_scheduler_encodes_directly():
-    tokenizer = _SectionTokenizer()
+def test_engines_without_a_text_scheduler_keep_their_tokenizer_calls():
+    class _RecordingTokenizer(_SectionTokenizer):
+        def __init__(self):
+            super().__init__()
+            self.kwargs = []
+
+        def encode(self, text, **kwargs):
+            self.kwargs.append(kwargs)
+            return super().encode(text, **kwargs)
+
+    tokenizer = _RecordingTokenizer()
     engine = _engine(tokenizer, scheduler=False)
-    assert engine.encode_prompt_text("<|im_start|>hi") == tokenizer.encode(
-        "<|im_start|>hi"
-    )
+    assert engine.encode_prompt_text("<|im_start|>hi") is None
+    assert helpers.count_prompt_tokens(engine, "<|im_start|>hi") == 3
+    assert tokenizer.kwargs == [{"add_special_tokens": True}]
 
 
 def test_count_prompt_tokens_keeps_direct_path_for_bos_prefixed_prompts():

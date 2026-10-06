@@ -16,6 +16,12 @@ for that head followed by the encoding of the variant's own tail.  That claim
 is checked on the real prompt (whose full tokens are known) before it is used;
 any mismatch, missing tokenizer surface or exception returns ``None`` and the
 caller encodes the variant in full, exactly as before.
+
+The result only feeds the prefix-boundary heuristic: the scheduler always
+snapshots the real prompt's own token prefix, so a variant that tokenizes
+differently from what this module predicts (for example an added token
+matched after normalization rather than literally) can cost the next turn
+some cache reuse but cannot change any output.
 """
 
 from __future__ import annotations

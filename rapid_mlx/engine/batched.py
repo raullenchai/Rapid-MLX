@@ -2599,13 +2599,14 @@ class BatchedEngine(BaseEngine):
             return [*prompt_ids, *suffix_ids], suffix_ids
         return prompt + "".join(_HARMONY_NO_THINKING_SUFFIX_TOKENS), suffix_ids
 
-    def encode_prompt_text(self, prompt: str) -> list[int]:
+    def encode_prompt_text(self, prompt: str) -> list[int] | None:
         """Tokenize a rendered prompt exactly as the text scheduler will.
 
         Delegates to the scheduler's host-cached encoder so every caller that
         tokenizes the same rendered prompt for one request (context-length
         guard, prefix-boundary probe, admission) shares a single encode.
-        Engines without a text scheduler encode directly.
+        Returns ``None`` when there is no text scheduler; callers then keep
+        their own tokenizer call unchanged.
         """
         scheduler = getattr(
             getattr(getattr(self, "_engine", None), "engine", None), "scheduler", None
@@ -2613,7 +2614,7 @@ class BatchedEngine(BaseEngine):
         encode = getattr(scheduler, "_encode_prompt_string", None)
         if callable(encode):
             return list(encode(prompt))
-        return list(self.tokenizer.encode(prompt))
+        return None
 
     def build_prompt(
         self,
@@ -3605,11 +3606,12 @@ class BatchedEngine(BaseEngine):
             # The scheduler tokenizes this exact string next; going through
             # its host-cached encoder lets that call (and the route's
             # context-length count before it) reuse one encode.
-            real_tokens = (
-                list(real_prompt)
-                if isinstance(real_prompt, list)
-                else self.encode_prompt_text(real_prompt)
-            )
+            if isinstance(real_prompt, list):
+                real_tokens = list(real_prompt)
+            else:
+                real_tokens = self.encode_prompt_text(real_prompt)
+                if real_tokens is None:
+                    real_tokens = tokenizer.encode(real_prompt)
             markers = (
                 added_token_markers(tokenizer) if isinstance(real_prompt, str) else ()
             )

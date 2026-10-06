@@ -5249,9 +5249,13 @@ def count_prompt_tokens(engine, prompt) -> int:
         # which tokenizes it again at admission. Looked up on the class so a
         # dynamic proxy or mock never stands in for the real method.
         encode_prompt_text = getattr(type(engine), "encode_prompt_text", None)
-        if add_special_tokens and callable(encode_prompt_text):
-            return len(encode_prompt_text(engine, prompt))
-        token_ids = tokenizer.encode(prompt, add_special_tokens=add_special_tokens)
+        token_ids = (
+            encode_prompt_text(engine, prompt)
+            if add_special_tokens and callable(encode_prompt_text)
+            else None
+        )
+        if token_ids is None:
+            token_ids = tokenizer.encode(prompt, add_special_tokens=add_special_tokens)
         return len(token_ids)
     except Exception:
         logger.debug("count_prompt_tokens: tokenizer.encode failed", exc_info=True)
