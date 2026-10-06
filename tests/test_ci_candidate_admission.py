@@ -167,7 +167,16 @@ def test_workflow_uses_trusted_checkout_and_indexes_after_upload():
         "statuses": "write",
     }
     job = workflow["jobs"]["admit"]
-    assert job["if"] == "github.event.workflow_run.conclusion == 'success'"
+    assert "github.event.workflow_run.conclusion == 'success'" in job["if"]
+    for guard in (
+        "event == 'pull_request'",
+        "head_repository.full_name == github.repository",
+        "'mergify/merge-queue/'",
+    ):
+        assert guard in job["if"]
+    assert workflow["on" if "on" in workflow else True]["workflow_run"][
+        "workflows"
+    ] == ["CI", "Candidate qualification"]
     steps = job["steps"]
     assert steps[0]["with"] == {
         "ref": "${{ github.sha }}",
@@ -179,7 +188,11 @@ def test_workflow_uses_trusted_checkout_and_indexes_after_upload():
     upload, index = steps[-2:]
     assert upload["if"] == index["if"] == "steps.result.outputs.verified == 'true'"
     assert "candidate-admission/ci" in index["run"]
-    assert '--producer-run-id "$PRODUCER_RUN"' in steps[1]["run"]
+    assert '--producer-run-id "$TRIGGER_RUN"' in steps[1]["run"]
+    assert (
+        '--source-run-id "$TRIGGER_RUN" --source-attempt "$TRIGGER_ATTEMPT"'
+        in steps[1]["run"]
+    )
     assert "candidate-admission/ci" not in (root / ".mergify.yml").read_text()
 
 
@@ -236,3 +249,231 @@ def test_second_consumer_cannot_switch_notification_provenance(monkeypatch, chan
     assert verified_consumptions[1]["verified"]
     assert not result["verified"] and "candidate_sha" not in result
     assert "producer/index" in result["reason"]
+
+
+@pytest.mark.parametrize("pending", ["index", "producer"])
+def test_parallel_start_waits_then_consumes_real_completed_archive(
+    monkeypatch, pending
+):
+    client, _, _, run, _ = setup(monkeypatch)
+    original = admission.consumer._status
+    calls = []
+    if pending == "producer":
+        run["status"] = "in_progress"
+
+    def status(*args):
+        calls.append(1)
+        if pending == "index" and len(calls) == 1:
+            raise admission.evidence.EvidenceError("qualification status is absent")
+        return original(*args)
+
+    sleeps = []
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        run["status"] = "completed"
+
+    monkeypatch.setattr(admission.consumer, "_status", status)
+    monkeypatch.setattr(admission.time, "sleep", sleep)
+    result = admission.verify_source_admission(client, 20, 1)
+    assert sleeps == [1]
+    assert result["verified"] and result["source_run_id"] == 20
+    assert result["source_attempt"] == 1 and result["producer_run_id"] == 100
+    assert not result["authorizes_merge"] and not result["authorizes_reduced_ci"]
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("id", 21),
+        ("id", True),
+        ("run_attempt", 2),
+        ("run_attempt", True),
+        ("path", "other.yml"),
+        ("event", "push"),
+        ("head_branch", "main"),
+        ("repository", {"full_name": "other/repo"}),
+        ("head_repository", {"full_name": "other/repo"}),
+        ("status", "in_progress"),
+        ("conclusion", "failure"),
+        ("head_sha", "bad"),
+    ],
+)
+def test_parallel_source_identity_rejects_wrong_or_stale_trigger(
+    monkeypatch, field, value
+):
+    client, _, _, _, _ = setup(monkeypatch)
+    client.responses[f"repos/{REPO}/actions/runs/20"][field] = value
+    assert not admission.verify_source_admission(client, 20, 1)["verified"]
+
+
+@pytest.mark.parametrize("run,attempt", [(0, 1), (True, 1), (20, None), (20, False)])
+def test_parallel_source_invalid_inputs_never_call_api(run, attempt):
+    from types import SimpleNamespace
+
+    client = SimpleNamespace(json=lambda *a: pytest.fail("invalid input queried API"))
+    assert not admission.verify_source_admission(client, run, attempt)["verified"]
+
+
+@pytest.mark.parametrize(
+    "case", ["absent", "revoked", "foreign", "closed", "main", "api"]
+)
+def test_parallel_wait_is_bounded_and_never_bypasses_full_guard(monkeypatch, case):
+    client, _, status, _, _ = setup(monkeypatch)
+    clock = iter([0, 46])
+    monkeypatch.setattr(admission.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(
+        admission.time, "sleep", lambda *a: pytest.fail("wait exceeded deadline")
+    )
+    if case == "absent":
+        monkeypatch.setattr(
+            admission.consumer,
+            "_status",
+            lambda *a: (_ for _ in ()).throw(
+                admission.evidence.EvidenceError("qualification status is absent")
+            ),
+        )
+    elif case == "revoked":
+        status["state"] = "failure"
+    elif case == "foreign":
+        status["target_url"] = "https://github.com/other/repo/actions/runs/100"
+    elif case == "closed":
+        client.responses[f"repos/{REPO}/pulls"] = []
+    elif case == "main":
+        client.responses[f"repos/{REPO}/git/ref/heads/main"]["object"]["sha"] = "e" * 40
+    else:
+        monkeypatch.setattr(
+            admission.consumer,
+            "_status",
+            lambda *a: (_ for _ in ()).throw(
+                admission.evidence.EvidenceError("API unavailable")
+            ),
+        )
+    result = admission.verify_source_admission(client, 20, 1)
+    assert not result["verified"] and "candidate_sha" not in result and result["reason"]
+
+
+def test_parallel_trigger_cannot_accept_another_successful_source(monkeypatch):
+    client, _, _, _, _ = setup(monkeypatch)
+    client.responses[f"repos/{REPO}/actions/runs/21"] = dict(
+        client.responses[f"repos/{REPO}/actions/runs/20"], id=21
+    )
+    result = admission.verify_source_admission(client, 21, 1)
+    assert (
+        not result["verified"] and result["reason"] == "admission changed triggering CI"
+    )
+
+
+def test_parallel_trigger_final_read_rejects_rerun_boundary(monkeypatch):
+    client, _, _, _, _ = setup(monkeypatch)
+    original = admission.verify_admission
+
+    def verify(*args):
+        result = original(*args)
+        assert result["verified"]
+        client.responses[f"repos/{REPO}/actions/runs/20"]["run_attempt"] = 2
+        return result
+
+    monkeypatch.setattr(admission, "verify_admission", verify)
+    assert not admission.verify_source_admission(client, 20, 1)["verified"]
+
+
+def test_parallel_cli_exposes_only_real_producer_identity(monkeypatch, tmp_path):
+    client, _, _, _, _ = setup(monkeypatch)
+    monkeypatch.setattr(admission.evidence, "GitHubClient", lambda *a: client)
+    out, record = tmp_path / "out", tmp_path / "record"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "admission",
+            "--repo",
+            REPO,
+            "--source-run-id",
+            "20",
+            "--source-attempt",
+            "1",
+            "--github-output",
+            str(out),
+            "--output",
+            str(record),
+        ],
+    )
+    admission.main()
+    values = dict(line.split("=", 1) for line in out.read_text().splitlines())
+    assert values == {
+        "verified": "true",
+        "candidate_sha": CANDIDATE,
+        "producer_run_id": "100",
+    }
+    assert json.loads(record.read_text())["source_run_id"] == 20
+
+
+@pytest.mark.parametrize(
+    "trigger,run", [("CI", "20"), ("Candidate qualification", "100")]
+)
+def test_actual_rendered_observer_shell_uses_real_verified_cli(
+    monkeypatch, tmp_path, trigger, run
+):
+    import os
+    import subprocess
+
+    shell_run = subprocess.run
+    client, _, _, _, _ = setup(monkeypatch)
+    workflow = yaml.safe_load(
+        (
+            Path(__file__).resolve().parents[1]
+            / ".github/workflows/candidate-admission.yml"
+        ).read_text()
+    )
+    shell = workflow["jobs"]["admit"]["steps"][1]["run"]
+    captured, out = tmp_path / "args", tmp_path / "out"
+    env = dict(
+        os.environ,
+        TRIGGER_NAME=trigger,
+        TRIGGER_RUN=run,
+        TRIGGER_ATTEMPT="1",
+        GITHUB_REPOSITORY=REPO,
+        GITHUB_OUTPUT=str(out),
+        RUNNER_TEMP=str(tmp_path),
+        CAPTURE=str(captured),
+    )
+    shell_run(
+        ["bash", "-c", 'python() { printf "%s\\0" "$@" > "$CAPTURE"; }\n' + shell],
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    args = captured.read_bytes().decode().rstrip("\0").split("\0")
+    assert args[:2] == ["-m", "scripts.ci_candidate_admission"]
+    monkeypatch.setattr(admission.evidence, "GitHubClient", lambda *a: client)
+    monkeypatch.setattr(sys, "argv", ["admission", *args[2:]])
+    admission.main()
+    result = json.loads((tmp_path / "candidate-admission.json").read_text())
+    assert result["verified"] and result["source_run_id"] == 20
+    assert result["producer_run_id"] == 100 and result["source_attempt"] == 1
+
+
+@pytest.mark.parametrize("change", ["index", "attempt"])
+def test_parallel_final_source_read_cannot_switch_producer_provenance(
+    monkeypatch, change
+):
+    client, _, status, run, _ = setup(monkeypatch)
+    original = admission.verify_admission
+
+    def verify(*args):
+        result = original(*args)
+        assert result["verified"]
+        if change == "index":
+            status["id"] += 1
+        else:
+            run["run_attempt"] = 2
+            for job in client.job_records[100]:
+                job["run_attempt"] = 2
+        return result
+
+    monkeypatch.setattr(admission, "verify_admission", verify)
+    result = admission.verify_source_admission(client, 20, 1)
+    assert not result["verified"]
+    assert result["reason"] == "producer/index changed after source verification"
