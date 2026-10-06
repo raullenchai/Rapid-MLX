@@ -101,6 +101,21 @@ class PromptLookupIndex:
         for end in range(self.min_ngram, len(self.prompt)):
             gram = self.prompt[end - self.min_ngram : end]
             self._positions.setdefault(gram, []).append(end)
+        # Every indexed n-gram minus its last token: what the generated text
+        # must end with for the NEXT token to be able to complete a match.
+        self._gram_heads = {gram[:-1] for gram in self._positions}
+
+    def may_match_after_next(self, generated: list[int] | tuple[int, ...]) -> bool:
+        """Whether :meth:`propose` could match once one more token is appended
+        to ``generated``, whichever token that is.
+
+        ``False`` is exact (no next token can produce a match); ``True`` only
+        says the generated suffix is the head of some indexed n-gram.
+        """
+        head = self.min_ngram - 1
+        if len(generated) < head:
+            return False
+        return tuple(int(token) for token in generated[-head:]) in self._gram_heads
 
     def propose(
         self,

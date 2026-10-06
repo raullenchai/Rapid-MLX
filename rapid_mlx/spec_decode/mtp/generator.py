@@ -1238,8 +1238,13 @@ def mtp_generate_step(
             mx.async_eval(*arrays)
         return result
 
-    def _prompt_lookup_drafts() -> list | None:
-        """Return point-mass prompt drafts, or ``None`` when no suffix matches."""
+    def _lookup_proposal() -> tuple[list[int], int] | None:
+        """This round's copy-draft rows and matched-suffix length, or ``None``.
+
+        The prompt match, narrowed to the turn's measured width and to what
+        the cache can roll back. Whether the copy is worth verifying is
+        ``CopyDraftGate.allow``'s call, made by ``_plan_next``.
+        """
 
         if _prompt_lookup_index is None:
             return None
@@ -1263,7 +1268,29 @@ def mtp_generate_step(
         if safe_count == 0:
             _timing_add("prompt_lookup_cache_fallthroughs", 1.0)
             return None
-        if not _copy_draft_gate.allow():
+        return list(proposed_tokens[:safe_count]), int(match.matched_suffix)
+
+    def _lookup_drafts(proposal: tuple[list[int], int]) -> list:
+        """Point-mass drafts for a proposal the next round verifies."""
+        proposed_tokens, matched_suffix = proposal
+        _timing_add("prompt_lookup_proposals", 1.0)
+        _timing_add("prompt_lookup_drafted_tokens", float(len(proposed_tokens)))
+        _timing_add("prompt_lookup_matched_suffix_tokens", float(matched_suffix))
+        return [
+            (mx.array(token, mx.uint32), None, None, None) for token in proposed_tokens
+        ]
+
+    def _plan_next(desired_k: int):
+        """What the upcoming round runs: ``("lookup", proposal)``,
+        ``("mtp", depth)`` or ``("park", 0)``.
+
+        A prompt copy comes first, then an MTP chain at ``desired_k`` if the
+        cache can roll that far back, else a plain step.
+        """
+        proposal = _lookup_proposal()
+        if proposal is not None:
+            if _copy_draft_gate.allow():
+                return "lookup", proposal
             # Measured: this turn's copy-drafts are committing fewer tokens
             # per millisecond than the speculative rounds they displace, so
             # take the MTP round instead.
@@ -1277,14 +1304,11 @@ def mtp_generate_step(
             # nothing here measures one yet. Until it does, refusing is
             # the only move that cannot cost throughput.
             _timing_add("prompt_lookup_ev_declines", 1.0)
-            return None
-        proposed_tokens = proposed_tokens[:safe_count]
-        _timing_add("prompt_lookup_proposals", 1.0)
-        _timing_add("prompt_lookup_drafted_tokens", float(len(proposed_tokens)))
-        _timing_add("prompt_lookup_matched_suffix_tokens", float(match.matched_suffix))
-        return [
-            (mx.array(token, mx.uint32), None, None, None) for token in proposed_tokens
-        ]
+        if desired_k >= 1:
+            depth = _admit_mtp_depth(desired_k)
+            if depth > 0:
+                return "mtp", depth
+        return "park", 0
 
     def _gate_cost(round_ms: float, verify_rows: int) -> float:
         """What ``CopyDraftGate`` is charged for a round (see ``_reproducible``)."""
@@ -1323,6 +1347,72 @@ def mtp_generate_step(
             _timing_add("mtp_cache_fallthroughs", 1.0)
         return admitted
 
+    # ------------------------------------------------------------------
+    # Pipelined parks. A parked round is a plain one-row step, and plain
+    # decode (mlx-lm's ``GenerationBatch._step``) never lets the GPU wait on
+    # the host: it builds and launches step n+1 before it reads token n back,
+    # so graph construction and the caller's per-token work (detokenize, stop
+    # scan, streaming) run while the GPU computes. A parked round used to
+    # build its step only after the caller asked for the next token, so all
+    # of that host time sat on the critical path -- measured on an M2 Pro
+    # with Qwen3.5-4B-4bit: parked MTP ~46 tok/s against ~62 for plain
+    # decode, with identical tokens.
+    #
+    # So a round that decides to park launches the next step before it hands
+    # its token over, and while parked, each round launches the next step
+    # before it even syncs on its own token, as plain decode does. That early
+    # launch is a bet that the next round parks too, placed before this
+    # round's token is known, so it is only placed when no prompt copy can
+    # follow this token (``PromptLookupIndex.may_match_after_next``). If the
+    # depth controller then asks for drafts, the launched step simply becomes
+    # the next round -- it is the target's own one-row step, so nothing is
+    # lost or approximated -- and the chain is drafted after it. Every round
+    # is still a target forward over committed tokens, drafts are verified
+    # as before, and the schedule depends only on the request's own tokens
+    # and decisions, so a greedy request stays reproducible.
+    #
+    # Only without logits processors: a processor's state would advance at
+    # graph-construction time, one token before the caller sees the token
+    # that should drive it.
+    _pipeline_parks = not logits_processors
+    # The next round's launched step: ``(main_tok, main_lp, hidden,
+    # prev_tokens, launched_at)``, or ``None``.
+    prefetched_step: tuple | None = None
+    # Whether the decision that made the upcoming round a park chose to park
+    # (as opposed to a decision that had to wait behind a launched step).
+    park_was_chosen = False
+    # A depth chosen while the next round's step was already in flight;
+    # drafted after that round.
+    deferred_depth: int | None = None
+
+    def _park_step(yy):
+        """Build a one-row step and start it: ``(token, logprobs, hidden,
+        prev_tokens)``.
+
+        The token and logprob rows are sliced here and evaluated with the
+        step, because the stream runs in submission order: a slice taken
+        after the next step was launched would queue behind that step, and
+        reading it would wait for the whole forward the launch was meant to
+        overlap.
+        """
+        p_toks, p_lps, _p_alps, p_hidden, p_prev, _ = _step_backbone(
+            yy, prev_tokens, n_predict=1
+        )
+        p_tok, p_lp = p_toks[0], p_lps[0]
+        mx.async_eval(p_tok, p_lp)
+        return p_tok, p_lp, p_hidden, p_prev
+
+    def _launch_park_step(tok):
+        """Start the next round's step on ``tok`` (possibly still lazy)."""
+        launched_at = time.perf_counter()
+        return (*_park_step(tok.reshape(1).astype(mx.uint32)), launched_at)
+
+    def _copy_may_follow() -> bool:
+        return (
+            _prompt_lookup_index is not None
+            and _prompt_lookup_index.may_match_after_next(generated_token_ids)
+        )
+
     while ntoks < max_tokens:
         round_start_perf = time.perf_counter()
         if pending_drafts is None:
@@ -1330,11 +1420,24 @@ def mtp_generate_step(
             # Round K=0 (either bootstrap or a park). Plain backbone
             # forward emits ONE committed token.
             # -------------------------------------------------------
-            toks, lps, accept_lps, hidden, prev_tokens, _ = _step_backbone(
-                y, prev_tokens, n_predict=1
-            )
-            mx.eval(toks)
-            main_tok, main_lp = toks[0], lps[0]
+            if prefetched_step is not None:
+                # Launched by the previous round; charge the round from the
+                # launch, as an unpipelined round is charged from its build.
+                main_tok, main_lp, hidden, prev_tokens, round_start_perf = (
+                    prefetched_step
+                )
+                prefetched_step = None
+            else:
+                main_tok, main_lp, hidden, prev_tokens = _park_step(y)
+            launched = None
+            if (
+                _pipeline_parks
+                and park_was_chosen
+                and ntoks + 1 < max_tokens
+                and not _copy_may_follow()
+            ):
+                launched = _launch_park_step(main_tok)
+            mx.eval(main_tok)
             round_wall_ms = (time.perf_counter() - round_start_perf) * 1000.0
             _record_round(0, round_wall_ms, [])
             # One token for the whole forward: the floor a copy-draft has to
@@ -1365,32 +1468,36 @@ def mtp_generate_step(
             # (codex #1441 guarded the same invariant when drafting was the
             # last thing a round did).
             if not round_done:
-                next_k = _next_depth()
-
-                hidden_at_main = hidden[:, -1:, :]
-                lookup_drafts = _prompt_lookup_drafts()
-                if lookup_drafts is not None:
-                    pending_drafts = lookup_drafts
-                    pending_is_prompt_lookup = True
-                elif next_k >= 1:
-                    next_k = _admit_mtp_depth(next_k)
-                    if next_k == 0:
-                        pending_drafts = None
-                        pending_is_prompt_lookup = False
-                    else:
-                        # Chain-of-K: generate ``next_k`` drafts cascaded via
-                        # MTP. next_k==1 is the plain single-draft path.
-                        d_toks, d_lps, d_alps, d_xtcs = _draft_chain_timed(
-                            hidden_at_main, main_tok, prev_tokens, next_k
-                        )
-                        pending_drafts = list(zip(d_toks, d_lps, d_alps, d_xtcs))
-                        pending_is_prompt_lookup = False
+                if deferred_depth is not None:
+                    next_k, deferred_depth = deferred_depth, None
                 else:
-                    # Parking again: no draft. Next round enters this
-                    # branch with ``pending_drafts is None`` and pays no
-                    # drafter cost — the whole point of park.
-                    pending_drafts = None
-                    pending_is_prompt_lookup = False
+                    next_k = _next_depth()
+                plan, plan_arg = _plan_next(next_k)
+                pending_drafts = None
+                pending_is_prompt_lookup = False
+                park_was_chosen = plan == "park"
+                if launched is not None:
+                    # The next round's step is already running, so the next
+                    # round is that step. ``_copy_may_follow`` ruled out a
+                    # copy before the launch; a chain is drafted after it.
+                    prefetched_step = launched
+                    if plan == "mtp":
+                        deferred_depth = plan_arg
+                elif plan == "lookup":
+                    pending_drafts = _lookup_drafts(plan_arg)
+                    pending_is_prompt_lookup = True
+                elif plan == "mtp":
+                    # Chain-of-K: generate ``plan_arg`` drafts cascaded via
+                    # MTP. A depth of 1 is the plain single-draft path.
+                    d_toks, d_lps, d_alps, d_xtcs = _draft_chain_timed(
+                        hidden[:, -1:, :], main_tok, prev_tokens, plan_arg
+                    )
+                    pending_drafts = list(zip(d_toks, d_lps, d_alps, d_xtcs))
+                elif _pipeline_parks:
+                    # Parking again, with the next step launched now so it
+                    # runs while the caller handles this token. Next round
+                    # pays no drafter cost -- the whole point of park.
+                    prefetched_step = _launch_park_step(main_tok)
                 y = mx.array([main_tok_id], mx.uint32)
 
             # No guard rewind is needed around this yield the way the verify
@@ -1772,42 +1879,39 @@ def mtp_generate_step(
                     _restore_processor_state(emissions[-1][2])
                 # Decide K for the next round BEFORE generating the
                 # next chain (a park decision skips drafter cost).
-                next_k = _next_depth()
-                lookup_drafts = _prompt_lookup_drafts()
-                if lookup_drafts is not None:
-                    pending_drafts = lookup_drafts
+                plan, plan_arg = _plan_next(_next_depth())
+                park_was_chosen = plan == "park"
+                if plan == "lookup":
+                    pending_drafts = _lookup_drafts(plan_arg)
                     pending_is_prompt_lookup = True
-                elif next_k >= 1:
-                    next_k = _admit_mtp_depth(next_k)
-                    if next_k == 0:
-                        pending_drafts = None
-                        pending_is_prompt_lookup = False
+                elif plan == "mtp":
+                    # Chain-carry: on all-accept the mtp_cache must
+                    # advance by one extra position for the just-accepted
+                    # LAST draft so the head's attention sees it before
+                    # predicting the next round's first draft.
+                    if accepted_count == k_len:
+                        align_h = hidden[:, accepted_count - 1 : accepted_count, :]
+                        align_tok = draft_toks_arr[accepted_count - 1]
+                        cache_commit = (align_h, align_tok)
                     else:
-                        # Chain-carry: on all-accept the mtp_cache must
-                        # advance by one extra position for the just-accepted
-                        # LAST draft so the head's attention sees it before
-                        # predicting the next round's first draft.
-                        if accepted_count == k_len:
-                            align_h = hidden[:, accepted_count - 1 : accepted_count, :]
-                            align_tok = draft_toks_arr[accepted_count - 1]
-                            cache_commit = (align_h, align_tok)
-                        else:
-                            cache_commit = None
-                        last_committed_tok = mx.array(
-                            [last_committed_tok_id], mx.uint32
-                        )
-                        d_toks, d_lps, d_alps, d_xtcs = _draft_chain_timed(
-                            last_committed_hidden,
-                            last_committed_tok,
-                            prev_tokens,
-                            next_k,
-                            cache_commit=cache_commit,
-                        )
-                        pending_drafts = list(zip(d_toks, d_lps, d_alps, d_xtcs))
-                        pending_is_prompt_lookup = False
+                        cache_commit = None
+                    last_committed_tok = mx.array([last_committed_tok_id], mx.uint32)
+                    d_toks, d_lps, d_alps, d_xtcs = _draft_chain_timed(
+                        last_committed_hidden,
+                        last_committed_tok,
+                        prev_tokens,
+                        plan_arg,
+                        cache_commit=cache_commit,
+                    )
+                    pending_drafts = list(zip(d_toks, d_lps, d_alps, d_xtcs))
+                    pending_is_prompt_lookup = False
                 else:
                     pending_drafts = None
                     pending_is_prompt_lookup = False
+                    if _pipeline_parks:
+                        # The next round parks; start its step now so it
+                        # runs while the caller handles this round's tokens.
+                        prefetched_step = _launch_park_step(y)
 
             for (
                 _emit_tok_id,
