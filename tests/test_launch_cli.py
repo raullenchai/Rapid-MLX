@@ -226,7 +226,7 @@ class TestCline:
             '{"version": 1, "providers": {"x": {"settings": {"provider": "x"},'
             ' "updatedAt": "2026-01-01T00:00:00+02:00"}}}',
             '{"version": 1, "providers": {"x": {"settings": {"provider": "x"},'
-            ' "updatedAt": "t", "tokenSource": "stolen"}}}',
+            ' "updatedAt": "2026-01-01T00:00:00Z", "tokenSource": "stolen"}}}',
         ],
     )
     def test_refuses_to_rewrite_a_file_cline_would_reject(self, fake_home, content):
@@ -441,6 +441,34 @@ class TestContinueDev:
         )
         upstream.update(name="Local Config", version="1.0.0", schema="v1")
         assert continue_dev.convert_legacy_config(legacy) == upstream
+
+    def test_converter_passes_through_shapes_it_does_not_map(self):
+        legacy = {
+            "models": ["bare-model-id"],
+            "tabAutocompleteModel": [
+                {"title": "a1", "provider": "ollama", "model": "x"},
+                "bare",
+            ],
+            "contextProviders": ["raw-context"],
+            "customCommands": ["raw-command"],
+            "docs": ["raw-doc"],
+            "experimental": {"modelContextProtocolServers": ["raw-server"]},
+        }
+        converted = continue_dev.convert_legacy_config(legacy)
+        assert converted["models"] == [
+            "bare-model-id",
+            {
+                "name": "a1",
+                "provider": "ollama",
+                "model": "x",
+                "roles": ["autocomplete"],
+            },
+            "bare",
+        ]
+        assert converted["context"] == ["raw-context"]
+        assert converted["prompts"] == ["raw-command"]
+        assert converted["docs"] == ["raw-doc"]
+        assert converted["mcpServers"] == ["raw-server"]
 
     def test_migrates_legacy_json_without_touching_it(self, fake_home, capsys):
         cont = fake_home / ".continue"
