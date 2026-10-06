@@ -270,10 +270,12 @@ def main() -> None:
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--expected", type=Path)
     args = parser.parse_args()
-    from scripts.ci_candidate_rollout import qualify_source
+    from scripts.ci_candidate_rollout import ImmutableContentsClient, qualify_source
 
     result = qualify_source(
-        evidence.GitHubClient(args.repo), args.source_run_id, args.trusted_ref
+        ImmutableContentsClient(evidence.GitHubClient(args.repo)),
+        args.source_run_id,
+        args.trusted_ref,
     )
     if args.expected and result != json.loads(args.expected.read_text()):
         raise evidence.EvidenceError("qualification changed before publication")
