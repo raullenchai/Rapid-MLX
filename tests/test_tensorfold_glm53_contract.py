@@ -593,7 +593,11 @@ def test_glm_server_wrapper_declares_product_metadata(monkeypatch) -> None:
 
 
 def test_catalog_runtime_revision_is_the_shared_runtime() -> None:
-    """Every profile is installed from the one revision the code checks."""
+    """No catalog pin or module constant can drift from the checked revision.
+
+    The Qwen alias uses the DFlash catalog schema, which carries no runtime
+    pin: its backend compares the installed runtime with the shared constant.
+    """
 
     from rapid_mlx.speculative import tensorfold_glm53, tensorfold_qwen27
     from rapid_mlx.speculative.tensorfold_runtime import (
@@ -615,7 +619,8 @@ def test_catalog_runtime_revision_is_the_shared_runtime() -> None:
         for name, profile in aliases.items()
         if isinstance(profile, dict) and "tensorfold_runtime_revision" in profile
     }
-    assert pinned == {"glm5.3-flash-tensorfold": SUPPORTED_REVISION}
+    assert "glm5.3-flash-tensorfold" in pinned
+    assert set(pinned.values()) == {SUPPORTED_REVISION}
     assert tensorfold_glm53.SUPPORTED_RUNTIME_REVISION == SUPPORTED_REVISION
     assert tensorfold_qwen27.SUPPORTED_REVISION == SUPPORTED_REVISION
     assert f"git+{SUPPORTED_RUNTIME_URL}@{SUPPORTED_REVISION}" in INSTALL_HINT
