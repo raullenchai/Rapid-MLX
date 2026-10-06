@@ -345,6 +345,7 @@ def test_mapped_real_archive_consumption_and_live_revocation(monkeypatch, cached
         "static",
         "unexpected-full",
         "source-route",
+        "source-preflight",
         "main",
         "reuse",
         "not-selected",
@@ -374,6 +375,7 @@ def test_real_stable_aggregate_requires_exact_mapped_route(bad):
             "needs.changes.outputs.engine": "true",
             "needs.changes.outputs.full_gate": "true",
             "needs.changes.outputs.source_canary": "false",
+            "needs.changes.outputs.source_preflight": "false",
             "needs.changes.outputs.candidate_shadow": "true",
             "needs.changes.outputs.candidate_reduced": "true",
             "github.event_name": "pull_request",
@@ -389,6 +391,8 @@ def test_real_stable_aggregate_requires_exact_mapped_route(bad):
         values["needs.test-matrix.result"] = "success"
     elif bad == "source-route":
         values["needs.changes.outputs.source_canary"] = "true"
+    elif bad == "source-preflight":
+        values["needs.changes.outputs.source_preflight"] = "true"
     elif bad == "main":
         values["github.event_name"] = "push"
     elif bad == "reuse":
