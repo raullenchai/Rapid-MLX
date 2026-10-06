@@ -187,6 +187,7 @@ def test_actual_workflow_classifier_keeps_candidates_main_and_forks_full(
         CANARY_ENABLED="false",
         SOURCE_PREFLIGHT_ENABLED=enabled,
         CANDIDATE_SHADOW_ENABLED="false",
+        CANDIDATE_CANARY_ENABLED="false",
     )
     result = subprocess.run(
         ["bash", "-c", script], cwd=ROOT, env=env, capture_output=True, text=True
