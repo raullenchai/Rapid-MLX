@@ -400,7 +400,9 @@ def main() -> None:
             evidence_uploaded=args.evidence_uploaded == "true",
         )
     elif args.source_run_id is not None:
-        result = verify_source_admission(client, args.source_run_id, args.source_attempt)
+        result = verify_source_admission(
+            client, args.source_run_id, args.source_attempt
+        )
     else:
         result = verify_admission(client, args.producer_run_id)
     args.output.write_text(json.dumps(result, indent=2) + "\n")
@@ -408,7 +410,8 @@ def main() -> None:
         output.write("verified=" + str(result.get("verified", False)).lower() + "\n")
         if result.get("verified"):
             output.write("candidate_sha=" + result["candidate_sha"] + "\n")
-            output.write("producer_run_id=" + str(result["producer_run_id"]) + "\n")
+            if "producer_run_id" in result:
+                output.write("producer_run_id=" + str(result["producer_run_id"]) + "\n")
     print(json.dumps(result))
 
 
