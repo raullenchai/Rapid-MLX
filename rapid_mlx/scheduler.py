@@ -2211,6 +2211,10 @@ def _install_mtp_vendored(
                         else None
                     ),
                     prompt_lookup_policy=prompt_lookup_policy,
+                    # A step started ahead of delivery puts the cache past the
+                    # token boundary ``_requeue_owner_at_boundary`` needs, so
+                    # parked rounds run ahead only while nobody is waiting.
+                    may_run_ahead=lambda: not _others_waiting(),
                 )
             except Exception as e:  # noqa: BLE001
                 logger.warning(

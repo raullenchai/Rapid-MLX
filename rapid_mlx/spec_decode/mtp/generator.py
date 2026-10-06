@@ -421,6 +421,7 @@ def mtp_generate_step(
     prompt_lookup_enabled: bool | None = None,
     prompt_lookup_history: list[int] | mx.array | None = None,
     prompt_lookup_policy: PromptLookupPolicy | None = None,
+    may_run_ahead: Callable[[], bool] | None = None,
 ) -> Generator[tuple[int, mx.array, bool], None, None]:
     """Generator that uses the model's native MTP head for spec decode.
 
@@ -457,6 +458,12 @@ def mtp_generate_step(
             :class:`MTPAcceptCounter`. Tests pass a fresh counter to
             isolate measurements; production callers pass ``None``
             and the module-global counter is used.
+        may_run_ahead: Asked before a parked round starts the next round's
+            step ahead of delivery. ``False`` holds it, so the target cache
+            ends at the delivered tokens when the round yields -- the
+            boundary at which the scheduler can hand the request to a batch
+            with newly arrived requests. Only the launch is held; the
+            request's schedule is the same either way.
     """
     import inspect as _inspect
 
@@ -1407,6 +1414,9 @@ def mtp_generate_step(
         launched_at = time.perf_counter()
         return (*_park_step(tok.reshape(1).astype(mx.uint32)), launched_at)
 
+    def _may_run_ahead() -> bool:
+        return may_run_ahead is None or bool(may_run_ahead())
+
     def _copy_may_follow() -> bool:
         return (
             _prompt_lookup_index is not None
@@ -1429,14 +1439,21 @@ def mtp_generate_step(
                 prefetched_step = None
             else:
                 main_tok, main_lp, hidden, prev_tokens = _park_step(y)
-            launched = None
-            if (
+            # Whether the next round is bet to park before this round's
+            # token is known. The bet, not the launch, shapes the schedule:
+            # it is a function of the request alone, while the launch can be
+            # held by ``may_run_ahead``.
+            bet_on_park = (
                 _pipeline_parks
                 and park_was_chosen
                 and ntoks + 1 < max_tokens
                 and not _copy_may_follow()
-            ):
-                launched = _launch_park_step(main_tok)
+            )
+            launched = (
+                _launch_park_step(main_tok)
+                if bet_on_park and _may_run_ahead()
+                else None
+            )
             mx.eval(main_tok)
             round_wall_ms = (time.perf_counter() - round_start_perf) * 1000.0
             _record_round(0, round_wall_ms, [])
@@ -1476,10 +1493,10 @@ def mtp_generate_step(
                 pending_drafts = None
                 pending_is_prompt_lookup = False
                 park_was_chosen = plan == "park"
-                if launched is not None:
-                    # The next round's step is already running, so the next
-                    # round is that step. ``_copy_may_follow`` ruled out a
-                    # copy before the launch; a chain is drafted after it.
+                if bet_on_park:
+                    # The next round is the step bet on (running already
+                    # unless the launch was held). ``_copy_may_follow`` ruled
+                    # out a copy before the bet; a chain is drafted after it.
                     prefetched_step = launched
                     if plan == "mtp":
                         deferred_depth = plan_arg
@@ -1493,7 +1510,7 @@ def mtp_generate_step(
                         hidden[:, -1:, :], main_tok, prev_tokens, plan_arg
                     )
                     pending_drafts = list(zip(d_toks, d_lps, d_alps, d_xtcs))
-                elif _pipeline_parks:
+                elif _pipeline_parks and _may_run_ahead():
                     # Parking again, with the next step launched now so it
                     # runs while the caller handles this token. Next round
                     # pays no drafter cost -- the whole point of park.
@@ -1908,7 +1925,7 @@ def mtp_generate_step(
                 else:
                     pending_drafts = None
                     pending_is_prompt_lookup = False
-                    if _pipeline_parks:
+                    if _pipeline_parks and _may_run_ahead():
                         # The next round parks; start its step now so it
                         # runs while the caller handles this round's tokens.
                         prefetched_step = _launch_park_step(y)

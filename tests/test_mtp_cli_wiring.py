@@ -2099,6 +2099,7 @@ def _boundary_fake_generator(monkeypatch, emissions):
 
     class _FakeGen:
         closed = False
+        kwargs: dict = {}
 
         def __iter__(self):
             return self
@@ -2109,7 +2110,11 @@ def _boundary_fake_generator(monkeypatch, emissions):
         def close(self):
             _FakeGen.closed = True
 
-    monkeypatch.setattr(_gen_mod, "mtp_generate_step", lambda *a, **kw: _FakeGen())
+    def _make(*args, **kwargs):
+        _FakeGen.kwargs = kwargs
+        return _FakeGen()
+
+    monkeypatch.setattr(_gen_mod, "mtp_generate_step", _make)
     return _FakeGen
 
 
@@ -2297,6 +2302,23 @@ def test_singleton_yields_at_a_token_boundary_to_a_waiting_request(monkeypatch):
     assert requeued[5:7] == ("sampler", [])
     assert requeued[7] is gb.state_machines[0]
     assert batch_gen._unprocessed_sequences[1] == ("waiting",)
+
+
+def test_parked_rounds_stop_running_ahead_while_a_request_waits(monkeypatch):
+    """A parked round's run-ahead step would put the cache past the token
+    boundary the yield above needs, so it is held while anyone waits."""
+    batch_gen, gb, _requests, fake = _yielding_setup(monkeypatch)
+    _emit(batch_gen, gb)  # primed token: the generator is constructed
+    may_run_ahead = fake.kwargs["may_run_ahead"]
+    assert may_run_ahead() is True
+
+    batch_gen._unprocessed_sequences.append(("waiting",))
+    assert may_run_ahead() is False
+    batch_gen._unprocessed_sequences.clear()
+    batch_gen._prompt_batch.uids = [8]
+    assert may_run_ahead() is False
+    batch_gen._prompt_batch.uids = []
+    assert may_run_ahead() is True
 
 
 def test_singleton_yields_to_a_request_already_in_the_prompt_batch(monkeypatch):

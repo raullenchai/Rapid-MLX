@@ -158,10 +158,10 @@ def test_logits_processors_keep_parked_rounds_unpipelined():
     assert ahead == [0] * 8, ahead
 
 
-def test_a_copy_found_while_a_step_is_in_flight_is_verified_after_it():
-    """Parked prose that starts quoting the prompt: the launched step becomes
-    the next round, the copy is proposed from the state it leaves, and every
-    token is still the target's own."""
+def test_parked_prose_that_starts_quoting_the_prompt_copies_without_delay():
+    """Parked prose that starts quoting the prompt: no step is bet on where a
+    copy can follow, so the copy is verified at the first token it matches,
+    and every token is still the target's own."""
     from rapid_mlx.spec_decode.mtp.prompt_lookup import PromptLookupPolicy
 
     # Generation counts up from 90; 90-99 are not in the prompt (parked
@@ -328,3 +328,82 @@ def test_prompt_index_says_when_no_next_token_can_complete_a_match():
             index.propose([*generated, nxt]) is not None for nxt in range(1, 10)
         )
         assert could <= index.may_match_after_next(generated), generated
+
+
+def _scripted_depths(monkeypatch, depths):
+    from rapid_mlx.spec_decode.mtp import generator as generator_mod
+
+    script = iter(depths)
+
+    class _Scripted:
+        def pick_k(self):
+            return next(script)
+
+        def record(self, *args, **kwargs):
+            return None
+
+    monkeypatch.setattr(
+        generator_mod, "request_depth_controller", lambda *args: _Scripted()
+    )
+
+
+def test_holding_the_run_ahead_changes_no_schedule(monkeypatch):
+    """``may_run_ahead`` (another request waiting) only holds the launch:
+    the request verifies the same widths and returns the same tokens."""
+    from rapid_mlx.spec_decode.mtp.reproducible_depth import GreedySchedule
+
+    depths = ([0] * 4 + [2] * 3) * 10
+    runs = []
+    for allow in (True, False):
+        _scripted_depths(monkeypatch, iter(depths))
+        model = _WidthSensitiveTarget(lambda rows: 77 if rows > 1 else 200)
+        tokens, ahead = _run(
+            model,
+            PROMPT,
+            40,
+            greedy_schedule=GreedySchedule(
+                depth=2, steep_verify=True, round_costs=(1.0, 1.4, 1.9)
+            ),
+            may_run_ahead=lambda allow=allow: allow,
+        )
+        runs.append((tokens, list(model.widths), ahead))
+    (ran_tokens, ran_widths, ran_ahead), (held_tokens, held_widths, held_ahead) = runs
+    assert ran_tokens == held_tokens
+    assert ran_widths == held_widths
+    assert 1 in ran_ahead
+    assert max(held_ahead) <= 0, held_ahead
+
+
+def test_a_held_run_ahead_leaves_the_cache_at_the_delivered_tokens():
+    """Once held, the next yielded token has no target row beyond it: the
+    cache holds the prompt plus every delivered token but the last."""
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
+
+    waiting = {"now": False}
+    caches = [_CountingKVCache(), _CountingKVCache()]
+    model = _WidthSensitiveTarget(_no_tie)
+    offsets_at_yield = []
+    for index, (_token, _lp, _drafted) in enumerate(
+        mtp_generate_step(
+            mx.array(PROMPT, dtype=mx.uint32),
+            model,
+            max_tokens=12,
+            prompt_cache=caches,
+            accept_counter=MTPAcceptCounter(),
+            model_id="park-pipeline-test",
+            temp=0.0,
+            max_k=2,
+            prompt_lookup_enabled=False,
+            greedy_schedule=_parked(),
+            may_run_ahead=lambda: not waiting["now"],
+        )
+    ):
+        offsets_at_yield.append(caches[0].offset)
+        if index == 4:
+            waiting["now"] = True
+    delivered_boundary = [len(PROMPT) + i for i in range(12)]
+    # Running ahead: one row past the boundary.
+    assert offsets_at_yield[:5] == [b + 1 for b in delivered_boundary[:5]]
+    # The step already in flight is consumed; from then on, at the boundary.
+    assert offsets_at_yield[6:] == delivered_boundary[6:], offsets_at_yield
