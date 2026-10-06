@@ -431,6 +431,15 @@ def test_requests_decide_on_the_class_curve_not_the_timings():
     cheap, steep = class_round_costs(False, 2), class_round_costs(True, 2)
     assert cheap[0] == steep[0] == 1.0
     assert cheap[1] < steep[1] and cheap[2] < steep[2]
+    # The default curve is unchanged; on the steep curve a parked round is
+    # pipelined like plain decode, so only drafting rounds carry the
+    # generator's host overhead.
+    assert cheap == (1.0, 1.272, 1.544)
+    assert steep == (1.0, 1.87, 2.49)
+    # Without pipelined parks (logits processors) the steep curve charges the
+    # overhead to every round, as before; the default curve is the same.
+    assert class_round_costs(True, 2, parks_pipelined=False) == (1.0, 1.496, 1.992)
+    assert class_round_costs(False, 2, parks_pipelined=False) == cheap
     # Depths past the curve read its deepest point.
     assert request_round_cost(cheap, 5) == cheap[-1]
     # Measured costs (for the park verdict) include drafts and overhead.
@@ -677,3 +686,61 @@ def test_one_models_timing_does_not_block_another_model():
         release.set()
         worker.join(5.0)
     assert reproducible_schedule("slow", 2, slow) == fast
+
+
+@pytest.mark.parametrize(
+    ("acceptance", "pipelined", "drafts"),
+    [
+        (0.95, True, True),  # nearly every draft lands: drafting pays
+        (0.5, True, False),  # prose-like: plain steps are faster
+        (0.8, True, False),  # 2.44 tokens for 2.49 steps at K=2 does not pay
+        (0.8, False, True),  # ...but does while parked rounds pay overhead
+    ],
+)
+def test_steep_request_curve_drafts_only_where_it_pays(acceptance, pipelined, drafts):
+    """The steep curve's EV decision on a request's own acceptance."""
+    from rapid_mlx.spec_decode.mtp.reproducible_depth import (
+        GreedySchedule,
+        class_round_costs,
+        request_depth_controller,
+        request_round_cost,
+        request_round_costs,
+    )
+
+    schedule = GreedySchedule(
+        depth=2, steep_verify=True, round_costs=class_round_costs(True, 2)
+    )
+    costs = request_round_costs(schedule, parks_pipelined=pipelined)
+    controller = request_depth_controller(costs, 2)
+    # Feed sustained acceptance at depth 2 (the deterministic pattern stands
+    # in for a long run at that rate).
+    pattern = [True] * round(acceptance * 20) + [False] * (20 - round(acceptance * 20))
+    for round_index in range(400):
+        first = pattern[round_index % 20]
+        second = pattern[(round_index * 7 + 3) % 20]
+        accepts = [first, second] if first else [False]
+        controller.record(2, request_round_cost(costs, 2), accepts)
+    picks = [controller.pick_k() for _ in range(64)]
+    for depth in picks:
+        controller.record(depth, request_round_cost(costs, depth), [])
+    drafted = sum(1 for depth in picks if depth > 0) > len(picks) // 2
+    assert drafted is drafts, (acceptance, pipelined, picks)
+
+
+def test_request_curve_follows_whether_parked_rounds_pipeline():
+    from rapid_mlx.spec_decode.mtp.reproducible_depth import (
+        GreedySchedule,
+        class_round_costs,
+        request_round_costs,
+    )
+
+    steep = GreedySchedule(
+        depth=2, steep_verify=True, round_costs=class_round_costs(True, 2)
+    )
+    cheap = GreedySchedule(
+        depth=2, steep_verify=False, round_costs=class_round_costs(False, 2)
+    )
+    assert request_round_costs(steep, parks_pipelined=True) == steep.round_costs
+    assert request_round_costs(steep, parks_pipelined=False) == (1.0, 1.496, 1.992)
+    assert request_round_costs(cheap, parks_pipelined=False) == cheap.round_costs
+    assert request_round_costs(GreedySchedule(depth=2), parks_pipelined=False) == ()
