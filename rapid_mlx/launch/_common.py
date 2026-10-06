@@ -28,6 +28,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from typing import Any
 
 
 def backup_existing(path: Path) -> Path | None:
@@ -288,7 +289,7 @@ _SECRET_CONTAINERS = ("headers", "env")
 _PLACEHOLDER_KEY = "sk-noop"
 
 
-def redact_secrets(data: object, *, _inside_secret_container: bool = False) -> object:
+def redact_secrets(data: Any, *, _inside_secret_container: bool = False) -> Any:
     """Return a copy of ``data`` with credential-looking string values hidden.
 
     Used for previews only (``--dry-run`` diffs): a config being migrated or

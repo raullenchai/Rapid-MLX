@@ -122,7 +122,7 @@ def load_legacy_config(path: Path) -> dict[str, Any]:
 def dump_yaml(data: dict[str, Any]) -> str:
     import yaml
 
-    return yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
+    return str(yaml.safe_dump(data, sort_keys=False, allow_unicode=True))
 
 
 def _drop_none(value: dict[str, Any]) -> dict[str, Any]:

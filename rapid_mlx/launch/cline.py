@@ -195,7 +195,7 @@ def patched_config(
     no-op (no new ``updatedAt``).
     """
     # A new file follows Cline's own key order.
-    result = (
+    result: dict[str, Any] = (
         dict(existing)
         if existing
         else {
@@ -206,7 +206,7 @@ def patched_config(
         }
     )
     result.setdefault("modes", {})
-    providers = dict(result.get("providers") or {})
+    providers: dict[str, Any] = dict(result.get("providers") or {})
     previous = providers.get(_PROVIDER_ID)
     previous = previous if isinstance(previous, dict) else {}
     previous_settings = previous.get("settings")
