@@ -34,7 +34,7 @@ jobs:
   # candidate, tree, trusted workflow, artifact, source attempts, and jobs.
   # Every miss or verifier failure falls back to the ordinary full main gate.
   queue-tree-evidence:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.RAPID_MLX_CANDIDATE_CANARY != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -121,6 +121,7 @@ jobs:
       source_canary: ${{ steps.policy.outputs.source_canary }}
       source_canary_base_run: ${{ steps.policy.outputs.source_canary_base_run }}
       source_canary_tests: ${{ steps.policy.outputs.source_canary_tests }}
+      candidate_reduced: ${{ steps.policy.outputs.candidate_reduced }}
       candidate_shadow: ${{ steps.policy.outputs.candidate_shadow }}
       candidate_shadow_tests: ${{ steps.policy.outputs.candidate_shadow_tests }}
       reuse_ci: ${{ needs.queue-tree-evidence.outputs.reuse_ci || 'false' }}
@@ -135,6 +136,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SOURCE_PREFLIGHT_ENABLED: ${{ vars.RAPID_MLX_SOURCE_PREFLIGHT }}
           CANARY_ENABLED: ${{ vars.RAPID_MLX_SOURCE_CANARY }}
+          CANDIDATE_CANARY_ENABLED: ${{ vars.RAPID_MLX_CANDIDATE_CANARY }}
           CANDIDATE_SHADOW_ENABLED: ${{ vars.RAPID_MLX_CANDIDATE_SHADOW_EXECUTION }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           EVENT_NAME: ${{ github.event_name }}
@@ -144,6 +146,7 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
+          echo 'candidate_reduced=false' >> "$GITHUB_OUTPUT"
           echo 'candidate_shadow=false' >> "$GITHUB_OUTPUT"
           echo 'candidate_shadow_tests=' >> "$GITHUB_OUTPUT"
           if [ "$EVENT_NAME" = "pull_request" ]; then
@@ -176,6 +179,17 @@ jobs:
                   --repo "$REPO" --enabled true --run-id "$GITHUB_RUN_ID" \
                   --head "$PR_HEAD_SHA" --base "$PR_BASE_SHA" \
                   --github-output "$GITHUB_OUTPUT"
+              fi
+              if [ "$CANDIDATE_CANARY_ENABLED" = true ] && \
+                [[ "$HEAD_REF" =~ ^mergify/merge-queue/[0-9a-f]{10}$ ]]; then
+                if python -m pip install "pyyaml>=6.0" && \
+                  python -m scripts.ci_candidate_rollout --repo "$REPO" \
+                    --run-id "$GITHUB_RUN_ID" --head "$PR_HEAD_SHA" --base "$PR_BASE_SHA" \
+                    --github-output "$GITHUB_OUTPUT"; then
+                  :
+                else
+                  echo 'candidate_reduced=false' >> "$GITHUB_OUTPUT"
+                fi
               fi
             else
               # Only the latest successful main-push qualification on the
@@ -659,6 +673,7 @@ jobs:
       needs.changes.result == 'success' &&
       needs.changes.outputs.engine == 'true' &&
       needs.changes.outputs.source_canary != 'true' &&
+      needs.changes.outputs.candidate_reduced != 'true' &&
       needs.changes.outputs.reuse_ci != 'true'
     runs-on: ubuntu-latest
     strategy:
@@ -764,6 +779,7 @@ jobs:
       needs.changes.result == 'success' &&
       needs.changes.outputs.engine == 'true' &&
       needs.changes.outputs.source_canary != 'true' &&
+      needs.changes.outputs.candidate_reduced != 'true' &&
       needs.changes.outputs.reuse_ci != 'true' &&
       needs.test-matrix.result == 'success'
     runs-on: ubuntu-latest
@@ -810,6 +826,7 @@ jobs:
       needs.changes.outputs.engine == 'true' &&
       needs.changes.outputs.source_canary != 'true' &&
       needs.changes.outputs.source_preflight != 'true' &&
+      needs.changes.outputs.candidate_reduced != 'true' &&
       needs.changes.outputs.reuse_ci != 'true'
     runs-on: macos-14
     steps:
@@ -1011,6 +1028,7 @@ jobs:
       needs.changes.outputs.engine == 'true' &&
       needs.changes.outputs.source_canary != 'true' &&
       needs.changes.outputs.source_preflight != 'true' &&
+      needs.changes.outputs.candidate_reduced != 'true' &&
       needs.changes.outputs.reuse_ci != 'true' &&
       needs.linux-coverage.result == 'success' &&
       needs.test-apple-silicon.result == 'success'
@@ -1091,6 +1109,7 @@ jobs:
       needs.changes.result == 'success' &&
       needs.changes.outputs.engine == 'true' &&
       needs.changes.outputs.full_gate == 'true' &&
+      needs.changes.outputs.candidate_reduced != 'true' &&
       needs.changes.outputs.reuse_ci != 'true'
     runs-on: macos-14
     timeout-minutes: 20
@@ -1171,6 +1190,11 @@ jobs:
             echo "Unexpected mapped candidate shadow execution"
             exit 1
           fi
+          if [ "${{ needs.changes.outputs.candidate_reduced }}" = true ] && \
+            [ "${{ needs.changes.outputs.reuse_ci }}" = true ]; then
+            echo "Scoped candidate cannot reuse full CI"
+            exit 1
+          fi
           if [ "${{ needs.changes.outputs.reuse_ci }}" = true ]; then
             echo "Complete CI already passed on the authenticated identical-tree candidate"
             exit 0
@@ -1201,6 +1225,24 @@ jobs:
             && [ "${{ needs.changes.outputs.source_canary }}" = true ]; then
             echo "Conflicting source validation routes"
             exit 1
+          fi
+          if [ "${{ needs.changes.outputs.candidate_reduced }}" = true ]; then
+            if [ "${{ needs.changes.outputs.full_gate }}" != true ] \
+              || [ "${{ github.event_name }}" != pull_request ] \
+              || [ "${{ needs.changes.outputs.candidate_shadow }}" != true ] \
+              || [ "${{ needs.changes.outputs.source_canary }}" = true ] \
+              || [ "${{ needs.changes.outputs.source_preflight }}" = true ]; then
+              echo "Invalid scoped candidate context"
+              exit 1
+            fi
+            for result in "${{ needs.source-canary-unit.result }}" "${{ needs.test-matrix.result }}" "${{ needs.test-apple-silicon.result }}" "${{ needs.linux-coverage.result }}" "${{ needs.changed-lines-coverage.result }}" "${{ needs.l1-smoke.result }}"; do
+              if [ "$result" != skipped ]; then
+                echo "Unexpected full/source execution on scoped candidate"
+                exit 1
+              fi
+            done
+            echo "Complete mapped candidate execution and mandatory coverage passed"
+            exit 0
           fi
           if [ "${{ needs.changes.outputs.source_canary }}" = true ]; then
             if [ "${{ needs.changes.outputs.full_gate }}" = true ] \

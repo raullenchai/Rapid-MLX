@@ -1,33 +1,25 @@
-# Trusted candidate admission deployment
+# Trusted candidate admission
 
-`Candidate admission` starts on successful own queue CI completion in parallel
-with qualification, and retains successful qualification notifications. It reads one bounded exact producer artifact identity, requires the
-candidate's newest qualification index to bind that same producer run, and
-calls the full consumer twice to revalidate the archive, actual full CI jobs,
-current attempt, open candidate, first-parent base/tree and current main.
-The producer and index are reread before returning a verified candidate.
-Candidate artifacts are parsed as data and never executed; checkout uses the
-trusted workflow SHA with credentials disabled.
+The trusted default-branch workflow consumes the current qualification artifact
+as data, revalidates actual source jobs, open queue candidate, exact run/attempt,
+first-parent base/tree, current main and controller identities, and rereads the
+producer/index after the second consumer. No candidate code is executed with
+publication credentials.
 
-Verified full results upload separate admission evidence before publishing
-`candidate-admission/ci`. Missing, stale, malformed, superseded, mapped or
-unavailable qualification cannot publish success. This workflow is an observer
-until queue enrollment is independently reviewed and deployed; current queue
-conditions and required checks are unchanged. No result authorizes merging or
-reduced CI. Absence of a success index is not a successful admission.
+Successful own queue CI also starts admission in parallel with qualification; failed qualification notifications remain available for revocation.
 
-Deploy and validate genuine hosted producer/consumer output before enrolling
-this context in merge conditions. Enrolling a context in its own bootstrap
-candidate before its default-branch workflow exists can deadlock that candidate.
-A later mandatory gate must define current-attempt validity/revocation and
-inflight rollback; an old advisory success must not be reused as new authority.
-Full repair candidates continue to use the existing complete validation policy;
-this observer grants no red-main exception for reduced candidates.
+Full, mapped and explicit Engine policy exemptions have separate scope kinds.
+Only full proof can qualify complete-evidence reuse. Mapped proof additionally
+requires live authenticated activation generation, mapped execution/coverage
+and a currently full-qualified base. Admission evidence uploads before the
+commit-bound status is published; publication revalidates again and repairs a
+changed proof after posting. Missing/stale/revoked proof is never a green gate.
 
-This slice does not enable mapped routing, change full-main reuse/backstop,
-activate variables, or modify Mergify/protection. Local fixtures establish the
-consumer contract, not hosted behavior or speedup. During observer rollout,
-rollback may disable the workflow without changing existing full checks.
+Both queue merge rules require the GitHub Actions-owned admission context.
+Deploy observer workflows and verify a genuine current full admission before
+publishing enrollment changes; no candidate-only gate is added to source queue
+admission. The default-off rollout and recovery procedure are documented in
+[candidate-reduced-rollout.md](candidate-reduced-rollout.md).
 
 ## Observer bootstrap timing
 

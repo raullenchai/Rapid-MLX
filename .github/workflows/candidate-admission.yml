@@ -4,6 +4,17 @@ on:
   workflow_run:
     workflows: [CI, Candidate qualification]
     types: [completed]
+  workflow_dispatch:
+    inputs:
+      rollback:
+        description: Disable candidate canary and revoke inflight reduced gates
+        type: boolean
+        required: true
+        default: false
+
+concurrency:
+  group: ${{ github.event_name == 'workflow_dispatch' && 'candidate-rollout-control' || format('candidate-admission-{0}', github.run_id) }}
+  cancel-in-progress: false
 
 permissions:
   actions: read
@@ -15,9 +26,10 @@ permissions:
 jobs:
   admit:
     if: >-
-      github.event.workflow_run.conclusion == 'success' &&
+      github.event_name == 'workflow_run' &&
       (github.event.workflow_run.name == 'Candidate qualification' ||
        (github.event.workflow_run.name == 'CI' &&
+        github.event.workflow_run.conclusion == 'success' &&
         github.event.workflow_run.event == 'pull_request' &&
         startsWith(github.event.workflow_run.head_branch, 'mergify/merge-queue/') &&
         github.event.workflow_run.head_repository.full_name == github.repository))
@@ -29,6 +41,8 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Install existing rollout policy dependency
+        run: python -m pip install "pyyaml>=6.0"
       - name: Revalidate full candidate qualification
         id: result
         env:
@@ -56,13 +70,63 @@ jobs:
           if-no-files-found: error
           retention-days: 7
       - name: Index verified full admission
-        if: steps.result.outputs.verified == 'true'
+        if: always() && steps.result.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
           CANDIDATE_SHA: ${{ steps.result.outputs.candidate_sha }}
+          VERIFIED_PRODUCER: ${{ steps.result.outputs.producer_run_id }}
+          NOTIFIED_PRODUCER: ${{ github.event.workflow_run.id }}
+          TRIGGER_NAME: ${{ github.event.workflow_run.name }}
         run: |
           set -euo pipefail
-          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$CANDIDATE_SHA" \
-            -f state=success -f context=candidate-admission/ci \
-            -f description='Revalidated trusted full candidate; queue enrollment unchanged' \
-            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          producer="$VERIFIED_PRODUCER"
+          if [ -z "$producer" ]; then
+            if [ "$TRIGGER_NAME" != "Candidate qualification" ]; then
+              exit 0
+            fi
+            producer="$NOTIFIED_PRODUCER"
+          fi
+          python -m scripts.ci_candidate_admission \
+            --repo "$GITHUB_REPOSITORY" \
+            --producer-run-id "$producer" \
+            --expected "$RUNNER_TEMP/candidate-admission.json" \
+            --publish-target-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --github-output "$GITHUB_OUTPUT" --output "$RUNNER_TEMP/candidate-admission-publication.json"
+  rollback:
+    if: github.event_name == 'workflow_dispatch' && inputs.rollback && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+      statuses: write
+    steps:
+      - name: Check out trusted rollback controller
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Install existing rollout policy dependency
+        run: python -m pip install "pyyaml>=6.0"
+      - name: Disable rollout and revoke inflight gates
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python -m scripts.ci_candidate_admission --repo "$GITHUB_REPOSITORY" \
+            --rollback --publish-target-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --github-output "$GITHUB_OUTPUT" --output "$RUNNER_TEMP/candidate-rollback.json"
+      - name: Upload rollback evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: candidate-rollback-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/candidate-rollback.json
+          if-no-files-found: error
+          retention-days: 7
+  activate:
+    if: github.event_name == 'workflow_dispatch' && !inputs.rollback && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Record explicit rollout activation
+        run: echo 'Trusted main activation; live consumers require this exact successful generation.'
