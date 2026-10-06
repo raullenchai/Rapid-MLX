@@ -68,6 +68,22 @@ def _walk(root, **kw):
     return out
 
 
+def test_a_long_value_is_cut_and_carries_its_whole_length(tree):
+    nodes, _ = tree
+    long = "x" * (ax_driver.MAX_VALUE_CHARS + 30)
+    nodes.update(
+        {
+            "win": {"AXRole": "AXWindow", "AXChildren": ["note", "short"]},
+            "note": {"AXRole": "AXTextArea", "AXTitle": "Note", "AXValue": long},
+            "short": {"AXRole": "AXTextArea", "AXTitle": "Tag", "AXValue": "abc"},
+        }
+    )
+    note, short = _walk("win")
+    assert note["value"] == long[: ax_driver.MAX_VALUE_CHARS]
+    assert note["value_chars"] == len(long)
+    assert (short["value"], short["value_chars"]) == ("abc", None)
+
+
 def test_secure_field_text_is_never_requested(tree):
     nodes, fake = tree
     nodes.update(
@@ -776,3 +792,22 @@ def test_set_value_writes_numbers_to_numeric_controls_only(
     assert backend.set_value("A", 0, "2")["verified"] is True
     assert writes == [written]
     assert bool(reads) is reads_current
+
+
+def test_set_value_writes_a_field_scrolled_out_of_view(monkeypatch):
+    # An AX write names the element; where its centre is does not matter, so
+    # a field below the fold is not refused as a point outside the window.
+    snapshot = _set_value_snapshot("AXTextArea", "")
+    asked = []
+    monkeypatch.setattr(
+        backend,
+        "_live_element",
+        lambda snap, index, *, validate_point: asked.append(validate_point) or "live",
+    )
+    module = types.ModuleType("ApplicationServices")
+    module.kAXValueAttribute = "AXValue"
+    module.AXUIElementSetAttributeValue = lambda live, attr, value: 0
+    monkeypatch.setitem(sys.modules, "ApplicationServices", module)
+    monkeypatch.setattr(backend, "_read_value", lambda live: "a\nb")
+    out = backend.set_value("A", 0, "a\nb", expected_snapshot=snapshot)
+    assert out["verified"] is True and asked == [False]

@@ -870,6 +870,7 @@ def get_app_state(
                 "parent_role": target.get("parent_role") or "",
                 "label": target["text"],
                 "value": target.get("value"),
+                "value_chars": target.get("value_chars"),
                 "actions": target.get("actions", []),
                 "x": round(rect[0]),
                 "y": round(rect[1]),
@@ -1240,6 +1241,8 @@ def _numeric_request(current: object, value: str) -> float | None:
 # misses it, and the typing fallback then applies the value a second time
 # ("2" became "22"). A write is given this long to show.
 AX_WRITE_READBACK_S = 0.5
+# A menu opened through Accessibility validates its items within this.
+MENU_VALIDATE_S = 0.3
 
 
 def _await_readback(live: object, value: str, numeric: float | None) -> str | None:
@@ -1952,6 +1955,54 @@ def drag(
         verification="synthetic drag emitted; outcome not asserted",
         include_post_state=include_post_state,
     )
+
+
+MAX_READ_CHARS = 20000
+
+
+def read_value(
+    app: str,
+    element_index: int,
+    *,
+    start: int = 0,
+    max_chars: int = MAX_READ_CHARS,
+    expected_snapshot: dict | None = None,
+    window_id: int | str | None = None,
+) -> dict:
+    """The whole value of an element whose observed value was cut short.
+
+    Returns ``text`` (at most ``max_chars`` from ``start``) and the value's
+    ``total_chars``. A secret field's value is never read.
+    """
+    if start < 0 or not 0 < max_chars <= MAX_READ_CHARS:
+        raise ComputerUseError(
+            "invalid_argument", f"start >= 0 and 0 < max_chars <= {MAX_READ_CHARS}"
+        )
+    snapshot = expected_snapshot or get_app_state(
+        app,
+        screenshot=False,
+        use_cache=False,
+        window_id=window_id,
+        activate=OBSERVE_BY_ROUTE,
+    )
+    entry = _element(snapshot, element_index)
+    if entry.get("value") == ax_driver.USER_VALUE or (
+        "AXSecureTextField" in (entry.get("role"), entry.get("subrole"))
+    ):
+        raise ComputerUseError(
+            "invalid_argument", "a secret field's value is the user's; it is not read"
+        )
+    live = _live_element(snapshot, element_index, validate_point=False)
+    readable, raw = ax_driver._get_checked(live, "AXValue")
+    if not readable or not isinstance(raw, str):
+        raise ComputerUseError(
+            "accessibility_error", "the element's value could not be read"
+        )
+    return {
+        "text": raw[start : start + max_chars],
+        "start": start,
+        "total_chars": len(raw),
+    }
 
 
 def _same_process(expected: dict):
@@ -3376,7 +3427,9 @@ def set_value(
     is_transient = entry.get(
         "source_window_id", snapshot.get("window_id")
     ) != snapshot.get("window_id")
-    live = _live_element(snapshot, element_index, validate_point=not is_transient)
+    # An AX write names the element, not a point: a field scrolled out of
+    # view is written where it is. The typing fallback checks its own point.
+    live = _live_element(snapshot, element_index, validate_point=False)
     if live is not None:
         is_finder_item = (
             is_finder_snapshot(snapshot)
@@ -5138,6 +5191,31 @@ def _menu_item_by_path(app_info: dict, path: list[str]) -> object:
     return node
 
 
+def _menu_item_revalidated(item: object) -> bool:
+    """Whether a menu item read as disabled is enabled once its menu is asked.
+
+    AppKit validates items when their menu opens, so an item of an app that
+    is not in front keeps the state it had for another window (Save… stayed
+    disabled for a new document after a saved one). Opening the item's
+    menu-bar menu through Accessibility validates it against the key window
+    without showing anything or activating the app; it is closed again.
+    """
+    top = item
+    for _ in range(8):
+        if top is None or ax_driver._get(top, "AXRole") == "AXMenuBarItem":
+            break
+        top = ax_driver._get(top, "AXParent")
+    if top is None or ax_driver._get(top, "AXRole") != "AXMenuBarItem":
+        return False
+    if ax_driver.AXUIElementPerformAction(top, "AXPress") != 0:
+        return False
+    time.sleep(MENU_VALIDATE_S)
+    enabled = ax_driver._get(item, "AXEnabled") is not False
+    ax_driver.AXUIElementPerformAction(top, "AXCancel")
+    time.sleep(MENU_VALIDATE_S)
+    return enabled
+
+
 def _press_menu_item(
     app: str, snapshot: dict, item: object, label: str, include_post_state: bool
 ) -> dict:
@@ -5172,7 +5250,9 @@ def _press_menu_item(
                     "action_failed", "menu key equivalent could not be synthesized"
                 )
         else:
-            if ax_driver._get(item, "AXEnabled") is False:
+            if ax_driver._get(item, "AXEnabled") is False and not (
+                background and _menu_item_revalidated(item)
+            ):
                 raise ComputerUseError(
                     "synthetic_input_blocked",
                     f"menu item {label} is disabled for window "
@@ -5592,7 +5672,9 @@ def perform_secondary_action(
         activate=OBSERVE_BY_ROUTE,
     )
     entry = _element(snapshot, element_index)
-    live = _live_element(snapshot, element_index)
+    # An AX action names the element: an open menu's item lies outside the
+    # window's frame and is still the one to act on.
+    live = _live_element(snapshot, element_index, validate_point=False)
     if live is None or action not in entry["actions"]:
         raise ComputerUseError(
             "value_not_settable",
