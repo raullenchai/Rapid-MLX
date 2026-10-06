@@ -166,6 +166,9 @@ VALUE_ROLES = {
 # Web pages nest deep: a Walmart result grid sits ~30 levels under the window,
 # and a whole results page is ~800 nodes.
 MAX_NODES = 4000
+# A value longer than this is cut in the snapshot; its full length rides along
+# (``value_chars``) and backend.read_value returns the rest.
+MAX_VALUE_CHARS = 120
 MAX_DEPTH = 60
 CLICKABLE_SUBSTRINGS = ("button", "link", "menuitem", "tab", "checkbox", "radio")
 PRIORITY_CONTAINER_ROLES = {"AXToolbar", "AXTabGroup", "AXMenuBar"}
@@ -754,6 +757,7 @@ def _walk(
     if interesting and (label or actionable or editable or dialog):
         counter[0] += 1
         value = None
+        value_chars = None  # the whole value's length, when ``value`` is cut
         if (editable or role in VALUE_ROLES) and not secure_text:
             raw_value = node.get("AXValue")
             if user_only:
@@ -767,7 +771,9 @@ def _walk(
                 and raw_value.strip() != label.strip()
                 and (editable or raw_value.strip())
             ):
-                value = raw_value[:120]
+                value = raw_value[:MAX_VALUE_CHARS]
+                if len(raw_value) > MAX_VALUE_CHARS:
+                    value_chars = len(raw_value)
         target: dict[str, Any] = {
             "target_id": f"t{counter[0] - 1:03d}",
             "role": role,
@@ -775,6 +781,7 @@ def _walk(
             "parent_role": parent_role,
             "text": label,
             "value": value,
+            "value_chars": value_chars,
             "actions": actions[:6],
             "rect": geom,
             "states": _states_of(node, role),

@@ -1,7 +1,7 @@
 """Eval harness: one PerceptionSession behind a local socket.
 
 Model channel   POST /       {"op": observe|windows|apps|front|handback|wait|handoff|open_url|
-                               click|fill|type|key|scroll|action, ...} -> {"text": ...}
+                               read|click|fill|type|key|scroll|drag|action, ...} -> {"text": ...}
 User channel    POST /human  {"op": fill|type|click|key|done, ...}
 
 The user channel is the person at the Mac typing during a handoff (a
@@ -90,7 +90,16 @@ def handle(req: dict) -> str:
             out = SESSION.wait(wid, **req)
         else:
             out = SESSION.handoff(wid, req.pop("reason"), **req)
-        return f"{op} met={out['met']}\n" + out["observation"].render(full=full)
+        partly = "" if out.get("complete", True) else " (page only partly read)"
+        return f"{op} met={out['met']}{partly}\n" + out["observation"].render(full=full)
+    if op == "read":
+        out = SESSION.read(
+            req["ref"],
+            start=int(req.get("start", 0)),
+            max_chars=int(req.get("max_chars", backend.MAX_READ_CHARS)),
+        )
+        end = out["start"] + len(out["text"])
+        return f"chars {out['start']}-{end} of {out['total_chars']}\n{out['text']}"
     if op == "open_url":
         return _receipt(SESSION.open_url(req["window_id"], req["url"]), full)
     return _receipt(SESSION.act(op, req.pop("ref", None), **req), full)
