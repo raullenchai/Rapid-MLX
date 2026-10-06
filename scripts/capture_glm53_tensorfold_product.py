@@ -42,6 +42,7 @@ FIXTURE = ROOT / "docs/engineering/performance/fixtures/glm53-tensorfold-ttlcach
 ALIASES = ROOT / "rapid_mlx/aliases.json"
 ALIAS = "glm5.3-flash-tensorfold"
 DIRECT_SERVED_NAME = "glm53-tf-v06"
+RUNTIME_VERSION = "0.6.6"
 HASH_MAP_NAME = "artifact-hashes.json"
 SCHEMA = "rapid-mlx/glm53-tensorfold-product-capture/v1"
 HASH_MAP_SCHEMA = "rapid-mlx/artifact-sha256-map/v1"
@@ -1139,14 +1140,14 @@ def require_qualified_runtime(model: dict[str, Any]) -> None:
     runtime = package_provenance("tensorfold")
     vcs = runtime.get("vcs") or {}
     if (
-        runtime.get("version") != "0.6.6"
+        runtime.get("version") != RUNTIME_VERSION
         or vcs.get("type") != "git"
         or vcs.get("commit_id") != model["runtime_revision"]
         or runtime.get("editable") is True
     ):
         raise CaptureError(
             "installed TensorFold runtime is not the exact qualified, non-editable "
-            "0.6.6 git revision"
+            f"{RUNTIME_VERSION} git revision"
         )
 
 

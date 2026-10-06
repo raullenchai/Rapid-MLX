@@ -600,8 +600,13 @@ def test_catalog_runtime_revision_is_the_shared_runtime() -> None:
         INSTALL_HINT,
         SUPPORTED_REVISION,
         SUPPORTED_RUNTIME_URL,
+        SUPPORTED_VERSION,
     )
 
+    capture = (
+        Path(__file__).parents[1] / "scripts" / "capture_glm53_tensorfold_product.py"
+    ).read_text()
+    assert f'RUNTIME_VERSION = "{SUPPORTED_VERSION}"' in capture
     aliases = json.loads(
         (Path(__file__).parents[1] / "rapid_mlx" / "aliases.json").read_text()
     )
