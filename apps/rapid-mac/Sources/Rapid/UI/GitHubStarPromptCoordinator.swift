@@ -249,7 +249,8 @@ enum GitHubStarCLI {
     static func star(
         _ repositoryURL: URL,
         executableURL overrideExecutableURL: URL? = nil,
-        timeout requestedTimeout: Duration = timeout
+        timeout requestedTimeout: Duration = timeout,
+        afterTimeoutSignal: (@Sendable () async -> Void)? = nil
     ) async throws {
         guard repositoryURL == GitHubCommunity.repositoryURL else {
             throw GitHubStarCLIError.invalidRepository
@@ -262,7 +263,9 @@ enum GitHubStarCLI {
             executableURL: executable,
             arguments: apiArguments()
         )
-        let terminationStatus = try await waitUntilExit(child, timeout: requestedTimeout)
+        let terminationStatus = try await waitUntilExit(
+            child, timeout: requestedTimeout, afterTimeoutSignal: afterTimeoutSignal
+        )
 
         guard terminationStatus == 0 else {
             throw GitHubStarCLIError.commandFailed
@@ -283,7 +286,11 @@ enum GitHubStarCLI {
             .first { FileManager.default.isExecutableFile(atPath: $0.path) }
     }
 
-    private static func waitUntilExit(_ child: GitHubStarChild, timeout: Duration) async throws -> Int32 {
+    private static func waitUntilExit(
+        _ child: GitHubStarChild,
+        timeout: Duration,
+        afterTimeoutSignal: (@Sendable () async -> Void)?
+    ) async throws -> Int32 {
         enum Outcome {
             case exited(Int32)
             case timedOut
@@ -305,7 +312,8 @@ enum GitHubStarCLI {
                     if let status = child.terminationStatusIfExited() {
                         return .exited(status)
                     }
-                    child.killIfRunning()
+                    child.killIfRunning(timedOut: true)
+                    await afterTimeoutSignal?()
                     return .timedOut
                 }
 
@@ -324,6 +332,11 @@ enum GitHubStarCLI {
 
         switch outcome {
         case let .exited(status):
+            // Signalling can wake the exit waiter before the timeout task
+            // returns. Preserve the cause independently of task-group order.
+            if child.wasKilledForTimeout {
+                throw GitHubStarCLIError.timedOut
+            }
             return status
         case .timedOut:
             throw GitHubStarCLIError.timedOut
@@ -345,6 +358,7 @@ private final class GitHubStarChild: @unchecked Sendable {
     private let lock = NSLock()
     private let reapLock = NSLock()
     private var running = true
+    private var killedForTimeout = false
     private var terminationStatus: Int32?
     private var waiters: [CheckedContinuation<Int32, Never>] = []
     private var exitSource: (any DispatchSourceProcess)?
@@ -353,10 +367,19 @@ private final class GitHubStarChild: @unchecked Sendable {
         self.processIdentifier = processIdentifier
     }
 
-    func killIfRunning() {
+    var wasKilledForTimeout: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return killedForTimeout
+    }
+
+    func killIfRunning(timedOut: Bool = false) {
         reapLock.lock()
         lock.lock()
         let shouldSignal = running
+        if shouldSignal && timedOut {
+            killedForTimeout = true
+        }
         lock.unlock()
         if shouldSignal {
             _ = kill(-processIdentifier, SIGKILL)
