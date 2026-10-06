@@ -754,7 +754,13 @@ def test_precise_float_sigmoid_matches_mx_sigmoid_on_every_bf16_valued_float():
 
 
 @requires_metal
-def test_fast_silu_matches_nn_silu_on_every_finite_bf16():
+def test_fast_silu_differs_from_nn_silu_on_at_most_the_one_known_bf16_input():
+    """Known defect (#4208): whether the form this kernel uses is
+    bit-identical to ``nn.silu`` is GPU-family dependent. The GitHub Apple
+    runners show no mismatch; M3 Ultra shows exactly one (x = -6.84375).
+    This pins that bound over every finite bf16 input — a different or an
+    additional mismatch fails. It does not claim the kernel is bit-exact on
+    every device; #4208 tracks restoring that."""
     x = _finite_bf16()
     reference = nn.silu(x)
     fast = _header_helper(
@@ -764,22 +770,12 @@ def test_fast_silu_matches_nn_silu_on_every_finite_bf16():
         mx.bfloat16,
     )
     mx.eval(reference, fast)
-    mismatches = _bit_mismatches(fast, reference, mx.uint16)
-    if mismatches:
-        # Known defect (#4208): on some GPU families the stock op and the
-        # form this kernel uses disagree on exactly one input. Only that
-        # exact signature is skipped; any other or additional mismatch
-        # still fails, and a clean sweep still passes.
-        x_bits, ref_bits, fast_bits = (
-            np.array(a.view(mx.uint16)) for a in (x, reference, fast)
-        )
-        signature = [
-            (int(x_bits[k]), int(ref_bits[k]), int(fast_bits[k]))
-            for k in np.flatnonzero(ref_bits != fast_bits)
-        ]
-        if signature == [(0xC0DB, 0xBBEE, 0xBBF0)]:
-            pytest.skip(
-                "#4208: fused-kernel SiLU differs from nn.silu at x=-6.84375 "
-                "(0xc0db: 0xbbee vs 0xbbf0) on this GPU family"
-            )
-    assert mismatches == 0
+    x_bits, ref_bits, fast_bits = (
+        np.array(a.view(mx.uint16)) for a in (x, reference, fast)
+    )
+    mismatches = [
+        (int(x_bits[k]), int(ref_bits[k]), int(fast_bits[k]))
+        for k in np.flatnonzero(ref_bits != fast_bits)
+    ]
+    print(f"fast-form bf16 SiLU mismatches vs nn.silu: {len(mismatches)}")
+    assert mismatches in ([], [(0xC0DB, 0xBBEE, 0xBBF0)])
