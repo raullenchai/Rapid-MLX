@@ -378,3 +378,53 @@ def test_warm_file_unreadable_for_hashing_is_refetched(tmp_path, monkeypatch):
     assert router.file_urls() == [f"{BASE}/{REPO}/config.json"]
     assert hf_calls == []
     _assert_blob_layout(tmp_path, "config.json", CONFIG)
+
+
+def test_cold_pull_replaces_a_corrupt_blob_stored_under_the_expected_id(
+    tmp_path, monkeypatch
+):
+    """A verified download is never discarded in favour of a bad blob."""
+    blob = _repo_root(tmp_path) / "blobs" / _oid(CONFIG)
+    blob.parent.mkdir(parents=True)
+    blob.write_bytes(STALE_CONFIG)  # no snapshot entry links to it yet
+    siblings = [_sibling("config.json", CONFIG, lfs=False)]
+    ok, router, hf_calls, _out = _run(
+        tmp_path, monkeypatch, siblings, {"config.json": CONFIG}
+    )
+    assert ok is True
+    assert router.file_urls() == [f"{BASE}/{REPO}/config.json"]
+    assert hf_calls == []
+    _assert_blob_layout(tmp_path, "config.json", CONFIG)
+
+
+def test_migrating_a_proven_file_replaces_a_corrupt_blob(tmp_path, monkeypatch):
+    blob = _repo_root(tmp_path) / "blobs" / _oid(CONFIG)
+    blob.parent.mkdir(parents=True)
+    blob.write_bytes(STALE_CONFIG)
+    _plant(tmp_path, "config.json", CONFIG)
+    siblings = [_sibling("config.json", CONFIG, lfs=False)]
+    ok, router, hf_calls, _out = _run(
+        tmp_path, monkeypatch, siblings, {"config.json": STALE_CONFIG}
+    )
+    assert ok is True
+    assert router.file_urls() == []
+    assert hf_calls == []
+    _assert_blob_layout(tmp_path, "config.json", CONFIG)
+
+
+def test_matching_existing_blob_is_reused(tmp_path, monkeypatch):
+    blob = _repo_root(tmp_path) / "blobs" / _oid(CONFIG)
+    blob.parent.mkdir(parents=True)
+    blob.write_bytes(CONFIG)
+    before = blob.stat().st_ino
+    siblings = [_sibling("config.json", CONFIG, lfs=False)]
+    ok, _router, _hf_calls, _out = _run(
+        tmp_path, monkeypatch, siblings, {"config.json": CONFIG}
+    )
+    assert ok is True
+    assert blob.stat().st_ino == before
+    _assert_blob_layout(tmp_path, "config.json", CONFIG)
+
+
+def test_blob_oid_predicate_treats_unreadable_as_mismatch(tmp_path):
+    assert _mirror._blob_oid_is(_oid(CONFIG))(tmp_path / "missing") is False

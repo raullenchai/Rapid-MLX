@@ -573,6 +573,18 @@ def _git_blob_oid(path: Path) -> str:
     return hasher.hexdigest()
 
 
+def _blob_oid_is(expected: str) -> Callable[[Path], bool]:
+    """Predicate: the file at a path hashes to git blob id ``expected``."""
+
+    def check(path: Path) -> bool:
+        try:
+            return _git_blob_oid(path) == expected
+        except OSError:
+            return False
+
+    return check
+
+
 def pinned_snapshot_download(
     repo_id: str,
     revision: str,
@@ -1057,7 +1069,9 @@ def _do_r2_download(
             # ``blobs/<git blob id>`` and the snapshot entry links to them.
             # Readiness gates that require snapshot files to resolve inside
             # the repo's blob store (Wan) depend on it.
-            ok, reason = _install_lfs_blob_and_symlink(tmp, target, repo_root, got_oid)
+            ok, reason = _install_lfs_blob_and_symlink(
+                tmp, target, repo_root, got_oid, existing_ok=_blob_oid_is(got_oid)
+            )
             if not ok:
                 _safe_unlink(tmp)
                 _rollback_credits(progress_tracker, chunks_credited)
@@ -1094,6 +1108,8 @@ def _install_lfs_blob_and_symlink(
     target: Path,
     repo_root: Path,
     expected_sha256: str,
+    *,
+    existing_ok: Callable[[Path], bool] | None = None,
 ) -> tuple[bool, str]:
     """Land verified LFS bytes at ``blobs/<sha>`` and symlink ``target``.
 
@@ -1118,6 +1134,10 @@ def _install_lfs_blob_and_symlink(
       we acquired the lock, just symlink to it and drop our ``tmp``
       (size+sha are already validated upstream, so any existing blob
       with that name has the same content).
+    * ``existing_ok``, when given, must also accept that existing blob;
+      otherwise our verified bytes replace it under the lock. Non-LFS
+      files pass a git-blob-id check (cheap: HF keeps them small), so a
+      corrupted ``blobs/<blob id>`` is never trusted by name.
     """
     blobs_dir = repo_root / "blobs"
     blob_path = blobs_dir / expected_sha256
@@ -1137,7 +1157,11 @@ def _install_lfs_blob_and_symlink(
         # check and now. If it's there with content, drop our tmp and
         # just symlink. sha+size were validated by the caller, so any
         # blob already at the canonical name has identical bytes.
-        if blob_path.exists() and not blob_path.is_symlink():
+        if (
+            blob_path.exists()
+            and not blob_path.is_symlink()
+            and (existing_ok is None or existing_ok(blob_path))
+        ):
             _safe_unlink(tmp)
         else:
             # Atomic install: write to a ``.tmp`` sibling first so a
@@ -1908,13 +1932,8 @@ def download_with_mirror_fallback(
         except OSError:
             return False
         if not proven:
-            # A blob stored under the expected id with other bytes would be
-            # trusted by name when the verified refetch is installed, so the
-            # bad copy is removed first (HF would refetch it the same way).
-            blobs = (repo_root / "blobs").resolve(strict=False)
-            resolved = target.resolve(strict=False)
-            if resolved.parent == blobs and resolved.name == expected:
-                _safe_unlink(resolved)
+            # The refetch replaces a bad ``blobs/<expected>`` under its lock
+            # (see ``existing_ok`` in ``_install_lfs_blob_and_symlink``).
             return False
         if target.is_symlink() and not pinned:
             # Bytes proven; the link already passed the containment checks
@@ -1929,7 +1948,9 @@ def download_with_mirror_fallback(
         # A proven regular file (left by an older client, which kept mirror
         # configs as plain files) moves into the HF blob layout so readiness
         # gates that require ``blobs/`` containment (Wan) agree.
-        ok, _reason = _install_lfs_blob_and_symlink(target, target, repo_root, expected)
+        ok, _reason = _install_lfs_blob_and_symlink(
+            target, target, repo_root, expected, existing_ok=_blob_oid_is(expected)
+        )
         return ok
 
     def _do_file(
