@@ -8,7 +8,8 @@ snapshots from the default Hugging Face cache; it downloaded no model data.
 - Target: `Vontra/GLM-5.3-Flash-MLX-4bit-MTP` at
   `76add2a341a1cd90ad0e86bb69839ea9c35827c6`.
 - Runtime: TensorFold 0.6.0 at
-  `c4646171139ee8a3c38103eaa1699dad226ec12b`.
+  `c4646171139ee8a3c38103eaa1699dad226ec12b` for the original run; requalified on
+  0.6.6 at `cb2ebf0540f42604e2759b2ddef497861e928248` (see below).
 - MLX 0.32.3; 4-bit affine weights in groups of 64; embedded MTP head.
 - Context 8,192; one request; temperature 0; seed 1234.
 
@@ -25,7 +26,7 @@ It asks for a standard-library, thread-safe TTL/LRU cache with single-flight
 loading. Run the exact pinned runtime from a clean shell:
 
 ```bash
-python -m pip install "tensorfold @ git+https://github.com/ashhart/TensorFold.git@c4646171139ee8a3c38103eaa1699dad226ec12b"
+python -m pip install "tensorfold @ git+https://github.com/ashhart/TensorFold.git@cb2ebf0540f42604e2759b2ddef497861e928248"
 TARGET=$(python -c 'from huggingface_hub import snapshot_download; print(snapshot_download("Vontra/GLM-5.3-Flash-MLX-4bit-MTP", revision="76add2a341a1cd90ad0e86bb69839ea9c35827c6"))')
 tensorfold serve "$TARGET" \
   --name glm53-tf-v06 --context 8192 --max-tokens 4096 \
@@ -63,6 +64,27 @@ These samples qualify an experimental opt-in path. They do not establish a
 fixed speed multiplier or a quality improvement. An earlier run under heavy
 swap made wide verification slower than serial; memory admission and the 256 GB
 product floor are therefore part of the profile contract.
+
+## Requalification on TensorFold 0.6.6 (2026-10-06)
+
+Both accelerated profiles now share one runtime, TensorFold 0.6.6 at
+`cb2ebf0540f42604e2759b2ddef497861e928248`, because one environment holds one
+`tensorfold` distribution. The reproduction above was repeated on the same host
+with the same target revision, fixture and server flags.
+
+| Profile | Check | 0.6.6 | Earlier runtime |
+| --- | --- | --- | --- |
+| GLM-5.3-Flash | coding fixture, drafted | 57.9 token/s | 57.5 (0.6.0) |
+| GLM-5.3-Flash | coding fixture, `draft:false` | 47.8 token/s | 47.5 (0.6.0) |
+| GLM-5.3-Flash | drafted and serial message and token fingerprint | identical | identical |
+| GLM-5.3-Flash | `rapid-mlx serve glm5.3-flash-tensorfold`, 320-token prose | 59.4 token/s | not measured |
+| Qwen3.8-27B | `rapid-mlx serve qwen3.8-27b-tensorfold`, 320-token prose | 80.2 token/s | 79.8 (0.5.0) |
+| Qwen3.8-27B | same, first token at a 2,620-token prompt | 7.62 s | 7.65 s (0.5.0) |
+
+The host had no other resident model and reported 18% free memory with the GLM
+target loaded, but 16.0 GB of swap left by earlier unrelated work was still
+allocated. The product-path capture below refuses to start with nonzero swap, so
+it was not rerun; the table is direct-runtime and alias evidence only.
 
 ## Product-path evidence capture
 
