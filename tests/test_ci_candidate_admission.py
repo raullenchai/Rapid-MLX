@@ -417,9 +417,15 @@ def test_actual_rendered_observer_shell_uses_real_verified_cli(
 ):
     import os
     import subprocess
+    from contextlib import nullcontext
+
+    from scripts import ci_github_transport
 
     shell_run = subprocess.run
     client, _, _, _, _ = setup(monkeypatch)
+    monkeypatch.setattr(
+        ci_github_transport, "PersistentGitHubClient", lambda *a: nullcontext(client)
+    )
     workflow = yaml.safe_load(
         (
             Path(__file__).resolve().parents[1]
@@ -447,6 +453,7 @@ def test_actual_rendered_observer_shell_uses_real_verified_cli(
     )
     args = captured.read_bytes().decode().rstrip("\0").split("\0")
     assert args[:2] == ["-m", "scripts.ci_candidate_admission"]
+    assert "--reuse-api-connection" in args
     monkeypatch.setattr(admission.evidence, "GitHubClient", lambda *a: client)
     monkeypatch.setattr(sys, "argv", ["admission", *args[2:]])
     admission.main()

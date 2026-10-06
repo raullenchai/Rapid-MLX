@@ -5,9 +5,11 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import os
 import re
 import subprocess
 import time
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
@@ -153,7 +155,14 @@ def verify_source_admission(
                 )
                 if not target or target.group("repo") != client.repo:
                     raise evidence.EvidenceError("unknown source producer target")
-                result = verify_admission(client, int(target.group("run_id")))
+                producer_id = int(target.group("run_id"))
+                producer = client.json(
+                    f"repos/{client.repo}/actions/runs/{producer_id}"
+                )
+                if producer.get("status") == "completed":
+                    result = verify_admission(client, producer_id)
+                else:
+                    result = {"verified": False, "reason": "producer not ready"}
                 if result.get("verified") is True:
                     if (
                         result.get("candidate_sha") != sha
@@ -175,6 +184,8 @@ def verify_source_admission(
                         raise evidence.EvidenceError(
                             "producer/index changed after source verification"
                         )
+                    return result
+                if producer.get("status") == "completed":
                     return result
                 rejected["reason"] = result.get("reason", "producer not ready")
             if time.monotonic() >= deadline:
@@ -199,6 +210,7 @@ def verify_source_admission(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", required=True)
+    parser.add_argument("--reuse-api-connection", action="store_true")
     identity = parser.add_mutually_exclusive_group(required=True)
     identity.add_argument("--producer-run-id", type=int)
     identity.add_argument("--source-run-id", type=int)
@@ -206,19 +218,26 @@ def main() -> None:
     parser.add_argument("--github-output", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    client = evidence.GitHubClient(args.repo)
-    result = (
-        verify_source_admission(client, args.source_run_id, args.source_attempt)
-        if args.source_run_id is not None
-        else verify_admission(client, args.producer_run_id)
-    )
-    args.output.write_text(json.dumps(result, indent=2) + "\n")
-    with args.github_output.open("a") as output:
-        output.write("verified=" + str(result["verified"]).lower() + "\n")
-        if result["verified"]:
-            output.write("candidate_sha=" + result["candidate_sha"] + "\n")
-            output.write("producer_run_id=" + str(result["producer_run_id"]) + "\n")
-    print(json.dumps(result))
+    with ExitStack() as stack:
+        client = evidence.GitHubClient(args.repo)
+        if args.reuse_api_connection:
+            from scripts.ci_github_transport import PersistentGitHubClient
+
+            client = stack.enter_context(
+                PersistentGitHubClient(args.repo, os.environ.get("GH_TOKEN", ""))
+            )
+        result = (
+            verify_source_admission(client, args.source_run_id, args.source_attempt)
+            if args.source_run_id is not None
+            else verify_admission(client, args.producer_run_id)
+        )
+        args.output.write_text(json.dumps(result, indent=2) + "\n")
+        with args.github_output.open("a") as output:
+            output.write("verified=" + str(result["verified"]).lower() + "\n")
+            if result["verified"]:
+                output.write("candidate_sha=" + result["candidate_sha"] + "\n")
+                output.write("producer_run_id=" + str(result["producer_run_id"]) + "\n")
+        print(json.dumps(result))
 
 
 if __name__ == "__main__":

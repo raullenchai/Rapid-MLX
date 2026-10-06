@@ -42,3 +42,18 @@ notification remains available; neither trigger can use historical proof as live
 merge authority. No queue hold, check reset, replay or gate waiver is introduced.
 A slow runner can still miss the live candidate window; inspect actual upload and
 index outcomes rather than treating a green observer aggregate as positive proof.
+
+## Connection reuse in the observer
+
+The hosted observer opts into one authenticated HTTPS connection per CLI for its
+JSON reads. Every run, job, status, open-candidate and main check still makes a
+fresh GET; responses and authorization are never cached. Pagination keeps the
+original own-repository endpoint and filters, follows only authenticated API
+page numbers, and rejects redirects, foreign links and malformed responses.
+Artifact downloads retain the bounded existing ZIP transport and validation.
+Network or HTTP failures reject the proof without retrying through another client.
+
+Producer readiness can be awaited within the existing deadline. Once the producer
+is completed, a rejected actual proof is terminal; stale or closed proof does not
+become a readiness retry. Connection reuse reduces subprocess/TLS overhead; it does
+not guarantee a hosted window, positive admission or a general CI speedup.
