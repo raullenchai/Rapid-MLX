@@ -13,18 +13,17 @@ from pathlib import Path
 from typing import Any
 
 from .tensorfold_qwen27 import TensorFoldQwen27Backend, TensorFoldUnavailable
+from .tensorfold_runtime import (
+    INSTALL_HINT as INSTALL_HINT,
+)
+from .tensorfold_runtime import (
+    SUPPORTED_MLX_VERSION,
+    SUPPORTED_VERSION,
+)
+from .tensorfold_runtime import SUPPORTED_REVISION as SUPPORTED_RUNTIME_REVISION
 
-SUPPORTED_VERSION = "0.6.0"
-SUPPORTED_MLX_VERSION = "0.32.3"
 SUPPORTED_TARGET = "Vontra/GLM-5.3-Flash-MLX-4bit-MTP"
 SUPPORTED_TARGET_REVISION = "76add2a341a1cd90ad0e86bb69839ea9c35827c6"
-SUPPORTED_RUNTIME_REVISION = "c4646171139ee8a3c38103eaa1699dad226ec12b"
-INSTALL_HINT = (
-    "Install the qualified TensorFold runtime from its vetted revision with:\n"
-    '    python -m pip install "tensorfold @ '
-    "git+https://github.com/ashhart/TensorFold.git@"
-    f'{SUPPORTED_RUNTIME_REVISION}"'
-)
 
 
 def download_qualified_target() -> str:

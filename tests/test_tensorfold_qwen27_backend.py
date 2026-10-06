@@ -40,7 +40,7 @@ def test_product_alias_declares_exact_tensorfold_pair() -> None:
 
 @pytest.mark.parametrize(
     ("failed_check", "message"),
-    [("runtime", "optional tensorfold==0.5.0 runtime"), ("environment", "arm64/macOS")],
+    [("runtime", "optional tensorfold==0.6.6 runtime"), ("environment", "arm64/macOS")],
 )
 def test_cli_preflight_rejects_before_pair_download(
     monkeypatch, capsys, failed_check: str, message: str
@@ -336,7 +336,7 @@ class TensorFoldQwen27Tests(unittest.IsolatedAsyncioTestCase):
             "url": "https://github.com/ashhart/TensorFold.git",
             "vcs_info": {"vcs": "git", "commit_id": SUPPORTED_REVISION},
         }
-        require_runtime("0.5.0", direct_url=qualified)
+        require_runtime("0.6.6", direct_url=qualified)
         with self.assertRaisesRegex(TensorFoldUnavailable, "found 0.5.1"):
             require_runtime("0.5.1", direct_url=qualified)
         for provenance in (
@@ -352,7 +352,7 @@ class TensorFoldQwen27Tests(unittest.IsolatedAsyncioTestCase):
             },
         ):
             with self.assertRaisesRegex(TensorFoldUnavailable, "exact qualified"):
-                require_runtime("0.5.0", direct_url=provenance)
+                require_runtime("0.6.6", direct_url=provenance)
 
     def test_installed_runtime_reads_exact_vcs_provenance(self):
         qualified = {
@@ -367,7 +367,7 @@ class TensorFoldQwen27Tests(unittest.IsolatedAsyncioTestCase):
         with (
             patch(
                 "rapid_mlx.speculative.tensorfold_qwen27.importlib.metadata.version",
-                return_value="0.5.0",
+                return_value="0.6.6",
             ),
             patch(
                 "rapid_mlx.speculative.tensorfold_qwen27.importlib.metadata.distribution",
@@ -383,7 +383,7 @@ class TensorFoldQwen27Tests(unittest.IsolatedAsyncioTestCase):
         with (
             patch(
                 "rapid_mlx.speculative.tensorfold_qwen27.importlib.metadata.version",
-                return_value="0.5.0",
+                return_value="0.6.6",
             ),
             patch(
                 "rapid_mlx.speculative.tensorfold_qwen27.importlib.metadata.distribution",
