@@ -61,7 +61,11 @@ from .prompt_lookup import (
     PromptLookupPolicy,
     verify_cost_estimate,
 )
-from .reproducible_depth import request_depth_controller, request_round_cost
+from .reproducible_depth import (
+    request_depth_controller,
+    request_round_cost,
+    request_round_costs,
+)
 
 _LEGACY_PROMPT_LOOKUP_POLICY = PromptLookupPolicy()
 
@@ -1164,7 +1168,13 @@ def mtp_generate_step(
     # EV rule with nothing from the clock or from other requests
     # (``reproducible_depth.request_depth_controller``). Without a measured
     # curve the request drafts at ``max_k_effective`` every round.
-    _request_costs = _schedule.round_costs if _schedule is not None else ()
+    # Parked rounds run ahead of delivery unless logits processors are active
+    # (see ``_pipeline_parks`` below); the cost curve has to match.
+    _request_costs = (
+        request_round_costs(_schedule, parks_pipelined=not logits_processors)
+        if _schedule is not None
+        else ()
+    )
     _request_depth = (
         request_depth_controller(_request_costs, max_k_effective)
         if _request_costs and max_k_effective > 0
