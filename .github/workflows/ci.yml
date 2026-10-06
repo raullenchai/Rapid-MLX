@@ -913,6 +913,7 @@ jobs:
             tests/test_ddtree_integration.py \
             tests/test_mtp_gemma4_assistant_inject.py \
             tests/test_mtp_draft_overlap.py \
+            tests/test_mtp_greedy_determinism.py \
             tests/test_mtp_nongreedy_distribution.py \
             tests/test_speculative_request_policy.py \
             tests/test_deepseek_v4_vendored.py \

@@ -196,6 +196,7 @@ __all__ = [
     "PromptLookupIndex",
     "PromptLookupMatch",
     "PromptLookupPolicy",
+    "verify_cost_estimate",
 ]
 
 
@@ -325,6 +326,55 @@ def _tile_floor(rows: int) -> int:
     return edge if edge >= COPY_DRAFT_TILE_ROWS - 1 else rows
 
 
+# Target-forward cost by verified rows, in one-row steps, for requests whose
+# schedule must not read the clock. The points are the measured verify curve
+# quoted throughout this module (Qwen3.8-27B-4bit, M4 Pro: 66.8 ms at one row,
+# 69.7 at two, 262.5 at nine, 331.5 at thirteen, 342.3 at thirty-two)
+# divided by the one-row step: the vector path grows with every row up to the
+# GEMM switch, the tile is then flat to its edge, and each further tile costs
+# a whole tile (647.5 ms at 33 rows).
+_VERIFY_COST_CURVE = ((1, 1.0), (2, 1.043), (9, 3.930), (13, 4.963), (32, 5.124))
+# The same, for hosts where every verified row costs most of a step
+# (``reproducible_depth.STEEP_VERIFY_ROW_COST``): Qwen3.5-4B-4bit on an M2 Pro
+# at a 1k-token context, 17.5 ms at one row, 29.5 at two, 41.5 at three,
+# 54.1 at four, 103.2 at eight and 107.5 at sixteen.
+_STEEP_VERIFY_COST_CURVE = (
+    (1, 1.0),
+    (2, 1.69),
+    (3, 2.38),
+    (4, 3.09),
+    (8, 5.91),
+    (32, 6.15),
+)
+
+
+def verify_cost_estimate(rows: int, *, steep: bool = False) -> float:
+    """Clock-free cost of a target forward over ``rows`` rows, in steps.
+
+    The replayable stand-in for a round's wall time, for requests whose
+    output has to be a function of the request alone (greedy, or a seeded
+    sampler): piecewise-linear over ``_VERIFY_COST_CURVE`` inside the first
+    ``COPY_DRAFT_TILE_ROWS`` tile and a full tile per tile beyond it. It is a
+    proxy, not a measurement: the curve's shape is one model's on one chip,
+    and the drafter's own forward is not charged, so it can misjudge a
+    copy-draft whose yield is close to the speculative rounds it displaces.
+    What it buys is that the same request makes the same copy decisions on
+    every run, while a wide block that commits little still reads as dear.
+    """
+    if rows <= 0:
+        raise ValueError(f"a target forward verifies at least one row, got {rows}")
+    curve = _STEEP_VERIFY_COST_CURVE if steep else _VERIFY_COST_CURVE
+    full_tile = curve[-1][1]
+    if rows > COPY_DRAFT_TILE_ROWS:
+        return full_tile * -(-rows // COPY_DRAFT_TILE_ROWS)
+    # Both curves end at the tile edge, so a segment always brackets ``rows``.
+    (lo_rows, lo_cost), (hi_rows, hi_cost) = next(
+        pair for pair in zip(curve, curve[1:]) if rows <= pair[1][0]
+    )
+    span = (rows - lo_rows) / (hi_rows - lo_rows)
+    return lo_cost + span * (hi_cost - lo_cost)
+
+
 def _tile_edge(rows: int) -> int:
     """Widest proposal whose ``rows + 1`` row verify fills whole tiles.
 
@@ -433,7 +483,11 @@ class CopyDraftGate:
             is_copy_draft: whether the round verified a copy-draft.
             committed: tokens the round actually delivered to the caller.
             round_ms: wall time charged to the round, including any drafter
-                cost carried into it (a copy-draft carries none).
+                cost carried into it (a copy-draft carries none) -- or, for a
+                request whose output must not depend on the clock, the
+                round's :func:`verify_cost_estimate`. The gate only compares
+                ratios of sums within one request, so any unit works as long
+                as the request sticks to it.
             accepted: copied rows the target accepted. Required for a
                 copy-draft round, where it sizes the next block -- but only
                 when it is below ``proposed``, since a block the target
