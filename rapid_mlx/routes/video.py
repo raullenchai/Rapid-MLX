@@ -952,6 +952,8 @@ def _probe_extension_video(path: Path) -> tuple[int, int, int]:
         formats = details["format"]["format_name"].split(",")
         # Match the pinned runtime's metadata count, including its duration
         # fallback, so inference and the API agree on the source workload.
+        # A missing count falls back to duration; a literal "N/A" is invalid
+        # in that runtime's int() conversion and must be rejected here too.
         declared_frames = int(stream.get("nb_frames", 0))
         if declared_frames == 0:
             declared_frames = int(

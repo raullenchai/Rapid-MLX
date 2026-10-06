@@ -296,6 +296,40 @@ def test_extension_probe_rejects_corrupt_decoding(tmp_path: Path) -> None:
         video._probe_extension_video(source)
 
 
+@pytest.mark.parametrize("declared_count", [None, "0", "N/A"])
+def test_extension_probe_runtime_metadata_compatibility(
+    declared_count: str | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(video.shutil, "which", lambda _: "/ffprobe")
+    stream = {
+        "width": 256,
+        "height": 256,
+        "avg_frame_rate": "24/1",
+        "r_frame_rate": "24/1",
+    }
+    if declared_count is not None:
+        stream["nb_frames"] = declared_count
+
+    def probe(command, **kwargs):
+        details = (
+            {"streams": [{"nb_read_frames": "9", "nb_read_packets": "9"}]}
+            if "-count_frames" in command
+            else {
+                "streams": [stream],
+                "format": {"format_name": "mov,mp4", "duration": "0.375"},
+            }
+        )
+        return SimpleNamespace(stdout=json.dumps(details), stderr="")
+
+    monkeypatch.setattr(video.subprocess, "run", probe)
+    if declared_count == "N/A":
+        # The pinned runtime int() conversion rejects this literal as well.
+        with pytest.raises(HTTPException, match="invalid input_video"):
+            video._probe_extension_video(Path("source.mp4"))
+    else:
+        assert video._probe_extension_video(Path("source.mp4")) == (256, 256, 9)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure", [False, True])
 async def test_extension_route_runs_job_and_removes_source(
