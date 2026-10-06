@@ -367,3 +367,16 @@ def test_count_prompt_tokens_keeps_direct_path_for_bos_prefixed_prompts():
         tokenizer.encode(prompt, add_special_tokens=False)
     )
     assert engine._prompt_host_cache.stats()["stores"] == 0
+
+
+def test_token_list_generation_prompt_keeps_full_variant_encodes():
+    """Harmony-style token-id prompts have no text to share a head with."""
+    tokenizer = _SectionTokenizer()
+    engine = _engine(tokenizer)
+    messages = _conversation()
+    real = _render(messages)
+    boundary = engine._compute_prefix_boundary(
+        messages, generation_prompt=tokenizer.encode(real)
+    )
+    assert boundary == _reference_boundary(messages, real)
+    assert engine._prompt_host_cache.stats()["stores"] == 0
