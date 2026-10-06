@@ -10,6 +10,7 @@ suppression, and #3763's consent, rollback, and lock semantics.
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import threading
@@ -329,8 +330,19 @@ def test_app_opened_new_install_identity_emits_inside_window(
     assert second_id not in serialized
 
 
-def test_concurrent_claims_elect_exactly_one_writer(loop_env):
-    """Invariant 5: simultaneous processes cannot both claim; no deadlock."""
+def test_concurrent_claims_elect_exactly_one_writer(loop_env, monkeypatch):
+    """Successful lock acquisition elects one writer independently of IO speed."""
+
+    def acquire_without_storage_deadline(fd):
+        # Exercise the real OS lock and atomic claim, not the separate timeout
+        # fail-open path. Slow fsync must not turn this healthy-path test into
+        # an assertion that telemetry can block startup beyond its deadline.
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        return True
+
+    monkeypatch.setattr(
+        model_events, "_acquire_serve_failed_lock", acquire_without_storage_deadline
+    )
     _tmp_path, _events, _advance = loop_env
     barrier = threading.Barrier(8)
     enqueued: list[int] = []

@@ -1965,16 +1965,32 @@ def test_serve_failure_lock_timeout_rereads_before_failing_open(
 
 def test_slow_serve_failure_enqueue_does_not_hold_ledger_lock(monkeypatch):
     key = ("model", "llm", "other", "")
-    barrier = threading.Barrier(8)
+    enqueue_started = threading.Event()
+    release_enqueue = threading.Event()
     calls: list[None] = []
     results: list[bool] = []
+    unlocked: list[bool] = []
 
     def claim() -> None:
-        barrier.wait()
-
         def slow_track() -> bool:
             calls.append(None)
-            threading.Event().wait(0.6)
+            # A separate descriptor must acquire the actual OS lock while the
+            # callback is blocked. A fresh-ledger timeout reread alone cannot
+            # prove that enqueue released the lock.
+            fd = os.open(model_events._serve_failed_recent_path().parent, os.O_RDONLY)
+            try:
+                try:
+                    model_events.fcntl.flock(
+                        fd, model_events.fcntl.LOCK_EX | model_events.fcntl.LOCK_NB
+                    )
+                except BlockingIOError:
+                    unlocked.append(False)
+                else:
+                    unlocked.append(True)
+            finally:
+                os.close(fd)
+            enqueue_started.set()
+            release_enqueue.wait(5.0)
             return True
 
         results.append(
@@ -1987,13 +2003,26 @@ def test_slow_serve_failure_enqueue_does_not_hold_ledger_lock(monkeypatch):
         )
 
     threads = [threading.Thread(target=claim) for _ in range(8)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(timeout=2.0)
+    threads[0].start()
+    try:
+        assert enqueue_started.wait(5.0)
+        # Start contenders after the winner's durable claim. This isolates
+        # enqueue lock lifetime from the intentional slow-storage fail-open
+        # behaviour before a claim is written.
+        for thread in threads[1:]:
+            thread.start()
+        for thread in threads[1:]:
+            thread.join(timeout=2.0)
+        assert all(not thread.is_alive() for thread in threads[1:])
+    finally:
+        release_enqueue.set()
+        for thread in threads:
+            if thread.ident is not None:
+                thread.join(timeout=2.0)
 
     assert all(not thread.is_alive() for thread in threads)
     assert calls == [None]
+    assert unlocked == [True]
     assert results.count(True) == 1
     assert results.count(False) == 7
 
