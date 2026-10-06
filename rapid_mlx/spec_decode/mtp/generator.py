@@ -1325,17 +1325,25 @@ def mtp_generate_step(
             verify_rows, steep=bool(getattr(_schedule, "steep_verify", False))
         )
 
-    def _record_round(k_used: int, round_wall_ms: float, accepts: list[bool]) -> None:
+    def _record_round(
+        k_used: int,
+        round_wall_ms: float,
+        accepts: list[bool],
+        *,
+        request_recorded: bool = False,
+    ) -> None:
         """Fold a round outcome into the controller (if enabled).
 
         ``round_wall_ms`` is the caller's target-forward measurement; the
         drafting cost carried over from the previous round is added here
-        so exactly one place owns the accounting.
+        so exactly one place owns the accounting. ``request_recorded`` says
+        the request's own controller was already fed this round (its cost
+        is a constant, so a parked round can feed it before its sync).
         """
         nonlocal pending_draft_ms
         charged = round_wall_ms + pending_draft_ms
         pending_draft_ms = 0.0
-        if _request_depth is not None:
+        if _request_depth is not None and not request_recorded:
             _request_depth.record(
                 k_used, request_round_cost(_request_costs, k_used), accepts
             )
@@ -1366,17 +1374,20 @@ def mtp_generate_step(
     # decode, with identical tokens.
     #
     # So a round that decides to park launches the next step before it hands
-    # its token over, and while parked, each round launches the next step
-    # before it even syncs on its own token, as plain decode does. That early
-    # launch is a bet that the next round parks too, placed before this
-    # round's token is known, so it is only placed when no prompt copy can
-    # follow this token (``PromptLookupIndex.may_match_after_next``). If the
-    # depth controller then asks for drafts, the launched step simply becomes
-    # the next round -- it is the target's own one-row step, so nothing is
-    # lost or approximated -- and the chain is drafted after it. Every round
-    # is still a target forward over committed tokens, drafts are verified
-    # as before, and the schedule depends only on the request's own tokens
-    # and decisions, so a greedy request stays reproducible.
+    # its token over, and a parked round whose depth controller already
+    # parks the next round too launches that step before it even syncs on
+    # its own token, as plain decode does. The depth for the next round is
+    # picked before that sync for this reason; it never depended on the
+    # token (only on earlier rounds), and the request's own controller is
+    # fed this round's constant cost first, so its picks come in the same
+    # order. The adaptive controller of a sampled request, which is charged
+    # a measured cost, then sees the round's cost after its pick: one sample
+    # late. The early launch is placed only when no prompt copy can follow
+    # this token either (``PromptLookupIndex.may_match_after_next``), so the
+    # next round is then certainly a park, exactly as without the launch:
+    # every round is still the same target forward over committed tokens
+    # and the schedule depends only on the request, so a greedy request
+    # stays reproducible.
     #
     # Only without logits processors: a processor's state would advance at
     # graph-construction time, one token before the caller sees the token
@@ -1386,12 +1397,6 @@ def mtp_generate_step(
     # prev_tokens, uncharged_ms)``, or ``None``. ``uncharged_ms`` is the
     # time spent building it that no round's timer has seen.
     prefetched_step: tuple | None = None
-    # Whether the decision that made the upcoming round a park chose to park
-    # (as opposed to a decision that had to wait behind a launched step).
-    park_was_chosen = False
-    # A depth chosen while the next round's step was already in flight;
-    # drafted after that round.
-    deferred_depth: int | None = None
 
     def _park_step(yy):
         """Build a one-row step and start it: ``(token, logprobs, hidden,
@@ -1452,26 +1457,28 @@ def mtp_generate_step(
                 prefetched_step = None
             else:
                 main_tok, main_lp, hidden, prev_tokens = _park_step(y)
-            # Whether the next round is bet to park before this round's
-            # token is known. The bet, not the launch, shapes the schedule:
-            # it is a function of the request alone, while the launch can be
-            # held by ``may_run_ahead``.
-            bet_on_park = (
-                _pipeline_parks
-                and park_was_chosen
-                and ntoks + 1 < max_tokens
-                and not _copy_may_follow()
+            # Decide the next round's depth before the sync (see the
+            # pipelining note above) when there is a next round.
+            request_recorded = False
+            if ntoks + 1 < max_tokens:
+                if _request_depth is not None:
+                    _request_depth.record(0, request_round_cost(_request_costs, 0), [])
+                    request_recorded = True
+                next_k = _next_depth()
+            # Certain to park: no depth asked for, and no copy can follow.
+            parks_next = (
+                ntoks + 1 < max_tokens and next_k == 0 and not _copy_may_follow()
             )
             launched = (
                 _launch_park_step(main_tok, timed_by_this_round=True)
-                if bet_on_park and _may_run_ahead()
+                if parks_next and _pipeline_parks and _may_run_ahead()
                 else None
             )
             mx.eval(main_tok)
             round_wall_ms = (
                 time.perf_counter() - round_start_perf
             ) * 1000.0 + uncharged_ms
-            _record_round(0, round_wall_ms, [])
+            _record_round(0, round_wall_ms, [], request_recorded=request_recorded)
             # One token for the whole forward: the floor a copy-draft has to
             # beat when the controller has parked.
             _copy_draft_gate.observe(
@@ -1500,27 +1507,14 @@ def mtp_generate_step(
             # (codex #1441 guarded the same invariant when drafting was the
             # last thing a round did).
             if not round_done:
-                if deferred_depth is not None:
-                    next_k, deferred_depth = deferred_depth, None
-                else:
-                    next_k = _next_depth()
                 pending_drafts = None
                 pending_is_prompt_lookup = False
-                if bet_on_park:
-                    # The next round is the step bet on (running already
-                    # unless the launch was held). ``_copy_may_follow`` ruled
-                    # out a copy before the bet; a chain the controller asks
-                    # for is planned after that step, against the cache it
-                    # leaves -- never against one a launched step has already
-                    # advanced, or whether the launch was held could change
-                    # the depth the cache admits.
+                if parks_next:
+                    # Planned before the sync: a park, its step already
+                    # running unless ``may_run_ahead`` held it.
                     prefetched_step = launched
-                    park_was_chosen = next_k == 0
-                    if next_k >= 1:
-                        deferred_depth = next_k
                 else:
                     plan, plan_arg = _plan_next(next_k)
-                    park_was_chosen = plan == "park"
                     if plan == "lookup":
                         pending_drafts = _lookup_drafts(plan_arg)
                         pending_is_prompt_lookup = True
@@ -1922,7 +1916,6 @@ def mtp_generate_step(
                 # Decide K for the next round BEFORE generating the
                 # next chain (a park decision skips drafter cost).
                 plan, plan_arg = _plan_next(_next_depth())
-                park_was_chosen = plan == "park"
                 if plan == "lookup":
                     pending_drafts = _lookup_drafts(plan_arg)
                     pending_is_prompt_lookup = True

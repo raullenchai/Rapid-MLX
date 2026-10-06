@@ -159,9 +159,9 @@ def test_logits_processors_keep_parked_rounds_unpipelined():
 
 
 def test_parked_prose_that_starts_quoting_the_prompt_copies_without_delay():
-    """Parked prose that starts quoting the prompt: no step is bet on where a
-    copy can follow, so the copy is verified at the first token it matches,
-    and every token is still the target's own."""
+    """Parked prose that starts quoting the prompt: no step runs ahead where
+    a copy can follow, so the copy is verified at the first token it
+    matches, and every token is still the target's own."""
     from rapid_mlx.spec_decode.mtp.prompt_lookup import PromptLookupPolicy
 
     # Generation counts up from 90; 90-99 are not in the prompt (parked
@@ -189,11 +189,11 @@ def test_parked_prose_that_starts_quoting_the_prompt_copies_without_delay():
     assert len(tokens) <= rows and rounds < len(tokens)
 
 
-def test_drafting_resumes_after_a_launched_step(monkeypatch):
-    """The controller leaves depth 0 while a parked step is in flight: that
-    step becomes the next round and the chain is drafted from its state, so
-    drafts are verified against committed positions and accepted as before.
-    """
+def test_drafting_resumes_after_pipelined_parks(monkeypatch):
+    """The controller alternates between parking and drafting: parked rounds
+    run ahead, and a round whose next depth is non-zero launches nothing and
+    drafts at once, so drafts are verified against committed positions and
+    accepted as before."""
     from rapid_mlx.spec_decode.mtp import generator as generator_mod
     from rapid_mlx.spec_decode.mtp.reproducible_depth import GreedySchedule
 
@@ -462,15 +462,15 @@ def test_parked_round_cost_excludes_the_callers_time(monkeypatch):
 
 
 def test_a_held_run_ahead_admits_the_same_depth_near_the_start(monkeypatch):
-    """Rollback admission depends on how far the cache reaches. A depth asked
-    for while a step was bet on is admitted after that step, so a launched
-    step (one row further) and a held one admit the same width -- here, a
-    one-token prompt where depth 3 fits only once three rows are cached."""
+    """Rollback admission depends on how far the cache reaches, so it must
+    never see a step launched ahead (one row further than a held one): here,
+    a one-token prompt where depth 3 fits only once three rows are cached,
+    asked for right after a pipelined park."""
     from rapid_mlx.spec_decode.mtp.reproducible_depth import GreedySchedule
 
     runs = []
     for allow in (True, False):
-        # Pre-loop pick, bootstrap (park), then depth 3 on the bet round.
+        # Pre-loop pick, bootstrap (park), then depth 3.
         _scripted_depths(monkeypatch, iter([0, 0, 3, 3] + [0] * 40))
         model = _WidthSensitiveTarget(_no_tie)
         tokens, _ = _run(
