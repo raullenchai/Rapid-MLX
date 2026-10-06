@@ -17,7 +17,11 @@ One ``PerceptionSession`` tracks what the model has seen:
   transitions;
 * an action whose outcome is unknown blocks further input until the window
   is observed again (Muse's "unresolved outcome" rule, relaxed: a fresh
-  observation clears it).
+  observation clears it);
+* the session executes, it does not judge: whether to confirm with the user
+  before a payment, a deletion or a secret is the brain's decision, and it
+  asks in its reply. Observations never show a secret field's value, and
+  ``handoff`` lets the user type something themselves.
 """
 
 from __future__ import annotations
@@ -31,7 +35,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from . import backend, guards
+from . import backend, privacy
 from .errors import ComputerUseError
 
 MAX_CHANGE_LINES = 20
@@ -42,12 +46,6 @@ SETTLE_MIN_S = 0.3
 SETTLE_CAP_S = 1.5
 SETTLE_CAP_SLOW_S = 5.0
 _SLOW_KEYS = {"return", "enter", "cmd+r", "cmd+l", "cmd+n", "cmd+t", "cmd+w"}
-# Keys that press the focused control.
-_ACTIVATING_KEYS = {"return", "enter", "space", " ", "kp_enter"}
-_PASTE = re.compile(
-    r"^(?:(?:shift|option|alt|ctrl)\+)*(?:cmd|command)\+(?:(?:shift|option|alt)\+)*v$",
-    re.I,
-)
 WAIT_POLL_S = 0.5
 # A bot reply lands in pieces (bubble, then text, then quick replies).
 WAIT_QUIET_S = 2.5
@@ -313,11 +311,8 @@ class PerceptionSession:
         self._awake: subprocess.Popen | None = None
         self._handed_from: int | None = None  # pid in front before take_front
         # One lock serializes AX work: a handoff waits on one thread while the
-        # human channel (approvals, human input) arrives on another.
+        # human channel (the user's input during a handoff) arrives on another.
         self._lock = threading.RLock()
-        self._approval_ids = itertools.count(1)
-        self._pending: dict[str, dict] = {}  # approval id -> what was asked
-        self._approved: dict[str, dict] = {}  # approval id -> granted, unused
         self._with_human: dict[str, str] = {}  # window id -> why
         self._human_done: set[str] = set()
         self.on_event = None  # host hook: callable(kind, payload)
@@ -418,147 +413,24 @@ class PerceptionSession:
         self.release_awake()
         return {"restored_pid": pid, "restored": restored}
 
-    # -- what only the user may do -----------------------------------------
+    # -- the user's turn ----------------------------------------------------
+    #
+    # Whether to confirm with the user before an action (a payment, a
+    # deletion) is the brain's decision, made from the user's instructions:
+    # it asks in its reply. The session only executes; ``handoff`` gives the
+    # user a window to do something themselves (a password, a code).
 
-    def _guard(
-        self, op: str, obs: Observation, row: Row | None, kw: dict
-    ) -> tuple | None:
-        """Raise if the agent may not do this; return an approval it used."""
+    def _refuse_while_with_human(self, obs: Observation) -> None:
+        """Refuse agent input to a window the user has been handed."""
         if obs.window_id in self._with_human:
             raise ComputerUseError(
                 "with_human",
                 f"the user is working in window {obs.window_id} "
                 f"({self._with_human[obs.window_id]}); wait for the handoff to finish",
             )
-        # A printable key is typing too: a password spelled key by key is
-        # still the user's.
-        key_text = _key_text(kw.get("key")) if op == "key" else None
-        # A paste enters text the agent never saw (the user's clipboard).
-        pasting = op == "key" and bool(_PASTE.match(str(kw.get("key", ""))))
-        typing = op == "type" or key_text is not None or pasting
-        if op == "fill" or typing:
-            # Typed text goes to the focused element whatever ref was named,
-            # so a focused secret field is guarded the same as a named one.
-            targets = [row] if row is not None else []
-            if typing:
-                targets += [r for r in obs.rows if "focused" in r.states]
-            for target in targets:
-                why = guards.needs_human_input(
-                    target.role, target.subrole, target.label
-                ) or ("a password field" if target.secure else None)
-                if why:
-                    raise ComputerUseError(
-                        "needs_human",
-                        f"{target.ref} is {why}; the user types it. Use handoff "
-                        "with a reason, then continue when it returns.",
-                    )
-            if typing:
-                # Focus can move after the observation (a page that focuses
-                # its password box on load): ask the app what has it now.
-                why = _focused_secret(obs.snapshot.get("app") or {})
-                if why:
-                    raise ComputerUseError(
-                        "needs_human",
-                        f"the focused field is {why}; the user types it. Use "
-                        "handoff with a reason, then continue when it returns.",
-                    )
-            text = key_text if key_text is not None else str(kw.get("text", ""))
-            held = [text]
-            if typing:
-                # Typing appends: a card number split across calls is still a
-                # card number in the field. The text may land in the named
-                # field or the focused one, so each is checked.
-                held += [
-                    field.value + text
-                    for field in targets
-                    if field.value and field.value != guards.USER_VALUE
-                ]
-            if any(guards.contains_card_number(t) for t in held):
-                raise ComputerUseError(
-                    "sensitive_data",
-                    "the text contains a card number; it was not typed",
-                )
-        # Pressing a control is a click, its AX action, or an activating key
-        # (a chord ending in one, Shift+Return, too). A key goes to the
-        # focused control whatever ref was named, so the focused controls are
-        # guarded as well as the named one.
-        activating_key = op == "key" and _activating(kw.get("key"))
-        if op in {"click", "action"} or activating_key:
-            pressed = [row] if row is not None else []
-            if activating_key:
-                pressed += [r for r in obs.rows if "focused" in r.states]
-            for target in pressed:
-                if guards.is_money_commit(target.role, target.label):
-                    return self._require_approval(obs, target)
-        return None
 
-    def _require_approval(self, obs: Observation, row: Row) -> tuple[str, dict]:
-        """Let a commit through only with the user's approval of this screen.
-
-        The approval binds to the window, the control and every amount on
-        screen: if a total changes after the user approved, it is a new
-        question. An approval is used once.
-        """
-        texts = obs.texts()
-        key = _approval_key(obs, row)
-        for aid, grant in list(self._approved.items()):
-            if grant["key"] == key:
-                del self._approved[aid]
-                self._emit("approval_used", {"id": aid, "label": row.label})
-                return aid, grant
-        asked = next((a for a, p in self._pending.items() if p["key"] == key), None)
-        aid = asked if asked is not None else f"a{next(self._approval_ids)}"
-        if asked is None:
-            items, heading = _near_button(obs, row)
-            self._pending[aid] = {
-                "key": key,
-                "label": row.label,
-                "window": obs.window_id,
-                "title": obs.title,
-                "context": guards.money_context(
-                    texts, obs.choices(), items=items, heading=heading
-                )
-                + (
-                    ["(the page was only partly read: check every amount on screen)"]
-                    if obs.truncated
-                    else []
-                ),
-            }
-            self._emit("approval_requested", {"id": aid, **_public(self._pending[aid])})
-        pending = self._pending[aid]
-        raise ComputerUseError(
-            "needs_approval",
-            f'"{row.label}" spends money or cannot be undone. Show the user what it '
-            f"commits and wait for approval {aid}; then click it again. On screen: "
-            + " | ".join(pending["context"] or ["(no amounts shown)"]),
-        )
-
-    # The methods below are the user's channel. A host wires them to the
-    # person (a dialog, the app UI, a CLI); they are never model tools.
-
-    def pending_approvals(self) -> dict:
-        return {aid: _public(p) for aid, p in self._pending.items()}
-
-    def approve(self, approval_id: str) -> dict:
-        with self._lock:
-            pending = self._pending.pop(approval_id, None)
-            if pending is None:
-                raise ComputerUseError(
-                    "invalid_argument", f"no pending approval {approval_id}"
-                )
-            self._approved[approval_id] = pending
-            self._emit("approved", {"id": approval_id, "label": pending["label"]})
-            return {"approved": approval_id, "label": pending["label"]}
-
-    def deny(self, approval_id: str) -> dict:
-        with self._lock:
-            pending = self._pending.pop(approval_id, None)
-            if pending is None:
-                raise ComputerUseError(
-                    "invalid_argument", f"no pending approval {approval_id}"
-                )
-            self._emit("denied", {"id": approval_id})
-            return {"denied": approval_id, "label": pending["label"]}
+    # The methods below are the user's channel during a handoff. A host
+    # wires them to the person; they are never model tools.
 
     def human_act(self, op: str, ref: str | None = None, **kwargs: Any) -> dict:
         """Input the user makes through the host (stands in for their keyboard)."""
@@ -643,12 +515,13 @@ class PerceptionSession:
         until_gone: str | None = None,
         timeout: float = 600.0,
     ) -> dict:
-        """Give the user the front to do what only they may do, then resume.
+        """Give the user the front to do something themselves, then resume.
 
-        Brings the window forward, tells the user why, blocks agent input to
-        that window, and returns when the page shows the condition (or the
-        user says they are done). The agent never sees what they typed into
-        a field only they may fill.
+        The brain calls it when it wants the user to act in the window (type
+        a password or a code, check a page). Brings the window forward, tells
+        the user why, blocks agent input to that window, and returns when the
+        page shows the condition (or the user says they are done). The agent
+        never sees what they typed into a secret field.
         """
         with self._lock:
             obs = self._window_obs(window_id)
@@ -842,20 +715,20 @@ class PerceptionSession:
                 self._refs[live] = (ref, role, label)
             value = element.get("value")
             secure = "AXSecureTextField" in (role, subrole) or (
-                label == guards.SECURE_LABEL
+                label == privacy.SECURE_LABEL
             )
             if secure:
                 # Named by its own label; whether it holds anything, never what.
                 label = str(element.get("field_name") or "") or label
                 filled = element.get("filled")
-                value = None if filled is None else guards.USER_VALUE if filled else ""
+                value = None if filled is None else privacy.USER_VALUE if filled else ""
             elif (
                 isinstance(value, str)
                 and value
-                and guards.needs_human_input(role, subrole, label)
+                and privacy.user_only_field(role, subrole, label)
             ):
                 # What the user typed into a secret field is theirs.
-                value = guards.USER_VALUE
+                value = privacy.USER_VALUE
             center = element.get("center") or [0, 0]
             # The driver clips frames to the window: a scrolled-away element
             # (below the fold, a carousel's hidden slide) comes back empty, and
@@ -969,8 +842,8 @@ class PerceptionSession:
             obs, row = self._resolve(ref)
         else:
             obs, row = self._window_obs(kwargs.pop("window_id", None)), None
-        if obs.window_id in self._with_human and not by_human:
-            self._guard(op, obs, row, kwargs)  # raises with_human
+        if not by_human:
+            self._refuse_while_with_human(obs)
         # The gate stops the agent sending blind input; the user sees the screen.
         if obs.window_id in self._unresolved and not by_human:
             raise ComputerUseError(
@@ -981,8 +854,6 @@ class PerceptionSession:
             )
         self.keep_awake()
         _require_display_awake()
-        # Last before acting, so an approval is used only by an attempt.
-        used = None if by_human else self._guard(op, obs, row, kwargs)
         app, snapshot, wid = obs.app, obs.snapshot, obs.window_id
         front_before = _frontmost_bundle()
         started = time.perf_counter()
@@ -1002,19 +873,10 @@ class PerceptionSession:
                 again = fresh.by_ref().get(row.ref)
                 if again is None or (again.role, again.label) != (row.role, row.label):
                     raise
-                if used is not None and _approval_key(fresh, again) != used[1]["key"]:
-                    # The approval covered the screen the user saw; a shifted
-                    # page with other amounts is a new question.
-                    raise
                 obs, row, snapshot = fresh, again, fresh.snapshot
                 result = self._dispatch(op, app, snapshot, wid, row, kwargs)
         except ComputerUseError as exc:
             error = exc
-            if used is not None:
-                # The click never happened (stale snapshot, drift): the user's
-                # approval still stands for the same screen.
-                self._approved[used[0]] = used[1]
-                self._emit("approval_kept", {"id": used[0], "label": used[1]["label"]})
         acted_ms = round((time.perf_counter() - started) * 1000)
         slow = op == "key" and str(kwargs.get("key", "")).lower() in _SLOW_KEYS
         # What the target should show afterwards. A secret field never shows
@@ -1193,7 +1055,7 @@ class PerceptionSession:
             # cannot rule one out. A chord goes to the focused element, so a
             # named field is focused first; any other target is refused.
             if row is not None:
-                if row.role not in guards.TEXT_ROLES:
+                if row.role not in privacy.TEXT_ROLES:
                     raise ComputerUseError(
                         "invalid_argument",
                         f"a key combination goes to the focused element; {row.ref} "
@@ -1217,7 +1079,7 @@ class PerceptionSession:
                 if (
                     exc.code != "target_drift"
                     or row is None
-                    or row.role not in guards.TEXT_ROLES
+                    or row.role not in privacy.TEXT_ROLES
                     or str(kw["key"]).lower() not in {"return", "enter"}
                 ):
                     raise
@@ -1593,7 +1455,7 @@ def _container_name(rows: list[Row], prefix: tuple[int, ...], label: str) -> str
         if row.role == "AXHeading":
             return row.label
     for row in inside:
-        if not guards.amounts([row.label]):
+        if not privacy.is_price(row.label):
             return row.label
     return inside[0].label if inside else ""
 
@@ -1637,7 +1499,7 @@ def _content(obs: Observation) -> frozenset[tuple[str, str]]:
         (row.role, row.label)
         for row in obs.rows
         if row.label
-        and row.role not in guards.TEXT_ROLES
+        and row.role not in privacy.TEXT_ROLES
         and not row.is_browser_noise()
     )
 
@@ -1651,25 +1513,6 @@ def _split_key(key: object) -> tuple[frozenset[str], str]:
         head, base = head[:-1] if head.endswith("+") else head, "+"
     modifiers = frozenset(m.lower() for m in head.split("+") if m)
     return modifiers, base
-
-
-# Modifiers that still type a character: shift+7 is "&", option+a is "å".
-_TYPING_MODIFIERS = frozenset({"shift", "option", "alt"})
-
-
-def _key_text(key: object) -> str | None:
-    """The character pressing ``key`` types ("a", "shift+7", "option+a"), or
-    None. With option the character differs from the base key, which stands
-    in for it."""
-    modifiers, base = _split_key(key)
-    if not modifiers <= _TYPING_MODIFIERS:
-        return None
-    return base if len(base) == 1 and base.isprintable() else None
-
-
-def _activating(key: object) -> bool:
-    """Whether ``key`` presses the focused control, with any modifiers."""
-    return _split_key(key)[1].lower() in _ACTIVATING_KEYS
 
 
 def _focus_field(app: str, index: int | None, snapshot: dict, wid: str) -> None:
@@ -1706,9 +1549,7 @@ def _is_combo(key: str) -> bool:
 
 
 def _user_only(row: Row) -> bool:
-    return row.secure or bool(
-        guards.needs_human_input(row.role, row.subrole, row.label)
-    )
+    return row.secure or privacy.user_only_field(row.role, row.subrole, row.label)
 
 
 def _window_gone(window_id: str, wait_s: float = 1.0) -> bool:
@@ -1744,51 +1585,6 @@ def _window_exists(window_id: str) -> bool | None:
     if windows is None:
         return None
     return any(int(w.get("kCGWindowNumber", -1)) == wanted for w in windows)
-
-
-def _focused_secret(app_info: dict) -> str | None:
-    """Why the app's focused element is for the user only, read live.
-
-    Reads only role, subrole and naming attributes, never a value.
-    """
-    if app_info.get("pid") is None:
-        return None
-    unchecked = "a field whose focus could not be checked"
-    try:
-        from . import ax_driver
-
-        app_element = backend._pid_app_element(app_info)
-        readable, focused = ax_driver._get_checked(app_element, "AXFocusedUIElement")
-        if not readable:
-            return unchecked
-        if focused is None:
-            return None  # nothing has focus: typed text goes nowhere
-        names: dict[str, str] = {}
-        for attribute in (
-            "AXRole",
-            "AXSubrole",
-            "AXDescription",
-            "AXTitle",
-            "AXPlaceholderValue",
-        ):
-            readable, value = ax_driver._get_checked(focused, attribute)
-            if not readable:
-                return unchecked
-            names[attribute] = value.strip() if isinstance(value, str) else ""
-        role, subrole = names["AXRole"], names["AXSubrole"]
-        if "AXSecureTextField" in (role, subrole):
-            return guards.needs_human_input(role, subrole, "")
-        label = next(
-            (
-                names[a]
-                for a in ("AXDescription", "AXTitle", "AXPlaceholderValue")
-                if names[a]
-            ),
-            "",
-        )
-        return guards.needs_human_input(role, subrole, label)
-    except Exception:  # noqa: BLE001 - focus could not be inspected: fail closed
-        return unchecked
 
 
 def _window_owner(window_id: str | int) -> str | None:
@@ -1840,61 +1636,6 @@ def _frontmost_bundle() -> str | None:
         return str(app.bundleIdentifier()) if app is not None else None
     except Exception:  # pragma: no cover
         return None
-
-
-MAX_NEAR_ROWS = 80
-
-
-def _near_button(obs: Observation, row: Row) -> tuple[list[str], str]:
-    """The priced lines around a commit button, and its section's name.
-
-    The smallest container of the button that shows an amount besides the
-    button's own (an order summary, an offer dialog): its priced lines are
-    what the button commits, its heading (or name) what it is for.
-    """
-    for depth in range(len(row.path) - 1, 0, -1):
-        prefix = row.path[:depth]
-        inside = [
-            r
-            for r in obs.rows
-            if r.path[:depth] == prefix and r is not row and not r.is_browser_noise()
-        ]
-        if len(inside) > MAX_NEAR_ROWS:
-            break  # the whole page, not the button's section
-        texts = [
-            r.label if r.value is None else f"{r.label} {r.value}".strip()
-            for r in inside
-            if r.role not in {"AXButton", "AXLink"}
-        ]
-        if not guards.amounts(texts):
-            continue
-        heading = next(
-            (r.label for r in inside if r.role == "AXHeading" and r.label),
-            next(
-                (r.label for r in inside if r.path == prefix and r.label),
-                "",
-            ),
-        )
-        return guards.priced_lines(texts), heading[:MAX_CONTEXT_CHARS]
-    return [], ""
-
-
-def _approval_key(obs: Observation, row: Row) -> tuple:
-    """What an approval binds to: window, control, every amount on screen,
-    every chosen option (delivery slot, plan, payment method, ...) and what
-    every text field holds (recipient, address, account, quantity)."""
-    return (
-        obs.window_id,
-        row.ref,
-        row.label,
-        guards.amounts(obs.texts()),
-        tuple(obs.choices()),
-        tuple((r.ref, r.value or "") for r in obs.rows if r.role in guards.TEXT_ROLES),
-    )
-
-
-def _public(pending: dict) -> dict:
-    return {k: v for k, v in pending.items() if k != "key"}
 
 
 def _notify(title: str, message: str) -> None:

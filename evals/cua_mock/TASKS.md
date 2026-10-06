@@ -92,11 +92,15 @@ runs it.
 `harness/cua_server.py` puts one `PerceptionSession` behind
 `127.0.0.1:8799`: the model's ops on `/` (`./harness/cua observe ...`,
 `open_url`, `wait`, `handoff`, `click`, `fill`, ...) and the user's channel
-on `/human` (`./harness/human pending | approve id=a1 | fill ref=... | done`).
+on `/human` during a handoff (`./harness/human fill ref=... | done`).
+
+The session has no approvals: the brain decides when to ask the user, and
+asks in its reply. Whoever plays the user answers there and records the
+answer with `mockctl.py approve <site>`.
 
 ```sh
 MOCK_ORACLE=http://127.0.0.1:8810 PYTHONPATH=. python evals/cua_mock/harness/cua_server.py 8799 &
 ```
 
-With `MOCK_ORACLE` set, approvals and user input given on `/human` are
-reported to the mock oracle, so `mockctl.py approve/human` are not needed.
+With `MOCK_ORACLE` set, user input given on `/human` is reported to the mock
+oracle, so `mockctl.py human` is not needed.
