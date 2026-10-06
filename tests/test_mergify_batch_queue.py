@@ -14,6 +14,7 @@ REQUIRED_CHECKS = {
     "check-success = @github-actions/desktop-tests",
     "check-success = @github-actions/version-bump-guard",
 }
+CANDIDATE_ADMISSION = "check-success = @github-actions/candidate-admission/ci"
 HEAD_AUTHORIZATION = "check-success = merge-ready-head"
 LANE_CHECKS = {
     "no-mac-batch": "check-success = @github-actions/merge-lane-no-mac",
@@ -62,7 +63,8 @@ def test_queue_revalidates_every_required_check_on_the_candidate():
         assert not ({*LANE_CHECKS.values()} - {LANE_CHECKS[name]}) & set(
             rule["queue_conditions"]
         )
-        assert set(rule["merge_conditions"]) == REQUIRED_CHECKS
+        assert CANDIDATE_ADMISSION not in rule["queue_conditions"]
+        assert set(rule["merge_conditions"]) == REQUIRED_CHECKS | {CANDIDATE_ADMISSION}
         assert HEAD_AUTHORIZATION not in rule["merge_conditions"]
         assert not set(LANE_CHECKS.values()) & set(rule["merge_conditions"])
         assert rule["branch_protection_injection_mode"] == "queue"
