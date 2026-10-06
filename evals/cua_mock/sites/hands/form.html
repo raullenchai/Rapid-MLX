@@ -1,0 +1,51 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Supplier intake</title>
+<style>
+  body { font: 15px system-ui; max-width: 640px; margin: 24px auto; }
+  label { display: block; margin: 10px 0 2px; }
+  input[type=text], textarea, select { width: 100%; font: inherit; padding: 4px; }
+  #legal { height: 220px; overflow: auto; border: 1px solid #999; padding: 8px; margin: 16px 0; }
+  #done { color: #060; font-weight: 600; }
+</style>
+<h1>Supplier intake</h1>
+<form id="form">
+  <label for="company">Company name</label><input type="text" id="company">
+  <label for="email">Contact email</label><input type="text" id="email">
+  <div id="filler"></div>
+  <label for="notes">Notes</label><textarea id="notes" rows="4"></textarea>
+  <label for="country">Country</label>
+  <select id="country"><option>Choose…</option><option>Canada</option><option>Chile</option><option>China</option></select>
+  <div id="legal">
+    <h2>Terms</h2>
+    <div id="clauses"></div>
+    <label for="taxid">Tax ID</label><input type="text" id="taxid">
+    <label><input type="checkbox" id="terms"> Accept terms</label>
+  </div>
+  <button type="submit">Submit intake</button>
+  <p id="done" role="status"></p>
+</form>
+<script src="../common.js"></script>
+<script>
+// The fields nobody asked about: a long form is mostly these.
+for (let i = 1; i <= 30; i++) {
+  filler.insertAdjacentHTML("beforeend",
+    `<label for="f${i}">Reference ${i}</label><input type="text" id="f${i}">`);
+}
+for (let i = 1; i <= 25; i++) {
+  clauses.insertAdjacentHTML("beforeend", `<p>Clause ${i}: the supplier agrees to clause ${i}.</p>`);
+}
+Mock.start(() => {
+  let sent = 0;
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    sent += 1;
+    const other = [...filler.querySelectorAll("input")].filter((f) => f.value).map((f) => f.id);
+    Mock.log("hands", "form_submit", {
+      n: sent, company: company.value, email: email.value, notes: notes.value,
+      country: country.value, taxid: taxid.value, terms: terms.checked, other,
+    });
+    done.textContent = `Intake received (${sent})`;
+  });
+});
+</script>
