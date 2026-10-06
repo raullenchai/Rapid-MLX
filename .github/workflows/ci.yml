@@ -74,7 +74,7 @@ jobs:
 
       - name: Revalidate source runs and jobs
         id: validate
-        if: always() && steps.discover.outputs.found == 'true'
+        if: ${{ !cancelled() && steps.discover.outputs.found == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -106,7 +106,7 @@ jobs:
       contents: read
       actions: read
     needs: queue-tree-evidence
-    if: always()
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     outputs:
       engine: ${{ steps.policy.outputs.engine }}
@@ -261,7 +261,7 @@ jobs:
   merge-lane-no-mac:
     needs: changes
     if: >-
-      always() &&
+      !cancelled() &&
       needs.changes.result == 'success' &&
       needs.changes.outputs.engine != 'true' &&
       needs.changes.outputs.desktop != 'true'
@@ -273,7 +273,7 @@ jobs:
   merge-lane-mac:
     needs: changes
     if: >-
-      always() &&
+      !cancelled() &&
       needs.changes.result == 'success' &&
       (needs.changes.outputs.engine == 'true' ||
        needs.changes.outputs.desktop == 'true')
@@ -285,7 +285,7 @@ jobs:
   lint:
     needs: changes
     if: >-
-      always() &&
+      !cancelled() &&
       needs.changes.result == 'success' &&
       needs.changes.outputs.reuse_ci != 'true'
     runs-on: ubuntu-latest
@@ -337,7 +337,7 @@ jobs:
   engine-contracts:
     needs: changes
     if: >-
-      always() &&
+      !cancelled() &&
       needs.changes.result == 'success' &&
       needs.changes.outputs.engine == 'true' &&
       needs.changes.outputs.reuse_ci != 'true'
@@ -411,7 +411,7 @@ jobs:
     # for (origin/main == the pushed commit).
     needs: changes
     if: >-
-      always() &&
+      !cancelled() &&
       needs.changes.result == 'success' &&
       github.event_name == 'pull_request' &&
       needs.changes.outputs.engine == 'true' &&
@@ -488,7 +488,7 @@ jobs:
   type-check:
     needs: changes
     if: >-
-      always() &&
+      !cancelled() &&
       needs.changes.result == 'success' &&
       needs.changes.outputs.engine == 'true' &&
       needs.changes.outputs.reuse_ci != 'true'
@@ -513,7 +513,7 @@ jobs:
   source-canary-unit:
     needs: changes
     if: >-
-      always() &&
+      !cancelled() &&
       needs.changes.result == 'success' &&
       needs.changes.outputs.source_canary == 'true' &&
       needs.changes.outputs.full_gate != 'true'
@@ -579,7 +579,7 @@ jobs:
   candidate-canary-unit:
     needs: changes
     if: >-
-      always() &&
+      !cancelled() &&
       needs.changes.result == 'success' &&
       needs.changes.outputs.full_gate == 'true' &&
       needs.changes.outputs.candidate_shadow == 'true' &&
@@ -655,7 +655,7 @@ jobs:
   test-matrix:
     needs: changes
     if: >-
-      always() &&
+      !cancelled() &&
       needs.changes.result == 'success' &&
       needs.changes.outputs.engine == 'true' &&
       needs.changes.outputs.source_canary != 'true' &&
@@ -760,7 +760,7 @@ jobs:
   linux-coverage:
     needs: [changes, test-matrix]
     if: >-
-      always() &&
+      !cancelled() &&
       needs.changes.result == 'success' &&
       needs.changes.outputs.engine == 'true' &&
       needs.changes.outputs.source_canary != 'true' &&
@@ -805,7 +805,7 @@ jobs:
   test-apple-silicon:
     needs: changes
     if: >-
-      always() &&
+      !cancelled() &&
       needs.changes.result == 'success' &&
       needs.changes.outputs.engine == 'true' &&
       needs.changes.outputs.source_canary != 'true' &&
@@ -1005,7 +1005,7 @@ jobs:
       - linux-coverage
       - test-apple-silicon
     if: >-
-      always() &&
+      !cancelled() &&
       needs.changes.result == 'success' &&
       github.event_name == 'pull_request' &&
       needs.changes.outputs.engine == 'true' &&
@@ -1087,7 +1087,7 @@ jobs:
     # release-blocking rather than an informational red check.
     needs: changes
     if: >-
-      always() &&
+      !cancelled() &&
       needs.changes.result == 'success' &&
       needs.changes.outputs.engine == 'true' &&
       needs.changes.outputs.full_gate == 'true' &&
@@ -1152,9 +1152,12 @@ jobs:
       - changed-lines-coverage
       - l1-smoke
     runs-on: ubuntu-latest
+    # Keep the required verdict terminal after failure or cancellation;
+    # classifier and workload jobs above stop when their source is superseded.
     if: always()
     steps:
       - name: Check test results
+        if: ${{ !cancelled() }}
         run: |
           if [ "${{ needs.changes.result }}" != success ]; then
             echo "CI change classifier failed"
@@ -1268,3 +1271,9 @@ jobs:
             echo "Unpromoted head unexpectedly allocated the L1 smoke lane"
             exit 1
           fi
+
+      - name: Reject cancelled workflow
+        if: ${{ cancelled() }}
+        run: |
+          echo "CI workflow was cancelled"
+          exit 1
