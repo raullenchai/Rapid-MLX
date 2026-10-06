@@ -24,6 +24,7 @@ CONTROLS = (
     "scripts/ci_candidate_execution.py",
     "scripts/ci_candidate_consumer.py",
     "scripts/ci_candidate_admission.py",
+    "scripts/ci_github_transport.py",
     "scripts/ci_candidate_mapped_transport.py",
     ".github/workflows/candidate-admission.yml",
 )

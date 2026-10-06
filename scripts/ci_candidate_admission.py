@@ -388,31 +388,43 @@ def main() -> None:
     args = parser.parse_args()
     from scripts.ci_candidate_rollout import ImmutableContentsClient
 
-    client = ImmutableContentsClient(evidence.GitHubClient(args.repo))
-    if args.rollback:
-        result = rollback(client, args.publish_target_url)
-    elif args.expected:
-        result = publish_admission(
-            client,
-            args.producer_run_id,
-            json.loads(args.expected.read_text()),
-            args.publish_target_url,
-            evidence_uploaded=args.evidence_uploaded == "true",
-        )
-    elif args.source_run_id is not None:
-        result = verify_source_admission(
-            client, args.source_run_id, args.source_attempt
-        )
-    else:
-        result = verify_admission(client, args.producer_run_id)
-    args.output.write_text(json.dumps(result, indent=2) + "\n")
-    with args.github_output.open("a") as output:
-        output.write("verified=" + str(result.get("verified", False)).lower() + "\n")
-        if result.get("verified"):
-            output.write("candidate_sha=" + result["candidate_sha"] + "\n")
-            if "producer_run_id" in result:
-                output.write("producer_run_id=" + str(result["producer_run_id"]) + "\n")
-    print(json.dumps(result))
+    with ExitStack() as stack:
+        client = evidence.GitHubClient(args.repo)
+        if args.reuse_api_connection:
+            from scripts.ci_github_transport import PersistentGitHubClient
+
+            client = stack.enter_context(
+                PersistentGitHubClient(args.repo, os.environ.get("GH_TOKEN", ""))
+            )
+        client = ImmutableContentsClient(client)
+        if args.rollback:
+            result = rollback(client, args.publish_target_url)
+        elif args.expected:
+            result = publish_admission(
+                client,
+                args.producer_run_id,
+                json.loads(args.expected.read_text()),
+                args.publish_target_url,
+                evidence_uploaded=args.evidence_uploaded == "true",
+            )
+        elif args.source_run_id is not None:
+            result = verify_source_admission(
+                client, args.source_run_id, args.source_attempt
+            )
+        else:
+            result = verify_admission(client, args.producer_run_id)
+        args.output.write_text(json.dumps(result, indent=2) + "\n")
+        with args.github_output.open("a") as output:
+            output.write(
+                "verified=" + str(result.get("verified", False)).lower() + "\n"
+            )
+            if result.get("verified"):
+                output.write("candidate_sha=" + result["candidate_sha"] + "\n")
+                if "producer_run_id" in result:
+                    output.write(
+                        "producer_run_id=" + str(result["producer_run_id"]) + "\n"
+                    )
+        print(json.dumps(result))
 
 
 if __name__ == "__main__":
