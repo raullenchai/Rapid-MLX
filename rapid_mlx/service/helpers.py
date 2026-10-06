@@ -5245,6 +5245,12 @@ def count_prompt_tokens(engine, prompt) -> int:
     try:
         bos = getattr(tokenizer, "bos_token", None)
         add_special_tokens = bos is None or not prompt.startswith(bos)
+        # The engine's own encoder caches this exact prompt for the scheduler,
+        # which tokenizes it again at admission. Looked up on the class so a
+        # dynamic proxy or mock never stands in for the real method.
+        encode_prompt_text = getattr(type(engine), "encode_prompt_text", None)
+        if add_special_tokens and callable(encode_prompt_text):
+            return len(encode_prompt_text(engine, prompt))
         token_ids = tokenizer.encode(prompt, add_special_tokens=add_special_tokens)
         return len(token_ids)
     except Exception:

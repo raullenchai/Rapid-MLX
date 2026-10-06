@@ -36,6 +36,7 @@ from ..api.utils import (
 )
 from ..output_router import Channel, OutputRouter
 from ..prompt_host_cache import PromptHostCache
+from ..prompt_token_reuse import added_token_markers, encode_sharing_head
 from ..utils.chat_template import apply_chat_template as shared_apply_chat_template
 from .base import BaseEngine, GenerationOutput
 
@@ -2598,6 +2599,22 @@ class BatchedEngine(BaseEngine):
             return [*prompt_ids, *suffix_ids], suffix_ids
         return prompt + "".join(_HARMONY_NO_THINKING_SUFFIX_TOKENS), suffix_ids
 
+    def encode_prompt_text(self, prompt: str) -> list[int]:
+        """Tokenize a rendered prompt exactly as the text scheduler will.
+
+        Delegates to the scheduler's host-cached encoder so every caller that
+        tokenizes the same rendered prompt for one request (context-length
+        guard, prefix-boundary probe, admission) shares a single encode.
+        Engines without a text scheduler encode directly.
+        """
+        scheduler = getattr(
+            getattr(getattr(self, "_engine", None), "engine", None), "scheduler", None
+        )
+        encode = getattr(scheduler, "_encode_prompt_string", None)
+        if callable(encode):
+            return list(encode(prompt))
+        return list(self.tokenizer.encode(prompt))
+
     def build_prompt(
         self,
         messages: list[dict[str, Any]],
@@ -3585,11 +3602,32 @@ class BatchedEngine(BaseEngine):
             if hasattr(tokenizer, "tokenizer"):
                 tokenizer = tokenizer.tokenizer
 
+            # The scheduler tokenizes this exact string next; going through
+            # its host-cached encoder lets that call (and the route's
+            # context-length count before it) reuse one encode.
             real_tokens = (
                 list(real_prompt)
                 if isinstance(real_prompt, list)
-                else tokenizer.encode(real_prompt)
+                else self.encode_prompt_text(real_prompt)
             )
+            markers = (
+                added_token_markers(tokenizer) if isinstance(real_prompt, str) else ()
+            )
+
+            def encode_variant(text: str) -> list[int]:
+                # Variants share all but their last message or two with the
+                # real prompt; re-encode only the differing tail when that
+                # is provably equivalent, else encode in full as before.
+                reused = encode_sharing_head(
+                    real_prompt,
+                    real_tokens,
+                    text,
+                    encode_tail=lambda tail: tokenizer.encode(
+                        tail, add_special_tokens=False
+                    ),
+                    markers=markers,
+                )
+                return reused if reused is not None else tokenizer.encode(text)
 
             if transient_message_start is not None:
                 future_prompt = self._apply_chat_template(
@@ -3605,7 +3643,7 @@ class BatchedEngine(BaseEngine):
                     enable_thinking=enable_thinking,
                     chat_template_kwargs=chat_template_kwargs,
                 )
-                future_tokens = tokenizer.encode(future_prompt)
+                future_tokens = encode_variant(future_prompt)
                 transient_lcp = 0
                 for real_token, future_token in zip(real_tokens, future_tokens):
                     if real_token != future_token:
@@ -3634,8 +3672,8 @@ class BatchedEngine(BaseEngine):
                 chat_template_kwargs=chat_template_kwargs,
             )
 
-            stable_tokens = tokenizer.encode(stable_prompt)
-            next_turn_tokens = tokenizer.encode(next_turn_prompt)
+            stable_tokens = encode_variant(stable_prompt)
+            next_turn_tokens = encode_variant(next_turn_prompt)
             stable_lcp = 0
             for real_token, stable_token in zip(real_tokens, stable_tokens):
                 if real_token != stable_token:
@@ -3670,7 +3708,7 @@ class BatchedEngine(BaseEngine):
                 chat_template_kwargs=chat_template_kwargs,
             )
 
-            dummy_tokens = tokenizer.encode(dummy_prompt)
+            dummy_tokens = encode_variant(dummy_prompt)
 
             # Find LCP — the point where the two diverge is the boundary
             lcp = 0
