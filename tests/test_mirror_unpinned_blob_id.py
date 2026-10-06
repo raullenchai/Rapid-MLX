@@ -469,3 +469,16 @@ def test_drop_bad_blob_ignores_an_unstatable_path(tmp_path, monkeypatch):
 
     monkeypatch.setattr(Path, "is_file", boom)
     _mirror._drop_bad_blob(tmp_path, _oid(CONFIG))  # must not raise
+
+
+def test_drop_bad_blob_removes_only_the_link_to_a_corrupt_shared_file(tmp_path):
+    shared = tmp_path / "shared-store" / "ab" / ("c" * 64)
+    shared.parent.mkdir(parents=True)
+    shared.write_bytes(STALE_CONFIG)
+    root = tmp_path / "repo"
+    link = root / "blobs" / _oid(CONFIG)
+    link.parent.mkdir(parents=True)
+    link.symlink_to(shared)
+    _mirror._drop_bad_blob(root, _oid(CONFIG))
+    assert not link.is_symlink() and not link.exists()
+    assert shared.read_bytes() == STALE_CONFIG  # the shared file is untouched

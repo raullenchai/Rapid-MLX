@@ -591,18 +591,19 @@ def _drop_bad_blob(repo_root: Path, oid: str) -> None:
     HF names a non-LFS blob by its git blob id and re-links an existing blob
     by name without downloading. A corrupted one would otherwise survive every
     HF fallback, so it is removed (under the same lock our installer takes)
-    before the fallback runs.
+    before the fallback runs. When ``blobs/<oid>`` is a link into a shared
+    store, only this repository's link is removed, never the shared file.
     """
     blob = repo_root / "blobs" / oid
     try:
-        if not blob.is_file() or blob.is_symlink():
+        if not blob.is_file():
             return
     except OSError:
         return
     lock_path = repo_root / "blobs" / f"{oid}.lock"
     lock_fh = _acquire_part_lock(lock_path)
     try:
-        if blob.is_file() and not blob.is_symlink() and not _blob_oid_is(oid)(blob):
+        if blob.is_file() and not _blob_oid_is(oid)(blob):
             _safe_unlink(blob)
     finally:
         _release_part_lock(lock_fh, lock_path)
