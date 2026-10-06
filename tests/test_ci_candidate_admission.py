@@ -181,3 +181,58 @@ def test_workflow_uses_trusted_checkout_and_indexes_after_upload():
     assert "candidate-admission/ci" in index["run"]
     assert '--producer-run-id "$PRODUCER_RUN"' in steps[1]["run"]
     assert "candidate-admission/ci" not in (root / ".mergify.yml").read_text()
+
+
+@pytest.mark.parametrize("change", ["new-producer", "new-attempt"])
+def test_second_consumer_cannot_switch_notification_provenance(monkeypatch, change):
+    client, _, status, run, artifact = setup(monkeypatch)
+    prefix = f"repos/{REPO}"
+    original_json = client.json
+    monkeypatch.setattr(
+        client, "json", lambda *a, **kw: copy.deepcopy(original_json(*a, **kw))
+    )
+    original_consume = admission.consumer.consume_full
+    original_download = admission.consumer.subprocess.run
+    calls = 0
+    verified_consumptions = []
+
+    def download(command, **kwargs):
+        if command[-1].endswith("/artifacts/201/zip"):
+            command = [*command[:-1], f"{prefix}/actions/artifacts/101/zip"]
+        return original_download(command, **kwargs)
+
+    monkeypatch.setattr(admission.consumer.subprocess, "run", download)
+
+    def consume(*args):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            if change == "new-producer":
+                client.responses[f"{prefix}/actions/runs/200"] = dict(run, id=200)
+                client.job_records[200] = copy.deepcopy(client.job_records[100])
+                client.responses[f"{prefix}/actions/runs/200/artifacts"] = {
+                    "total_count": 1,
+                    "artifacts": [dict(artifact, id=201, workflow_run={"id": 200})],
+                }
+                client.responses[f"{prefix}/commits/{CANDIDATE}/statuses"].append(
+                    dict(
+                        status,
+                        id=502,
+                        target_url=f"https://github.com/{REPO}/actions/runs/200",
+                    )
+                )
+            else:
+                run["run_attempt"] = 2
+                for job in client.job_records[100]:
+                    job["run_attempt"] = 2
+        result = original_consume(*args)
+        verified_consumptions.append(result)
+        return result
+
+    monkeypatch.setattr(admission.consumer, "consume_full", consume)
+    result = admission.verify_admission(client, 100)
+    # Both real ZIP/live full verifications succeed with identical source proof.
+    assert calls == 2 and verified_consumptions[0] == verified_consumptions[1]
+    assert verified_consumptions[1]["verified"]
+    assert not result["verified"] and "candidate_sha" not in result
+    assert "producer/index" in result["reason"]

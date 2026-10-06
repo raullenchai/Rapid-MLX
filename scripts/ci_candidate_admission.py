@@ -75,6 +75,15 @@ def verify_admission(
         current = consumer.consume_full(client, sha)
         if current != consumed or current.get("verified") is not True:
             raise evidence.EvidenceError("candidate changed before admission")
+        # Full-consumer output binds source proof, not notification provenance.
+        # A new producer for identical proof must not validate this old notice.
+        if (
+            consumer._producer_run(client, producer_run_id) != run
+            or consumer._status(client, sha) != status
+        ):
+            raise evidence.EvidenceError(
+                "producer/index changed after final verification"
+            )
         result.update(
             verified=True,
             candidate_sha=sha,
