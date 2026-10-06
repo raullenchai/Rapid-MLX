@@ -258,7 +258,7 @@ def qualify_candidate(
 
 
 def main() -> None:
-    """Initial producer supports full qualification only; mapped stays disabled."""
+    """Qualify current source; mapped requires live enrolled rollout policy."""
     import argparse
     import json
     from pathlib import Path
@@ -268,10 +268,17 @@ def main() -> None:
     parser.add_argument("--source-run-id", required=True, type=int)
     parser.add_argument("--trusted-ref", required=True)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--expected", type=Path)
     args = parser.parse_args()
-    result = qualify_candidate(
+    from scripts.ci_candidate_rollout import qualify_source
+
+    result = qualify_source(
         evidence.GitHubClient(args.repo), args.source_run_id, args.trusted_ref
     )
+    if args.expected and result != json.loads(args.expected.read_text()):
+        raise evidence.EvidenceError("qualification changed before publication")
+    if args.expected and not result.get("qualified"):
+        raise evidence.EvidenceError("qualification revoked before publication")
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
     print(

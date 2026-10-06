@@ -129,7 +129,9 @@ def _artifact(
         return json.loads(archive.read(members[0]))
 
 
-def consume_full(client: evidence.GitHubClient, candidate_sha: str) -> dict[str, Any]:
+def _consume(
+    client: evidence.GitHubClient, candidate_sha: str, *, scoped: bool = False
+) -> dict[str, Any]:
     """Recompute full proof, then recheck mutable state; unused by queue rules."""
     result: dict[str, Any] = {
         "verified": False,
@@ -150,10 +152,12 @@ def consume_full(client: evidence.GitHubClient, candidate_sha: str) -> dict[str,
         record = _artifact(client, run_id, candidate_sha, started)
         if (
             record.get("schema") != producer.SCHEMA
-            or record.get("kind") != "full"
+            or record.get("kind")
+            not in ({"mapped", "engine-not-required"} if scoped else {"full"})
             or record.get("candidate_sha") != candidate_sha
             or record.get("qualified") is not True
-            or record.get("authorizes_reduced_ci") is not False
+            or record.get("authorizes_reduced_ci")
+            is not (record.get("kind") == "mapped")
             or type(record.get("source_run_id")) is not int
             or record["source_run_id"] < 1
             or type(record.get("source_attempt")) is not int
@@ -168,7 +172,13 @@ def consume_full(client: evidence.GitHubClient, candidate_sha: str) -> dict[str,
             raise evidence.EvidenceError("qualification base is stale")
         # The transport is not authority: repeat actual full jobs, latest source
         # attempt, creator/ref/base/tree/first-parent and open-candidate checks.
-        current = producer.qualify_candidate(client, record["source_run_id"], tip)
+        if scoped:
+            from scripts.ci_candidate_rollout import qualify_source
+
+            recompute = qualify_source
+        else:
+            recompute = producer.qualify_candidate
+        current = recompute(client, record["source_run_id"], tip)
         if current != record or not current.get("qualified"):
             raise evidence.EvidenceError(
                 "artifact differs from live full qualification"
@@ -182,9 +192,9 @@ def consume_full(client: evidence.GitHubClient, candidate_sha: str) -> dict[str,
             != tip
         ):
             raise evidence.EvidenceError("main changed during verification")
-        if producer.qualify_candidate(client, record["source_run_id"], tip) != current:
+        if recompute(client, record["source_run_id"], tip) != current:
             raise evidence.EvidenceError("candidate changed during verification")
-        result.update(verified=True, kind="full", qualification=current)
+        result.update(verified=True, kind=record["kind"], qualification=current)
     except (
         evidence.EvidenceError,
         KeyError,
@@ -198,3 +208,18 @@ def consume_full(client: evidence.GitHubClient, candidate_sha: str) -> dict[str,
     ) as exc:
         result["reason"] = str(exc)[:500]
     return result
+
+
+def consume_full(client: evidence.GitHubClient, candidate_sha: str) -> dict[str, Any]:
+    """Existing full-only consumer; scoped records never qualify full reuse."""
+    return _consume(client, candidate_sha)
+
+
+def consume_qualified(
+    client: evidence.GitHubClient, candidate_sha: str
+) -> dict[str, Any]:
+    """Accept independently revalidated full, mapped or explicit policy evidence."""
+    full = consume_full(client, candidate_sha)
+    if full.get("verified"):
+        return full
+    return _consume(client, candidate_sha, scoped=True)
