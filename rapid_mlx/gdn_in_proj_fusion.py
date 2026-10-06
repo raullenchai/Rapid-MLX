@@ -43,10 +43,11 @@ Set ``RAPID_MLX_GDN_IN_PROJ_FUSION=0`` to disable.
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 import mlx.core as mx
+
+from ._env import env_falsey
 
 logger = logging.getLogger(__name__)
 
@@ -445,8 +446,8 @@ def fuse_gdn_in_proj(model: Any) -> int:
     individually parity-proven and fully functional — the return value
     is the number of layers actually committed in every case.
     """
-    if os.environ.get("RAPID_MLX_GDN_IN_PROJ_FUSION", "1") == "0":
-        logger.info("[gdn_fusion] disabled via RAPID_MLX_GDN_IN_PROJ_FUSION=0")
+    if env_falsey("RAPID_MLX_GDN_IN_PROJ_FUSION"):
+        logger.info("[gdn_fusion] disabled via RAPID_MLX_GDN_IN_PROJ_FUSION")
         return 0
     try:
         return _install(model)

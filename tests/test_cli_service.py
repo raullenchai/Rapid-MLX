@@ -738,6 +738,68 @@ def test_log_paths_returns_none_when_unknown(monkeypatch, tmp_path):
     assert logs._log_paths("com.rapidmlx.server", "serveuser") is None
 
 
+def test_configured_log_file_read_from_service_config(
+    monkeypatch, plist_kwargs, tmp_path
+):
+    """``service logs`` follows the plist's ``--config`` to the serve args."""
+    import rapid_mlx.headless_service.logs as logs
+    from rapid_mlx.headless_service.config import config_bytes
+
+    config = ServiceConfig(
+        schema_version=SCHEMA_VERSION,
+        label="com.rapidmlx.server",
+        service_user="serveuser",
+        executable="/Users/serveuser/.local/bin/rapid-mlx",
+        model="qwen3.5-4b-4bit",
+        serve_args=("--log-file", "/var/log/rapid-mlx.log"),
+    ).validated()
+    config_path = tmp_path / "service.json"
+    config_path.write_bytes(config_bytes(config))
+    plist = tmp_path / "com.rapidmlx.server.plist"
+    plist.write_bytes(
+        serialize_plist(build_plist_dict(**plist_kwargs, config_path=config_path))
+    )
+    monkeypatch.setattr(ins_mod, "_plist_path", staticmethod(lambda _l: plist))
+    assert logs._configured_log_file("com.rapidmlx.server") == "/var/log/rapid-mlx.log"
+
+
+def test_configured_log_file_none_without_service_config(
+    monkeypatch, plist_kwargs, tmp_path
+):
+    """A legacy plist without ``--config`` has no readable ``--log-file``."""
+    import rapid_mlx.headless_service.logs as logs
+
+    plist = tmp_path / "com.rapidmlx.server.plist"
+    plist.write_bytes(serialize_plist(build_plist_dict(**plist_kwargs)))
+    monkeypatch.setattr(ins_mod, "_plist_path", staticmethod(lambda _l: plist))
+    assert logs._configured_log_file("com.rapidmlx.server") is None
+
+
+@pytest.mark.parametrize(
+    ("target", "note"),
+    [
+        (None, None),
+        ("-", None),
+        ("/dev/stderr", None),
+        ("/dev/null", "note: the service discards server output"),
+        ("/var/log/rapid-mlx.log", "writes server output to /var/log/rapid-mlx.log"),
+    ],
+)
+def test_logs_notes_where_server_output_goes(
+    monkeypatch, tmp_path, capsys, target, note
+):
+    import rapid_mlx.headless_service.logs as logs
+
+    _patched_logged_files(monkeypatch, tmp_path)
+    monkeypatch.setattr(logs, "_configured_log_file", lambda _label: target)
+    assert logs.logs_command(_ns()) == 0
+    out = capsys.readouterr().out
+    if note is None:
+        assert "note:" not in out
+    else:
+        assert note in out
+
+
 def test_logs_no_paths_errors(monkeypatch, capsys, tmp_path):
     import rapid_mlx.headless_service.logs as logs
 

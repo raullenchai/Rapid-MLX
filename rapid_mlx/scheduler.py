@@ -44,6 +44,7 @@ from mlx_lm.tokenizer_utils import NaiveStreamingDetokenizer  # noqa: E402
 # in-flight request (#1525).
 _mlx_compat.install_batch_slot_guard()
 
+from ._env import env_truthy  # noqa: E402
 from ._sampler_fast_path import (  # noqa: E402
     is_fused_top_p_eligible,
     make_fused_top_p_temp_sampler,
@@ -4731,9 +4732,7 @@ class Scheduler:
         # who set ``RAPID_MLX_DISABLE_FUSED_SAMPLER=true`` (the more natural
         # form for a boolean knob) actually get the fast path disabled,
         # instead of silently leaving it on.
-        _fused_disabled = os.environ.get(
-            "RAPID_MLX_DISABLE_FUSED_SAMPLER", "0"
-        ).strip().lower() in ("1", "true", "yes", "on")
+        _fused_disabled = env_truthy("RAPID_MLX_DISABLE_FUSED_SAMPLER")
         key = (
             sampling_params.temperature,
             sampling_params.top_p,
@@ -10035,6 +10034,11 @@ class Scheduler:
         """
         interval = getattr(self.config, "kv_disk_checkpoint_interval", 0)
         if interval is None or interval <= 0:
+            return
+
+        from . import disk_caches
+
+        if disk_caches.disabled():
             return
 
         # Lazy import keeps the module-load cost of rapid_mlx.scheduler

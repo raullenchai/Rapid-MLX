@@ -14,13 +14,13 @@ model.
 from __future__ import annotations
 
 import logging
-import os
 import sys
 from collections.abc import Callable
 from typing import Any, cast
 
 import mlx.core as mx
 
+from ._env import env_falsey
 from .compiled_precision import gate_sigmoid
 
 logger = logging.getLogger(__name__)
@@ -193,7 +193,7 @@ def _patch_class(block_class: type) -> None:
 
 def install_qwen35_moe_router(model: Any) -> int:
     """Enroll compatible blocks from one loaded model; return their count."""
-    if os.environ.get("RAPID_MLX_QWEN35_MOE_ROUTER", "1") == "0":
+    if env_falsey("RAPID_MLX_QWEN35_MOE_ROUTER"):
         return 0
     if not mx.metal.is_available():
         return 0

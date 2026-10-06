@@ -11,23 +11,19 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import threading
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
+
+from ._env import env_falsey
 
 _DEFAULT_MAX_ENTRIES = 64
 _DEFAULT_MAX_BYTES = 64 * 1024 * 1024
 
 
 def prompt_host_cache_enabled() -> bool:
-    return os.environ.get("RAPID_MLX_PROMPT_HOST_CACHE", "1").strip().lower() not in {
-        "0",
-        "false",
-        "no",
-        "off",
-    }
+    return not env_falsey("RAPID_MLX_PROMPT_HOST_CACHE")
 
 
 def _fingerprint(value: Any) -> str | None:

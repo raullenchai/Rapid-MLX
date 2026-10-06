@@ -50,7 +50,7 @@ class ServiceConfig:
 
     def validated(self) -> ServiceConfig:
         from .common import is_loopback_host, validate_label
-        from .install import refuse_secret_flags
+        from .install import refuse_secret_flags, refuse_unbootable_log_file
 
         if self.schema_version != SCHEMA_VERSION:
             raise ServiceConfigError(
@@ -84,6 +84,7 @@ class ServiceConfig:
             raise ServiceConfigError("log_backup_count must be at least 1")
         try:
             refuse_secret_flags(self.serve_args)
+            refuse_unbootable_log_file(self.serve_args)
         except Exception as exc:
             raise ServiceConfigError(str(exc)) from None
         if any("\0" in token for token in self.serve_args):

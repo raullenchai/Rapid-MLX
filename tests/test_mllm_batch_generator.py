@@ -2131,6 +2131,36 @@ def test_generator_preserves_explicit_apc_disk_setting(monkeypatch):
         gen.close()
 
 
+def test_generator_disable_disk_caches_overrules_apc_disk_setting(monkeypatch):
+    from rapid_mlx import disk_caches
+    from rapid_mlx.models.mlx_vlm_vendored import apc
+
+    manager = _ExactPrefixCache()
+    seen_overrides = None
+
+    def _from_env(*, overrides):
+        nonlocal seen_overrides
+        seen_overrides = overrides
+        return manager
+
+    monkeypatch.setenv("APC_DISK_ENABLED", "1")
+    monkeypatch.setattr(apc, "model_apc_mode", lambda _model: "exact")
+    monkeypatch.setattr(apc, "from_env", _from_env)
+    monkeypatch.setattr(apc, "semantic_extra_hash", lambda **_kwargs: 41)
+    monkeypatch.setattr(disk_caches, "_cli_disabled", True)
+
+    gen = _make_generator(_RecordingModel())
+    try:
+        assert gen._prefix_cache is manager
+        assert seen_overrides == {
+            "enabled": True,
+            "num_blocks": 0,
+            "disk_enabled": False,
+        }
+    finally:
+        gen.close()
+
+
 def test_generator_keeps_mllm_available_when_exact_apc_init_fails(monkeypatch):
     from rapid_mlx.models.mlx_vlm_vendored import apc
 
