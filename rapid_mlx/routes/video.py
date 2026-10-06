@@ -84,6 +84,17 @@ class _VideoJob:
 
 
 _jobs: dict[str, _VideoJob] = {}
+_extension_uploads: set[str] = set()
+
+
+def _active_video_admissions_locked() -> int:
+    """Count running/queued jobs and reserved uploads with _jobs_lock held."""
+    return len(_extension_uploads) + sum(
+        not (job.status in {"completed", "failed"} and job.generation_finished)
+        for job in _jobs.values()
+    )
+
+
 _tasks: dict[str, asyncio.Task] = {}
 _cleanup_tasks: set[asyncio.Task] = set()
 _generation_threads: set[threading.Thread] = set()
@@ -258,6 +269,7 @@ def configure_video_jobs(output_dir: str | Path | None) -> Path:
             or active_cleanup
             or _generation_threads
             or _persistence_threads
+            or _extension_uploads
         ):
             raise RuntimeError("cannot reconfigure the video job store while jobs run")
         _jobs.clear()
@@ -933,7 +945,7 @@ def _probe_extension_video(path: Path) -> tuple[int, int, int]:
                 "-select_streams",
                 "v:0",
                 "-show_entries",
-                "stream=width,height,avg_frame_rate,r_frame_rate,nb_frames:format=format_name,duration:format_tags=major_brand",
+                "stream=width,height,avg_frame_rate,r_frame_rate,nb_frames:format=format_name,duration:format_tags=major_brand,compatible_brands",
                 "-of",
                 "json",
                 str(path),
@@ -951,6 +963,9 @@ def _probe_extension_video(path: Path) -> tuple[int, int, int]:
         runtime_frame_rate = Fraction(stream["r_frame_rate"])
         formats = details["format"]["format_name"].split(",")
         major_brand = details["format"].get("tags", {}).get("major_brand", "").strip()
+        compatible_brands = (
+            details["format"].get("tags", {}).get("compatible_brands", "")
+        )
         # Match the pinned runtime's metadata count, including its duration
         # fallback, so inference and the API agree on the source workload.
         # A missing count falls back to duration; a literal "N/A" is invalid
@@ -975,7 +990,16 @@ def _probe_extension_video(path: Path) -> tuple[int, int, int]:
     # QuickTime file. Its concrete brand must identify an MP4 container.
     mp4_brands = {"isom", "mp41", "mp42", "avc1", "dash", "M4V", "MSNV"}
     mp4_brands.update(f"iso{version}" for version in range(2, 10))
-    if "mp4" not in formats or major_brand not in mp4_brands:
+    brands = {major_brand} | {
+        compatible_brands[offset : offset + 4].strip()
+        for offset in range(0, len(compatible_brands), 4)
+    }
+    if (
+        "mp4" not in formats
+        or major_brand == "qt"
+        or major_brand.startswith("3g")
+        or not brands.intersection(mp4_brands)
+    ):
         raise HTTPException(status_code=400, detail="input_video must be MP4")
     # The pinned runtime reads r_frame_rate. Checking only the average
     # permits variable-rate inputs whose generated output is not 24 fps.
@@ -1456,6 +1480,8 @@ async def create_video(
                 raise HTTPException(
                     status_code=503, detail="video server is shutting down"
                 )
+            if _active_video_admissions_locked() >= _MAX_JOBS:
+                raise HTTPException(status_code=429, detail="video job queue is full")
             if len(_jobs) >= _MAX_JOBS:
                 finished = [
                     item
@@ -1533,18 +1559,20 @@ async def extend_video(
         raise HTTPException(
             status_code=400, detail="extend_frames must be 8, 16, 24, 32, 40, or 48"
         )
+    job_id = f"video_{uuid.uuid4().hex}"
     with _jobs_lock:
         if not _accepting_jobs:
             raise HTTPException(status_code=503, detail="video server is shutting down")
-
-    job_id = f"video_{uuid.uuid4().hex}"
+        if _active_video_admissions_locked() >= _MAX_JOBS:
+            raise HTTPException(status_code=429, detail="video job queue is full")
+        _extension_uploads.add(job_id)
     job_dir = _jobs_root / job_id
-    job_dir.mkdir(mode=0o700)
     source_video = job_dir / "source.mp4"
     enqueued = False
     evicted_id: str | None = None
     task: asyncio.Task | None = None
     try:
+        job_dir.mkdir(mode=0o700)
         total_bytes = 0
         target = await asyncio.to_thread(source_video.open, "xb")
         try:
@@ -1599,6 +1627,7 @@ async def extend_video(
                 oldest = min(finished, key=lambda item: item.created_at)
                 _jobs.pop(oldest.id, None)
                 evicted_id = oldest.id
+            _extension_uploads.discard(job.id)
             _jobs[job.id] = job
             task = asyncio.create_task(
                 _run_job(
@@ -1620,8 +1649,12 @@ async def extend_video(
             _tasks[job.id] = task
             enqueued = True
     finally:
-        if not enqueued:
-            await asyncio.to_thread(shutil.rmtree, job_dir, ignore_errors=True)
+        try:
+            if not enqueued:
+                await asyncio.to_thread(shutil.rmtree, job_dir, ignore_errors=True)
+        finally:
+            with _jobs_lock:
+                _extension_uploads.discard(job_id)
     assert task is not None
 
     def discard_task(done: asyncio.Task) -> None:

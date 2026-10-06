@@ -337,7 +337,10 @@ def test_extension_probe_runtime_metadata_compatibility(
         assert video._probe_extension_video(Path("source.mp4")) == (256, 256, 9)
 
 
-def test_extension_probe_rejects_quicktime_container(tmp_path: Path) -> None:
+@pytest.mark.parametrize("container,brand", [("mov", "qt  "), ("mp4", "F4V ")])
+def test_extension_probe_container_brands(
+    container: str, brand: str, tmp_path: Path
+) -> None:
     ffmpeg = shutil.which("ffmpeg")
     ffprobe = shutil.which("ffprobe")
     if ffmpeg is None or ffprobe is None:
@@ -356,14 +359,105 @@ def test_extension_probe_rejects_quicktime_container(tmp_path: Path) -> None:
             "-frames:v",
             "9",
             "-f",
-            "mov",
+            container,
+            "-brand",
+            brand,
             "-y",
             str(source),
         ],
         check=True,
     )
-    with pytest.raises(HTTPException, match="must be MP4"):
-        video._probe_extension_video(source)
+    if container == "mov":
+        with pytest.raises(HTTPException, match="must be MP4"):
+            video._probe_extension_video(source)
+    else:
+        assert video._probe_extension_video(source) == (256, 256, 9)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_extension_reserves_capacity_before_upload_and_releases_it(
+    cancel: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    video.configure_video_jobs(tmp_path / "jobs")
+    video.start_video_jobs()
+    monkeypatch.setattr(video, "_MAX_JOBS", 1)
+    monkeypatch.setattr(
+        video,
+        "_video_engine",
+        lambda: SimpleNamespace(
+            model_name="MrMofer/ltx-2.5-mlx-q8", video_family="ltx-2.5"
+        ),
+    )
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class BlockedUpload(Upload):
+        async def read(self, size: int) -> bytes:
+            entered.set()
+            await release.wait()
+            return await super().read(size)
+
+    def reject_source(path):
+        raise HTTPException(status_code=400, detail="invalid input_video")
+
+    monkeypatch.setattr(video, "_probe_extension_video", reject_source)
+
+    async def submit(upload):
+        return await video.extend_video(
+            prompt="continue",
+            model="ltx-2.5-mlx-q8",
+            extend_frames=8,
+            seed=42,
+            input_video=upload,
+        )
+
+    first = asyncio.create_task(submit(BlockedUpload(b"invalid")))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        with pytest.raises(RuntimeError, match="while jobs run"):
+            video.configure_video_jobs(tmp_path / "other-jobs")
+        second = Upload(b"must not be read")
+        with pytest.raises(HTTPException) as exc:
+            await submit(second)
+        assert exc.value.status_code == 429
+        assert second.data == b"must not be read"
+        # Ordinary generation must not consume a reserved extension slot.
+        with pytest.raises(HTTPException) as exc:
+            await video.create_video(
+                prompt="continue",
+                model="ltx-2.5-mlx-q8",
+                seconds="1",
+                size="256x256",
+                seed=42,
+                fps=24,
+                frames=9,
+                input_reference=None,
+            )
+        assert exc.value.status_code == 429
+        if cancel:
+            first.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await first
+        else:
+            release.set()
+            with pytest.raises(HTTPException) as exc:
+                await first
+            assert exc.value.status_code == 400
+        assert not video._extension_uploads
+        assert list(video._jobs_root.iterdir()) == []
+        # Rejection/cancellation must permit a subsequent upload to reach validation.
+        with pytest.raises(HTTPException) as exc:
+            await submit(Upload(b"invalid"))
+        assert exc.value.status_code == 400
+        assert not video._extension_uploads
+    finally:
+        if not first.done():
+            first.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await first
+        video.configure_video_jobs(None)
+        video.start_video_jobs()
 
 
 @pytest.mark.asyncio
