@@ -50,7 +50,6 @@ import anyio
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from .._env import env_truthy
 from ..cache.protocol import (
     MANIFEST_FILENAME,
     PROTOCOL_VERSION,
@@ -307,7 +306,7 @@ def _reject_if_ipc_lock_degraded(iplock: _InterProcessLock) -> None:
     opted into unsafe shared-FS operation (#1100 codex round 5 #2)."""
     if not iplock.degraded:
         return
-    if env_truthy(_ALLOW_UNSAFE_SHARED_FS_ENV):
+    if os.environ.get(_ALLOW_UNSAFE_SHARED_FS_ENV) == "1":
         return
     raise HTTPException(
         status_code=503,

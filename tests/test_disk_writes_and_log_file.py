@@ -279,6 +279,92 @@ def test_disable_version_check_flag_sets_environment_for_children(monkeypatch):
     assert os.environ["RAPID_MLX_DISABLE_VERSION_CHECK"] == "1"
 
 
+def test_json_command_rejects_stdout_log_target_in_process(monkeypatch, capsys):
+    from rapid_mlx import cli
+
+    monkeypatch.setenv(log_file.ENV_VAR, "-")
+    monkeypatch.setattr(sys, "argv", ["rapid-mlx", "--no-banner", "models", "--json"])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 2
+    assert "RAPID_MLX_LOG_FILE=-" in capsys.readouterr().err
+
+
+def test_log_file_empty_flag_and_descriptions():
+    with pytest.raises(log_file.LogFileError, match="must not be empty"):
+        log_file.validate("  ", "--log-file")
+    assert log_file.describe("-") == "stdout"
+    assert log_file.describe(os.devnull) == "discarded (/dev/null)"
+    assert log_file.describe("/tmp/server.log") == "/tmp/server.log"
+
+
+def test_log_file_apply_redirects_both_descriptors(monkeypatch, tmp_path):
+    dups = []
+    monkeypatch.setattr(log_file.os, "dup2", lambda src, dst: dups.append((src, dst)))
+    log_file.apply("-")
+    assert dups == [(1, 2)]
+
+    dups.clear()
+    closed = []
+    real_close = os.close
+    monkeypatch.setattr(
+        log_file.os, "close", lambda fd: (closed.append(fd), real_close(fd))
+    )
+    target = tmp_path / "server.log"
+    log_file.apply(str(target))
+    assert target.exists()
+    assert [dst for _, dst in dups] == [1, 2]
+    assert closed == [dups[0][0]]
+
+
+def test_log_file_apply_keeps_a_target_opened_on_a_standard_descriptor(monkeypatch):
+    # With stdout closed, os.open hands back descriptor 1 itself.
+    monkeypatch.setattr(log_file.os, "open", lambda *_a: 1)
+    monkeypatch.setattr(log_file.os, "dup2", lambda _src, _dst: None)
+    monkeypatch.setattr(
+        log_file.os, "close", lambda _fd: pytest.fail("closed the log target")
+    )
+    log_file.apply("/tmp/server.log")
+
+
+def test_log_file_apply_reports_unopenable_target(tmp_path):
+    with pytest.raises(log_file.LogFileError, match="cannot be opened for writing"):
+        log_file.apply(str(tmp_path / "missing" / "server.log"), "RAPID_MLX_LOG_FILE")
+
+
+def test_chat_log_target_is_validated_only_when_chat_spawns_a_server(tmp_path, capsys):
+    from rapid_mlx import cli
+
+    good = tmp_path / "server.log"
+    bad = str(tmp_path / "missing" / "server.log")
+    spawn = argparse.Namespace(log_file=str(good), base_url=None, port=None)
+    assert cli._chat_server_log_target(spawn) == str(good)
+    for attach in (
+        argparse.Namespace(log_file=bad, base_url="http://127.0.0.1:8000", port=None),
+        argparse.Namespace(log_file=bad, base_url=None, port=8000),
+    ):
+        assert cli._chat_server_log_target(attach) is None
+    with pytest.raises(SystemExit) as exc:
+        cli._chat_server_log_target(
+            argparse.Namespace(log_file=bad, base_url=None, port=None)
+        )
+    assert exc.value.code == 2
+    assert "does not exist" in capsys.readouterr().err
+
+
+def test_chat_spawn_closes_its_log_when_the_server_cannot_start(monkeypatch, tmp_path):
+    from rapid_mlx import cli
+
+    def failing_popen(_cmd, **kwargs):
+        failing_popen.log = kwargs["stdout"]
+        raise OSError("spawn failed")
+
+    monkeypatch.setattr(subprocess, "Popen", failing_popen)
+    with pytest.raises(OSError, match="spawn failed"):
+        cli._spawn_chat_server("m", str(tmp_path / "chat.log"))
+    assert failing_popen.log.closed
+
+
 class _StopServeError(Exception):
     pass
 

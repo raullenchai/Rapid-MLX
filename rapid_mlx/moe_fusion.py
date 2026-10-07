@@ -31,12 +31,11 @@ from __future__ import annotations
 
 import inspect
 import logging
+import os
 import sys
 from typing import Any
 
 import mlx.core as mx
-
-from ._env import env_falsey
 
 logger = logging.getLogger(__name__)
 
@@ -201,8 +200,8 @@ def fuse_gate_up(model: Any) -> int:
     module scan finds no ``SwitchGLU``. Idempotent: already-fused
     instances carry ``gate_up_proj`` and are skipped by the gate.
     """
-    if env_falsey("RAPID_MLX_MOE_GATE_UP_FUSION"):
-        logger.info("[moe_fusion] disabled via RAPID_MLX_MOE_GATE_UP_FUSION")
+    if os.environ.get("RAPID_MLX_MOE_GATE_UP_FUSION", "1") == "0":
+        logger.info("[moe_fusion] disabled via RAPID_MLX_MOE_GATE_UP_FUSION=0")
         return 0
     families = _switch_layer_families()
     if not families:

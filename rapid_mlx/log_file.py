@@ -85,4 +85,7 @@ def apply(target: str, source: str = FLAG) -> None:
         os.dup2(fd, 1)
         os.dup2(fd, 2)
     finally:
-        os.close(fd)
+        # A process started with stdout or stderr closed gets 1 or 2 back
+        # from os.open; that descriptor is now the log target itself.
+        if fd > 2:
+            os.close(fd)

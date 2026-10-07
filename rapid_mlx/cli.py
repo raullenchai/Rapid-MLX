@@ -11667,6 +11667,24 @@ def _recover_failed_chat_turn(messages: list[dict], turn_start: int) -> None:
         del messages[turn_start:]
 
 
+def _chat_server_log_target(args) -> str | None:
+    """The validated ``--log-file`` target for the server ``chat`` spawns.
+
+    Attaching to a running server (``--base-url`` / ``--port``) starts none,
+    so an unusable target is ignored there instead of ending the session.
+    """
+    from rapid_mlx import log_file
+
+    try:
+        target, _ = log_file.resolve_validated(getattr(args, "log_file", None))
+    except log_file.LogFileError as exc:
+        if getattr(args, "base_url", None) or getattr(args, "port", None) is not None:
+            return None
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(2)
+    return target
+
+
 def chat_command(args):
     """Interactive REPL chat with a model.
 
@@ -11687,13 +11705,7 @@ def chat_command(args):
     proc = None
     log_path: str | None = None
     mcp_runtime = None
-    try:
-        server_log_target, _ = log_file.resolve_validated(
-            getattr(args, "log_file", None)
-        )
-    except log_file.LogFileError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        sys.exit(2)
+    server_log_target = _chat_server_log_target(args)
     server_spawn_kwargs: dict[str, Any] = {}
     if getattr(args, "disable_disk_caches", False):
         server_spawn_kwargs["disable_disk_caches"] = True
