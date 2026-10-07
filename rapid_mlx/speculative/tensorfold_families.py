@@ -12,6 +12,7 @@ from __future__ import annotations
 import functools
 import json
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -49,7 +50,9 @@ class TensorFoldFamilyProfile:
     drafter: str | None = None
     drafter_revision: str | None = None
     drafter_bits: int = 4
+    # The drafter's config.json names its layout under one of these two keys.
     drafter_architecture: str | None = None
+    drafter_model_type: str | None = None
 
 
 PROFILES: dict[str, TensorFoldFamilyProfile] = {
@@ -109,6 +112,21 @@ PROFILES: dict[str, TensorFoldFamilyProfile] = {
             min_memory_gb=48,
             quantization=(4, 64),
         ),
+        TensorFoldFamilyProfile(
+            profile_id="deepseek-v4-flash-tensorfold",
+            label="TensorFold DeepSeek V4 Flash",
+            model_type="deepseek_v4",
+            target="mlx-community/DeepSeek-V4-Flash-4bit",
+            target_revision="38c0bd20a6fba70f22c5ee2940ec0092b36ab936",
+            method="mtp",
+            algorithm="dspark",
+            fallback_model="deepseek-v4-flash-4bit",
+            min_memory_gb=256,
+            quantization=(4, 64),
+            drafter="TensorFold/DeepSeek-V4-Flash-DSpark-MLX",
+            drafter_revision="31fb9a6eeca93fe3e19aef8c9406fd42d16bb5e7",
+            drafter_model_type="deepseek_v4_dspark",
+        ),
     )
 }
 
@@ -152,7 +170,11 @@ def validate_artifacts(
     if _snapshot_revision(drafter) != profile.drafter_revision:
         raise TensorFoldUnavailable(f"unqualified {profile.label} drafter revision")
     draft_config = _read_config(drafter, "drafter")
-    if draft_config.get("architectures") != [profile.drafter_architecture]:
+    if profile.drafter_model_type is not None:
+        qualified = draft_config.get("model_type") == profile.drafter_model_type
+    else:
+        qualified = draft_config.get("architectures") == [profile.drafter_architecture]
+    if not qualified:
         raise TensorFoldUnavailable(
             f"drafter is not the qualified {profile.label} draft model"
         )
@@ -164,17 +186,25 @@ class FamilyArtifacts:
     drafter_path: str
 
 
-def download_qualified_artifacts(profile: TensorFoldFamilyProfile) -> FamilyArtifacts:
-    """Resolve the profile's immutable snapshots through the shared Hub cache."""
+def download_qualified_artifacts(
+    profile: TensorFoldFamilyProfile,
+    *,
+    before_drafter: Callable[[], None] | None = None,
+) -> FamilyArtifacts:
+    """Resolve the profile's immutable snapshots through the shared Hub cache.
+
+    ``before_drafter`` runs once the target is on disk and before a drafter is
+    fetched, so a caller's free-space check sees what the target consumed.
+    """
 
     from .._mirror import pinned_snapshot_download
 
     target = pinned_snapshot_download(profile.target, profile.target_revision)
-    drafter = (
-        pinned_snapshot_download(profile.drafter, profile.drafter_revision)
-        if profile.drafter is not None and profile.drafter_revision is not None
-        else ""
-    )
+    drafter = ""
+    if profile.drafter is not None and profile.drafter_revision is not None:
+        if before_drafter is not None:
+            before_drafter()
+        drafter = pinned_snapshot_download(profile.drafter, profile.drafter_revision)
     validate_artifacts(profile, Path(target), Path(drafter) if drafter else None)
     return FamilyArtifacts(target_path=str(target), drafter_path=str(drafter))
 

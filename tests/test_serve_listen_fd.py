@@ -678,7 +678,12 @@ def test_serve_command_downloads_qualified_glm_tensorfold_target(
 
 
 @pytest.mark.parametrize(
-    "alias", ["nemotron-3.5-lightning-tensorfold", "qwen3.8-flash-next-tensorfold"]
+    "alias",
+    [
+        "nemotron-3.5-lightning-tensorfold",
+        "qwen3.8-flash-next-tensorfold",
+        "deepseek-v4-flash-tensorfold",
+    ],
 )
 def test_serve_command_downloads_qualified_family_tensorfold_target(
     stub_heavy_serve_deps, monkeypatch, scheduler_config_stub, alias
@@ -688,6 +693,7 @@ def test_serve_command_downloads_qualified_family_tensorfold_target(
     from rapid_mlx.speculative import tensorfold_families
 
     family = tensorfold_families.PROFILES[alias]
+    head_path = "/pinned/family-head" if family.drafter else ""
     disk_checks: list[tuple[str, str | None]] = []
     downloaded = []
     monkeypatch.setattr(cli, "_check_alias_min_memory", lambda *_a, **_k: None)
@@ -699,13 +705,19 @@ def test_serve_command_downloads_qualified_family_tensorfold_target(
             (repo, revision_override)
         ),
     )
+
+    def fake_download(profile, *, before_drafter):
+        # The target lands first; the real resolver then runs the hook.
+        downloaded.append(profile)
+        assert disk_checks == [(family.target, family.target_revision)]
+        if profile.drafter is not None:
+            before_drafter()
+        return SimpleNamespace(
+            target_path="/pinned/family-target", drafter_path=head_path
+        )
+
     monkeypatch.setattr(
-        tensorfold_families,
-        "download_qualified_artifacts",
-        lambda profile: (
-            downloaded.append(profile)
-            or SimpleNamespace(target_path="/pinned/family-target", drafter_path="")
-        ),
+        tensorfold_families, "download_qualified_artifacts", fake_download
     )
     monkeypatch.setattr(
         cli, "_serve_tensorfold_mtp_if_requested", lambda *_a, **_k: True
@@ -718,8 +730,12 @@ def test_serve_command_downloads_qualified_family_tensorfold_target(
     cli.serve_command(ns)
 
     assert downloaded == [family]
-    assert disk_checks == [(family.target, family.target_revision)]
+    expected_checks = [(family.target, family.target_revision)]
+    if family.drafter is not None:
+        expected_checks.append((family.drafter, family.drafter_revision))
+    assert disk_checks == expected_checks
     assert ns.model == "/pinned/family-target"
+    assert ns._tensorfold_head_path == head_path
 
 
 def test_tensorfold_alias_preflights_downloads_pair_and_dispatches_server(
