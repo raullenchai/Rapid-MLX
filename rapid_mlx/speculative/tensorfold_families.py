@@ -56,6 +56,23 @@ PROFILES: dict[str, TensorFoldFamilyProfile] = {
     profile.profile_id: profile
     for profile in (
         TensorFoldFamilyProfile(
+            profile_id="bonsai2-27b-tensorfold",
+            label="TensorFold Ternary Bonsai 2",
+            model_type="prism_hadamard_qwen35",
+            target="prism-ml/Ternary-Bonsai-2-27B-mlx-2bit",
+            target_revision="fcba37d2117a7077eac6b613b2668d14d9779edd",
+            method="dflash",
+            algorithm="dflash2",
+            fallback_model="bonsai2-27b-2bit",
+            min_memory_gb=96,
+            quantization=(2, 128),
+            ordinary_engine=False,
+            drafter="z-lab/Qwen3.8-27B-DFlash2",
+            drafter_revision="50307d4c4cde6860d4eee73e2547cd786fe8e8a4",
+            drafter_bits=4,
+            drafter_architecture="DFlash2DraftModel",
+        ),
+        TensorFoldFamilyProfile(
             profile_id="nemotron-3.5-lightning-tensorfold",
             label="TensorFold Nemotron 3.5 Lightning",
             model_type="nemotron_h",
@@ -79,6 +96,18 @@ PROFILES: dict[str, TensorFoldFamilyProfile] = {
             min_memory_gb=192,
             quantization=(4, 32),
             ordinary_engine=False,
+        ),
+        TensorFoldFamilyProfile(
+            profile_id="gemma-4-26b-tensorfold",
+            label="TensorFold Gemma 4 26B",
+            model_type="gemma4",
+            target="mlx-community/gemma-4-26b-a4b-it-4bit",
+            target_revision="0d77464eeb233a2da68ebf9d7dc4edaac7db956d",
+            method="suffix",
+            algorithm="suffix-lookup",
+            fallback_model="gemma-4-26b-4bit",
+            min_memory_gb=48,
+            quantization=(4, 64),
         ),
     )
 }
