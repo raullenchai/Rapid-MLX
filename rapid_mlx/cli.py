@@ -2925,6 +2925,55 @@ def _tensorfold_mtp_profile(model_name: str | None):
     return profile if profile and getattr(profile, "tensorfold_mtp", False) else None
 
 
+def _reject_tensorfold_family_opt_out_or_exit(args) -> None:
+    """Stop an opt-out on a profile whose alias has no ordinary serving mode."""
+
+    from .speculative.tensorfold_families import profile_for
+
+    family = profile_for(
+        getattr(args, "_original_alias", None) or getattr(args, "model", None)
+    )
+    if family is None or family.ordinary_engine:
+        return
+    if getattr(args, "no_spec_decode", False) or getattr(args, "mllm", False):
+        print(
+            f"error: {family.profile_id} has no ordinary serving mode. "
+            f"Use {family.fallback_model} instead.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+
+def _require_tensorfold_family_lane_or_exit(args) -> None:
+    """Stop any effective configuration that leaves such a profile's lane.
+
+    An explicit ``--speculative-config`` can select another method or backend
+    for the alias, which would hand its checkpoint to the ordinary loader.
+    """
+
+    from .speculative.tensorfold_families import profile_for
+
+    family = profile_for(
+        getattr(args, "_original_alias", None) or getattr(args, "model", None)
+    )
+    if family is None or family.ordinary_engine:
+        return
+    if family.method == "dflash":
+        on_lane = (
+            getattr(args, "enable_dflash", False)
+            and getattr(args, "dflash_backend", None) == "tensorfold"
+        )
+    else:
+        on_lane = getattr(args, "mtp_backend", None) == "tensorfold"
+    if not on_lane:
+        print(
+            f"error: {family.profile_id} serves only through its TensorFold "
+            f"profile. Use {family.fallback_model} for other configurations.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+
 def _normalize_speculative_config_or_exit(args):
     """Parse ``--speculative-config`` and map methods to runtime fields."""
     import json
@@ -2936,6 +2985,7 @@ def _normalize_speculative_config_or_exit(args):
         require_migrated_speculative_config,
     )
 
+    _reject_tensorfold_family_opt_out_or_exit(args)
     raw_config = getattr(args, "speculative_config", None)
     raw_config_was_explicit = raw_config is not None
     config = None
@@ -3584,12 +3634,22 @@ def _serve_tensorfold_mtp_if_requested(
         )
         raise SystemExit(2)
 
+    from .speculative.tensorfold_families import (
+        profile_for,
+        run_tensorfold_family_server,
+    )
     from .speculative.tensorfold_glm53 import run_tensorfold_glm53_server
 
+    family = profile_for(alias_name)
+    run_server = (
+        functools.partial(run_tensorfold_family_server, family)
+        if family is not None
+        else run_tensorfold_glm53_server
+    )
     _check_disk_space(args.model, force=getattr(args, "force_disk_check", False))
     _check_memory_capacity(args.model, alias=alias_name)
     server_module._sync_config()
-    run_tensorfold_glm53_server(
+    run_server(
         main_model_repo=args.model,
         main_model_revision=None,
         drafter_repo="",
@@ -3800,14 +3860,35 @@ def _preflight_dflash_mutexes_or_exit(args) -> None:
 def _preflight_tensorfold_qwen27_or_exit(args=None) -> None:
     """Reject an unusable qualified TensorFold runtime before downloads."""
 
-    profile = _tensorfold_mtp_profile(
+    alias_name = (
         (getattr(args, "_original_alias", None) or getattr(args, "model", None))
         if args is not None
         else None
     )
+    profile = _tensorfold_mtp_profile(alias_name)
     runtime_probe: Callable[[], None]
     environment_probe: Callable[[], None]
-    if profile is not None:
+    from .speculative.tensorfold_families import profile_for
+
+    family = profile_for(alias_name) if profile is not None else None
+    if family is not None:
+        from .speculative.tensorfold_families import require_memory
+        from .speculative.tensorfold_qwen27 import (
+            INSTALL_HINT,
+            TensorFoldUnavailable,
+            require_environment,
+            require_runtime,
+        )
+
+        def _family_environment() -> None:
+            require_environment()
+            require_memory(family)
+
+        install_hint = INSTALL_HINT
+        label = family.label.removeprefix("TensorFold ")
+        runtime_probe = require_runtime
+        environment_probe = _family_environment
+    elif profile is not None:
         from .speculative.tensorfold_glm53 import (
             INSTALL_HINT,
             TensorFoldUnavailable,
@@ -5298,6 +5379,7 @@ def serve_command(args):
     # rejecting an explicit MLLM/speculative conflict before optional-runtime
     # checks or model downloads can obscure the actionable error.
     _normalize_speculative_config_or_exit(args)
+    _require_tensorfold_family_lane_or_exit(args)
     _reject_unsupported_listen_fd_lane(
         args, owns_v41_product_download=_owns_v41_product_download
     )
@@ -5674,15 +5756,24 @@ def serve_command(args):
     ):
         from rapid_mlx.telemetry.server_start import failure_stage
 
+        from .speculative.tensorfold_families import (
+            download_qualified_artifacts,
+            profile_for,
+        )
         from .speculative.tensorfold_glm53 import download_qualified_target
 
+        _tf_family = profile_for(getattr(args, "_original_alias", None) or args.model)
         with failure_stage("download"):
             _check_disk_space(
                 _tf_profile.hf_path,
                 force=getattr(args, "force_disk_check", False),
                 revision_override=_tf_profile.tensorfold_target_revision,
             )
-            args.model = download_qualified_target()
+            args.model = (
+                download_qualified_artifacts(_tf_family).target_path
+                if _tf_family is not None
+                else download_qualified_target()
+            )
     elif not _is_wan_video:
         if getattr(args, "force_disk_check", False):
             _ensure_model_downloaded(args.model, force_disk_check=True)
