@@ -784,6 +784,53 @@ def test_tensorfold_alias_preflights_downloads_pair_and_dispatches_server(
     assert kwargs["experimental_opt_in"] is True
 
 
+def test_paired_family_alias_downloads_its_pair_and_dispatches_family_server(
+    stub_heavy_serve_deps, monkeypatch, scheduler_config_stub
+):
+    """A repository shared with an ordinary alias still reaches its profile."""
+    from types import SimpleNamespace
+
+    from rapid_mlx.speculative import tensorfold_families
+
+    family = tensorfold_families.PROFILES["bonsai2-27b-tensorfold"]
+    events: list[object] = []
+    artifacts = SimpleNamespace(
+        target_path="/qualified/target", drafter_path="/qualified/drafter"
+    )
+    monkeypatch.setattr(
+        cli,
+        "_preflight_tensorfold_qwen27_or_exit",
+        lambda args: events.append(("preflight", args._original_alias)),
+    )
+    monkeypatch.setattr(cli, "_check_alias_min_memory", lambda *_a, **_k: None)
+    monkeypatch.setattr(cli, "_check_disk_space", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        tensorfold_families,
+        "download_qualified_artifacts",
+        lambda profile: events.append(("download", profile)) or artifacts,
+    )
+    monkeypatch.setattr(
+        tensorfold_families,
+        "run_tensorfold_family_server",
+        lambda profile, **kwargs: events.append(("server", profile, kwargs)),
+    )
+
+    ns = _minimal_serve_ns()
+    ns.model = family.target
+    ns._original_alias = family.profile_id
+    ns._dflash_experimental = True
+
+    cli.serve_command(ns)
+
+    assert events[0] == ("preflight", family.profile_id)
+    assert events[1] == ("download", family)
+    kind, profile, kwargs = events[-1]
+    assert (kind, profile) == ("server", family)
+    assert kwargs["main_model_repo"] == artifacts.target_path
+    assert kwargs["drafter_repo"] == artifacts.drafter_path
+    assert kwargs["served_model_name"] == family.profile_id
+
+
 def test_serve_command_threads_auto_detected_hybrid_into_cache_admission(
     stub_heavy_serve_deps, monkeypatch, scheduler_config_stub
 ):
