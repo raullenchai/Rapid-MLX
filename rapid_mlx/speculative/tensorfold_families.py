@@ -266,10 +266,11 @@ class TensorFoldFamilyBackend(TensorFoldQwen27Backend):
             # Startup failed with weights possibly allocated: stop an app that
             # runs its scheduler, then hand the memory back. The startup error
             # is the one to report, so a failing shutdown must not replace it.
-            owner = backend if backend is not None else app
             try:
-                if owner is not None:
-                    (getattr(owner, "close", None) or owner.scheduler.stop)()
+                if backend is not None:
+                    backend.close()
+                elif app is not None:
+                    app.scheduler.stop()
             except Exception:
                 pass
             finally:
