@@ -115,11 +115,11 @@ LTX25_RUNTIME_SHA256="fa9a66a0c78721c3dce51d0f1dadcabad060682410303be748e529a846
 # after its test/debug payload is trimmed below. They use the same signed
 # universal-wheel mechanism as the native extensions already in the bundle.
 #
-# Re-locked at 322 on 2026-10-07: the sidecar now ships the complete base
-# vision/image/video runtimes (torch, torchvision, OpenCV with its bundled
-# dylibs, matplotlib, imageio-ffmpeg) instead of reduced --no-deps copies.
-# Measured on an Apple Silicon build host from this script.
-MACHO_BASELINE_COUNT="${MACHO_BASELINE_COUNT:-322}"
+# Re-locked at 228 on 2026-10-07: the sidecar now ships the base vision/
+# image/video runtimes (torch, torchvision, matplotlib, mflux, mlx-video)
+# instead of reduced --no-deps copies; OpenCV and imageio-ffmpeg's binary are
+# excluded (GPL FFmpeg). Measured on an Apple Silicon build host.
+MACHO_BASELINE_COUNT="${MACHO_BASELINE_COUNT:-228}"
 # Allow modest drift without blocking — wheel updates sometimes shift
 # 1-2 .so files. Bigger drift means a new dependency, needs review.
 # Kept at 5 across the 51 → 77 baseline rebase to give Pillow and
