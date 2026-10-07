@@ -34,7 +34,7 @@ _REQUESTABLE = (pf.UNSUPPORTED_ARCHITECTURE, pf.UNSUPPORTED_FORMAT)
 
 CONSENT_PROMPT = (
     "  Ask us to support it? This sends the repo id, architecture,\n"
-    "  format and your Rapid-MLX version. Nothing else. [y/N] "
+    "  format, failure class and your Rapid-MLX version. Nothing else. [y/N] "
 )
 
 
@@ -131,7 +131,7 @@ def _wants_request(args: Any) -> str | None:
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         print(
             "  Ask us to support it: re-run with --request "
-            "(sends the repo id, architecture, format and version).",
+            "(sends the repo id, architecture, format, failure class and version).",
             file=sys.stderr,
         )
         return NON_INTERACTIVE
