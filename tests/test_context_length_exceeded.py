@@ -773,6 +773,13 @@ def test_serial_inference_can_enforce_the_model_window_without_a_flag():
             )
             == 10
         )
+        # ... and the reply is still capped at the model's window.
+        assert (
+            enforce_rendered_context_length(
+                model, object(), "prompt", 10_000_000, model_window=True
+            )
+            == 512
+        )
     finally:
         reset_config()
 

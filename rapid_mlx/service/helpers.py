@@ -5184,9 +5184,9 @@ def enforce_rendered_context_length(
 
     engine = SimpleNamespace(_model=model, tokenizer=tokenizer)
     prompt_tokens = count_prompt_tokens(engine, prompt)
-    if prompt_tokens <= 0 and not explicit:
-        return max_tokens
-    if prompt_tokens <= 0:
+    # Without an operator window an uncountable prompt is not fatal, but the
+    # reply is still capped at the model's own window.
+    if prompt_tokens <= 0 and explicit:
         raise HTTPException(
             status_code=400,
             detail={
