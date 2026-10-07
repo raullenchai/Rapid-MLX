@@ -386,6 +386,48 @@ def test_native_cli_boot_helper_resolves_alias_without_legacy_extra(monkeypatch)
     }
 
 
+@pytest.mark.parametrize("available", [False, True])
+def test_legacy_cli_boot_helper_keeps_zero_argument_optional_guard(
+    monkeypatch, available
+):
+    from rapid_mlx import cli, embedding
+
+    calls = []
+    guard_calls = []
+    original_guard = embedding.require_mlx_embeddings_or_exit
+
+    def guard(*args):
+        guard_calls.append(args)
+        return original_guard(*args)
+
+    monkeypatch.setattr(embedding, "require_mlx_embeddings_or_exit", guard)
+    monkeypatch.setattr(embedding, "mlx_embeddings_available", lambda: available)
+    args = SimpleNamespace(embedding_model="legacy-embedding-model")
+    load = lambda name, **kwargs: calls.append((name, kwargs))
+    if available:
+        cli._load_embedding_model_or_exit(args, load)
+        assert calls == [
+            (
+                "legacy-embedding-model",
+                {"lock": True, "max_length": "auto", "overflow_policy": "truncate"},
+            )
+        ]
+    else:
+        with pytest.raises(SystemExit) as error:
+            cli._load_embedding_model_or_exit(args, load)
+        assert error.value.code == 2
+        assert calls == []
+    assert guard_calls == [()]
+
+
+@pytest.mark.parametrize("model", [None, SimpleNamespace(model_type="legacy")])
+def test_media_token_guard_is_native_only(model):
+    engine = EmbeddingEngine("legacy-embedding-model")
+    engine._model = model
+    # Legacy models and unloaded engines have no native media-token config.
+    assert engine._reject_media_tokens([[258880, 258881]]) is None
+
+
 @pytest.mark.parametrize("entrypoint", ["serve", "server"])
 @pytest.mark.parametrize("name", ["embeddinggemma-2-4bit", "legacy-model"])
 def test_rendered_early_boot_guard_selects_only_its_backend(
