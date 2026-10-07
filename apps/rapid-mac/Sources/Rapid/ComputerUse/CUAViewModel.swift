@@ -523,8 +523,8 @@ final class CUAViewModel: ObservableObject {
     var selectedBrowserDomainError: String? {
         guard selectedApp?.isBrowser == true else { return nil }
         let domain = Self.normalizedDomain(allowedDomain)
-        if domain.isEmpty { return "Enter the site domain this browser window may use during the task." }
-        if !Self.isValidDomain(domain) { return "Enter a domain such as example.com, without a path or port." }
+        if domain.isEmpty { return String(localized: "Enter the site domain this browser window may use during the task.") }
+        if !Self.isValidDomain(domain) { return String(localized: "Enter a domain such as example.com, without a path or port.") }
         return nil
     }
 
@@ -620,15 +620,15 @@ final class CUAViewModel: ObservableObject {
     var approvalUnavailableMessage: String? {
         guard phase == .awaitingApproval, !canApprove else { return nil }
         if isStopping {
-            return "Rapid is stopping this task. Approval is unavailable while cancellation finishes."
+            return String(localized: "Rapid is stopping this task. Approval is unavailable while cancellation finishes.")
         }
         if requiresBindingCleanup {
-            return "Rapid could not verify this task start. Approval is disabled; stop the task immediately."
+            return String(localized: "Rapid could not verify this task start. Approval is disabled; stop the task immediately.")
         }
         if runContext?.targets.isEmpty == false {
-            return "This approval no longer matches the active app. Stop the task and try again."
+            return String(localized: "This approval no longer matches the active app. Stop the task and try again.")
         }
-        return "This approval is missing its gate identity. Stop the task and retry."
+        return String(localized: "This approval is missing its gate identity. Stop the task and retry.")
     }
 
     var activeProgress: CUAProgressPresentation? {
@@ -838,17 +838,17 @@ final class CUAViewModel: ObservableObject {
             let hint = recovery.first.map { " \($0)" } ?? ""
             switch code {
             case "app_not_found":
-                return "The app is no longer open. Open it, then try again.\(hint)"
+                return ExperimentalSurfaceCopy.cuaAppUnavailable(hint: hint)
             case "window_not_found":
-                return "Rapid could not find the app item needed for this task. Open it, then try again.\(hint)"
+                return ExperimentalSurfaceCopy.cuaWindowUnavailable(hint: hint)
             default:
-                return "Rapid could not find the apps needed for this task: \(message)\(hint)"
+                return ExperimentalSurfaceCopy.cuaTargetsUnavailable(message: message, hint: hint)
             }
         }
         if case let CUAClientError.http(code, _) = error, code == 404 {
-            return "This local server does not support automatic app selection. Update or restart Rapid, then try again."
+            return String(localized: "This local server does not support automatic app selection. Update or restart Rapid, then try again.")
         }
-        return "Rapid could not find the apps needed for this task: \(Self.describe(error)) Try again."
+        return ExperimentalSurfaceCopy.cuaTargetsUnavailable(error: Self.describe(error))
     }
 
     // MARK: Add-brain settings
@@ -919,7 +919,7 @@ final class CUAViewModel: ObservableObject {
 
     var plannerDisclosure: String {
         guard let planner = selectedPlanner else {
-      return "Actions run on this Mac. Add a model to review what it receives."
+      return String(localized: "Actions run on this Mac. Add a model to review what it receives.")
         }
         if Self.isLoopbackEndpoint(planner.url) {
             return planner.textOnly

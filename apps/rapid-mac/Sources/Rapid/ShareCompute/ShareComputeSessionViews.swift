@@ -39,7 +39,7 @@ struct ShareComputeRewardSessionStrip: View {
 
     var body: some View {
         HStack(spacing: isNarrow ? 10 : 16) {
-            ShareComputeEyebrow(text: "Reward session", tone: RapidTheme.textPrimary, size: 11)
+            ShareComputeEyebrow(text: String(localized: "Reward session"), tone: RapidTheme.textPrimary, size: 11)
             Rectangle()
                 .fill(RapidTheme.hairlineStrong)
                 .frame(width: 1, height: 20)
@@ -169,7 +169,7 @@ struct ShareComputePreparingView: View {
         VStack(alignment: .leading, spacing: 24) {
             HStack(alignment: .top, spacing: RapidTheme.Space.lg) {
                 VStack(alignment: .leading, spacing: 4) {
-                    ShareComputeEyebrow(text: "Preparing this Mac", size: 11)
+                    ShareComputeEyebrow(text: String(localized: "Preparing this Mac"), size: 11)
                     Text("Starting the shared model")
                         .font(.system(size: isNarrow ? 21 : 25, weight: .bold))
                         .foregroundStyle(RapidTheme.bandInk)
@@ -210,7 +210,7 @@ struct ShareComputePreparingView: View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.lg) {
             VStack(alignment: .leading, spacing: 8) {
                 ShareComputeEyebrow(
-                    text: "Reward status",
+                    text: String(localized: "Reward status"),
                     tone: RapidTheme.onBrandPrimarySecondary,
                     size: 11
                 )
@@ -422,7 +422,7 @@ struct ShareComputeOnlineView: View {
             HStack(alignment: .top, spacing: RapidTheme.Space.lg) {
                 VStack(alignment: .leading, spacing: 5) {
                     ShareComputeEyebrow(
-                        text: isReconnecting ? "Reconnecting" : "Compute connected",
+                        text: isReconnecting ? String(localized: "Reconnecting") : String(localized: "Compute connected"),
                         tone: isReconnecting ? RapidTheme.brandPrimary : RapidTheme.bandReady,
                         size: 11
                     )
@@ -556,7 +556,7 @@ struct ShareComputeOnlineView: View {
                         .foregroundStyle(RapidTheme.onBrandPrimary)
                         .accessibilityHidden(true)
                     ShareComputeEyebrow(
-                        text: "QuickSilver tracking",
+                        text: String(localized: "QuickSilver tracking"),
                         tone: RapidTheme.onBrandPrimarySecondary,
                         size: 11
                     )
@@ -680,7 +680,7 @@ struct ShareComputeSessionCompleteView: View {
             HStack(alignment: .top, spacing: RapidTheme.Space.md) {
                 VStack(alignment: .leading, spacing: 4) {
                     ShareComputeEyebrow(
-                        text: "Completion receipt",
+                        text: String(localized: "Completion receipt"),
                         // This eyebrow sits on the amber panel, so it needs
                         // the amber-panel green, not the app-surface one.
                         tone: RapidTheme.onBrandPrimaryReady,
@@ -767,7 +767,7 @@ struct ShareComputeSessionCompleteView: View {
                         .foregroundStyle(RapidTheme.textPrimary)
                         .accessibilityHidden(true)
                     ShareComputeEyebrow(
-                        text: "Reward activity",
+                        text: String(localized: "Reward activity"),
                         tone: RapidTheme.textSecondary,
                         size: 11
                     )

@@ -21,7 +21,7 @@ struct ComputerUseView: View {
                 HStack(alignment: .top) {
                     SectionHeader(
                         "Computer Use",
-                        subtitle: "Actions run on this Mac using the local or cloud model you choose.",
+                        subtitle: String(localized: "Actions run on this Mac using the local or cloud model you choose."),
                         emphasis: .page
                     )
                     Spacer()

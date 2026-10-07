@@ -15,7 +15,9 @@ final class VideoGenViewModel {
         case image
 
         var id: String { rawValue }
-        var title: String { self == .text ? "Text" : "Image" }
+        var title: String {
+            self == .text ? String(localized: "Text") : String(localized: "Image")
+        }
         var capability: VideoModelCapability {
             self == .text ? .textToVideo : .imageToVideo
         }
@@ -119,7 +121,10 @@ final class VideoGenViewModel {
 
     var memoryRequirementText: String? {
         guard let minimum = selectedModel?.minimumMemoryGB else { return nil }
-        return "Needs at least \(Int(minimum.rounded())) GB unified memory; this Mac has \(Int(physicalRAMGB.rounded())) GB."
+        return ExperimentalSurfaceCopy.videoMemory(
+            minimum: Int(minimum.rounded()),
+            available: Int(physicalRAMGB.rounded())
+        )
     }
 
     var isServerReady: Bool {
