@@ -9598,6 +9598,7 @@ class Scheduler:
             # Append token to request
             request.append_output_token(response.token)
             token_time = time.time()
+            token_monotonic = time.monotonic()
 
             # R15-P1 (task #296): trigger disk-backed KV checkpoint at
             # 256-tok boundaries. Cheap when disabled — the helper
@@ -9616,6 +9617,7 @@ class Scheduler:
             # Record first token time for TTFT metric
             if request.first_token_time is None and request.num_output_tokens > 0:
                 request.first_token_time = token_time
+                request._first_token_monotonic = token_monotonic
                 prefill_s = request.first_token_time - getattr(
                     request, "_prefill_started_at", request.arrival_time
                 )
@@ -9842,7 +9844,7 @@ class Scheduler:
                 output.finish_reason = response.finish_reason
                 if response.finish_reason in ("stop", "length"):
                     output.timing_metrics = self.performance.timing_metrics_for_request(
-                        request, token_time
+                        request, token_monotonic
                     )
                 request_mtp_counter = getattr(request, "_mtp_accept_counter", None)
                 if request_mtp_counter is not None:

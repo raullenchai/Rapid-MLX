@@ -383,7 +383,8 @@ token. It includes queueing and prefill, including any prefix-cache reuse;
 it is not a pure prefill measurement or HTTP end-to-end latency. Mean ITL is
 `(last_token_time - first_token_time) * 1000 / (completion_tokens - 1)`;
 `1000 / mean_itl_ms` gives the request's post-first-token decode tokens/second.
-Times are frozen at the scheduler's observation of the final engine token,
+All instants are read from a monotonic clock, so wall-clock adjustments
+during generation do not affect the durations. Times are frozen at the scheduler's observation of the final engine token,
 before output decoding, cache finalization, buffering, or response delivery.
 Counts include engine-generated reasoning and stop tokens, even when those
 are not visible in the response text. Concurrent requests have independent
