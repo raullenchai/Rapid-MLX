@@ -437,6 +437,49 @@ def test_opt_out_needs_a_checkpoint_the_ordinary_engine_loads(
     assert profile.fallback_model in capsys.readouterr().err
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '{"method":"mtp"}',
+        '{"method":"mtp","backend":"native"}',
+        '{"method":"suffix"}',
+    ],
+)
+def test_explicit_config_cannot_leave_a_tensorfold_only_profile(
+    capsys, raw: str
+) -> None:
+    from rapid_mlx import cli
+
+    profile = families.PROFILES["qwen3.8-flash-next-tensorfold"]
+    args = SimpleNamespace(
+        model=profile.target,
+        _original_alias=profile.profile_id,
+        speculative_config=raw,
+        no_spec_decode=False,
+        mllm=False,
+        force_spec_decode=True,
+    )
+    cli._normalize_speculative_config_or_exit(args)
+    with pytest.raises(SystemExit, match="2"):
+        cli._require_tensorfold_family_lane_or_exit(args)
+    assert profile.fallback_model in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("profile_id", PROFILE_IDS)
+def test_default_configuration_stays_on_the_family_lane(profile_id: str) -> None:
+    from rapid_mlx import cli
+
+    args = SimpleNamespace(
+        model=families.PROFILES[profile_id].target,
+        _original_alias=profile_id,
+        speculative_config=None,
+        no_spec_decode=False,
+        mllm=False,
+    )
+    cli._normalize_speculative_config_or_exit(args)
+    cli._require_tensorfold_family_lane_or_exit(args)
+
+
 def test_only_the_measured_fallback_is_declared() -> None:
     ordinary = {p.profile_id for p in families.PROFILES.values() if p.ordinary_engine}
     assert ordinary == {"nemotron-3.5-lightning-tensorfold"}

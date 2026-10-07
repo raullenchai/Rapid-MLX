@@ -2899,6 +2899,33 @@ def _reject_tensorfold_family_opt_out_or_exit(args) -> None:
         raise SystemExit(2)
 
 
+def _require_tensorfold_family_lane_or_exit(args) -> None:
+    """Stop any effective configuration that leaves such a profile's lane.
+
+    An explicit ``--speculative-config`` can select another method or backend
+    for the alias, which would hand its checkpoint to the ordinary loader.
+    """
+
+    from .speculative.tensorfold_families import profile_for
+
+    family = profile_for(
+        getattr(args, "_original_alias", None) or getattr(args, "model", None)
+    )
+    if family is None or family.ordinary_engine:
+        return
+    on_lane = getattr(args, "mtp_backend", None) == "tensorfold" or (
+        getattr(args, "enable_dflash", False)
+        and getattr(args, "dflash_backend", None) == "tensorfold"
+    )
+    if not on_lane:
+        print(
+            f"error: {family.profile_id} serves only through its TensorFold "
+            f"profile. Use {family.fallback_model} for other configurations.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+
 def _normalize_speculative_config_or_exit(args):
     """Parse ``--speculative-config`` and map methods to runtime fields."""
     import json
@@ -5287,6 +5314,7 @@ def serve_command(args):
     # rejecting an explicit MLLM/speculative conflict before optional-runtime
     # checks or model downloads can obscure the actionable error.
     _normalize_speculative_config_or_exit(args)
+    _require_tensorfold_family_lane_or_exit(args)
     _reject_unsupported_listen_fd_lane(
         args, owns_v41_product_download=_owns_v41_product_download
     )
