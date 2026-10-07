@@ -244,13 +244,20 @@ def test_prompt_boundaries_mark_history_end_and_long_system_block() -> None:
     assert seen == {"tools": None, "prompt": [1, 2, 3, 900, 901], "thinking": True}
 
     # A system block is kept before and at its end, as far back as 512 tokens.
+    long_prompt = [1, 2, 3, *([900] * 4000)]
     app, _ = _boundary_app(system_len=3000)
-    assert _prompt_boundaries(app, [1, 2, 3, 900], messages, False) == (
+    assert _prompt_boundaries(app, long_prompt, messages, False) == (
         3,
         (952, 2488, 3000),
     )
     app, _ = _boundary_app(system_len=1000)
-    assert _prompt_boundaries(app, [1, 2, 3, 900], messages, False)[1] == (1000,)
+    assert _prompt_boundaries(app, long_prompt, messages, False)[1] == (1000,)
+    # A reported system length at or past the prompt end names no position.
+    app, _ = _boundary_app(system_len=3000)
+    assert _prompt_boundaries(app, long_prompt[:2600], messages, False)[1] == (
+        952,
+        2488,
+    )
 
 
 def test_prompt_boundaries_give_no_position_they_cannot_prove() -> None:

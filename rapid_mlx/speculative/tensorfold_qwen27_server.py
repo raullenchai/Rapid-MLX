@@ -113,7 +113,7 @@ def _prompt_boundaries(
     shared = tuple(
         position
         for position in (system_len - 2048, system_len - 512, system_len)
-        if system_len and position >= 512
+        if system_len and 512 <= position < len(prompt_ids)
     )
     return history_len, shared
 
