@@ -946,6 +946,70 @@ def test_http_refuses_a_prompt_past_the_model_window() -> None:
     assert seen == [6]
 
 
+def test_runtime_refusals_answer_as_client_errors(monkeypatch) -> None:
+    import sys
+    from types import ModuleType
+
+    from fastapi.testclient import TestClient
+
+    from rapid_mlx.speculative.dflash.server import _build_app
+    from rapid_mlx.speculative.tensorfold_qwen27_server import (
+        RequestRefused,
+        _as_refusal,
+    )
+
+    class RequestError(ValueError):
+        pass
+
+    class CapacityError(RequestError):
+        pass
+
+    errors = ModuleType("tensorfold.server.errors")
+    errors.RequestError = RequestError
+    errors.CapacityError = CapacityError
+    monkeypatch.setitem(sys.modules, "tensorfold.server.errors", errors)
+
+    refused = _as_refusal(RequestError("needs 228 GiB"))
+    assert isinstance(refused, RequestRefused) and refused.status_code == 400
+    assert str(refused) == "needs 228 GiB"
+    assert _as_refusal(CapacityError("busy")).status_code == 503
+    crash = RuntimeError("worker died")
+    assert _as_refusal(crash) is crash
+
+    # Without the runtime's error types nothing is reclassified.
+    monkeypatch.setitem(sys.modules, "tensorfold.server.errors", None)
+    plain = RequestError("unknown")
+    assert _as_refusal(plain) is plain
+
+    raised: list[BaseException] = [refused, crash]
+
+    def generate(_model, _processor, _prompt, **_kwargs):
+        raise raised.pop(0)
+
+    app = _build_app(
+        model=None,
+        processor=SimpleNamespace(eos_token_id=99, chat_template="template"),
+        runtime=SimpleNamespace(
+            algorithm="dflash2",
+            drafter_repo="pinned-drafter",
+            target_revision="a" * 40,
+            drafter_revision="b" * 40,
+        ),
+        served_model_name="qwen27-tf",
+        default_max_tokens=8,
+        cors_origins=[],
+        generate_fn=generate,
+        render_prompt_fn=lambda _p, _m, request, **_kw: request.messages[-1].content,
+        generation_kwargs_fn=lambda **kw: {"max_tokens": kw["max_tokens"]},
+    )
+    client = TestClient(app)
+    body = {"model": "qwen27-tf", "messages": [{"role": "user", "content": "hi"}]}
+    first = client.post("/v1/chat/completions", json=body)
+    assert first.status_code == 400
+    assert "needs 228 GiB" in first.json()["error"]["message"]
+    assert client.post("/v1/chat/completions", json=body).status_code == 500
+
+
 def test_http_stream_and_nonstream_use_provider_and_reject_tools() -> None:
     from fastapi.testclient import TestClient
 

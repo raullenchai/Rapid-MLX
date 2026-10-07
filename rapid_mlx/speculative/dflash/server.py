@@ -2323,6 +2323,10 @@ async def _non_stream_completion(
         logger.exception(
             "DFlash non-stream generate raised: %s", result, exc_info=result
         )
+        # A provider marks a request it refused with the status to answer.
+        refused = getattr(result, "status_code", None)
+        if isinstance(refused, int) and 400 <= refused < 600:
+            raise HTTPException(status_code=refused, detail=f"{backend_name}: {result}")
         raise HTTPException(
             status_code=500,
             detail=f"{backend_name} runtime error: {type(result).__name__}: {result}",

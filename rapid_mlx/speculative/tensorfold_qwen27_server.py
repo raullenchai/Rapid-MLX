@@ -119,6 +119,26 @@ def _prompt_boundaries(
     return history_len, shared
 
 
+class RequestRefused(ValueError):  # noqa: N818 - carries an HTTP status
+    """The runtime turned the request down; the HTTP layer answers with ``status_code``."""
+
+    status_code = 400
+
+
+def _as_refusal(error: BaseException) -> BaseException:
+    """Map the runtime's request refusals to a client error instead of a 500."""
+    try:
+        from tensorfold.server.errors import CapacityError, RequestError
+    except ImportError:
+        return error
+    if not isinstance(error, RequestError):
+        return error
+    refusal = RequestRefused(str(error))
+    refusal.status_code = 503 if isinstance(error, CapacityError) else 400
+    refusal.__cause__ = error
+    return refusal
+
+
 class TensorFoldRequestProvider:
     """Map one TensorFold ``ChatJob`` onto Rapid request/output objects.
 
@@ -246,7 +266,7 @@ class TensorFoldRequestProvider:
                     outputs.append(output)
                     yield output
             if job.error is not None:
-                raise job.error
+                raise _as_refusal(job.error)
             # Flush text held while it could still be a partial stop string and
             # verify that the streamed surface exactly reconstructs the final
             # batch decode. SSE cannot retract bytes, so fail closed if a future
