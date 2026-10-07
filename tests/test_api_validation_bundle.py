@@ -263,6 +263,9 @@ def _build_embed_app(patch_cfg, monkeypatch, embed_return):
     embedding_stub.EmbeddingInputTooLongError = type(
         "EmbeddingInputTooLongError", (ValueError,), {}
     )
+    embedding_stub.EmbeddingUnsupportedMediaError = type(
+        "EmbeddingUnsupportedMediaError", (ValueError,), {}
+    )
     monkeypatch.setitem(sys.modules, "rapid_mlx.embedding", embedding_stub)
 
     app = FastAPI()
