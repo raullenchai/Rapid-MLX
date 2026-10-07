@@ -8499,6 +8499,6962 @@
           }
         }
       }
+    },
+    " · %1$d kept local" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "· %1$d 保留在本地"
+          }
+        }
+      }
+    },
+    "%1$.1f %2$@ %3$@ the median" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$.1f %2$@ %3$@ 中位数"
+          }
+        }
+      }
+    },
+    "%1$.1f %2$@ from the median" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$.1f %2$@ 距中位数"
+          }
+        }
+      }
+    },
+    "%1$.1f GB download." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$.1f GB 下载。"
+          }
+        }
+      }
+    },
+    "%1$@ %2$@ for this pairing. Yours makes the comparison harder to argue with." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ %2$@ 对于此配对。你的比较让这种比较更难以反驳。"
+          }
+        }
+      }
+    },
+    "%1$@ free · Enough space" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ 空闲·空间充足"
+          }
+        }
+      }
+    },
+    "%1$@ free · Needs %2$@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ 免费 · 需要 %2$@"
+          }
+        }
+      }
+    },
+    "%1$@ is no longer in the benchmark catalogue, so it can’t be run again. Choose another model." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ 已不在基准测试目录中，因此无法再次运行。选择其他模型。"
+          }
+        }
+      }
+    },
+    "%1$@ published %2$@ for %3$@ on an %4$@. Run it once to add another reference and tighten the range." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ 在 %4$@ 上为 %3$@ 发布了 %2$@。运行一次以添加另一个参考并收紧范围。"
+          }
+        }
+      }
+    },
+    "%1$@ workload" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ 工作负载"
+          }
+        }
+      }
+    },
+    "%1$@ · downloaded" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@·已下载"
+          }
+        }
+      }
+    },
+    "%1$@, %2$@ details" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@、%2$@ 详细信息"
+          }
+        }
+      }
+    },
+    "%1$@, node %2$@, %3$d requests, %4$d input and %5$d output tokens, credit %6$@, %7$@, status %8$@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@，节点%2$@，%3$d请求，%4$d输入和%5$d输出token，积分%6$@，%7$@，状态%8$@"
+          }
+        }
+      }
+    },
+    "%1$d Models" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$d 模型"
+          }
+        }
+      }
+    },
+    "%1$d connected, %2$d ready, %3$d busy, %4$d open slots" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$d 已连接，%2$d 就绪，%3$d 忙，%4$d 开放插槽"
+          }
+        }
+      }
+    },
+    "%1$d models" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$d 模型"
+          }
+        }
+      }
+    },
+    "%1$d more contributors" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$d 更多贡献者"
+          }
+        }
+      }
+    },
+    "%1$d of %2$d GB" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%2$d 的 %1$d GB"
+          }
+        }
+      }
+    },
+    "%1$d of %2$d models" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%2$d 模型中的 %1$d"
+          }
+        }
+      }
+    },
+    "%1$d of %2$d passes complete" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%2$d 中的 %1$d 通过完成"
+          }
+        }
+      }
+    },
+    "%1$d percent" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$d 百分比"
+          }
+        }
+      }
+    },
+    "%1$d published %2$@ for this Mac profile" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$d 为此 Mac 配置文件发布了 %2$@"
+          }
+        }
+      }
+    },
+    "%1$d published %2$@ on an %3$@ so far." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "到目前为止，%1$d 在 %3$@ 上发布了 %2$@。"
+          }
+        }
+      }
+    },
+    "%1$d published %2$@ on rapidmlx.com" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$d 在rapidmlx.com 上发布了%2$@"
+          }
+        }
+      }
+    },
+    "%1$d windows · %2$d nodes" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$d 窗口 · %2$d 节点"
+          }
+        }
+      }
+    },
+    "%1$d windows · 1 node" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$d 窗口 · 1 个节点"
+          }
+        }
+      }
+    },
+    "%@. Capacity not reported in this reading." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@。本读数中未报告容量。"
+          }
+        }
+      }
+    },
+    "%@: not available" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@：不可用"
+          }
+        }
+      }
+    },
+    "%d Machines online" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%d 机器在线"
+          }
+        }
+      }
+    },
+    "%d accounting windows" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%d 会计窗口"
+          }
+        }
+      }
+    },
+    "%d req" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%d 要求"
+          }
+        }
+      }
+    },
+    "%d request slots available now" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%d 请求空位现已可用"
+          }
+        }
+      }
+    },
+    "%dd ago" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%d 天前"
+          }
+        }
+      }
+    },
+    "%dh ago" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%d 小时前"
+          }
+        }
+      }
+    },
+    "%dm ago" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%d分钟前"
+          }
+        }
+      }
+    },
+    "%ds ago" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%d 秒前"
+          }
+        }
+      }
+    },
+    "1 Machine online" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1台机器在线"
+          }
+        }
+      }
+    },
+    "1 Model" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 模型"
+          }
+        }
+      }
+    },
+    "1 measured 832×480, 81-frame render · fixed prompt and seed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 实测832×480、81帧渲染·修复提示和种子"
+          }
+        }
+      }
+    },
+    "1 measured render" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 测量渲染"
+          }
+        }
+      }
+    },
+    "1 request slot available now" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "现在有 1 个请求槽位可用"
+          }
+        }
+      }
+    },
+    "1 warm-up + 1 measured 1024×1024 render · fixed prompt, seed and 20 steps" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 次热身 + 1 次测量 1024×1024 渲染 · 固定提示、种子和 20 个步骤"
+          }
+        }
+      }
+    },
+    "1 warm-up render\n1 measured render" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 预热渲染\n1 测量渲染"
+          }
+        }
+      }
+    },
+    "1 warm-up round\n5 measured rounds" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1轮热身赛\n5 轮测量"
+          }
+        }
+      }
+    },
+    "1 warmup + 1 measured render" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 次热身 + 1 次测量渲染"
+          }
+        }
+      }
+    },
+    "1024 × 1024 at 20 steps, fixed prompt and seed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1024 × 1024 20 步，固定提示和种子"
+          }
+        }
+      }
+    },
+    "2 048 tokens in, 512 tokens of reply out" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "输入 2,048 个 token，输出 512 个回复 token"
+          }
+        }
+      }
+    },
+    "2 cases × (1 warmup + 5 rounds)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "2例×（1次热身+5轮）"
+          }
+        }
+      }
+    },
+    "512 tokens in, 128 tokens of reply out" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "输入 512 个 token，输出 128 个回复 token"
+          }
+        }
+      }
+    },
+    "832 × 480, 81 frames, fixed prompt and seed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "832 × 480，81 帧，固定提示和种子"
+          }
+        }
+      }
+    },
+    "A long prompt" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "很长的提示"
+          }
+        }
+      }
+    },
+    "A loopback URL on this Mac or an HTTPS endpoint" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此 Mac 或 HTTPS 端点上的环回 URL"
+          }
+        }
+      }
+    },
+    "A read key lets Rapid show your account’s credit ledger. It is read-only: it cannot register nodes or spend credit." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "读取密钥可让 Rapid 显示您帐户的积分账本。它是只读的：它不能注册节点或使用积分。"
+          }
+        }
+      }
+    },
+    "A short prompt" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "简短的提示"
+          }
+        }
+      }
+    },
+    "A single measured render, so there is no round-by-round progress or estimate." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "单个测量渲染，因此没有逐轮进度或估计。"
+          }
+        }
+      }
+    },
+    "ACCRUED" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已累积"
+          }
+        }
+      }
+    },
+    "ACTION" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "操作"
+          }
+        }
+      }
+    },
+    "ALSO MEASURED" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "还测量了"
+          }
+        }
+      }
+    },
+    "Accepting nodes." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "接受节点。"
+          }
+        }
+      }
+    },
+    "Account-wide, across every node." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "账户范围内，跨每个节点。"
+          }
+        }
+      }
+    },
+    "Accounting windows metered by QuickSilver across %d nodes on your account." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "由 QuickSilver 在您账户上的 %d 节点上计量的会计窗口。"
+          }
+        }
+      }
+    },
+    "Accounting windows metered by QuickSilver across every node on your account." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "由 QuickSilver 在您账户上的每个节点上计量的会计窗口。"
+          }
+        }
+      }
+    },
+    "Accounting windows metered by QuickSilver for 1 node on your account." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "由 QuickSilver 为您账户上的 1 个节点计量的会计窗口。"
+          }
+        }
+      }
+    },
+    "Action" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "行动"
+          }
+        }
+      }
+    },
+    "Actions run on this Mac using the local or cloud model you choose." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "使用您选择的本地或云模型在此 Mac 上运行操作。"
+          }
+        }
+      }
+    },
+    "Actions run on this Mac. Add a model to review what it receives." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "操作在此 Mac 上运行。添加一个模型来查看它收到的内容。"
+          }
+        }
+      }
+    },
+    "Add Model" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "添加模型"
+          }
+        }
+      }
+    },
+    "Add Model…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "添加模型…"
+          }
+        }
+      }
+    },
+    "Add a QuickSilver read key to see the accounting windows your nodes earned credit for." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "添加 QuickSilver 读取密钥以查看您的节点获得积分的记账窗口。"
+          }
+        }
+      }
+    },
+    "Add a QuickSilver read key to see your credit ledger." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "添加 QuickSilver 读取密钥以查看您的积分账本。"
+          }
+        }
+      }
+    },
+    "Add a model to continue" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "添加模型以继续"
+          }
+        }
+      }
+    },
+    "Add a read key" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "添加读取密钥"
+          }
+        }
+      }
+    },
+    "Add reference image" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "添加参考图像"
+          }
+        }
+      }
+    },
+    "Advanced" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "先进的"
+          }
+        }
+      }
+    },
+    "Allow this model to receive this task and the names of open apps to choose where to work" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "允许该模型接收此任务并打开应用程序的名称以选择在哪里工作"
+          }
+        }
+      }
+    },
+    "Already downloaded." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已经下载了。"
+          }
+        }
+      }
+    },
+    "Already registered" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已注册"
+          }
+        }
+      }
+    },
+    "Amounts are QuickSilver API credit — spendable balance for API usage, not a cash payout. 1.00 equals $1 of API usage." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "金额为 QuickSilver API 积分 — 用于 API 使用的可支出余额，而不是现金支付。 1.00 等于 API 使用量 1 美元。"
+          }
+        }
+      }
+    },
+    "Anonymous contributor %1$@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "匿名贡献者 %1$@"
+          }
+        }
+      }
+    },
+    "Answers stream back" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "答案流回"
+          }
+        }
+      }
+    },
+    "App in use" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "应用程序正在使用中"
+          }
+        }
+      }
+    },
+    "Approval resolved" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "批准已解决"
+          }
+        }
+      }
+    },
+    "Approve and Continue" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "批准并继续"
+          }
+        }
+      }
+    },
+    "Apps used" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "使用的应用程序"
+          }
+        }
+      }
+    },
+    "At least %1$d recent published %2$@ on an %3$@." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "至少 %1$d 最近在 %3$@ 上发表了 %2$@。"
+          }
+        }
+      }
+    },
+    "Availability and capacity only. QuickSilver does not publish a demand queue." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仅限可用性和容量。 QuickSilver 不发布需求队列。"
+          }
+        }
+      }
+    },
+    "BENCHMARK RUNNING" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "基准运行中"
+          }
+        }
+      }
+    },
+    "Balanced capacity and memory use" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "平衡容量和内存使用"
+          }
+        }
+      }
+    },
+    "Based on metered input and output tokens" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "基于计量的输入和输出 token"
+          }
+        }
+      }
+    },
+    "Benchmark another model" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "对另一个模型进行基准测试"
+          }
+        }
+      }
+    },
+    "Benchmark progress" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "基准进度"
+          }
+        }
+      }
+    },
+    "Benchmark request stopped before it started." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "基准请求在开始之前停止。"
+          }
+        }
+      }
+    },
+    "Benchmark stopped. Nothing was saved or published." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "基准停止了。没有保存或发布任何内容。"
+          }
+        }
+      }
+    },
+    "Browser access is not allowed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "浏览器不允许访问"
+          }
+        }
+      }
+    },
+    "Built in" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "内置"
+          }
+        }
+      }
+    },
+    "Busy" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "忙碌的"
+          }
+        }
+      }
+    },
+    "COMMUNITY NEEDS ANOTHER RESULT" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "社区需要另一个结果"
+          }
+        }
+      }
+    },
+    "COMPLETED" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已完成"
+          }
+        }
+      }
+    },
+    "Cancel Download" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "取消下载"
+          }
+        }
+      }
+    },
+    "Cancel Queued Video" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "取消排队视频"
+          }
+        }
+      }
+    },
+    "Cancel Video" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "取消视频"
+          }
+        }
+      }
+    },
+    "Cancel queued video?" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "取消排队的视频？"
+          }
+        }
+      }
+    },
+    "Change model" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "改变模型"
+          }
+        }
+      }
+    },
+    "Chat and Images are paused so the benchmark has the Mac to itself. Your model reloads automatically when it finishes." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "聊天和图像已暂停，因此基准测试仅针对 Mac 进行。模型完成后会自动重新加载。"
+          }
+        }
+      }
+    },
+    "Chat and Images pause so the benchmark has the Mac to itself. Your previous model reloads automatically when it finishes." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "聊天和图像暂停，因此基准测试仅针对 Mac 进行。您之前的模型完成后会自动重新加载。"
+          }
+        }
+      }
+    },
+    "Chat and Images pause while %1$@ is measured, then your model reloads automatically." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "测量 %1$@ 时聊天和图像会暂停，然后模型会自动重新加载。"
+          }
+        }
+      }
+    },
+    "Check Mac permissions" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "检查 Mac 权限"
+          }
+        }
+      }
+    },
+    "Checking this Mac…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "检查这台 Mac…"
+          }
+        }
+      }
+    },
+    "Choose a different local model" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "选择不同的本地模型"
+          }
+        }
+      }
+    },
+    "Choose a model to benchmark" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "选择一个模型进行基准测试"
+          }
+        }
+      }
+    },
+    "Choose model" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "选择模型"
+          }
+        }
+      }
+    },
+    "Choose the local or cloud OpenAI-compatible endpoint Rapid uses to plan this task." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "选择 Rapid 用于计划此任务的本地或云 OpenAI 兼容端点。"
+          }
+        }
+      }
+    },
+    "Choose the model this Mac would serve" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "选择此 Mac 将使用的模型"
+          }
+        }
+      }
+    },
+    "Collapsed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "倒塌"
+          }
+        }
+      }
+    },
+    "Community" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "社区"
+          }
+        }
+      }
+    },
+    "Community Benchmark" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "社区基准"
+          }
+        }
+      }
+    },
+    "Community Benchmark needs a current rapid-mlx runtime. Update or restart Rapid, then try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "社区基准需要当前的rapid-mlx 运行时。更新或重新启动 Rapid，然后重试。"
+          }
+        }
+      }
+    },
+    "Community Benchmark needs the bundled rapid-mlx runtime. Restart Rapid, then try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "社区基准需要捆绑的rapid-mlx运行时。重新启动 Rapid，然后重试。"
+          }
+        }
+      }
+    },
+    "Community capacity" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "社区容量"
+          }
+        }
+      }
+    },
+    "Community comparisons are not available in this build." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此版本中不提供社区比较。"
+          }
+        }
+      }
+    },
+    "Community data unavailable" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "社区数据不可用"
+          }
+        }
+      }
+    },
+    "Community data unavailable. Running and publishing still work." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "社区数据不可用。运行和发布仍然有效。"
+          }
+        }
+      }
+    },
+    "Community pulse" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "社区脉搏"
+          }
+        }
+      }
+    },
+    "Compared with %1$d published %2$@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "与 %1$d 发布的 %2$@ 相比"
+          }
+        }
+      }
+    },
+    "Comparison statistics appear when the community data loads." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "加载社区数据时会出现比较统计数据。"
+          }
+        }
+      }
+    },
+    "Comparison statistics are not available yet" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "还没有比较统计数据"
+          }
+        }
+      }
+    },
+    "Complete" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "完全的"
+          }
+        }
+      }
+    },
+    "Completion note" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "完成说明"
+          }
+        }
+      }
+    },
+    "Completion receipt" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "完成回执"
+          }
+        }
+      }
+    },
+    "Compute connected" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "计算连接"
+          }
+        }
+      }
+    },
+    "Computer Use needs Screen Recording for Rapid-MLX Desktop and Accessibility for its bundled helper. Allow each app in System Settings, then refresh." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "电脑操作需要 Rapid-MLX Desktop 的屏幕录制功能和其捆绑帮助程序的辅助功能。允许系统设置中的每个应用程序，然后刷新。"
+          }
+        }
+      }
+    },
+    "Computer Use needs Screen Recording for Rapid-MLX Desktop and Accessibility for its bundled helper. Each Allow button asks macOS for the app that uses that permission." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "电脑操作需要 Rapid-MLX Desktop 的屏幕录制功能和其捆绑帮助程序的辅助功能。每个“允许”按钮都会向 macOS 询问使用该权限的应用程序。"
+          }
+        }
+      }
+    },
+    "Config digest" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "配置摘要"
+          }
+        }
+      }
+    },
+    "Confirm app access" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "确认应用程序访问权限"
+          }
+        }
+      }
+    },
+    "Connect & Share" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "连接与分享"
+          }
+        }
+      }
+    },
+    "Connect & serve" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "连接和服务"
+          }
+        }
+      }
+    },
+    "Connect securely" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "安全连接"
+          }
+        }
+      }
+    },
+    "Connect your ledger" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "连接你的账本"
+          }
+        }
+      }
+    },
+    "Connected" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已连接"
+          }
+        }
+      }
+    },
+    "Connected Machines" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "互联机器"
+          }
+        }
+      }
+    },
+    "Connecting this Mac…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在连接此 Mac…"
+          }
+        }
+      }
+    },
+    "Connection periods" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "转机时间"
+          }
+        }
+      }
+    },
+    "Connection periods Rapid recorded on this Mac. Not a QuickSilver settlement record, and not matched to the windows above." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在此 Mac 上快速记录连接时间。不是QuickSilver结算记录，与上面的窗口不匹配。"
+          }
+        }
+      }
+    },
+    "Continue with %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "继续 %@"
+          }
+        }
+      }
+    },
+    "Copy JSON" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "复制JSON"
+          }
+        }
+      }
+    },
+    "Couldn’t prepare the publication: %1$@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法准备出版物：%1$@"
+          }
+        }
+      }
+    },
+    "Couldn’t publish: %1$@. Your local result is unchanged." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法发布：%1$@。您的本地结果没有变化。"
+          }
+        }
+      }
+    },
+    "Couldn’t reach QuickSilver." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法到达 QuickSilver。"
+          }
+        }
+      }
+    },
+    "Couldn’t read local results: %1$@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法读取本地结果：%1$@"
+          }
+        }
+      }
+    },
+    "Couldn’t refresh just now — showing the last reading." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "现在无法刷新 - 显示最后的读数。"
+          }
+        }
+      }
+    },
+    "Couldn’t refresh just now — showing the last reading. (%@)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "现在无法刷新 - 显示最后的读数。 (%@)"
+          }
+        }
+      }
+    },
+    "Counting your public contributions…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "计算您的公共贡献……"
+          }
+        }
+      }
+    },
+    "Coverage unavailable" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法覆盖"
+          }
+        }
+      }
+    },
+    "Create a new read key in the QuickSilver dashboard and paste it here." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在 QuickSilver 仪表板中创建一个新的读取密钥并将其粘贴到此处。"
+          }
+        }
+      }
+    },
+    "Create the first public reference" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "创建第一个公共参考"
+          }
+        }
+      }
+    },
+    "Create your first video" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "创建您的第一个视频"
+          }
+        }
+      }
+    },
+    "Credit" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "积分"
+          }
+        }
+      }
+    },
+    "Credit ledger" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "积分账本"
+          }
+        }
+      }
+    },
+    "Credited" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已记入积分"
+          }
+        }
+      }
+    },
+    "Credits" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "积分"
+          }
+        }
+      }
+    },
+    "Credits are QuickSilver API credits, not cash. Open the QuickSilver dashboard." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "积分是 QuickSilver API 积分，不是现金。打开 QuickSilver 仪表板。"
+          }
+        }
+      }
+    },
+    "Credits are calculated monthly from metered tokens" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "积分按月根据计量 token 计算"
+          }
+        }
+      }
+    },
+    "Credits: metered tokens, monthly" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "积分：按月计量 token"
+          }
+        }
+      }
+    },
+    "DATE" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "日期"
+          }
+        }
+      }
+    },
+    "Delete this video?" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "删除这个视频？"
+          }
+        }
+      }
+    },
+    "Delete video" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "删除视频"
+          }
+        }
+      }
+    },
+    "Describe a short scene below. The first generation is safest at the smallest size and duration." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "下面描述一个简短的场景。第一代是最安全的，尺寸最小，持续时间最小。"
+          }
+        }
+      }
+    },
+    "Describe the motion, subject, camera, and mood…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "描述动作、主题、相机和情绪……"
+          }
+        }
+      }
+    },
+    "Describe what you want Rapid to do…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "描述您希望 Rapid 做什么…"
+          }
+        }
+      }
+    },
+    "Destination" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "目的地"
+          }
+        }
+      }
+    },
+    "Disabled" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "残疾人"
+          }
+        }
+      }
+    },
+    "Download required" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "需要下载"
+          }
+        }
+      }
+    },
+    "Download required · ~%@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "需要下载 · ~%@"
+          }
+        }
+      }
+    },
+    "Download to serve" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "下载服务"
+          }
+        }
+      }
+    },
+    "Downloaded" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已下载"
+          }
+        }
+      }
+    },
+    "Downloads when the benchmark starts." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "基准测试开始时下载。"
+          }
+        }
+      }
+    },
+    "Duration" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "期间"
+          }
+        }
+      }
+    },
+    "ELAPSED" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已用时间"
+          }
+        }
+      }
+    },
+    "ENVIRONMENT" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "环境"
+          }
+        }
+      }
+    },
+    "EXPERIMENTAL" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "实验性"
+          }
+        }
+      }
+    },
+    "Earn API credits." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "获得 API 积分。"
+          }
+        }
+      }
+    },
+    "Ended" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "结束"
+          }
+        }
+      }
+    },
+    "Ended before serving began" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在服务开始前结束"
+          }
+        }
+      }
+    },
+    "Endpoint URL" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "端点 URL"
+          }
+        }
+      }
+    },
+    "Enter a domain such as example.com, without a path or port." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "输入一个域，例如 example.com，不带路径或端口。"
+          }
+        }
+      }
+    },
+    "Enter the site domain this browser window may use during the task." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "输入此浏览器窗口在任务期间可能使用的站点域。"
+          }
+        }
+      }
+    },
+    "Every character is a real Mac adding a point of evidence." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "每个角色都是真正的 Mac，添加了一点证据。"
+          }
+        }
+      }
+    },
+    "Expanded" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "扩展"
+          }
+        }
+      }
+    },
+    "External endpoints must use HTTPS. LAN addresses are also treated as external." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "外部端点必须使用 HTTPS。 LAN 地址也被视为外部地址。"
+          }
+        }
+      }
+    },
+    "FAILED" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "失败"
+          }
+        }
+      }
+    },
+    "FINAL API CREDIT" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最终 API 积分"
+          }
+        }
+      }
+    },
+    "FIRST RESULT NEEDED" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "需要第一个结果"
+          }
+        }
+      }
+    },
+    "Fast reasoning-focused model" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "以快速推理为中心的模型"
+          }
+        }
+      }
+    },
+    "Faster than the median" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "比中位数快"
+          }
+        }
+      }
+    },
+    "Files or file paths" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "文件或文件路径"
+          }
+        }
+      }
+    },
+    "Final usage and rewards appear in QuickSilver." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最终使用情况和奖励出现在QuickSilver中。"
+          }
+        }
+      }
+    },
+    "Finding models that still need results on this Mac." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "寻找在这台 Mac 上仍需要结果的模型。"
+          }
+        }
+      }
+    },
+    "Finding the right apps…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "寻找合适的应用程序…"
+          }
+        }
+      }
+    },
+    "Finding video models…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "寻找视频模型…"
+          }
+        }
+      }
+    },
+    "Fits" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "适合"
+          }
+        }
+      }
+    },
+    "Fits this Mac" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "适合这款 Mac"
+          }
+        }
+      }
+    },
+    "For example, My Local Model" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "例如，我的本地模型"
+          }
+        }
+      }
+    },
+    "From metered tokens" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "来自计量 token"
+          }
+        }
+      }
+    },
+    "Generate short videos locally. Start small—video models are large and generation can take several minutes." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本地生成短视频。从小处开始——视频模型很大，生成可能需要几分钟的时间。"
+          }
+        }
+      }
+    },
+    "Generated video preview" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "生成的视频预览"
+          }
+        }
+      }
+    },
+    "Generation can't be deleted while it is in progress." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "生成过程中无法删除。"
+          }
+        }
+      }
+    },
+    "Generation can't be interrupted safely once Metal work begins." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "一旦金属工作开始，发电就无法安全中断。"
+          }
+        }
+      }
+    },
+    "Generation failed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "生成失败"
+          }
+        }
+      }
+    },
+    "Generation speed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "生成速度"
+          }
+        }
+      }
+    },
+    "Get a key" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "获取钥匙"
+          }
+        }
+      }
+    },
+    "Get a provider key from QuickSilver" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "从 QuickSilver 获取提供商密钥"
+          }
+        }
+      }
+    },
+    "Getting ready" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "准备工作"
+          }
+        }
+      }
+    },
+    "Hardware serial or UUID" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "硬件序列号或 UUID"
+          }
+        }
+      }
+    },
+    "Hide exact data" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "隐藏确切数据"
+          }
+        }
+      }
+    },
+    "Higher-capacity pool model" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "更高容量的池模型"
+          }
+        }
+      }
+    },
+    "Highest pool demand · needs 192 GB+ unified memory" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最高池需求 · 需要 192 GB+ 统一内存"
+          }
+        }
+      }
+    },
+    "How long one 1024 × 1024 image takes to generate." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "生成一张 1024 × 1024 图像需要多长时间。"
+          }
+        }
+      }
+    },
+    "How long one 832 × 480, 81-frame render takes." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "一幅 832 × 480、81 帧渲染需要多长时间。"
+          }
+        }
+      }
+    },
+    "How long the whole run takes, warm-up render included." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "整个运行需要多长时间，包括预热渲染。"
+          }
+        }
+      }
+    },
+    "How long the whole run takes." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "整个跑步需要多长时间。"
+          }
+        }
+      }
+    },
+    "How long you wait before the first word appears." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "第一个单词出现之前您等待了多长时间。"
+          }
+        }
+      }
+    },
+    "How many tokens per second the model writes once it starts." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型开始生成后每秒输出的 token 数。"
+          }
+        }
+      }
+    },
+    "How sharing works, in three steps" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "共享如何运作，分三步"
+          }
+        }
+      }
+    },
+    "How the test works" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "测试如何进行"
+          }
+        }
+      }
+    },
+    "INCLUDES YOURS" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "包括你的"
+          }
+        }
+      }
+    },
+    "Image" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "图像"
+          }
+        }
+      }
+    },
+    "In line with others" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "与他人一致"
+          }
+        }
+      }
+    },
+    "In progress" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "进行中"
+          }
+        }
+      }
+    },
+    "Incomplete" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "不完整"
+          }
+        }
+      }
+    },
+    "It is already on your contributor page. Nothing was added a second time." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "它已经在您的贡献者页面上。第二次没有添加任何东西。"
+          }
+        }
+      }
+    },
+    "It will be published publicly under your anonymous contributor alias on rapidmlx.com." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "它将以您的匿名贡献者别名在 rapidmlx.com 上公开发布。"
+          }
+        }
+      }
+    },
+    "Its quantisation (%1$@)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "它的量化 (%1$@)"
+          }
+        }
+      }
+    },
+    "Join compute pool" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "加入计算池"
+          }
+        }
+      }
+    },
+    "Join the pool" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "加入泳池"
+          }
+        }
+      }
+    },
+    "KEPT ON THIS MAC, NOT PUBLISHED" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "保留在本机上，未发布"
+          }
+        }
+      }
+    },
+    "LATEST MEASUREMENT" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最新测量值"
+          }
+        }
+      }
+    },
+    "LLM" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "LLM"
+          }
+        }
+      }
+    },
+    "Last contribution %1$@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最后贡献 %1$@"
+          }
+        }
+      }
+    },
+    "Live Pool" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "现场台球"
+          }
+        }
+      }
+    },
+    "Live Pool shows every supported model, what is online, and what each one would download." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "实时算力池会显示所有支持的模型、在线状态，以及每个模型需要下载的内容。"
+          }
+        }
+      }
+    },
+    "Live pool capacity" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "实时算力池容量"
+          }
+        }
+      }
+    },
+    "Live relay availability · no demand queue" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "实时中继可用性 · 无需排队"
+          }
+        }
+      }
+    },
+    "Live requests · no task queue" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "实时请求 · 无任务队列"
+          }
+        }
+      }
+    },
+    "Load Preview" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "加载预览"
+          }
+        }
+      }
+    },
+    "Loading community activity…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在加载社区活动…"
+          }
+        }
+      }
+    },
+    "Loading community observations" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "加载社区观察结果"
+          }
+        }
+      }
+    },
+    "Loading coverage" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "负载覆盖范围"
+          }
+        }
+      }
+    },
+    "Loading preview…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在加载预览…"
+          }
+        }
+      }
+    },
+    "Local" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当地的"
+          }
+        }
+      }
+    },
+    "Local models available to share" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本地模型可供共享"
+          }
+        }
+      }
+    },
+    "Local receipts · Showing %1$d–%2$d of %3$d" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本地收据 · 显示 %1$d–%2$d，共 %3$d"
+          }
+        }
+      }
+    },
+    "Locked while sharing — Stop to change" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "共享时锁定 — 停止更改"
+          }
+        }
+      }
+    },
+    "Long replies" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "长回复"
+          }
+        }
+      }
+    },
+    "MAIN RESULT" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "主要结果"
+          }
+        }
+      }
+    },
+    "MEASURE THIS MODEL" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "测量这个模型"
+          }
+        }
+      }
+    },
+    "MEDIAN" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "中位数"
+          }
+        }
+      }
+    },
+    "MODEL" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型"
+          }
+        }
+      }
+    },
+    "MORE RESULTS NEEDED" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "需要更多结果"
+          }
+        }
+      }
+    },
+    "Mac" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "苹果"
+          }
+        }
+      }
+    },
+    "Mac model, memory and core counts" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mac 型号、内存和核心数"
+          }
+        }
+      }
+    },
+    "Mac profile %1$@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mac 配置文件 %1$@"
+          }
+        }
+      }
+    },
+    "Make this comparison stronger" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "让这个对比更加强烈"
+          }
+        }
+      }
+    },
+    "Manage Models" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "管理模型"
+          }
+        }
+      }
+    },
+    "Manage Models…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "管理模型…"
+          }
+        }
+      }
+    },
+    "May not fit" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "可能不适合"
+          }
+        }
+      }
+    },
+    "May not fit this Mac" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "可能不适合此 Mac"
+          }
+        }
+      }
+    },
+    "May not fit · %1$@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "可能不适合 · %1$@"
+          }
+        }
+      }
+    },
+    "Measure a model on this Mac. Keep the result private, or publish it to the Community Benchmark on rapidmlx.com." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在此 Mac 上测量模型。将结果保密，或将其发布到rapidmlx.com 上的社区基准。"
+          }
+        }
+      }
+    },
+    "Measure this model on your Mac" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在 Mac 上测量此模型"
+          }
+        }
+      }
+    },
+    "Measuring" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "测量"
+          }
+        }
+      }
+    },
+    "Measuring long replies" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "衡量长回复"
+          }
+        }
+      }
+    },
+    "Measuring short replies" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "衡量简短回复"
+          }
+        }
+      }
+    },
+    "Median comes from published observations. A dash means the bounded feed does not provide an observed range." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "中位数来自已发表的观察结果。破折号表示有界馈送不提供观察到的范围。"
+          }
+        }
+      }
+    },
+    "Median of %1$d measured %2$@ on short prompts." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$d 的中位数在短提示下测量 %2$@。"
+          }
+        }
+      }
+    },
+    "Median of the measured passes on short prompts." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "测量的中值通过短提示。"
+          }
+        }
+      }
+    },
+    "Median published" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "公布的中位数"
+          }
+        }
+      }
+    },
+    "Medians and observed ranges appear here once more people publish %1$@ results from an %2$@." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "一旦更多人发布 %2$@ 的 %1$@ 结果，中位数和观察范围就会出现在此处。"
+          }
+        }
+      }
+    },
+    "Metric: %1$@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "指标：%1$@"
+          }
+        }
+      }
+    },
+    "Model identifier" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型标识符"
+          }
+        }
+      }
+    },
+    "Model name" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型名称"
+          }
+        }
+      }
+    },
+    "Model restore" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型恢复"
+          }
+        }
+      }
+    },
+    "Model to serve" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "服务模型"
+          }
+        }
+      }
+    },
+    "Model to share: %1$@, ready on this Mac" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "分享模型：%1$@，在这台 Mac 上准备就绪"
+          }
+        }
+      }
+    },
+    "Model unavailable" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型不可用"
+          }
+        }
+      }
+    },
+    "Models served" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "服务过的模特"
+          }
+        }
+      }
+    },
+    "Models that are not downloaded yet are fetched when the benchmark starts." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "基准测试开始时，会获取尚未下载的模型。"
+          }
+        }
+      }
+    },
+    "Monthly credit summary" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "每月积分汇总"
+          }
+        }
+      }
+    },
+    "My Local Model" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "我的本地模型"
+          }
+        }
+      }
+    },
+    "My Results" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "我的结果"
+          }
+        }
+      }
+    },
+    "NEEDED BY THE COMMUNITY" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "社区需要"
+          }
+        }
+      }
+    },
+    "NEVER SHARED" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "从未分享过"
+          }
+        }
+      }
+    },
+    "Needs about %1$d GB" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "需要 %1$d GB"
+          }
+        }
+      }
+    },
+    "Never reached the pool" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "从未到达泳池"
+          }
+        }
+      }
+    },
+    "New Task" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "新任务"
+          }
+        }
+      }
+    },
+    "Next page" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "下一页"
+          }
+        }
+      }
+    },
+    "No accounting windows yet" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "还没有会计窗口"
+          }
+        }
+      }
+    },
+    "No benchmark models available" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "没有可用的基准模型"
+          }
+        }
+      }
+    },
+    "No benchmarks yet" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "还没有基准"
+          }
+        }
+      }
+    },
+    "No connection periods recorded yet." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "尚未记录连接时间。"
+          }
+        }
+      }
+    },
+    "No local receipts yet" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "还没有本地收据"
+          }
+        }
+      }
+    },
+    "No machines are connected right now." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "目前没有机器连接。"
+          }
+        }
+      }
+    },
+    "No models match this search." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "没有与此搜索匹配的模型。"
+          }
+        }
+      }
+    },
+    "No one has published a benchmark for %1$@ yet. Run it once to give the community its first point of comparison." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "尚未有人发布 %1$@ 的基准。运行一次即可为社区提供第一个比较点。"
+          }
+        }
+      }
+    },
+    "No one has published this model on an %1$@ yet." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "尚未有人在 %1$@ 上发布此模型。"
+          }
+        }
+      }
+    },
+    "No pool model is downloaded yet" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "尚未下载池模型"
+          }
+        }
+      }
+    },
+    "No published %1$@ results for an %2$@ came back. That does not mean there are none — try another workload, or check again later." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "没有发布 %2$@ 的 %1$@ 结果。这并不意味着没有——尝试其他工作负载，或者稍后再检查。"
+          }
+        }
+      }
+    },
+    "No published result exists yet for %1$@. Publishing yours gives other Mac users a real baseline." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ 尚未发布结果。发布您的内容可以为其他 Mac 用户提供真正的基准。"
+          }
+        }
+      }
+    },
+    "No read key yet" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "还没有读取密钥"
+          }
+        }
+      }
+    },
+    "No result" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "没有结果"
+          }
+        }
+      }
+    },
+    "No results to show for this selection" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "没有显示此选择的结果"
+          }
+        }
+      }
+    },
+    "No results with this status." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此状态没有结果。"
+          }
+        }
+      }
+    },
+    "No results yet" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "还没有结果"
+          }
+        }
+      }
+    },
+    "No results yet for this Mac profile" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "尚未找到此 Mac 配置文件的结果"
+          }
+        }
+      }
+    },
+    "No reward is counted yet" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "尚未计算奖励"
+          }
+        }
+      }
+    },
+    "No secondary metrics were recorded for this run." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本次运行没有记录任何辅助指标。"
+          }
+        }
+      }
+    },
+    "No supported video models" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "没有支持的视频模型"
+          }
+        }
+      }
+    },
+    "No video models" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "没有视频模型"
+          }
+        }
+      }
+    },
+    "No windows yet" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "还没有窗户"
+          }
+        }
+      }
+    },
+    "Node cap" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "节点上限"
+          }
+        }
+      }
+    },
+    "Node · Model" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "节点·模型"
+          }
+        }
+      }
+    },
+    "None of the models in the recent published results needs more samples on this Mac profile. That only covers what has been published lately — it isn’t a statement about every model in the catalogue." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最近发布的结果中的所有模型都不需要在此 Mac 配置文件上提供更多样本。这仅涵盖最近发布的内容 - 它并不是对目录中每个模型的声明。"
+          }
+        }
+      }
+    },
+    "Not connected" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未连接"
+          }
+        }
+      }
+    },
+    "Not downloaded" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未下载"
+          }
+        }
+      }
+    },
+    "Not enough storage" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "存储空间不足"
+          }
+        }
+      }
+    },
+    "Not needed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "不需要"
+          }
+        }
+      }
+    },
+    "Not reported in this reading" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本阅读中未报道"
+          }
+        }
+      }
+    },
+    "Nothing is published automatically. The result is saved on this Mac, and publishing is always a separate, explicit step." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "没有任何内容会自动发布。结果保存在这台 Mac 上，发布始终是一个单独的、明确的步骤。"
+          }
+        }
+      }
+    },
+    "Nothing looks thin right now" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "现在看起来没有什么单薄的"
+          }
+        }
+      }
+    },
+    "OBSERVATIONS" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "观察结果"
+          }
+        }
+      }
+    },
+    "OBSERVED RANGE" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "观测范围"
+          }
+        }
+      }
+    },
+    "OTHER MODELS" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "其他模型"
+          }
+        }
+      }
+    },
+    "Observed range" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "观测范围"
+          }
+        }
+      }
+    },
+    "On long prompts" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "出现长提示时"
+          }
+        }
+      }
+    },
+    "One image" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "一张图片"
+          }
+        }
+      }
+    },
+    "One measured 1024 × 1024 render at 20 steps, after a warm-up render." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在预热渲染后，以 20 个步骤测量了 1024 × 1024 渲染。"
+          }
+        }
+      }
+    },
+    "One measured 832 × 480, 81-frame render with a fixed prompt and seed." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "其中一项测量结果为 832 × 480、81 帧渲染，具有固定的提示和种子。"
+          }
+        }
+      }
+    },
+    "One model serves at a time" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "一次只提供一个模型"
+          }
+        }
+      }
+    },
+    "One request at a time. The warm-up round is thrown away; only the five measured rounds count." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "一次一个请求。热身赛被扔掉；只有五轮测量的回合才算数。"
+          }
+        }
+      }
+    },
+    "One video" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "一个视频"
+          }
+        }
+      }
+    },
+    "Online" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在线的"
+          }
+        }
+      }
+    },
+    "Only %1$d %2$@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仅 %1$d %2$@"
+          }
+        }
+      }
+    },
+    "Open Automation Settings" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开自动化设置"
+          }
+        }
+      }
+    },
+    "Open QuickSilver" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开QuickSilver"
+          }
+        }
+      }
+    },
+    "Open Read-only earnings keys in the QuickSilver Share Compute tab" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在 QuickSilver 共享计算选项卡中打开只读收入密钥"
+          }
+        }
+      }
+    },
+    "Open Request Slots" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "开放请求时段"
+          }
+        }
+      }
+    },
+    "Open rapidmlx.com" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开rapidmlx.com"
+          }
+        }
+      }
+    },
+    "Open read-only earnings keys" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开只读收入密钥"
+          }
+        }
+      }
+    },
+    "Open your QuickSilver account balance" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开您的 QuickSilver 账户余额"
+          }
+        }
+      }
+    },
+    "Optional" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "选修的"
+          }
+        }
+      }
+    },
+    "Optional. Stored only in your local Computer Use configuration." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "可选。仅存储在这台 Mac 的电脑操作配置中。"
+          }
+        }
+      }
+    },
+    "PUBLISHED" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已发布"
+          }
+        }
+      }
+    },
+    "Page %1$d of %2$d" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "第 %1$d 页（共 %2$d）"
+          }
+        }
+      }
+    },
+    "Paste your QuickSilver read key to continue." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "粘贴您的 QuickSilver 读取密钥以继续。"
+          }
+        }
+      }
+    },
+    "Pause current model" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "暂停当前​​模型"
+          }
+        }
+      }
+    },
+    "Paused by QuickSilver" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "由 QuickSilver 暂停"
+          }
+        }
+      }
+    },
+    "Paused by QuickSilver · not accepting nodes" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "由 QuickSilver 暂停 · 不接受节点"
+          }
+        }
+      }
+    },
+    "Paused by QuickSilver." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "由 QuickSilver 暂停。"
+          }
+        }
+      }
+    },
+    "Payload digest" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "有效负载摘要"
+          }
+        }
+      }
+    },
+    "Payment timing and destination remain managed by the provider." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "付款时间和目的地仍由提供商管理。"
+          }
+        }
+      }
+    },
+    "Payout account connected" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已连接支付账户"
+          }
+        }
+      }
+    },
+    "Payout account not reported" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "付款帐户未报告"
+          }
+        }
+      }
+    },
+    "Peak memory" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "峰值内存"
+          }
+        }
+      }
+    },
+    "Pending" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "待办的"
+          }
+        }
+      }
+    },
+    "Performance on Macs like yours" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在像您这样的 Mac 上的性能"
+          }
+        }
+      }
+    },
+    "Pool cap" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "泳池盖"
+          }
+        }
+      }
+    },
+    "Pool data unavailable" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "池数据不可用"
+          }
+        }
+      }
+    },
+    "Pool models and their live capacity" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "池模型及其实时容量"
+          }
+        }
+      }
+    },
+    "Preparation steps" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "准备步骤"
+          }
+        }
+      }
+    },
+    "Preparing Computer Use on this Mac…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在这台 Mac 上准备电脑操作…"
+          }
+        }
+      }
+    },
+    "Preparing compute" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "准备计算"
+          }
+        }
+      }
+    },
+    "Preparing model" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "准备模型"
+          }
+        }
+      }
+    },
+    "Preparing the first step…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "准备第一步……"
+          }
+        }
+      }
+    },
+    "Preparing this Mac" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "准备这台 Mac"
+          }
+        }
+      }
+    },
+    "Previous page" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "上一页"
+          }
+        }
+      }
+    },
+    "Private until you publish" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在您发布之前保密"
+          }
+        }
+      }
+    },
+    "Prompts or model output" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "提示或模型输出"
+          }
+        }
+      }
+    },
+    "Protocol" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "协议"
+          }
+        }
+      }
+    },
+    "Provider" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "提供者"
+          }
+        }
+      }
+    },
+    "Provider account connected" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "提供商帐户已连接"
+          }
+        }
+      }
+    },
+    "Provider account not reported" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未报告提供商帐户"
+          }
+        }
+      }
+    },
+    "Public contribution total unavailable" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "公共捐款总额不详"
+          }
+        }
+      }
+    },
+    "Publish" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "发布"
+          }
+        }
+      }
+    },
+    "Publish this result to add another observation for %1$@ on an %2$@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "发布此结果以在 %2$@ 上添加 %1$@ 的另一个观察结果"
+          }
+        }
+      }
+    },
+    "Publish this result to add observation %1$d for %2$@ on an %3$@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "发布此结果以在 %3$@ 上添加 %2$@ 的观测值 %1$d"
+          }
+        }
+      }
+    },
+    "Publish this result to the Community Benchmark" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "将此结果发布到社区基准"
+          }
+        }
+      }
+    },
+    "Publish this result to the Community Benchmark?" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "将此结果发布到社区基准吗？"
+          }
+        }
+      }
+    },
+    "Publish to Community Benchmark" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "发布到社区基准"
+          }
+        }
+      }
+    },
+    "Published" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已发表"
+          }
+        }
+      }
+    },
+    "Published Rapid-MLX Desktop results for the selected Mac profile. These are observations, not rankings." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已发布所选 Mac 配置文件的 Rapid-MLX Desktop 结果。这些是观察结果，而不是排名。"
+          }
+        }
+      }
+    },
+    "Published results exist for this model, but not enough detail to confirm they used the same build as your run." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "该模型存在已发布的结果，但没有足够的详细信息来确认它们使用与您的运行相同的构建。"
+          }
+        }
+      }
+    },
+    "Published results for this Mac profile are on the way." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此 Mac 配置文件的已发布结果即将发布。"
+          }
+        }
+      }
+    },
+    "Published to Community Benchmark" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "发布到社区基准"
+          }
+        }
+      }
+    },
+    "Publishing…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "出版…"
+          }
+        }
+      }
+    },
+    "Queued" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "排队"
+          }
+        }
+      }
+    },
+    "QuickSilver API credits" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "QuickSilver API 积分"
+          }
+        }
+      }
+    },
+    "QuickSilver allows a limited number of ledger checks per hour." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "QuickSilver 允许每小时进行有限数量的账本检查。"
+          }
+        }
+      }
+    },
+    "QuickSilver balance" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "QuickSilver 余额"
+          }
+        }
+      }
+    },
+    "QuickSilver couldn’t read that request." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "QuickSilver 无法读取该请求。"
+          }
+        }
+      }
+    },
+    "QuickSilver forwards requests to this Mac while it is online. No task queue or manual acceptance." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "QuickSilver 在这台 Mac 在线时将请求转发到该 Mac。没有任务队列或手动接受。"
+          }
+        }
+      }
+    },
+    "QuickSilver is rate-limiting ledger checks. Refresh is paused for a few minutes." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "QuickSilver 是限速账本检查。刷新暂停几分钟。"
+          }
+        }
+      }
+    },
+    "QuickSilver opens a window once your node serves metered requests. An empty ledger is a normal reading, not an error." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "一旦您的节点提供计量请求，QuickSilver 就会打开一个窗口。空账本是正常读数，而不是错误。"
+          }
+        }
+      }
+    },
+    "QuickSilver payout account" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "QuickSilver 支付账户"
+          }
+        }
+      }
+    },
+    "QuickSilver provider key" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "QuickSilver 提供商密钥"
+          }
+        }
+      }
+    },
+    "QuickSilver read key" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "QuickSilver 读取密钥"
+          }
+        }
+      }
+    },
+    "QuickSilver rejected the saved key — it may have been revoked or replaced. Create a new one and paste it below." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "QuickSilver 拒绝了保存的密钥 - 它可能已被撤销或替换。创建一个新的并将其粘贴到下面。"
+          }
+        }
+      }
+    },
+    "QuickSilver relay" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "QuickSilver 继电器"
+          }
+        }
+      }
+    },
+    "QuickSilver returned a ledger Rapid couldn’t read." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "QuickSilver 返回了 Rapid 无法读取的账本。"
+          }
+        }
+      }
+    },
+    "QuickSilver tracking" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "QuickSilver 跟踪"
+          }
+        }
+      }
+    },
+    "QuickSilver verifies accepted work and finalizes reward activity." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "QuickSilver 验证已接受的工作并完成奖励活动。"
+          }
+        }
+      }
+    },
+    "QuickSilver work runs on this Mac; reward activity remains in your provider account." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "QuickSilver 工作在此 Mac 上运行；奖励活动保留在您的提供商帐户中。"
+          }
+        }
+      }
+    },
+    "QuickSilver · Contributor ledger" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "QuickSilver · 贡献者账本"
+          }
+        }
+      }
+    },
+    "QuickSilver’s ledger is unavailable right now." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "QuickSilver 的账本目前不可用。"
+          }
+        }
+      }
+    },
+    "RESULT" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "结果"
+          }
+        }
+      }
+    },
+    "RUN AN AGENT TASK" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "运行代理任务"
+          }
+        }
+      }
+    },
+    "RUNNING" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "运行中"
+          }
+        }
+      }
+    },
+    "Rapid Computer Use could not report its permission status. Review Rapid-MLX Desktop in System Settings, then refresh." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rapid 电脑操作 无法报告其权限状态。查看“系统设置”中的 Rapid-MLX Desktop，然后刷新。"
+          }
+        }
+      }
+    },
+    "Rapid always executes actions on this Mac. Choose where the planning model runs and exactly what it may receive." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rapid 始终在此 Mac 上执行操作。选择计划模型的运行位置以及它可能接收的具体内容。"
+          }
+        }
+      }
+    },
+    "Rapid could not verify this task start. Approval is disabled; stop the task immediately." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rapid 无法验证此任务的启动。批准被禁用；立即停止任务。"
+          }
+        }
+      }
+    },
+    "Rapid couldn't fully remove the saved read key. Revoke it in QuickSilver and try removing it again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rapid 无法完全删除已保存的读取密钥。在 QuickSilver 中撤销它并尝试再次删除它。"
+          }
+        }
+      }
+    },
+    "Rapid couldn’t read the pool summary. Your own readiness below is measured on this Mac and is unaffected." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rapid 无法读取池摘要。下面您自己的准备情况是在这台 Mac 上测量的，不受影响。"
+          }
+        }
+      }
+    },
+    "Rapid is paused. Approve only after checking the app and requested action." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "快速暂停。仅在检查应用程序并请求操作后才批准。"
+          }
+        }
+      }
+    },
+    "Rapid is reading the local model catalog." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rapid 正在读取本地模型目录。"
+          }
+        }
+      }
+    },
+    "Rapid is stopping this task. Approval is unavailable while cancellation finishes." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rapid 正在停止此任务。取消完成后无法批准。"
+          }
+        }
+      }
+    },
+    "Rapid leaves the pool and requests a restart of your previous model. Check that it becomes ready." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rapid 离开池并请求重新启动之前的模型。检查它是否准备就绪。"
+          }
+        }
+      }
+    },
+    "Rapid requests a restart after Stop" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "停止后快速请求重新启动"
+          }
+        }
+      }
+    },
+    "Rapid requests a restart of your previous model when this reward session ends." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当此奖励会话结束时，Rapid 请求重新启动您之前的模型。"
+          }
+        }
+      }
+    },
+    "Rapid stores the read key in this Mac’s Keychain. It can only read your account’s ledger — it cannot register nodes or spend credit. Your provider key (qsppk-) is never saved." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rapid 将读取的密钥存储在此 Mac 的钥匙串中。它只能读取您帐户的分类帐 - 它无法注册节点或使用积分。您的提供商密钥 (qsppk-) 永远不会保存。"
+          }
+        }
+      }
+    },
+    "Rapid · Local activity on this Mac" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "快速 · 此 Mac 上的本地活动"
+          }
+        }
+      }
+    },
+    "Rapid-MLX" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rapid-MLX"
+          }
+        }
+      }
+    },
+    "Rapid-MLX Desktop has Screen Recording access, and its bundled helper has Accessibility access for Computer Use." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rapid-MLX Desktop 具有屏幕录制访问权限，其捆绑的帮助程序具有电脑操作的辅助功能访问权限。"
+          }
+        }
+      }
+    },
+    "Raw JSON and destination" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "原始 JSON 和目的地"
+          }
+        }
+      }
+    },
+    "Read key rejected" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "读取密钥被拒绝"
+          }
+        }
+      }
+    },
+    "Reading pool capacity…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "阅读池容量…"
+          }
+        }
+      }
+    },
+    "Reading your ledger…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "阅读你的账本…"
+          }
+        }
+      }
+    },
+    "Ready on this Mac" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在这台 Mac 上准备就绪"
+          }
+        }
+      }
+    },
+    "Ready on this Mac · %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在这台 Mac 上准备就绪 · %@"
+          }
+        }
+      }
+    },
+    "Ready to Serve" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "准备服务"
+          }
+        }
+      }
+    },
+    "Ready to connect this Mac" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "准备连接此 Mac"
+          }
+        }
+      }
+    },
+    "Reason" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "原因"
+          }
+        }
+      }
+    },
+    "Receive credits" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "获得积分"
+          }
+        }
+      }
+    },
+    "Receive monthly credits" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "接收每月积分"
+          }
+        }
+      }
+    },
+    "Recent videos" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最近的视频"
+          }
+        }
+      }
+    },
+    "Recently refreshed. The ledger updates again shortly." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最近刷新了。账本很快就会再次更新。"
+          }
+        }
+      }
+    },
+    "Reconnecting" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "重新连接"
+          }
+        }
+      }
+    },
+    "Reconnecting to the pool" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "重新连接到池"
+          }
+        }
+      }
+    },
+    "Reconnecting to the relay…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "重新连接到继电器…"
+          }
+        }
+      }
+    },
+    "Recovering…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在恢复……"
+          }
+        }
+      }
+    },
+    "Refresh" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "刷新"
+          }
+        }
+      }
+    },
+    "Refresh the credit ledger" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "刷新积分账本"
+          }
+        }
+      }
+    },
+    "Register and open the relay" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "注册并打开继电器"
+          }
+        }
+      }
+    },
+    "Register this Mac" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "注册此 Mac"
+          }
+        }
+      }
+    },
+    "Register this Mac and open the relay" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "注册这台Mac并打开中继"
+          }
+        }
+      }
+    },
+    "Relay aggregate · %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "中继聚合·%@"
+          }
+        }
+      }
+    },
+    "Relay aggregate · unavailable" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "中继聚合 · 不可用"
+          }
+        }
+      }
+    },
+    "Remove saved key" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "删除已保存的密钥"
+          }
+        }
+      }
+    },
+    "Remove this model?" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "删除这个模型？"
+          }
+        }
+      }
+    },
+    "Remove…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "消除…"
+          }
+        }
+      }
+    },
+    "Render time" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "渲染时间"
+          }
+        }
+      }
+    },
+    "Rendering" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "渲染"
+          }
+        }
+      }
+    },
+    "Replace" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "代替"
+          }
+        }
+      }
+    },
+    "Replace the saved read key" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "替换保存的读取密钥"
+          }
+        }
+      }
+    },
+    "Replace your read key" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "更换您的读取密钥"
+          }
+        }
+      }
+    },
+    "Requests" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "要求"
+          }
+        }
+      }
+    },
+    "Requests now" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "立即请求"
+          }
+        }
+      }
+    },
+    "Responses return through the tunnel" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "响应通过隧道返回"
+          }
+        }
+      }
+    },
+    "Restart after Stop" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "停止后重新启动"
+          }
+        }
+      }
+    },
+    "Restart requested" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请求重新启动"
+          }
+        }
+      }
+    },
+    "Restores this task as a draft. Rapid will choose the apps again and ask before accessing a website." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "将此任务恢复为草稿。 Rapid 将再次选择应用程序并在访问网站之前进行询问。"
+          }
+        }
+      }
+    },
+    "Retry Recovery" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "重试恢复"
+          }
+        }
+      }
+    },
+    "Retry setup" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "重试设置"
+          }
+        }
+      }
+    },
+    "Review & connect" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "查看并连接"
+          }
+        }
+      }
+    },
+    "Review & connect this Mac" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "检查并连接这台 Mac"
+          }
+        }
+      }
+    },
+    "Review the exact data" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "查看准确数据"
+          }
+        }
+      }
+    },
+    "Reviewed domain" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已审核域名"
+          }
+        }
+      }
+    },
+    "Reward activity" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "奖励记录"
+          }
+        }
+      }
+    },
+    "Reward activity continues in QuickSilver." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "奖励活动在 QuickSilver 继续进行。"
+          }
+        }
+      }
+    },
+    "Reward activity is managed in QuickSilver." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "奖励活动在 QuickSilver 中管理。"
+          }
+        }
+      }
+    },
+    "Reward eligible when work is accepted." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "工作被接受后即可获得奖励。"
+          }
+        }
+      }
+    },
+    "Reward session" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "奖励会"
+          }
+        }
+      }
+    },
+    "Reward status" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "奖励状态"
+          }
+        }
+      }
+    },
+    "Rewards in QuickSilver" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "QuickSilver 中的奖励"
+          }
+        }
+      }
+    },
+    "Run" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "跑步"
+          }
+        }
+      }
+    },
+    "Run ID" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "运行ID"
+          }
+        }
+      }
+    },
+    "Run a fixed %1$@ workload for %2$@ and keep the result on this Mac. You can publish it to the Community Benchmark afterwards." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "为 %2$@ 运行固定的 %1$@ 工作负载，并将结果保留在此 Mac 上。您可以随后将其发布到社区基准。"
+          }
+        }
+      }
+    },
+    "Run accepted work locally" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在本地运行已接受的工作"
+          }
+        }
+      }
+    },
+    "Run again" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "再次运行"
+          }
+        }
+      }
+    },
+    "Run anyway" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无论如何都要跑"
+          }
+        }
+      }
+    },
+    "Run benchmark" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "运行基准测试"
+          }
+        }
+      }
+    },
+    "Run your first benchmark" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "运行您的第一个基准测试"
+          }
+        }
+      }
+    },
+    "Runtime" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "运行时"
+          }
+        }
+      }
+    },
+    "SAVED HERE" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "保存在这里"
+          }
+        }
+      }
+    },
+    "SAVED ON THIS MAC" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已保存在此 Mac 上"
+          }
+        }
+      }
+    },
+    "SECONDARY METRICS" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "次要指标"
+          }
+        }
+      }
+    },
+    "SHARED" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "共享"
+          }
+        }
+      }
+    },
+    "STARTING" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "启动中"
+          }
+        }
+      }
+    },
+    "STATUS" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "状态"
+          }
+        }
+      }
+    },
+    "Same Mac profile as the table — %1$@." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "与表相同的 Mac 配置文件 — %1$@。"
+          }
+        }
+      }
+    },
+    "Same model, same %1$@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "相同模型，相同 %1$@"
+          }
+        }
+      }
+    },
+    "Save & load ledger" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "保存和加载分类帐"
+          }
+        }
+      }
+    },
+    "Save Model" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "保存模型"
+          }
+        }
+      }
+    },
+    "Save video" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "保存视频"
+          }
+        }
+      }
+    },
+    "Saving to this Mac" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "保存到此 Mac"
+          }
+        }
+      }
+    },
+    "Seconds per video" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "每个视频的秒数"
+          }
+        }
+      }
+    },
+    "Section" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "部分"
+          }
+        }
+      }
+    },
+    "See what is online" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "看看网上有什么"
+          }
+        }
+      }
+    },
+    "Select a model" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "选择模型"
+          }
+        }
+      }
+    },
+    "Selected" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已选择"
+          }
+        }
+      }
+    },
+    "Sent directly to the local provider process. Rapid does not save it in app settings." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "直接发送到本地提供商进程。 Rapid 不会将其保存在应用程序设置中。"
+          }
+        }
+      }
+    },
+    "Serve live requests" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "服务实时请求"
+          }
+        }
+      }
+    },
+    "Serve live requests from this Mac through QuickSilver." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "通过 QuickSilver 处理来自此 Mac 的实时请求。"
+          }
+        }
+      }
+    },
+    "Serve live requests." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "满足实时请求。"
+          }
+        }
+      }
+    },
+    "Serve live requests. " : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "满足实时请求。"
+          }
+        }
+      }
+    },
+    "Serve live requests. Earn API credits." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "满足实时请求。获得 API 积分。"
+          }
+        }
+      }
+    },
+    "Served the pool · ended cleanly" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "服务于泳池 · 干净地结束"
+          }
+        }
+      }
+    },
+    "Serving live requests" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "服务实时请求"
+          }
+        }
+      }
+    },
+    "Share" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "分享"
+          }
+        }
+      }
+    },
+    "Share again" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "再次分享"
+          }
+        }
+      }
+    },
+    "Sharing %1$@ · %2$@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "共享 %1$@ · %2$@"
+          }
+        }
+      }
+    },
+    "Sharing %1$@. Locked while sharing — stop to change." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "共享 %1$@。共享时锁定 — 停止更改。"
+          }
+        }
+      }
+    },
+    "Short replies" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "简短回复"
+          }
+        }
+      }
+    },
+    "Showing %1$d of %2$d windows · totals below use all of them" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "显示 %2$d 窗口的 %1$d · 以下总计使用所有窗口"
+          }
+        }
+      }
+    },
+    "Showing the most recent windows only." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仅显示最近的窗口。"
+          }
+        }
+      }
+    },
+    "Skipped" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "跳过"
+          }
+        }
+      }
+    },
+    "Slots" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "老虎机"
+          }
+        }
+      }
+    },
+    "Slower than the median" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "比中位数慢"
+          }
+        }
+      }
+    },
+    "Some windows are still pending; QuickSilver finalises them after the month closes." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "一些窗口仍在等待中； QuickSilver 在月底后最终确定它们。"
+          }
+        }
+      }
+    },
+    "Source" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "来源"
+          }
+        }
+      }
+    },
+    "Stage %1$@ of %2$d" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%2$d 的阶段 %1$@"
+          }
+        }
+      }
+    },
+    "Start Video Model" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "启动视频模型"
+          }
+        }
+      }
+    },
+    "Start a video model" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "启动视频模型"
+          }
+        }
+      }
+    },
+    "Start shared model" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "启动共享模型"
+          }
+        }
+      }
+    },
+    "Starting is explicit so opening this tab never replaces your current model or allocates memory by surprise." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "启动是明确的，因此打开此选项卡永远不会替换您当前的模型或意外分配内存。"
+          }
+        }
+      }
+    },
+    "Starting task" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "开始任务"
+          }
+        }
+      }
+    },
+    "Starting the shared model" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "启动共享模型"
+          }
+        }
+      }
+    },
+    "Status" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "地位"
+          }
+        }
+      }
+    },
+    "Stop" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "停止"
+          }
+        }
+      }
+    },
+    "Stop Sharing" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "停止分享"
+          }
+        }
+      }
+    },
+    "Stop Task" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "停止任务"
+          }
+        }
+      }
+    },
+    "Stop sharing this Mac" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "停止共享这台 Mac"
+          }
+        }
+      }
+    },
+    "Supported pool model" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "支持的池模型"
+          }
+        }
+      }
+    },
+    "Supported pool model · ready on this Mac" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "支持的池模型·在此 Mac 上准备就绪"
+          }
+        }
+      }
+    },
+    "TIME LEFT" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "剩余时间"
+          }
+        }
+      }
+    },
+    "TODAY · %1$@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "今天 · %1$@"
+          }
+        }
+      }
+    },
+    "Target" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "目标"
+          }
+        }
+      }
+    },
+    "Task" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "任务"
+          }
+        }
+      }
+    },
+    "Task complete" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "任务完成"
+          }
+        }
+      }
+    },
+    "Task failed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "任务失败"
+          }
+        }
+      }
+    },
+    "Task goal" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "任务目标"
+          }
+        }
+      }
+    },
+    "Task in progress" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "任务正在进行中"
+          }
+        }
+      }
+    },
+    "Technical details" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "技术细节"
+          }
+        }
+      }
+    },
+    "Text" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "文本"
+          }
+        }
+      }
+    },
+    "Text only — do not send screenshots" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仅文本 - 不发送屏幕截图"
+          }
+        }
+      }
+    },
+    "That is a normal reading, not an error. Connect this Mac and it becomes the first." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这是正常读数，不是错误。连接这台 Mac，它就成为第一台。"
+          }
+        }
+      }
+    },
+    "That isn’t a read key. Read keys start with qsprk-. A provider key (qsppk-) registers nodes and is never saved by Rapid." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "那不是读取密钥。读取以 qsprk- 开头的密钥。提供者密钥 (qsppk-) 注册节点并且永远不会被 Rapid 保存。"
+          }
+        }
+      }
+    },
+    "That read key contains a line break or control character. Paste it as a single line." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "该读取键包含换行符或控制字符。将其粘贴为单行。"
+          }
+        }
+      }
+    },
+    "That read key is longer than QuickSilver issues." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "该读取密钥比 QuickSilver 问题长。"
+          }
+        }
+      }
+    },
+    "That read key looks incomplete." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "该读取密钥看起来不完整。"
+          }
+        }
+      }
+    },
+    "The benchmark runs entirely on this Mac. It uses fixed prompts and settings every time, so a result from one Mac can be compared with a result from another." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "该基准测试完全在这台 Mac 上运行。它每次都使用固定的提示和设置，因此可以将一台 Mac 的结果与另一台 Mac 的结果进行比较。"
+          }
+        }
+      }
+    },
+    "The benchmark was not uploaded." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "基准未上传。"
+          }
+        }
+      }
+    },
+    "The community service returned %1$d." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "社区服务返回 %1$d。"
+          }
+        }
+      }
+    },
+    "The community service returned a count that could not be read." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "社区服务返回了无法读取的计数。"
+          }
+        }
+      }
+    },
+    "The exact checkpoint revision" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "确切的检查点修订"
+          }
+        }
+      }
+    },
+    "The generated file will be removed from this Mac. This can't be undone." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "生成的文件将从该 Mac 中删除。这无法撤消。"
+          }
+        }
+      }
+    },
+    "The model identifier expected by this endpoint" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "该端点期望的模型标识符"
+          }
+        }
+      }
+    },
+    "The model's repository id" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型的存储库 ID"
+          }
+        }
+      }
+    },
+    "The model's repository id (%1$@)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型的存储库 ID (%1$@)"
+          }
+        }
+      }
+    },
+    "The most unified memory the model held at once." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型同时拥有的最统一的记忆。"
+          }
+        }
+      }
+    },
+    "The public feed only covers the most recent runs, so the total for this model and Mac is not known yet." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "公共源仅涵盖最近的运行，因此该模型和 Mac 的总数尚不清楚。"
+          }
+        }
+      }
+    },
+    "The published history was too long to total exactly." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已发表的历史太长，无法准确概括。"
+          }
+        }
+      }
+    },
+    "The queued request will be removed before generation begins." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "排队的请求将在生成开始之前被删除。"
+          }
+        }
+      }
+    },
+    "The service assigns this installation an anonymous alias the first time you publish. Everything you publish from this Mac then appears together on one contributor page." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当您第一次发布时，该服务会为此安装分配一个匿名别名。然后，您从这台 Mac 发布的所有内容都会一起显示在一个贡献者页面上。"
+          }
+        }
+      }
+    },
+    "The service briefly sees your IP address for rate limiting. It is not stored in the benchmark record." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "该服务会短暂查看您的 IP 地址以进行速率限制。它不存储在基准记录中。"
+          }
+        }
+      }
+    },
+    "The signed engine does not currently advertise a compatible video model." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "签名引擎当前不宣传兼容的视频模型。"
+          }
+        }
+      }
+    },
+    "The task stopped because Rapid could not verify the selected browser's domain. Allow Rapid to control that browser in System Settings, then choose New Task and try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "由于 Rapid 无法验证所选浏览器的域，任务已停止。在“系统设置”中允许 Rapid 控制该浏览器，然后选择“新任务”并重试。"
+          }
+        }
+      }
+    },
+    "The timings and memory figures above" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "上面的时序和内存数据"
+          }
+        }
+      }
+    },
+    "The warm-up render is thrown away; only the measured render counts." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "预热渲染被丢弃；仅测量的渲染计数。"
+          }
+        }
+      }
+    },
+    "There are now %1$d published observations for %2$@ on an %3$@, including yours." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "现在 %1$d 已发布对 %3$@ 上 %2$@ 的观察结果，包括您的观察结果。"
+          }
+        }
+      }
+    },
+    "This Mac couldn't save the read key. Unlock your Keychain and try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此 Mac 无法保存读取密钥。解锁您的钥匙串并重试。"
+          }
+        }
+      }
+    },
+    "This Mac's Keychain is unavailable. Unlock it and try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此 Mac 的钥匙串不可用。解锁并重试。"
+          }
+        }
+      }
+    },
+    "This Mac, published as %1$@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此 Mac，发布为 %1$@"
+          }
+        }
+      }
+    },
+    "This alias belongs to this installation of Rapid-MLX. Everything you publish from this Mac appears together on one contributor page, so people can see a consistent set of results without knowing who you are." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此别名属于 Rapid-MLX 的此安装。您从这台 Mac 发布的所有内容都会一起显示在一个贡献者页面上，因此人们可以看到一组一致的结果，而无需知道您是谁。"
+          }
+        }
+      }
+    },
+    "This approval is missing its gate identity. Stop the task and retry." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此批准缺少其门标识。停止任务并重试。"
+          }
+        }
+      }
+    },
+    "This approval no longer matches the active app. Stop the task and try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此批准不再与活动应用程序匹配。停止任务并重试。"
+          }
+        }
+      }
+    },
+    "This failed request will be removed from recent videos." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此失败的请求将从最近的视频中删除。"
+          }
+        }
+      }
+    },
+    "This local server does not support automatic app selection. Update or restart Rapid, then try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此本地服务器不支持自动应用程序选择。更新或重新启动 Rapid，然后重试。"
+          }
+        }
+      }
+    },
+    "This loopback endpoint runs on this Mac and does not require an API key." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此环回端点在此 Mac 上运行，不需要 API 密钥。"
+          }
+        }
+      }
+    },
+    "This model doesn't fit this Mac" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此模型不适合此 Mac"
+          }
+        }
+      }
+    },
+    "This model's memory requirement couldn't be verified." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法验证该模型的内存要求。"
+          }
+        }
+      }
+    },
+    "This prevents two large models from competing for unified memory." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这可以防止两个大型模型竞争统一内存。"
+          }
+        }
+      }
+    },
+    "This read key was rejected. It may have been revoked or replaced." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此读取密钥被拒绝。它可能已被撤销或替换。"
+          }
+        }
+      }
+    },
+    "This result is already published" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "该结果已经发布"
+          }
+        }
+      }
+    },
+    "Time shared" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "共享时间"
+          }
+        }
+      }
+    },
+    "Time to first token" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "首个 token 用时"
+          }
+        }
+      }
+    },
+    "Tokens in" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "输入 token"
+          }
+        }
+      }
+    },
+    "Tokens in/out" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "输入/输出 token"
+          }
+        }
+      }
+    },
+    "Tokens out" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "输出 token"
+          }
+        }
+      }
+    },
+    "Too many ledger checks. Try again in a few minutes." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "账本检查过多。几分钟后重试。"
+          }
+        }
+      }
+    },
+    "Total benchmark duration" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "总基准持续时间"
+          }
+        }
+      }
+    },
+    "Total duration" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "总持续时间"
+          }
+        }
+      }
+    },
+    "Tracking begins after QuickSilver accepts the node." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "跟踪在 QuickSilver 接受节点后开始。"
+          }
+        }
+      }
+    },
+    "Try Again" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "再试一次"
+          }
+        }
+      }
+    },
+    "Two fixed token workloads · 1 warm-up + 5 measured rounds each · concurrency 1" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "两个固定 token 工作负载 · 每个执行 1 次预热和 5 轮测量 · 并发数为 1"
+          }
+        }
+      }
+    },
+    "Unavailable right now" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "现在不可用"
+          }
+        }
+      }
+    },
+    "Unknown" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未知"
+          }
+        }
+      }
+    },
+    "Unsupported benchmark protocol" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "不支持的基准协议"
+          }
+        }
+      }
+    },
+    "Updated %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已更新 %@"
+          }
+        }
+      }
+    },
+    "Verified CLI runs only — the ranked dataset lives on rapidmlx.com" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仅运行经过验证的 CLI — 排名数据集位于 rapidmlx.com 上"
+          }
+        }
+      }
+    },
+    "Video duration" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "视频时长"
+          }
+        }
+      }
+    },
+    "Video model" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "视频模型"
+          }
+        }
+      }
+    },
+    "Video prompt" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "视频提示"
+          }
+        }
+      }
+    },
+    "Video ready" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "视频准备就绪"
+          }
+        }
+      }
+    },
+    "Video size" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "视频尺寸"
+          }
+        }
+      }
+    },
+    "View contributor page" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "查看贡献者页面"
+          }
+        }
+      }
+    },
+    "View online" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在线查看"
+          }
+        }
+      }
+    },
+    "View reward in QuickSilver" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在 QuickSilver 中查看奖励"
+          }
+        }
+      }
+    },
+    "View the contributor page for %1$@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "查看 %1$@ 的贡献者页面"
+          }
+        }
+      }
+    },
+    "View the verified global leaderboard" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "查看经过验证的全球排行榜"
+          }
+        }
+      }
+    },
+    "View the verified global leaderboard on rapidmlx.com" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在rapidmlx.com 上查看经过验证的全球排行榜"
+          }
+        }
+      }
+    },
+    "View your contribution" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "查看您的贡献"
+          }
+        }
+      }
+    },
+    "WHAT IT RUNS ON %1$@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "它在 %1$@ 上运行"
+          }
+        }
+      }
+    },
+    "WHAT THIS MEASURES" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这衡量什么"
+          }
+        }
+      }
+    },
+    "WHAT YOU GET BACK" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "您会得到什么"
+          }
+        }
+      }
+    },
+    "WORKLOAD" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "工作负载"
+          }
+        }
+      }
+    },
+    "Waiting" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "等待"
+          }
+        }
+      }
+    },
+    "Waiting for pool connection." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "等待池连接。"
+          }
+        }
+      }
+    },
+    "Waiting for your approval at a sign-in page" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在登录页面等待您的批准"
+          }
+        }
+      }
+    },
+    "Waiting to generate" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "等待生成"
+          }
+        }
+      }
+    },
+    "Warm up" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "热身"
+          }
+        }
+      }
+    },
+    "What can I serve right now?" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "我现在可以提供什么服务？"
+          }
+        }
+      }
+    },
+    "What have I earned?" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "我赚到了什么？"
+          }
+        }
+      }
+    },
+    "What is online right now" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "现在在线有什么"
+          }
+        }
+      }
+    },
+    "What is online right now?" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "现在网上有什么？"
+          }
+        }
+      }
+    },
+    "Where your Mac can help" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mac 可以提供帮助的地方"
+          }
+        }
+      }
+    },
+    "Worker" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "工人"
+          }
+        }
+      }
+    },
+    "Worker name" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "工人姓名"
+          }
+        }
+      }
+    },
+    "Worker name for this Mac" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此 Mac 的工作人员名称"
+          }
+        }
+      }
+    },
+    "Workload" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "工作量"
+          }
+        }
+      }
+    },
+    "YOU" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你"
+          }
+        }
+      }
+    },
+    "You made this comparison stronger" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你让这种比较更加强烈"
+          }
+        }
+      }
+    },
+    "Your %1$@ result is live on rapidmlx.com." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "您的 %1$@ 结果已在rapidmlx.com 上实时显示。"
+          }
+        }
+      }
+    },
+    "Your %1$@ result is now part of the public observations for an %2$@." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "您的 %1$@ 结果现已成为 %2$@ 公众观察结果的一部分。"
+          }
+        }
+      }
+    },
+    "Your Mac can create the first reference" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "您的 Mac 可以创建第一个参考"
+          }
+        }
+      }
+    },
+    "Your Mac is contributing" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "您的 Mac 正在做出贡献"
+          }
+        }
+      }
+    },
+    "Your contribution session is complete" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "您的贡献会议已完成"
+          }
+        }
+      }
+    },
+    "Your local activity below is measured on this Mac and is unaffected." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "您的以下本地活动是在这台 Mac 上测量的，不受影响。"
+          }
+        }
+      }
+    },
+    "Your name or any account" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "您的姓名或任何帐户"
+          }
+        }
+      }
+    },
+    "Your own readiness below still works." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "您自己在下面的准备工作仍然有效。"
+          }
+        }
+      }
+    },
+    "Your result is now part of the public observations for %1$@." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "您的结果现已成为 %1$@ 公众观察结果的一部分。"
+          }
+        }
+      }
+    },
+    "Your result stays on this Mac until you publish it. Publishing adds it to the public observations for this model and Mac profile." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "您的结果将保留在这台 Mac 上，直到您发布为止。发布将其添加到对此模型和 Mac 配置文件的公众观察中。"
+          }
+        }
+      }
+    },
+    "Your results appear here after you run one. They stay on this Mac unless you publish them." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "运行后，您的结果将显示在此处。除非您发布它们，否则它们会保留在这台 Mac 上。"
+          }
+        }
+      }
+    },
+    "Your saved copy of this result keeps these details. Only the submission is narrowed." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "您保存的结果副本会保留这些详细信息。只是提交范围缩小了。"
+          }
+        }
+      }
+    },
+    "Zero" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "零"
+          }
+        }
+      }
+    },
+    "above" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "多于"
+          }
+        }
+      }
+    },
+    "accrued %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "应计 %@"
+          }
+        }
+      }
+    },
+    "accrued amount unknown" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "应计金额未知"
+          }
+        }
+      }
+    },
+    "at least" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "至少"
+          }
+        }
+      }
+    },
+    "at least %1$d" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "至少 %1$d"
+          }
+        }
+      }
+    },
+    "below" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "以下"
+          }
+        }
+      }
+    },
+    "contribution" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "贡献"
+          }
+        }
+      }
+    },
+    "contributions" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "贡献"
+          }
+        }
+      }
+    },
+    "contributors" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "贡献者"
+          }
+        }
+      }
+    },
+    "hide" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "隐藏"
+          }
+        }
+      }
+    },
+    "https://example.com/v1" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "https://example.com/v1"
+          }
+        }
+      }
+    },
+    "just now" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "现在"
+          }
+        }
+      }
+    },
+    "macOS" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "macOS"
+          }
+        }
+      }
+    },
+    "macOS and Rapid-MLX versions" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "macOS 和 Rapid-MLX 版本"
+          }
+        }
+      }
+    },
+    "models" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型"
+          }
+        }
+      }
+    },
+    "needs about %1$d GB" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "需要 %1$d GB"
+          }
+        }
+      }
+    },
+    "needs more memory" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "需要更多内存"
+          }
+        }
+      }
+    },
+    "observation" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "观察"
+          }
+        }
+      }
+    },
+    "observations" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "观察"
+          }
+        }
+      }
+    },
+    "on pass %1$d" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "通过 %1$d"
+          }
+        }
+      }
+    },
+    "pass" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "经过"
+          }
+        }
+      }
+    },
+    "passes" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "通过"
+          }
+        }
+      }
+    },
+    "published result exists" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已发表的结果已存在"
+          }
+        }
+      }
+    },
+    "published results exist" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已发表的结果存在"
+          }
+        }
+      }
+    },
+    "published runs" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已发布的运行"
+          }
+        }
+      }
+    },
+    "qsppk-…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "qsppk-…"
+          }
+        }
+      }
+    },
+    "qsprk-…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "qsprk-…"
+          }
+        }
+      }
+    },
+    "result" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "结果"
+          }
+        }
+      }
+    },
+    "result exists" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "结果存在"
+          }
+        }
+      }
+    },
+    "results" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "结果"
+          }
+        }
+      }
+    },
+    "results exist" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "结果存在"
+          }
+        }
+      }
+    },
+    "reward activity continues in QuickSilver" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "奖励活动在 QuickSilver 继续进行"
+          }
+        }
+      }
+    },
+    "s / image" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "s/图像"
+          }
+        }
+      }
+    },
+    "s / video" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "视频/视频"
+          }
+        }
+      }
+    },
+    "show" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "展示"
+          }
+        }
+      }
+    },
+    "usually 2–10 minutes" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "通常 2-10 分钟"
+          }
+        }
+      }
+    },
+    "usually 2–5 minutes" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "通常 2-5 分钟"
+          }
+        }
+      }
+    },
+    "usually 5–15 minutes" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "通常 5-15 分钟"
+          }
+        }
+      }
+    },
+    "wrapping up…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "结束…"
+          }
+        }
+      }
+    },
+    "~%d:%02d left" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "~%1$d:%2$02d left"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "~%d: 还剩 %02d"
+          }
+        }
+      }
+    },
+    "·" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "·"
+          }
+        }
+      }
+    },
+    "· %1$d local models ready" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "· %1$d 本地模型准备就绪"
+          }
+        }
+      }
+    },
+    "· 1 local model ready" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "· 1 个本地模型已准备就绪"
+          }
+        }
+      }
     }
   }
 }
