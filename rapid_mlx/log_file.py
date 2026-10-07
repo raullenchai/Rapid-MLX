@@ -72,10 +72,10 @@ def apply(target: str, source: str = FLAG) -> None:
     """
     sys.stdout.flush()
     sys.stderr.flush()
-    if target == STDOUT:
-        os.dup2(1, 2)
-        return
     try:
+        if target == STDOUT:
+            os.dup2(1, 2)
+            return
         fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     except OSError as exc:
         raise LogFileError(

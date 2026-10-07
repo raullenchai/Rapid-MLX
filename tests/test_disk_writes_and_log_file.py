@@ -328,6 +328,13 @@ def test_log_file_apply_keeps_a_target_opened_on_a_standard_descriptor(monkeypat
 
 
 def test_log_file_apply_reports_unopenable_target(tmp_path):
+    def closed_stdout(_src, _dst):
+        raise OSError(9, "Bad file descriptor")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(log_file.os, "dup2", closed_stdout)
+        with pytest.raises(log_file.LogFileError, match="Bad file descriptor"):
+            log_file.apply("-")
     with pytest.raises(log_file.LogFileError, match="cannot be opened for writing"):
         log_file.apply(str(tmp_path / "missing" / "server.log"), "RAPID_MLX_LOG_FILE")
 
