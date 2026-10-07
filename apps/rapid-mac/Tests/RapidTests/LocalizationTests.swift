@@ -49,6 +49,30 @@ struct LocalizationTests {
         return try #require(any as? [String: Any])
     }
 
+    private func experimentalSurfaceSources() throws -> [String] {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = root.appendingPathComponent("Sources/Rapid", isDirectory: true)
+        let manager = FileManager.default
+        var urls = [
+            source.appendingPathComponent("UI/CommunityBenchmarkView.swift"),
+            source.appendingPathComponent("UI/CommunityBenchmarkFeatureConfig.swift"),
+            source.appendingPathComponent("UI/CUASection.swift"),
+            source.appendingPathComponent("UI/ComputerUseView.swift"),
+            source.appendingPathComponent("UI/VideoView.swift")
+        ]
+        for directory in ["UI/CommunityBenchmark", "ShareCompute", "ComputerUse", "Video"] {
+            let url = source.appendingPathComponent(directory, isDirectory: true)
+            urls += try manager.contentsOfDirectory(
+                at: url,
+                includingPropertiesForKeys: nil
+            ).filter { $0.pathExtension == "swift" }
+        }
+        return urls.map(\.path).sorted()
+    }
+
     @Test("Catalog parses as valid xcstrings JSON with the expected top-level shape")
     func catalogShape() throws {
         let json = try loadCatalog()
@@ -191,6 +215,49 @@ struct LocalizationTests {
         }
     }
 
+    @Test("Every native-extracted experimental-surface key carries zh-Hans")
+    func experimentalSurfaceSourceKeysTranslated() async throws {
+        let output = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rapid-localization-extract-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: output) }
+
+        let extractor = try await TestSubprocess.run(
+            executableURL: URL(fileURLWithPath: "/usr/bin/xcrun"),
+            arguments: [
+                "xcstringstool", "extract", "--avoid-arg-placeholder",
+                "--modern-localizable-strings", "--SwiftUI",
+                "--output-format", "xcstrings", "--output-directory", output.path
+            ] + (try experimentalSurfaceSources())
+        )
+        #expect(
+            extractor.terminationStatus == 0,
+            "xcstringstool extraction failed: \(String(decoding: extractor.standardError, as: UTF8.self))"
+        )
+
+        let extractedData = try Data(contentsOf: output.appendingPathComponent("Localizable.xcstrings"))
+        let extracted = try #require(
+            try JSONSerialization.jsonObject(with: extractedData) as? [String: Any]
+        )
+        let extractedStrings = try #require(extracted["strings"] as? [String: Any])
+        let catalogStrings = try #require(try loadCatalog()["strings"] as? [String: Any])
+
+        for key in extractedStrings.keys where !key.isEmpty {
+            let entry = try #require(
+                catalogStrings[key] as? [String: Any],
+                "Experimental surface key is absent from the catalog: \(key)"
+            )
+            let localizations = try #require(entry["localizations"] as? [String: Any])
+            let zh = try #require(
+                localizations["zh-Hans"] as? [String: Any],
+                "Experimental surface key lacks zh-Hans: \(key)"
+            )
+            let unit = try #require(zh["stringUnit"] as? [String: Any])
+            #expect(unit["state"] as? String == "translated")
+            #expect(!(unit["value"] as? String ?? "").isEmpty)
+        }
+    }
+
     /// A translation that drops, adds, or retypes a format argument renders
     /// garbage (or reads a wrong-typed vararg) only in that language, where
     /// no English-run test would see it.
@@ -266,6 +333,10 @@ struct LocalizationTests {
             Bundle(url: output.appendingPathComponent("zh-Hans.lproj", isDirectory: true)),
             "xcstringstool did not emit a loadable zh-Hans localization bundle"
         )
+        let enBundle = try #require(
+            Bundle(url: output.appendingPathComponent("en.lproj", isDirectory: true)),
+            "xcstringstool did not emit a loadable English localization bundle"
+        )
 
         let alias = "qwen3.8-27b-4bit"
         let count = 3
@@ -275,6 +346,11 @@ struct LocalizationTests {
         #expect(String(localized: "Download \(alias) first", bundle: zhBundle) == "请先下载 qwen3.8-27b-4bit")
         #expect(String(localized: "Archived (\(count))", bundle: zhBundle) == "已归档 (3)")
         #expect(String(localized: "\(count) models", bundle: zhBundle) == "3 个模型")
+        #expect(String(localized: "Finding video models…", bundle: zhBundle) == "寻找视频模型…")
+        #expect(String(localized: "Balanced capacity and memory use", bundle: zhBundle) == "平衡容量和内存使用")
+        #expect(String(localized: "Cancel queued video?", bundle: zhBundle) == "取消排队的视频？")
+        #expect(String(localized: "Finding video models…", bundle: enBundle) == "Finding video models…")
+        #expect(String(localized: "Balanced capacity and memory use", bundle: enBundle) == "Balanced capacity and memory use")
     }
 
     @Test("Compiled zh-Hans catalog resolves through the production photo-hint path")

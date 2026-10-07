@@ -543,7 +543,7 @@ struct CommunityBenchmarkResult: Decodable, Identifiable {
             }
             // Unreachable for summaries produced by `summarize`, which drops
             // cases without a task-appropriate metric.
-            return "\(rounds) rounds"
+            return String(localized: "\(rounds) rounds")
         }
 
         static func formatMilliseconds(_ value: Double) -> String {
@@ -810,9 +810,9 @@ enum CommunityBenchmarkRunStatus {
 
     static func scope(for task: ModelTask) -> String {
         switch task {
-        case .imageGeneration: return "1 warmup + 1 measured render"
-        case .videoGeneration: return "1 measured render"
-        default: return "2 cases × (1 warmup + 5 rounds)"
+        case .imageGeneration: return String(localized: "1 warmup + 1 measured render")
+        case .videoGeneration: return String(localized: "1 measured render")
+        default: return String(localized: "2 cases × (1 warmup + 5 rounds)")
         }
     }
 
@@ -821,9 +821,9 @@ enum CommunityBenchmarkRunStatus {
         // Image time is dominated by the model: a small SD-class model lands
         // in a couple of minutes, a flux-class one can take ten. Keep the
         // up-front hint wide and honest; the live ETA below carries accuracy.
-        case .imageGeneration: return "usually 2–10 minutes"
-        case .videoGeneration: return "usually 5–15 minutes"
-        default: return "usually 2–5 minutes"
+        case .imageGeneration: return String(localized: "usually 2–10 minutes")
+        case .videoGeneration: return String(localized: "usually 5–15 minutes")
+        default: return String(localized: "usually 2–5 minutes")
         }
     }
 
@@ -921,7 +921,7 @@ enum CommunityBenchmarkRunStatus {
         let remaining = projected - max(0, now.timeIntervalSince(lastStepAt))
         // Past the projection with no new step: don't sit on a stale
         // "~0:00 left" — say we're finishing the last pass(es).
-        guard remaining > 0 else { return "wrapping up…" }
+        guard remaining > 0 else { return String(localized: "wrapping up…") }
         let secs = Int(remaining.rounded())
         return String(format: "~%d:%02d left", secs / 60, secs % 60)
     }

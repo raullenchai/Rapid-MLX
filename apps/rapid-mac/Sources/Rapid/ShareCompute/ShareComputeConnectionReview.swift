@@ -117,7 +117,7 @@ struct ShareComputeConnectionReview: View {
     private var fields: some View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.md) {
             VStack(alignment: .leading, spacing: 5) {
-                ShareComputeEyebrow(text: "Worker name", tone: RapidTheme.textSecondary, size: 10)
+                ShareComputeEyebrow(text: String(localized: "Worker name"), tone: RapidTheme.textSecondary, size: 10)
                 TextField("", text: $worker)
                     .textFieldStyle(.roundedBorder)
                     .focused($focus, equals: .worker)
@@ -129,7 +129,7 @@ struct ShareComputeConnectionReview: View {
                 VStack(alignment: .leading, spacing: 5) {
                     HStack {
                         ShareComputeEyebrow(
-                            text: "QuickSilver provider key",
+                            text: String(localized: "QuickSilver provider key"),
                             tone: RapidTheme.textSecondary,
                             size: 10
                         )
