@@ -199,13 +199,17 @@ class EmbeddingEngine:
     def load(self) -> None:
         """Load the embedding model and tokenizer."""
         if is_native_embedding_model(self.model_name):
-            from .models.embedding_gemma2.loader import load
+            from .models.embedding_gemma2.loader import load as load_native
+
+            load_model = load_native
         else:
-            from mlx_embeddings import load
+            from mlx_embeddings import load as load_legacy
+
+            load_model = load_legacy
 
         logger.info(f"Loading embedding model: {self.model_name}")
         start = time.perf_counter()
-        model, tokenizer = load(self.model_name)
+        model, tokenizer = load_model(self.model_name)
         self._model, self._tokenizer = model, tokenizer
         elapsed = time.perf_counter() - start
         logger.info(f"Embedding model loaded in {elapsed:.2f}s: {self.model_name}")
@@ -313,9 +317,10 @@ class EmbeddingEngine:
         )
 
     def _reject_media_tokens(self, batches: list[list[int]]) -> None:
-        if getattr(self._model, "model_type", None) != "embedding_gemma2":
+        model = self._model
+        if model is None or getattr(model, "model_type", None) != "embedding_gemma2":
             return
-        config = self._model.config
+        config = model.config
         media_ids = {
             getattr(config, field)
             for field in (

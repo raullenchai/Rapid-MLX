@@ -2,6 +2,8 @@
 # Copyright © 2025 Prince Canuma
 # Vendored from MLX-VLM 3d87e88402f307efbf68e568971aa887ee7d9ed0; see NOTICE.
 
+from typing import cast
+
 import mlx.core as mx
 import mlx.nn as nn
 from mlx_vlm.models.gemma4.language import RMSNormNoScale
@@ -30,7 +32,8 @@ class RotaryEmbedding(nn.Module):
 class Attention(nn.Module):
     def __init__(self, config: TextConfig, layer_idx: int):
         super().__init__()
-        overrides = config.per_layer_config.get(f"{layer_idx:02d}", {})
+        # TextConfig.__post_init__ resolves each optional constructor default.
+        overrides = cast(dict, config.per_layer_config).get(f"{layer_idx:02d}", {})
         self.head_dim = overrides.get("head_dim", config.head_dim)
         self.num_heads = overrides.get(
             "num_attention_heads", config.num_attention_heads
@@ -61,10 +64,10 @@ class Attention(nn.Module):
         self.q_norm = nn.RMSNorm(self.head_dim, eps=config.rms_norm_eps)
         self.k_norm = nn.RMSNorm(self.head_dim, eps=config.rms_norm_eps)
         self.v_norm = RMSNormNoScale(self.head_dim, eps=config.rms_norm_eps)
-        layer_type = config.layer_types[layer_idx]
+        layer_type = cast(list[str], config.layer_types)[layer_idx]
         self.rope = RotaryEmbedding(
             self.head_dim,
-            base=config.rope_parameters[layer_type]["rope_theta"],
+            base=cast(dict, config.rope_parameters)[layer_type]["rope_theta"],
         )
 
     def __call__(self, x, mask, position_ids):

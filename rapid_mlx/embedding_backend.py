@@ -18,5 +18,7 @@ def is_native_embedding_model(model_name: str | None) -> bool:
         return True
     config = Path(model_name) / "config.json"
     if config.is_file():
-        return json.loads(config.read_text()).get("model_type") == "embedding_gemma2"
+        return bool(
+            json.loads(config.read_text()).get("model_type") == "embedding_gemma2"
+        )
     return False
