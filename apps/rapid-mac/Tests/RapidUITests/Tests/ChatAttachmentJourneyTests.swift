@@ -43,6 +43,34 @@ final class ChatAttachmentJourneyTests: XCTestCase {
             )
         )
         XCTAssertFalse(
+            FileDropRetryPolicy.shouldFinishObservation(
+                completedDrop: false,
+                chipSettled: false,
+                transportResult: .none
+            )
+        )
+        XCTAssertFalse(
+            FileDropRetryPolicy.shouldFinishObservation(
+                completedDrop: false,
+                chipSettled: false,
+                transportResult: .notStarted
+            )
+        )
+        XCTAssertTrue(
+            FileDropRetryPolicy.shouldFinishObservation(
+                completedDrop: false,
+                chipSettled: false,
+                transportResult: .copy
+            )
+        )
+        XCTAssertTrue(
+            FileDropRetryPolicy.shouldFinishObservation(
+                completedDrop: true,
+                chipSettled: false,
+                transportResult: .none
+            )
+        )
+        XCTAssertFalse(
             FileDropRetryPolicy.shouldRetry(
                 completedDrop: true,
                 transportFailed: true,

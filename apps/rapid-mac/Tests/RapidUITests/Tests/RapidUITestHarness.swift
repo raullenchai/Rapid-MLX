@@ -75,6 +75,14 @@ enum FileDropRetryPolicy {
             && transportFailed
             && attempt < maximumAttempts
     }
+
+    static func shouldFinishObservation(
+        completedDrop: Bool,
+        chipSettled: Bool,
+        transportResult: DragTransportFile.Result?
+    ) -> Bool {
+        completedDrop || chipSettled || transportResult == .copy
+    }
 }
 
 enum DragTransportFile {
@@ -444,21 +452,25 @@ final class RapidUITestHarness {
                 Date() >= completionObservationStart
                     && FileManager.default.fileExists(atPath: self.dropEventFile.path)
             }
-            let transportResultIsVisible = {
-                FileManager.default.fileExists(atPath: transportResultFile.path)
+            let visibleTransportResult = {
+                try? DragTransportFile.result(at: transportResultFile)
             }
 
             // The drop-completion marker and the product render arrive
             // independently. First wait briefly for either authoritative
-            // signal, then spend the rest of the original budget on an
-            // observed drop's chip.
+            // acceptance signal, then spend the rest of the original budget
+            // on an observed drop's chip. A source-side `.none` or
+            // `.notStarted` is not proof the destination did not consume the
+            // drop, so it cannot end destination observation early.
             let observationTimeout = FileDropRetryPolicy.observationTimeout(
                 settleTimeout: settleDeadline.timeIntervalSinceNow
             )
             _ = waitUntil(timeout: observationTimeout) {
-                chipIsSettled()
-                    || completionIsVisible()
-                    || transportResultIsVisible()
+                FileDropRetryPolicy.shouldFinishObservation(
+                    completedDrop: completionIsVisible(),
+                    chipSettled: chipIsSettled(),
+                    transportResult: visibleTransportResult()
+                )
             }
             if chipIsSettled() {
                 guard terminateFileDragSource(dragSource) else { return attempt }
