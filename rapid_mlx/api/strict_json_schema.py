@@ -30,9 +30,10 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from typing import Any
+
+from .._env import env_falsey
 
 logger = logging.getLogger(__name__)
 
@@ -42,10 +43,6 @@ logger = logging.getLogger(__name__)
 
 _DISABLE_FLAG = "RAPID_MLX_STRICT_JSON_SCHEMA"
 _REPAIR_FLAG = "RAPID_MLX_STRICT_JSON_SCHEMA_REPAIR"
-
-# Values that disable a feature flag (matches the
-# ``RAPID_MLX_AUTO_PULL`` / ``RAPID_MLX_PROFILE_VERBOSE`` convention).
-_OFF_VALUES = {"0", "off", "false", "no", "disable", "disabled"}
 
 
 def strict_enforcement_enabled() -> bool:
@@ -60,8 +57,7 @@ def strict_enforcement_enabled() -> bool:
     silent-pass-through behavior pre-R12-4 and need time to adapt their
     clients. It will likely be removed in a future release.
     """
-    raw = os.environ.get(_DISABLE_FLAG, "").strip().lower()
-    return raw not in _OFF_VALUES
+    return not env_falsey(_DISABLE_FLAG)
 
 
 def repair_retry_enabled() -> bool:
@@ -73,8 +69,7 @@ def repair_retry_enabled() -> bool:
     strict mode remains hard-contract; only the retry is skipped).
     Useful for cost-sensitive deployments that prefer to fail fast.
     """
-    raw = os.environ.get(_REPAIR_FLAG, "").strip().lower()
-    return raw not in _OFF_VALUES
+    return not env_falsey(_REPAIR_FLAG)
 
 
 # ---------------------------------------------------------------------------

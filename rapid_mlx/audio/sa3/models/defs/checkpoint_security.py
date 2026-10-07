@@ -9,9 +9,10 @@ import pickle
 from pathlib import Path
 from typing import Any
 
+from rapid_mlx._env import env_truthy
+
 logger = logging.getLogger(__name__)
 
-_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 _UNSAFE_ENV = "RAPID_MLX_ALLOW_UNSAFE_SA3_PICKLE"
 
 
@@ -22,7 +23,7 @@ def load_torch_checkpoint(path: str | Path) -> Any:
     try:
         return torch.load(path, map_location="cpu", weights_only=True)
     except pickle.UnpicklingError as exc:
-        allowed = os.environ.get(_UNSAFE_ENV, "").strip().lower() in _TRUE_VALUES
+        allowed = env_truthy(_UNSAFE_ENV)
         if not allowed:
             raise RuntimeError(
                 f"Refusing unsafe pickle fallback for SA3 checkpoint {path}. "

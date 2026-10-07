@@ -45,6 +45,8 @@ from typing import Any
 
 import mlx.core as mx
 
+from ..._env import is_falsey
+
 # Force the ArraysCache rollback_state patch on first import — the
 # generator references ``cache.rollback_state`` directly inside
 # ``_rollback_draft``, and the patch lifts that attribute from a
@@ -75,7 +77,7 @@ def _env_flag(name: str, default: bool) -> bool:
     raw = os.environ.get(name)
     if raw is None:
         return default
-    return raw.strip().lower() not in {"0", "false", "off", "no"}
+    return not is_falsey(raw)
 
 
 def _prompt_lookup_policy(model) -> PromptLookupPolicy:

@@ -10,11 +10,12 @@ reduction deliberately mirrors MLX's ``sdpa_vector_2pass`` accumulator types,
 from __future__ import annotations
 
 import logging
-import os
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, version
 
 import mlx.core as mx
+
+from .._env import env_truthy
 
 logger = logging.getLogger(__name__)
 
@@ -49,12 +50,7 @@ def _metal_architecture() -> str:
 
 
 def _enabled() -> bool:
-    return os.environ.get(ENABLE_ENV, "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    return env_truthy(ENABLE_ENV)
 
 
 def indexed_splitk_decline_reason(

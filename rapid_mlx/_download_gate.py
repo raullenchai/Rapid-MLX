@@ -49,6 +49,8 @@ import subprocess
 import sys
 import threading
 
+from ._env import env_truthy
+
 # File suffixes that contribute to "model weight + tokenizer" footprint.
 # Anything outside this set (e.g. ``.gitattributes``, ``README.md``) is a
 # rounding error and is excluded so the prompt size matches what the user
@@ -2178,8 +2180,7 @@ def confirm_or_abort(
     ``sys.exit(1)``. EOF on stdin is treated as Enter (proceed).
     """
     # Env override always wins.
-    env_val = os.environ.get(auto_yes_env, "").strip().lower()
-    if env_val in {"1", "true", "yes"}:
+    if env_truthy(auto_yes_env):
         return True
 
     # Non-interactive: never block; we already burned the user's time

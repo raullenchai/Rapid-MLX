@@ -155,6 +155,47 @@ def refuse_secret_flags(serve_args: tuple[str, ...]) -> None:
             )
 
 
+def log_file_from_serve_args(serve_args: tuple[str, ...]) -> str | None:
+    """The ``--log-file`` value among serve args, or None when absent."""
+    target = None
+    for index, token in enumerate(serve_args):
+        if token == "--log-file":
+            if index + 1 >= len(serve_args):
+                raise ServiceInstallError("--log-file requires a value.")
+            target = serve_args[index + 1]
+        elif token.startswith("--log-file="):
+            target = token.split("=", 1)[1]
+    return target
+
+
+def refuse_unbootable_log_file(
+    serve_args: tuple[str, ...], *, require_directory: bool = False
+) -> None:
+    """Reject a ``--log-file`` the daemon could not open when launchd boots it."""
+    target = log_file_from_serve_args(serve_args)
+    if target is None or target in ("-", "/dev/null", "/dev/stderr", "/dev/stdout"):
+        return
+    if target.startswith("/dev/"):
+        raise ServiceInstallError(
+            f"--log-file {target!r} is not a supported device target; use "
+            "/dev/null, /dev/stderr or /dev/stdout."
+        )
+    if not os.path.isabs(target):
+        raise ServiceInstallError(
+            f"--log-file {target!r} must be an absolute path for the service."
+        )
+    if target == "/Volumes" or target.startswith("/Volumes/"):
+        raise ServiceInstallError(
+            f"--log-file {target!r} is under /Volumes: external disks and RAM "
+            "disks are mounted after launchd starts the service at boot."
+        )
+    if require_directory and not os.path.isdir(os.path.dirname(target)):
+        raise ServiceInstallError(
+            f"--log-file {target!r}: directory {os.path.dirname(target)} "
+            "does not exist."
+        )
+
+
 def _cache_root_present(home: Path, model: str) -> bool:
     """Best-effort: is the HF cache dir for ``model`` present under ``home``?"""
     cache_root = home / ".cache" / "huggingface" / "hub"
@@ -459,6 +500,7 @@ def install_command(args) -> int:
     try:
         validate_service_account(user)
         refuse_secret_flags(serve_args)
+        refuse_unbootable_log_file(serve_args, require_directory=True)
         home = home_for_user(user)
         assert home is not None
         # Resolve the binary against the SERVICE account's home, not the

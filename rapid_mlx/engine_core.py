@@ -26,6 +26,7 @@ from typing import Any
 
 import mlx.core as mx
 
+from ._env import env_truthy
 from .model_registry import get_registry
 from .output_collector import RequestOutputCollector, RequestStreamState
 from .request import Request, RequestOutput, SamplingParams
@@ -127,9 +128,7 @@ def _resolve_hybrid_throttle(is_hybrid: bool) -> bool:
     Default OFF. ``RAPID_HYBRID_THROTTLE=1`` re-enables the old spacing
     as an emergency escape hatch for unsupported mlx-lm builds.
     """
-    return is_hybrid and os.environ.get(
-        "RAPID_HYBRID_THROTTLE", "0"
-    ).strip().lower() in ("1", "true", "yes", "on")
+    return is_hybrid and env_truthy("RAPID_HYBRID_THROTTLE")
 
 
 @dataclass
@@ -453,7 +452,7 @@ class EngineCore:
                 runtime_spec_decode=lane_active,
             )
         )
-        if os.environ.get("RAPID_MLX_PROFILE_VERBOSE") == "1" or getattr(
+        if env_truthy("RAPID_MLX_PROFILE_VERBOSE") or getattr(
             self.config, "verbose_profile", False
         ):
             # Reconcile the table with the runtime (adversarial review
