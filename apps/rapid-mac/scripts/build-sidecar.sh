@@ -654,14 +654,10 @@ find "$STAGE" -type d -name __pycache__ -prune -exec rm -rf {} +
 # Two safe drops:
 #   1. transformers/models/*/modeling_*.py — our inference path goes
 #      through mlx-lm's own model classes; we never instantiate
-#      transformers' AutoModel/PreTrainedModel. The bundle also has
-#      no PyTorch (`torch` not installed), so transformers' lazy
-#      `from transformers import AutoModel` already returns a
-#      "PyTorch was not found" placeholder — third parties calling
-#      `AutoModel.from_pretrained(...)` against this sidecar hit
-#      the placeholder error path long before any missing-module
-#      lookup, so deleting modeling_*.py is a no-op for the
-#      already-broken AutoModel surface. We DO still need the
+#      transformers' AutoModel/PreTrainedModel (PyTorch is bundled for
+#      the vision/image runtimes, but no Rapid path loads a transformers
+#      PyTorch model class; the build smoke imports every advertised
+#      vision/image/video lane after this trim). We DO still need the
 #      tokenizer + config dispatch in transformers/models/auto/, so
 #      that path is pruned out of the find.
 #   2. image_processing_*.py + feature_extraction_*.py — historically
@@ -791,7 +787,7 @@ rm -rf \
 # registry, whose StepAudio2 implementation reuses Chatterbox's S3Gen
 # transformer blocks. Keep that transitive runtime closure even though
 # Chatterbox is not exposed in the Desktop picker. Drop the remaining family
-# implementations so the release stays below the app's 500 MiB envelope.
+# implementations to keep the bundle lean.
 if [ -d "$STAGE/site-packages/mlx_audio/tts/models" ]; then
     find "$STAGE/site-packages/mlx_audio/tts/models" \
         -mindepth 1 -maxdepth 1 -type d \
