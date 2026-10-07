@@ -525,6 +525,14 @@ def convert(
         raise RuntimeError("Extreme SSD is outside this task")
     if output.exists():
         raise RuntimeError(f"output already exists: {output}")
+
+    # Validate the complete Qwen4-Exp tensor contract before creating the
+    # output parent or a private staging tree.  ``_convert_into`` validates
+    # individual tensors as it reaches them, which is too late for an
+    # unrelated or incomplete checkpoint: conversion may already have written
+    # quantized payloads by the time a structural mismatch is discovered.
+    inspect_manifest(source)
+
     output.parent.mkdir(parents=True, exist_ok=True)
     available = shutil.disk_usage(output.parent).free
     if available < min_free_bytes:
