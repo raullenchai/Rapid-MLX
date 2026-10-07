@@ -596,6 +596,50 @@ class TestBoundarySnapshot:
         assert record.call_args.kwargs == {"force": True, "anchor": True}
         assert scheduler._hybrid_checkpoints[109] == [None, None]
 
+    def test_cold_boundary_keeps_stride_checkpoints_recorded_before_it(
+        self, monkeypatch
+    ):
+        """A cold prompt's interior stride checkpoints must survive the
+        boundary anchor: a later request that diverges before the boundary
+        can only resume from one of them."""
+        from rapid_mlx import scheduler as scheduler_module
+
+        scheduler = _make_scheduler_with_cache()
+        scheduler.config.hybrid_cache_entries = 4
+        scheduler._extract_cache_states = MagicMock(return_value=[{"k": "v"}])
+        reconstructed = [object(), object()]
+        scheduler._reconstruct_cache_from_states = MagicMock(return_value=reconstructed)
+        scheduler.memory_aware_cache.store = MagicMock(return_value=True)
+        record = MagicMock(return_value=True)
+        monkeypatch.setattr(scheduler_module, "_state_checkpoint_max", lambda: 4)
+        monkeypatch.setattr(scheduler_module, "_record_state_checkpoints", record)
+
+        request = self._register_with_boundary(
+            scheduler, "req-stride", 111, list(range(100)), 80
+        )
+        request.cached_tokens = 0
+        stride_samples = [None, MagicMock(anchor_position=None)]
+        scheduler._hybrid_checkpoints[111] = stride_samples
+        scheduler.batch_generator = MagicMock()
+        scheduler.batch_generator.extract_cache.return_value = {
+            111: (["raw-cache"], list(range(80)))
+        }
+
+        scheduler._snapshot_boundary_segments(
+            [
+                SimpleNamespace(
+                    uid=111,
+                    progress=(80, 100),
+                    end_of_segment=True,
+                    end_of_prompt=False,
+                )
+            ]
+        )
+
+        assert record.call_args.args[:3] == (reconstructed, stride_samples, 80)
+        assert record.call_args.kwargs == {"force": True, "anchor": True}
+        assert scheduler._hybrid_checkpoints[111] is stride_samples
+
     def test_reused_prefix_recovers_holders_before_recording_boundary(
         self, monkeypatch
     ):
