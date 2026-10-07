@@ -848,7 +848,7 @@ flag always wins over its env-var fallback when both are set.
 | `RAPID_MLX_MODEL_MIRROR` | `https://models.rapidmlx.com` | Model download mirror base URL; set to an empty string to force downloads from Hugging Face |
 | `RAPID_MLX_EXTRA_MODEL_ROOTS` | unset | Extra local directories to resolve models from, separated by `os.pathsep` (`:` on macOS/Linux), or a JSON array of paths |
 | `RAPID_MLX_DEFAULT_MODEL` | `qwen3.5-4b-4bit` | Default model alias used by `rapid-mlx launch` when `--model` is not given |
-| `RAPID_MLX_DISABLE_VERSION_CHECK` | unset | `1` / `true` / `yes` / `on` / `enable` / `enabled` skips new-version checks, including the passive `serve` startup-log notice. Same as the global `--disable-version-check` flag. |
+| `RAPID_MLX_DISABLE_VERSION_CHECK` | unset | Any non-empty value other than `0` / `false` / `no` / `off` / `disable` / `disabled` skips new-version checks, including the passive `serve` startup-log notice. Same as the global `--disable-version-check` flag. |
 | `RAPID_MLX_TRUST_REMOTE_CODE` | unset | Set `0`/`false`/`no`/`off` to force `trust_remote_code=False` process-wide for tokenizer loading |
 | `RAPID_MLX_TEST_MODEL` | unset | Model for tests (legacy `VLLM_MLX_TEST_MODEL` still honored) |
 | `HF_TOKEN` | unset | HuggingFace token for gated/private repos |

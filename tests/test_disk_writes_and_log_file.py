@@ -262,8 +262,10 @@ def test_version_check_zero_does_not_disable(monkeypatch):
 
     monkeypatch.setenv("RAPID_MLX_DISABLE_VERSION_CHECK", "0")
     assert vc._explicitly_disabled() is False
-    monkeypatch.setenv("RAPID_MLX_DISABLE_VERSION_CHECK", "1")
-    assert vc._explicitly_disabled() is True
+    # Every other non-empty value keeps opting out, as before.
+    for value in ("1", "true", "anything"):
+        monkeypatch.setenv("RAPID_MLX_DISABLE_VERSION_CHECK", value)
+        assert vc._explicitly_disabled() is True
 
 
 def test_disable_version_check_flag_sets_environment_for_children(monkeypatch):
@@ -328,6 +330,16 @@ def test_log_file_apply_keeps_a_target_opened_on_a_standard_descriptor(monkeypat
 
 
 def test_log_file_apply_reports_unopenable_target(tmp_path):
+    # A failed redirect onto an opened file is reported the same way.
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(
+            log_file.os,
+            "dup2",
+            lambda _s, _d: (_ for _ in ()).throw(OSError(9, "Bad file descriptor")),
+        )
+        with pytest.raises(log_file.LogFileError, match="Bad file descriptor"):
+            log_file.apply(str(tmp_path / "server.log"))
+
     def closed_stdout(_src, _dst):
         raise OSError(9, "Bad file descriptor")
 

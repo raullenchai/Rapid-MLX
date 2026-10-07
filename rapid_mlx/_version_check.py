@@ -53,7 +53,7 @@ from importlib.metadata import PackageNotFoundError, distribution
 from importlib.metadata import version as pkg_version
 from pathlib import Path
 
-from rapid_mlx._env import env_truthy
+from rapid_mlx._env import is_falsey
 
 # The update check routes through the landing worker rather than hitting
 # api.github.com directly. The worker at ``rapidmlx.com/api/cli-update``
@@ -99,7 +99,10 @@ def _explicitly_disabled() -> bool:
 
     These opt-outs also apply to the non-interactive ``serve`` log notice.
     """
-    if env_truthy("RAPID_MLX_DISABLE_VERSION_CHECK"):
+    # Any value other than an explicit "off" spelling keeps opting out, as it
+    # always has; only ``=0`` / ``=false`` / ... no longer disable the check.
+    raw = os.environ.get("RAPID_MLX_DISABLE_VERSION_CHECK", "").strip()
+    if raw and not is_falsey(raw):
         return True
     if os.environ.get("CI"):
         return True
