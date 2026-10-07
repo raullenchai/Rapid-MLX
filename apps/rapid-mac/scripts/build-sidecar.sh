@@ -858,6 +858,8 @@ echo "==> pre-compiling .pyc cache (SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH)"
 #     at import time (torch.utils._config_module calls inspect.getsource
 #     on every config module), so sourceless torch raises
 #     ``OSError: could not get source code`` on ``import torch``.
+#   * site-packages/cv2/ — OpenCV's loader exec()s its config*.py files
+#     by source path and refuses to import without them.
 #   * Anything under site-packages/transformers/models/ — transformers
 #     scans that subtree at import time (define_import_structure /
 #     create_import_structure_from_path) and only recognises .py
@@ -898,7 +900,8 @@ if [[ "${SKIP_SOURCE_DROP:-0}" != "1" ]]; then
     find "$STAGE/site-packages" -type d -name __pycache__ \
         -not -path "*/transformers/models/*" \
         -not -path "*/site-packages/torch/*" \
-        -not -path "*/site-packages/torchvision/*" -print | \
+        -not -path "*/site-packages/torchvision/*" \
+        -not -path "*/site-packages/cv2/*" -print | \
     while read -r cachedir; do
         parent="$(dirname "$cachedir")"
         for pyc in "$cachedir"/*"$PYC_SUFFIX"; do
