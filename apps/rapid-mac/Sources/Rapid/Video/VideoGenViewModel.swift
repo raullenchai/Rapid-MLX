@@ -121,7 +121,10 @@ final class VideoGenViewModel {
 
     var memoryRequirementText: String? {
         guard let minimum = selectedModel?.minimumMemoryGB else { return nil }
-        return String(localized: "Needs at least \(Int(minimum.rounded())) GB unified memory; this Mac has \(Int(physicalRAMGB.rounded())) GB.")
+        return ExperimentalSurfaceCopy.videoMemory(
+            minimum: Int(minimum.rounded()),
+            available: Int(physicalRAMGB.rounded())
+        )
     }
 
     var isServerReady: Bool {

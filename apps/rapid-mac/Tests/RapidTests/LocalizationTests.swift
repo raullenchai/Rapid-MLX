@@ -9,6 +9,20 @@ import Testing
 @Suite("Localizable.xcstrings — catalog shape and zh-Hans resolution")
 struct LocalizationTests {
 
+    private static let experimentalTemplateKeys = [
+        "experimental.video.generating",
+        "experimental.video.memory_requirement",
+        "experimental.benchmark.rounds",
+        "experimental.cua.step",
+        "experimental.cua.step_finished",
+        "experimental.cua.switched",
+        "experimental.cua.run",
+        "experimental.cua.app_unavailable",
+        "experimental.cua.window_unavailable",
+        "experimental.cua.targets_unavailable",
+        "experimental.cua.targets_unavailable_retry"
+    ]
+
     private static let photoHintCatalogKeys = [
         "image_input.unavailable.legacy_model",
         "image_input.unavailable.text_lane_forced",
@@ -71,6 +85,14 @@ struct LocalizationTests {
             ).filter { $0.pathExtension == "swift" }
         }
         return urls.map(\.path).sorted()
+    }
+
+    private func rapidSource(_ relativePath: String) -> URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/Rapid/\(relativePath)")
     }
 
     @Test("Catalog parses as valid xcstrings JSON with the expected top-level shape")
@@ -258,6 +280,62 @@ struct LocalizationTests {
         }
     }
 
+    @Test("Computed experimental copy stays connected to production localization boundaries")
+    func computedExperimentalCopyUsesProductionBoundaries() throws {
+        let requirements: [String: [String]] = [
+            "UI/VideoView.swift": [
+                "returnString(localized:\"Findingvideomodels…\")",
+                "returnExperimentalSurfaceCopy.videoProgress(job.progress)"
+            ],
+            "Video/VideoGenViewModel.swift": [
+                "returnExperimentalSurfaceCopy.videoMemory(minimum:Int(minimum.rounded()),available:Int(physicalRAMGB.rounded()))"
+            ],
+            "UI/CommunityBenchmarkView.swift": [
+                "returnExperimentalSurfaceCopy.benchmarkRounds(rounds)"
+            ],
+            "UI/CUASection.swift": [
+                "returnExperimentalSurfaceCopy.cuaStep(event.step??0,instruction:instruction)",
+                "returnExperimentalSurfaceCopy.cuaStepFinished(event.step??0)",
+                "returnExperimentalSurfaceCopy.cuaSwitched(to:destination)",
+                "returnExperimentalSurfaceCopy.cuaRun(event.status??\"ended\")"
+            ],
+            "ComputerUse/CUAViewModel.swift": [
+                "returnExperimentalSurfaceCopy.cuaAppUnavailable(hint:hint)",
+                "returnExperimentalSurfaceCopy.cuaWindowUnavailable(hint:hint)",
+                "returnExperimentalSurfaceCopy.cuaTargetsUnavailable(message:message,hint:hint)",
+                "returnExperimentalSurfaceCopy.cuaTargetsUnavailable(error:Self.describe(error))"
+            ]
+        ]
+
+        for (path, expectedCalls) in requirements {
+            let source = try String(contentsOf: rapidSource(path), encoding: .utf8)
+            let canonical = SourceGuardSupport.canonicalSource(source, literals: .preserve)
+            for expectedCall in expectedCalls {
+                #expect(
+                    canonical.contains(expectedCall),
+                    "Production localization boundary was removed from \(path): \(expectedCall)"
+                )
+            }
+        }
+
+        let catalogStrings = try #require(try loadCatalog()["strings"] as? [String: Any])
+        for key in Self.experimentalTemplateKeys {
+            let entry = try #require(
+                catalogStrings[key] as? [String: Any],
+                "Missing computed-copy catalog contract: \(key)"
+            )
+            let localizations = try #require(entry["localizations"] as? [String: Any])
+            for language in ["en", "zh-Hans"] {
+                let unit = try #require(
+                    (localizations[language] as? [String: Any])?["stringUnit"] as? [String: Any],
+                    "Missing \(language) computed-copy value: \(key)"
+                )
+                #expect(unit["state"] as? String == "translated")
+                #expect(!(unit["value"] as? String ?? "").isEmpty)
+            }
+        }
+    }
+
     /// A translation that drops, adds, or retypes a format argument renders
     /// garbage (or reads a wrong-typed vararg) only in that language, where
     /// no English-run test would see it.
@@ -351,6 +429,19 @@ struct LocalizationTests {
         #expect(String(localized: "Cancel queued video?", bundle: zhBundle) == "取消排队的视频？")
         #expect(String(localized: "Finding video models…", bundle: enBundle) == "Finding video models…")
         #expect(String(localized: "Balanced capacity and memory use", bundle: enBundle) == "Balanced capacity and memory use")
+        #expect(ExperimentalSurfaceCopy.videoProgress(42, bundle: zhBundle) == "生成中 · 42%")
+        #expect(ExperimentalSurfaceCopy.videoMemory(minimum: 48, available: 32, bundle: zhBundle) == "至少需要 48 GB 统一内存；这台 Mac 有 32 GB。")
+        #expect(ExperimentalSurfaceCopy.benchmarkRounds(5, bundle: zhBundle) == "5 轮")
+        #expect(ExperimentalSurfaceCopy.cuaStep(2, instruction: "点击继续", bundle: zhBundle) == "第 2 步：点击继续")
+        #expect(ExperimentalSurfaceCopy.cuaStepFinished(2, bundle: zhBundle) == "第 2 步已完成")
+        #expect(ExperimentalSurfaceCopy.cuaSwitched(to: "Safari", bundle: zhBundle) == "已切换到 Safari")
+        #expect(ExperimentalSurfaceCopy.cuaRun("ended", bundle: zhBundle) == "运行状态：ended")
+        #expect(ExperimentalSurfaceCopy.cuaAppUnavailable(hint: " 请检查窗口。", bundle: zhBundle) == "应用已不再打开。请打开后重试。 请检查窗口。")
+        #expect(ExperimentalSurfaceCopy.cuaWindowUnavailable(hint: " 请检查窗口。", bundle: zhBundle) == "Rapid 找不到此任务所需的应用项目。请打开后重试。 请检查窗口。")
+        #expect(ExperimentalSurfaceCopy.cuaTargetsUnavailable(message: "未找到", hint: " 请检查窗口。", bundle: zhBundle) == "Rapid 找不到此任务所需的应用：未找到 请检查窗口。")
+        #expect(ExperimentalSurfaceCopy.cuaTargetsUnavailable(error: "连接失败", bundle: zhBundle) == "Rapid 找不到此任务所需的应用：连接失败 请重试。")
+        #expect(ExperimentalSurfaceCopy.videoProgress(42, bundle: enBundle) == "Generating · 42%")
+        #expect(ExperimentalSurfaceCopy.videoMemory(minimum: 48, available: 32, bundle: enBundle) == "Needs at least 48 GB unified memory; this Mac has 32 GB.")
     }
 
     @Test("Compiled zh-Hans catalog resolves through the production photo-hint path")

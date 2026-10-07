@@ -1058,9 +1058,9 @@ struct CUAEventList: View {
         switch event.kind {
         case "plan":
             let instruction = event.stepInstruction ?? event.action ?? "plan"
-            return String(localized: "Step \(event.step ?? 0): \(instruction)")
+            return ExperimentalSurfaceCopy.cuaStep(event.step ?? 0, instruction: instruction)
         case "executed":
-            return String(localized: "Step \(event.step ?? 0) finished")
+            return ExperimentalSurfaceCopy.cuaStepFinished(event.step ?? 0)
         case "gate":
             return String(localized: "Waiting for your approval at a sign-in page")
         case "gate_resolved":
@@ -1068,9 +1068,9 @@ struct CUAEventList: View {
         case "target_switched":
             let destination = event.targetID.flatMap { targetNames[$0] }
                 ?? "another app"
-            return String(localized: "Switched to \(destination)")
+            return ExperimentalSurfaceCopy.cuaSwitched(to: destination)
         case "terminal":
-            return String(localized: "Run \(event.status ?? "ended")")
+            return ExperimentalSurfaceCopy.cuaRun(event.status ?? "ended")
         default:
             return event.kind
         }

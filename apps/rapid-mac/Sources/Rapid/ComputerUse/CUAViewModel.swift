@@ -838,17 +838,17 @@ final class CUAViewModel: ObservableObject {
             let hint = recovery.first.map { " \($0)" } ?? ""
             switch code {
             case "app_not_found":
-                return String(localized: "The app is no longer open. Open it, then try again.\(hint)")
+                return ExperimentalSurfaceCopy.cuaAppUnavailable(hint: hint)
             case "window_not_found":
-                return String(localized: "Rapid could not find the app item needed for this task. Open it, then try again.\(hint)")
+                return ExperimentalSurfaceCopy.cuaWindowUnavailable(hint: hint)
             default:
-                return String(localized: "Rapid could not find the apps needed for this task: \(message)\(hint)")
+                return ExperimentalSurfaceCopy.cuaTargetsUnavailable(message: message, hint: hint)
             }
         }
         if case let CUAClientError.http(code, _) = error, code == 404 {
             return String(localized: "This local server does not support automatic app selection. Update or restart Rapid, then try again.")
         }
-        return String(localized: "Rapid could not find the apps needed for this task: \(Self.describe(error)) Try again.")
+        return ExperimentalSurfaceCopy.cuaTargetsUnavailable(error: Self.describe(error))
     }
 
     // MARK: Add-brain settings
