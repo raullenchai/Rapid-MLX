@@ -46,7 +46,7 @@ final class ChatAttachmentJourneyTests: XCTestCase {
             FileDropRetryPolicy.shouldFinishObservation(
                 completedDrop: false,
                 chipSettled: false,
-                transportResult: .none
+                transportResult: DragTransportFile.Result.none
             )
         )
         XCTAssertFalse(
@@ -67,7 +67,7 @@ final class ChatAttachmentJourneyTests: XCTestCase {
             FileDropRetryPolicy.shouldFinishObservation(
                 completedDrop: true,
                 chipSettled: false,
-                transportResult: .none
+                transportResult: DragTransportFile.Result.none
             )
         )
         XCTAssertFalse(
