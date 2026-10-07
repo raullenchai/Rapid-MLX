@@ -212,6 +212,19 @@ def test_first_class_unchanged_config_with_no_server_emits_nothing(
     assert events == []
 
 
+def test_first_class_setup_with_live_server_reports_check(
+    monkeypatch, events, continue_config, capsys
+):
+    monkeypatch.setattr(setup, "verify_server", lambda *_a, **_k: "served-model")
+
+    cli.agents_command(_args("continue", "http://127.0.0.1:8000/v1", model="m"))
+
+    output = capsys.readouterr().out
+    assert "Connection check passed (model: served-model)." in output
+    assert "Start it with:" not in output
+    assert events == [("configured", "continue")]
+
+
 # --- generic flow ----------------------------------------------------------
 
 
