@@ -5636,3 +5636,31 @@ def test_homebrew_absent_mlx_vlm_points_at_the_full_pypi_install(tmp_path):
     assert "The Homebrew formula includes the text runtime" in row.label
     assert "brew uninstall rapid-mlx && uv tool install 'rapid-mlx==" in row.label
     assert "pip install" not in row.label
+
+
+def test_homebrew_incompatible_mlx_vlm_points_at_the_full_pypi_install(tmp_path):
+    runtime = (
+        (tmp_path / "opt" / "homebrew" / "Cellar" / "rapid-mlx" / "0.15.8")
+        / "libexec"
+        / "bin"
+        / "python"
+    )
+    runtime.parent.mkdir(parents=True)
+    runtime.write_text("")
+
+    def fake_ver(dist: str, runtime=None) -> str | None:
+        return "0.7.0" if dist == "mlx-vlm" else None
+
+    with (
+        mock.patch.object(eh.sys, "executable", str(runtime)),
+        mock.patch.object(eh, "_safe_version", side_effect=fake_ver),
+    ):
+        section = eh.section_optional_packages()
+
+    row = next(
+        c
+        for c in section.checks
+        if c.label.startswith("mlx-vlm (vision") and "incompatible" in c.label
+    )
+    assert "The Homebrew formula includes the text runtime" in row.label
+    assert "pip install" not in row.label
