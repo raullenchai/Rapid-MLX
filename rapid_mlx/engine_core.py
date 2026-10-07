@@ -1488,6 +1488,10 @@ class EngineCore:
                 req_output.prompt_compression
                 or (buf.prompt_compression if buf is not None else None)
             ),
+            timing_metrics=(
+                req_output.timing_metrics
+                or (buf.timing_metrics if buf is not None else None)
+            ),
         )
 
     async def stream_outputs(

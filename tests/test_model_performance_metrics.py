@@ -995,3 +995,96 @@ def test_process_model_registry_is_lru_bounded():
     assert len(get_model_performance_snapshots()) <= (
         MODEL_LEDGER_REGISTRY_LIMIT + RETIRED_MODEL_SNAPSHOT_LIMIT
     )
+
+
+def test_terminal_timing_is_request_owned_and_frozen(monkeypatch):
+    scheduler = _scheduler()
+    first = _running_request(scheduler, "timed-first")
+    first._arrival_monotonic = 10.0
+    first._first_token_monotonic = 12.0
+    first.cached_tokens = first.num_prompt_tokens
+    monkeypatch.setattr(time, "monotonic", lambda: 16.0)
+    outputs, _ = scheduler._process_batch_responses([_terminal_response()])
+    assert outputs[0].timing_metrics == {
+        "time_to_first_token_ms": 2000.0,
+        "mean_itl_ms": 2000.0,
+    }
+    # A later, independent request cannot change the completed snapshot.
+    second = _running_request(scheduler, "timed-second")
+    second._arrival_monotonic = 13.0
+    second._first_token_monotonic = 14.0
+    monkeypatch.setattr(time, "monotonic", lambda: 20.0)
+    later, _ = scheduler._process_batch_responses([_terminal_response()])
+    assert later[0].timing_metrics == {
+        "time_to_first_token_ms": 1000.0,
+        "mean_itl_ms": 3000.0,
+    }
+    assert outputs[0].timing_metrics["mean_itl_ms"] == 2000.0
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+def test_first_token_timing_has_no_decode_interval(monkeypatch, terminal):
+    scheduler = _scheduler()
+    request = _running_request(scheduler, "one-token")
+    request.output_token_ids.clear()
+    request.first_token_time = None
+    request._arrival_monotonic = 10.0
+    monkeypatch.setattr(time, "monotonic", lambda: 12.0)
+    response = _terminal_response()
+    response.finish_reason = "length" if terminal else None
+    outputs, _ = scheduler._process_batch_responses([response])
+    assert outputs[0].timing_metrics == (
+        {"time_to_first_token_ms": 2000.0} if terminal else None
+    )
+
+
+@pytest.mark.parametrize("now", [12.0, 11.0, float("inf"), float("nan")])
+def test_terminal_timing_omits_unmeasurable_decode_window(monkeypatch, now):
+    scheduler = _scheduler()
+    request = _running_request(scheduler, "clock-boundary")
+    request._arrival_monotonic = 10.0
+    request._first_token_monotonic = 12.0
+    monkeypatch.setattr(time, "monotonic", lambda: now)
+    outputs, _ = scheduler._process_batch_responses([_terminal_response()])
+    assert outputs[0].timing_metrics == {"time_to_first_token_ms": 2000.0}
+
+
+def test_terminal_timing_ignores_wall_clock_steps(monkeypatch):
+    scheduler = _scheduler()
+    request = _running_request(scheduler, "clock-step")
+    request._arrival_monotonic = 10.0
+    request._first_token_monotonic = 12.0
+    # The wall clock jumps behind the request's arrival mid-generation.
+    request.arrival_time = 1000.0
+    request.first_token_time = 1002.0
+    monkeypatch.setattr(time, "time", lambda: 500.0)
+    monkeypatch.setattr(time, "monotonic", lambda: 16.0)
+    outputs, _ = scheduler._process_batch_responses([_terminal_response()])
+    assert outputs[0].timing_metrics == {
+        "time_to_first_token_ms": 2000.0,
+        "mean_itl_ms": 2000.0,
+    }
+
+
+def test_aborted_output_does_not_report_success_timing(monkeypatch):
+    scheduler = _scheduler()
+    _running_request(scheduler, "aborted-timing")
+    monkeypatch.setattr(time, "time", lambda: 16.0)
+    response = _terminal_response()
+    response.finish_reason = "abort"
+    outputs, _ = scheduler._process_batch_responses([response])
+    assert outputs[0].timing_metrics is None
+
+
+@pytest.mark.parametrize(
+    "first,arrival,tokens",
+    [(None, 10.0, []), (12.0, 10.0, []), (9.0, 10.0, [1]), (float("nan"), 10.0, [1])],
+)
+def test_unmeasured_request_omits_timing(first, arrival, tokens):
+    from rapid_mlx.request import Request, SamplingParams
+
+    request = Request("empty", "prompt", SamplingParams(max_tokens=1))
+    request._first_token_monotonic = first
+    request._arrival_monotonic = arrival
+    request.output_token_ids = tokens
+    assert ModelPerformanceLedger.timing_metrics_for_request(request, 16.0) is None

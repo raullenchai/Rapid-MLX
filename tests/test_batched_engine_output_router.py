@@ -647,3 +647,31 @@ def test_output_router_transient_detection_failure_is_not_cached():
     assert router is not None
     assert router.map.format_tag == "gemma4"
     assert tok.calls == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "terminal_tokens", [[3, 200006, 200005, 17196, 200008, 4], [200007]]
+)
+async def test_routed_stream_carries_timing_only_on_terminal(terminal_tokens):
+    engine = _make_engine(FakeTokenizer(HARMONY_VOCAB))
+    timing = {"time_to_first_token_ms": 250.0, "mean_itl_ms": 20.0}
+
+    async def source(**kwargs):
+        yield GenerationOutput(
+            text="", new_text="", tokens=[200005, 35644, 200008, 2], finished=False
+        )
+        yield GenerationOutput(
+            text="",
+            new_text="",
+            tokens=terminal_tokens,
+            finished=True,
+            timing_metrics=timing,
+        )
+
+    engine.stream_generate = source
+    outputs = await _collect(
+        engine.stream_chat(messages=[{"role": "user", "content": "hi"}])
+    )
+    assert [o.timing_metrics for o in outputs if o.finished] == [timing]
+    assert all(o.timing_metrics is None for o in outputs if not o.finished)

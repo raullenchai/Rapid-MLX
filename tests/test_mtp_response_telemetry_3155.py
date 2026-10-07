@@ -102,3 +102,30 @@ def test_multi_prompt_completion_metrics_are_summed_by_depth():
         "accepted_by_depth": [4, 2, 1],
         "drafted_by_depth": [5, 3, 2],
     }
+
+
+_TIMING = {"time_to_first_token_ms": 250.0, "mean_itl_ms": 20.0}
+
+
+def test_timing_response_metrics_coexist_with_speculative_counters():
+    output = GenerationOutput(
+        text="ok", timing_metrics=_TIMING, spec_decode_metrics=_RAW_METRICS
+    )
+    metrics = _build_response_metrics(output)
+    assert metrics.model_dump(exclude_none=True) == {
+        **_TIMING,
+        "speculative_decoding": _RAW_METRICS,
+    }
+
+
+def test_single_generation_timing_survives_completion_merge():
+    output = GenerationOutput(text="ok", timing_metrics=_TIMING)
+    assert _merge_response_metrics([output]).model_dump(exclude_none=True) == _TIMING
+    assert _merge_response_metrics([output, output]) is None
+
+
+def test_repair_attempt_aggregation_does_not_invent_request_timing():
+    from rapid_mlx.service.helpers import _aggregate_generation_attempts
+
+    output = GenerationOutput(text="ok", timing_metrics=_TIMING)
+    assert _aggregate_generation_attempts(output, output).timing_metrics is None

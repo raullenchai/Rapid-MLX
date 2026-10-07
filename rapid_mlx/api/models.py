@@ -2248,6 +2248,10 @@ class PerRequestMetrics(BaseModel):
 
     speculative_decoding: SpeculativeDecodingMetrics | None = None
     prompt_compression: PromptCompressionMetrics | None = None
+    time_to_first_token_ms: float | None = Field(
+        default=None, ge=0, allow_inf_nan=False
+    )
+    mean_itl_ms: float | None = Field(default=None, gt=0, allow_inf_nan=False)
 
 
 class Usage(BaseModel):
