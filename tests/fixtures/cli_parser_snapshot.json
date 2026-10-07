@@ -3402,7 +3402,7 @@
        "const": true,
        "default": false,
        "dest": "request",
-       "help": "If the pre-download check refuses a public Hugging Face model (unsupported architecture or GGUF/.bin-only), file a support request without asking. Sends only the repo id, architecture, format and Rapid-MLX version.",
+       "help": "If the pre-download check refuses a public Hugging Face model (unsupported architecture or GGUF/.bin-only), file a support request without asking. Sends only the repo id, architecture, format, failure class and Rapid-MLX version.",
        "metavar": null,
        "nargs": 0,
        "option_strings": [
@@ -4039,7 +4039,7 @@
        "const": true,
        "default": false,
        "dest": "request",
-       "help": "If the pre-download check refuses a public Hugging Face model (unsupported architecture or GGUF/.bin-only), file a support request without asking. Sends only the repo id, architecture, format and Rapid-MLX version.",
+       "help": "If the pre-download check refuses a public Hugging Face model (unsupported architecture or GGUF/.bin-only), file a support request without asking. Sends only the repo id, architecture, format, failure class and Rapid-MLX version.",
        "metavar": null,
        "nargs": 0,
        "option_strings": [
