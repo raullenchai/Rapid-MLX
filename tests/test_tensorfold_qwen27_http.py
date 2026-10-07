@@ -136,7 +136,11 @@ def test_http_gate_rejects_unqualified_features_and_maps_sampling() -> None:
         min_p=0.05,
         seed=42,
         stop=["END"],
-        messages=[SimpleNamespace(content="hi")],
+        messages=[
+            SimpleNamespace(
+                content="hi", model_dump=lambda exclude_none: {"content": "hi"}
+            )
+        ],
         tools=None,
         response_format=None,
         repetition_penalty=None,
@@ -155,6 +159,7 @@ def test_http_gate_rejects_unqualified_features_and_maps_sampling() -> None:
         "min_p": 0.05,
         "seed": 42,
         "stop": ["END"],
+        "messages": [{"content": "hi"}],
     }
 
     request.messages = [SimpleNamespace(content=[{"type": "image_url"}])]
@@ -198,6 +203,74 @@ def test_http_gate_accepts_only_neutral_penalties_and_boolean_thinking() -> None
     with pytest.raises(HTTPException, match="chat_template_kwargs") as exc:
         validate_http_request(request)
     assert exc.value.status_code == 400
+
+
+class _BoundaryTokenizer:
+    """Renders each message as its content tokens, then a generation suffix."""
+
+    def apply_chat_template(
+        self, messages, *, tokenize, add_generation_prompt, enable_thinking
+    ):
+        assert tokenize is False
+        body = " ".join(message["content"] for message in messages)
+        suffix = (" 900 901" if enable_thinking else " 900") * add_generation_prompt
+        return body + suffix
+
+    def encode(self, text):
+        return [int(token) for token in text.split()]
+
+
+def _boundary_app(system_len: int = 0, tokenizer=None):
+    seen = {}
+
+    def system_prefix_len(messages, tools, prompt_ids, thinking=None):
+        seen.update(tools=tools, prompt=list(prompt_ids), thinking=thinking)
+        return system_len
+
+    app = SimpleNamespace(
+        tokenizer=tokenizer or _BoundaryTokenizer(),
+        tokenizer_lock=__import__("threading").Lock(),
+        system_prefix_len=system_prefix_len,
+    )
+    return app, seen
+
+
+def test_prompt_boundaries_mark_history_end_and_long_system_block() -> None:
+    from rapid_mlx.speculative.tensorfold_qwen27_server import _prompt_boundaries
+
+    messages = [{"role": "user", "content": "1 2 3"}]
+    app, seen = _boundary_app()
+    assert _prompt_boundaries(app, [1, 2, 3, 900, 901], messages, True) == (3, ())
+    assert seen == {"tools": None, "prompt": [1, 2, 3, 900, 901], "thinking": True}
+
+    # A system block is kept before and at its end, as far back as 512 tokens.
+    app, _ = _boundary_app(system_len=3000)
+    assert _prompt_boundaries(app, [1, 2, 3, 900], messages, False) == (
+        3,
+        (952, 2488, 3000),
+    )
+    app, _ = _boundary_app(system_len=1000)
+    assert _prompt_boundaries(app, [1, 2, 3, 900], messages, False)[1] == (1000,)
+
+
+def test_prompt_boundaries_give_no_position_they_cannot_prove() -> None:
+    from rapid_mlx.speculative.tensorfold_qwen27_server import _prompt_boundaries
+
+    messages = [{"role": "user", "content": "1 2 3"}]
+    app, _ = _boundary_app(system_len=3000)
+    # No messages: a raw-prompt caller keeps today's behavior.
+    assert _prompt_boundaries(app, [1, 2, 3, 900], None, False) == (0, ())
+    # The history rendering does not prefix the prompt that will be prefilled.
+    assert _prompt_boundaries(app, [1, 7, 3, 900], messages, False)[0] == 0
+    # The history is the whole prompt: nothing follows it to resume into.
+    assert _prompt_boundaries(app, [1, 2, 3], messages, False)[0] == 0
+
+    class Broken(_BoundaryTokenizer):
+        def apply_chat_template(self, *args, **kwargs):
+            raise ValueError("template rejects this conversation")
+
+    app, _ = _boundary_app(system_len=3000, tokenizer=Broken())
+    assert _prompt_boundaries(app, [1, 2, 3, 900], messages, False) == (0, ())
 
 
 def test_provider_preserves_exact_token_ids_and_request_outputs(
@@ -274,9 +347,23 @@ def test_provider_preserves_exact_token_ids_and_request_outputs(
     provider = TensorFoldRequestProvider(
         SimpleNamespace(_app=app), audit_path=str(audit)
     )
+    app.tokenizer.apply_chat_template = lambda messages, **kwargs: "history"
+    app.tokenizer.encode = lambda text: [10] if text == "history" else [10, 11]
+    app.system_prefix_len = lambda *args, **kwargs: 0
     chunks = list(
-        provider.stream_generate(None, None, "prompt", max_tokens=8, thinking_budget=5)
+        provider.stream_generate(
+            None,
+            None,
+            "prompt",
+            max_tokens=8,
+            thinking_budget=5,
+            messages=[{"role": "user", "content": "hi"}],
+            enable_thinking=True,
+        )
     )
+    assert scheduler.job.prompt_ids == [10, 11]
+    assert scheduler.job.history_len == 1
+    assert scheduler.job.shared_prefix_lens == ()
 
     assert [chunk.token for chunk in chunks] == [21, 22]
     assert [chunk.text for chunk in chunks] == ["A", ""]
