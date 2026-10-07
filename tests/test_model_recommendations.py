@@ -150,6 +150,61 @@ def test_every_tier_has_exactly_smart_and_fast() -> None:
         assert [pick.role for pick in tier.picks] == ["smart", "fast"]
         assert all(pick.alias in aliases for pick in tier.picks)
         assert all(pick.footprint_gb < tier.floor_gb * 0.75 for pick in tier.picks)
+        assert all(pick.tokens_per_sec is None for pick in tier.picks)
+
+
+def test_removing_legacy_speed_does_not_change_recommendation_ranking() -> None:
+    assert [
+        (
+            tier.floor_gb,
+            *(
+                (pick.role, pick.alias, pick.footprint_gb, pick.capability_pct)
+                for pick in tier.picks
+            ),
+        )
+        for tier in load_recommendation_tiers()
+    ] == [
+        (
+            8,
+            ("smart", "lfm2.5-2.6b-4bit", 3.0, 64),
+            ("fast", "lfm2.5-1b-4bit", 1.9, 47),
+        ),
+        (
+            16,
+            ("smart", "qwen3.5-4b-4bit", 6.0, 78),
+            ("fast", "lfm2.5-1b-4bit", 1.9, 47),
+        ),
+        (
+            18,
+            ("smart", "qwen3.5-9b-4bit", 8.7, 82),
+            ("fast", "qwen3.5-4b-4bit", 6.0, 78),
+        ),
+        (
+            24,
+            ("smart", "bonsai-27b-2bit", 13.0, 86),
+            ("fast", "qwen3.5-4b-4bit", 6.0, 78),
+        ),
+        (
+            32,
+            ("smart", "qwen3.8-27b-4bit", 20.0, 92),
+            ("fast", "qwen3.5-4b-4bit", 6.0, 78),
+        ),
+        (
+            48,
+            ("smart", "qwen3.8-27b-4bit", 20.0, 92),
+            ("fast", "qwen3.6-35b-4bit", 20.0, 87),
+        ),
+        (
+            64,
+            ("smart", "qwen3.8-27b-4bit", 20.0, 92),
+            ("fast", "qwen3.6-35b-4bit", 20.0, 87),
+        ),
+        (
+            96,
+            ("smart", "qwen3.8-27b-4bit", 20.0, 92),
+            ("fast", "qwen3.6-35b-4bit", 20.0, 87),
+        ),
+    ]
 
 
 def test_display_fast_path_matches_catalog_validated_tiers() -> None:
@@ -228,6 +283,7 @@ def test_recipe_json_is_stable_and_has_two_picks(monkeypatch, capsys) -> None:
     assert payload["picks"][0]["disk_fit"] is True
     assert payload["picks"][0]["download_size_gb"] == 15.2
     assert payload["picks"][0]["required_disk_gb"] == 16.72
+    assert all(pick["tokens_per_sec"] is None for pick in payload["picks"])
 
 
 def test_recipe_text_prints_ready_to_run_commands(monkeypatch, capsys) -> None:
@@ -238,6 +294,7 @@ def test_recipe_text_prints_ready_to_run_commands(monkeypatch, capsys) -> None:
     assert "Smart — qwen3.5-9b-4bit" in output
     assert "Fast — qwen3.5-4b-4bit" in output
     assert "rapid-mlx serve qwen3.5-9b-4bit" in output
+    assert "tok/s" not in output
 
 
 def test_recipe_suppresses_command_for_pick_that_will_not_fit(
