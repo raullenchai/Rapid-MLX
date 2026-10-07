@@ -516,6 +516,21 @@
     "enforce_min_memory": true,
     "experimental": true
   },
+  "qwen3.8-flash-next-tensorfold": {
+    "hf_path": "TensorFold/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": true,
+    "is_hybrid_explicit": true,
+    "is_moe": true,
+    "is_text_only": true,
+    "supports_spec_decode": false,
+    "tensorfold_mtp": true,
+    "tensorfold_target_revision": "2b170fa6309d5d1ee380b35636075fac7945f286",
+    "tensorfold_runtime_revision": "cb2ebf0540f42604e2759b2ddef497861e928248",
+    "min_memory_gb": 192,
+    "enforce_min_memory": true,
+    "experimental": true
+  },
   "qwen3.6-35b-nvfp4": {
     "supports_image_input": true,
     "hf_path": "mlx-community/Qwen3.6-35B-A3B-nvfp4",
@@ -1726,6 +1741,21 @@
     "is_hybrid": true,
     "supports_spec_decode": false,
     "is_moe": true
+  },
+  "nemotron-3.5-lightning-tensorfold": {
+    "hf_path": "TensorFold/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": true,
+    "is_hybrid_explicit": true,
+    "is_moe": true,
+    "is_text_only": true,
+    "supports_spec_decode": false,
+    "tensorfold_mtp": true,
+    "tensorfold_target_revision": "d9d758fb83953437f7263256b0d96157e2a348b8",
+    "tensorfold_runtime_revision": "cb2ebf0540f42604e2759b2ddef497861e928248",
+    "min_memory_gb": 48,
+    "enforce_min_memory": true,
+    "experimental": true
   },
   "nemotron-labs-diffusion-3b-4bit": {
     "hf_path": "mlx-community/Nemotron-Labs-Diffusion-3B-4bit",

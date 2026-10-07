@@ -124,6 +124,31 @@ The dedicated alias enables its accelerated backend by default on compatible
 systems. Pass `--no-spec-decode` to opt out; Rapid then uses the normal GLM
 serving path and reports that mode rather than advertising TensorFold as active.
 
+### Experimental Nemotron 3.5 and Qwen3.8 Flash Next accelerated profiles
+
+Two more experimental, text-only profiles run on the same TensorFold runtime.
+Both use the MTP head published with the checkpoint, so there is no separate
+draft-model download, and both leave the ordinary alias untouched.
+
+| Profile | Minimum memory | Ordinary alias |
+|---|---|---|
+| `nemotron-3.5-lightning-tensorfold` | 48 GB | `nemotron-3.5-lightning-30b-4bit` |
+| `qwen3.8-flash-next-tensorfold` | 192 GB | `qwen3.8-flash-next-4bit` |
+
+```bash
+python -m pip install "tensorfold @ git+https://github.com/ashhart/TensorFold.git@cb2ebf0540f42604e2759b2ddef497861e928248"
+rapid-mlx serve nemotron-3.5-lightning-tensorfold
+```
+
+The limits match the GLM profile above: streaming and non-streaming text chat
+work, while tools, images, grammar constraints, and general batching fail
+explicitly. Each profile pins its target and runtime revisions and refuses
+other artifacts at startup. `--no-spec-decode` returns the Nemotron profile to
+the normal serving path. The Flash Next checkpoint loads only in TensorFold,
+so that flag exits with a pointer to `qwen3.8-flash-next-4bit` instead.
+Measurements are in the
+[qualification record](../engineering/performance/2026-10-06-tensorfold-family-profiles-qualification.md).
+
 ### Experimental Chat candidate: NeoHorse 1 9B
 
 `neohorse-9b-4bit` is an opt-in, text-only Chat model for Macs with at

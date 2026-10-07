@@ -10,6 +10,8 @@
     "OsaurusAI/Qwen-Image-Edit-mflux-q8": 37472689129,
     "Qwen/Qwen-Image-2.1": 33131596301,
     "Runpod/FLUX.2-klein-4B-mflux-4bit": 4619695783,
+    "TensorFold/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit": 18544210829,
+    "TensorFold/Qwen3.8-Flash-Next-MLX-4bit-MTP": 113233012767,
     "Vontra/DeepSeek-V4-Flash-0731-MXFP4-MLX": 167094577743,
     "Vontra/GLM-5.3-Flash-MLX-4bit-MTP": 181741731388,
     "Vontra/MiMo-V2.6-Flash-RL-MLX-4bit-MTP": 171652934411,
