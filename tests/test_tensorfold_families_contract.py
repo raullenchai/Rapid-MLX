@@ -341,6 +341,23 @@ def test_loader_follows_the_upstream_serve_construction(
             backend_class.load(str(tmp_path), "", served_name="served")
     assert wrapped == [True] and seen["cleared"] == 3
 
+    # A shutdown that itself fails neither hides the startup error nor keeps
+    # the weights.
+    class StuckApp(real_app):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.scheduler = SimpleNamespace(
+                stop=lambda: (_ for _ in ()).throw(OSError("stop failed"))
+            )
+
+    monkeypatch.setattr(sys.modules["tensorfold.server.app"], "ChatApp", StuckApp)
+    with monkeypatch.context() as patch:
+        patch.setattr(backend_class, "__init__", refuse)
+        with pytest.raises(RuntimeError, match="wrap failed"):
+            backend_class.load(str(tmp_path), "", served_name="served")
+    assert seen["cleared"] == 4
+    monkeypatch.setattr(sys.modules["tensorfold.server.app"], "ChatApp", real_app)
+
     # So does a load that fails part-way through its own allocation.
     load = Package.load
     Package.load = staticmethod(
@@ -348,7 +365,7 @@ def test_loader_follows_the_upstream_serve_construction(
     )
     with pytest.raises(RuntimeError, match="load failed"):
         backend_class.load(str(tmp_path), "", served_name="served")
-    assert seen["cleared"] == 4
+    assert seen["cleared"] == 5
     Package.load = load
     Package.engine_settings = settings
     Package.setup = staticmethod(lambda app, loaded, **options: None)
