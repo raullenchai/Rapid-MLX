@@ -14,9 +14,16 @@ from rapid_mlx.speculative import tensorfold_families as families
 from rapid_mlx.speculative.tensorfold_qwen27 import TensorFoldUnavailable
 
 PROFILE_IDS = sorted(families.PROFILES)
-MTP_IDS = [pid for pid in PROFILE_IDS if families.PROFILES[pid].method == "mtp"]
-TARGET_ONLY_IDS = [pid for pid in PROFILE_IDS if not families.PROFILES[pid].drafter]
-PAIRED_IDS = [pid for pid in PROFILE_IDS if families.PROFILES[pid].drafter]
+# A DFlash pair is declared in the catalog; every other profile serves through
+# the target-only lane, bringing along any draft head it pins itself.
+PAIRED_IDS = [pid for pid in PROFILE_IDS if families.PROFILES[pid].method == "dflash"]
+TARGET_ONLY_IDS = [pid for pid in PROFILE_IDS if pid not in PAIRED_IDS]
+HEAD_IDS = [pid for pid in TARGET_ONLY_IDS if families.PROFILES[pid].drafter]
+MTP_IDS = [
+    pid
+    for pid in TARGET_ONLY_IDS
+    if families.PROFILES[pid].method == "mtp" and pid not in HEAD_IDS
+]
 REPO_ROOT = Path(__file__).parents[1]
 DRAFT_REVISION = "a" * 40
 
@@ -58,7 +65,7 @@ def test_catalog_alias_matches_the_registered_profile(profile_id: str) -> None:
     alias = resolve_profile(profile_id)
     assert families.profile_for(profile_id) is profile
     assert alias.hf_path == profile.target
-    if profile.drafter is None:
+    if profile_id in TARGET_ONLY_IDS:
         kernel = profile.method == "suffix"
         assert (alias.tensorfold_kernel, alias.tensorfold_mtp) == (kernel, not kernel)
         assert alias.tensorfold_target_revision == profile.target_revision
@@ -476,6 +483,18 @@ def test_cli_dispatches_family_profile(monkeypatch, profile_id: str) -> None:
     assert captured["main_model_repo"] == "/pinned/target"
     assert captured["served_model_name"] == profile_id
     assert captured["reasoning_parser_name"] == "qwen3"
+    assert captured["drafter_repo"] == ""
+
+    # The download step leaves the pinned head's path for the server to load.
+    args._tensorfold_head_path = "/pinned/head"
+    assert cli._serve_tensorfold_mtp_if_requested(
+        args,
+        server_module=server,
+        effective_max_tokens=512,
+        cors_origins=[],
+        uvicorn_log_level="info",
+    )
+    assert captured["drafter_repo"] == "/pinned/head"
 
 
 @pytest.mark.parametrize("profile_id", PROFILE_IDS)
@@ -572,6 +591,7 @@ def test_default_configuration_stays_on_the_family_lane(profile_id: str) -> None
 def test_only_the_measured_fallback_is_declared() -> None:
     ordinary = {p.profile_id for p in families.PROFILES.values() if p.ordinary_engine}
     assert ordinary == {
+        "deepseek-v4-flash-tensorfold",
         "gemma-4-26b-tensorfold",
         "nemotron-3.5-lightning-tensorfold",
     }
@@ -597,6 +617,28 @@ def test_paired_profile_pins_a_real_drafter_layout(
     (drafter / "config.json").write_text('{"architectures": ["DFlashDraftModel"]}')
     with pytest.raises(TensorFoldUnavailable, match="draft model"):
         families.validate_artifacts(profile, target, drafter)
+
+
+@pytest.mark.parametrize("profile_id", HEAD_IDS)
+def test_head_profile_pins_a_real_head_layout(profile_id: str, tmp_path: Path) -> None:
+    profile = families.PROFILES[profile_id]
+    assert (profile_id, profile.drafter_model_type, profile.algorithm) == (
+        "deepseek-v4-flash-tensorfold",
+        "deepseek_v4_dspark",
+        "dspark",
+    )
+    target = _target(tmp_path, profile)
+    head = _snapshot(
+        tmp_path, "head", profile.drafter_revision, {"model_type": "deepseek_v4_dspark"}
+    )
+    families.validate_artifacts(profile, target, head)
+
+    with pytest.raises(TensorFoldUnavailable, match="requires its qualified drafter"):
+        families.validate_artifacts(profile, target, None)
+    # The sibling MTP head loads in the same engine but was not the one measured.
+    (head / "config.json").write_text('{"model_type": "deepseek_v4_mtp"}')
+    with pytest.raises(TensorFoldUnavailable, match="draft model"):
+        families.validate_artifacts(profile, target, head)
 
 
 def test_models_reference_documents_every_family_profile() -> None:

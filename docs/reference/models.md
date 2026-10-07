@@ -186,6 +186,25 @@ Tools, images, grammar constraints, and general batching fail explicitly; use
 through Rapid's ordinary text engine. Measurements are in the
 [qualification record](../engineering/performance/2026-10-06-tensorfold-gemma4-qualification.md).
 
+### Experimental DeepSeek V4 Flash accelerated profile
+
+`deepseek-v4-flash-tensorfold` is an experimental, text-only profile that
+serves `mlx-community/DeepSeek-V4-Flash-4bit` on the same TensorFold runtime,
+drafting with DeepSeek's DSpark head from
+`TensorFold/DeepSeek-V4-Flash-DSpark-MLX` (a separate download of about
+10 GiB). The weights stay wired at about 151 GiB, so it requires a 256 GB Mac
+and was measured only on an M3 Ultra.
+
+```bash
+python -m pip install "tensorfold @ git+https://github.com/ashhart/TensorFold.git@cb2ebf0540f42604e2759b2ddef497861e928248"
+rapid-mlx serve deepseek-v4-flash-tensorfold
+```
+
+Tools, images, grammar constraints, and general batching fail explicitly; use
+`deepseek-v4-flash-4bit` for tool calling. `--no-spec-decode` serves the same
+checkpoint through Rapid's ordinary text engine. Measurements are in the
+[qualification record](../engineering/performance/2026-10-07-tensorfold-deepseek-v4-flash-qualification.md).
+
 ### Experimental Chat candidate: NeoHorse 1 9B
 
 `neohorse-9b-4bit` is an opt-in, text-only Chat model for Macs with at

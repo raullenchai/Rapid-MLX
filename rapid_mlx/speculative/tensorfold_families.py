@@ -49,7 +49,9 @@ class TensorFoldFamilyProfile:
     drafter: str | None = None
     drafter_revision: str | None = None
     drafter_bits: int = 4
+    # The drafter's config.json names its layout under one of these two keys.
     drafter_architecture: str | None = None
+    drafter_model_type: str | None = None
 
 
 PROFILES: dict[str, TensorFoldFamilyProfile] = {
@@ -109,6 +111,21 @@ PROFILES: dict[str, TensorFoldFamilyProfile] = {
             min_memory_gb=48,
             quantization=(4, 64),
         ),
+        TensorFoldFamilyProfile(
+            profile_id="deepseek-v4-flash-tensorfold",
+            label="TensorFold DeepSeek V4 Flash",
+            model_type="deepseek_v4",
+            target="mlx-community/DeepSeek-V4-Flash-4bit",
+            target_revision="38c0bd20a6fba70f22c5ee2940ec0092b36ab936",
+            method="mtp",
+            algorithm="dspark",
+            fallback_model="deepseek-v4-flash-4bit",
+            min_memory_gb=256,
+            quantization=(4, 64),
+            drafter="TensorFold/DeepSeek-V4-Flash-DSpark-MLX",
+            drafter_revision="31fb9a6eeca93fe3e19aef8c9406fd42d16bb5e7",
+            drafter_model_type="deepseek_v4_dspark",
+        ),
     )
 }
 
@@ -152,7 +169,11 @@ def validate_artifacts(
     if _snapshot_revision(drafter) != profile.drafter_revision:
         raise TensorFoldUnavailable(f"unqualified {profile.label} drafter revision")
     draft_config = _read_config(drafter, "drafter")
-    if draft_config.get("architectures") != [profile.drafter_architecture]:
+    if profile.drafter_model_type is not None:
+        qualified = draft_config.get("model_type") == profile.drafter_model_type
+    else:
+        qualified = draft_config.get("architectures") == [profile.drafter_architecture]
+    if not qualified:
         raise TensorFoldUnavailable(
             f"drafter is not the qualified {profile.label} draft model"
         )
