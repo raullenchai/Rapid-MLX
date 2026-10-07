@@ -160,20 +160,19 @@ dependencies = [
     # imported lazily; tests/test_base_runtime_lazy_imports.py guards the CLI
     # front door.
     #
-    # Markers: these runtimes are Apple-Silicon/Metal-only, and on Linux
-    # ``torch`` resolves to multi-GB CUDA wheels — the Darwin marker keeps a
-    # non-macOS resolve (tooling, lockfiles) from pulling them. Linux users who
-    # want the old behaviour can still opt in with the unmarked [vision] extra.
-    # mflux keeps the image lane's Python >=3.11 gate (the image-lane preflight
-    # gives 3.10 users an upgrade diagnostic); SDXL/SD3.5 still run on 3.10
-    # with Pillow + sentencepiece.
+    # Markers are carried over unchanged from the extras they came from: the
+    # [vision] requirements were never platform-gated (so the vision runtime is
+    # base on every platform and its repair is always a base reinstall), while
+    # the [image]/[video] requirements keep their Darwin and Python >=3.11
+    # gates (the image/video preflight gives 3.10 users an upgrade diagnostic;
+    # SDXL/SD3.5 still run on 3.10 with Pillow + sentencepiece).
     #
     # mlx-vlm stays exactly pinned to the signed Desktop sidecar's validated
     # runtime; moving it is a gated coherence event (#1248).
-    "mlx-vlm==0.7.2; platform_system == 'Darwin'",
-    "opencv-python>=4.8.0; platform_system == 'Darwin'",
-    "torch>=2.3.0; platform_system == 'Darwin'",
-    "torchvision>=0.18.0; platform_system == 'Darwin'",
+    "mlx-vlm==0.7.2",
+    "opencv-python>=4.8.0",
+    "torch>=2.3.0",
+    "torchvision>=0.18.0",
     "pillow>=10.0.0",
     "mflux>=0.20.0,<0.21; platform_system == 'Darwin' and python_version >= '3.11'",
     "sentencepiece>=0.2.0; platform_system == 'Darwin'",
@@ -192,10 +191,9 @@ computer-use = [
     "pyobjc-framework-ApplicationServices==12.2.2; platform_system == 'Darwin'",
     "pyobjc-framework-Quartz==12.2.2; platform_system == 'Darwin'",
 ]
-# Vision/multimodal runtime. On macOS these requirements already ship in the
-# base install, so ``rapid-mlx[vision]`` is an accepted no-op alias kept for
-# existing docs, scripts and installers; on other platforms it opts in to the
-# same packages without the base install's Darwin marker.
+# Vision/multimodal runtime. These requirements already ship in the base
+# install, so ``rapid-mlx[vision]`` is an accepted no-op alias kept for
+# existing docs, scripts and installers.
 vision = [
     # Keep the optional runtime identical to the signed Desktop sidecar.
     # A floating 0.6.x range backtracks to 0.6.3 under older Transformers

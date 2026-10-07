@@ -183,18 +183,17 @@ def test_transformers_range_excludes_5130_and_caps_next_minor() -> None:
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_mlx_vlm_ships_in_core_dependencies_on_macos() -> None:
-    """``mlx-vlm`` is a base dependency (Darwin-gated, exact-pinned) so the
-    first serve of a multimodal alias never needs an extra-install step.
+def test_mlx_vlm_ships_in_core_dependencies() -> None:
+    """``mlx-vlm`` is an exact-pinned, ungated base dependency so the first
+    serve of a multimodal alias never needs an extra-install step, and a
+    missing copy is always repaired by reinstalling the base package.
     ``[vision]`` stays a valid alias extra for existing installers."""
     py = _load_pyproject()
     core = py.get("project", {}).get("dependencies", [])
     vlm = [Requirement(spec) for spec in core if _split_spec(spec)[0] == "mlx-vlm"]
     assert len(vlm) == 1, f"mlx-vlm missing from core deps={core!r}"
     assert vlm[0].specifier == SpecifierSet("==0.7.2")
-    assert vlm[0].marker is not None
-    assert vlm[0].marker.evaluate({"platform_system": "Darwin"})
-    assert not vlm[0].marker.evaluate({"platform_system": "Linux"})
+    assert vlm[0].marker is None
 
 
 def test_readme_does_not_send_users_to_install_the_vision_extra() -> None:
