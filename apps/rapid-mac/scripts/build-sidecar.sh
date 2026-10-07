@@ -444,6 +444,28 @@ for wheel in \
     }
 done
 
+# The complete native stack (torch, OpenCV, ...) is resolved for the build
+# host. Fail closed if any platform wheel requires a macOS newer than the
+# app's macOS 14 minimum, so a newer builder can never ship a binary that
+# only loads on its own OS.
+PYTHONPATH="$STAGE/site-packages" PYTHONNOUSERSITE=1 "$STAGE/python/bin/python3.12" -s - "$STAGE/site-packages" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+too_new = []
+for wheel in sorted(Path(sys.argv[1]).glob("*.dist-info/WHEEL")):
+    for tag in re.findall(r"^Tag: \S+-macosx_(\d+)_(\d+)_\w+$", wheel.read_text(), re.M):
+        if (int(tag[0]), int(tag[1])) > (14, 0):
+            too_new.append(f"{wheel.parent.name}: macOS {tag[0]}.{tag[1]}")
+if too_new:
+    raise SystemExit(
+        "ERR: sidecar wheels require a macOS newer than Desktop's macOS 14 "
+        "minimum:\n  " + "\n  ".join(too_new)
+    )
+print("==> every bundled platform wheel targets macOS 14 or older: OK")
+PY
+
 # ----- step 2.5: full vision / image / video runtimes ------------------
 #
 # mlx-vlm (+ torch, torchvision, OpenCV, Pillow), mflux and mlx-video arrive
@@ -452,7 +474,14 @@ done
 # reduced ``--no-deps`` copies and patched mflux to avoid torch; with the
 # complete runtimes present neither the reduced installs nor those patches
 # are needed. Video encoding is still routed through the first-party
-# VideoToolbox bridge and the minimal FFmpeg built above (step 2.7 below).
+# VideoToolbox bridge and the minimal LGPL FFmpeg built above (step 2.7
+# below; the shim exports FFMPEG_BINARY so the video lane resolves it first).
+#
+# imageio-ffmpeg's wheel carries its own prebuilt, GPL-configured ffmpeg
+# executable. Desktop never invokes it (FFMPEG_BINARY wins), it would be an
+# unsigned extensionless Mach-O outside the signing sweep, and it would break
+# the LGPL-only FFmpeg policy, so drop the binary and keep the Python package.
+rm -rf "$STAGE/site-packages/imageio_ffmpeg/binaries/"ffmpeg-*
 
 # ----- step 2.7: video encoder routing + LTX-2.5 runtime ----------------
 #

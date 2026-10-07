@@ -226,6 +226,10 @@ struct SidecarBuildScriptTests {
                 "The standalone encoder is a signed Mach-O too.")
         #expect(script.contains(#"assert registered_wan_runtime_issue("wan2.2-ti2v-5b-q8") is None"#),
                 "The video-lane preflight must see the bundled runtime as present.")
+        #expect(script.contains(#"rm -rf "$STAGE/site-packages/imageio_ffmpeg/binaries/"ffmpeg-*"#),
+                "imageio-ffmpeg's GPL, unsigned ffmpeg executable must never ship; Desktop uses its LGPL build.")
+        #expect(script.contains("every bundled platform wheel targets macOS 14 or older"),
+                "Host-resolved native wheels must fail closed above the app's macOS 14 minimum.")
         #expect(script.contains("encode_rgb_video(np.zeros((2, 32, 16, 3)"),
                 "The build must produce a real MP4 with the packaged encoder.")
         #expect(script.contains("VideoEngine._crop_generated_output("),
