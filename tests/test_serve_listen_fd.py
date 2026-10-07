@@ -705,15 +705,19 @@ def test_serve_command_downloads_qualified_family_tensorfold_target(
             (repo, revision_override)
         ),
     )
+
+    def fake_download(profile, *, before_drafter):
+        # The target lands first; the real resolver then runs the hook.
+        downloaded.append(profile)
+        assert disk_checks == [(family.target, family.target_revision)]
+        if profile.drafter is not None:
+            before_drafter()
+        return SimpleNamespace(
+            target_path="/pinned/family-target", drafter_path=head_path
+        )
+
     monkeypatch.setattr(
-        tensorfold_families,
-        "download_qualified_artifacts",
-        lambda profile: (
-            downloaded.append(profile)
-            or SimpleNamespace(
-                target_path="/pinned/family-target", drafter_path=head_path
-            )
-        ),
+        tensorfold_families, "download_qualified_artifacts", fake_download
     )
     monkeypatch.setattr(
         cli, "_serve_tensorfold_mtp_if_requested", lambda *_a, **_k: True

@@ -12,6 +12,7 @@ from __future__ import annotations
 import functools
 import json
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -185,17 +186,25 @@ class FamilyArtifacts:
     drafter_path: str
 
 
-def download_qualified_artifacts(profile: TensorFoldFamilyProfile) -> FamilyArtifacts:
-    """Resolve the profile's immutable snapshots through the shared Hub cache."""
+def download_qualified_artifacts(
+    profile: TensorFoldFamilyProfile,
+    *,
+    before_drafter: Callable[[], None] | None = None,
+) -> FamilyArtifacts:
+    """Resolve the profile's immutable snapshots through the shared Hub cache.
+
+    ``before_drafter`` runs once the target is on disk and before a drafter is
+    fetched, so a caller's free-space check sees what the target consumed.
+    """
 
     from .._mirror import pinned_snapshot_download
 
     target = pinned_snapshot_download(profile.target, profile.target_revision)
-    drafter = (
-        pinned_snapshot_download(profile.drafter, profile.drafter_revision)
-        if profile.drafter is not None and profile.drafter_revision is not None
-        else ""
-    )
+    drafter = ""
+    if profile.drafter is not None and profile.drafter_revision is not None:
+        if before_drafter is not None:
+            before_drafter()
+        drafter = pinned_snapshot_download(profile.drafter, profile.drafter_revision)
     validate_artifacts(profile, Path(target), Path(drafter) if drafter else None)
     return FamilyArtifacts(target_path=str(target), drafter_path=str(drafter))
 

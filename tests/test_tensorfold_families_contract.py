@@ -182,6 +182,16 @@ def test_download_resolves_only_pinned_snapshots(monkeypatch, tmp_path: Path) ->
         ("example/drafter", DRAFT_REVISION),
     ]
 
+    # The hook runs between the two downloads, and never without a drafter.
+    requested.clear()
+    families.download_qualified_artifacts(
+        paired, before_drafter=lambda: requested.append("hook")
+    )
+    assert requested[1:] == ["hook", ("example/drafter", DRAFT_REVISION)]
+    families.download_qualified_artifacts(
+        profile, before_drafter=lambda: pytest.fail("no drafter to check")
+    )
+
 
 def test_memory_gate_uses_the_profile_floor(monkeypatch) -> None:
     profile = families.PROFILES[MTP_IDS[0]]

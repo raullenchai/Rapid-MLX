@@ -5816,13 +5816,17 @@ def serve_command(args):
             if _tf_family is None:
                 args.model = download_qualified_target()
             else:
-                if _tf_family.drafter is not None:
-                    _check_disk_space(
+                # A pinned head is checked after the target lands, so the check
+                # sees the space the target took.
+                _tf_artifacts = download_qualified_artifacts(
+                    _tf_family,
+                    before_drafter=functools.partial(
+                        _check_disk_space,
                         _tf_family.drafter,
                         force=getattr(args, "force_disk_check", False),
                         revision_override=_tf_family.drafter_revision,
-                    )
-                _tf_artifacts = download_qualified_artifacts(_tf_family)
+                    ),
+                )
                 args.model = _tf_artifacts.target_path
                 # A draft head the profile pins rides along with its target.
                 args._tensorfold_head_path = _tf_artifacts.drafter_path
