@@ -258,7 +258,9 @@ def test_loader_follows_the_upstream_serve_construction(
 
     family = SimpleNamespace(model_type=profile.model_type, package=Package)
     _install_fake_tensorfold(monkeypatch, family, seen)
-    monkeypatch.delenv("RAPID_TEST_TF_FAMILY", raising=False)
+    # Registered through setenv so the loader's own setdefault is undone.
+    monkeypatch.setenv("RAPID_TEST_TF_FAMILY", "0")
+    monkeypatch.delenv("RAPID_TEST_TF_FAMILY")
     monkeypatch.setattr(families, "require_runtime", lambda: None)
     monkeypatch.setattr(families, "require_environment", lambda: None)
     monkeypatch.setattr(families, "require_memory", lambda _profile: None)
