@@ -76,6 +76,11 @@ class SetupPlan:
             return "\n".join([diff, *(f"  Note: {note}" for note in self.notes)])
         before_data = self.before
         after_data = self.after
+        if self.agent == "qwen-code":
+            # Preserved provider credentials belong in the file, never in
+            # the preview printed before consent or during a dry run.
+            before_data = launch_common.redact_secrets(self.before)
+            after_data = launch_common.redact_secrets(self.after)
         secret_changed = False
         if (
             self.agent == "claude-code"
