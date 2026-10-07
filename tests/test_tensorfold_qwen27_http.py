@@ -393,11 +393,16 @@ def test_provider_preserves_exact_token_ids_and_request_outputs(
     assert len(record["token_sha256"]) == 64
 
     # No seed: sampled requests draw a fresh one each time, greedy ones none.
-    seeds = set()
+    drawn = iter((11, 12, 13))
+    monkeypatch.setattr(
+        "rapid_mlx.speculative.tensorfold_qwen27_server.secrets.randbelow",
+        lambda _bound: next(drawn),
+    )
+    seeds = []
     for _ in range(3):
         list(provider.stream_generate(None, None, "prompt", temperature=0.7))
-        seeds.add(scheduler.job.sampling[0]["seed"])
-    assert len(seeds) == 3
+        seeds.append(scheduler.job.sampling[0]["seed"])
+    assert seeds == [11, 12, 13]
     list(provider.stream_generate(None, None, "prompt", temperature=0.0))
     assert scheduler.job.sampling == ({"temperature": 0.0}, 0.0)
 
