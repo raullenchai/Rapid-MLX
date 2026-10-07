@@ -814,11 +814,22 @@ _ENVIRONMENT_DEFINING = (
 )
 
 
+# ``setup.py`` / ``setup.cfg`` define the environment only as the project's
+# own build files at the repository root. The same basename deeper in the
+# tree is ordinary source (``rapid_mlx/agents/setup.py`` is the agent setup
+# flow), and refusing the A/B for it leaves baseline drift with no way out.
+_ROOT_ONLY_ENVIRONMENT_DEFINING = ("setup.py", "setup.cfg")
+
+
 def _diff_defines_the_environment(files_changed: list[str]) -> bool:
-    return any(
-        Path(f).name in _ENVIRONMENT_DEFINING or Path(f).name.startswith("requirements")
-        for f in files_changed
-    )
+    for changed in files_changed:
+        path = Path(changed)
+        if path.name in _ROOT_ONLY_ENVIRONMENT_DEFINING:
+            if len(path.parts) == 1:
+                return True
+        elif path.name in _ENVIRONMENT_DEFINING or path.name.startswith("requirements"):
+            return True
+    return False
 
 
 AB_ROUNDS = 2
