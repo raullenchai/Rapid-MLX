@@ -319,6 +319,26 @@ def test_loader_follows_the_upstream_serve_construction(
         backend_class.load(str(tmp_path), "", served_name="served")
     assert seen["cleared"] == 2
 
+    # An app that started but could not be wrapped is stopped directly.
+    Package.engine_settings = settings
+    wrapped: list[bool] = []
+    real_app = sys.modules["tensorfold.server.app"].ChatApp
+
+    class StartedApp(real_app):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.scheduler = SimpleNamespace(stop=lambda: wrapped.append(True))
+
+    def refuse(self, app):
+        raise RuntimeError("wrap failed")
+
+    monkeypatch.setattr(sys.modules["tensorfold.server.app"], "ChatApp", StartedApp)
+    with monkeypatch.context() as patch:
+        patch.setattr(backend_class, "__init__", refuse)
+        with pytest.raises(RuntimeError, match="wrap failed"):
+            backend_class.load(str(tmp_path), "", served_name="served")
+    assert wrapped == [True] and seen["cleared"] == 3
+
     # So does a load that fails part-way through its own allocation.
     load = Package.load
     Package.load = staticmethod(
@@ -326,7 +346,7 @@ def test_loader_follows_the_upstream_serve_construction(
     )
     with pytest.raises(RuntimeError, match="load failed"):
         backend_class.load(str(tmp_path), "", served_name="served")
-    assert seen["cleared"] == 3
+    assert seen["cleared"] == 4
     Package.load = load
     Package.engine_settings = settings
     Package.setup = staticmethod(lambda app, loaded, **options: None)

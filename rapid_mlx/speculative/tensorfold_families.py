@@ -216,7 +216,7 @@ class TensorFoldFamilyBackend(TensorFoldQwen27Backend):
         if drafter is not None:
             options["drafter"] = str(drafter)
             options["drafter_bits"] = profile.drafter_bits
-        model = backend = None
+        model = app = backend = None
         try:
             model, tokenizer = package.load(target, **options)
             settings = dict(package.engine_settings(model))
@@ -265,8 +265,9 @@ class TensorFoldFamilyBackend(TensorFoldQwen27Backend):
         except BaseException:
             # Startup failed with weights possibly allocated: stop an app that
             # runs its scheduler, then hand the memory back.
-            if backend is not None:
-                backend.close()
+            owner = backend if backend is not None else app
+            if owner is not None:
+                (getattr(owner, "close", None) or owner.scheduler.stop)()
             del model
             mx.clear_cache()
             raise
