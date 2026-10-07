@@ -305,3 +305,29 @@ def test_a_dependency_change_is_never_excused_by_the_base(
         pr, _base(344.0, 419.0), choice.model_id, files_changed=["rapid_mlx/engine.py"]
     )
     assert ordinary["preexisting"], ordinary["finding"]
+
+
+@pytest.mark.parametrize(
+    ("changed", "defines_environment"),
+    [
+        ("setup.py", True),
+        ("setup.cfg", True),
+        ("pyproject.toml", True),
+        ("config/requirements-ci-linux.txt", True),
+        ("apps/tool/pyproject.toml", True),
+        # A module that merely shares the build file's basename is source.
+        ("rapid_mlx/agents/setup.py", False),
+        ("tests/fixtures/setup.cfg", False),
+        ("rapid_mlx/engine.py", False),
+    ],
+)
+def test_only_a_root_build_file_counts_as_a_packaging_change(
+    changed, defines_environment
+):
+    """`rapid_mlx/agents/setup.py` is the agent setup flow, not a build file.
+    Matching it by basename refused the base A/B for every PR that touched
+    it, so ordinary baseline drift became an unclearable failure."""
+    assert (
+        stress_e2e_bench._diff_defines_the_environment([changed, "README.md"])
+        is defines_environment
+    )
