@@ -271,6 +271,9 @@ async def test_http_lazy_failures_hide_local_python_paths(
     embedding_stub.EmbeddingInputTooLongError = type(
         "EmbeddingInputTooLongError", (Exception,), {}
     )
+    embedding_stub.EmbeddingUnsupportedMediaError = type(
+        "EmbeddingUnsupportedMediaError", (ValueError,), {}
+    )
     monkeypatch.setitem(sys.modules, "rapid_mlx.embedding", embedding_stub)
     raw = Request({"type": "http", "headers": []})
     with pytest.raises(HTTPException) as embedding:

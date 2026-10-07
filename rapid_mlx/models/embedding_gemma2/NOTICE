@@ -1,0 +1,21 @@
+Native EmbeddingGemma 2 source subset
+
+Source: https://github.com/Blaizzy/mlx-vlm
+Revision: 3d87e88402f307efbf68e568971aa887ee7d9ed0
+Copyright © 2025 Prince Canuma. Distributed under the MIT License (LICENSE).
+The pinned repository license is MIT, not Apache-2.0; no license was relabeled.
+
+Derived config.py, language.py and embedding_gemma2.py from
+mlx_vlm/models/embedding_gemma2/; copied only EmbeddingOutput,
+normalize_embeddings and mean_pooling from mlx_vlm/models/pooling.py.
+Changes: namespace imports point to shipped MLX-VLM Gemma4/base helpers and
+local pooling; type annotations and line formatting follow the host project's
+lint rules. Original encoder math, projection and pooling are preserved.
+The text-only subset removes media configurations, towers, media feature
+extraction/scattering and audio/vision weight transformations. Only the
+text encoder is instantiated; unused media checkpoint weights are filtered,
+unknown text weights remain subject to strict loading, and media inputs are
+explicitly rejected by the serving engine and native model.
+loader.py adapts the strict, quantized loading steps of the pinned
+mlx_vlm/encoder_loader.py for this single model with disabled media towers.
+No global MLX-VLM registration or replacement is performed.

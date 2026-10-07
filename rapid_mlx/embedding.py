@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 # Canonical install-hint copy. Shared between the CLI startup probe
 # (H-08) and the ``/v1/embeddings`` route guard (H-09) so the user sees
 # the same actionable line no matter which surface tripped the guard.
+from .embedding_backend import is_native_embedding_model
 from .runtime.optional_runtime import optional_extra_install_hint
 
 EMBEDDINGS_EXTRA_INSTALL_HINT = optional_extra_install_hint("embeddings")
@@ -59,6 +60,10 @@ class EmbeddingInputTooLongError(Exception):
         )
 
 
+class EmbeddingUnsupportedMediaError(ValueError):
+    """The native encoder is exposed only for text/code in this release."""
+
+
 def mlx_embeddings_available() -> bool:
     """Probe whether ``mlx_embeddings`` is importable.
 
@@ -87,7 +92,7 @@ def mlx_embeddings_available() -> bool:
     return importlib.util.find_spec("mlx_embeddings") is not None
 
 
-def require_mlx_embeddings_or_exit() -> None:
+def require_mlx_embeddings_or_exit(model_name: str | None = None) -> None:
     """CLI-side guard: bail out cleanly when ``--embedding-model`` is
     passed but the ``[embeddings]`` extra isn't installed.
 
@@ -98,6 +103,17 @@ def require_mlx_embeddings_or_exit() -> None:
     Probe at flag-parse time and exit ``2`` (the conventional argparse
     usage-error code) with an actionable hint to stderr.
     """
+    if is_native_embedding_model(model_name):
+        import importlib.util
+
+        if importlib.util.find_spec("mlx_vlm") is not None:
+            return
+        print(
+            "error: EmbeddingGemma 2 requires the [vision] native runtime. "
+            + optional_extra_install_hint("vision"),
+            file=sys.stderr,
+        )
+        sys.exit(2)
     if mlx_embeddings_available():
         return
     print(
@@ -182,11 +198,19 @@ class EmbeddingEngine:
 
     def load(self) -> None:
         """Load the embedding model and tokenizer."""
-        from mlx_embeddings import load
+        if is_native_embedding_model(self.model_name):
+            from .models.embedding_gemma2.loader import load as load_native
+
+            load_model = load_native
+        else:
+            from mlx_embeddings import load as load_legacy
+
+            load_model = load_legacy
 
         logger.info(f"Loading embedding model: {self.model_name}")
         start = time.perf_counter()
-        self._model, self._tokenizer = load(self.model_name)
+        model, tokenizer = load_model(self.model_name)
+        self._model, self._tokenizer = model, tokenizer
         elapsed = time.perf_counter() - start
         logger.info(f"Embedding model loaded in {elapsed:.2f}s: {self.model_name}")
         self._resolve_effective_max_length()
@@ -207,6 +231,10 @@ class EmbeddingEngine:
         model_cfg = getattr(self._model, "config", None)
         if model_cfg is None:
             model_cfg = getattr(self._model, "args", None)
+        if getattr(self._model, "model_type", None) == "embedding_gemma2":
+            # The checkpoint's rotary range is 262144; its supported shared
+            # input window is 8192. Do not advertise the rotary range as context.
+            return 8192
         if model_cfg is not None:
             for attr in ("max_position_embeddings", "max_seq_len", "n_positions"):
                 val = getattr(model_cfg, attr, None)
@@ -288,6 +316,29 @@ class EmbeddingEngine:
             worst,
         )
 
+    def _reject_media_tokens(self, batches: list[list[int]]) -> None:
+        model = self._model
+        if model is None or getattr(model, "model_type", None) != "embedding_gemma2":
+            return
+        config = model.config
+        media_ids = {
+            getattr(config, field)
+            for field in (
+                "image_token_id",
+                "audio_token_id",
+                "video_token_id",
+                "boi_token_id",
+                "eoi_token_id",
+                "boa_token_id",
+                "eoa_token_index",
+            )
+        }
+        if any(media_ids.intersection(ids) for ids in batches):
+            raise EmbeddingUnsupportedMediaError(
+                "EmbeddingGemma 2 supports text/code only in this release; "
+                "image, audio, video and interleaved media tokens are unsupported"
+            )
+
     def embed(self, texts: str | list[str]) -> list[list[float]]:
         """
         Generate embeddings for one or more texts.
@@ -312,11 +363,16 @@ class EmbeddingEngine:
         # GemmaTokenizer lacks batch_encode_plus, and the model's __call__
         # expects positional `inputs` not `input_ids` as a kwarg).
         inner_tok = getattr(self._tokenizer, "_tokenizer", self._tokenizer)
+        if getattr(self._model, "model_type", None) == "embedding_gemma2":
+            # AutoTokenizer itself is callable; its private _tokenizer is
+            # the raw Rust backend, not the mlx-embeddings callable wrapper.
+            inner_tok = self._tokenizer
 
         # Measure true (un-truncated) lengths first so overflow is
         # observable and the resolved effective limit — not a hardcoded
         # 512 — governs truncation (issue #1381).
         measured = inner_tok(texts, truncation=False, padding=False)
+        self._reject_media_tokens(measured["input_ids"])
         lengths = [len(ids) for ids in measured["input_ids"]]
         self._enforce_overflow(lengths)
 
@@ -378,6 +434,7 @@ class EmbeddingEngine:
             return []
 
         lengths = [len(ids) for ids in token_batches]
+        self._reject_media_tokens(token_batches)
         self._enforce_overflow(lengths)
 
         # Pad each sequence to the longest in the batch, capped at the
