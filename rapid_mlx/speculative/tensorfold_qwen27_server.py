@@ -6,6 +6,7 @@ from __future__ import annotations
 import functools
 import hashlib
 import json
+import logging
 import os
 import queue
 import threading
@@ -18,6 +19,8 @@ from typing import Any, cast
 from rapid_mlx.request import RequestOutput
 
 from .tensorfold_qwen27 import TensorFoldQwen27Backend, validate_request
+
+logger = logging.getLogger(__name__)
 
 _MAX_CONCURRENT_REQUESTS = 1
 
@@ -67,6 +70,54 @@ class ProviderResult:
     prompt_tokens: int
 
 
+def _prompt_boundaries(
+    app: Any, prompt_ids: list[int], messages: Any, enable_thinking: bool
+) -> tuple[int, tuple[int, ...]]:
+    """Positions where TensorFold may keep resumable state for this prompt.
+
+    Recurrent state cannot be truncated, so the runtime resumes a later
+    request only from state it kept during an earlier prefill.  It keeps
+    state at the end of the rendered history (everything before the
+    generation suffix, which the next turn's prompt repeats) and around the
+    end of a long system block shared across conversations.  A job submitted
+    without these positions keeps nothing and every turn recomputes the whole
+    prompt.  Both are measured against ``prompt_ids``; a rendering that does
+    not prefix the prompt yields no position rather than a wrong one.
+    """
+    if not messages:
+        return 0, ()
+    tokenizer = app.tokenizer
+    try:
+        with app.tokenizer_lock:
+            history = [
+                int(token)
+                for token in tokenizer.encode(
+                    tokenizer.apply_chat_template(
+                        messages,
+                        tokenize=False,
+                        add_generation_prompt=False,
+                        enable_thinking=enable_thinking,
+                    )
+                )
+            ]
+        system_len = int(
+            app.system_prefix_len(messages, None, prompt_ids, thinking=enable_thinking)
+        )
+    except Exception:  # a template quirk costs reuse, never the request
+        logger.debug("TensorFold prompt boundaries unavailable", exc_info=True)
+        return 0, ()
+    size = len(history)
+    history_len = (
+        size if 0 < size < len(prompt_ids) and prompt_ids[:size] == history else 0
+    )
+    shared = tuple(
+        position
+        for position in (system_len - 2048, system_len - 512, system_len)
+        if system_len and 512 <= position < len(prompt_ids)
+    )
+    return history_len, shared
+
+
 class TensorFoldRequestProvider:
     """Map one TensorFold ``ChatJob`` onto Rapid request/output objects.
 
@@ -106,9 +157,17 @@ class TensorFoldRequestProvider:
         temperature = float(kwargs.get("temperature", 0.0))
         cancellation = Cancellation()
         request_id = f"rapid-{uuid.uuid4().hex[:12]}"
+        history_len, shared_prefix_lens = _prompt_boundaries(
+            app,
+            prompt_ids,
+            kwargs.get("messages"),
+            bool(kwargs.get("enable_thinking", False)),
+        )
         job = ChatJob(
             job_id=request_id,
             prompt_ids=prompt_ids,
+            history_len=history_len,
+            shared_prefix_lens=shared_prefix_lens,
             max_tokens=max(1, int(kwargs.get("max_tokens", 1))),
             temperature=temperature,
             sampling=app._resolve_sampling(fields, temperature, prompt_ids),
@@ -334,16 +393,26 @@ def generation_kwargs(
         "min_p": getattr(request, "min_p", None),
         "seed": getattr(request, "seed", None),
         "stop": getattr(request, "stop", None),
+        # The provider renders these again without the generation suffix to
+        # find where this prompt's reusable history ends.
+        "messages": _request_messages(request),
     }
     if (budget := getattr(request, "reasoning_max_tokens", None)) is not None:
         kwargs["thinking_budget"] = budget
     return kwargs
 
 
+def _request_messages(request: Any) -> list[dict[str, Any]]:
+    return [
+        message.model_dump(exclude_none=True)
+        for message in getattr(request, "messages", None) or ()
+    ]
+
+
 def render_prompt(
     processor: Any, _model: Any, request: Any, *, enable_thinking: bool, **_ignored: Any
 ) -> str:
-    messages = [message.model_dump(exclude_none=True) for message in request.messages]
+    messages = _request_messages(request)
     return cast(
         str,
         processor.apply_chat_template(
