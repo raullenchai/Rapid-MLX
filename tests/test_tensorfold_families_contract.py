@@ -334,7 +334,20 @@ def test_loader_follows_the_upstream_serve_construction(
     assert (app["max_rows"], app["max_draft"], app["lanes"]) == (12, 11, 1)
     assert app["context_window"] == 4096 and app["fit_context"] is False
     assert app["default_max_tokens"] == 256
-    assert app["enable_thinking"] is True and app["checkpoint_slots"] == 0
+    assert app["enable_thinking"] is True
+    # The prompt store is on, sized like the runtime's own serve default.
+    assert app["checkpoint_slots"] is None
+    assert app["checkpoint_budget_bytes"] == families._prompt_cache_bytes()
+    monkeypatch.setattr(
+        families.os,
+        "sysconf",
+        lambda name: 4096 if name == "SC_PAGE_SIZE" else 12 * 2**18,
+    )
+    assert families._prompt_cache_bytes() == 6 * 1024**3 // 4
+    monkeypatch.setattr(
+        families.os, "sysconf", lambda name: 4096 if name == "SC_PAGE_SIZE" else 2**26
+    )
+    assert families._prompt_cache_bytes() == 16 * 1024**3
     assert app["engine_factory"].keywords["prefill_plan"].args[0] == 4096
     assert app["engine_factory"].keywords["prefill_pass"] == 8
     assert seen["setup"][1] is model
