@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import queue
+import secrets
 import threading
 import uuid
 from collections.abc import Iterator
@@ -127,9 +128,14 @@ class TensorFoldRequestProvider:
     """
 
     def __init__(
-        self, backend: TensorFoldQwen27Backend, *, audit_path: str | None = None
+        self,
+        backend: TensorFoldQwen27Backend,
+        *,
+        audit_path: str | None = None,
+        sampling_defaults: dict[str, float | int] | None = None,
     ) -> None:
         self.backend = backend
+        self._sampling_defaults = dict(sampling_defaults or {})
         self._audit_path = audit_path
         self._audit_lock = threading.Lock()
         self.last_token_ids: list[int] = []
@@ -152,9 +158,24 @@ class TensorFoldRequestProvider:
             for key in ("top_p", "top_k", "min_p", "seed", "stop")
             if kwargs.get(key) is not None
         }
-        validate_request(sampling={k: v for k, v in fields.items() if k != "stop"})
-        stops = StopPolicy(fields, tokenizer, app.tokenizer_lock, app.stop_ids)
         temperature = float(kwargs.get("temperature", 0.0))
+        # The runtime resolves sampling from this mapping alone and treats a
+        # missing temperature as greedy, so the request's value must be in it.
+        # Truncation the request leaves out comes from the model's own
+        # defaults; untruncated sampling at high temperature reads as noise.
+        sampling_fields = {
+            **self._sampling_defaults,
+            **fields,
+            "temperature": temperature,
+        }
+        if temperature > 0 and "seed" not in sampling_fields:
+            # Without a seed the runtime derives one from the prompt, which
+            # makes regenerating the same message return the same text.
+            sampling_fields["seed"] = secrets.randbelow(2**31)
+        validate_request(
+            sampling={k: v for k, v in sampling_fields.items() if k != "stop"}
+        )
+        stops = StopPolicy(fields, tokenizer, app.tokenizer_lock, app.stop_ids)
         cancellation = Cancellation()
         request_id = f"rapid-{uuid.uuid4().hex[:12]}"
         history_len, shared_prefix_lens = _prompt_boundaries(
@@ -170,7 +191,7 @@ class TensorFoldRequestProvider:
             shared_prefix_lens=shared_prefix_lens,
             max_tokens=max(1, int(kwargs.get("max_tokens", 1))),
             temperature=temperature,
-            sampling=app._resolve_sampling(fields, temperature, prompt_ids),
+            sampling=app._resolve_sampling(sampling_fields, temperature, prompt_ids),
             drafts=True,
             ignore_eos=stops.ignore_eos,
             stop_check=stops if stops.strings else None,
@@ -388,7 +409,9 @@ def generation_kwargs(
     kwargs = {
         "max_tokens": max_tokens,
         "temperature": temperature,
-        "top_p": top_p,
+        # The shared app fills an omitted top_p with 1.0, which would mask the
+        # model's default; forward only what the request itself set.
+        "top_p": top_p if getattr(request, "top_p", None) is not None else None,
         "top_k": getattr(request, "top_k", None),
         "min_p": getattr(request, "min_p", None),
         "seed": getattr(request, "seed", None),
@@ -407,6 +430,14 @@ def _request_messages(request: Any) -> list[dict[str, Any]]:
         message.model_dump(exclude_none=True)
         for message in getattr(request, "messages", None) or ()
     ]
+
+
+def _model_sampling_defaults(model_path: str) -> dict[str, float | int]:
+    """Truncation defaults the model ships; temperature stays the request's."""
+    from rapid_mlx.utils.generation_config import load_generation_config_sampling
+
+    shipped = load_generation_config_sampling(model_path)
+    return {k: shipped[k] for k in ("top_p", "top_k", "min_p") if k in shipped}
 
 
 def render_prompt(
@@ -477,7 +508,9 @@ def run_tensorfold_qwen27_server(
     # Qualification-only token evidence. Unset by default so production
     # requests never persist generated token IDs.
     provider = TensorFoldRequestProvider(
-        backend, audit_path=os.environ.get("RAPID_MLX_TENSORFOLD_AUDIT_PATH")
+        backend,
+        audit_path=os.environ.get("RAPID_MLX_TENSORFOLD_AUDIT_PATH"),
+        sampling_defaults=_model_sampling_defaults(main_model_repo),
     )
     from rapid_mlx.api.models import ModelInfo, SpeculativeDecodingInfo
     from rapid_mlx.speculative.dflash.server import _build_app

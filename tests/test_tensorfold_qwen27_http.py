@@ -132,6 +132,7 @@ def test_http_gate_rejects_unqualified_features_and_maps_sampling() -> None:
     assert exc.value.status_code == 400
 
     request = SimpleNamespace(
+        top_p=0.9,
         top_k=20,
         min_p=0.05,
         seed=42,
@@ -366,11 +367,16 @@ def test_provider_preserves_exact_token_ids_and_request_outputs(
             thinking_budget=5,
             messages=[{"role": "user", "content": "hi"}],
             enable_thinking=True,
+            temperature=0.7,
+            seed=5,
         )
     )
     assert scheduler.job.prompt_ids == [10, 11]
     assert scheduler.job.history_len == 1
     assert scheduler.job.shared_prefix_lens == ()
+    # The runtime reads temperature from the mapping, not the positional value.
+    assert scheduler.job.sampling == ({"seed": 5, "temperature": 0.7}, 0.7)
+    assert scheduler.job.temperature == 0.7
 
     assert [chunk.token for chunk in chunks] == [21, 22]
     assert [chunk.text for chunk in chunks] == ["A", ""]
@@ -385,6 +391,61 @@ def test_provider_preserves_exact_token_ids_and_request_outputs(
     record = json.loads(audit.read_text())
     assert record["token_ids"] == [21, 22]
     assert len(record["token_sha256"]) == 64
+
+    # No seed: sampled requests draw a fresh one each time, greedy ones none.
+    drawn = iter((11, 12, 13))
+    monkeypatch.setattr(
+        "rapid_mlx.speculative.tensorfold_qwen27_server.secrets.randbelow",
+        lambda _bound: next(drawn),
+    )
+    seeds = []
+    for _ in range(3):
+        list(provider.stream_generate(None, None, "prompt", temperature=0.7))
+        seeds.append(scheduler.job.sampling[0]["seed"])
+    assert seeds == [11, 12, 13]
+    list(provider.stream_generate(None, None, "prompt", temperature=0.0))
+    assert scheduler.job.sampling == ({"temperature": 0.0}, 0.0)
+
+    # Truncation the request omits comes from the model; what it sets wins.
+    provider = TensorFoldRequestProvider(
+        SimpleNamespace(_app=app), sampling_defaults={"top_k": 20, "top_p": 0.95}
+    )
+    list(provider.stream_generate(None, None, "prompt", temperature=0.7, seed=1))
+    assert scheduler.job.sampling[0] == {
+        "top_k": 20,
+        "top_p": 0.95,
+        "seed": 1,
+        "temperature": 0.7,
+    }
+    list(
+        provider.stream_generate(
+            None, None, "prompt", temperature=0.7, seed=1, top_p=1.0, top_k=0
+        )
+    )
+    assert scheduler.job.sampling[0]["top_p"] == 1.0
+    assert scheduler.job.sampling[0]["top_k"] == 0
+
+
+def test_model_truncation_defaults_and_omitted_top_p(tmp_path) -> None:
+    from rapid_mlx.speculative.tensorfold_qwen27_server import (
+        _model_sampling_defaults,
+        generation_kwargs,
+    )
+
+    (tmp_path / "generation_config.json").write_text(
+        '{"temperature": 1.0, "top_k": 20, "top_p": 0.95, "repetition_penalty": 1.1}'
+    )
+    assert _model_sampling_defaults(str(tmp_path)) == {"top_p": 0.95, "top_k": 20}
+    assert _model_sampling_defaults(str(tmp_path / "missing")) == {}
+
+    # The shared app's 1.0 stands in for an omitted top_p; it is not forwarded.
+    omitted = SimpleNamespace(top_p=None, top_k=None, min_p=None, seed=None, stop=None)
+    assert (
+        generation_kwargs(max_tokens=1, temperature=0.7, top_p=1.0, request=omitted)[
+            "top_p"
+        ]
+        is None
+    )
 
 
 def test_provider_closed_timeout_error_and_generate(
