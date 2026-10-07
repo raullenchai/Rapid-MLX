@@ -57,7 +57,7 @@ def test_engine_guard_reports_missing_runtime_with_model_context(monkeypatch):
 
     message = exc_info.value.format_user_message()
     assert "publisher/vision-model" in message
-    assert "requires the `mlx-vlm`" in message
+    assert "require the `mlx-vlm` runtime" in message
 
 
 def test_validated_runtime_version_is_accepted(monkeypatch):
