@@ -30,7 +30,9 @@ def _clean_switches(monkeypatch):
         "RAPID_MLX_DISABLE_VERSION_CHECK",
         "CI",
     ):
-        monkeypatch.delenv(name, raising=False)
+        # Set first so teardown also removes a value the test itself exports.
+        monkeypatch.setenv(name, "")
+        monkeypatch.delenv(name)
     disk_caches.configure(False)
     yield
     disk_caches.configure(False)
@@ -482,6 +484,8 @@ def test_service_refuses_log_files_unavailable_at_boot(tmp_path):
     )
     with pytest.raises(ServiceInstallError, match="absolute"):
         refuse_unbootable_log_file(("--log-file", "server.log"))
+    with pytest.raises(ServiceInstallError, match="requires a value"):
+        refuse_unbootable_log_file(("--max-num-seqs", "4", "--log-file"))
     with pytest.raises(ServiceInstallError, match="/Volumes"):
         refuse_unbootable_log_file(("--log-file", "/Volumes/RAMDisk/server.log"))
     with pytest.raises(ServiceInstallError, match="does not exist"):
