@@ -564,6 +564,115 @@ def test_qwen_code_plan_writes_its_entry_when_no_provider_list_exists(
         assert written["modelProviders"]["anthropic"] == [{"id": "a"}]
 
 
+@pytest.mark.parametrize("agent", ["continue", "continue-dev"])
+@pytest.mark.parametrize("config_mode", ["fresh", "yaml", "legacy"])
+@pytest.mark.parametrize(
+    "key_env", [None, "", "test-continue-server-key"], ids=["absent", "empty", "keyed"]
+)
+def test_continue_setup_credential_round_trip(
+    setup_paths, monkeypatch, capsys, agent, config_mode, key_env
+):
+    import yaml
+
+    from rapid_mlx import cli
+
+    if key_env is None:
+        monkeypatch.delenv("RAPID_MLX_API_KEY", raising=False)
+    else:
+        monkeypatch.setenv("RAPID_MLX_API_KEY", key_env)
+    expected_key = key_env or "sk-noop"
+    _, path = setup_paths
+    path.parent.mkdir(parents=True)
+    legacy = path.with_name("config.json")
+    other = {
+        "name": "Other",
+        "provider": "openai",
+        "model": "other-model",
+        "apiKey": "test-other-provider-key",
+    }
+    managed = {**other, "name": "rapid-mlx", "apiKey": "test-obsolete-managed-key"}
+    if config_mode == "yaml":
+        path.write_text(
+            yaml.safe_dump(
+                {
+                    "name": "Mine",
+                    "version": "1.0.0",
+                    "schema": "v1",
+                    "models": [other, managed],
+                }
+            )
+        )
+    elif config_mode == "legacy":
+        legacy.write_text(
+            json.dumps(
+                {
+                    "models": [
+                        {
+                            "title": m["name"],
+                            **{k: v for k, v in m.items() if k != "name"},
+                        }
+                        for m in (other, managed)
+                    ]
+                }
+            )
+        )
+    original_files = {p.name: p.read_bytes() for p in path.parent.iterdir()}
+
+    plan = build_setup_plan(agent, "http://localhost:8000/v1", "local-model")
+    entry = next(m for m in plan.after["models"] if m["name"] == "rapid-mlx")
+    assert entry["apiKey"] == expected_key
+    preview = plan.diff()
+    for secret in (key_env, other["apiKey"], managed["apiKey"]):
+        if secret:
+            assert secret not in preview
+    assert {p.name: p.read_bytes() for p in path.parent.iterdir()} == original_files
+
+    assert apply_setup_plan(plan) == path
+    written = yaml.safe_load(path.read_text())
+    entry = next(m for m in written["models"] if m["name"] == "rapid-mlx")
+    assert entry["apiKey"] == expected_key
+    assert entry["apiBase"] == "http://localhost:8000/v1"
+    assert path.stat().st_mode & 0o777 == 0o600
+    if config_mode != "fresh":
+        expected_other = (
+            {**other, "roles": ["chat"]} if config_mode == "legacy" else other
+        )
+        assert (
+            next(m for m in written["models"] if m["name"] == "Other") == expected_other
+        )
+    if config_mode == "legacy":
+        assert legacy.read_bytes() == original_files["config.json"]
+    assert not build_setup_plan(
+        agent, "http://localhost:8000/v1", "local-model"
+    ).changed
+
+    # The public setup command must leave an already-keyed config untouched.
+    after_apply = {p.name: p.read_bytes() for p in path.parent.iterdir()}
+    written_stat = path.stat()
+    cli.agents_command(
+        SimpleNamespace(
+            agent_name="continue",
+            base_url="http://localhost:8000/v1",
+            test=False,
+            setup=True,
+            model="local-model",
+            agent_version=None,
+            dry_run=False,
+            yes=True,
+            no_check=True,
+        )
+    )
+    output = capsys.readouterr().out
+    assert "Already configured; no file changes needed." in output
+    if key_env:
+        assert key_env not in output
+    assert {p.name: p.read_bytes() for p in path.parent.iterdir()} == after_apply
+    assert (path.stat().st_ino, path.stat().st_mtime_ns) == (
+        written_stat.st_ino,
+        written_stat.st_mtime_ns,
+    )
+
+
 def test_apply_refuses_file_changed_after_preview(setup_paths):
     claude_path, _ = setup_paths
     claude_path.parent.mkdir(parents=True)

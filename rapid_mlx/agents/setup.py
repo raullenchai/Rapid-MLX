@@ -338,7 +338,11 @@ def build_setup_plan(
         # that creates it from a populated config.json carries the converted
         # JSON settings over and leaves config.json itself untouched.
         try:
-            continue_plan = continue_dev.build_plan(base_url, model)
+            continue_plan = continue_dev.build_plan(
+                base_url,
+                model,
+                api_key=os.environ.get("RAPID_MLX_API_KEY") or "sk-noop",
+            )
         except ValueError:
             if emit_telemetry:
                 track_agent_configure_failed("config_invalid", "continue")
