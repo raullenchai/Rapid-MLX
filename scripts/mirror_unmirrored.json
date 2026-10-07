@@ -97,6 +97,11 @@
       "since": "2026-10-05"
     },
     {
+      "hf_path": "TensorFold/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+      "reason": "large variant; HF fallback; mirror cost not justified",
+      "since": "2026-10-07"
+    },
+    {
       "hf_path": "rickylin20260522/Wan2.2-T2V-A14B-mlx",
       "reason": "large variant; HF fallback; mirror cost not justified",
       "since": "2026-10-05"
