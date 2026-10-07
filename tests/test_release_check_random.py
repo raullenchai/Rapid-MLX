@@ -181,6 +181,48 @@ def test_the_measured_agentic_failure_is_out_of_the_pool(g12):
     )
 
 
+def test_agentic_capability_flag_excludes_deepseek_without_changing_default(
+    g12, tmp_path
+):
+    """G12 honors an explicit capability result without changing the default.
+
+    Missing and true flags remain eligible, so adding this field for one
+    measured model cannot silently remove ordinary models from random coverage.
+    """
+    aliases = {
+        "ordinary-8b-4bit": {"hf_path": "fake/Ordinary-8B-4bit"},
+        "agentic-8b-4bit": {
+            "hf_path": "fake/Agentic-8B-4bit",
+            "agentic_coverage": True,
+        },
+        "non-agentic-8b-4bit": {
+            "hf_path": "fake/Non-Agentic-8B-4bit",
+            "agentic_coverage": False,
+        },
+    }
+    path = tmp_path / "aliases.json"
+    path.write_text(json.dumps(aliases))
+
+    assert {name for name, _ in g12._eligible_aliases(path)} == {
+        "ordinary-8b-4bit",
+        "agentic-8b-4bit",
+    }
+    root = Path(__file__).resolve().parent.parent
+    aliases = json.loads((root / "rapid_mlx" / "aliases.json").read_text())
+    assert aliases["deepseek-r1-8b-4bit"]["agentic_coverage"] is False
+    assert "deepseek-r1-8b-4bit" not in {
+        name for name, _ in g12._eligible_aliases(root / "rapid_mlx" / "aliases.json")
+    }
+    l1_contract = (root / "scripts" / "l1_toolcall_check.py").read_text()
+    assert '"name": "release_probe"' in l1_contract
+    assert '"tool_choice"' in l1_contract
+    assert "role=tool" in l1_contract
+    replay_tests = (
+        root / "tests" / "test_chat_template_tool_call_arguments.py"
+    ).read_text()
+    assert "test_deepseek_r1_string_concat_template_replays_tool_result" in replay_tests
+
+
 def test_multimodal_models_are_out_of_the_pool(g12):
     """The harness profiles are text-only, and this filter has always said so —
     but it said it by looking for ``-vl-`` in the alias, which is exactly the
@@ -253,11 +295,13 @@ def test_real_aliases_json_yields_nonzero_pool(g12):
     """Sanity check against the in-tree aliases.json: at least 5 eligible
     models must exist or the gauntlet has nothing to sample.
 
-    The pool sits at EXACTLY 5 as of #1671 — the 6B floor took the four 4B
-    aliases and the multimodal filter took three UI-TARS plus Gemma 3. There is
-    no headroom left: the next exclusion, or an aliases prune, trips this, and
-    the answer then is a gate sized for the models being excluded (#1677), not
-    a lower bar here."""
+    The pool sat at five after #1671. #1688 subsequently added deterministic
+    engine-contract coverage plus DeepSeek-specific replay regressions for
+    models whose competence cannot satisfy the voluntary agent harnesses. That
+    clears #1677's prerequisite for removing the measured non-agentic
+    DeepSeek-R1 alias. Later alias additions leave at least five genuine agentic
+    candidates, so the existing minimum can remain unchanged. Any shrinkage
+    below it must provide replacement coverage before changing this floor."""
     real = Path(__file__).resolve().parent.parent / "rapid_mlx" / "aliases.json"
     eligible = g12._eligible_aliases(real)
     assert len(eligible) >= 5, (
