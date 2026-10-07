@@ -1266,10 +1266,13 @@ class TestGenerationOutputFieldOrder:
             "spec_decode_metrics",
             # #4092 appended PFlash ``prompt_compression`` after it.
             "prompt_compression",
+            # #4087 appended request timing after prompt compression.
+            "timing_metrics",
         ], (
             f"new GenerationOutput fields must be APPENDED in order "
             f"(raw_text → reasoning_text → tool_calls → cached_tokens "
-            f"→ matched_stop → spec_decode_metrics → prompt_compression) "
+            f"→ matched_stop → spec_decode_metrics → prompt_compression "
+            f"→ timing_metrics) "
             f"to preserve "
             f"positional-arg compatibility "
             f"for the pre-v0.6.65 surface. Current trailing fields "

@@ -105,6 +105,9 @@ class GenerationOutput:
     # only on the terminal output when compression dropped prompt tokens:
     # ``{"original_tokens": N, "kept_tokens": M}``. Appended last.
     prompt_compression: dict[str, int] | None = None
+    # Frozen scheduler timings for a successful terminal text generation.
+    # Appended after prompt_compression to preserve its positional index.
+    timing_metrics: dict[str, float] | None = None
 
 
 def _callable_accepts_kwarg(func: Any, name: str, inspect_mod: Any) -> bool:
