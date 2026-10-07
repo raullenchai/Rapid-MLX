@@ -24,6 +24,33 @@ def _required_path(environment_key: str) -> Path:
     return path
 
 
+def _assert_clean_pinned_reference(reference: Path) -> None:
+    commit = subprocess.run(
+        ["git", "-C", str(reference), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert commit == _REFERENCE_COMMIT, (
+        f"reference checkout is at {commit}, expected {_REFERENCE_COMMIT}"
+    )
+    status = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(reference),
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=no",
+            "--ignore-submodules=none",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert not status, f"reference checkout has tracked or submodule changes:\n{status}"
+
+
 def _run_probe(
     *, backend: str, checkpoint: Path, output: Path, reference: Path | None = None
 ) -> None:
@@ -52,13 +79,7 @@ def _run_probe(
 def test_real_qwen4_exp_q4_matches_pinned_reference(tmp_path: Path) -> None:
     checkpoint = _required_path("RAPID_MLX_QWEN4_EXP_ARTIFACT")
     reference = _required_path("RAPID_MLX_QWEN4_EXP_REFERENCE")
-    commit = subprocess.run(
-        ["git", "-C", str(reference), "rev-parse", "HEAD"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-    assert commit == _REFERENCE_COMMIT
+    _assert_clean_pinned_reference(reference)
 
     rapid_output = tmp_path / "rapid.npz"
     reference_output = tmp_path / "reference.npz"
@@ -81,3 +102,109 @@ def test_real_qwen4_exp_q4_matches_pinned_reference(tmp_path: Path) -> None:
             "cached_decode_logits_last",
         ):
             assert np.argmax(rapid[logits_probe]) == np.argmax(expected[logits_probe])
+
+
+def test_reference_guard_rejects_tracked_changes(tmp_path: Path, monkeypatch) -> None:
+    reference = tmp_path / "reference"
+    reference.mkdir()
+    subprocess.run(["git", "init", "-q", str(reference)], check=True)
+    tracked = reference / "tracked.py"
+    tracked.write_text("original\n")
+    subprocess.run(["git", "-C", str(reference), "add", "tracked.py"], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(reference),
+            "-c",
+            "user.name=Rapid MLX Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "fixture",
+        ],
+        check=True,
+    )
+    head = subprocess.run(
+        ["git", "-C", str(reference), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    monkeypatch.setattr(sys.modules[__name__], "_REFERENCE_COMMIT", head)
+    tracked.write_text("modified\n")
+
+    with pytest.raises(AssertionError, match="tracked or submodule changes"):
+        _assert_clean_pinned_reference(reference)
+
+
+def test_reference_guard_rejects_modified_submodule(
+    tmp_path: Path, monkeypatch
+) -> None:
+    child = tmp_path / "child"
+    child.mkdir()
+    subprocess.run(["git", "init", "-q", str(child)], check=True)
+    child_file = child / "tracked.py"
+    child_file.write_text("original\n")
+    subprocess.run(["git", "-C", str(child), "add", "tracked.py"], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(child),
+            "-c",
+            "user.name=Rapid MLX Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "fixture",
+        ],
+        check=True,
+    )
+
+    reference = tmp_path / "reference"
+    reference.mkdir()
+    subprocess.run(["git", "init", "-q", str(reference)], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(reference),
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            str(child),
+            "vendor/child",
+        ],
+        check=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(reference),
+            "-c",
+            "user.name=Rapid MLX Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qam",
+            "fixture",
+        ],
+        check=True,
+    )
+    head = subprocess.run(
+        ["git", "-C", str(reference), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    monkeypatch.setattr(sys.modules[__name__], "_REFERENCE_COMMIT", head)
+    (reference / "vendor/child/tracked.py").write_text("modified\n")
+
+    with pytest.raises(AssertionError, match="tracked or submodule changes"):
+        _assert_clean_pinned_reference(reference)
