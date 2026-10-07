@@ -652,6 +652,19 @@
     "is_hybrid": false,
     "supports_spec_decode": true
   },
+  "deepseek-v4-flash-tensorfold": {
+    "hf_path": "mlx-community/DeepSeek-V4-Flash-4bit",
+    "reasoning_parser": "deepseek_v4",
+    "is_hybrid": false,
+    "is_text_only": true,
+    "supports_spec_decode": false,
+    "tensorfold_mtp": true,
+    "tensorfold_target_revision": "38c0bd20a6fba70f22c5ee2940ec0092b36ab936",
+    "tensorfold_runtime_revision": "cb2ebf0540f42604e2759b2ddef497861e928248",
+    "min_memory_gb": 256,
+    "enforce_min_memory": true,
+    "experimental": true
+  },
   "deepseek-v4-flash-0731-mxfp4": {
     "hf_path": "Vontra/DeepSeek-V4-Flash-0731-MXFP4-MLX",
     "tool_call_parser": "deepseek_v4_0731",

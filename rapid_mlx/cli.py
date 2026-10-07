@@ -3683,7 +3683,7 @@ def _serve_tensorfold_mtp_if_requested(
     run_server(
         main_model_repo=args.model,
         main_model_revision=None,
-        drafter_repo="",
+        drafter_repo=getattr(args, "_tensorfold_head_path", ""),
         drafter_revision=None,
         host=args.host,
         port=_resolved_serve_port(args),
@@ -5813,11 +5813,23 @@ def serve_command(args):
                 force=getattr(args, "force_disk_check", False),
                 revision_override=_tf_profile.tensorfold_target_revision,
             )
-            args.model = (
-                download_qualified_artifacts(_tf_family).target_path
-                if _tf_family is not None
-                else download_qualified_target()
-            )
+            if _tf_family is None:
+                args.model = download_qualified_target()
+            else:
+                # A pinned head is checked after the target lands, so the check
+                # sees the space the target took.
+                _tf_artifacts = download_qualified_artifacts(
+                    _tf_family,
+                    before_drafter=functools.partial(
+                        _check_disk_space,
+                        _tf_family.drafter,
+                        force=getattr(args, "force_disk_check", False),
+                        revision_override=_tf_family.drafter_revision,
+                    ),
+                )
+                args.model = _tf_artifacts.target_path
+                # A draft head the profile pins rides along with its target.
+                args._tensorfold_head_path = _tf_artifacts.drafter_path
     elif not _is_wan_video:
         if getattr(args, "force_disk_check", False):
             _ensure_model_downloaded(args.model, force_disk_check=True)
