@@ -397,12 +397,15 @@ fi
 # alias-extra packages, then install
 # rapid-mlx itself without dependencies. The list comes from the exact
 # metadata being shipped (source tree or candidate wheel).
+# Command substitution in a plain assignment propagates the helper's exit
+# status under ``set -e`` (process substitution would not).
+SIDECAR_REQUIREMENTS_TEXT="$("$STAGE/python/bin/python3.12" \
+    "${REPO_ROOT}/scripts/sidecar-core-requirements.py" \
+    "$RAPID_MLX_INSTALL_TARGET" --extras audio-desktop,computer-use)"
 SIDECAR_REQUIREMENTS=()
 while IFS= read -r requirement; do
     [ -n "$requirement" ] && SIDECAR_REQUIREMENTS+=("$requirement")
-done < <("$STAGE/python/bin/python3.12" \
-    "${REPO_ROOT}/scripts/sidecar-core-requirements.py" \
-    "$RAPID_MLX_INSTALL_TARGET" --extras audio-desktop,computer-use)
+done <<< "$SIDECAR_REQUIREMENTS_TEXT"
 if [ "${#SIDECAR_REQUIREMENTS[@]}" -eq 0 ]; then
     echo "ERR: could not derive the sidecar's rapid-mlx requirements" >&2
     exit 1

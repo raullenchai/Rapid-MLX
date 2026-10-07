@@ -79,6 +79,7 @@ def _heavy_imports(tmp_path, argv: list[str]) -> list[str]:
         cwd=tmp_path,
         stdin=subprocess.DEVNULL,
     )
+    assert proc.returncode == 0, proc.stderr[-2000:]
     marker = [
         line for line in proc.stderr.splitlines() if line.startswith("HEAVY_IMPORTS=")
     ]
