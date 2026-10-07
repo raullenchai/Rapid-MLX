@@ -854,6 +854,10 @@ echo "==> pre-compiling .pyc cache (SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH)"
 #     in theory, but keeping the source is ~negligible cost and avoids
 #     a class of namespace-package downgrade bugs in tools that probe
 #     __file__).
+#   * site-packages/torch/ and torchvision/ — torch reads its own source
+#     at import time (torch.utils._config_module calls inspect.getsource
+#     on every config module), so sourceless torch raises
+#     ``OSError: could not get source code`` on ``import torch``.
 #   * Anything under site-packages/transformers/models/ — transformers
 #     scans that subtree at import time (define_import_structure /
 #     create_import_structure_from_path) and only recognises .py
@@ -892,7 +896,9 @@ if [[ "${SKIP_SOURCE_DROP:-0}" != "1" ]]; then
     # EXCLUSION: transformers/models/ is left in source form (see
     # comment block above for why).
     find "$STAGE/site-packages" -type d -name __pycache__ \
-        -not -path "*/transformers/models/*" -print | \
+        -not -path "*/transformers/models/*" \
+        -not -path "*/site-packages/torch/*" \
+        -not -path "*/site-packages/torchvision/*" -print | \
     while read -r cachedir; do
         parent="$(dirname "$cachedir")"
         for pyc in "$cachedir"/*"$PYC_SUFFIX"; do
