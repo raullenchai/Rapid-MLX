@@ -1,6 +1,7 @@
 # Embeddings
 
-rapid-mlx supports text embeddings using [mlx-embeddings](https://github.com/Blaizzy/mlx-embeddings), providing an OpenAI-compatible `/v1/embeddings` endpoint.
+rapid-mlx provides an OpenAI-compatible `/v1/embeddings` endpoint with a native
+EmbeddingGemma 2 text/code encoder and the existing optional embedding backend.
 
 ## Installation
 
@@ -11,6 +12,57 @@ pip install 'rapid-mlx[embeddings]'
 ```
 
 If you boot `rapid-mlx serve --embedding-model …` without the extra installed, the CLI exits cleanly with the same install hint (no `ModuleNotFoundError` traceback).
+
+EmbeddingGemma 2 uses the existing `[vision]` native runtime instead of
+`mlx-embeddings`; the packaged Desktop engine already includes that runtime.
+For a Python installation, use `pip install 'rapid-mlx[vision]'`. Existing
+embedding models still require `[embeddings]`. Do not replace the pinned
+vision runtime with an unvalidated upstream development build.
+
+## EmbeddingGemma 2: text and code
+
+`embeddinggemma-2-bf16` and `embeddinggemma-2-4bit` select
+`mlx-community/embeddinggemma-2-bf16` and
+`mlx-community/embeddinggemma-2-4bit`. The native loader also accepts the
+official `google/embeddinggemma-2` checkpoint or a local directory with
+`model_type: embedding_gemma2`. This is a new bidirectional encoder with its
+trained projection and normalized 768-dimensional output; it is separate
+from the older 300M model.
+
+```bash
+rapid-mlx serve <your-chat-model> --embedding-model embeddinggemma-2-4bit
+```
+
+This release serves **text/code only**. Images, audio, video and interleaved
+media are not accepted by this endpoint. Media objects/fields are rejected by
+the request schema; media control tokens in text or token-ID inputs return
+400 with `unsupported_embedding_modality`. The vision/audio towers are not
+loaded. The model is an embedding backend, not a chat model.
+
+The supported input window is **8192 tokens**, including special tokens and
+any task prefix. `--embedding-max-length auto` uses that limit; larger values
+are clamped. Existing overflow policies (`truncate` with a warning/metric,
+or `error` with a structured 400) remain available. Floating activations stay
+BF16 or FP32, never FP16. Standard affine 4-bit weights reduce memory with a
+quality tradeoff; other quantization families are not supported by this adapter.
+
+Callers supply the appropriate task prefix; the endpoint does not guess
+whether an input is a query or a document. For retrieval, use
+`task: search result | query: ...` and `title: none | text: ...` (replace
+`none` with a real title when available). For code queries, use
+`task: code retrieval | query: ...` and a document title such as a filename.
+
+```bash
+curl http://localhost:8000/v1/embeddings \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"embeddinggemma-2-4bit","input":["task: search result | query: Which planet is the Red Planet?","title: none | text: Mars is known as the Red Planet."],"dimensions":256,"encoding_format":"float"}'
+```
+
+For a keyed server, also send its configured `Authorization: Bearer` header.
+The default dimension is 768; Matryoshka prefixes of 128, 256 or 512 are
+recommended. The existing endpoint truncates and re-normalizes requested
+dimensions, supports float or base64 output, and accepts pre-tokenized
+inputs. Queries and documents must use the same dimension.
 
 ## Quick Start
 

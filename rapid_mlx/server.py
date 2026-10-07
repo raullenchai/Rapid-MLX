@@ -4092,8 +4092,12 @@ def main():
     # error first with nothing else on stderr/stdout before it.
     if getattr(args, "embedding_model", None):
         from .embedding import require_mlx_embeddings_or_exit
+        from .embedding_backend import is_native_embedding_model
 
-        require_mlx_embeddings_or_exit()
+        if is_native_embedding_model(args.embedding_model):
+            require_mlx_embeddings_or_exit(args.embedding_model)
+        else:
+            require_mlx_embeddings_or_exit()
 
     uvicorn_log_level = configure_logging(args.log_level)
 

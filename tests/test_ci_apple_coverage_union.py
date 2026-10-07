@@ -178,6 +178,12 @@ def test_qwen4_fused_gdn_coverage_runs_on_apple_silicon() -> None:
     assert "tests/test_qsa_stage1.py" in apple_run
 
 
+def test_embedding_gemma2_native_contracts_run_on_apple_silicon() -> None:
+    _, workflow = _workflow()
+    apple_run = workflow["jobs"]["test-apple-silicon"]["steps"][-2]["run"]
+    assert "tests/test_embedding_gemma2.py" in apple_run
+
+
 def test_qwen36_dual_lane_coverage_runs_on_apple_silicon() -> None:
     """Qwen3.6 routing and disconnect ownership must reach the MLX lane."""
     _, workflow = _workflow()

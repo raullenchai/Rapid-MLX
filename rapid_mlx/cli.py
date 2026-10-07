@@ -1375,8 +1375,12 @@ def _load_embedding_model_or_exit(args, load_fn) -> None:
     machinery.
     """
     from .embedding import require_mlx_embeddings_or_exit
+    from .embedding_backend import is_native_embedding_model
 
-    require_mlx_embeddings_or_exit()
+    if is_native_embedding_model(args.embedding_model):
+        require_mlx_embeddings_or_exit(args.embedding_model)
+    else:
+        require_mlx_embeddings_or_exit()
 
     original_embed = args.embedding_model
     resolved_embed, did_resolve = _resolve_embedding_alias(original_embed)
@@ -5282,8 +5286,12 @@ def serve_command(args):
     # the base install (no ``[embeddings]`` extra) keeps booting.
     if getattr(args, "embedding_model", None):
         from .embedding import require_mlx_embeddings_or_exit
+        from .embedding_backend import is_native_embedding_model
 
-        require_mlx_embeddings_or_exit()
+        if is_native_embedding_model(args.embedding_model):
+            require_mlx_embeddings_or_exit(args.embedding_model)
+        else:
+            require_mlx_embeddings_or_exit()
 
     # Resolve speculative intent before selecting the final serving lane.
     # This lets an explicit --mllm suppress an alias-owned MTP default while
