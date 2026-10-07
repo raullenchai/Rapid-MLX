@@ -501,7 +501,7 @@ def _add_serve_parser(
             "If the pre-download check refuses a public Hugging Face model "
             "(unsupported architecture or GGUF/.bin-only), file a support "
             "request without asking. Sends only the repo id, architecture, "
-            "format and Rapid-MLX version."
+            "format, failure class and Rapid-MLX version."
         ),
     )
     serve_parser.add_argument(
@@ -2243,7 +2243,7 @@ def _add_pull_parser(
             "If the pre-download check refuses a public Hugging Face model "
             "(unsupported architecture or GGUF/.bin-only), file a support "
             "request without asking. Sends only the repo id, architecture, "
-            "format and Rapid-MLX version."
+            "format, failure class and Rapid-MLX version."
         ),
     )
     pull_parser.add_argument(
