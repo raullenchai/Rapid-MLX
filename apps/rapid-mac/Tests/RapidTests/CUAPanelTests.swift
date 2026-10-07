@@ -2873,7 +2873,7 @@ struct CUATargetUISourceTests {
         #expect(page.contains("local or cloud model you choose"))
         #expect(!page.contains("EXPERIMENTAL"))
         let computerUsePosition = try #require(sidebar.range(of: "if computerUseEnabled"))
-        let experimentalPosition = try #require(sidebar.range(of: "SectionHeader(\"Experimental\")"))
+        let experimentalPosition = try #require(sidebar.range(of: "SectionHeader(String(localized: \"Experimental\"))"))
         #expect(computerUsePosition.lowerBound < experimentalPosition.lowerBound)
         #expect(!page.contains("Everything runs locally"))
         #expect(page.contains("CUASection(viewModel: cuaViewModel)"))

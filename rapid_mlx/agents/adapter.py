@@ -374,6 +374,77 @@ def setup_agent_config(
     return "No config to write (template not specified)"
 
 
+def codex_setup_report(profile: AgentProfile, agent_version: str | None = None) -> str:
+    """Read back saved defaults, without claiming to resolve every Codex layer."""
+    import json
+    from urllib.parse import urlsplit, urlunsplit
+
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility
+        import tomli as tomllib
+
+    cfg = profile.get_config_for_version(agent_version)
+    path = _resolve_config_path(cfg)
+    config = tomllib.loads(path.read_text(encoding="utf-8"))
+    model = config.get("model")
+    provider_id = config.get("model_provider")
+    if not isinstance(model, str) or not isinstance(provider_id, str):
+        raise ValueError("saved Codex config has no model or model_provider")
+    providers = config.get("model_providers", {})
+    provider = providers.get(provider_id, {}) if isinstance(providers, dict) else {}
+    endpoint = provider.get("base_url") if isinstance(provider, dict) else None
+    if not isinstance(endpoint, str):
+        raise ValueError("saved Codex provider has no base_url")
+    # Authentication is never part of a setup report, including URL credentials.
+    url = urlsplit(endpoint)
+    safe_endpoint = urlunsplit(
+        (url.scheme, url.netloc.rsplit("@", 1)[-1], url.path, "", "")
+    )
+    lines = [
+        f"Saved Codex defaults (read back from {path}):",
+        f"  Model: {model}",
+        f"  Provider: {provider_id}",
+        f"  Endpoint: {safe_endpoint}",
+    ]
+    catalog_name = config.get("model_catalog_json")
+    if isinstance(catalog_name, str):
+        catalog_path = Path(catalog_name).expanduser()
+        catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+        models = catalog.get("models", []) if isinstance(catalog, dict) else []
+        entry = (
+            next(
+                (
+                    item
+                    for item in models
+                    if isinstance(item, dict) and item.get("slug") == model
+                ),
+                None,
+            )
+            if isinstance(models, list)
+            else None
+        )
+        if entry is None:
+            raise ValueError(
+                f"saved model {model!r} is missing from its Codex model catalog; "
+                "rerun agents codex --setup against the running server"
+            )
+        lines.append(f"  Model catalog: {catalog_path} (model ID matches)")
+    else:
+        lines.append(
+            "  Model catalog: not configured; Codex may use fallback model metadata."
+        )
+    if config.get("profile"):
+        lines.append(
+            f"  Default profile: {config['profile']} (preserved; may override these defaults)"
+        )
+    lines.append(
+        "Project settings, profiles and Codex --model/--config flags can override "
+        "these defaults. Use the same model ID as the catalog when overriding."
+    )
+    return "\n  ".join(lines)
+
+
 def _merge_file_config(
     existing_path: Path,
     rendered: str,

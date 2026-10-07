@@ -1887,13 +1887,15 @@ start_model() {
     [[ -n "$selected_alias" ]] \
         || die "the readiness action exposed no selected model alias"
     press "$OUT/readiness-start.json" Readiness.Action "$OUT/start-model.json"
-    if [[ "$initial_action" == "Download" ]]; then
+    # The zh-Hans persona reads the same actions in Simplified Chinese; the
+    # labels are matched in both languages wherever a journey can run localized.
+    if [[ "$initial_action" == "Download" || "$initial_action" == "下载" ]]; then
         local download_ready=0
         for _ in {1..240}; do
             see_main "$OUT/readiness-after-download.json"
             if jq -e '.data.ui_elements[]?
                       | select(.identifier == "Readiness.Action"
-                               and .description == "Start"
+                               and (.description == "Start" or .description == "启动")
                                and .enabled == true)' \
                 "$OUT/readiness-after-download.json" >/dev/null; then
                 download_ready=1
@@ -2019,7 +2021,7 @@ wait_send_idle() {
         if [[ "$deferred_start_attempted" == 0 ]] \
            && jq -e '.data.ui_elements[]?
                       | select(.identifier == "Readiness.Action"
-                               and .description == "Start"
+                               and (.description == "Start" or .description == "启动")
                                and .enabled == true)' \
                 "$destination" >/dev/null; then
             "$AX_DRIVER" click-center "$APP_PID" Readiness.Action \
@@ -2050,7 +2052,8 @@ wait_send_idle() {
             continue
         fi
         if jq -e '.data.ui_elements[]? | select(.identifier == "ChatView.SendOrStopButton"
-                  and has("description") and .description == "Send message"
+                  and has("description")
+                  and (.description == "Send message" or .description == "发送消息")
                   and has("enabled") and (has("help") | not))' \
             "$destination" >/dev/null; then
             stable=$((stable + 1))
@@ -2874,10 +2877,12 @@ flow_model_crash_recovery() {
         || die "server did not respawn after the simulated crash"
     for _ in {1..80}; do
         see_main "$OUT/crash-ready.json"
-        if [[ "$(element_field "$OUT/crash-ready.json" ChatView.SendOrStopButton description)" == "Send message" ]]; then break; fi
+        crash_send_label="$(element_field "$OUT/crash-ready.json" ChatView.SendOrStopButton description)"
+        if [[ "$crash_send_label" == "Send message" || "$crash_send_label" == "发送消息" ]]; then break; fi
         sleep 0.25
     done
-    [[ "$(element_field "$OUT/crash-ready.json" ChatView.SendOrStopButton description)" == "Send message" ]] \
+    crash_send_label="$(element_field "$OUT/crash-ready.json" ChatView.SendOrStopButton description)"
+    [[ "$crash_send_label" == "Send message" || "$crash_send_label" == "发送消息" ]] \
         || die "model was not ready after crash recovery"
     jq -n --argjson starts "$(grep -c '"event": "server_started"' "$OUT/fake-events.jsonl")" \
         '{success: true, assertion: "sidecar crashed once, respawned, and returned to ready", server_starts: $starts}' \

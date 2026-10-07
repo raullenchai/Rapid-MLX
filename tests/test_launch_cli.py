@@ -52,11 +52,15 @@ def fake_home(tmp_path, monkeypatch) -> Path:
     expected paths.
     """
     monkeypatch.delenv("RAPID_MLX_API_KEY", raising=False)
+    # The clients' own relocation variables must not leak in from the host.
+    for name in ("CLINE_DIR", "CLINE_DATA_DIR", "CONTINUE_GLOBAL_DIR"):
+        monkeypatch.delenv(name, raising=False)
 
-    # cline: replace the candidate-roots helper so detect/path
-    # resolution picks paths under tmp_path.
+    # cline: Cline's data dir and the VS Code globalStorage roots both
+    # resolve under tmp_path.
     fake_root = tmp_path / "vscode-globalStorage"
     monkeypatch.setattr(cline, "_candidate_settings_roots", lambda: [fake_root])
+    monkeypatch.setattr(cline, "_cline_data_dir", lambda: tmp_path / ".cline" / "data")
 
     # claude_code: replace the two module constants.
     monkeypatch.setattr(claude_code, "_CLAUDE_STATE_DIR", tmp_path / ".claude")
@@ -81,80 +85,244 @@ def fake_home(tmp_path, monkeypatch) -> Path:
     return tmp_path
 
 
+def _install_cline(home: Path) -> Path:
+    """Materialise Cline's settings dir (what a first Cline run creates)."""
+    settings = home / ".cline" / "data" / "settings"
+    settings.mkdir(parents=True)
+    return settings
+
+
+def _cline_settings(data: dict) -> dict:
+    assert data["lastUsedProvider"] == "openai-compatible"
+    return data["providers"]["openai-compatible"]["settings"]
+
+
 # --------------------------------------------------------------------
 # Cline adapter
 # --------------------------------------------------------------------
 
 
+FIXTURES = Path(__file__).parent / "fixtures" / "agent_configs"
+
+
 class TestCline:
-    def test_detect_false_when_no_globalstorage(self, fake_home):
+    def test_detect_false_when_nothing_installed(self, fake_home):
         assert cline.detect() is False
-        assert cline.current_config_path() is None
-
-    def test_detect_true_when_settings_dir_exists(self, fake_home):
-        # Materialise the extension settings dir but not the file —
-        # detect() should still report True (installed, uninitialised).
-        ext_dir = (
-            fake_home / "vscode-globalStorage" / "saoudrizwan.claude-dev" / "settings"
+        # The path is well-defined even before Cline ever ran.
+        assert cline.current_config_path() == (
+            fake_home / ".cline/data/settings/providers.json"
         )
-        ext_dir.mkdir(parents=True)
+
+    def test_detect_true_for_cli_on_path(self, fake_home, monkeypatch):
+        monkeypatch.setattr(
+            _common,
+            "which",
+            lambda cmd: "/usr/local/bin/cline" if cmd == "cline" else None,
+        )
         assert cline.detect() is True
-        path = cline.current_config_path()
-        assert path is not None
-        assert path.name == "cline_mcp_settings.json"
 
-    def test_write_preserves_existing_keys(self, fake_home):
-        ext_dir = (
-            fake_home / "vscode-globalStorage" / "saoudrizwan.claude-dev" / "settings"
+    def test_detect_true_for_cline_data_dir(self, fake_home):
+        (fake_home / ".cline" / "data").mkdir(parents=True)
+        assert cline.detect() is True
+
+    def test_detect_true_for_vscode_extension(self, fake_home):
+        (fake_home / "vscode-globalStorage" / "saoudrizwan.claude-dev").mkdir(
+            parents=True
         )
-        ext_dir.mkdir(parents=True)
-        path = ext_dir / "cline_mcp_settings.json"
+        assert cline.detect() is True
+
+    def test_data_dir_follows_cline_environment(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("CLINE_DATA_DIR", raising=False)
+        monkeypatch.setenv("CLINE_DIR", str(tmp_path / "cline-home"))
+        assert cline._cline_data_dir() == tmp_path / "cline-home" / "data"
+        monkeypatch.setenv("CLINE_DATA_DIR", str(tmp_path / "explicit"))
+        assert cline._cline_data_dir() == tmp_path / "explicit"
+        monkeypatch.delenv("CLINE_DATA_DIR")
+        monkeypatch.delenv("CLINE_DIR")
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        assert cline._cline_data_dir() == tmp_path / "home" / ".cline" / "data"
+
+    def test_new_file_matches_what_cline_auth_writes(self, fake_home, monkeypatch):
+        """Golden: byte-for-byte what ``cline auth -p openai -b … -k sk-noop
+        -m qwen3.5-4b-4bit`` (Cline CLI 3.0.68) wrote into a fresh HOME."""
+        monkeypatch.setattr(cline, "_now_iso", lambda: "2026-10-06T18:08:54.038Z")
+        path = cline.write_or_patch_config(
+            "http://127.0.0.1:8123", "qwen3.5-4b-4bit", api_key="sk-noop"
+        )
+        assert path == fake_home / ".cline/data/settings/providers.json"
+        golden = FIXTURES / "cline_auth_3.0.68_providers.json"
+        assert path.read_text() == golden.read_text()
+        assert path.stat().st_mode & 0o777 == 0o600
+        assert list(path.parent.glob("*.bak.*")) == []
+
+    def test_preserves_other_providers_and_backs_up(self, fake_home):
+        settings_dir = _install_cline(fake_home)
+        path = settings_dir / "providers.json"
+        existing = {
+            "version": 1,
+            "lastUsedProvider": "anthropic",
+            "modes": {"voiceInput": {"enabled": True}},
+            "providers": {
+                "anthropic": {
+                    "settings": {"provider": "anthropic", "apiKey": "sk-ant-x"},
+                    "updatedAt": "2026-01-01T00:00:00.000Z",
+                    "tokenSource": "manual",
+                },
+                "openai-compatible": {
+                    "settings": {
+                        "provider": "openai-compatible",
+                        "apiKey": "old",
+                        "model": "old-model",
+                        "baseUrl": "https://example.invalid/v1",
+                        "headers": {"X-Team": "a"},
+                    },
+                    "updatedAt": "2026-01-01T00:00:00.000Z",
+                    "tokenSource": "migration",
+                    "note": "kept",
+                },
+            },
+        }
+        path.write_text(json.dumps(existing))
+
+        cline.write_or_patch_config("http://127.0.0.1:8000/v1", "qwen3.5-4b-4bit")
+
+        data = json.loads(path.read_text())
+        assert data["providers"]["anthropic"] == existing["providers"]["anthropic"]
+        assert data["modes"] == existing["modes"]
+        entry = data["providers"]["openai-compatible"]
+        assert entry["settings"] == {
+            "provider": "openai-compatible",
+            "apiKey": "sk-noop",
+            "model": "qwen3.5-4b-4bit",
+            "baseUrl": "http://127.0.0.1:8000/v1",
+            "headers": {"X-Team": "a"},
+        }
+        assert entry["tokenSource"] == "migration"
+        assert entry["note"] == "kept"
+        assert entry["updatedAt"].endswith("Z")
+        assert data["lastUsedProvider"] == "openai-compatible"
+        backups = list(settings_dir.glob("providers.json.bak.*"))
+        assert len(backups) == 1
+        assert json.loads(backups[0].read_text()) == existing
+
+    def test_rerun_is_a_no_op(self, fake_home):
+        path = cline.write_or_patch_config("http://127.0.0.1:8000", "m")
+        before = path.read_bytes()
+        cline.write_or_patch_config("http://127.0.0.1:8000/", "m")
+        assert path.read_bytes() == before
+        assert list(path.parent.glob("*.bak.*")) == []
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "not json",
+            "[]",
+            '{"version": 2, "providers": {}}',
+            '{"version": 1, "providers": []}',
+            '{"version": true, "providers": {}}',
+            '{"version": 1, "modes": null, "providers": {}}',
+            '{"version": 1, "lastUsedProvider": "", "providers": {}}',
+            '{"version": 1, "providers": {"x": []}}',
+            '{"version": 1, "providers": {"x": {"updatedAt": "t"}}}',
+            '{"version": 1, "providers": {"x": {"settings": {"provider": "x"}}}}',
+            '{"version": 1, "providers": {"x": {"settings": {"provider": "x"},'
+            ' "updatedAt": "2026-01-01T00:00:00+02:00"}}}',
+            '{"version": 1, "providers": {"x": {"settings": {"provider": "x"},'
+            ' "updatedAt": "2026-01-01T00:00:00Z", "tokenSource": "stolen"}}}',
+        ],
+    )
+    def test_refuses_to_rewrite_a_file_cline_would_reject(self, fake_home, content):
+        settings_dir = _install_cline(fake_home)
+        path = settings_dir / "providers.json"
+        path.write_text(content)
+        with pytest.raises(ValueError):
+            cline.write_or_patch_config("http://127.0.0.1:8000", "m")
+        assert path.read_text() == content
+        assert list(settings_dir.glob("*.bak.*")) == []
+
+    def test_writes_through_a_symlinked_providers_file(self, fake_home):
+        settings_dir = _install_cline(fake_home)
+        real = fake_home / "dotfiles" / "providers.json"
+        real.parent.mkdir()
+        real.write_text('{"version": 1, "providers": {}}')
+        link = settings_dir / "providers.json"
+        link.symlink_to(real)
+
+        cline.write_or_patch_config("http://127.0.0.1:8000", "m")
+
+        assert link.is_symlink()
+        assert _cline_settings(json.loads(real.read_text()))["model"] == "m"
+        assert len(list(real.parent.glob("providers.json.bak.*"))) == 1
+
+    def test_never_touches_mcp_settings(self, fake_home):
+        mcp = (
+            fake_home
+            / "vscode-globalStorage/saoudrizwan.claude-dev/settings"
+            / "cline_mcp_settings.json"
+        )
+        mcp.parent.mkdir(parents=True)
+        mcp.write_text('{"mcpServers": {}}')
+        cline.write_or_patch_config("http://127.0.0.1:8000", "m")
+        assert mcp.read_text() == '{"mcpServers": {}}'
+        assert list(mcp.parent.iterdir()) == [mcp]
+
+    def test_preview_redacts_keys_and_writes_nothing(self, fake_home):
+        settings_dir = _install_cline(fake_home)
+        path = settings_dir / "providers.json"
         path.write_text(
             json.dumps(
                 {
-                    "mcpServers": {"custom": {"command": "node"}},
-                    "apiProvider": "anthropic",  # we'll overwrite this
-                    "openAiApiKey": "old-key",  # we'll overwrite this
-                    "customInstructions": "be terse",  # must survive
+                    "version": 1,
+                    "providers": {
+                        "anthropic": {
+                            "settings": {"provider": "anthropic", "apiKey": "real"},
+                            "updatedAt": "2026-01-01T00:00:00.000Z",
+                            "tokenSource": "manual",
+                        }
+                    },
                 }
             )
         )
-
-        returned = cline.write_or_patch_config(
-            "http://127.0.0.1:8000",
-            "qwen3.5-4b-4bit",
-            api_key="sk-noop",
+        before = path.read_text()
+        shown, diff, notes = cline.preview("http://127.0.0.1:8000", "m", "secret")
+        assert shown == path
+        assert notes == ()
+        assert "real" not in diff and "secret" not in diff
+        assert '+  "lastUsedProvider": "openai-compatible"' in diff
+        # A header value is a credential whatever the header is called.
+        path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "providers": {
+                        "openai-compatible": {
+                            "settings": {
+                                "provider": "openai-compatible",
+                                "headers": {"X-Custom": "hdr-secret"},
+                            },
+                            "updatedAt": "2026-01-01T00:00:00.000Z",
+                        }
+                    },
+                }
+            )
         )
-        assert returned == path
+        before = path.read_text()
+        diff = cline.preview("http://127.0.0.1:8000", "m", "sk-noop")[1]
+        assert "hdr-secret" not in diff and '"X-Custom": "<redacted>"' in diff
+        assert path.read_text() == before
+        cline.write_or_patch_config("http://127.0.0.1:8000", "m", api_key="secret")
+        assert cline.preview("http://127.0.0.1:8000", "m", "secret")[1] == ""
 
-        # Backup exists.
-        backups = list(ext_dir.glob("cline_mcp_settings.json.bak.*"))
-        assert len(backups) == 1
-
-        data = json.loads(path.read_text())
-        # Keys we own — set / overwritten.
-        assert data["apiProvider"] == "openai"
-        assert data["openAiBaseUrl"] == "http://127.0.0.1:8000/v1"
-        assert data["openAiApiKey"] == "sk-noop"
-        assert data["openAiModelId"] == "qwen3.5-4b-4bit"
-        # Keys we don't own — untouched.
-        assert data["mcpServers"] == {"custom": {"command": "node"}}
-        assert data["customInstructions"] == "be terse"
-
-    def test_does_not_double_append_v1(self, fake_home):
-        """User passes ``http://127.0.0.1:8000/v1`` — must NOT
-        produce ``/v1/v1``."""
-        ext_dir = (
-            fake_home / "vscode-globalStorage" / "saoudrizwan.claude-dev" / "settings"
-        )
-        ext_dir.mkdir(parents=True)
-        cline.write_or_patch_config(
-            "http://127.0.0.1:8000/v1",
-            "alias",
-        )
-        path = ext_dir / "cline_mcp_settings.json"
-        data = json.loads(path.read_text())
-        assert data["openAiBaseUrl"] == "http://127.0.0.1:8000/v1"
+    def test_post_setup_notes_give_exact_extension_steps(self):
+        lines = cline.post_setup_notes("http://127.0.0.1:8000", "m", None)
+        text = "\n".join(lines)
+        assert "API Provider: OpenAI Compatible" in text
+        assert "Base URL:     http://127.0.0.1:8000/v1" in text
+        assert "Model ID:     m" in text
+        assert "sk-noop" in text
+        keyed = "\n".join(cline.post_setup_notes("http://h/v1", "m", "s3cret"))
+        assert "s3cret" not in keyed
+        assert "RAPID_MLX_API_KEY" in keyed
 
 
 # --------------------------------------------------------------------
@@ -244,40 +412,244 @@ class TestContinueDev:
         (fake_home / ".continue").mkdir()
         assert continue_dev.detect() is True
 
-    def test_appends_new_model_entry(self, fake_home):
+    def test_targets_config_yaml(self, fake_home):
+        assert continue_dev.current_config_path() == fake_home / ".continue/config.yaml"
+
+    def test_continue_global_dir_is_honoured(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("CONTINUE_GLOBAL_DIR", str(tmp_path / "cfg"))
+        assert continue_dev.current_config_path() == tmp_path / "cfg" / "config.yaml"
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("CONTINUE_GLOBAL_DIR", "rel")
+        assert continue_dev.current_config_path() == tmp_path / "rel" / "config.yaml"
+
+    def test_new_config_golden(self, fake_home):
         (fake_home / ".continue").mkdir()
-        cfg = continue_dev.current_config_path()
-        cfg.write_text(
-            json.dumps(
-                {
-                    "models": [
-                        {"title": "Anthropic", "provider": "anthropic"},
-                    ],
-                    "customCommands": [{"name": "test"}],
-                }
-            )
+        path = continue_dev.write_or_patch_config(
+            "http://127.0.0.1:8000", "qwen3.5-4b-4bit"
         )
-        continue_dev.write_or_patch_config("http://127.0.0.1:8000", "qwen3.5-4b-4bit")
-        data = json.loads(cfg.read_text())
+        golden = FIXTURES / "continue_new_config.yaml"
+        assert path.read_text() == golden.read_text()
+        assert path.stat().st_mode & 0o777 == 0o600
+        assert not (fake_home / ".continue/config.json").exists()
+
+    def test_converter_matches_continue_upstream(self):
+        """Golden: Continue's own ``convertJsonToYamlConfig``
+        (@continuedev/config-yaml 1.42.0) on the same input. We differ only
+        by the v1 header Continue writes for new files and by dropping our
+        is the v1 header Continue writes for new files."""
+        legacy = json.loads((FIXTURES / "continue_legacy_config.json").read_text())
+        upstream = json.loads(
+            (FIXTURES / "continue_legacy_converted_upstream.json").read_text()
+        )
+        upstream.update(name="Local Config", version="1.0.0", schema="v1")
+        assert continue_dev.convert_legacy_config(legacy) == upstream
+
+    def test_converter_passes_through_shapes_it_does_not_map(self):
+        legacy = {
+            "models": ["bare-model-id"],
+            "tabAutocompleteModel": [
+                {"title": "a1", "provider": "ollama", "model": "x"},
+                "bare",
+            ],
+            "contextProviders": ["raw-context"],
+            "customCommands": ["raw-command"],
+            "docs": ["raw-doc"],
+            "experimental": {"modelContextProtocolServers": ["raw-server"]},
+        }
+        converted = continue_dev.convert_legacy_config(legacy)
+        assert converted["models"] == [
+            "bare-model-id",
+            {
+                "name": "a1",
+                "provider": "ollama",
+                "model": "x",
+                "roles": ["autocomplete"],
+            },
+            "bare",
+        ]
+        assert converted["context"] == ["raw-context"]
+        assert converted["prompts"] == ["raw-command"]
+        assert converted["docs"] == ["raw-doc"]
+        assert converted["mcpServers"] == ["raw-server"]
+
+    def test_migrates_legacy_json_without_touching_it(self, fake_home, capsys):
+        cont = fake_home / ".continue"
+        cont.mkdir()
+        legacy = cont / "config.json"
+        legacy_bytes = (FIXTURES / "continue_legacy_config.json").read_bytes()
+        legacy.write_bytes(legacy_bytes)
+
+        path = continue_dev.write_or_patch_config(
+            "http://127.0.0.1:8000", "qwen3.5-4b-4bit"
+        )
+
+        assert path == cont / "config.yaml"
+        golden = FIXTURES / "continue_migrated_config.yaml"
+        assert path.read_text() == golden.read_text()
+        assert legacy.read_bytes() == legacy_bytes
+        assert list(cont.glob("*.bak.*")) == []
+        assert "config.json is left unchanged" in capsys.readouterr().err
+
+    def test_patches_existing_yaml_in_place(self, fake_home):
+        import yaml
+
+        cont = fake_home / ".continue"
+        cont.mkdir()
+        path = cont / "config.yaml"
+        path.write_text(
+            "name: Mine\nversion: 0.1.0\nschema: v1\n"
+            "models:\n"
+            "- uses: anthropic/claude-sonnet\n"
+            "- name: rapid-mlx\n  provider: openai\n  model: old\n"
+            "  apiBase: http://127.0.0.1:9000/v1\n  apiKey: sk-noop\n"
+            "  defaultCompletionOptions:\n    temperature: 0.1\n"
+            "rules:\n- keep it short\n"
+        )
+        # A legacy json beside an existing yaml is ignored by Continue: it
+        # must not be migrated again.
+        (cont / "config.json").write_text('{"models": [{"title": "Old"}]}')
+
+        continue_dev.write_or_patch_config("http://127.0.0.1:8000", "new")
+
+        data = yaml.safe_load(path.read_text())
+        assert data["name"] == "Mine" and data["version"] == "0.1.0"
+        assert data["rules"] == ["keep it short"]
+        assert data["models"][0] == {"uses": "anthropic/claude-sonnet"}
+        assert data["models"][1] == {
+            "name": "rapid-mlx",
+            "provider": "openai",
+            "model": "new",
+            "apiBase": "http://127.0.0.1:8000/v1",
+            "apiKey": "sk-noop",
+            "defaultCompletionOptions": {"temperature": 0.1},
+        }
         assert len(data["models"]) == 2
-        rapid = next(m for m in data["models"] if m["title"] == "rapid-mlx")
-        assert rapid["provider"] == "openai"
-        assert rapid["model"] == "qwen3.5-4b-4bit"
-        assert rapid["apiBase"] == "http://127.0.0.1:8000/v1"
-        # Other model preserved.
-        assert any(m["title"] == "Anthropic" for m in data["models"])
-        # Other top-level keys preserved.
-        assert data["customCommands"] == [{"name": "test"}]
+        assert len(list(cont.glob("config.yaml.bak.*"))) == 1
+
+    def test_existing_entry_without_chat_role_gains_it(self):
+        existing = {
+            "models": [
+                {"name": "rapid-mlx", "provider": "openai", "roles": ["autocomplete"]}
+            ]
+        }
+        after = continue_dev.patched_config(existing, "http://h", "m")
+        assert after["models"][0]["roles"] == ["chat", "autocomplete"]
+        assert existing["models"][0]["roles"] == ["autocomplete"]
+
+    def test_rerun_is_a_no_op(self, fake_home):
+        (fake_home / ".continue").mkdir()
+        continue_dev.write_or_patch_config("http://127.0.0.1:8000", "model-a")
+        path = continue_dev.current_config_path()
+        before = path.read_bytes()
+        continue_dev.write_or_patch_config("http://127.0.0.1:8000/v1", "model-a")
+        assert path.read_bytes() == before
+        assert list(path.parent.glob("*.bak.*")) == []
 
     def test_rerun_replaces_in_place_not_duplicates(self, fake_home):
+        import yaml
+
         (fake_home / ".continue").mkdir()
         continue_dev.write_or_patch_config("http://127.0.0.1:8000", "model-a")
         continue_dev.write_or_patch_config("http://127.0.0.1:8000", "model-b")
-        cfg = continue_dev.current_config_path()
-        data = json.loads(cfg.read_text())
-        rapid_entries = [m for m in data["models"] if m.get("title") == "rapid-mlx"]
-        assert len(rapid_entries) == 1
-        assert rapid_entries[0]["model"] == "model-b"
+        data = yaml.safe_load(continue_dev.current_config_path().read_text())
+        rapid = [m for m in data["models"] if m.get("name") == "rapid-mlx"]
+        assert [m["model"] for m in rapid] == ["model-b"]
+
+    @pytest.mark.parametrize(
+        ("name", "content"),
+        [
+            ("config.yaml", "models: [unclosed\n"),
+            ("config.yaml", "- a list\n"),
+            ("config.json", "{not json"),
+            ("config.json", "[1]"),
+        ],
+    )
+    def test_refuses_unparsable_configs(self, fake_home, name, content):
+        cont = fake_home / ".continue"
+        cont.mkdir()
+        (cont / name).write_text(content)
+        with pytest.raises(ValueError):
+            continue_dev.write_or_patch_config("http://127.0.0.1:8000", "m")
+        assert sorted(p.name for p in cont.iterdir()) == [name]
+
+    @pytest.mark.parametrize("content", ["", "{}\n"])
+    def test_existing_empty_yaml_wins_over_legacy_json(self, fake_home, content):
+        import yaml
+
+        cont = fake_home / ".continue"
+        cont.mkdir()
+        (cont / "config.yaml").write_text(content)
+        # Continue ignores config.json once config.yaml exists, so even a
+        # broken legacy file must not be read or migrated.
+        (cont / "config.json").write_text("{broken")
+        path = continue_dev.write_or_patch_config("http://127.0.0.1:8000", "m")
+        data = yaml.safe_load(path.read_text())
+        assert [m["name"] for m in data["models"]] == ["rapid-mlx"]
+        assert (cont / "config.json").read_text() == "{broken"
+
+    def test_blank_yaml_is_treated_as_new(self, fake_home):
+        cont = fake_home / ".continue"
+        cont.mkdir()
+        (cont / "config.yaml").write_text("\n")
+        path = continue_dev.write_or_patch_config("http://127.0.0.1:8000", "m")
+        assert "name: rapid-mlx" in path.read_text()
+
+    def test_writes_through_a_symlinked_config_yaml(self, fake_home):
+        cont = fake_home / ".continue"
+        cont.mkdir()
+        real = fake_home / "dotfiles" / "config.yaml"
+        real.parent.mkdir()
+        real.write_text("name: Mine\nversion: 1.0.0\nmodels: []\n")
+        (cont / "config.yaml").symlink_to(real)
+
+        continue_dev.write_or_patch_config("http://127.0.0.1:8000", "m")
+
+        assert (cont / "config.yaml").is_symlink()
+        assert "name: rapid-mlx" in real.read_text()
+        assert len(list(real.parent.glob("config.yaml.bak.*"))) == 1
+
+    def test_preview_redacts_migrated_keys(self, fake_home):
+        cont = fake_home / ".continue"
+        cont.mkdir()
+        (cont / "config.json").write_bytes(
+            (FIXTURES / "continue_legacy_config.json").read_bytes()
+        )
+        path, diff, notes = continue_dev.preview(
+            "http://127.0.0.1:8000", "qwen3.5-4b-4bit"
+        )
+        assert path == cont / "config.yaml"
+        assert not path.exists()
+        for secret in ("sk-ant-example", "voyage-example", "jira-example"):
+            assert secret not in diff
+        (cont / "config.json").write_text(
+            json.dumps(
+                {
+                    "models": [
+                        {
+                            "title": "Proxy",
+                            "provider": "openai",
+                            "requestOptions": {
+                                "headers": {"Authorization": "Bearer hdr-secret"}
+                            },
+                        }
+                    ],
+                    "experimental": {
+                        "modelContextProtocolServers": [
+                            {
+                                "transport": {
+                                    "command": "x",
+                                    "env": {"DATABASE_URL": "postgres://u:pw@h"},
+                                }
+                            }
+                        ]
+                    },
+                }
+            )
+        )
+        diff = continue_dev.preview("http://127.0.0.1:8000", "m")[1]
+        assert "hdr-secret" not in diff and "pw@h" not in diff
+        assert "+  apiKey: sk-noop" in diff
+        assert len(notes) == 1 and "config.json" in notes[0]
 
 
 # --------------------------------------------------------------------
@@ -362,6 +734,27 @@ class TestCursor:
 
 
 class TestCommon:
+    def test_redact_secrets_hides_credentials_only(self):
+        data = {
+            "apiKey": "real",
+            "placeholder": {"apiKey": "sk-noop"},
+            "nested": [{"accessToken": "t", "tokenSource": "manual"}],
+            "maxTokens": 10,
+            "GITHUB_TOKEN": "g",
+            "password": "",
+            "model": "m",
+        }
+        assert _common.redact_secrets(data) == {
+            "apiKey": "<redacted>",
+            "placeholder": {"apiKey": "sk-noop"},
+            "nested": [{"accessToken": "<redacted>", "tokenSource": "manual"}],
+            "maxTokens": 10,
+            "GITHUB_TOKEN": "<redacted>",
+            "password": "",
+            "model": "m",
+        }
+        assert data["apiKey"] == "real"
+
     def test_atomic_write_creates_parent_dirs(self, tmp_path):
         target = tmp_path / "a" / "b" / "c" / "settings.json"
         _common.atomic_write_json(target, {"k": "v"})
@@ -778,10 +1171,7 @@ class TestLaunchCommand:
     def test_dry_run_does_not_touch_disk(self, fake_home, capsys):
         # Mark cline as detected so the dispatcher reaches the
         # would-patch line.
-        ext_dir = (
-            fake_home / "vscode-globalStorage" / "saoudrizwan.claude-dev" / "settings"
-        )
-        ext_dir.mkdir(parents=True)
+        ext_dir = _install_cline(fake_home)
         before = list(ext_dir.iterdir())
 
         launch_cli.launch_command(_make_args(client="cline", dry_run=True))
@@ -792,21 +1182,18 @@ class TestLaunchCommand:
         assert list(ext_dir.iterdir()) == before
 
     def test_real_patch_writes_file(self, fake_home, capsys):
-        ext_dir = (
-            fake_home / "vscode-globalStorage" / "saoudrizwan.claude-dev" / "settings"
-        )
-        ext_dir.mkdir(parents=True)
+        ext_dir = _install_cline(fake_home)
         launch_cli.launch_command(_make_args(client="cline", model="qwen3.5-4b-4bit"))
-        target = ext_dir / "cline_mcp_settings.json"
+        target = ext_dir / "providers.json"
         assert target.exists()
         data = json.loads(target.read_text())
-        assert data["openAiModelId"] == "qwen3.5-4b-4bit"
+        assert _cline_settings(data)["model"] == "qwen3.5-4b-4bit"
         out = capsys.readouterr().out
         assert "Patched cline" in out
         assert "Now ready" in out
 
     def test_not_detected_client_fails_with_hint(self, fake_home, capsys):
-        # cline is NOT detected (no globalStorage dir). The command
+        # cline is NOT detected (no CLI, data dir or extension). The command
         # should fail with a clear hint and exit non-zero.
         with pytest.raises(SystemExit) as excinfo:
             launch_cli.launch_command(_make_args(client="cline"))
@@ -815,10 +1202,7 @@ class TestLaunchCommand:
         assert "cline: not detected" in err
 
     def test_start_server_spawns_and_writes_pid(self, fake_home, capsys):
-        ext_dir = (
-            fake_home / "vscode-globalStorage" / "saoudrizwan.claude-dev" / "settings"
-        )
-        ext_dir.mkdir(parents=True)
+        _install_cline(fake_home)
         fake_proc = MagicMock()
         fake_proc.pid = 99999
         with patch.object(subprocess, "Popen", return_value=fake_proc) as popen:
@@ -869,17 +1253,14 @@ class TestLaunchCommand:
     def test_api_key_is_passed_to_client_and_started_server(
         self, fake_home, capsys, monkeypatch
     ):
-        ext_dir = (
-            fake_home / "vscode-globalStorage" / "saoudrizwan.claude-dev" / "settings"
-        )
-        ext_dir.mkdir(parents=True)
+        ext_dir = _install_cline(fake_home)
         fake_proc = MagicMock()
         fake_proc.pid = 99998
         monkeypatch.setenv("RAPID_MLX_API_KEY", "shared-secret")
         with patch.object(subprocess, "Popen", return_value=fake_proc) as popen:
             launch_cli.launch_command(_make_args(client="cline", start_server=True))
-        config = json.loads((ext_dir / "cline_mcp_settings.json").read_text())
-        assert config["openAiApiKey"] == "shared-secret"
+        config = json.loads((ext_dir / "providers.json").read_text())
+        assert _cline_settings(config)["apiKey"] == "shared-secret"
         assert popen.call_args.kwargs["env"]["RAPID_MLX_API_KEY"] == "shared-secret"
 
     def test_start_server_skipped_when_no_clients_patched(self, fake_home, capsys):
@@ -905,6 +1286,59 @@ class TestLaunchCommand:
         err = capsys.readouterr().err
         assert "Skipping --start-server" in err
 
+    def test_dry_run_previews_redacted_diff_for_cline(
+        self, fake_home, capsys, monkeypatch
+    ):
+        _install_cline(fake_home)
+        monkeypatch.setenv("RAPID_MLX_API_KEY", "shared-secret")
+        launch_cli.launch_command(_make_args(client="cline", dry_run=True))
+        out = capsys.readouterr().out
+        assert "providers.json (proposed)" in out
+        assert '"baseUrl": "http://127.0.0.1:8000/v1"' in out
+        assert "shared-secret" not in out
+        assert not (fake_home / ".cline/data/settings/providers.json").exists()
+
+    def test_dry_run_reports_already_configured(self, fake_home, capsys):
+        (fake_home / ".continue").mkdir()
+        continue_dev.write_or_patch_config("http://127.0.0.1:8000", "m")
+        launch_cli.launch_command(
+            _make_args(client="continue-dev", model="m", dry_run=True)
+        )
+        out = capsys.readouterr().out
+        assert "continue-dev: already configured; no changes" in out
+
+    def test_dry_run_shows_migration_note_and_unreadable_config(
+        self, fake_home, capsys
+    ):
+        cont = fake_home / ".continue"
+        cont.mkdir()
+        (cont / "config.json").write_text('{"models": []}')
+        launch_cli.launch_command(_make_args(client="continue-dev", dry_run=True))
+        out = capsys.readouterr().out
+        assert "continue-dev: note: Continue now reads config.yaml" in out
+        assert "config.yaml (proposed)" in out
+
+        (cont / "config.json").write_text("{broken")
+        launch_cli.launch_command(_make_args(client="continue-dev", dry_run=True))
+        out = capsys.readouterr().out
+        assert "continue-dev: cannot preview" in out
+        assert sorted(p.name for p in cont.iterdir()) == ["config.json"]
+
+    def test_real_cline_patch_prints_extension_steps(self, fake_home, capsys):
+        _install_cline(fake_home)
+        launch_cli.launch_command(_make_args(client="cline", model="m"))
+        out = capsys.readouterr().out
+        assert "API Provider: OpenAI Compatible" in out
+        assert "Model ID:     m" in out
+
+    def test_continue_dev_launch_writes_yaml(self, fake_home, capsys):
+        (fake_home / ".continue").mkdir()
+        launch_cli.launch_command(_make_args(client="continue-dev", model="m"))
+        out = capsys.readouterr().out
+        assert "Patched continue-dev config at" in out
+        assert "config.yaml" in out
+        assert not (fake_home / ".continue/config.json").exists()
+
     def test_continue_is_an_alias_for_continue_dev(self, fake_home, capsys):
         """``launch continue`` must resolve exactly like ``launch
         continue-dev`` (#2082): ``rapid-mlx agents`` calls the same
@@ -922,16 +1356,13 @@ class TestLaunchCommand:
         """When ``main()`` rewrites ``args.model`` from alias to HF id,
         the launch command should patch with the ORIGINAL alias so the
         IDE client requests the short name from rapid-mlx."""
-        ext_dir = (
-            fake_home / "vscode-globalStorage" / "saoudrizwan.claude-dev" / "settings"
-        )
-        ext_dir.mkdir(parents=True)
+        ext_dir = _install_cline(fake_home)
         ns = _make_args(client="cline", model="mlx-community/Qwen3.5-4B-MLX-4bit")
         # Simulate what ``main()`` does on the way in.
         ns._original_alias = "qwen3.5-4b-4bit"
         launch_cli.launch_command(ns)
-        data = json.loads((ext_dir / "cline_mcp_settings.json").read_text())
-        assert data["openAiModelId"] == "qwen3.5-4b-4bit"
+        data = json.loads((ext_dir / "providers.json").read_text())
+        assert _cline_settings(data)["model"] == "qwen3.5-4b-4bit"
 
 
 # --------------------------------------------------------------------

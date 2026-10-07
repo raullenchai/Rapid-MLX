@@ -119,11 +119,26 @@ class ExternalCacheProbeError(RuntimeError):
     path: str
 
     def user_message(self) -> str:
+        app = {
+            "Apple_Terminal": "Terminal",
+            "iTerm.app": "iTerm",
+            "vscode": "Visual Studio Code",
+            "WarpTerminal": "Warp",
+        }.get(os.environ.get("TERM_PROGRAM", ""), "the app that launched this command")
+        reason = (
+            "Access was denied."
+            if isinstance(self, CacheProbePermissionError)
+            else "The read timed out; check that the volume is connected and responsive."
+        )
         return (
             "Rapid-MLX cannot read the Hugging Face cache on the external "
-            f"volume ({self.path}). Grant this terminal or app access to that "
-            "volume in System Settings → Privacy & Security → Files & Folders, "
-            "then retry."
+            f"volume ({self.path}). {reason}\n"
+            "  If macOS is blocking volume access:\n"
+            "  1. Open System Settings → Privacy & Security → Files & Folders:\n"
+            "     open 'x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders'\n"
+            f"  2. Under {app}, enable Removable Volumes (or accept the Allow prompt).\n"
+            "  3. Run the same rapid-mlx command again in that app.\n"
+            "  Keep the existing cache; this error does not mean the model needs downloading."
         )
 
 

@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Pytest configuration and shared fixtures."""
 
+import argparse
+import contextlib
 import importlib.util
 import ipaddress
 import os
@@ -543,6 +545,81 @@ def scheduler_config_stub(monkeypatch):
         sys.modules.pop("rapid_mlx.turboquant", None)
 
 
+def _called_while_importing_the_server_module() -> bool:
+    """True when the current call stack is ``rapid_mlx.server``'s own import."""
+    import sys
+
+    frame = sys._getframe(1)
+    while frame is not None:
+        if (
+            frame.f_code.co_name == "<module>"
+            and frame.f_globals.get("__name__") == "rapid_mlx.server"
+        ):
+            return True
+        frame = frame.f_back
+    return False
+
+
+@contextlib.contextmanager
+def server_app_state_isolated():
+    """Undo, on exit, what the enclosed code did to Starlette app state.
+
+    The first request through an app builds its middleware stack, after which
+    ``add_middleware`` raises. On exit every middleware registered inside the
+    block is removed from its app, and that app's built stack is discarded;
+    the process-global ``rapid_mlx.server.app`` is always left un-started.
+
+    What the server module installs while it is being imported is part of
+    the app and is kept, including when that first import happens inside the
+    block.
+    """
+    import sys
+
+    try:
+        from starlette.applications import Starlette
+    except ImportError:  # pragma: no cover - starlette is a core dependency
+        yield
+        return
+
+    added: list[tuple[object, object]] = []
+    original = Starlette.add_middleware
+
+    def _recording_add_middleware(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+        if not _called_while_importing_the_server_module():
+            # Starlette prepends, so the new entry is the first one.
+            added.append((self, self.user_middleware[0]))
+
+    Starlette.add_middleware = _recording_add_middleware
+    try:
+        yield
+    finally:
+        Starlette.add_middleware = original
+        for owner, entry in added:
+            owner.user_middleware[:] = [
+                m for m in owner.user_middleware if m is not entry
+            ]
+            # A stack built with that entry must not outlive it.
+            owner.middleware_stack = None
+        # Tests swap in stand-in modules and stand-in ``app`` objects; only
+        # a real Starlette application has a started state to reset.
+        app = getattr(sys.modules.get("rapid_mlx.server"), "app", None)
+        if isinstance(app, Starlette):
+            app.middleware_stack = None
+
+
+@pytest.fixture(autouse=True)
+def _unstart_global_server_app_after_each_test():
+    """Keep the process-global FastAPI app configurable across tests.
+
+    Without this, any test that drives the real ``serve`` path (which
+    configures CORS on ``rapid_mlx.server.app``) fails whenever an earlier
+    test in the same process sent a request through that app.
+    """
+    with server_app_state_isolated():
+        yield
+
+
 @pytest.fixture(autouse=True)
 def _reset_global_parser_state_after_each_test():
     """Keep the process-global parser state hermetic across tests.
@@ -591,11 +668,17 @@ def _reset_global_parser_state_after_each_test():
         _server._reasoning_parser_name = None
 
 
+class _ServerURLOptIn(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+        namespace.integration_server_opt_in = bool(values)
+
+
 def pytest_addoption(parser):
     """Add custom command line options."""
     parser.addoption(
         "--server-url",
-        action="store",
+        action=_ServerURLOptIn,
         default="http://localhost:8000",
         help="URL of the Rapid-MLX server for integration tests",
     )
@@ -655,10 +738,13 @@ def pytest_collection_modifyitems(config, items):
                 item.add_marker(skip_slow)
 
     # Skip integration tests unless server URL is explicitly provided
-    skip_integration = pytest.mark.skip(reason="Integration tests require --server-url")
-    for item in items:
-        if "integration" in item.keywords:
-            item.add_marker(skip_integration)
+    if not getattr(config.option, "integration_server_opt_in", False):
+        skip_integration = pytest.mark.skip(
+            reason="Integration tests require --server-url"
+        )
+        for item in items:
+            if "integration" in item.keywords:
+                item.add_marker(skip_integration)
 
     # Skip items inside script-only modules (regression_suite.py etc.)
     # — see ``_SCRIPT_ONLY_MODULES`` above. ``pytest_ignore_collect`` is

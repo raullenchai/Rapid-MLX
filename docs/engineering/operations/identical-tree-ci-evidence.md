@@ -97,3 +97,18 @@ Desktop CI took 22 minutes 38 seconds of wall time, including about 26
 Manzanita GUI slot-minutes and a 4 minute 39 second hosted app build. These are
 workflow timings, not an invoice: platform billing multipliers and partner
 runner charges must still be read from their respective usage exports.
+
+## Latest-candidate barrier for full main execution
+
+Discovery never replaces a newer identical-tree candidate with an older full
+success when the newer candidate was cancelled or its evidence API is
+unavailable. These are cache misses: ordinary full main validation executes.
+A successful newer candidate without the complete evidence namespace is also
+a cache miss, even if an older identical-tree candidate has full attestation.
+A scoped mapped, source or advisory success does not count as complete proof.
+
+This preserves the full-main backstop boundary for future reduced candidates.
+It does not implement or activate reduced candidate routing, enforce a
+qualification status in the queue, or authorize a reduced landing. Those
+controls and their in-flight rollback need separate reviewed rollout evidence.
+An API failure may increase full-run cost; it never broadens proof acceptance.

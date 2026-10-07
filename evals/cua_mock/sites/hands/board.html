@@ -1,0 +1,44 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Launch board</title>
+<style>
+  body { font: 15px system-ui; max-width: 560px; margin: 24px auto; user-select: none; }
+  li { list-style: none; border: 1px solid #888; padding: 10px; margin: 6px 0; background: #f6f6f6; cursor: grab; }
+  canvas { border: 1px solid #888; display: block; margin-top: 16px; }
+</style>
+<h1>Launch board</h1>
+<p>Drag a task onto another to place it before that one.</p>
+<ul id="tasks" aria-label="Tasks"></ul>
+<p>Order: <span id="order"></span></p>
+<canvas id="pad" width="400" height="120"></canvas>
+<script src="../common.js"></script>
+<script>
+Mock.start(() => {
+  let names = ["Alpha", "Bravo", "Charlie", "Delta"], held = null;
+  const draw = () => {
+    tasks.replaceChildren(...names.map((name) => {
+      const li = document.createElement("li");
+      li.textContent = name;
+      li.addEventListener("mousedown", () => { held = name; });
+      li.addEventListener("mouseup", () => {
+        if (held && held !== name) {
+          names = names.filter((n) => n !== held);
+          names.splice(names.indexOf(name), 0, held);
+          Mock.log("hands", "reordered", { order: names });
+          draw();
+        }
+        held = null;
+      });
+      return li;
+    }));
+    order.textContent = names.join(", ");
+  };
+  document.addEventListener("mouseup", () => { held = null; });
+  draw();
+  // Painted, not built: nothing in the accessibility tree says it is there.
+  const ctx = pad.getContext("2d");
+  ctx.fillStyle = "#c22"; ctx.fillRect(140, 35, 120, 50);
+  ctx.fillStyle = "#fff"; ctx.font = "18px system-ui"; ctx.fillText("Ignite", 172, 66);
+  pad.addEventListener("click", (e) => Mock.log("hands", "canvas_click", { x: e.offsetX, y: e.offsetY }));
+});
+</script>

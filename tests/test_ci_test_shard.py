@@ -1,9 +1,12 @@
 import configparser
+import json
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 try:
     import tomllib
@@ -118,6 +121,7 @@ def test_control():
         """
 import warnings
 import pytest
+import yaml
 
 def test_warning():
     warnings.warn(pytest.PytestDeprecationWarning("pytest deprecation"))
@@ -200,3 +204,83 @@ def test_invalid_shard_index_fails(tmp_path: Path, index: int) -> None:
     _write(tmp_path / "tests/test_one.py", 1)
     with pytest.raises(ValueError, match="shard index"):
         ignored_paths(tmp_path, "ordinary", index, 3)
+
+
+def _configured_repository_shards(suite: str) -> int:
+    workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text())
+    job = workflow["jobs"]["test-matrix"]
+    script = next(
+        step["run"]
+        for step in job["steps"]
+        if step.get("name") == "Run unit tests (no MLX required)"
+    )
+    counts = re.findall(
+        r"--suite (ordinary|headless).*?--shard-count (\d+)", script, re.S
+    )
+    assert len(counts) == 2 and {name for name, _ in counts} == {"ordinary", "headless"}
+    count = int(dict(counts)[suite])
+    matrix = job["strategy"]["matrix"]
+    if isinstance(matrix, dict):
+        shards = matrix["shard"]
+    else:
+        # The source routing pilot emits a smaller interpreter set, but its
+        # full candidate matrix and both planners must still agree on shards.
+        assert matrix == "${{ fromJSON(needs.changes.outputs.test_matrix) }}"
+        outputs = json.loads(
+            subprocess.check_output(
+                [
+                    sys.executable,
+                    str(REPO_ROOT / "scripts/classify_ci_changes.py"),
+                    "--force-full",
+                    "rapid_mlx/cli.py",
+                ],
+                text=True,
+            )
+        )
+        shards = sorted(
+            {item["shard"] for item in json.loads(outputs["test_matrix"])["include"]}
+        )
+    assert sorted(shards) == list(range(1, count + 1))
+    return count
+
+
+def _assert_repository_enrollment(suite: str, shard_count: int, planner) -> None:
+    # Enumerate independently of discover/partition so omissions in their
+    # input universe cannot be hidden by comparing a planner to itself.
+    universe = {
+        path.relative_to(REPO_ROOT).as_posix()
+        for path in (REPO_ROOT / "tests").rglob("test_*.py")
+        if not path.relative_to(REPO_ROOT).as_posix().startswith("tests/integrations/")
+        and (
+            path.relative_to(REPO_ROOT).as_posix().startswith("tests/headless_mlx/")
+            == (suite == "headless")
+        )
+    }
+    assert universe
+    selected = []
+    for index in range(1, shard_count + 1):
+        ignored = set(planner(REPO_ROOT, suite, index, shard_count))
+        assert ignored <= universe
+        selected.append(universe - ignored)
+    assert all(selected)
+    assert set.union(*selected) == universe
+    assert sum(map(len, selected)) == len(universe)
+
+
+@pytest.mark.parametrize("suite", ["ordinary", "headless"])
+def test_actual_repository_enrollment_matches_configured_shards(suite: str) -> None:
+    _assert_repository_enrollment(
+        suite, _configured_repository_shards(suite), ignored_paths
+    )
+
+
+def test_actual_repository_enrollment_detects_planner_omission() -> None:
+    omitted = "tests/test_ci_test_shard.py"
+
+    def incomplete(root, suite, index, count):
+        return [*ignored_paths(root, suite, index, count), omitted]
+
+    with pytest.raises(AssertionError):
+        _assert_repository_enrollment(
+            "ordinary", _configured_repository_shards("ordinary"), incomplete
+        )

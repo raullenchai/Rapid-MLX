@@ -1,0 +1,44 @@
+{
+  "models": [
+    {
+      "title": "Claude",
+      "provider": "anthropic",
+      "model": "claude-sonnet",
+      "apiKey": "sk-ant-example",
+      "completionOptions": {"temperature": 0.2},
+      "requestOptions": {"timeout": 30}
+    },
+    {
+      "title": "rapid-mlx",
+      "provider": "openai",
+      "model": "qwen3.5-9b-4bit",
+      "apiBase": "http://127.0.0.1:8000/v1",
+      "apiKey": "sk-noop"
+    },
+    {
+      "title": "Ollama Llama",
+      "provider": "ollama",
+      "model": "llama3"
+    }
+  ],
+  "tabAutocompleteModel": {"title": "Autocomplete", "provider": "ollama", "model": "qwen2.5-coder:1.5b"},
+  "embeddingsProvider": {"provider": "ollama", "model": "nomic-embed-text"},
+  "reranker": {"name": "voyage", "params": {"model": "rerank-2", "apiKey": "voyage-example"}},
+  "contextProviders": [
+    {"name": "code"},
+    {"name": "open", "params": {"onlyPinned": true}},
+    {"name": "web", "params": {"n": 5}},
+    {"name": "jira", "params": {"JiraToken": "jira-example", "JiraDomain": "example.atlassian.net"}}
+  ],
+  "customCommands": [{"name": "test", "description": "Write tests", "prompt": "Write unit tests for {{{ input }}}"}],
+  "systemMessage": "Answer briefly.",
+  "experimental": {
+    "modelContextProtocolServers": [
+      {"transport": {"type": "stdio", "command": "uvx", "args": ["mcp-server-git"], "server_name": "git"}},
+      {"transport": {"type": "stdio", "command": "node", "args": ["server.js"]}}
+    ]
+  },
+  "docs": [{"title": "MLX", "startUrl": "https://ml-explore.github.io/mlx/", "faviconUrl": "https://example.com/f.ico"}],
+  "requestOptions": {"verifySsl": true},
+  "allowAnonymousTelemetry": false
+}

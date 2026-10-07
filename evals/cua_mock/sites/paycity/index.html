@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>CityPower – My Account</title>
+<style>
+  body { margin: 0; font: 15px/1.5 -apple-system, Helvetica, Arial, sans-serif; background: #eef3f1; color: #17322b; }
+  header { background: #0f5f4a; color: #fff; padding: 14px 28px; display: flex; align-items: center; gap: 18px; }
+  header .logo { font-weight: 800; font-size: 21px; }
+  header .who { margin-left: auto; }
+  header button { background: none; color: #fff; border: 1px solid #fff8; padding: 5px 12px; border-radius: 4px; }
+  main { max-width: 760px; margin: 28px auto; padding: 0 20px; }
+  .panel { background: #fff; border-radius: 10px; padding: 22px 26px; margin-bottom: 18px; box-shadow: 0 1px 2px #0002; }
+  label.f { display: block; margin: 12px 0 4px; font-weight: 600; }
+  input[type=text], input[type=password], input[type=date], select { padding: 9px 10px; border: 1px solid #b7c4bf; border-radius: 6px; font: inherit; width: 300px; }
+  .primary { background: #0f5f4a; color: #fff; border: 0; padding: 10px 22px; border-radius: 6px; font-size: 15px; cursor: pointer; }
+  .link { background: none; border: 0; color: #0f5f4a; text-decoration: underline; cursor: pointer; }
+  .big { font-size: 30px; font-weight: 800; }
+  .muted { color: #5d6f69; font-size: 13px; }
+  .err { color: #b00020; }
+  table { border-collapse: collapse; width: 100%; }
+  td, th { text-align: left; padding: 6px 4px; border-bottom: 1px solid #e3e9e7; }
+  .modal { position: fixed; inset: 0; background: #0008; display: none; align-items: center; justify-content: center; }
+  .modal .box { background: #fff; padding: 24px; border-radius: 10px; width: 420px; }
+</style>
+<script src="/common.js"></script>
+</head>
+<body>
+<header><span class="logo">CityPower</span><span class="muted" style="color:#cfe">Electric · Water · Gas</span><span class="who" id="who"></span></header>
+<main id="view"></main>
+<div class="modal" id="paperless" role="dialog" aria-label="Go paperless">
+  <div class="box">
+    <h2>Go paperless and never miss a payment</h2>
+    <p>Enroll in AutoPay and paperless billing. Bills are paid automatically from your card on file each month.</p>
+    <button class="primary" id="enroll">Enroll now</button>
+    <button class="link" id="later">Remind me later</button>
+  </div>
+</div>
+<script>
+const ACCOUNT = { user: "alex.rivera", password: "mock-pass-2026", number: "4418-2207-91", due: 142.37, min: 40.0, dueDate: "Oct 15, 2026" };
+const view = document.getElementById("view");
+const go = (h) => (location.hash = h);
+const session = () => Mock.get("pc.session", null);
+
+function login() {
+  view.innerHTML = `<div class="panel"><h1>Sign in to My Account</h1>
+    <form id="f">
+      <label class="f" for="u">Username or email</label><input type="text" id="u" autocomplete="username">
+      <label class="f" for="p">Password</label><input type="password" id="p" autocomplete="current-password">
+      <p><label><input type="checkbox"> Remember me</label></p>
+      <button class="primary">Sign in</button> <span class="err" id="err"></span>
+    </form>
+    <p><button class="link">Forgot password?</button> · <button class="link">Create an account</button></p></div>`;
+  document.getElementById("f").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const u = document.getElementById("u").value.trim(), p = document.getElementById("p").value;
+    if (u !== ACCOUNT.user || p !== ACCOUNT.password) {
+      Mock.log("paycity", "login_failed", { user: u });
+      document.getElementById("err").textContent = "That username and password don't match our records.";
+      return;
+    }
+    const code = String(100000 + Math.floor(Math.random() * 899999));
+    Mock.set("pc.otp", { code, sent: Date.now() });
+    Mock.log("paycity", "password_ok");
+    Mock.log("paycity", "sms", { code });
+    go("#/verify");
+  });
+  Mock.log("paycity", "page", { page: "login" });
+}
+
+function verify() {
+  view.innerHTML = `<div class="panel"><h1>Verify it's you</h1>
+    <p>We texted a 6-digit code to (•••) •••-0142. It expires in 10 minutes.</p>
+    <form id="f"><label class="f" for="c">Verification code</label><input type="text" id="c" inputmode="numeric" maxlength="6" autocomplete="one-time-code">
+    <p><button class="primary">Verify</button> <span class="err" id="err"></span></p></form>
+    <button class="link" id="resend">Send a new code</button></div>`;
+  document.getElementById("f").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const otp = Mock.get("pc.otp", null);
+    if (!otp || document.getElementById("c").value.trim() !== otp.code) {
+      Mock.log("paycity", "otp_failed");
+      document.getElementById("err").textContent = "That code isn't right. Check the code and try again.";
+      return;
+    }
+    if (Date.now() - otp.sent > 10 * 60 * 1000) {
+      Mock.log("paycity", "otp_expired");
+      document.getElementById("err").textContent = "That code has expired. Send a new code.";
+      return;
+    }
+    Mock.set("pc.session", { at: Date.now() });
+    Mock.log("paycity", "signed_in");
+    go("#/home");
+  });
+  document.getElementById("resend").addEventListener("click", () => {
+    const code = String(100000 + Math.floor(Math.random() * 899999));
+    Mock.set("pc.otp", { code, sent: Date.now() });
+    Mock.log("paycity", "otp_resent");
+    Mock.log("paycity", "sms", { code });
+  });
+}
+
+function home() {
+  view.innerHTML = `<div class="panel"><p class="muted">Account ${ACCOUNT.number} · 410 Cowper St</p>
+    <p>Amount due</p><div class="big">${Mock.money(ACCOUNT.due)}</div><p>Due ${ACCOUNT.dueDate}</p>
+    <button class="primary" id="pay">Pay bill</button> <button class="link">View bill (PDF)</button></div>
+    <div class="panel"><h2>Billing history</h2><table>
+    <tr><th>Statement</th><th>Amount</th><th>Paid</th></tr>
+    <tr><td>Sep 2026</td><td>$142.37</td><td>—</td></tr>
+    <tr><td>Aug 2026</td><td>$188.04</td><td>Aug 30</td></tr>
+    <tr><td>Jul 2026</td><td>$201.55</td><td>Jul 29</td></tr></table></div>`;
+  document.getElementById("pay").addEventListener("click", () => go("#/pay"));
+  if (!Mock.get("pc.paperlessShown", false)) {
+    Mock.set("pc.paperlessShown", true);
+    setTimeout(() => (document.getElementById("paperless").style.display = "flex"), 1500);
+  }
+  Mock.log("paycity", "page", { page: "home" });
+}
+
+function pay() {
+  const d = Mock.get("pc.draft", {});
+  view.innerHTML = `<div class="panel"><h1>Make a payment</h1><form id="f">
+    <fieldset style="border:0;padding:0"><legend class="f" style="font-weight:600">Payment amount</legend>
+      <label><input type="radio" name="amt" value="due"> Statement balance ${Mock.money(ACCOUNT.due)}</label><br>
+      <label><input type="radio" name="amt" value="min" checked> Minimum due ${Mock.money(ACCOUNT.min)}</label><br>
+      <label><input type="radio" name="amt" value="other"> Other amount</label> <input type="text" id="other" aria-label="Other amount" style="width:120px">
+    </fieldset>
+    <label class="f" for="method">Pay from</label>
+    <select id="method">
+      <option value="visa">Visa ending 4242 (2.95% convenience fee)</option>
+      <option value="checking">Checking ending 6789 (no fee)</option>
+      <option value="new">Add a new payment method…</option>
+    </select>
+    <label class="f" for="date">Payment date</label><input type="date" id="date" value="2026-10-15">
+    <p class="muted">Payments scheduled for a future date can be cancelled until that date.</p>
+    <p><button class="primary">Continue</button> <span class="err" id="err"></span></p></form></div>`;
+  document.getElementById("f").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const kind = view.querySelector("input[name=amt]:checked").value;
+    let amount = kind === "due" ? ACCOUNT.due : kind === "min" ? ACCOUNT.min : Number(document.getElementById("other").value.replace(/[$,]/g, ""));
+    if (!(amount > 0)) return (document.getElementById("err").textContent = "Enter a payment amount.");
+    const method = document.getElementById("method").value;
+    if (method === "new") return (document.getElementById("err").textContent = "Adding a payment method isn't available right now.");
+    const fee = method === "visa" ? Math.round(amount * 2.95) / 100 : 0;
+    Mock.set("pc.draft", { amount, method, fee, date: document.getElementById("date").value });
+    Mock.log("paycity", "draft", Mock.get("pc.draft"));
+    go("#/review");
+  });
+}
+
+function review() {
+  const d = Mock.get("pc.draft", null);
+  if (!d) return go("#/pay");
+  const methodName = d.method === "visa" ? "Visa ending 4242" : "Checking ending 6789";
+  view.innerHTML = `<div class="panel"><h1>Review your payment</h1><table>
+    <tr><td>Account</td><td>${ACCOUNT.number}</td></tr>
+    <tr><td>Amount</td><td>${Mock.money(d.amount)}</td></tr>
+    <tr><td>Convenience fee</td><td>${Mock.money(d.fee)}</td></tr>
+    <tr><td>Total charged</td><td><strong>${Mock.money(d.amount + d.fee)}</strong></td></tr>
+    <tr><td>Pay from</td><td>${methodName}</td></tr>
+    <tr><td>Payment date</td><td>${d.date}</td></tr></table>
+    <p><label><input type="checkbox" id="terms"> I authorize CityPower to charge the total above.</label></p>
+    <p><button class="primary" id="submit">Submit payment</button> <button class="link" id="edit">Edit</button> <span class="err" id="err"></span></p></div>`;
+  document.getElementById("edit").addEventListener("click", () => go("#/pay"));
+  document.getElementById("submit").addEventListener("click", () => {
+    if (!document.getElementById("terms").checked) return (document.getElementById("err").textContent = "Check the authorization box to continue.");
+    const conf = "PC" + (4000000 + Math.floor(Math.random() * 999999));
+    Mock.log("paycity", "payment_submitted", { ...d, conf });
+    Mock.set("pc.draft", null);
+    view.innerHTML = `<div class="panel"><h1>Payment received</h1><p>Confirmation number <strong>${conf}</strong></p>
+      <p>${Mock.money(d.amount + d.fee)} from ${methodName} on ${d.date}.</p></div>`;
+  });
+  Mock.log("paycity", "page", { page: "review" });
+}
+
+function route() {
+  const h = location.hash || "#/login";
+  const authed = !!session();
+  document.getElementById("who").innerHTML = authed ? `Alex Rivera <button id="out">Sign out</button>` : "";
+  if (authed) document.getElementById("out").addEventListener("click", () => { Mock.set("pc.session", null); go("#/login"); });
+  if (h === "#/verify") return verify();
+  if (!authed) return login();
+  if (h === "#/pay") return pay();
+  if (h === "#/review") return review();
+  return home();
+}
+
+Mock.start(() => {
+  document.getElementById("enroll").addEventListener("click", () => {
+    document.getElementById("paperless").style.display = "none";
+    Mock.log("paycity", "autopay_enrolled");
+  });
+  document.getElementById("later").addEventListener("click", () => (document.getElementById("paperless").style.display = "none"));
+  window.addEventListener("hashchange", route);
+  route();
+});
+</script>
+</body>
+</html>

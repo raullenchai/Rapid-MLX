@@ -39,8 +39,8 @@ struct SettingsToolsPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.xl) {
             SectionHeader(
-                "Tools",
-                subtitle: "Tools the model can call during a chat. Turn one off and it is never offered — and never runs, even if the model asks for it by name.",
+                String(localized: "Tools"),
+                subtitle: String(localized: "Tools the model can call during a chat. Turn one off and it is never offered — and never runs, even if the model asks for it by name."),
                 emphasis: .page
             )
             toolsSection
@@ -53,7 +53,7 @@ struct SettingsToolsPanel: View {
     // MARK: - Available tools
 
     private var toolsSection: some View {
-        SettingsSection("Available tools") {
+        SettingsSection(String(localized: "Available tools")) {
             let definitions = chat.builtinDefinitions
             ForEach(Array(definitions.enumerated()), id: \.element.function.name) { index, def in
                 if index > 0 { SettingsRowDivider() }
@@ -151,7 +151,7 @@ struct SettingsToolsPanel: View {
             .rapidAnimation(RapidMotion.quick, value: isExpanded)
             .accessibilityLabel("Details for \(Self.displayName(for: name))")
             .accessibilityAddTraits(isExpanded ? [.isButton, .isSelected] : .isButton)
-            .accessibilityHint(isExpanded ? "Collapse" : "Expand")
+            .accessibilityHint(isExpanded ? String(localized: "Collapse") : String(localized: "Expand"))
             .accessibilityIdentifier("Settings.Tools.Details.\(name)")
 
             if isExpanded {
@@ -192,15 +192,15 @@ struct SettingsToolsPanel: View {
     /// something true rather than nothing.
     static func displayName(for toolName: String) -> String {
         switch toolName {
-        case "web_search": return "Web Search"
-        case "browse":     return "Browse Web Page"
-        case "weather":    return "Weather"
-        case "read_document": return "Read Attached Document"
-        case "local_search": return "Search Local Files"
-        case "local_read": return "Read Local File"
-        case "local_write": return "Write Local File"
-        case "local_trash": return "Move File to Trash"
-        case "local_run": return "Run Development Command"
+        case "web_search": return String(localized: "Web Search")
+        case "browse":     return String(localized: "Browse Web Page")
+        case "weather":    return String(localized: "Weather")
+        case "read_document": return String(localized: "Read Attached Document")
+        case "local_search": return String(localized: "Search Local Files")
+        case "local_read": return String(localized: "Read Local File")
+        case "local_write": return String(localized: "Write Local File")
+        case "local_trash": return String(localized: "Move File to Trash")
+        case "local_run": return String(localized: "Run Development Command")
         default:           return toolName
         }
     }
@@ -211,28 +211,28 @@ struct SettingsToolsPanel: View {
     static func summary(for toolName: String, fallback: String) -> String {
         switch toolName {
         case "web_search":
-            return "Looks up current information on the web when a question needs it."
+            return String(localized: "Looks up current information on the web when a question needs it.")
         case "browse":
-            return "Opens a web page you or the model names and reads it. You approve each page."
+            return String(localized: "Opens a web page you or the model names and reads it. You approve each page.")
         case "weather":
-            return "Gets the current weather for a place you name."
+            return String(localized: "Gets the current weather for a place you name.")
         case "read_document":
             // States the retention window because it is the one thing about
             // this tool a user cannot discover by using it: everything else is
             // visible in the transcript, but "the full text is kept for N days,
             // then you are asked to attach the file again" is only observable
             // by waiting a quarter and being surprised.
-            return "Reads the rest of a PDF, CSV, or text file you attached. Only files you attach; never other files on your Mac. The full text is kept on this Mac for \(DocumentContentCache.retentionDays) days, and is deleted when you remove the attachment or delete the conversation."
+            return String(localized: "Reads the rest of a PDF, CSV, or text file you attached. Only files you attach; never other files on your Mac. The full text is kept on this Mac for \(DocumentContentCache.retentionDays) days, and is deleted when you remove the attachment or delete the conversation.")
         case "local_search":
-            return "Searches filenames and text under a folder you approve on this Mac."
+            return String(localized: "Searches filenames and text under a folder you approve on this Mac.")
         case "local_read":
-            return "Reads a UTF-8 text file you approve inside your home folder."
+            return String(localized: "Reads a UTF-8 text file you approve inside your home folder.")
         case "local_write":
-            return "Creates or replaces one text file after showing the exact path and content for approval."
+            return String(localized: "Creates or replaces one text file after showing the exact path and content for approval.")
         case "local_trash":
-            return "Moves one file to Trash after approval. It never removes folders or permanently deletes files."
+            return String(localized: "Moves one file to Trash after approval. It never removes folders or permanently deletes files.")
         case "local_run":
-            return "Runs an approved development command without a shell, with a 30-second limit."
+            return String(localized: "Runs an approved development command without a shell, with a 30-second limit.")
         default:
             return fallback
         }
@@ -247,15 +247,15 @@ struct SettingsToolsPanel: View {
 
     private static func voiceOverLabel(for toolName: String) -> String {
         switch toolName {
-        case "web_search": "Web search"
-        case "browse": "Browse pages"
-        case "weather": "Weather"
-        case "read_document": "Read attached document"
-        case "local_search": "Search local files"
-        case "local_read": "Read local file"
-        case "local_write": "Write local file"
-        case "local_trash": "Move file to Trash"
-        case "local_run": "Run development command"
+        case "web_search": String(localized: "Web search")
+        case "browse": String(localized: "Browse pages")
+        case "weather": String(localized: "Weather")
+        case "read_document": String(localized: "Read attached document")
+        case "local_search": String(localized: "Search local files")
+        case "local_read": String(localized: "Read local file")
+        case "local_write": String(localized: "Write local file")
+        case "local_trash": String(localized: "Move file to Trash")
+        case "local_run": String(localized: "Run development command")
         default: toolName.replacingOccurrences(of: "_", with: " ")
         }
     }
@@ -265,8 +265,8 @@ struct SettingsToolsPanel: View {
     private var webSearchSection: some View {
         @Bindable var config = webSearch
         return SettingsSection(
-            "Web search",
-            subtitle: "Which backend `web_search` queries. Keenable works with no account; add a free key (Parallel recommended) for the best results. Keys stay in your Keychain."
+            String(localized: "Web search"),
+            subtitle: String(localized: "Which backend `web_search` queries. Keenable works with no account; add a free key (Parallel recommended) for the best results. Keys stay in your Keychain.")
         ) {
                 VStack(alignment: .leading, spacing: RapidTheme.Space.md) {
                     // Native macOS radio group, kept native: radios are
@@ -400,11 +400,11 @@ struct SettingsToolsPanel: View {
     ) -> String {
         switch state {
         case .unknown:
-            return "Checking saved key…"
+            return String(localized: "Checking saved key…")
         case .unavailable:
-            return "The saved key can’t be accessed. Enter it again and save to replace it."
+            return String(localized: "The saved key can’t be accessed. Enter it again and save to replace it.")
         case .present:
-            return "A key is stored for \(provider.displayName)."
+            return String(localized: "A key is stored for \(provider.displayName).")
         case .absent:
             return noKeyCaption(for: provider)
         }
@@ -416,9 +416,9 @@ struct SettingsToolsPanel: View {
     /// Static + internal so the copy is pinned by tests.
     static func noKeyCaption(for provider: WebSearchProvider) -> String {
         if provider.requiresKey {
-            return "No key stored — searches fall back to Keenable until you save one."
+            return String(localized: "No key stored — searches fall back to Keenable until you save one.")
         }
-        return "No key stored — \(provider.displayName) works without one; a free key lifts the shared rate limit."
+        return String(localized: "No key stored — \(provider.displayName) works without one; a free key lifts the shared rate limit.")
     }
 
     private func commitKey(for provider: WebSearchProvider) {
@@ -456,9 +456,9 @@ struct SettingsToolsPanel: View {
 
     static func feedbackCopy(_ feedback: SettingsView.WebSearchKeySaveFeedback) -> String {
         switch feedback {
-        case .saved: return "Saved to your Keychain."
-        case .cleared: return "Key removed."
-        case .writeFailed: return "Couldn't write to the Keychain. Try again."
+        case .saved: return String(localized: "Saved to your Keychain.")
+        case .cleared: return String(localized: "Key removed.")
+        case .writeFailed: return String(localized: "Couldn't write to the Keychain. Try again.")
         }
     }
 
@@ -471,13 +471,13 @@ struct SettingsToolsPanel: View {
 
     private var browseSection: some View {
         SettingsSection(
-            "Browsing",
-            subtitle: "`browse` fetches a page and hands its text to the model. The model picks the URL, so by default you approve each destination first."
+            String(localized: "Browsing"),
+            subtitle: String(localized: "`browse` fetches a page and hands its text to the model. The model picks the URL, so by default you approve each destination first.")
         ) {
             Toggle(isOn: browseAutoApproveBinding) {
                 SettingsRowLabel(
-                    title: "Approve every page automatically",
-                    description: "Skips the confirmation for unattended use. Private and local addresses stay blocked either way."
+                    title: String(localized: "Approve every page automatically"),
+                    description: String(localized: "Skips the confirmation for unattended use. Private and local addresses stay blocked either way.")
                 )
             }
             .toggleStyle(TrailingSettingsToggleStyle())
@@ -498,8 +498,8 @@ struct SettingsToolsPanel: View {
 
     private var embeddedAPISection: some View {
         SettingsSection(
-            "Embedded API security",
-            subtitle: "The Desktop engine always requires a bearer key and stays bound to 127.0.0.1. Choose when that key rotates."
+            String(localized: "Embedded API security"),
+            subtitle: String(localized: "The Desktop engine always requires a bearer key and stays bound to 127.0.0.1. Choose when that key rotates.")
         ) {
             VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
                 RapidSegmentedControl(
@@ -510,21 +510,21 @@ struct SettingsToolsPanel: View {
                     options: [
                         .init(
                             value: .perLaunch,
-                            title: "Every start",
+                            title: String(localized: "Every start"),
                             identifier: "Settings.Tools.EmbeddedAPI.PerLaunch"
                         ),
                         .init(
                             value: .daily,
-                            title: "Daily",
+                            title: String(localized: "Daily"),
                             identifier: "Settings.Tools.EmbeddedAPI.Daily"
                         ),
                         .init(
                             value: .explicit,
-                            title: "Until I rotate",
+                            title: String(localized: "Until I rotate"),
                             identifier: "Settings.Tools.EmbeddedAPI.Explicit"
                         ),
                     ],
-                    accessibilityLabel: "Embedded API key rotation"
+                    accessibilityLabel: String(localized: "Embedded API key rotation")
                 )
                 .accessibilityIdentifier("Settings.Tools.EmbeddedAPI.Lifetime")
 
@@ -596,17 +596,17 @@ struct SettingsToolsPanel: View {
     static func embeddedBearerIssueCopy(_ issue: EmbeddedBearerStorageIssue) -> String {
         switch issue {
         case .generationFailed:
-            return "Secure key generation failed, so the model was not started."
+            return String(localized: "Secure key generation failed, so the model was not started.")
         case .missingSecret:
-            return "No usable saved key was found, so this model started with a one-time key."
+            return String(localized: "No usable saved key was found, so this model started with a one-time key.")
         case .corruptedCredential:
-            return "The saved credential was malformed, so this model started with a one-time key."
+            return String(localized: "The saved credential was malformed, so this model started with a one-time key.")
         case .unavailableKeychain:
-            return "The Keychain is unavailable, so this model started with a one-time key."
+            return String(localized: "The Keychain is unavailable, so this model started with a one-time key.")
         case .writeFailed:
-            return "The Keychain couldn’t store a new key, so this model started with a one-time key. Restart the model to try again."
+            return String(localized: "The Keychain couldn’t store a new key, so this model started with a one-time key. Restart the model to try again.")
         case .deleteFailed:
-            return "The saved key couldn’t be removed from your Keychain. Retry cleanup before relying on Every start storage."
+            return String(localized: "The saved key couldn’t be removed from your Keychain. Retry cleanup before relying on Every start storage.")
         }
     }
 

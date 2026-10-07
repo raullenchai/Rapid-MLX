@@ -1286,7 +1286,12 @@ def test_wait_send_idle_follows_an_intentionally_deferred_auto_start(tmp_path):
     helper = f"wait_send_idle() {{{helper_body}\n}}"
 
     assert 'identifier == "Readiness.Action"' in helper
-    assert 'and .description == "Start"' in helper
+    assert 'and (.description == "Start" or .description == "启动")' in helper
+    assert '(.description == "Send message" or .description == "发送消息")' in helper
+    # The zh-Hans journey drives the same script, so every label gate it
+    # crosses has to accept the localized spelling too.
+    assert '"$initial_action" == "Download" || "$initial_action" == "下载"' in source
+    assert source.count('"$crash_send_label" == "发送消息"') == 2
     assert "and .enabled == true" in helper
     assert '"$AX_DRIVER" click-center "$APP_PID" Readiness.Action' in helper
     assert "follow_memory_confirmation_edge" in helper

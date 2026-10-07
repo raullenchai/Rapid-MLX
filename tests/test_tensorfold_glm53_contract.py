@@ -197,8 +197,8 @@ def test_glm_runtime_and_platform_gates(monkeypatch) -> None:
 
     from rapid_mlx.speculative import tensorfold_glm53 as adapter
 
-    adapter.require_runtime("0.6.0", direct_url=_qualified_direct_url())
-    monkeypatch.setattr(adapter.importlib.metadata, "version", lambda _name: "0.6.0")
+    adapter.require_runtime("0.6.6", direct_url=_qualified_direct_url())
+    monkeypatch.setattr(adapter.importlib.metadata, "version", lambda _name: "0.6.6")
     monkeypatch.setattr(
         adapter.importlib.metadata,
         "distribution",
@@ -234,13 +234,13 @@ def test_glm_runtime_and_platform_gates(monkeypatch) -> None:
         },
     ):
         with pytest.raises(adapter.TensorFoldUnavailable, match="exact qualified"):
-            adapter.require_runtime("0.6.0", direct_url=provenance)
+            adapter.require_runtime("0.6.6", direct_url=provenance)
     monkeypatch.setattr(
         adapter.importlib.metadata,
         "version",
         lambda _name: (_ for _ in ()).throw(PackageNotFoundError()),
     )
-    with pytest.raises(adapter.TensorFoldUnavailable, match="tensorfold==0.6.0"):
+    with pytest.raises(adapter.TensorFoldUnavailable, match="tensorfold==0.6.6"):
         adapter.require_runtime()
     monkeypatch.setattr(adapter.sys, "platform", "darwin")
     with pytest.raises(adapter.TensorFoldUnavailable, match="Apple Silicon"):
@@ -590,3 +590,38 @@ def test_glm_server_wrapper_declares_product_metadata(monkeypatch) -> None:
     assert captured["method"] == "mtp"
     assert captured["paired_repository"] is None
     assert captured["supports_reasoning_budget"] is True
+
+
+def test_catalog_runtime_revision_is_the_shared_runtime() -> None:
+    """No catalog pin or module constant can drift from the checked revision.
+
+    The Qwen alias uses the DFlash catalog schema, which carries no runtime
+    pin: its backend compares the installed runtime with the shared constant.
+    """
+
+    from rapid_mlx.speculative import tensorfold_glm53, tensorfold_qwen27
+    from rapid_mlx.speculative.tensorfold_runtime import (
+        INSTALL_HINT,
+        SUPPORTED_REVISION,
+        SUPPORTED_RUNTIME_URL,
+        SUPPORTED_VERSION,
+    )
+
+    capture = (
+        Path(__file__).parents[1] / "scripts" / "capture_glm53_tensorfold_product.py"
+    ).read_text()
+    assert f'RUNTIME_VERSION = "{SUPPORTED_VERSION}"' in capture
+    aliases = json.loads(
+        (Path(__file__).parents[1] / "rapid_mlx" / "aliases.json").read_text()
+    )
+    pinned = {
+        name: profile["tensorfold_runtime_revision"]
+        for name, profile in aliases.items()
+        if isinstance(profile, dict) and "tensorfold_runtime_revision" in profile
+    }
+    assert "glm5.3-flash-tensorfold" in pinned
+    assert set(pinned.values()) == {SUPPORTED_REVISION}
+    assert tensorfold_glm53.SUPPORTED_RUNTIME_REVISION == SUPPORTED_REVISION
+    assert tensorfold_qwen27.SUPPORTED_REVISION == SUPPORTED_REVISION
+    assert f"git+{SUPPORTED_RUNTIME_URL}@{SUPPORTED_REVISION}" in INSTALL_HINT
+    assert tensorfold_glm53.INSTALL_HINT is tensorfold_qwen27.INSTALL_HINT

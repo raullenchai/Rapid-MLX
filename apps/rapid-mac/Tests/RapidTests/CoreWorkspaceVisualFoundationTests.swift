@@ -570,7 +570,7 @@ struct CoreWorkspaceVisualFoundationTests {
             // The canonicaliser strips whitespace INSIDE preserved string
             // literals too, so "New Chat" arrives here as "NewChat".
             let title = row.title.filter { !$0.isWhitespace }
-            let needle = "title:\"\(title)\",systemImage:\"\(row.symbol)\""
+            let needle = "title:String(localized:\"\(title)\"),systemImage:\"\(row.symbol)\""
             guard let found = source.range(of: needle, range: searchStart..<source.endIndex) else {
                 Issue.record("\(row.title) / \(row.symbol) is missing, renamed, or out of order.")
                 return

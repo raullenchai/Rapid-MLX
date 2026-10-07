@@ -34,7 +34,7 @@ jobs:
   # candidate, tree, trusted workflow, artifact, source attempts, and jobs.
   # Every miss or verifier failure falls back to the ordinary full main gate.
   queue-tree-evidence:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.RAPID_MLX_CANDIDATE_CANARY != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -102,6 +102,9 @@ jobs:
           fi
 
   changes:
+    permissions:
+      contents: read
+      actions: read
     needs: queue-tree-evidence
     if: always()
     runs-on: ubuntu-latest
@@ -111,6 +114,16 @@ jobs:
       docs_only: ${{ steps.policy.outputs.docs_only }}
       full_gate: ${{ steps.policy.outputs.full_gate }}
       l1_matrix: ${{ steps.policy.outputs.l1_matrix }}
+      linux_matrix_mode: ${{ steps.policy.outputs.linux_matrix_mode }}
+      linux_matrix_reason: ${{ steps.policy.outputs.linux_matrix_reason }}
+      test_matrix: ${{ steps.policy.outputs.test_matrix }}
+      source_preflight: ${{ steps.policy.outputs.source_preflight }}
+      source_canary: ${{ steps.policy.outputs.source_canary }}
+      source_canary_base_run: ${{ steps.policy.outputs.source_canary_base_run }}
+      source_canary_tests: ${{ steps.policy.outputs.source_canary_tests }}
+      candidate_reduced: ${{ steps.policy.outputs.candidate_reduced }}
+      candidate_shadow: ${{ steps.policy.outputs.candidate_shadow }}
+      candidate_shadow_tests: ${{ steps.policy.outputs.candidate_shadow_tests }}
       reuse_ci: ${{ needs.queue-tree-evidence.outputs.reuse_ci || 'false' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -120,6 +133,12 @@ jobs:
       - name: Classify validation lanes
         id: policy
         env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_PREFLIGHT_ENABLED: ${{ vars.RAPID_MLX_SOURCE_PREFLIGHT }}
+          CANARY_ENABLED: ${{ vars.RAPID_MLX_SOURCE_CANARY }}
+          CANDIDATE_CANARY_ENABLED: ${{ vars.RAPID_MLX_CANDIDATE_CANARY }}
+          CANDIDATE_SHADOW_ENABLED: ${{ vars.RAPID_MLX_CANDIDATE_SHADOW_EXECUTION }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           EVENT_NAME: ${{ github.event_name }}
           HEAD_REF: ${{ github.head_ref }}
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
@@ -127,6 +146,9 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
+          echo 'candidate_reduced=false' >> "$GITHUB_OUTPUT"
+          echo 'candidate_shadow=false' >> "$GITHUB_OUTPUT"
+          echo 'candidate_shadow_tests=' >> "$GITHUB_OUTPUT"
           if [ "$EVENT_NAME" = "pull_request" ]; then
             # Classify the actual diff before integration promotion. Promotion
             # broadens coverage inside the affected lane; it must not turn an
@@ -134,9 +156,6 @@ jobs:
             # Disable rename folding so both the removed source path and the
             # new destination participate in classification.
             git diff --no-renames --name-only "$PR_BASE_SHA" "$GITHUB_SHA" > /tmp/changed-paths
-            python scripts/classify_ci_changes.py \
-              --paths-file /tmp/changed-paths \
-              --github-output "$GITHUB_OUTPUT"
             full_gate=false
             if [ "$HEAD_REPO" = "$REPO" ] && \
               { [[ "$HEAD_REF" == train/* ]] || \
@@ -145,8 +164,67 @@ jobs:
             fi
             echo "full_gate=$full_gate" >> "$GITHUB_OUTPUT"
             if [ "$full_gate" = true ]; then
+              python scripts/classify_ci_changes.py \
+                --paths-file /tmp/changed-paths \
+                --force-full \
+                --force-reason promoted-head \
+                --github-output "$GITHUB_OUTPUT"
               echo 'l1_matrix={"include":[{"model":"qwen3.5-4b-4bit","contract_only":"0"},{"model":"llama3-3b-4bit","contract_only":"0"},{"model":"gemma3-4b-qat-4bit","contract_only":"1"},{"model":"qwen3-4b-instruct-2507-4bit","contract_only":"1"},{"model":"qwen3-4b-thinking-2507-4bit","contract_only":"1"}]}' >> "$GITHUB_OUTPUT"
+              # Shadow execution is additive: it never changes full routing.
+              # Only an authenticated Mergify candidate with current full main
+              # and a complete combined-path allowlist may select the extra job.
+              if [ "$CANDIDATE_SHADOW_ENABLED" = true ] && \
+                [[ "$HEAD_REF" =~ ^mergify/merge-queue/[0-9a-f]{10}$ ]]; then
+                python -m scripts.ci_candidate_execution select \
+                  --repo "$REPO" --enabled true --run-id "$GITHUB_RUN_ID" \
+                  --head "$PR_HEAD_SHA" --base "$PR_BASE_SHA" \
+                  --github-output "$GITHUB_OUTPUT"
+              fi
+              if [ "$CANDIDATE_CANARY_ENABLED" = true ] && \
+                [[ "$HEAD_REF" =~ ^mergify/merge-queue/[0-9a-f]{10}$ ]]; then
+                if python -m pip install "pyyaml>=6.0" && \
+                  python -m scripts.ci_candidate_rollout --repo "$REPO" \
+                    --run-id "$GITHUB_RUN_ID" --head "$PR_HEAD_SHA" --base "$PR_BASE_SHA" \
+                    --github-output "$GITHUB_OUTPUT"; then
+                  :
+                else
+                  echo 'candidate_reduced=false' >> "$GITHUB_OUTPUT"
+                fi
+              fi
             else
+              # Only the latest successful main-push qualification on the
+              # exact PR base can anchor a reduced source check. Every miss,
+              # pending run, red/cancelled attempt or API failure broadens.
+              if [ "$CANARY_ENABLED" = true ]; then
+                if gh run list --repo "$REPO" --workflow ci.yml --event push \
+                  --branch main --commit "$PR_BASE_SHA" --limit 1 \
+                  --json databaseId,headSha,status,conclusion > /tmp/source-canary-base.json \
+                  && jq -e --arg base "$PR_BASE_SHA" \
+                    '.[0] | .headSha == $base and .status == "completed" and .conclusion == "success"' \
+                    /tmp/source-canary-base.json > /dev/null; then
+                  echo "source_canary_base_run=$(jq -r '.[0].databaseId' /tmp/source-canary-base.json)" >> "$GITHUB_OUTPUT"
+                else
+                  CANARY_ENABLED=false
+                fi
+              fi
+              if [ "$SOURCE_PREFLIGHT_ENABLED" = true ] && [ "$HEAD_REPO" = "$REPO" ]; then
+                preflight_args=(--source-preflight)
+                if [ "$CANARY_ENABLED" = true ]; then
+                  preflight_args+=(--source-canary)
+                fi
+                python scripts/classify_ci_changes.py \
+                  --paths-file /tmp/changed-paths "${preflight_args[@]}" \
+                  --github-output "$GITHUB_OUTPUT"
+              elif [ "$CANARY_ENABLED" = true ]; then
+                python scripts/classify_ci_changes.py \
+                  --paths-file /tmp/changed-paths --source-canary \
+                  --github-output "$GITHUB_OUTPUT"
+              else
+                python scripts/classify_ci_changes.py \
+                  --paths-file /tmp/changed-paths --force-full \
+                  --force-reason source-canary-disabled \
+                  --github-output "$GITHUB_OUTPUT"
+              fi
               echo 'l1_matrix={"include":[{"model":"qwen3.5-4b-4bit","contract_only":"0"}]}' >> "$GITHUB_OUTPUT"
             fi
           else
@@ -158,9 +236,41 @@ jobs:
               echo 'desktop=true'
               echo 'docs_only=false'
               echo 'full_gate=true'
+              echo 'source_preflight=false'
+              echo 'source_canary=false'
+              echo 'source_canary_tests='
+              echo 'linux_matrix_mode=full'
+              echo 'linux_matrix_reason=non-pr-full'
+              echo 'test_matrix={"include":[{"python-version":"3.10","shard":1},{"python-version":"3.10","shard":2},{"python-version":"3.10","shard":3},{"python-version":"3.11","shard":1},{"python-version":"3.11","shard":2},{"python-version":"3.11","shard":3},{"python-version":"3.12","shard":1},{"python-version":"3.12","shard":2},{"python-version":"3.12","shard":3}]}'
               echo 'l1_matrix={"include":[{"model":"qwen3.5-4b-4bit","contract_only":"0"},{"model":"llama3-3b-4bit","contract_only":"0"},{"model":"gemma3-4b-qat-4bit","contract_only":"1"},{"model":"qwen3-4b-instruct-2507-4bit","contract_only":"1"},{"model":"qwen3-4b-thinking-2507-4bit","contract_only":"1"}]}'
             } >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Explain Linux matrix route
+        env:
+          MATRIX_MODE: ${{ steps.policy.outputs.linux_matrix_mode }}
+          MATRIX_REASON: ${{ steps.policy.outputs.linux_matrix_reason }}
+        run: |
+          echo "Linux matrix: ${MATRIX_MODE} (${MATRIX_REASON})"
+          {
+            echo '### Linux test matrix'
+            echo "- Mode: \`${MATRIX_MODE}\`"
+            echo "- Reason: \`${MATRIX_REASON}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Explain source proof scope
+        env:
+          SOURCE_CANARY: ${{ steps.policy.outputs.source_canary }}
+          MAPPED_TESTS: ${{ steps.policy.outputs.source_canary_tests }}
+          BASE_RUN: ${{ steps.policy.outputs.source_canary_base_run }}
+        run: |
+          {
+            echo '### Source proof scope'
+            echo "- Mapped CPU canary: ${SOURCE_CANARY:-false}"
+            echo "- Selected regression files: ${MAPPED_TESTS:-full route}"
+            echo "- Exact-base main qualification run: ${BASE_RUN:-none}"
+            echo '- Full candidate/main/release qualification remains required.'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   merge-lane-no-mac:
     needs: changes
@@ -414,19 +524,164 @@ jobs:
       - name: Enforce shrink-only mypy error budget
         run: python scripts/check_mypy_error_budget.py
 
+  source-canary-unit:
+    needs: changes
+    if: >-
+      always() &&
+      needs.changes.result == 'success' &&
+      needs.changes.outputs.source_canary == 'true' &&
+      needs.changes.outputs.full_gate != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.11"
+      - name: Install mapped CPU test dependencies
+        run: |
+          pip install -e . --no-deps
+          pip install --requirement config/requirements-ci-linux.txt "diff-cover==8.0.3"
+      - name: Run mapped regressions and mandatory changed-line coverage
+        env:
+          BASE_RUN: ${{ needs.changes.outputs.source_canary_base_run }}
+          MAPPED_TESTS: ${{ needs.changes.outputs.source_canary_tests }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          read -r -a selected <<< "$MAPPED_TESTS"
+          test "${#selected[@]}" -gt 0
+          # Collect the exact base with the same recorder. Do not let default
+          # marker filters silently drop mapped tests or a PR shrink the suite.
+          baseline="$RUNNER_TEMP/mapped-base"
+          git worktree add --detach "$baseline" "$PR_BASE_SHA"
+          cp scripts/ci_mapped_execution.py "$baseline/scripts/ci_mapped_execution.py"
+          (
+            cd "$baseline"
+            PYTHONPATH="$baseline" python -m pytest "${selected[@]}" -o addopts= \
+              --collect-only -p scripts.ci_mapped_execution \
+              --mapped-execution-manifest "$GITHUB_WORKSPACE/source-canary-base-collection.json"
+          )
+          python -m pytest "${selected[@]}" -o addopts= -p scripts.ci_mapped_execution \
+            --mapped-execution-manifest source-canary-execution.json \
+            --cov=rapid_mlx --cov-report=xml --junitxml=source-canary-junit.xml
+          python scripts/ci_mapped_execution.py \
+            --baseline source-canary-base-collection.json \
+            --executed source-canary-execution.json --tests "${selected[@]}"
+          python -c 'import xml.etree.ElementTree as E; cases=E.parse("source-canary-junit.xml").findall(".//testcase"); assert cases and all(c.find("skipped") is None and c.find("failure") is None and c.find("error") is None for c in cases), "mapped tests must actually execute successfully"'
+          python -m diff_cover.diff_cover_tool coverage.xml \
+            --compare-branch "$PR_BASE_SHA" --show-uncovered --fail-under 100
+          jq -n --arg head "$GITHUB_SHA" --arg base "$PR_BASE_SHA" \
+            --arg tests "$MAPPED_TESTS" --arg base_run "$BASE_RUN" \
+            '{schema:"rapid-mlx/source-canary-unit/v1",scope:"mapped-cpu-only",head:$head,base:$base,base_run:$base_run,tests:($tests|split(" ")),full_candidate_required:true}' \
+            > source-canary-scope.json
+          echo 'Mapped CPU source proof only; complete candidate/main/release qualification remains required.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload separate source-only proof
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: source-canary-unit-${{ github.sha }}
+          path: |
+            source-canary-scope.json
+            source-canary-junit.xml
+            source-canary-base-collection.json
+            source-canary-execution.json
+            coverage.xml
+          if-no-files-found: error
+          retention-days: 7
+
+  candidate-canary-unit:
+    needs: changes
+    if: >-
+      always() &&
+      needs.changes.result == 'success' &&
+      needs.changes.outputs.full_gate == 'true' &&
+      needs.changes.outputs.candidate_shadow == 'true' &&
+      github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.11"
+      - name: Install mapped CPU test dependencies
+        run: |
+          pip install -e . --no-deps
+          pip install --requirement config/requirements-ci-linux.txt "diff-cover==8.0.3"
+      - name: Run complete mapped regressions
+        env:
+          MAPPED_TESTS: ${{ needs.changes.outputs.candidate_shadow_tests }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          read -r -a selected <<< "$MAPPED_TESTS"
+          test "${#selected[@]}" -gt 0
+          baseline="$RUNNER_TEMP/candidate-mapped-base"
+          git worktree add --detach "$baseline" "$PR_BASE_SHA"
+          cp scripts/ci_mapped_execution.py "$baseline/scripts/ci_mapped_execution.py"
+          (
+            cd "$baseline"
+            PYTHONPATH="$baseline" python -m pytest "${selected[@]}" -o addopts= \
+              --collect-only -p scripts.ci_mapped_execution \
+              --mapped-execution-manifest "$GITHUB_WORKSPACE/candidate-base-collection.json"
+          )
+          python -m pytest "${selected[@]}" -o addopts= -p scripts.ci_mapped_execution \
+            --mapped-execution-manifest candidate-execution.json \
+            --cov=rapid_mlx --cov-report=xml:candidate-coverage.xml \
+            --junitxml=candidate-junit.xml
+          python scripts/ci_mapped_execution.py \
+            --baseline candidate-base-collection.json \
+            --executed candidate-execution.json --tests "${selected[@]}"
+      - name: Enforce mandatory changed-line coverage
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          python -m diff_cover.diff_cover_tool candidate-coverage.xml \
+            --compare-branch "$PR_BASE_SHA" --show-uncovered --fail-under 100
+      - name: Pack exact candidate input
+        env:
+          MAPPED_TESTS: ${{ needs.changes.outputs.candidate_shadow_tests }}
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          read -r -a selected <<< "$MAPPED_TESTS"
+          python -m scripts.ci_candidate_execution pack \
+            --head "$CANDIDATE_SHA" --base "$PR_BASE_SHA" \
+            --run-id "$GITHUB_RUN_ID" --attempt "$GITHUB_RUN_ATTEMPT" \
+            --tests "${selected[@]}" --baseline candidate-base-collection.json \
+            --executed candidate-execution.json --junit candidate-junit.xml \
+            --coverage candidate-coverage.xml --output candidate-mapped-input.json
+      - name: Upload mapped execution proof
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: candidate-mapped-input-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: candidate-mapped-input.json
+          if-no-files-found: error
+          retention-days: 7
+
   test-matrix:
     needs: changes
     if: >-
       always() &&
       needs.changes.result == 'success' &&
       needs.changes.outputs.engine == 'true' &&
+      needs.changes.outputs.source_canary != 'true' &&
+      needs.changes.outputs.candidate_reduced != 'true' &&
       needs.changes.outputs.reuse_ci != 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
-        python-version: ["3.10", "3.11", "3.12"]
-        shard: [1, 2, 3]
+      # Ordinary leaf-only PRs run the complete three-shard suite on the
+      # coverage interpreter. Shared/core/unknown changes and every promoted
+      # integration candidate retain all supported Python versions.
+      matrix: ${{ fromJSON(needs.changes.outputs.test_matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -523,6 +778,8 @@ jobs:
       always() &&
       needs.changes.result == 'success' &&
       needs.changes.outputs.engine == 'true' &&
+      needs.changes.outputs.source_canary != 'true' &&
+      needs.changes.outputs.candidate_reduced != 'true' &&
       needs.changes.outputs.reuse_ci != 'true' &&
       needs.test-matrix.result == 'success'
     runs-on: ubuntu-latest
@@ -545,6 +802,9 @@ jobs:
           COVERAGE_FILE=coverage-linux-3.11.data python -m coverage xml -o coverage.xml
 
       - name: Upload combined coverage to Codecov
+        # The external report is advisory. Keep action bootstrap failures from
+        # masking the mandatory local coverage artifact and changed-lines gate.
+        continue-on-error: true
         uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238  # v4
         with:
           file: ./coverage.xml
@@ -564,6 +824,9 @@ jobs:
       always() &&
       needs.changes.result == 'success' &&
       needs.changes.outputs.engine == 'true' &&
+      needs.changes.outputs.source_canary != 'true' &&
+      needs.changes.outputs.source_preflight != 'true' &&
+      needs.changes.outputs.candidate_reduced != 'true' &&
       needs.changes.outputs.reuse_ci != 'true'
     runs-on: macos-14
     steps:
@@ -679,6 +942,8 @@ jobs:
             tests/test_ddtree_integration.py \
             tests/test_mtp_gemma4_assistant_inject.py \
             tests/test_mtp_draft_overlap.py \
+            tests/test_mtp_greedy_determinism.py \
+            tests/test_mtp_park_pipeline.py \
             tests/test_mtp_nongreedy_distribution.py \
             tests/test_speculative_request_policy.py \
             tests/test_deepseek_v4_vendored.py \
@@ -693,6 +958,9 @@ jobs:
             tests/test_scheduler_admission_policy.py \
             tests/test_scheduler_recurrent_cache_materialization.py \
             tests/test_think_stop_scheduler.py \
+            tests/test_memory_stability.py \
+            tests/test_sampling_params_passthrough.py \
+            tests/test_global_app_isolation.py \
             tests/test_prefix_cache_persistence.py \
             tests/test_agent_session_prefix_cache.py \
             tests/test_prefix_boundary_path_parity.py \
@@ -758,6 +1026,9 @@ jobs:
       needs.changes.result == 'success' &&
       github.event_name == 'pull_request' &&
       needs.changes.outputs.engine == 'true' &&
+      needs.changes.outputs.source_canary != 'true' &&
+      needs.changes.outputs.source_preflight != 'true' &&
+      needs.changes.outputs.candidate_reduced != 'true' &&
       needs.changes.outputs.reuse_ci != 'true' &&
       needs.linux-coverage.result == 'success' &&
       needs.test-apple-silicon.result == 'success'
@@ -838,6 +1109,7 @@ jobs:
       needs.changes.result == 'success' &&
       needs.changes.outputs.engine == 'true' &&
       needs.changes.outputs.full_gate == 'true' &&
+      needs.changes.outputs.candidate_reduced != 'true' &&
       needs.changes.outputs.reuse_ci != 'true'
     runs-on: macos-14
     timeout-minutes: 20
@@ -891,6 +1163,8 @@ jobs:
       - engine-contracts
       - mlx-bound-guard
       - type-check
+      - source-canary-unit
+      - candidate-canary-unit
       - test-matrix
       - linux-coverage
       - test-apple-silicon
@@ -903,6 +1177,22 @@ jobs:
         run: |
           if [ "${{ needs.changes.result }}" != success ]; then
             echo "CI change classifier failed"
+            exit 1
+          fi
+          if [ "${{ needs.changes.outputs.candidate_shadow }}" = true ]; then
+            if [ "${{ needs.changes.outputs.full_gate }}" != true ] \
+              || [ "${{ github.event_name }}" != pull_request ] \
+              || [ "${{ needs.candidate-canary-unit.result }}" != success ]; then
+              echo "Additive mapped candidate execution failed"
+              exit 1
+            fi
+          elif [ "${{ needs.candidate-canary-unit.result }}" != skipped ]; then
+            echo "Unexpected mapped candidate shadow execution"
+            exit 1
+          fi
+          if [ "${{ needs.changes.outputs.candidate_reduced }}" = true ] && \
+            [ "${{ needs.changes.outputs.reuse_ci }}" = true ]; then
+            echo "Scoped candidate cannot reuse full CI"
             exit 1
           fi
           if [ "${{ needs.changes.outputs.reuse_ci }}" = true ]; then
@@ -929,6 +1219,69 @@ jobs:
           if [ "${{ github.event_name }}" = pull_request ] \
             && [ "${{ needs.mlx-bound-guard.result }}" != success ]; then
             echo "MLX dependency-bound guard failed"
+            exit 1
+          fi
+          if [ "${{ needs.changes.outputs.source_preflight }}" = true ] \
+            && [ "${{ needs.changes.outputs.source_canary }}" = true ]; then
+            echo "Conflicting source validation routes"
+            exit 1
+          fi
+          if [ "${{ needs.changes.outputs.candidate_reduced }}" = true ]; then
+            if [ "${{ needs.changes.outputs.full_gate }}" != true ] \
+              || [ "${{ github.event_name }}" != pull_request ] \
+              || [ "${{ needs.changes.outputs.candidate_shadow }}" != true ] \
+              || [ "${{ needs.changes.outputs.source_canary }}" = true ] \
+              || [ "${{ needs.changes.outputs.source_preflight }}" = true ]; then
+              echo "Invalid scoped candidate context"
+              exit 1
+            fi
+            for result in "${{ needs.source-canary-unit.result }}" "${{ needs.test-matrix.result }}" "${{ needs.test-apple-silicon.result }}" "${{ needs.linux-coverage.result }}" "${{ needs.changed-lines-coverage.result }}" "${{ needs.l1-smoke.result }}"; do
+              if [ "$result" != skipped ]; then
+                echo "Unexpected full/source execution on scoped candidate"
+                exit 1
+              fi
+            done
+            echo "Complete mapped candidate execution and mandatory coverage passed"
+            exit 0
+          fi
+          if [ "${{ needs.changes.outputs.source_canary }}" = true ]; then
+            if [ "${{ needs.changes.outputs.full_gate }}" = true ] \
+              || [ "${{ github.event_name }}" != pull_request ] \
+              || [ "${{ needs.source-canary-unit.result }}" != success ]; then
+              echo "Mapped source execution failed or attempted on a full gate"
+              exit 1
+            fi
+            for result in "${{ needs.test-matrix.result }}" "${{ needs.test-apple-silicon.result }}" "${{ needs.linux-coverage.result }}" "${{ needs.changed-lines-coverage.result }}" "${{ needs.l1-smoke.result }}"; do
+              if [ "$result" != skipped ]; then
+                echo "Unexpected full-job result in mapped source route: $result"
+                exit 1
+              fi
+            done
+            echo "Mapped CPU source proof passed; full integration candidate is still required"
+            exit 0
+          fi
+          if [ "${{ needs.changes.outputs.source_preflight }}" = true ]; then
+            if [ "${{ github.event_name }}" != pull_request ] \
+              || [ "${{ github.event.pull_request.head.repo.full_name }}" != "${{ github.repository }}" ] \
+              || [ "${{ needs.changes.outputs.full_gate }}" != false ] \
+              || [ "${{ needs.changes.outputs.linux_matrix_mode }}" != py311 ] \
+              || [ "${{ needs.changes.outputs.source_canary }}" != false ] \
+              || [ "${{ needs.test-matrix.result }}" != success ] \
+              || [ "${{ needs.linux-coverage.result }}" != success ]; then
+              echo "Invalid or failed source preflight"
+              exit 1
+            fi
+            for result in "${{ needs.source-canary-unit.result }}" "${{ needs.test-apple-silicon.result }}" "${{ needs.changed-lines-coverage.result }}" "${{ needs.l1-smoke.result }}"; do
+              if [ "$result" != skipped ]; then
+                echo "Unexpected deferred-job result in source preflight: $result"
+                exit 1
+              fi
+            done
+            echo "CPU source preflight passed; full combined candidate and changed-line coverage remain required before merge"
+            exit 0
+          fi
+          if [ "${{ needs.source-canary-unit.result }}" != skipped ]; then
+            echo "Unexpected reduced proof on a full route"
             exit 1
           fi
           if [ "${{ needs.test-matrix.result }}" != "success" ]; then

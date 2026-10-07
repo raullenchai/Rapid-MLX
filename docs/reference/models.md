@@ -96,7 +96,7 @@ installed source runtime. Install the exact qualified revision before selecting
 the profile:
 
 ```bash
-python -m pip install "tensorfold @ git+https://github.com/ashhart/TensorFold.git@9cd52ab4daba68ddd09be89be8f23ad43175e821"
+python -m pip install "tensorfold @ git+https://github.com/ashhart/TensorFold.git@cb2ebf0540f42604e2759b2ddef497861e928248"
 ```
 
 This dependency remains an explicit opt-in because it is not available as an
@@ -112,7 +112,7 @@ there is no separate draft-model download. The ordinary
 Install the exact qualified runtime, then select the dedicated alias:
 
 ```bash
-python -m pip install "tensorfold @ git+https://github.com/ashhart/TensorFold.git@c4646171139ee8a3c38103eaa1699dad226ec12b"
+python -m pip install "tensorfold @ git+https://github.com/ashhart/TensorFold.git@cb2ebf0540f42604e2759b2ddef497861e928248"
 rapid-mlx serve glm5.3-flash-tensorfold
 ```
 
@@ -171,10 +171,9 @@ decoding remains disabled pending separate evidence.
 
 ### Experimental research model: Qwen3.8 27B Abliterated
 
-`qwen3.8-27b-abliterated-4bit` serves the `oQ4e/` Apple-Silicon build of
-[`windowsxp811203/Qwen3.8-27B-Abliterated-MLX-MTP`](https://huggingface.co/windowsxp811203/Qwen3.8-27B-Abliterated-MLX-MTP).
-The alias downloads only that 16.99 GB checkpoint rather than every build in
-the multi-quant repository. It supports text and image input and is deliberately
+`qwen3.8-27b-abliterated-4bit` serves the oQ4e Apple-Silicon build
+[`windowsxp811203/Qwen3.8-27B-Abliterated-MLX-oQ4e-mtp`](https://huggingface.co/windowsxp811203/Qwen3.8-27B-Abliterated-MLX-oQ4e-mtp),
+a 16.99 GB checkpoint. It supports text and image input and is deliberately
 not a Smart/Fast default.
 
 ```bash

@@ -17,6 +17,9 @@ can actually understand.
 
 ## [Unreleased]
 
+### Fixed
+- Simplified Chinese now covers the sidebar, the chat home screen and message box, the Settings categories and panels, Model Management, and the model picker, which previously stayed in English when macOS was set to Chinese. Experimental tabs (Benchmark, Share Compute, Computer Use, Video) are not yet fully translated.
+
 ## [0.15.6] — 2026-10-04
 
 Rapid-MLX 0.15.6 adds a simpler interactive first run and improves reliability for long prompts, local agents, custom models, shared caches, and long-running servers.

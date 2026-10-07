@@ -93,7 +93,7 @@ struct AgentConnectionInformationArchitectureTests {
     func agentNameIsUserFacing() throws {
         let sidebar = try source("SidebarView.swift")
         let palette = try source("CommandPaletteView.swift")
-        #expect(sidebar.contains("title: \"Agent\""))
+        #expect(sidebar.contains("title: String(localized: \"Agent\")"))
         #expect(palette.contains("case .launch: return \"Open Agent\""))
     }
 }

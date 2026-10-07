@@ -78,9 +78,21 @@ REQUIRED_CI_JOBS = (
     "changed-lines-coverage",
     "tests",
 )
-REQUIRED_CI_MATRIX_PREFIXES = {
-    "test-matrix (": 9,
-    "l1-smoke (": 5,
+# Full evidence requires these identities, independently of recorded counts.
+# Workflow parity tests force any enrollment change to update this contract.
+REQUIRED_CI_MATRIX_JOBS = {
+    "test-matrix (": tuple(
+        f"test-matrix ({version}, {shard})"
+        for version in ("3.10", "3.11", "3.12")
+        for shard in (1, 2, 3)
+    ),
+    "l1-smoke (": (
+        "l1-smoke (qwen3.5-4b-4bit, 0)",
+        "l1-smoke (llama3-3b-4bit, 0)",
+        "l1-smoke (gemma3-4b-qat-4bit, 1)",
+        "l1-smoke (qwen3-4b-instruct-2507-4bit, 1)",
+        "l1-smoke (qwen3-4b-thinking-2507-4bit, 1)",
+    ),
 }
 MAX_GUI_MATRIX_JOBS = 4
 
@@ -318,7 +330,8 @@ def _validate_ci_jobs(
 ) -> list[dict[str, Any]]:
     jobs = _successful_jobs(client, run)
     selected = [_require_unique_success(jobs, name) for name in REQUIRED_CI_JOBS]
-    for prefix, expected_count in REQUIRED_CI_MATRIX_PREFIXES.items():
+    for prefix, expected_names in REQUIRED_CI_MATRIX_JOBS.items():
+        expected_count = len(expected_names)
         matches = [job for job in jobs if str(job.get("name", "")).startswith(prefix)]
         if len(matches) != expected_count:
             raise EvidenceError(
@@ -330,7 +343,9 @@ def _validate_ci_jobs(
             for job in matches
         ):
             raise EvidenceError(f"CI matrix {prefix!r} did not fully succeed")
-        selected.extend(matches)
+        selected.extend(
+            _require_unique_success(matches, name) for name in expected_names
+        )
     return selected
 
 
@@ -469,8 +484,7 @@ def discover(client: GitHubClient, scope: str, main_sha: str) -> DiscoveryProbe:
         (
             run
             for run in _recent_runs(client, scope)
-            if run.get("conclusion") != "cancelled"
-            and run.get("head_sha") != main_sha
+            if run.get("head_sha") != main_sha
             and isinstance(run.get("head_sha"), str)
             and CANDIDATE_RE.fullmatch(str(run.get("head_branch", "")))
         ),
@@ -482,8 +496,10 @@ def discover(client: GitHubClient, scope: str, main_sha: str) -> DiscoveryProbe:
         try:
             if _tree_sha(client, candidate_sha) != main_tree:
                 continue
-            # Runs are newest-first. A later non-cancelled failure supersedes
-            # every older success for the same immutable candidate/tree.
+            # Runs are newest-first. Cancellation is also authoritative: a
+            # newer cancelled candidate cannot resurrect historical full proof.
+            # A reduced candidate without this full namespace is likewise a
+            # cache miss, forcing main to execute its complete backstop.
             if run.get("conclusion") != "success":
                 return DiscoveryProbe(None, False)
             status_pages = client.json(
@@ -533,9 +549,20 @@ def discover(client: GitHubClient, scope: str, main_sha: str) -> DiscoveryProbe:
                 if (
                     attestation.get("path") != ATTESTATION_WORKFLOW
                     or attestation.get("event") != "workflow_run"
-                    or attestation.get("status") != "completed"
-                    or attestation.get("conclusion") != "success"
                     or attestation.get("repository", {}).get("full_name") != client.repo
+                ):
+                    return DiscoveryProbe(None, False)
+                # The index is the producer's last step, before workflow cleanup.
+                # Wait within the caller's existing deadline; unfinished proof
+                # never permits reuse, and terminal failure never retries.
+                if (
+                    attestation.get("status") in {"queued", "in_progress"}
+                    and attestation.get("conclusion") is None
+                ):
+                    return DiscoveryProbe(None, True)
+                if (
+                    attestation.get("status") != "completed"
+                    or attestation.get("conclusion") != "success"
                 ):
                     return DiscoveryProbe(None, False)
                 return DiscoveryProbe(
@@ -555,8 +582,12 @@ def discover(client: GitHubClient, scope: str, main_sha: str) -> DiscoveryProbe:
             return DiscoveryProbe(None, True)
         except EvidenceError as exc:
             print(
-                f"warning: ignoring candidate {candidate_sha}: {exc}", file=sys.stderr
+                f"warning: cannot qualify candidate {candidate_sha}: {exc}",
+                file=sys.stderr,
             )
+            # An unavailable newer candidate cannot justify selecting an older
+            # identical-tree success. Missing evidence runs ordinary full CI.
+            return DiscoveryProbe(None, False)
     return DiscoveryProbe(None, False)
 
 

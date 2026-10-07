@@ -108,7 +108,7 @@ see [Testing Methodology](#testing-methodology).
 - **CrewAI** (Framework) — `OPENAI_API_BASE=http://localhost:8000/v1`
 - **AutoGen** (Framework) — `base_url="http://localhost:8000/v1"` in `llm_config`
 - **LlamaIndex** (Framework) — `OpenAI(api_base="http://localhost:8000/v1")`
-- **Cline** (IDE Extension) — Provider: OpenAI Compatible, Base URL: `http://localhost:8000/v1` ([known issues](https://github.com/raullenchai/Rapid-MLX/issues/47#issuecomment-4410012225))
+- **Cline** (CLI and VS Code extension) — `rapid-mlx launch cline` sets Cline's OpenAI Compatible provider in `~/.cline/data/settings/providers.json` (what `cline auth -p openai` writes) and prints the VS Code settings steps: Provider OpenAI Compatible, Base URL `http://localhost:8000/v1` ([known issues](https://github.com/raullenchai/Rapid-MLX/issues/47#issuecomment-4410012225))
 - **Open Interpreter** (CLI) — `OPENAI_API_BASE=http://localhost:8000/v1 interpreter`
 - **Dify** (Platform) — Add custom OpenAI provider at `http://localhost:8000/v1`
 - **n8n AI Nodes** (Automation) — Node config: Base URL `http://localhost:8000/v1`
@@ -214,7 +214,7 @@ Currently supported profiles (in `rapid_mlx/agents/profiles/`):
 | `aider` | Aider | Env vars | Yes (`test_aider.sh`) |
 | `claude-code` | Claude Code | Env vars | Yes (`test_agents_matrix.py`) |
 | `codex` | Codex CLI | TOML config | Yes (`test_agents_matrix.py`) |
-| `continue` | Continue.dev | JSON config | No |
+| `continue` | Continue.dev | YAML config (`~/.continue/config.yaml`) | No |
 | `deepseek-harness` | DeepSeek Harness | YAML config | Yes (`test_deepseek_harness_tier1.py`) |
 | `hermes` | Hermes Agent | YAML config | Yes (`test_hermes.py`) |
 | `kilo-code` | Kilo Code | JSON config | Yes (`test_agents_matrix.py`) |

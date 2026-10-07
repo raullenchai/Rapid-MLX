@@ -156,13 +156,35 @@ jobs:
           HEAD_REF: ${{ github.head_ref }}
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          PUSH_FORCED: ${{ github.event.forced }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           if [ "$EVENT_NAME" != "pull_request" ]; then
-            # A future merge queue candidate may combine independently scoped
-            # PRs, so validate both product lanes.
-            python scripts/classify_ci_changes.py --github-output "$GITHUB_OUTPUT"
+            # A normal main push has a complete before..after diff. Avoid
+            # allocating Mac runners for an Engine-only landing when full Mac
+            # evidence reuse misses. Missing or rewritten history stays full.
+            main_before_sha="${PUSH_BEFORE_SHA:-}"
+            main_head_sha="${GITHUB_SHA:-}"
+            main_changed_paths="${RUNNER_TEMP:-/tmp}/rapid-mac-main-changed-paths"
+            if [ "$EVENT_NAME" = push ] && [ "${GITHUB_REF:-}" = refs/heads/main ] \
+              && [ "${PUSH_FORCED:-}" = false ] \
+              && [[ "$main_before_sha" =~ ^[0-9a-f]{40}$ ]] \
+              && [ "$main_before_sha" != 0000000000000000000000000000000000000000 ] \
+              && [[ "$main_head_sha" =~ ^[0-9a-f]{40}$ ]] \
+              && [ "$(git rev-parse HEAD)" = "$main_head_sha" ] \
+              && git merge-base --is-ancestor "$main_before_sha" "$main_head_sha" \
+              && git diff --no-renames --name-only "$main_before_sha" "$main_head_sha" > "$main_changed_paths" \
+              && [ -s "$main_changed_paths" ]; then
+              python scripts/classify_ci_changes.py \
+                --paths-file "$main_changed_paths" \
+                --github-output "$GITHUB_OUTPUT"
+            else
+              python scripts/classify_ci_changes.py --github-output "$GITHUB_OUTPUT"
+            fi
+            # A required Desktop lane still runs the complete GUI inventory.
+            # Merge groups and invalid push inputs retain both product lanes.
             python scripts/select_gui_flows.py --github-output "$GITHUB_OUTPUT"
             {
               echo 'full_gate=true'

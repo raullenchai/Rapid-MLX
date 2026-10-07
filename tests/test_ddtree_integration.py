@@ -177,8 +177,8 @@ def test_info_ddtree_marks_4bit_alias_experimental(capsys) -> None:
     assert "4-bit" in captured.out
 
 
-def test_ddtree_report_recognizes_four_bit_subfolder() -> None:
-    """A neutral multi-quant repo must not bypass the 4-bit runtime gate."""
+def test_ddtree_report_recognizes_abliterated_oq4e_build() -> None:
+    """The oQ4e research build must not bypass the 4-bit runtime gate."""
 
     from rapid_mlx.model_aliases import resolve_profile
     from rapid_mlx.speculative.ddtree.eligibility import report

@@ -12,11 +12,20 @@ The allow-list mirrors the client's selection contract in ``rapid_mlx/_mirror.py
 causes the client to pass ``allow_patterns=["<subfolder>/*"]``. Consequently,
 non-selected quantisation folders such as ``5bit/``, ``6bit/`` and ``8bit/``
 must not be reported missing when the selected/default quant is elsewhere.
+A repository whose loader fetches a pinned file list (see
+``scripts/mirror_runtime_files.py``) is audited at that pin against that list,
+and every listed file must exist upstream at the pin.
 
 Public requests are cache-busted after every redirect and carry
 ``Cache-Control: no-cache``. This is essential because the CDN has served an
 old body and a cached 404 for up to its advertised ``max-age=3600``; the first
 ``models.rapidmlx.com`` redirect also drops the incoming query string.
+
+A non-LFS file whose mirror body differs from HF's blob id is an error when a
+client could serve it: the sizes match (clients that check size alone accept
+it) or HF lists no size. When the sizes differ, every client rejects the body
+and fetches HF's, so that ``content_mismatch`` is a warning; the file's own
+``size_mismatch`` error still fails the audit.
 
 When boto3 and R2 credentials happen to be available, object metadata is also
 compared with Hugging Face's LFS SHA-256. Without credentials that optional
@@ -51,8 +60,9 @@ from pathlib import Path
 from typing import Any
 
 if __package__:
-    from . import mirror_unmirrored
+    from . import mirror_runtime_files, mirror_unmirrored
 else:
+    import mirror_runtime_files
     import mirror_unmirrored
 
 UnmirroredEntry = mirror_unmirrored.UnmirroredEntry
@@ -572,13 +582,15 @@ def _valid_repo_id(repo_id: str) -> bool:
     return bool(owner and separator and name and "/" not in name)
 
 
-def _model_info(repo_id: str) -> Any:
+def _model_info(repo_id: str, revision: str | None = None) -> Any:
     from huggingface_hub import model_info
 
-    return model_info(repo_id, files_metadata=True)
+    if revision is None:
+        return model_info(repo_id, files_metadata=True)
+    return model_info(repo_id, revision=revision, files_metadata=True)
 
 
-def _hf_repo(repo_id: str) -> HfRepo:
+def _hf_repo(repo_id: str, revision: str | None = None) -> HfRepo:
     """Fetch one complete HF repository description, with paced retries."""
     from huggingface_hub.errors import HfHubHTTPError
 
@@ -589,7 +601,11 @@ def _hf_repo(repo_id: str) -> HfRepo:
             _request_counts["hf"] += 1
         delay = float(2**attempt)
         try:
-            info = _model_info(repo_id)
+            info = (
+                _model_info(repo_id)
+                if revision is None
+                else _model_info(repo_id, revision)
+            )
             break
         except HfHubHTTPError as error:
             response = getattr(error, "response", None)
@@ -926,14 +942,29 @@ def _apply_probe_result(
                 )
             )
         elif probe.blob_oid != item.oid:
-            report.findings.append(
-                _file_finding(
-                    "content_mismatch",
-                    item,
-                    f"mirror_blob={probe.blob_oid} hf_blob={item.oid}",
-                    sync_in_progress=sync_in_progress,
-                )
+            detail = f"mirror_blob={probe.blob_oid} hf_blob={item.oid}"
+            finding = _file_finding(
+                "content_mismatch", item, detail, sync_in_progress=sync_in_progress
             )
+            if (
+                finding.severity == "error"
+                and item.size is not None
+                and probe.size != item.size
+            ):
+                # A client serves a stale non-LFS mirror object only when its
+                # size matches HF's: clients before blob-id proof checked size
+                # alone, and current clients prove the blob id. A body whose
+                # size differs is rejected by every client and re-fetched from
+                # HF, so it costs a fallback, not a stale file. The
+                # ``size_mismatch`` error for the same file still fails the
+                # audit; this finding only stops claiming it is served.
+                finding = Finding(
+                    finding.kind,
+                    "warning",
+                    finding.path,
+                    f"{detail}; size differs, every client falls back to HF",
+                )
+            report.findings.append(finding)
     if item.sha256 is not None:
         public_sha = _etag_sha256(probe.etag)
         metadata_sha = metadata.get("hf-sha256") if metadata is not None else None
@@ -1017,13 +1048,25 @@ def audit(
     repos: dict[str, HfRepo] = {}
     repo_errors: dict[str, str] = {}
     unique_repos = {spec.hf_path for spec in selected}
+    # A loader that fetches a pinned file list is audited at its pin, against
+    # exactly that list (see scripts/mirror_runtime_files.py).
+    runtime_pins = {
+        repo_id: pin
+        for repo_id in unique_repos
+        if (pin := mirror_runtime_files.pinned_runtime_files(repo_id)) is not None
+    }
     if progress is not None:
         progress.repos_total = len(unique_repos)
         progress.emit("catalog-listed")
     hf_started = time.monotonic()
     with ThreadPoolExecutor(max_workers=min(pool_size, HF_MAX_WORKERS)) as hf_pool:
         hf_futures = {
-            hf_pool.submit(_hf_repo, repo_id): repo_id for repo_id in unique_repos
+            (
+                hf_pool.submit(_hf_repo, repo_id)
+                if repo_id not in runtime_pins
+                else hf_pool.submit(_hf_repo, repo_id, runtime_pins[repo_id][0])
+            ): repo_id
+            for repo_id in unique_repos
         }
         for hf_future in as_completed(hf_futures):
             repo_id = hf_futures[hf_future]
@@ -1056,6 +1099,23 @@ def audit(
             files = []
         else:
             files = _selected_files(repos[spec.hf_path].files, spec.subfolder)
+            pin = runtime_pins.get(spec.hf_path)
+            if pin is not None:
+                # The pinned list is exactly what a pull fetches (the pull
+                # ignores any catalog subfolder for these repositories).
+                files = [
+                    item for item in repos[spec.hf_path].files if item.path in pin[1]
+                ]
+                upstream = {item.path for item in repos[spec.hf_path].files}
+                for path in sorted(pin[1] - upstream):
+                    report.findings.append(
+                        Finding(
+                            "hf_missing_runtime_file",
+                            "error",
+                            path,
+                            f"absent upstream at pinned revision {pin[0]}",
+                        )
+                    )
         report.checked_files = len(files)
         in_progress = _sync_in_progress(entry)
         report_context.append((report, spec, entry, files, in_progress))

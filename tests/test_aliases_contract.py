@@ -241,8 +241,8 @@ def test_qwen38_27b_abliterated_alias_is_scoped_and_conservative() -> None:
     alias = "qwen3.8-27b-abliterated-4bit"
     profile = list_profiles()[alias]
 
-    assert profile.hf_path == ("windowsxp811203/Qwen3.8-27B-Abliterated-MLX-MTP")
-    assert profile.subfolder == "oQ4e"
+    assert profile.hf_path == ("windowsxp811203/Qwen3.8-27B-Abliterated-MLX-oQ4e-mtp")
+    assert profile.subfolder is None
     assert profile.supports_image_input is True
     assert profile.experimental is True
     assert profile.tool_call_parser == "qwen3_coder_xml"

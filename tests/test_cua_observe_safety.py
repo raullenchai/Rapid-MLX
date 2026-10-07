@@ -86,6 +86,9 @@ def test_focus_only_refuses_commit_control_it_cannot_focus(monkeypatch, no_input
     monkeypatch.setattr(
         backend.ax_driver, "AXUIElementSetAttributeValue", lambda *a: -25205
     )
+    # Foreground delivery: the background key-window retry would reach this
+    # Mac's real window server.
+    monkeypatch.setattr(backend, "_background_delivery", lambda snap: False)
     with pytest.raises(errors.ComputerUseError) as exc:
         backend.click("App", 0, expected_snapshot=snapshot, focus_only=True)
     assert exc.value.code == "synthetic_input_blocked"
@@ -102,6 +105,9 @@ def test_focus_only_never_pixel_clicks_when_axfocused_fails(monkeypatch, role):
     monkeypatch.setattr(
         backend.ax_driver, "AXUIElementSetAttributeValue", lambda *a: -25205
     )
+    # Foreground delivery: the background key-window retry would reach this
+    # Mac's real window server.
+    monkeypatch.setattr(backend, "_background_delivery", lambda snap: False)
     monkeypatch.setattr(
         backend, "_pixel_click", lambda *a, **k: pytest.fail("must not click")
     )
@@ -290,6 +296,9 @@ def test_borrow_foreground_reactivates_on_foreground_route(monkeypatch):
 
 
 def test_save_and_synthetic_fill_borrow_foreground_first(monkeypatch):
+    # The foreground (global HID, Cmd+A) fill path; background delivery fills
+    # without taking the foreground (test_computer_use_offspace.py).
+    monkeypatch.setattr(background_input, "background_enabled", lambda: False)
     order = []
     monkeypatch.setattr(
         backend, "_borrow_foreground", lambda snap: order.append("borrow")

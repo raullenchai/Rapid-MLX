@@ -14,6 +14,19 @@ rapid-mlx serve qwen3.5-4b-4bit --port 8000
 Short aliases (see `rapid-mlx models`) work everywhere a model name is
 accepted. Full HuggingFace repo IDs (`mlx-community/...`) work too.
 
+### An external model cache cannot be read
+
+If startup reports that the Hugging Face cache on an external volume cannot
+be read, keep the existing cache. An access error does not mean the model is
+missing. For a timeout, first check that the volume is connected and responsive.
+
+If macOS denied access, open **System Settings → Privacy & Security → Files &
+Folders** using the command printed with the error. Under the app you launched
+the command from (for example, Terminal), enable **Removable Volumes**, or
+accept its **Allow** prompt. Then retry the same `rapid-mlx serve` command in
+that app. Permission for a different terminal or editor does not authorize
+the app you are using. Rapid-MLX does not reset permissions or move your cache.
+
 ### With Paged Cache
 
 Memory-efficient caching for production / shared system prompts:

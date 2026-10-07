@@ -1,0 +1,79 @@
+name: Candidate qualification
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+  statuses: write
+
+# This producer is independent of the complete-evidence workflow. Its namespace
+# cannot qualify main reuse. Queue enrollment and mapped routing are separate.
+jobs:
+  qualify:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out trusted producer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Install existing rollout policy dependency
+        run: python -m pip install "pyyaml>=6.0"
+      - name: Verify current queue candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN: ${{ github.event.workflow_run.id }}
+        run: |
+          python -m scripts.ci_candidate_qualification \
+            --repo "$GITHUB_REPOSITORY" \
+            --source-run-id "$SOURCE_RUN" \
+            --trusted-ref "$GITHUB_SHA" \
+            --output "$RUNNER_TEMP/candidate-qualification.json"
+      - name: Select qualified full output
+        id: result
+        run: |
+          python - <<'PY'
+          import json, os, re
+          from pathlib import Path
+          result = json.loads((Path(os.environ['RUNNER_TEMP']) / 'candidate-qualification.json').read_text())
+          valid = (result.get('qualified') is True and result.get('kind') in {'full', 'mapped', 'engine-not-required'}
+                   and result.get('schema') == 'rapid-mlx/candidate-qualification/ci/v1'
+                   and result.get('repository') == os.environ['GITHUB_REPOSITORY']
+                   and result.get('authorizes_reduced_ci') is (result.get('kind') == 'mapped')
+                   and re.fullmatch(r'[0-9a-f]{40}', str(result.get('candidate_sha', ''))))
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('qualified=' + str(bool(valid)).lower() + '\n')
+              if valid:
+                  output.write('sha=' + result['candidate_sha'] + '\n')
+          PY
+      - name: Upload separate qualification
+        if: steps.result.outputs.qualified == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: candidate-qualification-ci-${{ steps.result.outputs.sha }}
+          path: ${{ runner.temp }}/candidate-qualification.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Index qualified candidate
+        if: steps.result.outputs.qualified == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_SHA: ${{ steps.result.outputs.sha }}
+          SOURCE_RUN: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          python -m scripts.ci_candidate_qualification \
+            --repo "$GITHUB_REPOSITORY" --source-run-id "$SOURCE_RUN" \
+            --trusted-ref "$GITHUB_SHA" \
+            --expected "$RUNNER_TEMP/candidate-qualification.json" \
+            --output "$RUNNER_TEMP/candidate-qualification-current.json"
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$CANDIDATE_SHA" \
+            -f state=success -f context=candidate-qualification/ci \
+            -f description='Trusted current candidate qualification with explicit validation scope' \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"

@@ -60,7 +60,7 @@ through it whenever it is available.
 | Wheel scroll | primer + ≤10-line notches, SkyLight only (both routes double the distance: 3 lines → 240px vs 120px in Chrome, 2× in TextEdit) | Window-local point stamped (a screen point does nothing once the window is off the origin — measured); nested scrollers work |
 | Text | keycode-0 + `CGEventKeyboardSetUnicodeString` per scalar, flags forced to 0 | Bypasses layout and IME; CJK and emoji arrive literally |
 | Keys / non-Cmd chords | keycode + exact flags to the pid, with `SLSEventAuthenticationMessage` | Envelope only on macOS 15+ |
-| Cmd chords | **foreground (HID)** | See "Measured limits" |
+| Cmd chords | **foreground (HID)** | See "Measured limits"; a bound window's non-menu chords go to the content in the background (2b) |
 
 Element clicks try the semantic action that matches the gesture first, but
 only if the element advertises it:
@@ -166,6 +166,33 @@ RAPID_MLX_LIVE_GUI=1 pytest tests/test_computer_use_background.py -q -k live
    Moving backend calls off the event loop moves to PR 3. The loop's gate and
    stop-event plumbing is bound to the server loop, so it needs its own
    design.
+2b. **Hands for windows the user is not looking at.**
+   - Windows on another Space (e.g. behind the user's full-screen app) are
+     listed and bindable. AXWindows lists only the active Space, so a CG
+     window is admitted only when an AX window of the same pid has the same
+     CGWindowID: AXFocusedWindow/AXMainWindow first, then a bounded,
+     once-per-window scan of `_AXUIElementCreateWithRemoteToken` element ids
+     (yabai's technique). Helper surfaces and other layers are never targets.
+   - Keyboard input goes through `_keyed_target`: keys posted to a pid land on
+     its key window, so the exact target is made key without raising it
+     (inside the user's own app: yabai's defocus → 20 ms gap → focus →
+     make-key records), then `_validate_focused_window(...,
+     require_exact_window_id=True)` runs before any key is posted, and the
+     user's window gets key status back in a `finally`. A validated transient
+     companion (popover) is never re-keyed; it is re-validated exactly.
+     If the target's own sheet takes key, input is refused with the sheet's
+     text and buttons instead of answering it.
+   - Fill without the foreground: `AXFocused` + `AXSelectedTextRange` over
+     the whole value + SkyLight unicode. A closed popup button is set by
+     typeahead (opening a menu needs the window on screen and leaves a menu
+     tracking the keyboard). The foreground Cmd+A path keeps borrowing the
+     foreground first.
+   - Background left drag (down, ≤60 interpolated `leftMouseDragged`, up),
+     both endpoints validated in the window.
+   - A Cmd chord on a bound window that is not one of the app's menu key
+     equivalents goes to the content in the background; a menu equivalent
+     runs only while the app is active (then on the made-key target),
+     otherwise it is refused with `synthetic_input_blocked`.
 3. **Robust observation and identity.**
    - Visit-budgeted walk;
    - `AXUIElementSetMessagingTimeout`;

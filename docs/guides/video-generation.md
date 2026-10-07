@@ -193,6 +193,35 @@ dimensions are rounded up to the runtime's required 32-pixel boundary and
 cropped back to the requested OpenAI size when necessary. The distilled path
 does not expose `guidance_scale` or `negative_prompt`.
 
+### Extend an LTX-2.5 video
+
+`POST /v1/videos/extend` uses the existing MP4 as temporal context and returns
+one MP4 containing the original and appended frames. It runs the runtime's
+video extension pipeline with the source video as temporal context.
+
+```bash
+curl http://localhost:8000/v1/videos/extend \
+  -F model=ltx-2.5-mlx-q8 \
+  -F 'prompt=The camera continues tracking the rider as the dragon banks left' \
+  -F input_video=@source.mp4 \
+  -F extend_frames=16 \
+  -F seed=42
+```
+
+The source must be an MP4 at exactly 24 fps, with dimensions from 256 to 1920
+pixels in multiples of 32 and a decoded frame count of `8n+1` (at least 9).
+Variable-rate files whose nominal and average frame rates disagree, corrupt
+videos, and inconsistent frame-count metadata are rejected before generation.
+`extend_frames` counts **output frames**, must be a multiple of 8, and accepts
+8–48. The endpoint accepts up to 97 total output frames, 24 million
+pixel-frames, and a 20 MB upload. The result uses the same asynchronous job and
+download endpoints as `POST /v1/videos`. `GET /v1/videos/capabilities` reports
+these extension limits. The uploaded source is removed after generation.
+
+The server's `--max-request-bytes` also applies to uploads. To allow the full
+20 MiB source plus multipart overhead, start the server with
+`--max-request-bytes 23068672`.
+
 ## CogVideoX-Fun
 
 Rapid-MLX can serve CogVideoX-Fun as an experimental, single-worker video
