@@ -630,6 +630,12 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # rapid_mlx/cli.py's banner gate (--no-banner flag is the primary
         # mechanism; the env var exists for non-interactive launchers).
         "RAPID_MLX_NO_BANNER",
+        # Disk-write and logging preferences: keep optional caches off disk
+        # and choose the log level and destination. None selects a model,
+        # parser, tier, or engine route.
+        "RAPID_MLX_DISABLE_DISK_CACHES",
+        "RAPID_MLX_LOG_LEVEL",
+        "RAPID_MLX_LOG_FILE",
     }
 )
 

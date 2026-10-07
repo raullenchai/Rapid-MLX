@@ -14,12 +14,12 @@ the dependency's stock scheduling.  Wide prefill slabs are left untouched.
 from __future__ import annotations
 
 import logging
-import os
 import threading
+
+from .._env import env_falsey
 
 logger = logging.getLogger(__name__)
 
-_FALSE_VALUES = frozenset({"0", "false", "no", "off"})
 _MAX_ROWS = 64
 _QUALIFIED_HIDDEN_SIZE = 2048
 _QUALIFIED_NUM_EXPERTS = 256
@@ -33,10 +33,7 @@ def _not_compiling() -> bool:
 
 
 _in_compiled_decode = _not_compiling
-_ENABLED = (
-    os.environ.get("RAPID_MLX_QWEN35_EAGER_LAYER_DISPATCH", "1").strip().lower()
-    not in _FALSE_VALUES
-)
+_ENABLED = not env_falsey("RAPID_MLX_QWEN35_EAGER_LAYER_DISPATCH")
 
 
 def _is_qualified_layer(layer) -> bool:

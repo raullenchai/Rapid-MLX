@@ -13,7 +13,6 @@ Apple Inc.
 from __future__ import annotations
 
 import logging
-import os
 import types
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any
@@ -30,6 +29,7 @@ _mlx_compat.install()
 
 from mlx_lm.models.cache import ArraysCache, KVCache, _BaseCache  # noqa: E402
 
+from ._env import env_falsey  # noqa: E402
 from .compiled_precision import (
     compiled_decode_precision,
     install_qwen35_attention_gate_precision,
@@ -41,7 +41,6 @@ _BUCKETS = (1023, 1024, 2048, 4096, 8192, 16384)
 _MAX_CONTEXT = 16384
 _MAX_VARIANTS = 8
 _MIN_INITIAL_BUCKET_HEADROOM = 32
-_FALSE_VALUES = frozenset({"0", "false", "no", "off"})
 
 
 class CompiledDecodePoisonedError(RuntimeError):
@@ -458,10 +457,7 @@ class CompiledDecodeStep:
 
 
 def enabled() -> bool:
-    return (
-        os.environ.get("RAPID_MLX_COMPILED_DECODE", "1").strip().lower()
-        not in _FALSE_VALUES
-    )
+    return not env_falsey("RAPID_MLX_COMPILED_DECODE")
 
 
 def convert_cache(cache: list[Any]) -> list[Any]:

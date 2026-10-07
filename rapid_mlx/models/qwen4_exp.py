@@ -13,7 +13,6 @@ milestones have independent numerical and lifecycle coverage.
 from __future__ import annotations
 
 import math
-import os
 from dataclasses import dataclass, field
 from functools import cache
 from typing import Any, cast
@@ -22,6 +21,7 @@ import mlx.core as mx
 import mlx.nn as nn
 
 from .. import _mlx_compat as _mlx_compat
+from .._env import env_truthy
 
 _mlx_compat.install()
 
@@ -60,15 +60,10 @@ from ..kernels.qwen4_fused_gdn_decode import (  # noqa: E402
 from .qwen4_exp_cache import QSAIndexCache, Qwen4ExpStateCache  # noqa: E402
 
 _FUSED_GDN_MODES = ("stock", "fused")
-_FUSED_GDN_DEFAULT = os.environ.get(
-    "RAPID_MLX_QWEN4_FUSED_GDN_DECODE", "0"
-).strip().lower() in {"1", "true", "yes", "on"}
+_FUSED_GDN_DEFAULT = env_truthy("RAPID_MLX_QWEN4_FUSED_GDN_DECODE")
 _FAST_RMSNORM_MODES = ("stock", "fast_fp32")
 _FAST_RMSNORM_DEFAULT = (
-    "fast_fp32"
-    if os.environ.get("RAPID_MLX_QWEN4_FAST_RMSNORM", "0").strip().lower()
-    in {"1", "true", "yes", "on"}
-    else "stock"
+    "fast_fp32" if env_truthy("RAPID_MLX_QWEN4_FAST_RMSNORM") else "stock"
 )
 
 

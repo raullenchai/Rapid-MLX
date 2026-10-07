@@ -17,7 +17,6 @@ ragged caches, unknown geometry, and speculative verification stay stock.
 from __future__ import annotations
 
 import logging
-import os
 import sys
 from collections.abc import Callable
 from threading import Lock
@@ -25,6 +24,7 @@ from typing import Any, cast
 
 import mlx.core as mx
 
+from ._env import env_falsey
 from .kernels.qwen4_fused_gdn_decode import (
     fused_gdn_decode,
     fused_gdn_runtime_supported,
@@ -404,7 +404,7 @@ def _structurally_eligible(layer: Any) -> bool:
 
 def install_qwen35_fused_gdn_decode(model: Any) -> int:
     """Enroll exact Qwen3.5-family GDN layers and return their count."""
-    if os.environ.get("RAPID_MLX_QWEN35_FUSED_GDN_DECODE", "1") == "0":
+    if env_falsey("RAPID_MLX_QWEN35_FUSED_GDN_DECODE"):
         return 0
     families: list[type] = []
     try:

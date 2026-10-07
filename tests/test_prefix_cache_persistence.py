@@ -3498,3 +3498,21 @@ def test_free_disk_bytes_reads_volume_and_tolerates_missing_path(tmp_path):
 
     assert mc._free_disk_bytes(str(tmp_path)) > 0
     assert mc._free_disk_bytes(str(tmp_path / "does-not-exist")) is None
+
+
+def test_kv_checkpoint_hook_returns_early_when_disk_caches_are_disabled():
+    """``--disable-disk-caches`` overrules ``--kv-disk-checkpoint-interval``."""
+    from types import SimpleNamespace
+
+    import pytest
+
+    from rapid_mlx import disk_caches
+
+    scheduler = pytest.importorskip("rapid_mlx.scheduler")
+    fake = SimpleNamespace(config=SimpleNamespace(kv_disk_checkpoint_interval=256))
+    disk_caches.configure(True)
+    try:
+        # A request without attributes proves the hook returns before reading it.
+        assert scheduler.Scheduler._maybe_disk_checkpoint(fake, object(), None) is None
+    finally:
+        disk_caches.configure(False)
