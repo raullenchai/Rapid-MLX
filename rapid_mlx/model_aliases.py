@@ -228,6 +228,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             "pflash_tier",
             "pflash_keep_ratio",
             "turboquant_tier",
+            "agentic_coverage",
         }
     )
     unknown_keys = set(value.keys()) - _ALLOWED_PROFILE_KEYS
@@ -785,6 +786,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         enforce_min_memory=_strict_bool("enforce_min_memory", False),
         vision_min_memory_gb=vision_min_memory_gb,
         experimental=_strict_bool("experimental", False),
+        agentic_coverage=_strict_bool("agentic_coverage", True),
     )
 
 
