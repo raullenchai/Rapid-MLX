@@ -390,42 +390,19 @@ fi
 # pip's resolver honor it for the transitive dep too. Revisit when mlx-lm /
 # mlx-vlm or transformers ship a compatible fix (tracked upstream in rapid-mlx).
 #
-# The engine's base install now carries the full vision (mlx-vlm + torch +
-# OpenCV), image (mflux) and video (mlx-video + imageio) runtimes. The sidecar
-# keeps its reduced runtimes (steps 2.5-2.7) to stay under BUNDLE_SIZE_CAP_MB,
-# so resolve the engine's requirements minus the [vision]/[image]/[video]
-# alias-extra packages, then install
-# rapid-mlx itself without dependencies. The list comes from the exact
-# metadata being shipped (source tree or candidate wheel).
-# Command substitution in a plain assignment propagates the helper's exit
-# status under ``set -e`` (process substitution would not).
-SIDECAR_REQUIREMENTS_TEXT="$("$STAGE/python/bin/python3.12" \
-    "${REPO_ROOT}/scripts/sidecar-core-requirements.py" \
-    "$RAPID_MLX_INSTALL_TARGET" --extras audio-desktop,computer-use)"
-SIDECAR_REQUIREMENTS=()
-while IFS= read -r requirement; do
-    [ -n "$requirement" ] && SIDECAR_REQUIREMENTS+=("$requirement")
-done <<< "$SIDECAR_REQUIREMENTS_TEXT"
-if [ "${#SIDECAR_REQUIREMENTS[@]}" -eq 0 ]; then
-    echo "ERR: could not derive the sidecar's rapid-mlx requirements" >&2
-    exit 1
-fi
+# The engine's base install carries the full vision (mlx-vlm + torch +
+# OpenCV), image (mflux) and video (mlx-video + imageio) runtimes, and the
+# Desktop ships them unchanged: the same dependency graph as
+# ``pip install rapid-mlx``, made deterministic by sidecar-constraints.txt.
 "$STAGE/python/bin/python3.12" -m pip install \
     --target "$STAGE/site-packages" \
     --no-warn-script-location \
     --no-compile \
     --upgrade \
     --constraint "$SIDECAR_CONSTRAINTS" \
-    "${SIDECAR_REQUIREMENTS[@]}" \
+    "${RAPID_MLX_INSTALL_TARGET}[audio-desktop,computer-use]" \
     'mlx' \
     'transformers'
-"$STAGE/python/bin/python3.12" -m pip install \
-    --target "$STAGE/site-packages" \
-    --no-warn-script-location \
-    --no-compile \
-    --upgrade \
-    --no-deps \
-    "${RAPID_MLX_INSTALL_TARGET}[audio-desktop,computer-use]"
 
 # pip normally selects wheels for the BUILD host. A sidecar assembled on
 # macOS 26 therefore receives mlx / mlx-metal's macosx_26 wheels even though
@@ -462,192 +439,18 @@ for wheel in \
     }
 done
 
-# ----- step 2.5: bundle mlx-vlm --no-deps + Pillow ---------------------
+# ----- step 2.5: full vision / image / video runtimes ------------------
 #
-# Even though we skip the [vision] extras to stay under rapid-desktop's
-# 500 MB CI gate, the gemma-4 family (12 aliases on the curated
-# catalog — gemma-4-12b-4bit, -12b-qat-4bit/8bit, -26b-4bit,
-# -26b-qat-4bit, -31b-{4,8}bit, -31b-qat-{4,8}bit, and friends) NEEDS
-# the ``mlx_vlm.models.gemma4_unified`` architecture classes to load,
-# even in text-only mode. v0.7.7 shipped without this and every
-# gemma-4 server start crashed with::
+# mlx-vlm (+ torch, torchvision, OpenCV, Pillow), mflux and mlx-video arrive
+# with step 2's ordinary dependency resolution — the same runtimes a
+# ``pip install rapid-mlx`` user gets. Earlier Desktop releases bundled
+# reduced ``--no-deps`` copies and patched mflux to avoid torch; with the
+# complete runtimes present neither the reduced installs nor those patches
+# are needed. Video encoding is still routed through the first-party
+# VideoToolbox bridge and the minimal FFmpeg built above (step 2.7 below).
+
+# ----- step 2.7: video encoder routing + LTX-2.5 runtime ----------------
 #
-#     ImportError: Gemma 4 models require the optional
-#         `mlx-vlm` dependency for the model architecture classes.
-#
-# ``--no-deps`` keeps the mlx-vlm install at ~9 MB (just the Python
-# classes) instead of pulling torch + cv2 + torchvision (~322 MB
-# cascade) the way ``[vision]`` extras would. mlx-vlm's __init__.py
-# eagerly chains ``from .convert import convert`` → ``.utils`` → ``PIL``,
-# so ``import mlx_vlm`` fails without Pillow even on the text-only
-# path. All other eager deps (transformers, requests, huggingface_hub,
-# safetensors, numpy, mlx) are already bundled by rapid-mlx's own
-# install above, so Pillow is the only additional dep we need.
-# Pin exactly: this install deliberately uses --no-deps, so a range would let
-# the desktop silently float to an mlx-vlm release whose declared transformers
-# requirement conflicts with the engine's validated <5.13 cap (#1501).
-echo "==> bundling mlx-vlm --no-deps + Pillow (gemma-4 + DiffusionGemma loader path)"
-"$STAGE/python/bin/python3.12" -m pip install \
-    --target "$STAGE/site-packages" \
-    --no-warn-script-location \
-    --no-compile \
-    --no-deps \
-    --constraint "$SIDECAR_CONSTRAINTS" \
-    'mlx-vlm' \
-    'Pillow>=10.0'
-
-# ----- step 2.6: bundle mflux --no-deps (Images tab image-gen lane) ----
-#
-# The Images tab offers flux2-klein-4b for generation + editing and
-# z-image-turbo for generation. ``ImageGenViewModel`` starts the sidecar on
-# whichever one the user picked. Without mflux the sidecar prints
-# "image generation requires the `rapid-mlx[image]` Python extra" and
-# exits before binding a port, so the app can only say "Couldn't start X.
-# Try again" — advice that fails identically forever, after a 4-6 GB
-# download. That is precisely the dead end #1603 closed for the video
-# aliases, and it shipped unnoticed because the Images golden flow drives
-# a stub server and so cannot observe a missing engine dependency.
-#
-# mflux declares torch (363 MB installed), opencv-python and matplotlib.
-# Bundling torch alone would blow BUNDLE_SIZE_CAP_MB (500) on its own, and
-# none of the three is reachable from the two families we wire:
-#   * every component of Flux2KleinWeightDefinition / ZImageWeightDefinition
-#     takes ComponentDefinition's default ``loading_mode="mlx_native"``,
-#     which loads through ``mx.load``;
-#   * torch is only touched by the "torch_checkpoint" / "torch_convert" /
-#     "torch_bfloat16" modes, which belong to families we do not wire
-#     (fibo, fibo_vlm, depth_pro);
-#   * cv2 lives in flux/variants/controlnet and matplotlib in
-#     flux/variants/concept_attention — neither on our path.
-# The only thing in the way is a module-level ``import torch`` in
-# weight_loader.py that runs on EVERY load; the patch below defers it into
-# the three functions that actually use it. Verified end to end on a
-# bundle with no torch: ``serve flux2-klein-4b`` binds, and
-# /v1/images/generations returns a real 512x512 PNG in ~3 s on an M3 Ultra.
-#
-# Of mflux's other declared deps only three are both missing here and
-# actually imported: platformdirs (cli/defaults/defaults.py, reached from
-# weight_loader), piexif (utils/image_util.py) and toml
-# (utils/version_util.py) — ~620 KB together. filelock is already bundled
-# by rapid-mlx's own install; hf-transfer is declared but never imported.
-# Pin exactly, for the same reason as mlx-vlm above: with --no-deps a range
-# would let the desktop float onto an mflux release whose loader wants a
-# dependency this bundle does not carry.
-echo "==> bundling mflux --no-deps + image runtime dependencies (Images tab image-gen lane)"
-"$STAGE/python/bin/python3.12" -m pip install \
-    --target "$STAGE/site-packages" \
-    --no-warn-script-location \
-    --no-compile \
-    --no-deps \
-    --constraint "$SIDECAR_CONSTRAINTS" \
-    'mflux' \
-    'platformdirs>=4.0,<5.0' \
-    'piexif>=1.1.3,<2.0' \
-    'toml>=0.10.2,<1.0' \
-    'sentencepiece>=0.2.0,<1.0'
-
-# Defer mflux's module-level torch imports into the three functions that
-# use them. Fails the build when the expected lines are gone: an mflux bump
-# that reshapes weight_loader.py must be re-verified by a human rather than
-# silently shipping an Images tab that dies on every generation.
-"$STAGE/python/bin/python3.12" - "$STAGE/site-packages" <<'PY'
-import pathlib
-import re
-import sys
-
-target = pathlib.Path(sys.argv[1]) / "mflux/models/common/weights/loading/weight_loader.py"
-src = target.read_text()
-
-for eager in ("import torch\n", "from safetensors.torch import load_file as torch_load_file\n"):
-    if eager not in src:
-        raise SystemExit(
-            f"ERR: mflux weight_loader.py no longer has the eager import "
-            f"{eager.strip()!r}. Re-verify the torch-free image path before "
-            f"bumping the mflux pin."
-        )
-    src = src.replace(eager, "", 1)
-
-lazy = (
-    "        import torch\n"
-    "        from safetensors.torch import load_file as torch_load_file\n"
-)
-for fn in ("_load_torch_checkpoint", "_load_torch_convert", "_load_torch_bfloat16"):
-    match = re.search(rf"^    def {fn}\(.*\n", src, re.M)
-    if match is None or not match.group(0).rstrip().endswith(":"):
-        raise SystemExit(
-            f"ERR: mflux weight_loader.py has no single-line def for {fn}(). "
-            f"Re-verify the torch-free image path before bumping the mflux pin."
-        )
-    src = src[: match.end()] + lazy + src[match.end() :]
-
-target.write_text(src)
-print("==> mflux torch imports deferred into the 3 torch-only loading modes")
-PY
-
-# mflux 0.20.0's PiD checkpoint converter is imported transitively by every
-# Qwen Image model even though it is only used for the separate PiD upscaler.
-# Keep that optional PyTorch conversion path lazy too, otherwise selecting the
-# bundled qwen-image alias fails before model construction with
-# ``ModuleNotFoundError: No module named 'torch'``.
-"$STAGE/python/bin/python3.12" - "$STAGE/site-packages" <<'PY'
-import pathlib
-import sys
-
-target = pathlib.Path(sys.argv[1]) / "mflux/models/common/pid_decoder/pid_weight_mapping.py"
-src = target.read_text()
-eager = "import torch\n"
-functions = (
-    "def convert_checkpoint(pth_path: str) -> dict[str, mx.array]:\n",
-    "def _to_mx_array(tensor: torch.Tensor) -> mx.array:\n",
-)
-if src.count(eager) != 1 or any(src.count(function) != 1 for function in functions):
-    raise SystemExit(
-        "ERR: mflux PiD weight mapping changed. Re-verify the torch-free "
-        "qwen-image path before bumping the mflux pin."
-    )
-src = src.replace(eager, "", 1)
-for function in functions:
-    replacement = function.replace("tensor: torch.Tensor", "tensor")
-    src = src.replace(function, replacement + '    import torch\n', 1)
-target.write_text(src)
-print("==> mflux PiD torch import deferred behind checkpoint conversion")
-PY
-
-# Fail closed: with no torch in the stage, importing mflux's weight loader
-# is itself the proof that the image lane no longer needs a 363 MB
-# dependency. Import the Rapid-owned Bonsai adapter too: it is separately
-# advertised in Desktop and reaches additional FLUX.2 modules. A regression
-# here means the corresponding Images-tab generation fails at startup.
-PYTHONPATH="$STAGE/site-packages" PYTHONNOUSERSITE=1 "$STAGE/python/bin/python3.12" -s - <<'PY'
-import importlib
-import sys
-
-importlib.import_module("mflux.models.common.weights.loading.weight_loader")
-importlib.import_module("mflux.models.qwen.variants.txt2img.qwen_image")
-importlib.import_module("mflux.models.qwen21.variants.txt2img.qwen_image_21")
-importlib.import_module("rapid_mlx.image.bonsai_runtime")
-if "torch" in sys.modules:
-    raise SystemExit("ERR: mflux still pulls torch at import time")
-print("==> mflux and Bonsai image lanes import without torch: OK")
-PY
-
-# ----- step 2.7: bundle minimal video runtime --no-deps ---------------
-#
-# The full [video] extra pulls OpenCV and a second, conflicting vision stack.
-# Desktop already carries every dependency reached by LTX-2.3 and Wan except
-# these two small pure-Python distributions. Encoding is routed through the
-# first-party bridge and the minimal FFmpeg above, so OpenCV/imageio remain
-# absent from the signed app.
-echo "==> bundling minimal LTX/Wan video runtime (no OpenCV)"
-"$STAGE/python/bin/python3.12" -m pip install \
-    --target "$STAGE/site-packages" \
-    --no-warn-script-location \
-    --no-compile \
-    --no-deps \
-    --constraint "$SIDECAR_CONSTRAINTS" \
-    'mlx-video-with-audio' \
-    'mlx-arsenal'
-
 # LTX-2.5 is a separate pure-Python runtime. A signed app cannot clone a
 # repository or provision an uv workspace after launch, so build its two
 # packages from the exact audited source snapshot and embed them.
@@ -762,9 +565,8 @@ def save_video(frames: np.ndarray, output_path: str, fps: int = 16):
 print("==> mlx-video encoders routed through bundled FFmpeg: OK")
 PY
 
-# ``--no-deps`` is intentional for bundle size, but it must not hide version
-# conflicts among distributions that ARE present. Missing optional heavy deps
-# remain allowed; every installed-to-installed edge must satisfy its metadata.
+# Every installed-to-installed dependency edge must satisfy its metadata (the
+# LTX-2.5 packages above are still embedded ``--no-deps``).
 PYTHONPATH="$STAGE/site-packages" PYTHONNOUSERSITE=1 \
     "$STAGE/python/bin/python3.12" -s \
     "$REPO_ROOT/scripts/check-sidecar-distributions.py" \
@@ -1248,18 +1050,11 @@ else
     }
     echo "    $CUA_IMPORT_OUT"
 
-    # mlx_vlm import smoke. The bundle ships mlx-vlm --no-deps (step 2.5)
-    # because gemma-4 + DiffusionGemma loaders need the architecture
-    # classes in mlx_vlm.models.gemma4{,_unified}. mlx-vlm's
-    # ``__init__.py`` eagerly chains ``from .convert import convert`` →
-    # ``.utils`` → ``PIL``, plus a fanout into ``.generate``,
-    # ``.prompt_utils``, ``.vision_cache``. As long as our --no-deps
-    # install covers every eager dep, ``import mlx_vlm`` succeeds.
-    # If a future mlx-vlm minor adds a NEW top-level eager import
-    # (e.g. ``import mlx_audio`` in __init__), this smoke catches it
-    # at build time instead of letting the bundle ship and crash on
-    # the user's first gemma-4 / DiffusionGemma launch — same failure
-    # class that bit v0.7.7.
+    # Vision + image runtime smoke. The bundle carries the complete base
+    # runtimes (step 2.5): import every architecture family Desktop exposes,
+    # the full torch/OpenCV stack and the mflux loaders, so a trim or
+    # source-drop regression (steps 3-3.6) fails the build instead of the
+    # user's first multimodal or image-generation start.
     VLM_OUT="$(env -i "${TELEMETRY_OFF_ENV[@]}" HOME="$SMOKE_HOME" PATH=/usr/bin:/bin \
         PYTHONHOME="$STAGE/python" \
         PYTHONPATH="$STAGE/site-packages" \
@@ -1276,19 +1071,21 @@ from mlx_vlm.models import (
 from rapid_mlx.image.hidream_runtime import HiDreamO1
 from rapid_mlx.image.sd35_runtime import SD35Large
 from rapid_mlx.image.sdxl_runtime import SDXL
-assert importlib.util.find_spec("cv2") is None
-assert importlib.util.find_spec("torch") is None
-assert importlib.util.find_spec("torchvision") is None
-print("mlx_vlm", mlx_vlm.__version__, "sentencepiece", sentencepiece.__version__, "desktop Qwen/Gemma/HiDream/SDXL/SD3.5 architectures OK")' 2>&1)" || {
-        echo "ERR: bundled mlx_vlm desktop architecture smoke failed:" >&2
+import cv2
+import torch
+import torchvision
+importlib.import_module("mflux.models.common.weights.loading.weight_loader")
+importlib.import_module("mflux.models.qwen.variants.txt2img.qwen_image")
+importlib.import_module("mflux.models.qwen21.variants.txt2img.qwen_image_21")
+importlib.import_module("rapid_mlx.image.bonsai_runtime")
+from rapid_mlx.runtime.image_lane import image_runtime_issue
+assert image_runtime_issue("flux2-klein-4b") is None
+print("mlx_vlm", mlx_vlm.__version__, "torch", torch.__version__, "cv2", cv2.__version__, "mflux", importlib.metadata.version("mflux"), "desktop vision/image runtimes OK")' 2>&1)" || {
+        echo "ERR: bundled vision/image runtime smoke failed:" >&2
         echo "$VLM_OUT" >&2
-        echo "ERR: usually means a new mlx-vlm release added an eager top-level import" >&2
-        echo "     not currently in the --no-deps bundle. Inspect the traceback for the" >&2
-        echo "     missing module and either pin mlx-vlm tighter in step 2.5 or add the" >&2
-        echo "     module to the --no-deps install line." >&2
         exit 3
     }
-    echo "    mlx_vlm import: $VLM_OUT"
+    echo "    vision/image runtimes: $VLM_OUT"
 
     # Audio surface smoke. Import both engine lanes and the Qwen3 preset-voice
     # implementation without loading model weights. A base-only sidecar can
@@ -1333,8 +1130,9 @@ from videox_fun_mlx.pipeline.pipeline_cogvideox_fun_inpaint import CogVideoXFunI
 from videox_fun_mlx.pipeline.scheduler import DDIMScheduler
 from rapid_mlx.runtime.video_lane import VideoEngine
 from rapid_mlx.video.encoding import encode_rgb_video
-assert importlib.util.find_spec("cv2") is None
-assert importlib.util.find_spec("imageio") is None
+import imageio_ffmpeg
+from rapid_mlx.runtime.video_lane import registered_wan_runtime_issue
+assert registered_wan_runtime_issue("wan2.2-ti2v-5b-q8") is None
 assert importlib.metadata.version("ltx-core-mlx") == "0.14.15"
 assert importlib.metadata.version("ltx-pipelines-mlx") == "0.14.15"
 from rapid_mlx.video.ltx25 import embedded_ltx25_interpreter
@@ -1355,7 +1153,7 @@ with tempfile.TemporaryDirectory() as directory:
         family="smoke",
     )
     assert output.stat().st_size > 0
-print("mlx_video minimal runtime + VideoToolbox encode/crop OK")' 2>&1)" || {
+print("mlx_video runtime + VideoToolbox encode/crop OK")' 2>&1)" || {
         echo "ERR: bundled video runtime or encoder smoke failed:" >&2
         echo "$VIDEO_OUT" >&2
         exit 3
