@@ -2915,14 +2915,20 @@ def _tensorfold_product_profile(model_name: str | None):
 
 
 def _tensorfold_mtp_profile(model_name: str | None):
-    """Return a catalog-qualified target-only TensorFold MTP profile."""
+    """Return a catalog-qualified target-only TensorFold profile (MTP or kernel)."""
 
     if not model_name:
         return None
     from .model_aliases import resolve_profile
 
     profile = resolve_profile(model_name)
-    return profile if profile and getattr(profile, "tensorfold_mtp", False) else None
+    if profile is None:
+        return None
+    if getattr(profile, "tensorfold_mtp", False) or getattr(
+        profile, "tensorfold_kernel", False
+    ):
+        return profile
+    return None
 
 
 def _reject_tensorfold_family_opt_out_or_exit(args) -> None:
@@ -3245,12 +3251,19 @@ def _normalize_speculative_config_or_exit(args):
         elif (
             not getattr(args, "no_spec_decode", False)
             and not getattr(args, "mllm", False)
-            and _tensorfold_mtp_profile(
-                getattr(args, "_original_alias", None) or getattr(args, "model", None)
+            and (
+                target_only := _tensorfold_mtp_profile(
+                    getattr(args, "_original_alias", None)
+                    or getattr(args, "model", None)
+                )
             )
             is not None
         ):
-            raw_config = '{"method":"mtp","backend":"tensorfold"}'
+            raw_config = (
+                '{"method":"suffix","backend":"tensorfold"}'
+                if getattr(target_only, "tensorfold_kernel", False)
+                else '{"method":"mtp","backend":"tensorfold"}'
+            )
             args.speculative_config = raw_config
         elif (
             not getattr(args, "no_spec_decode", False)
@@ -3472,6 +3485,10 @@ def _normalize_speculative_config_or_exit(args):
             args.mtp_max_k = 3
         if config.disable_auto_k is not None:
             args.mtp_disable_auto_k = config.disable_auto_k
+    elif config.method == "suffix" and config.backend == "tensorfold":
+        # A kernel profile's suffix lookup lives inside the TensorFold runtime,
+        # so it shares the target-only lane instead of Rapid's suffix decoder.
+        args.mtp_backend = "tensorfold"
     elif config.method == "suffix":
         args.suffix_decoding = True
         if config.num_speculative_tokens is not None:
@@ -3632,9 +3649,18 @@ def _serve_tensorfold_mtp_if_requested(
         return False
     alias_name = getattr(args, "_original_alias", None) or args.model
     profile = _tensorfold_mtp_profile(alias_name)
-    if profile is None:
+    requested = getattr(getattr(args, "_speculative_config", None), "method", None)
+    qualified = (
+        None
+        if profile is None
+        else "suffix"
+        if getattr(profile, "tensorfold_kernel", False)
+        else "mtp"
+    )
+    if qualified is None or requested not in (None, qualified):
         print(
-            "error: backend='tensorfold' for MTP requires a qualified catalog alias",
+            "error: backend='tensorfold' requires a catalog alias qualified for "
+            "that method",
             file=sys.stderr,
         )
         raise SystemExit(2)
@@ -9389,6 +9415,7 @@ def _available_models_json_payload() -> dict:
             ),
             "mtp_default_enabled": bool(getattr(p, "mtp_default_enabled", True)),
             "tensorfold_mtp": bool(getattr(p, "tensorfold_mtp", False)),
+            "tensorfold_kernel": bool(getattr(p, "tensorfold_kernel", False)),
             "tensorfold_target_revision": getattr(
                 p, "tensorfold_target_revision", None
             ),
@@ -9397,6 +9424,7 @@ def _available_models_json_payload() -> dict:
             ),
             "tensorfold_backend": "tensorfold"
             if getattr(p, "tensorfold_mtp", False)
+            or getattr(p, "tensorfold_kernel", False)
             else None,
             "modality": modality,
             "video_modes": list(p.video_modes or ()),

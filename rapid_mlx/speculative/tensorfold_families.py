@@ -97,6 +97,18 @@ PROFILES: dict[str, TensorFoldFamilyProfile] = {
             quantization=(4, 32),
             ordinary_engine=False,
         ),
+        TensorFoldFamilyProfile(
+            profile_id="gemma-4-26b-tensorfold",
+            label="TensorFold Gemma 4 26B",
+            model_type="gemma4",
+            target="mlx-community/gemma-4-26b-a4b-it-4bit",
+            target_revision="0d77464eeb233a2da68ebf9d7dc4edaac7db956d",
+            method="suffix",
+            algorithm="suffix-lookup",
+            fallback_model="gemma-4-26b-4bit",
+            min_memory_gb=48,
+            quantization=(4, 64),
+        ),
     )
 }
 

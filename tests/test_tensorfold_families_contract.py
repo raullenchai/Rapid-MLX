@@ -15,6 +15,7 @@ from rapid_mlx.speculative.tensorfold_qwen27 import TensorFoldUnavailable
 
 PROFILE_IDS = sorted(families.PROFILES)
 MTP_IDS = [pid for pid in PROFILE_IDS if families.PROFILES[pid].method == "mtp"]
+TARGET_ONLY_IDS = [pid for pid in PROFILE_IDS if not families.PROFILES[pid].drafter]
 PAIRED_IDS = [pid for pid in PROFILE_IDS if families.PROFILES[pid].drafter]
 REPO_ROOT = Path(__file__).parents[1]
 DRAFT_REVISION = "a" * 40
@@ -58,10 +59,11 @@ def test_catalog_alias_matches_the_registered_profile(profile_id: str) -> None:
     assert families.profile_for(profile_id) is profile
     assert alias.hf_path == profile.target
     if profile.drafter is None:
-        assert alias.tensorfold_mtp is True
+        kernel = profile.method == "suffix"
+        assert (alias.tensorfold_kernel, alias.tensorfold_mtp) == (kernel, not kernel)
         assert alias.tensorfold_target_revision == profile.target_revision
         assert alias.tensorfold_runtime_revision == SUPPORTED_REVISION
-        expected = '{"method":"mtp","backend":"tensorfold"}'
+        expected = f'{{"method":"{profile.method}","backend":"tensorfold"}}'
     else:
         assert alias.dflash_backend == "tensorfold"
         assert alias.dflash_target_revision == profile.target_revision
@@ -428,7 +430,7 @@ def test_server_wrapper_declares_product_metadata(monkeypatch, profile_id: str) 
     assert captured["main_model_repo"] == "/target"
 
 
-@pytest.mark.parametrize("profile_id", MTP_IDS)
+@pytest.mark.parametrize("profile_id", TARGET_ONLY_IDS)
 def test_cli_dispatches_family_profile(monkeypatch, profile_id: str) -> None:
     from rapid_mlx import cli
 
@@ -569,7 +571,10 @@ def test_default_configuration_stays_on_the_family_lane(profile_id: str) -> None
 
 def test_only_the_measured_fallback_is_declared() -> None:
     ordinary = {p.profile_id for p in families.PROFILES.values() if p.ordinary_engine}
-    assert ordinary == {"nemotron-3.5-lightning-tensorfold"}
+    assert ordinary == {
+        "gemma-4-26b-tensorfold",
+        "nemotron-3.5-lightning-tensorfold",
+    }
 
 
 @pytest.mark.parametrize("profile_id", PAIRED_IDS)
@@ -583,7 +588,15 @@ def test_paired_profile_pins_a_real_drafter_layout(
         profile.drafter_revision,
         {"architectures": [profile.drafter_architecture]},
     )
-    families.validate_artifacts(profile, _target(tmp_path, profile), drafter)
+    assert (profile_id, profile.drafter_architecture) == (
+        "bonsai2-27b-tensorfold",
+        "DFlash2DraftModel",
+    )
+    target = _target(tmp_path, profile)
+    families.validate_artifacts(profile, target, drafter)
+    (drafter / "config.json").write_text('{"architectures": ["DFlashDraftModel"]}')
+    with pytest.raises(TensorFoldUnavailable, match="draft model"):
+        families.validate_artifacts(profile, target, drafter)
 
 
 def test_models_reference_documents_every_family_profile() -> None:
@@ -642,3 +655,70 @@ def test_paired_tensorfold_only_profile_must_stay_on_dflash(monkeypatch) -> None
     ):
         with pytest.raises(SystemExit, match="2"):
             cli._require_tensorfold_family_lane_or_exit(args)
+
+
+@pytest.mark.parametrize(
+    ("alias", "requested"),
+    [
+        ("gemma-4-26b-tensorfold", "mtp"),
+        ("nemotron-3.5-lightning-tensorfold", "suffix"),
+        ("gemma-4-26b-4bit", "suffix"),
+    ],
+)
+def test_cli_refuses_a_method_the_alias_is_not_qualified_for(
+    capsys, alias: str, requested: str
+) -> None:
+    from rapid_mlx import cli
+
+    args = SimpleNamespace(
+        mtp_backend="tensorfold",
+        _original_alias=alias,
+        model="/pinned/target",
+        _speculative_config=SimpleNamespace(method=requested),
+    )
+    with pytest.raises(SystemExit) as exit_info:
+        cli._serve_tensorfold_mtp_if_requested(
+            args,
+            server_module=SimpleNamespace(),
+            effective_max_tokens=512,
+            cors_origins=[],
+            uvicorn_log_level="info",
+        )
+    assert exit_info.value.code == 2
+    assert "qualified for that method" in capsys.readouterr().err
+
+
+def test_kernel_profile_routes_suffix_to_the_tensorfold_lane() -> None:
+    from rapid_mlx import cli
+
+    profile = families.PROFILES["gemma-4-26b-tensorfold"]
+    args = SimpleNamespace(
+        model=profile.target,
+        _original_alias=profile.profile_id,
+        speculative_config=None,
+        no_spec_decode=False,
+        mllm=False,
+    )
+    cli._normalize_speculative_config_or_exit(args)
+    assert args.mtp_backend == "tensorfold"
+    assert args.suffix_decoding is False
+
+    opted_out = SimpleNamespace(
+        model=profile.target,
+        _original_alias=profile.profile_id,
+        speculative_config=None,
+        no_spec_decode=True,
+        mllm=False,
+    )
+    cli._normalize_speculative_config_or_exit(opted_out)
+    assert opted_out.mtp_backend is None
+
+
+def test_models_json_marks_the_kernel_profile() -> None:
+    from rapid_mlx import cli
+
+    rows = {row["alias"]: row for row in cli._available_models_json_payload()["text"]}
+    row = rows["gemma-4-26b-tensorfold"]
+    assert (row["tensorfold_kernel"], row["tensorfold_mtp"]) == (True, False)
+    assert row["tensorfold_backend"] == "tensorfold"
+    assert rows["glm5.3-flash-tensorfold"]["tensorfold_kernel"] is False

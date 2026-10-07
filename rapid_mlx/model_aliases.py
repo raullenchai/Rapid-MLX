@@ -214,6 +214,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             "dflash_algorithm",
             "dflash_backend",
             "tensorfold_mtp",
+            "tensorfold_kernel",
             "tensorfold_target_revision",
             "tensorfold_runtime_revision",
             "supports_ddtree",
@@ -432,13 +433,23 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         "tensorfold_target_revision": tensorfold_target_revision,
         "tensorfold_runtime_revision": tensorfold_runtime_revision,
     }
-    if tensorfold_mtp and any(v is None for v in tensorfold_revisions.values()):
+    tensorfold_kernel = _strict_bool("tensorfold_kernel", False)
+    if tensorfold_mtp and tensorfold_kernel:
         raise ValueError(
-            f"alias {alias!r}: tensorfold_mtp=true requires immutable target and runtime revisions"
+            f"alias {alias!r}: tensorfold_mtp and tensorfold_kernel are mutually exclusive"
         )
-    if not tensorfold_mtp and any(v is not None for v in tensorfold_revisions.values()):
+    tensorfold_target_only = tensorfold_mtp or tensorfold_kernel
+    if tensorfold_target_only and any(v is None for v in tensorfold_revisions.values()):
+        flag = "tensorfold_kernel" if tensorfold_kernel else "tensorfold_mtp"
+        raise ValueError(
+            f"alias {alias!r}: {flag}=true requires immutable target and runtime revisions"
+        )
+    if not tensorfold_target_only and any(
+        v is not None for v in tensorfold_revisions.values()
+    ):
         raise ValueError(
             f"alias {alias!r}: TensorFold revisions require tensorfold_mtp=true"
+            " or tensorfold_kernel=true"
         )
     for key, revision in tensorfold_revisions.items():
         if revision is not None and (
@@ -771,6 +782,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         dflash_algorithm=dflash_algorithm,
         dflash_backend=dflash_backend,
         tensorfold_mtp=tensorfold_mtp,
+        tensorfold_kernel=tensorfold_kernel,
         tensorfold_target_revision=tensorfold_target_revision,
         tensorfold_runtime_revision=tensorfold_runtime_revision,
         supports_ddtree=supports_ddtree,

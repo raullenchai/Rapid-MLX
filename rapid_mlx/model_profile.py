@@ -239,6 +239,9 @@ class ModelProfile:
     # Qualified target-only TensorFold MTP lane. Unlike DFlash this uses the
     # checkpoint's embedded MTP head and therefore has no drafter repository.
     tensorfold_mtp: bool = False
+    # Qualified target-only TensorFold kernel lane for a checkpoint without an
+    # MTP head. It shares the target and runtime revision pins.
+    tensorfold_kernel: bool = False
     tensorfold_target_revision: str | None = None
     tensorfold_runtime_revision: str | None = None
     # Recommended sampling defaults — curated per-family overrides that

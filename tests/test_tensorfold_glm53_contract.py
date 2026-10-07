@@ -119,7 +119,12 @@ def test_glm_runtime_provenance_read_failures_are_closed(monkeypatch) -> None:
         ({"hf_path": "repo", "tensorfold_mtp": True}, "requires immutable"),
         (
             {"hf_path": "repo", "tensorfold_target_revision": "0" * 40},
-            "require tensorfold_mtp=true",
+            "require tensorfold_mtp=true or tensorfold_kernel=true",
+        ),
+        ({"hf_path": "repo", "tensorfold_kernel": True}, "tensorfold_kernel=true"),
+        (
+            {"hf_path": "repo", "tensorfold_mtp": True, "tensorfold_kernel": True},
+            "mutually exclusive",
         ),
         (
             {

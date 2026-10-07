@@ -990,6 +990,25 @@
       "top_k": 64
     }
   },
+  "gemma-4-26b-tensorfold": {
+    "hf_path": "mlx-community/gemma-4-26b-a4b-it-4bit",
+    "reasoning_parser": "gemma4",
+    "is_hybrid": false,
+    "is_moe": true,
+    "is_text_only": true,
+    "supports_spec_decode": false,
+    "tensorfold_kernel": true,
+    "tensorfold_target_revision": "0d77464eeb233a2da68ebf9d7dc4edaac7db956d",
+    "tensorfold_runtime_revision": "cb2ebf0540f42604e2759b2ddef497861e928248",
+    "min_memory_gb": 48,
+    "enforce_min_memory": true,
+    "experimental": true,
+    "recommended_sampling": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 64
+    }
+  },
   "gemma-4-26b-qat-4bit": {
     "supports_image_input": true,
     "hf_path": "mlx-community/gemma-4-26B-A4B-it-qat-4bit",

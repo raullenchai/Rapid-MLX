@@ -169,6 +169,23 @@ to `bonsai2-27b-2bit`, which keeps image input and tool calling. Measurements
 are in the
 [qualification record](../engineering/performance/2026-10-06-tensorfold-bonsai2-qualification.md).
 
+### Experimental Gemma 4 26B accelerated profile
+
+`gemma-4-26b-tensorfold` is an experimental, text-only profile that serves
+`mlx-community/gemma-4-26b-a4b-it-4bit` on the same TensorFold runtime. It
+needs no draft model: the gain comes from TensorFold's Gemma kernels, with its
+suffix lookup as the only speculation. It requires 48 GB of unified memory.
+
+```bash
+python -m pip install "tensorfold @ git+https://github.com/ashhart/TensorFold.git@cb2ebf0540f42604e2759b2ddef497861e928248"
+rapid-mlx serve gemma-4-26b-tensorfold
+```
+
+Tools, images, grammar constraints, and general batching fail explicitly; use
+`gemma-4-26b-4bit` for those. `--no-spec-decode` serves the same checkpoint
+through Rapid's ordinary text engine. Measurements are in the
+[qualification record](../engineering/performance/2026-10-06-tensorfold-gemma4-qualification.md).
+
 ### Experimental Chat candidate: NeoHorse 1 9B
 
 `neohorse-9b-4bit` is an opt-in, text-only Chat model for Macs with at
