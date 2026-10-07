@@ -2915,14 +2915,20 @@ def _tensorfold_product_profile(model_name: str | None):
 
 
 def _tensorfold_mtp_profile(model_name: str | None):
-    """Return a catalog-qualified target-only TensorFold MTP profile."""
+    """Return a catalog-qualified target-only TensorFold profile (MTP or kernel)."""
 
     if not model_name:
         return None
     from .model_aliases import resolve_profile
 
     profile = resolve_profile(model_name)
-    return profile if profile and getattr(profile, "tensorfold_mtp", False) else None
+    if profile is None:
+        return None
+    if getattr(profile, "tensorfold_mtp", False) or getattr(
+        profile, "tensorfold_kernel", False
+    ):
+        return profile
+    return None
 
 
 def _reject_tensorfold_family_opt_out_or_exit(args) -> None:
@@ -3245,17 +3251,29 @@ def _normalize_speculative_config_or_exit(args):
         elif (
             not getattr(args, "no_spec_decode", False)
             and not getattr(args, "mllm", False)
-            and _tensorfold_mtp_profile(
-                getattr(args, "_original_alias", None) or getattr(args, "model", None)
+            and (
+                target_only := _tensorfold_mtp_profile(
+                    getattr(args, "_original_alias", None)
+                    or getattr(args, "model", None)
+                )
             )
             is not None
         ):
-            raw_config = '{"method":"mtp","backend":"tensorfold"}'
+            raw_config = (
+                '{"method":"suffix","backend":"tensorfold"}'
+                if getattr(target_only, "tensorfold_kernel", False)
+                else '{"method":"mtp","backend":"tensorfold"}'
+            )
             args.speculative_config = raw_config
         elif (
             not getattr(args, "no_spec_decode", False)
             and not getattr(args, "mllm", False)
-            and (profile := _tensorfold_product_profile(getattr(args, "model", None)))
+            and (
+                profile := _tensorfold_product_profile(
+                    getattr(args, "_original_alias", None)
+                    or getattr(args, "model", None)
+                )
+            )
             is not None
         ):
             raw_config = json.dumps(
@@ -3467,6 +3485,10 @@ def _normalize_speculative_config_or_exit(args):
             args.mtp_max_k = 3
         if config.disable_auto_k is not None:
             args.mtp_disable_auto_k = config.disable_auto_k
+    elif config.method == "suffix" and config.backend == "tensorfold":
+        # A kernel profile's suffix lookup lives inside the TensorFold runtime,
+        # so it shares the target-only lane instead of Rapid's suffix decoder.
+        args.mtp_backend = "tensorfold"
     elif config.method == "suffix":
         args.suffix_decoding = True
         if config.num_speculative_tokens is not None:
@@ -3627,9 +3649,18 @@ def _serve_tensorfold_mtp_if_requested(
         return False
     alias_name = getattr(args, "_original_alias", None) or args.model
     profile = _tensorfold_mtp_profile(alias_name)
-    if profile is None:
+    requested = getattr(getattr(args, "_speculative_config", None), "method", None)
+    qualified = (
+        None
+        if profile is None
+        else "suffix"
+        if getattr(profile, "tensorfold_kernel", False)
+        else "mtp"
+    )
+    if qualified is None or requested not in (None, qualified):
         print(
-            "error: backend='tensorfold' for MTP requires a qualified catalog alias",
+            "error: backend='tensorfold' requires a catalog alias qualified for "
+            "that method",
             file=sys.stderr,
         )
         raise SystemExit(2)
@@ -3870,7 +3901,7 @@ def _preflight_tensorfold_qwen27_or_exit(args=None) -> None:
     environment_probe: Callable[[], None]
     from .speculative.tensorfold_families import profile_for
 
-    family = profile_for(alias_name) if profile is not None else None
+    family = profile_for(alias_name)
     if family is not None:
         from .speculative.tensorfold_families import require_memory
         from .speculative.tensorfold_qwen27 import (
@@ -5449,7 +5480,11 @@ def serve_command(args):
         _spec_config is not None and _spec_config.backend == "tensorfold"
     )
     if _wants_tensorfold:
-        if _spec_config.method == "mtp":
+        from .speculative.tensorfold_families import profile_for as _tf_family_for
+
+        if _spec_config.method == "mtp" or _tf_family_for(
+            getattr(args, "_original_alias", None) or getattr(args, "model", None)
+        ):
             _preflight_tensorfold_qwen27_or_exit(args)
         else:
             _preflight_tensorfold_qwen27_or_exit()
@@ -5729,8 +5764,13 @@ def serve_command(args):
     ):
         from rapid_mlx.telemetry.server_start import failure_stage
 
+        from .speculative.tensorfold_families import (
+            download_qualified_artifacts,
+            profile_for,
+        )
         from .speculative.tensorfold_qwen27 import download_qualified_pair
 
+        _tf_family = profile_for(getattr(args, "_original_alias", None) or args.model)
         with failure_stage("download"):
             _check_disk_space(
                 _tf_profile.hf_path,
@@ -5742,7 +5782,11 @@ def serve_command(args):
                 force=getattr(args, "force_disk_check", False),
                 revision_override=_tf_profile.dflash_draft_revision,
             )
-            _tf_artifacts = download_qualified_pair()
+            _tf_artifacts = (
+                download_qualified_artifacts(_tf_family)
+                if _tf_family is not None
+                else download_qualified_pair()
+            )
         args.model = _tf_artifacts.target_path
         args._dflash_drafter_repo = _tf_artifacts.drafter_path
     elif (
@@ -6609,7 +6653,16 @@ def serve_command(args):
             ),
         )
         if _dflash_backend == "tensorfold":
-            run_tensorfold_qwen27_server(**_dflash_kwargs)
+            from .speculative.tensorfold_families import (
+                profile_for,
+                run_tensorfold_family_server,
+            )
+
+            _tf_family = profile_for(_alias_name)
+            if _tf_family is not None:
+                run_tensorfold_family_server(_tf_family, **_dflash_kwargs)
+            else:
+                run_tensorfold_qwen27_server(**_dflash_kwargs)
             return
         run_dflash_server(
             main_model_repo=_profile.hf_path if _profile else args.model,
@@ -9362,6 +9415,7 @@ def _available_models_json_payload() -> dict:
             ),
             "mtp_default_enabled": bool(getattr(p, "mtp_default_enabled", True)),
             "tensorfold_mtp": bool(getattr(p, "tensorfold_mtp", False)),
+            "tensorfold_kernel": bool(getattr(p, "tensorfold_kernel", False)),
             "tensorfold_target_revision": getattr(
                 p, "tensorfold_target_revision", None
             ),
@@ -9370,6 +9424,7 @@ def _available_models_json_payload() -> dict:
             ),
             "tensorfold_backend": "tensorfold"
             if getattr(p, "tensorfold_mtp", False)
+            or getattr(p, "tensorfold_kernel", False)
             else None,
             "modality": modality,
             "video_modes": list(p.video_modes or ()),

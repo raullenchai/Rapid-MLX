@@ -990,6 +990,25 @@
       "top_k": 64
     }
   },
+  "gemma-4-26b-tensorfold": {
+    "hf_path": "mlx-community/gemma-4-26b-a4b-it-4bit",
+    "reasoning_parser": "gemma4",
+    "is_hybrid": false,
+    "is_moe": true,
+    "is_text_only": true,
+    "supports_spec_decode": false,
+    "tensorfold_kernel": true,
+    "tensorfold_target_revision": "0d77464eeb233a2da68ebf9d7dc4edaac7db956d",
+    "tensorfold_runtime_revision": "cb2ebf0540f42604e2759b2ddef497861e928248",
+    "min_memory_gb": 48,
+    "enforce_min_memory": true,
+    "experimental": true,
+    "recommended_sampling": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 64
+    }
+  },
   "gemma-4-26b-qat-4bit": {
     "supports_image_input": true,
     "hf_path": "mlx-community/gemma-4-26B-A4B-it-qat-4bit",
@@ -1802,6 +1821,23 @@
       "top_p": 0.95,
       "top_k": 20
     }
+  },
+  "bonsai2-27b-tensorfold": {
+    "hf_path": "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": true,
+    "is_hybrid_explicit": true,
+    "is_text_only": true,
+    "supports_spec_decode": false,
+    "supports_dflash": true,
+    "dflash_draft_model": "z-lab/Qwen3.8-27B-DFlash2",
+    "dflash_target_revision": "fcba37d2117a7077eac6b613b2668d14d9779edd",
+    "dflash_draft_revision": "50307d4c4cde6860d4eee73e2547cd786fe8e8a4",
+    "dflash_algorithm": "dflash2",
+    "dflash_backend": "tensorfold",
+    "min_memory_gb": 96,
+    "enforce_min_memory": true,
+    "experimental": true
   },
   "smollm3-3b-4bit": {
     "hf_path": "mlx-community/SmolLM3-3B-4bit",

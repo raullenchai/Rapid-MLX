@@ -48,6 +48,7 @@ def test_available_payload_shape() -> None:
         "mtp_draft_model",
         "mtp_speculative_tokens",
         "tensorfold_mtp",
+        "tensorfold_kernel",
         "tensorfold_target_revision",
         "tensorfold_runtime_revision",
         "tensorfold_backend",
