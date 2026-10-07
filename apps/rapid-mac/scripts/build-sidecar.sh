@@ -482,6 +482,29 @@ PY
 # unsigned extensionless Mach-O outside the signing sweep, and it would break
 # the LGPL-only FFmpeg policy, so drop the binary and keep the Python package.
 rm -rf "$STAGE/site-packages/imageio_ffmpeg/binaries/"ffmpeg-*
+#
+# OpenCV is excluded from the DMG pending a licensing decision: every
+# opencv-python / opencv-python-headless macOS wheel embeds a GPL-configured
+# FFmpeg (--enable-gpl --enable-version3, libx264/x265) in cv2/.dylibs, which
+# conflicts with the Desktop's LGPL-only FFmpeg policy. The pip/PyPI base
+# install keeps it. Nothing the Desktop advertises imports cv2 at module load
+# (image input, image generation and video generation were smoke-proven
+# without it); VLM *video input* is the one feature that needs it, and the
+# engine rejects that request with a clear 400 when cv2 is absent.
+rm -rf \
+    "$STAGE/site-packages/cv2" \
+    "$STAGE/site-packages/"opencv_python-*.dist-info \
+    "$STAGE/site-packages/"opencv_python_headless-*.dist-info
+# Fail closed if any GPL FFmpeg component is still staged (OpenCV, PyAV or any
+# future wheel can carry one). The minimal FFmpeg built above is LGPL-only.
+GPL_FFMPEG_LIBS="$(find "$STAGE" \( -name 'libx264*' -o -name 'libx265*' \
+    -o -name 'libpostproc*' -o -name 'libvidstab*' -o -name 'librubberband*' \) -print)"
+if [ -n "$GPL_FFMPEG_LIBS" ]; then
+    echo "ERR: GPL FFmpeg components staged in the Desktop sidecar:" >&2
+    echo "$GPL_FFMPEG_LIBS" >&2
+    exit 1
+fi
+echo "==> no GPL FFmpeg components staged: OK"
 
 # ----- step 2.7: video encoder routing + LTX-2.5 runtime ----------------
 #
@@ -1090,8 +1113,8 @@ else
     echo "    $CUA_IMPORT_OUT"
 
     # Vision + image runtime smoke. The bundle carries the complete base
-    # runtimes (step 2.5): import every architecture family Desktop exposes,
-    # the full torch/OpenCV stack and the mflux loaders, so a trim or
+    # runtimes (step 2.5, OpenCV excluded): import every architecture family
+    # Desktop exposes, torch and the mflux loaders, so a trim or
     # source-drop regression (steps 3-3.6) fails the build instead of the
     # user's first multimodal or image-generation start.
     VLM_OUT="$(env -i "${TELEMETRY_OFF_ENV[@]}" HOME="$SMOKE_HOME" PATH=/usr/bin:/bin \
@@ -1110,16 +1133,16 @@ from mlx_vlm.models import (
 from rapid_mlx.image.hidream_runtime import HiDreamO1
 from rapid_mlx.image.sd35_runtime import SD35Large
 from rapid_mlx.image.sdxl_runtime import SDXL
-import cv2
 import torch
 import torchvision
+assert importlib.util.find_spec("cv2") is None, "OpenCV must stay out of the DMG (GPL FFmpeg)"
 importlib.import_module("mflux.models.common.weights.loading.weight_loader")
 importlib.import_module("mflux.models.qwen.variants.txt2img.qwen_image")
 importlib.import_module("mflux.models.qwen21.variants.txt2img.qwen_image_21")
 importlib.import_module("rapid_mlx.image.bonsai_runtime")
 from rapid_mlx.runtime.image_lane import image_runtime_issue
 assert image_runtime_issue("flux2-klein-4b") is None
-print("mlx_vlm", mlx_vlm.__version__, "torch", torch.__version__, "cv2", cv2.__version__, "mflux", importlib.metadata.version("mflux"), "desktop vision/image runtimes OK")' 2>&1)" || {
+print("mlx_vlm", mlx_vlm.__version__, "torch", torch.__version__, "mflux", importlib.metadata.version("mflux"), "desktop vision/image runtimes OK (no OpenCV)")' 2>&1)" || {
         echo "ERR: bundled vision/image runtime smoke failed:" >&2
         echo "$VLM_OUT" >&2
         exit 3

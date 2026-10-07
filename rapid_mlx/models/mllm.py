@@ -1445,6 +1445,13 @@ def smart_nframes(
     return int(nframes)
 
 
+VIDEO_INPUT_UNAVAILABLE_MESSAGE = (
+    "Failed to process video: video input needs OpenCV (opencv-python), which "
+    "this Rapid-MLX installation does not include — Rapid-MLX Desktop omits it. "
+    "Send sampled frames as images instead, or use the pip install."
+)
+
+
 def extract_video_frames_smart(
     video_path: str,
     fps: float = DEFAULT_FPS,
@@ -1465,8 +1472,13 @@ def extract_video_frames_smart(
     """
     try:
         import cv2
-    except ImportError:
-        raise ImportError("opencv-python is required for video processing")
+    except ImportError as exc:
+        # Rapid-MLX Desktop deliberately omits OpenCV (its macOS wheels embed
+        # a GPL-configured FFmpeg). Reject the request with a client-safe 400
+        # instead of letting the ImportError abort the engine as a 503.
+        from rapid_mlx.request import ClientRequestError
+
+        raise ClientRequestError(VIDEO_INPUT_UNAVAILABLE_MESSAGE) from exc
 
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():

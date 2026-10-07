@@ -90,8 +90,12 @@ struct SidecarBuildScriptTests {
                 "The bundled sidecar must prove SD3.5's tokenizer dependency imports.")
         #expect(script.contains("from rapid_mlx.image.sdxl_runtime import SDXL"),
                 "The bundled sidecar must include the vendored SDXL image adapter.")
-        #expect(script.contains("import cv2\nimport torch\nimport torchvision"),
-                "The Desktop ships the complete base vision runtime and must prove it imports.")
+        #expect(script.contains("import torch\nimport torchvision"),
+                "The Desktop ships the base vision runtime and must prove it imports.")
+        #expect(script.contains(#"assert importlib.util.find_spec("cv2") is None, "OpenCV must stay out of the DMG (GPL FFmpeg)""#),
+                "OpenCV (GPL FFmpeg) is excluded from the DMG pending a licensing decision.")
+        #expect(script.contains("ERR: GPL FFmpeg components staged in the Desktop sidecar"),
+                "Any staged GPL FFmpeg component must fail the build.")
         #expect(!script.contains(#"find_spec("torch") is None"#),
                 "The reduced torch-free vision bundle is gone; do not re-assert it.")
     }
