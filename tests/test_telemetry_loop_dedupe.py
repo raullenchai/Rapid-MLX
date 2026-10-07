@@ -861,12 +861,22 @@ def test_app_opened_identity_failure_is_contained(loop_env, monkeypatch):
     assert track_module._app_opened_attempted is True
 
 
+def test_app_opened_dedupe_key_ignores_the_command(loop_env):
+    _tmp_path, events, _advance = loop_env
+    track_module._emit_app_opened("cli", "chat")
+    track_module._reset_for_tests()
+    track_module._emit_app_opened("cli", "serve")
+    assert len(events) == 1
+
+
 def test_registry_has_no_new_server_start_or_app_opened_properties():
     """Invariant 6: no registry/schema change."""
     registry = json.loads(
         (Path(rapid_mlx.__file__).parent / "telemetry" / "events.json").read_text()
     )
-    assert set(registry["events"]["app_opened"]["props"]) == set()
+    # The closed ``command`` enum was added later on purpose; it is not part
+    # of the dedupe ledger key (surface, version, install), see below.
+    assert set(registry["events"]["app_opened"]["props"]) == {"command"}
     assert set(registry["events"]["server_start_state"]["props"]) == {
         "state",
         "model_type",

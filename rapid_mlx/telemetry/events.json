@@ -323,6 +323,24 @@
         "pi", "pydanticai", "qwen-code", "smolagents", "other"
       ]
     },
+    "cli_command": {
+      "_about": [
+        "Which top-level CLI entry point a launch used, for app_opened only:",
+        "exactly the registered `rapid-mlx` subcommand names (aliases such as",
+        "run/update included, as argparse reports them), plus 'bare' for",
+        "`rapid-mlx` with no subcommand and 'other' as the closed fallback.",
+        "The -h/--help and -V/--version flags report 'help' / 'version'.",
+        "Never arguments, flag values, model names or paths. A drift test",
+        "binds this list to the parser's registered subcommands."
+      ],
+      "values": [
+        "system-one", "cua", "serve", "bench", "benchmark", "models",
+        "recipe", "ls", "version", "help", "pull", "import", "rm", "alias",
+        "ps", "upgrade", "update", "chat", "run", "info", "agents", "start",
+        "connect", "doctor", "telemetry", "feedback", "share", "launch",
+        "service", "bare", "other"
+      ]
+    },
     "agent_error_class": {
       "_about": [
         "The failure modes rapid_mlx/agents/setup.py can actually reach:",
@@ -547,8 +565,13 @@
 
   "events": {
     "app_opened": {
-      "_about": "Launches. Common props carry everything that matters.",
-      "props": {}
+      "_about": [
+        "Launches. Common props carry everything that matters. CLI and server",
+        "launches add the closed top-level command name; Desktop omits it."
+      ],
+      "props": {
+        "command": {"kind": "enum", "enum": "cli_command", "required": false}
+      }
     },
     "server_start_state": {
       "_about": "Whether an accepted server invocation reached a listening socket.",
