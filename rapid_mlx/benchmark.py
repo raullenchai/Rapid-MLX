@@ -50,7 +50,7 @@ except ImportError:
 try:
     from PIL import Image
 except ImportError:
-    Image = None  # Only needed for image benchmarks; ships with rapid-mlx
+    Image = None  # Only needed for image benchmarks; ships with rapid-mlx[vision]
 import numpy as np
 import requests
 from tabulate import tabulate
