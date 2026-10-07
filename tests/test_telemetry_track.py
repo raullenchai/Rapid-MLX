@@ -1010,7 +1010,7 @@ if os.environ.get("RAPID_MLX_TEST_PREFLIGHT_EXIT") == "1":
         version_info=_PinnedVersion((3, 11)), stderr=sys.stderr
     )
     video_lane._default_video_runtime_requirements = lambda _model: [
-        "the `rapid-mlx[video]` Python extra"
+        "the mlx-video runtime"
     ]
     video_lane._resolve_ffmpeg = lambda: "/usr/bin/ffmpeg"
 

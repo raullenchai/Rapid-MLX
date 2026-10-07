@@ -115,7 +115,7 @@ def test_serve_parser_exposes_speculative_config() -> None:
     assert "--spec-decode" not in out.stdout
     # Help text mentions the install path so users know how to enable
     # the feature when it's missing.
-    assert "mlx-vlm runtime" in out.stdout, (
+    assert "ships in the base" in " ".join(out.stdout.split()), (
         "help text should name the runtime DFlash uses"
     )
 

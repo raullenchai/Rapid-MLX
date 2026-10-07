@@ -111,7 +111,7 @@ def test_wan_runtime_guard_checks_wan_module(monkeypatch, capsys) -> None:
     monkeypatch.setattr("shutil.which", lambda _: "/opt/homebrew/bin/ffmpeg")
     with pytest.raises(OptionalRuntimeMissing) as exc:
         require_video_runtime_or_exit("Anes1032/Wan2.2-TI2V-5B-mlx-q8")
-    assert "rapid-mlx[video]" in exc.value.format_user_message()
+    assert "the mlx-video runtime" in exc.value.format_user_message()
 
 
 def test_wan_runtime_guard_handles_missing_parent_package(monkeypatch, capsys) -> None:
@@ -126,7 +126,7 @@ def test_wan_runtime_guard_handles_missing_parent_package(monkeypatch, capsys) -
     monkeypatch.setattr("shutil.which", lambda _: "/opt/homebrew/bin/ffmpeg")
     with pytest.raises(OptionalRuntimeMissing) as exc:
         require_video_runtime_or_exit("Anes1032/Wan2.2-TI2V-5B-mlx-q8")
-    assert "rapid-mlx[video]" in exc.value.format_user_message()
+    assert "the mlx-video runtime" in exc.value.format_user_message()
 
 
 def test_wan_submodule_probe_does_not_import_parent(monkeypatch, tmp_path) -> None:
