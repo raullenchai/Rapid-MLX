@@ -274,7 +274,8 @@ class TensorFoldFamilyBackend(TensorFoldQwen27Backend):
             except Exception:
                 pass
             finally:
-                del model
+                # Drop every local owner first, or the cache clear frees nothing.
+                model = app = backend = None
                 mx.clear_cache()
             raise
         return backend
