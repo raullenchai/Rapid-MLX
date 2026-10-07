@@ -13266,8 +13266,18 @@ def agents_command(args):
                     sys.exit(1)
                 print(f"\n  Configured {profile.display_name} at {plan.path}.")
             if not args.no_check:
+                from rapid_mlx.agents.server_hint import (
+                    ServerNotRunningError,
+                    not_running_lines,
+                )
+
                 try:
                     advertised = verify_server(base_url, model_id, agent=profile.name)
+                except ServerNotRunningError:
+                    # Configuring before `serve` is the normal first-run
+                    # order: the saved config is complete, so finish with the
+                    # one command that starts a matching server.
+                    print("\n".join(not_running_lines(profile, base_url, model_id)))
                 except RuntimeError as exc:
                     status = (
                         "Configuration was saved"
@@ -13276,29 +13286,61 @@ def agents_command(args):
                     )
                     print(f"\n  {status}, but the connection check failed: {exc}\n")
                     sys.exit(1)
-                print(f"  Connection check passed (model: {advertised}).")
+                else:
+                    print(f"  Connection check passed (model: {advertised}).")
             if plan.changed:
-                # A configured event means a config mutation completed and,
-                # unless the operator explicitly skipped it, verification passed.
+                # A configured event means a config mutation completed and
+                # verification passed, was skipped with --no-check, or was
+                # deferred because no server was running yet.
                 track_agent_configured(plan.agent)
             print()
             return
 
         # Generic file writers do not have the first-class plan's post-write
-        # verifier. Refuse before mutation when the endpoint is unavailable so
-        # a failed setup cannot leave a new `model = default` config behind.
+        # verifier. Refuse before mutation when the endpoint is broken, or when
+        # no server is running and no --model was given, so a failed setup
+        # cannot leave a new `model = default` config behind. With --model, a
+        # not-yet-started server is the normal first-run order: write it.
         # --no-check remains the explicit offline-config escape hatch, and a
         # dry run remains side-effect-free preview even without a live server.
+        server_not_running = False
         if cfg.type != "env" and not args.dry_run and not args.no_check:
+            from rapid_mlx.agents.server_hint import (
+                ServerNotRunningError,
+                start_server_command,
+            )
             from rapid_mlx.agents.setup import verify_server
 
             try:
                 advertised = verify_server(base_url, model_id, agent=profile.name)
+            except ServerNotRunningError as exc:
+                if model_id == "default":
+                    # Without a live server or --model there is no model id
+                    # to write, and these writers never persist `default`.
+                    from rapid_mlx.agents.telemetry import (
+                        track_agent_configure_failed,
+                    )
+
+                    track_agent_configure_failed("server_not_ready", profile.name)
+                    print(
+                        f"\n  {profile.display_name} setup needs the model name: {exc}."
+                    )
+                    print(
+                        "  Start the server first:  "
+                        f"{start_server_command(profile, base_url, model_id)}"
+                    )
+                    retry = f"rapid-mlx agents {profile.name} --setup --model <name>"
+                    if base_url != "http://localhost:8000/v1":
+                        retry += f" --base-url {shlex.quote(base_url)}"
+                    print(f"  Or configure it now:     {retry}\n")
+                    sys.exit(1)
+                server_not_running = True
             except RuntimeError as exc:
                 print(f"\n  {profile.display_name} setup failed: {exc}\n")
                 sys.exit(1)
-            if model_id == "default":
-                model_id = advertised
+            else:
+                if model_id == "default":
+                    model_id = advertised
 
         summary = setup_agent_config(
             profile,
@@ -13339,8 +13381,12 @@ def agents_command(args):
                 print(
                     "  Connection check skipped (--no-check); no live model was verified."
                 )
-            else:
+            elif not server_not_running:
                 print(f"  Connection check passed (advertised model: {advertised}).")
+        if server_not_running:
+            from rapid_mlx.agents.server_hint import not_running_lines
+
+            print("\n".join(not_running_lines(profile, base_url, model_id)))
         print()
         return
 
