@@ -205,7 +205,11 @@ def test_product_recommendation_policy_is_atomic_ssot_and_validates_tasks() -> N
     first = policy["tiers"][0]["picks"][0]
     assert policy["machine_dimension"] == "physical_memory_mib"
     assert first["footprint_mib"] == 3 * 1024
-    assert first["decode_tokens_per_second_x100"] == 9350
+    assert all(
+        "decode_tokens_per_second_x100" not in pick
+        for tier in policy["tiers"]
+        for pick in tier["picks"]
+    )
     assert first["evidence_status"] == "legacy_measured"
 
     aliases = {item["alias"]: item for item in snapshot["aliases"]}
