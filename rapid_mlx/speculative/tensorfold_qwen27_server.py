@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import queue
+import secrets
 import threading
 import uuid
 from collections.abc import Iterator
@@ -152,9 +153,18 @@ class TensorFoldRequestProvider:
             for key in ("top_p", "top_k", "min_p", "seed", "stop")
             if kwargs.get(key) is not None
         }
-        validate_request(sampling={k: v for k, v in fields.items() if k != "stop"})
-        stops = StopPolicy(fields, tokenizer, app.tokenizer_lock, app.stop_ids)
         temperature = float(kwargs.get("temperature", 0.0))
+        # The runtime resolves sampling from this mapping alone and treats a
+        # missing temperature as greedy, so the request's value must be in it.
+        sampling_fields = {**fields, "temperature": temperature}
+        if temperature > 0 and "seed" not in sampling_fields:
+            # Without a seed the runtime derives one from the prompt, which
+            # makes regenerating the same message return the same text.
+            sampling_fields["seed"] = secrets.randbelow(2**31)
+        validate_request(
+            sampling={k: v for k, v in sampling_fields.items() if k != "stop"}
+        )
+        stops = StopPolicy(fields, tokenizer, app.tokenizer_lock, app.stop_ids)
         cancellation = Cancellation()
         request_id = f"rapid-{uuid.uuid4().hex[:12]}"
         history_len, shared_prefix_lens = _prompt_boundaries(
@@ -170,7 +180,7 @@ class TensorFoldRequestProvider:
             shared_prefix_lens=shared_prefix_lens,
             max_tokens=max(1, int(kwargs.get("max_tokens", 1))),
             temperature=temperature,
-            sampling=app._resolve_sampling(fields, temperature, prompt_ids),
+            sampling=app._resolve_sampling(sampling_fields, temperature, prompt_ids),
             drafts=True,
             ignore_eos=stops.ignore_eos,
             stop_check=stops if stops.strings else None,

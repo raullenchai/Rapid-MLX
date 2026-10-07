@@ -366,11 +366,16 @@ def test_provider_preserves_exact_token_ids_and_request_outputs(
             thinking_budget=5,
             messages=[{"role": "user", "content": "hi"}],
             enable_thinking=True,
+            temperature=0.7,
+            seed=5,
         )
     )
     assert scheduler.job.prompt_ids == [10, 11]
     assert scheduler.job.history_len == 1
     assert scheduler.job.shared_prefix_lens == ()
+    # The runtime reads temperature from the mapping, not the positional value.
+    assert scheduler.job.sampling == ({"seed": 5, "temperature": 0.7}, 0.7)
+    assert scheduler.job.temperature == 0.7
 
     assert [chunk.token for chunk in chunks] == [21, 22]
     assert [chunk.text for chunk in chunks] == ["A", ""]
@@ -385,6 +390,15 @@ def test_provider_preserves_exact_token_ids_and_request_outputs(
     record = json.loads(audit.read_text())
     assert record["token_ids"] == [21, 22]
     assert len(record["token_sha256"]) == 64
+
+    # No seed: sampled requests draw a fresh one each time, greedy ones none.
+    seeds = set()
+    for _ in range(3):
+        list(provider.stream_generate(None, None, "prompt", temperature=0.7))
+        seeds.add(scheduler.job.sampling[0]["seed"])
+    assert len(seeds) == 3
+    list(provider.stream_generate(None, None, "prompt", temperature=0.0))
+    assert scheduler.job.sampling == ({"temperature": 0.0}, 0.0)
 
 
 def test_provider_closed_timeout_error_and_generate(
