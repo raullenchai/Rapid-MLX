@@ -5168,20 +5168,24 @@ def get_model_max_context(engine) -> int:
 
 
 def enforce_rendered_context_length(
-    model, tokenizer, prompt: str, max_tokens: int
+    model, tokenizer, prompt: str, max_tokens: int, *, model_window: bool = False
 ) -> int:
     """Apply an explicit window in serial inference lanes after rendering.
 
     These lanes do not expose a BatchedEngine, but share the same tokenizer
     and model metadata rules as the normal API routes. Leave their default
-    behavior alone when the operator has not selected a window.
+    behavior alone when the operator has not selected a window, unless the
+    lane asks for the model's own window with ``model_window``.
     """
-    if get_config().context_length is None:
+    explicit = get_config().context_length is not None
+    if not explicit and not model_window:
         return max_tokens
     from types import SimpleNamespace
 
     engine = SimpleNamespace(_model=model, tokenizer=tokenizer)
     prompt_tokens = count_prompt_tokens(engine, prompt)
+    if prompt_tokens <= 0 and not explicit:
+        return max_tokens
     if prompt_tokens <= 0:
         raise HTTPException(
             status_code=400,

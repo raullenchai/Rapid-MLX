@@ -774,6 +774,7 @@ def test_render_prompt_and_server_bootstrap(monkeypatch) -> None:
     )
     assert closed == [True]
     assert captured["max_concurrent_requests"] == 1
+    assert captured["enforce_model_window"] is True
     assert (
         captured["runtime_status_extra"]["profile"]["compatibility"]["state"] == "ready"
     )
@@ -878,6 +879,71 @@ def test_nonstream_answer_stays_content_when_thinking_is_off() -> None:
         assert thinking["reasoning_content"] == "17 * 23"
     finally:
         reset_config()
+
+
+def test_http_refuses_a_prompt_past_the_model_window() -> None:
+    from fastapi.testclient import TestClient
+
+    from rapid_mlx.speculative.dflash.server import _build_app
+
+    class Processor:
+        eos_token_id = 99
+        chat_template = "template"
+        model_max_length = 16
+
+        def __init__(self):
+            self.tokenizer = self
+
+        def apply_chat_template(self, messages, **kwargs):
+            return messages[-1]["content"]
+
+        def encode(self, text, **_kwargs):
+            return list(range(len(text)))
+
+    seen: list[int] = []
+
+    def generate(_model, _processor, _prompt, **kwargs):
+        seen.append(kwargs["max_tokens"])
+        from rapid_mlx.speculative.tensorfold_qwen27_server import ProviderResult
+
+        return ProviderResult("ok", [7], 1, 4)
+
+    app = _build_app(
+        model=None,
+        processor=Processor(),
+        runtime=SimpleNamespace(
+            algorithm="dflash2",
+            drafter_repo="pinned-drafter",
+            target_revision="a" * 40,
+            drafter_revision="b" * 40,
+        ),
+        served_model_name="qwen27-tf",
+        default_max_tokens=8,
+        cors_origins=[],
+        generate_fn=generate,
+        render_prompt_fn=lambda _p, _m, request, **_kw: request.messages[-1].content,
+        generation_kwargs_fn=lambda **kw: {"max_tokens": kw["max_tokens"]},
+        enforce_model_window=True,
+    )
+    client = TestClient(app)
+
+    def post(content: str, max_tokens: int):
+        return client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "qwen27-tf",
+                "messages": [{"role": "user", "content": content}],
+                "max_tokens": max_tokens,
+            },
+        )
+
+    too_long = post("x" * 32, 4)
+    assert too_long.status_code == 400
+    assert too_long.json()["error"]["code"] == "context_length_exceeded"
+    assert seen == []
+
+    assert post("x" * 10, 10_000_000).status_code == 200
+    assert seen == [6]
 
 
 def test_http_stream_and_nonstream_use_provider_and_reject_tools() -> None:

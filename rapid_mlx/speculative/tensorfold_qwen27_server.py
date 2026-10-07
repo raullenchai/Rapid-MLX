@@ -566,6 +566,9 @@ def run_tensorfold_qwen27_server(
             supports_reasoning_budget=supports_reasoning_budget,
         ),
         backend_name=backend_label,
+        # One request holds the only lane, so a prompt past the model's
+        # window must be refused before it is prefilled.
+        enforce_model_window=True,
         speculative_info=speculative_info,
         model_info=model_info,
         runtime_status_extra={

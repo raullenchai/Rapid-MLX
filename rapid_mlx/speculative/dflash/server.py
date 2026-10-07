@@ -685,6 +685,7 @@ def _build_app(
     strict_openai_streaming: bool = False,
     telemetry_model: str | None = None,
     runtime_status_extra: dict[str, Any] | None = None,
+    enforce_model_window: bool = False,
 ) -> FastAPI:
     """Create the FastAPI application for DFlash mode.
 
@@ -1229,6 +1230,7 @@ def _build_app(
                 getattr(processor, "tokenizer", processor),
                 prompt,
                 max_tokens,
+                model_window=enforce_model_window,
             )
             temperature = (
                 request.temperature if request.temperature is not None else 0.0
