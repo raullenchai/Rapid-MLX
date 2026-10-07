@@ -649,6 +649,8 @@ rapid_mlx = [
     # The vendored mlx-vlm APC/cache implementation is MIT-licensed; its
     # license text must travel with every wheel that redistributes the source.
     "models/mlx_vlm_vendored/LICENSE",
+    "models/embedding_gemma2/LICENSE",
+    "models/embedding_gemma2/NOTICE",
 ]
 videox_fun_mlx = ["LICENSE", "NOTICE"]
 
