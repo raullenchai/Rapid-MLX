@@ -216,9 +216,9 @@ class TensorFoldFamilyBackend(TensorFoldQwen27Backend):
         if drafter is not None:
             options["drafter"] = str(drafter)
             options["drafter_bits"] = profile.drafter_bits
-        model, tokenizer = package.load(target, **options)
-        backend = None
+        model = backend = None
         try:
+            model, tokenizer = package.load(target, **options)
             settings = dict(package.engine_settings(model))
             getattr(model, "release_rounds", lambda: None)()
             wire_resident(mx, memory_limit - PROCESS_BYTES)
@@ -263,8 +263,8 @@ class TensorFoldFamilyBackend(TensorFoldQwen27Backend):
             if hook is not None:
                 hook(app, model, **options)
         except BaseException:
-            # Startup failed with the weights already allocated: stop an app
-            # that runs its scheduler, then hand the memory back.
+            # Startup failed with weights possibly allocated: stop an app that
+            # runs its scheduler, then hand the memory back.
             if backend is not None:
                 backend.close()
             del model

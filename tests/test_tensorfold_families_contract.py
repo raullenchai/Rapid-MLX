@@ -318,6 +318,16 @@ def test_loader_follows_the_upstream_serve_construction(
     with pytest.raises(RuntimeError, match="settings failed"):
         backend_class.load(str(tmp_path), "", served_name="served")
     assert seen["cleared"] == 2
+
+    # So does a load that fails part-way through its own allocation.
+    load = Package.load
+    Package.load = staticmethod(
+        lambda path, **kwargs: (_ for _ in ()).throw(RuntimeError("load failed"))
+    )
+    with pytest.raises(RuntimeError, match="load failed"):
+        backend_class.load(str(tmp_path), "", served_name="served")
+    assert seen["cleared"] == 3
+    Package.load = load
     Package.engine_settings = settings
     Package.setup = staticmethod(lambda app, loaded, **options: None)
 
@@ -458,6 +468,7 @@ def test_opt_out_needs_a_checkpoint_the_ordinary_engine_loads(
         '{"method":"mtp"}',
         '{"method":"mtp","backend":"native"}',
         '{"method":"suffix"}',
+        '{"method":"dflash","backend":"tensorfold","model":"example/drafter"}',
     ],
 )
 def test_explicit_config_cannot_leave_a_tensorfold_only_profile(
@@ -533,3 +544,26 @@ def test_preload_probes_leave_mlx_unimported_for_family_env() -> None:
         [sys.executable, "-c", script], capture_output=True, text=True, timeout=120
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_paired_tensorfold_only_profile_must_stay_on_dflash(monkeypatch) -> None:
+    from rapid_mlx import cli
+
+    paired = dataclasses.replace(
+        _paired(families.PROFILES["qwen3.8-flash-next-tensorfold"]),
+        profile_id="paired-only",
+        method="dflash",
+    )
+    monkeypatch.setitem(families.PROFILES, "paired-only", paired)
+    on_lane = SimpleNamespace(
+        _original_alias="paired-only", enable_dflash=True, dflash_backend="tensorfold"
+    )
+    cli._require_tensorfold_family_lane_or_exit(on_lane)
+    for args in (
+        SimpleNamespace(_original_alias="paired-only", mtp_backend="tensorfold"),
+        SimpleNamespace(
+            _original_alias="paired-only", enable_dflash=True, dflash_backend=None
+        ),
+    ):
+        with pytest.raises(SystemExit, match="2"):
+            cli._require_tensorfold_family_lane_or_exit(args)

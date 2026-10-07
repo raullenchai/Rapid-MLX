@@ -2913,10 +2913,13 @@ def _require_tensorfold_family_lane_or_exit(args) -> None:
     )
     if family is None or family.ordinary_engine:
         return
-    on_lane = getattr(args, "mtp_backend", None) == "tensorfold" or (
-        getattr(args, "enable_dflash", False)
-        and getattr(args, "dflash_backend", None) == "tensorfold"
-    )
+    if family.method == "dflash":
+        on_lane = (
+            getattr(args, "enable_dflash", False)
+            and getattr(args, "dflash_backend", None) == "tensorfold"
+        )
+    else:
+        on_lane = getattr(args, "mtp_backend", None) == "tensorfold"
     if not on_lane:
         print(
             f"error: {family.profile_id} serves only through its TensorFold "
