@@ -35,6 +35,7 @@ from rapid_mlx.model_aliases import (
     VALID_PFLASH_TIERS,
     VALID_SUFFIX_TIERS,
     list_profiles,
+    resolve_profile,
 )
 from rapid_mlx.model_auto_config import detect_model_config
 from rapid_mlx.reasoning import list_parsers as list_reasoning_parsers
@@ -106,6 +107,7 @@ ALLOWED_PROFILE_KEYS: frozenset[str] = frozenset(
         "tensorfold_kernel",
         "tensorfold_target_revision",
         "tensorfold_runtime_revision",
+        "agentic_coverage",
     }
 )
 
@@ -335,6 +337,26 @@ def test_experimental_alias_flag_requires_a_boolean(bad_value) -> None:
         _coerce(
             "bad-experimental-alias",
             {"hf_path": "publisher/model", "experimental": bad_value},
+        )
+
+
+def test_agentic_coverage_metadata_loads_and_preserves_defaults() -> None:
+    """The normal catalog loader retains the G12 capability metadata."""
+    profiles = list_profiles()
+
+    assert profiles["deepseek-r1-8b-4bit"].agentic_coverage is False
+    assert profiles["qwen3.5-9b-4bit"].agentic_coverage is True
+    assert resolve_profile("deepseek-r1-8b-4bit").agentic_coverage is False
+
+
+@pytest.mark.parametrize("bad_value", [0, 1, "false", None])
+def test_agentic_coverage_alias_flag_requires_a_boolean(bad_value) -> None:
+    from rapid_mlx.model_aliases import _coerce
+
+    with pytest.raises(ValueError, match="agentic_coverage"):
+        _coerce(
+            "bad-agentic-coverage-alias",
+            {"hf_path": "publisher/model", "agentic_coverage": bad_value},
         )
 
 

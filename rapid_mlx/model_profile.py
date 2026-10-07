@@ -363,6 +363,10 @@ class ModelProfile:
     # out-of-tree caller and quiets the recurring "mid-dataclass insert"
     # review flag.
     is_text_only: bool = False
+    # Release coverage capability. Missing/true keeps an alias in voluntary
+    # agentic sampling; literal false records a measured model-side inability.
+    # This is harness metadata only and does not alter serving or parser routing.
+    agentic_coverage: bool = True
 
     @property
     def speedup_dict(self) -> dict[str, float]:
