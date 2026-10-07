@@ -256,10 +256,16 @@ class TensorFoldFamilyBackend(TensorFoldQwen27Backend):
             model_id=f"{target.resolve()}|tensorfold={SUPPORTED_VERSION}",
             model_dir=target,
         )
+        backend = cls(app)
         hook = getattr(package, "setup", None)
         if hook is not None:
-            hook(app, model, **options)
-        return cls(app)
+            try:
+                hook(app, model, **options)
+            except BaseException:
+                # The app already runs its scheduler; do not leak it.
+                backend.close()
+                raise
+        return backend
 
 
 def backend_class_for(

@@ -294,6 +294,18 @@ def test_loader_follows_the_upstream_serve_construction(
     assert seen["setup"][1] is model
     backend.close()
 
+    # A failing setup hook closes the already-running app before it surfaces.
+    stopped: list[bool] = []
+
+    def failing_setup(app, loaded, **options):
+        app.scheduler = SimpleNamespace(stop=lambda: stopped.append(True))
+        raise RuntimeError("setup failed")
+
+    Package.setup = staticmethod(failing_setup)
+    with pytest.raises(RuntimeError, match="setup failed"):
+        backend_class.load(str(tmp_path), "", served_name="served")
+    assert stopped == [True]
+
     # A family without optional hooks still loads, and fits its own context.
     del Package.setup, Package.MLX_ENV, Model.resolve_prefill_identity
     Package.engine_settings = staticmethod(lambda _model: {})
