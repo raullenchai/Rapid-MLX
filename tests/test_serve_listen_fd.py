@@ -677,6 +677,51 @@ def test_serve_command_downloads_qualified_glm_tensorfold_target(
     assert ns.model == "/pinned/glm-target"
 
 
+@pytest.mark.parametrize(
+    "alias", ["nemotron-3.5-lightning-tensorfold", "qwen3.8-flash-next-tensorfold"]
+)
+def test_serve_command_downloads_qualified_family_tensorfold_target(
+    stub_heavy_serve_deps, monkeypatch, scheduler_config_stub, alias
+):
+    from types import SimpleNamespace
+
+    from rapid_mlx.speculative import tensorfold_families
+
+    family = tensorfold_families.PROFILES[alias]
+    disk_checks: list[tuple[str, str | None]] = []
+    downloaded = []
+    monkeypatch.setattr(cli, "_check_alias_min_memory", lambda *_a, **_k: None)
+    monkeypatch.setattr(cli, "_preflight_tensorfold_qwen27_or_exit", lambda _args: None)
+    monkeypatch.setattr(
+        cli,
+        "_check_disk_space",
+        lambda repo, *, revision_override=None, **_kwargs: disk_checks.append(
+            (repo, revision_override)
+        ),
+    )
+    monkeypatch.setattr(
+        tensorfold_families,
+        "download_qualified_artifacts",
+        lambda profile: (
+            downloaded.append(profile)
+            or SimpleNamespace(target_path="/pinned/family-target", drafter_path="")
+        ),
+    )
+    monkeypatch.setattr(
+        cli, "_serve_tensorfold_mtp_if_requested", lambda *_a, **_k: True
+    )
+    ns = _minimal_serve_ns()
+    ns.model = family.target
+    ns._original_alias = alias
+    ns.mtp_backend = "tensorfold"
+
+    cli.serve_command(ns)
+
+    assert downloaded == [family]
+    assert disk_checks == [(family.target, family.target_revision)]
+    assert ns.model == "/pinned/family-target"
+
+
 def test_tensorfold_alias_preflights_downloads_pair_and_dispatches_server(
     stub_heavy_serve_deps, monkeypatch, scheduler_config_stub
 ):
