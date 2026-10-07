@@ -2391,6 +2391,7 @@ def test_converter_failure_never_publishes_partial_output(tmp_path, monkeypatch)
         (staging / "partial.safetensors").write_bytes(b"partial")
         raise OSError("injected conversion failure")
 
+    monkeypatch.setattr(converter, "inspect_manifest", lambda _source: {"weights": 1})
     monkeypatch.setattr(converter, "_convert_into", fail_after_partial_write)
     with pytest.raises(OSError, match="injected conversion failure"):
         converter.convert(
@@ -2402,6 +2403,27 @@ def test_converter_failure_never_publishes_partial_output(tmp_path, monkeypatch)
 
     assert not final.exists()
     assert list(tmp_path.glob(".published.staging-*")) == []
+
+
+def test_converter_validates_manifest_before_creating_staging(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"unrelated.weight": "model.safetensors"}})
+    )
+    shard = source / "model.safetensors"
+    mx.save_safetensors(str(shard), {"unrelated.weight": mx.zeros((2, 64))})
+    output = tmp_path / "new-parent" / "published"
+
+    def unexpected_convert(*_args, **_kwargs):
+        raise AssertionError("conversion must not start before manifest validation")
+
+    monkeypatch.setattr(converter, "_convert_into", unexpected_convert)
+
+    with pytest.raises(RuntimeError, match="checkpoint contract count mismatch"):
+        converter.convert(source, output, max_shard_bytes=1024, min_free_bytes=0)
+
+    assert not output.parent.exists()
 
 
 def test_quantization_contract_uses_shape_exact_ple_groups_and_q8_routing():
