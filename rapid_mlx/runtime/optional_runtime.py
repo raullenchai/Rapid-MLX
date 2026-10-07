@@ -14,6 +14,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Literal, Protocol, cast
 
+from rapid_mlx.runtime.base_runtime import is_base_runtime_extra, runtime_install_spec
+
 OptionalExtra = Literal["vision", "video", "audio", "image"]
 OptionalRuntimeStatus = Literal["absent", "broken", "incompatible"]
 ExtraRecovery = Literal[
@@ -29,7 +31,6 @@ ExtraRecovery = Literal[
 ]
 
 _EXTRA_INSTALL_SIZE_MB: dict[OptionalExtra, int] = {
-    "vision": 322,
     "audio": 600,
 }
 _INSTALL_PROMPT_TIMEOUT_SECONDS = 30.0
@@ -83,7 +84,7 @@ def optional_extra_repair_command(
     from rapid_mlx import __version__
     from rapid_mlx._version_check import detect_install_method
 
-    pinned = f"rapid-mlx[{extra}]=={version or __version__}"
+    pinned = runtime_install_spec(extra, version or __version__)
     try:
         install_info = detect_install_method()
         method = install_info.method
@@ -100,6 +101,12 @@ def optional_extra_repair_command(
     if global_pipx:
         return f"sudo pipx install --global --force {shlex.quote(pinned)}"
     if method == "brew":
+        if is_base_runtime_extra(extra):
+            return (
+                "The Homebrew build does not carry this runtime. Switch to an "
+                "isolated tool install with:\n"
+                f"    brew uninstall rapid-mlx && uv tool install {shlex.quote(pinned)}"
+            )
         return (
             "The Homebrew build cannot add Python optional extras in place. "
             "Switch to an isolated tool install with:\n"
@@ -118,9 +125,15 @@ def optional_extra_install_hint(
     status: OptionalRuntimeStatus = "absent",
 ) -> str:
     """Return consistent human-facing repair guidance for an optional extra."""
-    return "Install the optional runtime with:\n    " + optional_extra_repair_command(
+    command = optional_extra_repair_command(
         extra, version=version, include_paths=include_paths, status=status
     )
+    if is_base_runtime_extra(extra):
+        return (
+            f"The {extra} runtime ships with rapid-mlx but is missing or damaged "
+            "in this environment. Repair the install with:\n    " + command
+        )
+    return "Install the optional runtime with:\n    " + command
 
 
 def format_startup_failure_marker(
@@ -191,10 +204,14 @@ def _prompt_to_install(
     timeout_seconds: float | None = None,
 ) -> PromptResult:
     """Wait at most 30 seconds for an explicit interactive opt-in."""
-    size_mb = _EXTRA_INSTALL_SIZE_MB.get(extra)
-    size = f" (~{size_mb} MB)" if size_mb is not None else ""
+    if is_base_runtime_extra(extra):
+        question = f"Repair rapid-mlx now (restores its {extra} runtime)? [y/N] "
+    else:
+        size_mb = _EXTRA_INSTALL_SIZE_MB.get(extra)
+        size = f" (~{size_mb} MB)" if size_mb is not None else ""
+        question = f"Install rapid-mlx[{extra}] now?{size} [y/N] "
     print(
-        f"Install rapid-mlx[{extra}] now?{size} [y/N] ",
+        question,
         end="",
         file=sys.stderr,
         flush=True,
@@ -308,7 +325,7 @@ def _install_optional_extra(exc: OptionalRuntimeMissing) -> None:
         "-m",
         "pip",
         "install",
-        f"rapid-mlx[{exc.extra}]=={__version__}",
+        runtime_install_spec(exc.extra, __version__),
     ]
     completed = subprocess.run(install_argv, check=False)
     if completed.returncode != 0:
@@ -364,10 +381,14 @@ def handle_optional_runtime_missing(
         can_install and not assume_yes and _is_tty(sys.stdin) and _is_tty(sys.stderr)
     )
     if can_install and not assume_yes and not is_interactive:
+        action = (
+            "repair rapid-mlx automatically, or run the command above manually."
+            if is_base_runtime_extra(exc.extra)
+            else f"install rapid-mlx[{exc.extra}] automatically, or install it "
+            "manually with the command above."
+        )
         print(
-            "Non-interactive session: rerun with --yes to install "
-            f"rapid-mlx[{exc.extra}] automatically, or install it manually "
-            "with the command above.",
+            f"Non-interactive session: rerun with --yes to {action}",
             file=sys.stderr,
         )
     print(

@@ -210,7 +210,7 @@ With a server running (step 2), this patches Claude Code's local config (`~/.cla
 
 > **Cursor:** Cursor currently routes BYOK requests through its own servers, so its servers cannot reach a Rapid-MLX endpoint on `localhost`. Rapid-MLX therefore does not generate a Cursor localhost config. If you intentionally expose the server through a public HTTPS tunnel, set `RAPID_MLX_API_KEY=your-secret` for both `rapid-mlx serve ...` and `rapid-mlx launch cursor --server-url https://your-public-host`. This is no longer a fully local connection; never expose an unauthenticated server. Rapid-MLX rejects explicit local/private addresses but cannot verify reachability from Cursor's network, whose DNS view may differ from your Mac.
 
-> **Vision / audio / video / diffusion models?** Base install is text-only (~460 MB). Vision, audio (TTS, STT, voice cloning), video generation, embeddings, and DFlash speculative decoding ship as opt-in extras. → [Optional extras](https://rapidmlx.com/docs/extras.html)
+> **Vision / image / video models?** They work out of the box: the base install includes the vision, image-generation and video-generation runtimes (image and video generation need Python 3.11+). Audio (TTS, STT, voice cloning) and embeddings ship as opt-in extras. → [Optional extras](https://rapidmlx.com/docs/extras.html)
 
 > **Not into the terminal?** [**Rapid-MLX Desktop**](https://rapidmlx.com/desktop) bundles the same engine inside a one-click Mac app.
 
@@ -227,10 +227,10 @@ With a server running (step 2), this patches Claude Code's local config (`~/.cla
 ## Image generation
 
 Generate images locally from the Desktop **Images** tab or the
-OpenAI-compatible Images API. Install the image runtime when using the CLI:
+OpenAI-compatible Images API. The image runtime ships with the base install
+(Python 3.11+):
 
 ```bash
-pip install 'rapid-mlx[image]'
 rapid-mlx serve flux2-klein-4b
 ```
 
@@ -320,11 +320,11 @@ Videos API. Three backends ship — **Wan 2.1 / 2.2**, **CogVideoX-Fun** and
 recommended starting point: smallest of the Wan set, and TI2V means one
 checkpoint does both text-to-video and image-to-video.
 
-Requires Python 3.11+ (the video runtime does not support 3.10; core text and
-audio still do) and `ffmpeg` for the final MP4 mux.
+The video runtime ships with the base install on Python 3.11+ (it does not
+support 3.10; core text and audio still do). Install `ffmpeg` for the final MP4
+mux.
 
 ```bash
-pip install 'rapid-mlx[video]'
 brew install ffmpeg
 rapid-mlx serve wan2.2-ti2v-5b-q8
 ```
@@ -655,9 +655,9 @@ python3.12 -m pip install rapid-mlx
 
 If `pip install rapid-mlx` says "no matching distribution", your Python is too old. `brew install python@3.12` first. Upgrade with `pip install -U rapid-mlx`.
 
-For image-input / VLM models (Qwen-VL, true multimodal), install the vision extra: `pip install 'rapid-mlx[vision]'` — see [Optional extras](https://rapidmlx.com/docs/extras.html).
+Image-input / VLM models (Qwen-VL, Gemma 4, true multimodal) need no extra step — the vision runtime ships with the base install. See [Optional extras](https://rapidmlx.com/docs/extras.html) for audio and embeddings.
 
-For the complete feature set — vision, chat, embeddings, audio, and System One — install the `[all]` extra: `pip install 'rapid-mlx[all]'`. Audio alone is `pip install 'rapid-mlx[audio]'`; see [Optional extras](https://rapidmlx.com/docs/extras.html).
+For the complete feature set — chat, embeddings, audio, and System One on top of the base install — install the `[all]` extra: `pip install 'rapid-mlx[all]'`. Audio alone is `pip install 'rapid-mlx[audio]'`; see [Optional extras](https://rapidmlx.com/docs/extras.html).
 
 </details>
 

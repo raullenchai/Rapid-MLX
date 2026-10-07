@@ -49,6 +49,9 @@ from typing import Any, cast
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 
+from rapid_mlx import __version__ as _rapid_mlx_version
+from rapid_mlx.runtime.base_runtime import runtime_install_spec
+
 # ---------------------------------------------------------------------------
 # Data model
 # ---------------------------------------------------------------------------
@@ -187,7 +190,13 @@ _SUPPORTED_VERSIONS: dict[str, str] = {
 # (warning) not ✗ — that's the whole point of "optional". The hint is
 # echoed verbatim in the report so the user can copy-paste.
 OPTIONAL_PACKAGES: list[tuple[str, str, str]] = [
-    ("mlx-vlm", "mlx-vlm (vision extras)", "rapid-mlx[vision]"),
+    # mlx-vlm ships in the base install; a missing copy is repaired by
+    # reinstalling the pinned base package, not by an opt-in extra.
+    (
+        "mlx-vlm",
+        "mlx-vlm (vision runtime)",
+        runtime_install_spec("vision", _rapid_mlx_version),
+    ),
     ("mlx-audio", "mlx-audio (audio extras)", "rapid-mlx[audio]"),
     (
         "mlx-embeddings",
@@ -2337,7 +2346,7 @@ def section_optional_packages() -> Section:
                 repair = repair_hint
             else:
                 repair = _runtime_pip_command(
-                    "rapid-mlx[vision]",
+                    runtime_install_spec("vision", _rapid_mlx_version),
                     f"transformers{_SUPPORTED_VERSIONS['transformers']}",
                     runtime=runtime,
                 )
@@ -2563,10 +2572,10 @@ def section_optional_packages() -> Section:
     # gradeable; only the remediation wording changes.
     dflash_min = (0, 5, 0)
     dflash_hint = repair_hint or _runtime_pip_command(
-        "rapid-mlx[dflash]", runtime=runtime
+        runtime_install_spec("dflash", _rapid_mlx_version), runtime=runtime
     )
     vision_hint = repair_hint or _runtime_pip_command(
-        "rapid-mlx[vision]", runtime=runtime
+        runtime_install_spec("vision", _rapid_mlx_version), runtime=runtime
     )
     vlm_ver = (
         _safe_version("mlx-vlm", runtime)

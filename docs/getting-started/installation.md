@@ -55,23 +55,27 @@ pip install -e .
 
 ## Optional Extras
 
-The base text-only install is ~460 MB. Vision/audio/etc. ship as opt-in extras.
+The base install includes the vision (mlx-vlm), image-generation (mflux) and
+video-generation (mlx-video) runtimes, so multimodal, image and video models
+start without an extra step. Image and video generation need Python 3.11+. On
+our M2 Pro (Python 3.11, arm64, fresh venv) the base install is about 360 MB to
+download and 1.7 GB on disk. Audio, embeddings and the other features below
+ship as opt-in extras. `vision`, `image`, `video`, `dflash` and `mtp` remain
+accepted extra names for existing scripts; on macOS they add nothing.
 
 | Extra | Install | Adds |
 |---|---|---|
-| `vision` | `pip install 'rapid-mlx[vision]'` | mlx-vlm + opencv + torch (~322 MB) for VLMs (Gemma 4, Qwen-VL, video) |
-| `dflash` | `pip install 'rapid-mlx[dflash]'` | mlx-vlm for DFlash speculative decoding; verified aliases get curated defaults, while explicit compatible target/drafter pairs may run experimentally |
 | `audio` | `pip install 'rapid-mlx[audio]'` | mlx-audio + spacy + scipy (~600 MB) for TTS / STT |
 | `embeddings` | `pip install 'rapid-mlx[embeddings]'` | mlx-embeddings (~50 MB) for `/v1/embeddings` |
 | `chat` | `pip install 'rapid-mlx[chat]'` | Gradio web UI (~150 MB) |
-| `video` | `pip install 'rapid-mlx[video]'` | mlx-video + imageio for LTX-2.3/Wan; LTX-2.5 additionally uses a pinned source runtime documented in the video guide; requires Python 3.11+ |
-| `image` | `pip install 'rapid-mlx[image]'` | mflux for text-to-image / image edit (FLUX.1-schnell, Qwen-Image); requires Python 3.11+ |
-| `mtp` | `pip install 'rapid-mlx[mtp]'` | MTP sidecars plus the qualified native Qwen3.6 verifier runtime |
 | `guided` | `pip install 'rapid-mlx[guided]'` | Legacy no-op kept for compatibility — llguidance ships in the core install (it replaced outlines in 0.10) |
-| `all` | `pip install 'rapid-mlx[all]'` | vision + dflash + audio + embeddings + chat (~1.1 GB); `video` / `image` / `mtp` are installed separately |
+| `all` | `pip install 'rapid-mlx[all]'` | audio + embeddings + chat + System One + Computer Use on top of the base install |
 
 When `rapid-mlx serve` finds that an optional runtime is absent, it prints a
-version-pinned repair command matched to the detected install method. pip and
+version-pinned repair command matched to the detected install method. For a
+runtime that ships with the base install (vision, image, video), a missing
+module means the environment is damaged, and the command reinstalls the pinned
+`rapid-mlx` package itself. pip and
 install.sh environments can offer to install into the current interpreter and
 restart the original command after success; the prompt defaults to no after 30
 seconds, and `--yes` (or `-y`) accepts non-interactively. uv tool, pipx, and
@@ -82,13 +86,14 @@ while an absent runtime uses an ordinary pinned install. Prompt telemetry keeps
 an explicit no distinct from timeout/EOF/read failure and Ctrl-C, and Ctrl-C
 retains normal interrupt exit behavior after the failure is recorded.
 
-Homebrew installs the text-only package and does not provide Python extras.
+Homebrew builds its own formula and does not provide Python extras or, unless
+the formula carries them, the vision/image/video runtimes.
 The formula is built as a Homebrew-managed virtualenv, but optional PyPI
 dependencies are not formula resources and an in-place pip mutation is not a
 supported, upgrade-stable repair. Switch to an isolated tool install instead:
 
 ```bash
-brew uninstall rapid-mlx && uv tool install 'rapid-mlx[dflash]==<rapid-mlx-version>'
+brew uninstall rapid-mlx && uv tool install 'rapid-mlx==<rapid-mlx-version>'
 ```
 
 ## Verify Installation

@@ -389,15 +389,40 @@ fi
 # constraint as a top-level requirement makes
 # pip's resolver honor it for the transitive dep too. Revisit when mlx-lm /
 # mlx-vlm or transformers ship a compatible fix (tracked upstream in rapid-mlx).
+#
+# The engine's base install now carries the full vision (mlx-vlm + torch +
+# OpenCV), image (mflux) and video (mlx-video + imageio) runtimes. The sidecar
+# keeps its reduced runtimes (steps 2.5-2.7) to stay under BUNDLE_SIZE_CAP_MB,
+# so resolve the engine's requirements minus the [vision]/[image]/[video]
+# alias-extra packages, then install
+# rapid-mlx itself without dependencies. The list comes from the exact
+# metadata being shipped (source tree or candidate wheel).
+SIDECAR_REQUIREMENTS=()
+while IFS= read -r requirement; do
+    [ -n "$requirement" ] && SIDECAR_REQUIREMENTS+=("$requirement")
+done < <("$STAGE/python/bin/python3.12" \
+    "${REPO_ROOT}/scripts/sidecar-core-requirements.py" \
+    "$RAPID_MLX_INSTALL_TARGET" --extras audio-desktop,computer-use)
+if [ "${#SIDECAR_REQUIREMENTS[@]}" -eq 0 ]; then
+    echo "ERR: could not derive the sidecar's rapid-mlx requirements" >&2
+    exit 1
+fi
 "$STAGE/python/bin/python3.12" -m pip install \
     --target "$STAGE/site-packages" \
     --no-warn-script-location \
     --no-compile \
     --upgrade \
     --constraint "$SIDECAR_CONSTRAINTS" \
-    "${RAPID_MLX_INSTALL_TARGET}[audio-desktop,computer-use]" \
+    "${SIDECAR_REQUIREMENTS[@]}" \
     'mlx' \
     'transformers'
+"$STAGE/python/bin/python3.12" -m pip install \
+    --target "$STAGE/site-packages" \
+    --no-warn-script-location \
+    --no-compile \
+    --upgrade \
+    --no-deps \
+    "${RAPID_MLX_INSTALL_TARGET}[audio-desktop,computer-use]"
 
 # pip normally selects wheels for the BUILD host. A sidecar assembled on
 # macOS 26 therefore receives mlx / mlx-metal's macosx_26 wheels even though

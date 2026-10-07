@@ -416,7 +416,7 @@ curl -fsSL https://rapidmlx.com/install.sh | sudo -u serveuser -H /bin/bash
 
 # Re-assert the extras required by this appliance. Examples:
 sudo -u serveuser -H /Users/serveuser/.rapid-mlx/bin/python \
-  -m pip install --upgrade 'rapid-mlx[vision]'
+  -m pip install --upgrade 'rapid-mlx[audio]'
 
 sudo -u serveuser -H /Users/serveuser/.rapid-mlx/bin/rapid-mlx doctor || \
   echo 'Doctor reported issues; keep the daemon stopped and continue validation.'

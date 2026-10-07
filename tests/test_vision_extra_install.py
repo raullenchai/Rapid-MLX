@@ -28,8 +28,9 @@ contracts:
 
   * ``[vision]`` still exists, still lists ``mlx-vlm`` (for Qwen-VL and
     true VLM routes — image-input models still need mlx-vlm proper).
-  * ``mlx-vlm`` NEVER slips into core deps (the ~322 MB / ~483 MB anti-
-    bloat guard).
+  * ``mlx-vlm`` ships in core deps on macOS (owner decision 2026-10: a
+    working first multimodal serve outweighs the larger base install), so
+    ``[vision]`` is now an accepted alias extra.
   * Gemma 4 boots WITHOUT ``mlx-vlm`` — the vendored module tree exists
     and ``gemma4_text.py`` carries the try/except fallback.
 
@@ -177,37 +178,28 @@ def test_transformers_range_excludes_5130_and_caps_next_minor() -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Defense in depth: mlx-vlm must NOT be in core deps (would defeat the
-# whole point of the extra — the ~322 MB save for text-only users).
+# The vision runtime ships in the base install: a bare ``pip install
+# rapid-mlx`` must accept image input on the first multimodal serve.
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_mlx_vlm_not_in_core_dependencies() -> None:
-    """If ``mlx-vlm`` slips into ``[project].dependencies`` the
-    text-only ``pip install rapid-mlx`` jumps from ~460 MB to ~782 MB.
-    The point of the ``[vision]`` extra is to keep that surface
-    opt-in. This is the second half of L-07's contract."""
+def test_mlx_vlm_ships_in_core_dependencies_on_macos() -> None:
+    """``mlx-vlm`` is a base dependency (Darwin-gated, exact-pinned) so the
+    first serve of a multimodal alias never needs an extra-install step.
+    ``[vision]`` stays a valid alias extra for existing installers."""
     py = _load_pyproject()
     core = py.get("project", {}).get("dependencies", [])
-    core_names = {_split_spec(s)[0].lower() for s in core}
-    assert "mlx-vlm" not in core_names, (
-        f"mlx-vlm leaked into core deps={core!r}. Move it back under "
-        f"`[project.optional-dependencies].vision` so the text-only "
-        f"`pip install rapid-mlx` stays slim (L-07)."
-    )
+    vlm = [Requirement(spec) for spec in core if _split_spec(spec)[0] == "mlx-vlm"]
+    assert len(vlm) == 1, f"mlx-vlm missing from core deps={core!r}"
+    assert vlm[0].specifier == SpecifierSet("==0.7.2")
+    assert vlm[0].marker is not None
+    assert vlm[0].marker.evaluate({"platform_system": "Darwin"})
+    assert not vlm[0].marker.evaluate({"platform_system": "Linux"})
 
 
-# ──────────────────────────────────────────────────────────────────────
-# README quickstart references `pip install 'rapid-mlx[vision]'`. The
-# docs-code drift would silently break the documented opt-in path.
-# ──────────────────────────────────────────────────────────────────────
-
-
-def test_readme_quickstart_mentions_vision_extra() -> None:
-    """The README quickstart MUST surface the ``[vision]`` opt-in so a
-    user reading top-down learns how to install for VL routes BEFORE
-    hitting a 500. Detection is intentionally loose: any line carrying
-    both ``rapid-mlx`` and ``[vision]`` in the README counts."""
+def test_readme_does_not_send_users_to_install_the_vision_extra() -> None:
+    """The README must describe current state: vision ships in the base
+    install, so no line may tell a user to ``pip install 'rapid-mlx[vision]'``."""
     here = Path(__file__).resolve()
     readme_path = None
     for parent in [here.parent, *here.parents]:
@@ -219,14 +211,12 @@ def test_readme_quickstart_mentions_vision_extra() -> None:
         "README.md not found above the test file — repo layout regressed?"
     )
     text = readme_path.read_text(encoding="utf-8")
-    has_vision_install = any(
-        ("rapid-mlx" in line and "[vision]" in line) for line in text.splitlines()
-    )
-    assert has_vision_install, (
-        "README.md no longer documents `pip install 'rapid-mlx[vision]'`. "
-        "Users hitting a VL route now get a bare 500 with no install hint "
-        "(L-07 — Kai r2 probe surfaced this on fresh-venv 0.8.0 installs)."
-    )
+    offenders = [
+        line
+        for line in text.splitlines()
+        if "pip install" in line and "rapid-mlx[vision]" in line
+    ]
+    assert offenders == []
 
 
 # ──────────────────────────────────────────────────────────────────────

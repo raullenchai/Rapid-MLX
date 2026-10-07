@@ -5,7 +5,7 @@ EmbeddingGemma 2 text/code encoder and the existing optional embedding backend.
 
 ## Installation
 
-The `/v1/embeddings` surface ships behind the `[embeddings]` extra (mirrors how `[audio]` and `[vision]` are packaged) — base installs of rapid-mlx do **not** bundle `mlx-embeddings`. Install the extra alongside the base package:
+The `/v1/embeddings` surface ships behind the `[embeddings]` extra (mirrors how `[audio]` is packaged) — base installs of rapid-mlx do **not** bundle `mlx-embeddings`. Install the extra alongside the base package:
 
 ```bash
 pip install 'rapid-mlx[embeddings]'
@@ -13,9 +13,9 @@ pip install 'rapid-mlx[embeddings]'
 
 If you boot `rapid-mlx serve --embedding-model …` without the extra installed, the CLI exits cleanly with the same install hint (no `ModuleNotFoundError` traceback).
 
-EmbeddingGemma 2 uses the existing `[vision]` native runtime instead of
-`mlx-embeddings`; the packaged Desktop engine already includes that runtime.
-For a Python installation, use `pip install 'rapid-mlx[vision]'`. Existing
+EmbeddingGemma 2 uses the native vision runtime (mlx-vlm) instead of
+`mlx-embeddings`; both the base Python install and the packaged Desktop engine
+already include that runtime. Existing
 embedding models still require `[embeddings]`. Do not replace the pinned
 vision runtime with an unvalidated upstream development build.
 

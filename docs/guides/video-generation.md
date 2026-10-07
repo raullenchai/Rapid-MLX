@@ -3,9 +3,9 @@
 Rapid-MLX exposes LTX-2.3, LTX-2.5, CogVideoX-Fun and Wan through the asynchronous
 OpenAI-compatible Videos API.
 
-Video generation requires Python 3.11 or newer because the upstream
-`mlx-video-with-audio` runtime does not support Python 3.10. Rapid-MLX's core
-text and audio features continue to support Python 3.10.
+The video runtime ships with the base `pip install rapid-mlx` on Python 3.11 or
+newer; the upstream `mlx-video-with-audio` runtime does not support Python 3.10.
+Rapid-MLX's core text and audio features continue to support Python 3.10.
 
 ## Keep completed videos across restarts
 
@@ -78,7 +78,6 @@ recommended starting point and supports both text-to-video and
 image-to-video.
 
 ```bash
-pip install 'rapid-mlx[video]'
 brew install ffmpeg
 rapid-mlx serve wan2.2-ti2v-5b-q8
 ```
@@ -129,7 +128,6 @@ track is worse than none, since it makes downstream tools believe the clip has
 sound. Expect no audio from any of the three backends.
 
 ```bash
-pip install 'rapid-mlx[video]'
 brew install ffmpeg
 rapid-mlx serve ltx-2.3-mlx-q4
 ```
@@ -232,7 +230,6 @@ generation backend on Apple Silicon. The MVP supports one-second,
 
 ```bash
 brew install ffmpeg
-pip install 'rapid-mlx[video]'
 ```
 
 The pinned CogVideoX-Fun MLX runtime ships with Rapid-MLX; no source checkout

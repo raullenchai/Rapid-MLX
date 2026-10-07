@@ -4747,7 +4747,7 @@ def _warn_vision_text_only_degrade(profile, *, args=None) -> bool:
         return False
     print(
         "warning: vision runtime absent; serving this text-capable checkpoint "
-        "text-only (image and video input unavailable). Enable the vision "
+        "text-only (image and video input unavailable). Restore the vision "
         "runtime with: " + optional_extra_repair_command("vision"),
         file=sys.stderr,
     )
@@ -7907,16 +7907,17 @@ def _run_submit_flow(
             if needs_vision:
                 print()
                 print(
-                    "  Error: this model needs the vision extras (Gemma 4 "
-                    "architecture classes live in mlx-vlm)."
+                    "  Error: this model needs the vision runtime (Gemma 4 "
+                    "architecture classes live in mlx-vlm), which ships with "
+                    "rapid-mlx but is missing from this environment."
                 )
-                print("  Install them and re-run:")
+                print("  Repair the install and re-run:")
                 print()
                 print("   ", optional_extra_repair_command("vision"))
                 print()
                 print(
-                    "  Or, if you only need text inference (smaller "
-                    "footprint, ~16 MB vs ~450 MB):"
+                    "  Or restore only the model classes (text inference, "
+                    "no torch/cv2):"
                 )
                 # Match the validated runtime used by the vision extra and
                 # packaged app so every recovery path installs the same lane.
