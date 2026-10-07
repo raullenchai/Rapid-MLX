@@ -220,6 +220,12 @@ def require_memory(
         )
 
 
+def _prompt_cache_bytes() -> int:
+    """The runtime's own serve default: an eighth of RAM, at most 16 GiB."""
+    ram = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    return int(min(16 * _GIB, ram // 8))
+
+
 class TensorFoldFamilyBackend(TensorFoldQwen27Backend):
     """One-lane Rapid boundary around a profile's pinned TensorFold family."""
 
@@ -308,8 +314,10 @@ class TensorFoldFamilyBackend(TensorFoldQwen27Backend):
                 default_max_tokens=int(max_tokens),
                 context_window=int(context_window),
                 enable_thinking=True,
-                checkpoint_slots=0,
-                checkpoint_budget_bytes=None,
+                # Kept prompt state is what lets a follow-up turn skip the
+                # prefill; the runtime evicts it under the memory budget.
+                checkpoint_slots=None,
+                checkpoint_budget_bytes=_prompt_cache_bytes(),
                 memory_budget_bytes=memory_limit,
                 fit_context=not context_window,
                 use_proposer=True,
