@@ -1525,6 +1525,7 @@
     "hf_path": "mlx-community/DeepSeek-R1-0528-Qwen3-8B-4bit",
     "tool_call_parser": "deepseek_v3",
     "reasoning_parser": "deepseek_r1",
+    "agentic_coverage": false,
     "is_hybrid": false,
     "supports_spec_decode": true,
     "suffix_decoding_tier": "avoid",
