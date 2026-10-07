@@ -12,8 +12,6 @@ pyobjc-framework-ApplicationServices==12.2.2
 pyobjc-framework-Cocoa==12.2.2
 pyobjc-framework-CoreText==12.2.2
 pyobjc-framework-Quartz==12.2.2
-# Full base vision/image/video runtimes (shipped in the Desktop sidecar too):
-# pin the native stacks pip would otherwise float between builds.
 torch==2.14.1
 torchvision==0.29.1
 opencv-python==4.14.0.94
