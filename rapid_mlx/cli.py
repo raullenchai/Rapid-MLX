@@ -5137,12 +5137,14 @@ def serve_command(args):
 
     args.log_level = _resolve_serve_log_level(getattr(args, "log_level", None))
     try:
-        log_target, _ = log_file.resolve_validated(getattr(args, "log_file", None))
+        log_target, log_source = log_file.resolve_validated(
+            getattr(args, "log_file", None)
+        )
+        if log_target is not None and log_source is not None:
+            log_file.apply(log_target, log_source)
     except log_file.LogFileError as exc:
         print(f"error: {exc}", file=sys.stderr)
         raise SystemExit(2) from None
-    if log_target is not None:
-        log_file.apply(log_target)
     disk_caches.configure(getattr(args, "disable_disk_caches", False))
 
     optional_runtime.set_assume_yes(getattr(args, "yes", False))

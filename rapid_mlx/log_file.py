@@ -64,14 +64,23 @@ def describe(target: str) -> str:
     return target
 
 
-def apply(target: str) -> None:
-    """Point this process's stdout and stderr at ``target``."""
+def apply(target: str, source: str = FLAG) -> None:
+    """Point this process's stdout and stderr at ``target``.
+
+    Raises LogFileError, with stdout and stderr untouched, when the target
+    cannot be opened for appending.
+    """
     sys.stdout.flush()
     sys.stderr.flush()
     if target == STDOUT:
         os.dup2(1, 2)
         return
-    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    except OSError as exc:
+        raise LogFileError(
+            f"{source} {target!r} cannot be opened for writing: {exc.strerror}"
+        ) from None
     try:
         os.dup2(fd, 1)
         os.dup2(fd, 2)

@@ -286,7 +286,7 @@ def test_serve_command_applies_log_file_and_disk_caches(monkeypatch, tmp_path):
     from rapid_mlx.runtime import optional_runtime
 
     applied = []
-    monkeypatch.setattr(log_file, "apply", applied.append)
+    monkeypatch.setattr(log_file, "apply", lambda t, s: applied.append((t, s)))
 
     def _stop(_yes):
         raise _StopServeError
@@ -298,7 +298,7 @@ def test_serve_command_applies_log_file_and_disk_caches(monkeypatch, tmp_path):
     )
     with pytest.raises(_StopServeError):
         cli.serve_command(args)
-    assert applied == [str(target)]
+    assert applied == [(str(target), "--log-file")]
     assert disk_caches.source() == "--disable-disk-caches"
     assert args.log_level == "INFO"
 
@@ -306,7 +306,7 @@ def test_serve_command_applies_log_file_and_disk_caches(monkeypatch, tmp_path):
 def test_serve_command_rejects_unusable_log_file(monkeypatch, tmp_path, capsys):
     from rapid_mlx import cli
 
-    monkeypatch.setattr(log_file, "apply", lambda _t: pytest.fail("must not apply"))
+    monkeypatch.setattr(log_file, "apply", lambda *_: pytest.fail("must not apply"))
     args = argparse.Namespace(
         log_level=None,
         log_file=str(tmp_path / "missing" / "serve.log"),
@@ -316,6 +316,22 @@ def test_serve_command_rejects_unusable_log_file(monkeypatch, tmp_path, capsys):
         cli.serve_command(args)
     assert exc.value.code == 2
     assert "does not exist" in capsys.readouterr().err
+
+
+def test_serve_command_reports_unwritable_log_file(tmp_path, capsys):
+    from rapid_mlx import cli
+
+    target = tmp_path / "read-only.log"
+    target.touch(mode=0o400)
+    args = argparse.Namespace(
+        log_level=None, log_file=str(target), disable_disk_caches=False
+    )
+    with pytest.raises(SystemExit) as exc:
+        cli.serve_command(args)
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert f"error: --log-file {str(target)!r} cannot be opened for writing" in err
+    assert "Traceback" not in err
 
 
 def _free_port():
@@ -334,6 +350,9 @@ def test_serve_sends_all_output_to_log_file(tmp_path):
         for k, v in os.environ.items()
         if k not in (disk_caches.ENV_VAR, log_file.ENV_VAR, "RAPID_MLX_LOG_LEVEL")
     }
+    # The CLI's own telemetry notice is printed before serve redirects its
+    # output and depends on this host's saved consent.
+    env["RAPID_MLX_TELEMETRY"] = "0"
     # The empty model directory makes the server stop during startup.
     result = subprocess.run(
         [
