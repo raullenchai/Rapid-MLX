@@ -260,7 +260,7 @@ def test_boot_guard_typed_failure_when_import_raises_oserror(monkeypatch):
     )
     # Honest: the primary directive must NOT be the misleading bare
     # "install mlx-vlm" absent message — it IS installed.
-    assert "requires the optional `mlx-vlm` dependency" not in err
+    assert "requires the `mlx-vlm` runtime, which ships" not in err
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -325,7 +325,7 @@ def test_boot_guard_message_names_pil_when_broken(monkeypatch):
         f"broken-runtime boot hint must name Pillow/PIL, got: {err!r}"
     )
     # Still points at the fix.
-    assert "rapid-mlx[vision]" in err or "pillow" in err.lower()
+    assert "rapid-mlx==" in err or "pillow" in err.lower()
 
 
 def test_boot_guard_broken_runtime_keeps_forced_reinstall_hint(monkeypatch):
@@ -338,7 +338,7 @@ def test_boot_guard_broken_runtime_keeps_forced_reinstall_hint(monkeypatch):
 
     failure = exc_info.value
     assert "--upgrade --force-reinstall" in failure.install_hint
-    assert failure.format_user_message().count("rapid-mlx[vision]") == 1
+    assert failure.format_user_message().count("rapid-mlx==") == 1
 
 
 # ─────────────────────────────────────────────────────────────────────────

@@ -115,8 +115,8 @@ def test_serve_parser_exposes_speculative_config() -> None:
     assert "--spec-decode" not in out.stdout
     # Help text mentions the install path so users know how to enable
     # the feature when it's missing.
-    assert "[dflash]" in out.stdout, (
-        "help text should reference the rapid-mlx[dflash] extras"
+    assert "mlx-vlm runtime" in out.stdout, (
+        "help text should name the runtime DFlash uses"
     )
 
 
@@ -2834,7 +2834,7 @@ def test_run_dflash_server_raises_when_mlx_vlm_missing(monkeypatch) -> None:
     from rapid_mlx.speculative.dflash import server as srv
 
     monkeypatch.setattr(srv, "have_runtime", lambda: False)
-    with pytest.raises(RuntimeError, match=r"rapid-mlx\[dflash\]"):
+    with pytest.raises(RuntimeError, match=r"rapid-mlx=="):
         srv.run_dflash_server(
             main_model_repo="mlx-community/Qwen3.5-27B-8bit",
             drafter_repo="z-lab/Qwen3.5-27B-DFlash",

@@ -98,8 +98,9 @@ def test_cli_front_door_never_imports_bundled_heavy_runtimes(tmp_path, argv):
 def test_guard_detects_a_heavy_import(tmp_path, monkeypatch):
     """The stub hook must observe a real import, or the guard is vacuous."""
     child = _CHILD.replace(
-        "from rapid_mlx.cli import cli_entrypoint",
-        "import torch  # noqa: F401\n        from rapid_mlx.cli import cli_entrypoint",
+        "    from rapid_mlx.cli import cli_entrypoint",
+        "    import torch  # noqa: F401\n    from rapid_mlx.cli import cli_entrypoint",
     )
+    assert child != _CHILD
     monkeypatch.setattr(sys.modules[__name__], "_CHILD", child)
     assert _heavy_imports(tmp_path, []) == ["torch"]

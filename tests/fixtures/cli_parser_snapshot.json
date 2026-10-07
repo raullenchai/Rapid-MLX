@@ -4694,7 +4694,7 @@
        "const": null,
        "default": null,
        "dest": "speculative_config",
-       "help": "vLLM-style speculative decoding JSON config. This frontend parses method/model/num_speculative_tokens now. DFlash requires the rapid-mlx[dflash] extra and is available with '{\"method\":\"dflash\"}', DDTree with '{\"method\":\"ddtree\"}', and MTP with '{\"method\":\"mtp\",\"num_speculative_tokens\":3,\"disable_auto_k\":false,\"continuous_batching\":false,\"allow_dynamic_membership\":false}'. Continuous self-MTP and dynamic membership are default-off. SuffixDecoding is an explicit, workload-specific flag for high prompt/output-overlap traffic and is available with '{\"method\":\"suffix\",\"num_speculative_tokens\":8}'.",
+       "help": "vLLM-style speculative decoding JSON config. This frontend parses method/model/num_speculative_tokens now. DFlash uses the base install's mlx-vlm runtime and is available with '{\"method\":\"dflash\"}', DDTree with '{\"method\":\"ddtree\"}', and MTP with '{\"method\":\"mtp\",\"num_speculative_tokens\":3,\"disable_auto_k\":false,\"continuous_batching\":false,\"allow_dynamic_membership\":false}'. Continuous self-MTP and dynamic membership are default-off. SuffixDecoding is an explicit, workload-specific flag for high prompt/output-overlap traffic and is available with '{\"method\":\"suffix\",\"num_speculative_tokens\":8}'.",
        "metavar": null,
        "nargs": null,
        "option_strings": [

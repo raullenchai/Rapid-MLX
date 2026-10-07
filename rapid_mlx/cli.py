@@ -12949,7 +12949,7 @@ def _print_dflash_status(alias: str, profile) -> None:
         ),
         (
             "mlx-vlm 0.5.0+",
-            _yes(have_runtime(), "installed", "missing (need rapid-mlx[dflash])"),
+            _yes(have_runtime(), "installed", "missing (reinstall rapid-mlx)"),
         ),
     ]
 

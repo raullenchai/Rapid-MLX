@@ -43,7 +43,7 @@ def test_bundled_hint_says_the_runtime_ships_with_rapid_mlx(monkeypatch) -> None
     assert hint == (
         "The vision runtime ships with rapid-mlx but is missing or damaged in "
         "this environment. Repair the install with:\n"
-        "    python -m pip install 'rapid-mlx==1.2.3'"
+        "    python -m pip install rapid-mlx==1.2.3"
     )
     assert "[vision]" not in hint
 
@@ -67,7 +67,7 @@ def test_brew_bundled_repair_switches_to_an_isolated_base_install(
     assert "does not carry this runtime" in command
     assert "optional extras" not in command
     assert command.endswith(
-        "brew uninstall rapid-mlx && uv tool install 'rapid-mlx==1.2.3'"
+        "brew uninstall rapid-mlx && uv tool install rapid-mlx==1.2.3"
     )
 
 

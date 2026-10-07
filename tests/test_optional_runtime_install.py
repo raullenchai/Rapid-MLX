@@ -691,14 +691,14 @@ def test_serve_yes_flag_and_help() -> None:
     [
         (
             "pip",
-            "/tmp/runtime/bin/python -m pip install 'rapid-mlx==1.2.3'",
+            "/tmp/runtime/bin/python -m pip install rapid-mlx==1.2.3",
         ),
         (
             "install_sh",
-            "/tmp/runtime/bin/python -m pip install 'rapid-mlx==1.2.3'",
+            "/tmp/runtime/bin/python -m pip install rapid-mlx==1.2.3",
         ),
-        ("uv", "uv tool install --force 'rapid-mlx==1.2.3'"),
-        ("pipx", "pipx install --force 'rapid-mlx==1.2.3'"),
+        ("uv", "uv tool install --force rapid-mlx==1.2.3"),
+        ("pipx", "pipx install --force rapid-mlx==1.2.3"),
     ],
 )
 def test_repair_command_matches_detected_install_method(
@@ -741,7 +741,7 @@ def test_global_pipx_repair_preserves_global_scope(monkeypatch) -> None:
 
     assert (
         optional_runtime.optional_extra_repair_command("vision", version="1.2.3")
-        == "sudo pipx install --global --force 'rapid-mlx==1.2.3'"
+        == "sudo pipx install --global --force rapid-mlx==1.2.3"
     )
 
 
@@ -756,7 +756,7 @@ def test_http_visible_repair_hides_interpreter_path(monkeypatch) -> None:
         "vision", version="1.2.3", include_paths=False
     )
 
-    assert command == "python -m pip install 'rapid-mlx==1.2.3'"
+    assert command == "python -m pip install rapid-mlx==1.2.3"
     assert "/Users/alice" not in command
 
 

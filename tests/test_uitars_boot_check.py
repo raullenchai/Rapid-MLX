@@ -101,8 +101,8 @@ def test_require_mlx_vlm_or_exit_raises_typed_actionable_failure(monkeypatch):
     assert "ui-tars-1.5-7b-4bit" in err, (
         f"hint must name the offending model id, got: {err!r}"
     )
-    assert "rapid-mlx[vision]" in err or "rapid-mlx[vision]" in err.replace("'", ""), (
-        f"hint must name the [vision] extra install path, got: {err!r}"
+    assert "rapid-mlx==" in err, (
+        f"hint must name the pinned base reinstall, got: {err!r}"
     )
     assert "mlx-vlm" in err, f"hint must name the dep, got: {err!r}"
 
@@ -142,7 +142,7 @@ def test_engine_side_require_mlx_vlm_raises_typed_failure(
 
     # Same actionable hint surface as the CLI guard.
     msg = str(exc_info.value)
-    assert "rapid-mlx[vision]" in msg
+    assert "rapid-mlx==" in msg
     assert "mlx-vlm" in msg
 
 

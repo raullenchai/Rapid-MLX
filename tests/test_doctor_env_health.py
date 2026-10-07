@@ -2924,7 +2924,7 @@ def test_incompatible_mlx_vlm_names_bounded_extension_repair(tmp_path):
     )
     assert row.status is eh.CheckStatus.FAIL
     assert "requires ==0.7.2" in row.label
-    assert "rapid-mlx[vision]" in row.label
+    assert "rapid-mlx==" in row.label
     assert "transformers>=5.0.0,!=5.13.0,<5.16" in row.label
     assert str(runtime.resolve()) in row.label
 
