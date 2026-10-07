@@ -106,11 +106,11 @@ inputs:
   bundle_size_cap_mb:
     description: Absolute .app size ceiling, enforced before notarisation.
     required: false
-    default: '1480'
+    default: '1435'
   bundle_size_delta_cap_mb:
     description: Per-release DMG growth ceiling in MiB vs the previous rapid-mac release.
     required: false
-    default: '170'
+    default: '160'
   # Apple signing + notary secrets, passed through by the caller from secrets.*.
   MACOS_DEVID_CERT_P12_BASE64:
     required: false
@@ -305,7 +305,7 @@ runs:
         cd "${{ inputs.checkout_path }}/apps/rapid-mac"
         APP="build/Rapid-MLX Desktop.app"
         SIDECAR="$APP/Contents/Resources/rapid-mlx"
-        CAP_MB="${BUNDLE_SIZE_CAP_MB:-1480}"
+        CAP_MB="${BUNDLE_SIZE_CAP_MB:-1435}"
         if [[ ! -d "$APP" ]]; then
           echo "::error::Expected $APP to exist after build step but it does not."
           exit 1
@@ -473,7 +473,7 @@ runs:
         set -euo pipefail
         cd "${{ inputs.checkout_path }}/apps/rapid-mac"
         DMG="build/rapid-mlx-desktop.dmg"
-        DELTA_CAP_MB="${BUNDLE_SIZE_DELTA_CAP_MB:-170}"
+        DELTA_CAP_MB="${BUNDLE_SIZE_DELTA_CAP_MB:-160}"
         [[ -f "$DMG" ]] || { echo "::error::missing $DMG"; exit 1; }
         PREV_TAG="${PREVIOUS_TAG:-}"
         CANONICAL_DMG_NAME="rapid-mlx-desktop.dmg"

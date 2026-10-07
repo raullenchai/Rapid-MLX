@@ -29,10 +29,10 @@ def test_rc_tag_is_accepted_for_immutable_desktop_artifacts():
 def test_desktop_raw_bundle_headroom_does_not_weaken_dmg_growth_gate():
     workflow = DESKTOP_WORKFLOW.read_text(encoding="utf-8")
     shared_action = DESKTOP_RELEASABLE.read_text(encoding="utf-8")
-    assert 'BUNDLE_SIZE_CAP_MB: "1480"' in workflow
-    assert 'BUNDLE_SIZE_DELTA_CAP_MB: "170"' in workflow
-    assert 'CAP_MB="${BUNDLE_SIZE_CAP_MB:-1480}"' in shared_action
-    assert 'DELTA_CAP_MB="${BUNDLE_SIZE_DELTA_CAP_MB:-170}"' in shared_action
+    assert 'BUNDLE_SIZE_CAP_MB: "1435"' in workflow
+    assert 'BUNDLE_SIZE_DELTA_CAP_MB: "160"' in workflow
+    assert 'CAP_MB="${BUNDLE_SIZE_CAP_MB:-1435}"' in shared_action
+    assert 'DELTA_CAP_MB="${BUNDLE_SIZE_DELTA_CAP_MB:-160}"' in shared_action
 
 
 def test_auto_release_stages_one_sha_labelled_complete_desktop_bundle():

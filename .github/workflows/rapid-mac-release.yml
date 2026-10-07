@@ -118,14 +118,14 @@ jobs:
       # step. The bundled sidecar (Contents/Resources/rapid-mlx) dominates.
       # The sidecar now ships the complete base vision/image/video runtimes
       # (torch, OpenCV, mflux, mlx-video): measured 2026-10-07 on an Apple
-      # Silicon builder, the .app went 578 -> 1460 MiB (sidecar 502 -> 1378
-      # MiB). Keep 20 MiB measured headroom.
-      BUNDLE_SIZE_CAP_MB: "1480"
+      # Silicon builder, the .app went 578 -> 1412 MiB (sidecar 502 -> 1330
+      # MiB). Keep ~20 MiB measured headroom.
+      BUNDLE_SIZE_CAP_MB: "1435"
       # Per-release DMG growth ceiling — enforced by the "Bundle size delta
       # gate" step against the previous rapid-mac release. The full-runtime
-      # release grows the compressed DMG 133 -> 286 MiB (+153 MiB); restore
+      # release grows the compressed DMG 133 -> 272 MiB (+139 MiB); restore
       # this to "50" once a stable release carrying the full runtimes ships.
-      BUNDLE_SIZE_DELTA_CAP_MB: "170"
+      BUNDLE_SIZE_DELTA_CAP_MB: "160"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
