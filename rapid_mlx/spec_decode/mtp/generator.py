@@ -45,6 +45,8 @@ from typing import Any
 
 import mlx.core as mx
 
+from ..._env import is_falsey
+
 # Force the ArraysCache rollback_state patch on first import — the
 # generator references ``cache.rollback_state`` directly inside
 # ``_rollback_draft``, and the patch lifts that attribute from a
@@ -61,7 +63,11 @@ from .prompt_lookup import (
     PromptLookupPolicy,
     verify_cost_estimate,
 )
-from .reproducible_depth import request_depth_controller, request_round_cost
+from .reproducible_depth import (
+    request_depth_controller,
+    request_round_cost,
+    request_round_costs,
+)
 
 _LEGACY_PROMPT_LOOKUP_POLICY = PromptLookupPolicy()
 
@@ -71,7 +77,7 @@ def _env_flag(name: str, default: bool) -> bool:
     raw = os.environ.get(name)
     if raw is None:
         return default
-    return raw.strip().lower() not in {"0", "false", "off", "no"}
+    return not is_falsey(raw)
 
 
 def _prompt_lookup_policy(model) -> PromptLookupPolicy:
@@ -1164,7 +1170,17 @@ def mtp_generate_step(
     # EV rule with nothing from the clock or from other requests
     # (``reproducible_depth.request_depth_controller``). Without a measured
     # curve the request drafts at ``max_k_effective`` every round.
-    _request_costs = _schedule.round_costs if _schedule is not None else ()
+    # Parked rounds run ahead of delivery unless logits processors are active
+    # (see ``_pipeline_parks`` below); the cost curve has to match. The
+    # scheduler also holds the run-ahead while another request waits, but
+    # only for the token or two before it hands this request to a batch, and
+    # the curve deliberately ignores that: it must not depend on other
+    # requests (see ``_reproducible``).
+    _request_costs = (
+        request_round_costs(_schedule, parks_pipelined=not logits_processors)
+        if _schedule is not None
+        else ()
+    )
     _request_depth = (
         request_depth_controller(_request_costs, max_k_effective)
         if _request_costs and max_k_effective > 0

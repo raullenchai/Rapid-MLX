@@ -161,6 +161,8 @@
     "mlx-community/chatterbox-turbo-fp16": 2987618173,
     "mlx-community/diffusiongemma-26B-A4B-it-4bit": 16575453264,
     "mlx-community/diffusiongemma-26B-A4B-it-8bit": 28004961995,
+    "mlx-community/embeddinggemma-2-4bit": 1130720875,
+    "mlx-community/embeddinggemma-2-bf16": 1521217601,
     "mlx-community/embeddinggemma-300m-6bit": 289365128,
     "mlx-community/embeddinggemma-300m-8bit": 366239122,
     "mlx-community/gemma-3-12b-it-qat-4bit": 8068024886,

@@ -9,12 +9,13 @@
 from __future__ import annotations
 
 import math
-import os
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, version
 from types import SimpleNamespace
 
 import mlx.core as mx
+
+from .._env import env_truthy
 
 _SUPPORTED_DTYPES = (mx.float16, mx.bfloat16, mx.float32)
 _MAX_TOPK = 512
@@ -39,12 +40,7 @@ def _metal_architecture() -> str:
 
 
 def _enabled() -> bool:
-    return os.environ.get(ENABLE_ENV, "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    return env_truthy(ENABLE_ENV)
 
 
 def qsa_stage1_decline_reason(

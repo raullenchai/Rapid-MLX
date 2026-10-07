@@ -3052,6 +3052,7 @@ class BatchedEngine(BaseEngine):
             matched_stop=getattr(output, "matched_stop", None),
             spec_decode_metrics=getattr(output, "spec_decode_metrics", None),
             prompt_compression=getattr(output, "prompt_compression", None),
+            timing_metrics=getattr(output, "timing_metrics", None),
         )
 
     async def stream_generate(
@@ -3206,6 +3207,7 @@ class BatchedEngine(BaseEngine):
                     # stop string for the Anthropic adapter.
                     matched_stop=getattr(output, "matched_stop", None),
                     spec_decode_metrics=getattr(output, "spec_decode_metrics", None),
+                    timing_metrics=getattr(output, "timing_metrics", None),
                 )
             return
 
@@ -3311,6 +3313,7 @@ class BatchedEngine(BaseEngine):
                     matched_stop=getattr(output, "matched_stop", None),
                     spec_decode_metrics=getattr(output, "spec_decode_metrics", None),
                     prompt_compression=getattr(output, "prompt_compression", None),
+                    timing_metrics=getattr(output, "timing_metrics", None),
                 )
         finally:
             # Best-effort defensive abort. Codex r2 P1 #2 concern: this
@@ -4006,6 +4009,7 @@ class BatchedEngine(BaseEngine):
             matched_stop=source.matched_stop,
             spec_decode_metrics=source.spec_decode_metrics,
             prompt_compression=source.prompt_compression,
+            timing_metrics=source.timing_metrics if finished else None,
         )
 
     def _routed_finish_sentinel(self, source: GenerationOutput) -> GenerationOutput:
@@ -4026,6 +4030,7 @@ class BatchedEngine(BaseEngine):
             matched_stop=source.matched_stop,
             spec_decode_metrics=source.spec_decode_metrics,
             prompt_compression=source.prompt_compression,
+            timing_metrics=source.timing_metrics,
         )
 
     def _finalize_output_router(
@@ -4161,6 +4166,7 @@ class BatchedEngine(BaseEngine):
                         routed_outputs[-1],
                         finished=True,
                         finish_reason=output.finish_reason,
+                        timing_metrics=output.timing_metrics,
                     )
                 else:
                     routed_outputs.append(finalized)

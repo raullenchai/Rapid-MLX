@@ -4,6 +4,7 @@ import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
+from unittest.mock import patch
 from urllib.request import Request
 
 import pytest
@@ -19,7 +20,7 @@ from rapid_mlx.launch import claude_code, continue_dev
 @pytest.fixture
 def setup_paths(tmp_path, monkeypatch):
     claude_path = tmp_path / "claude" / "settings.json"
-    continue_path = tmp_path / "continue" / "config.json"
+    continue_path = tmp_path / "continue" / "config.yaml"
     monkeypatch.setattr(claude_code, "current_config_path", lambda: claude_path)
     monkeypatch.setattr(continue_dev, "current_config_path", lambda: continue_path)
     return claude_path, continue_path
@@ -101,21 +102,575 @@ def test_claude_cli_setup_fetches_live_context_for_local_model(
 
 
 def test_continue_apply_preserves_models_and_creates_backup(setup_paths):
+    import yaml
+
     _, continue_path = setup_paths
     continue_path.parent.mkdir(parents=True)
     continue_path.write_text(
-        json.dumps({"models": [{"title": "Existing", "provider": "ollama"}]})
+        "name: Mine\nversion: 1.0.0\nschema: v1\n"
+        "models:\n- name: Existing\n  provider: ollama\n  model: llama3\n"
     )
     plan = build_setup_plan("continue", "http://localhost:8000", "qwen3.5-9b-4bit")
 
     apply_setup_plan(plan)
 
-    data = json.loads(continue_path.read_text())
-    assert any(model["title"] == "Existing" for model in data["models"])
-    rapid = next(model for model in data["models"] if model["title"] == "rapid-mlx")
+    data = yaml.safe_load(continue_path.read_text())
+    assert any(model["name"] == "Existing" for model in data["models"])
+    rapid = next(model for model in data["models"] if model["name"] == "rapid-mlx")
     assert rapid["apiBase"] == "http://localhost:8000/v1"
     assert rapid["model"] == "qwen3.5-9b-4bit"
-    assert len(list(continue_path.parent.glob("config.json.bak.*"))) == 1
+    assert len(list(continue_path.parent.glob("config.yaml.bak.*"))) == 1
+    assert continue_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_continue_plan_migrates_legacy_json_and_leaves_it_untouched(setup_paths):
+    import yaml
+
+    _, continue_path = setup_paths
+    legacy = continue_path.with_name("config.json")
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text(
+        json.dumps(
+            {
+                "models": [
+                    {"title": "Existing", "provider": "anthropic", "apiKey": "real-key"}
+                ],
+                "systemMessage": "be brief",
+            }
+        )
+    )
+    legacy_bytes = legacy.read_bytes()
+
+    plan = build_setup_plan("continue", "http://localhost:8000", "qwen3.5-9b-4bit")
+    preview = plan.diff()
+    assert "real-key" not in preview
+    assert "config.json is left unchanged" in preview
+    assert plan.path == continue_path and plan.migrated_from == legacy
+
+    apply_setup_plan(plan)
+
+    data = yaml.safe_load(continue_path.read_text())
+    assert [m["name"] for m in data["models"]] == ["rapid-mlx", "Existing"]
+    assert data["models"][1]["apiKey"] == "real-key"
+    assert data["rules"] == ["be brief"]
+    assert legacy.read_bytes() == legacy_bytes
+    # Re-running is a no-op plan.
+    assert not build_setup_plan(
+        "continue", "http://localhost:8000", "qwen3.5-9b-4bit"
+    ).changed
+
+
+def test_continue_apply_refuses_legacy_json_changed_after_preview(setup_paths):
+    _, continue_path = setup_paths
+    legacy = continue_path.with_name("config.json")
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text('{"models": [{"title": "A", "provider": "ollama"}]}')
+    plan = build_setup_plan("continue", "http://localhost:8000", "model")
+    legacy.write_text('{"models": [{"title": "B", "provider": "ollama"}]}')
+
+    with pytest.raises(RuntimeError, match="changed after preview"):
+        apply_setup_plan(plan)
+    assert not continue_path.exists()
+
+
+def test_continue_apply_treats_unreadable_legacy_json_as_changed(setup_paths):
+    _, continue_path = setup_paths
+    legacy = continue_path.with_name("config.json")
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text('{"models": [{"title": "A", "provider": "ollama"}]}')
+    plan = build_setup_plan("continue", "http://localhost:8000", "model")
+    legacy.write_text('{"models": [')
+
+    with pytest.raises(RuntimeError, match="changed after preview"):
+        apply_setup_plan(plan)
+    assert not continue_path.exists()
+
+
+def test_continue_plan_reports_invalid_yaml_as_value_error(setup_paths):
+    _, continue_path = setup_paths
+    continue_path.parent.mkdir(parents=True)
+    continue_path.write_text("models: [unclosed\n")
+
+    with pytest.raises(ValueError, match="not valid YAML"):
+        build_setup_plan("continue", "http://localhost:8000", "model")
+
+
+@pytest.fixture
+def qwen_secret_settings(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    path = tmp_path / ".qwen" / "settings.json"
+    path.parent.mkdir(parents=True)
+    existing = {
+        "modelProviders": {
+            "openai": [
+                {
+                    "id": "local-model",
+                    "name": "Old local name",
+                    "apiKey": "synthetic-managed-api-key",
+                    "custom": {"apiKey": "synthetic-nested-api-key", "keep": 42},
+                },
+                {"id": "remote", "apiKey": "synthetic-unmanaged-api-key"},
+            ],
+            "anthropic": [{"id": "other", "apiKey": "synthetic-other-api-key"}],
+        },
+        "custom": {"keep": "user-setting"},
+    }
+    path.write_text(json.dumps(existing))
+    return path, existing
+
+
+def test_qwen_preview_redacts_both_sides_without_changing_written_credentials(
+    qwen_secret_settings,
+):
+    from copy import deepcopy
+    from dataclasses import replace
+
+    path, existing = qwen_secret_settings
+    original_bytes = path.read_bytes()
+    plan = build_setup_plan("qwen-code", "http://localhost:8000/v1", "local-model")
+    original_after = deepcopy(plan.after)
+    changed_after = deepcopy(plan.after)
+    changed_after["modelProviders"]["openai"][0]["apiKey"] = "synthetic-new-api-key"
+    changed_after["modelProviders"]["openai"][0]["custom"]["apiKey"] = (
+        "synthetic-new-nested-api-key"
+    )
+    preview = replace(plan, after=changed_after).diff()
+    assert "synthetic-" not in preview
+    assert "<redacted>" in preview
+    assert "http://localhost:8000/v1" in preview
+    assert plan.before == existing
+    assert plan.after == original_after
+    assert path.read_bytes() == original_bytes
+
+    apply_setup_plan(plan)
+    written = json.loads(path.read_text())
+    providers = written["modelProviders"]
+    assert (
+        providers["openai"][0]["apiKey"]
+        == existing["modelProviders"]["openai"][0]["apiKey"]
+    )
+    assert providers["openai"][0]["custom"] == {
+        "apiKey": "synthetic-nested-api-key",
+        "keep": 42,
+    }
+    assert providers["openai"][1] == existing["modelProviders"]["openai"][1]
+    assert providers["anthropic"] == existing["modelProviders"]["anthropic"]
+    assert written["custom"] == existing["custom"]
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize("mode", ["dry-run", "accepted", "declined"])
+def test_qwen_cli_output_never_discloses_provider_credentials(
+    qwen_secret_settings, capsys, mode
+):
+    from rapid_mlx import cli
+
+    path, existing = qwen_secret_settings
+    original_bytes = path.read_bytes()
+    with (
+        patch("rapid_mlx.agents.adapter.fetch_context_window", return_value=32768),
+        patch("rapid_mlx.agents.telemetry.track_agent_configured"),
+        patch("rapid_mlx.agents.setup.confirm_plan", return_value=False) as consent,
+    ):
+        cli.agents_command(
+            SimpleNamespace(
+                agent_name="qwen-code",
+                base_url="http://localhost:8000/v1",
+                test=False,
+                setup=True,
+                model="local-model",
+                agent_version=None,
+                dry_run=mode == "dry-run",
+                yes=mode == "accepted",
+                no_check=True,
+            )
+        )
+    output = capsys.readouterr().out
+    assert "synthetic-" not in output
+    assert "<redacted>" in output
+    assert "local-model (Rapid-MLX)" in output
+    assert "http://localhost:8000/v1" in output
+    assert consent.call_count == int(mode == "declined")
+    if mode == "accepted":
+        written = json.loads(path.read_text())
+        assert (
+            written["modelProviders"]["openai"][0]["apiKey"]
+            == (existing["modelProviders"]["openai"][0]["apiKey"])
+        )
+        assert (
+            written["modelProviders"]["openai"][0]["custom"]
+            == (existing["modelProviders"]["openai"][0]["custom"])
+        )
+        assert (
+            written["modelProviders"]["openai"][1]
+            == (existing["modelProviders"]["openai"][1])
+        )
+        assert (
+            written["modelProviders"]["anthropic"]
+            == (existing["modelProviders"]["anthropic"])
+        )
+        assert written["custom"] == existing["custom"]
+        assert "Configured Qwen Code" in output
+    else:
+        assert path.read_bytes() == original_bytes
+        assert not list(path.parent.glob("settings.json.bak.*"))
+
+
+@pytest.mark.parametrize("existing", [None, {"apiKey": ""}])
+def test_qwen_preview_without_credentials_keeps_connection_changes_visible(
+    tmp_path, monkeypatch, existing
+):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    if existing is not None:
+        path = tmp_path / ".qwen" / "settings.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps(existing))
+    plan = build_setup_plan("qwen-code", "http://localhost:8000/v1", "local-model")
+    preview = plan.diff()
+    assert "local-model (Rapid-MLX)" in preview
+    assert "http://localhost:8000/v1" in preview
+    assert "contextWindowSize" in preview
+    if existing is not None:
+        assert plan.before["apiKey"] == plan.after["apiKey"] == ""
+
+
+def test_qwen_code_apply_preserves_providers_and_creates_backup(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    settings_path = tmp_path / ".qwen" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text(
+        json.dumps(
+            {
+                "modelProviders": {
+                    "openai": [
+                        {"id": "existing", "name": "Existing provider"},
+                        {
+                            "id": "local-model",
+                            "name": "Custom name",
+                            "custom": True,
+                        },
+                    ]
+                },
+                "custom": {"preserved": True},
+            }
+        )
+    )
+
+    plan = build_setup_plan(
+        "qwen-code",
+        "http://localhost:8000/v1",
+        "local-model",
+        context_length=131072,
+    )
+
+    assert json.loads(settings_path.read_text())["custom"] == {"preserved": True}
+    assert plan.after["custom"] == {"preserved": True}
+    providers = plan.after["modelProviders"]["openai"]
+    assert [provider["id"] for provider in providers] == ["existing", "local-model"]
+    rapid = providers[1]
+    assert rapid["custom"] is True
+    assert rapid["name"] == "local-model (Rapid-MLX)"
+    assert rapid["baseUrl"] == "http://localhost:8000/v1"
+    assert rapid["generationConfig"]["contextWindowSize"] == 131072
+
+    apply_setup_plan(plan)
+
+    written = json.loads(settings_path.read_text())
+    assert written == plan.after
+    assert written["custom"] == {"preserved": True}
+    assert len(list(settings_path.parent.glob("settings.json.bak.*"))) == 1
+
+
+@pytest.mark.parametrize(
+    "content", [b"{not json", b"[1, 2]", b"\xff\xfe{}", b"[" * 100_000]
+)
+def test_qwen_code_plan_refuses_an_unmergeable_settings_file(
+    tmp_path, monkeypatch, content
+):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    settings_path = tmp_path / ".qwen" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_bytes(content)
+
+    with (
+        patch("rapid_mlx.agents.setup.track_agent_configure_failed") as failed,
+        pytest.raises(ValueError),
+    ):
+        build_setup_plan("qwen-code", "http://localhost:8000/v1", "local-model")
+
+    failed.assert_called_once_with("config_invalid", "qwen-code")
+    assert settings_path.read_bytes() == content
+    assert not list(settings_path.parent.glob("settings.json.bak.*"))
+
+
+def test_qwen_code_plan_reports_an_unreadable_settings_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    # A directory where the file belongs exists but cannot be read as text.
+    (tmp_path / ".qwen" / "settings.json").mkdir(parents=True)
+
+    with (
+        patch("rapid_mlx.agents.setup.track_agent_configure_failed") as failed,
+        pytest.raises(OSError),
+    ):
+        build_setup_plan("qwen-code", "http://localhost:8000/v1", "local-model")
+
+    failed.assert_called_once_with("other", "qwen-code")
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"type": "env", "path": None, "template": None},
+        {"template": '{"model": {"name": "{model_id}"}}'},
+        {"template": '{"modelProviders": {"openai": [{"name": "no id"}]}}'},
+        {"template": "[]"},
+        {"template": {"modelProviders": {"openai": [{"id": "{model_id}"}]}}},
+        {"path": ["~/.qwen/settings.json"]},
+    ],
+)
+def test_qwen_code_plan_refuses_a_shadowing_profile_it_cannot_merge(
+    tmp_path, monkeypatch, config
+):
+    from dataclasses import replace
+
+    from rapid_mlx.agents import get_profile
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    shipped = get_profile("qwen-code")
+    shadow = replace(shipped, config=replace(shipped.config, **config))
+    monkeypatch.setattr("rapid_mlx.agents.setup._qwen_code_profile", lambda: shadow)
+
+    with pytest.raises(ValueError, match="installed qwen-code profile"):
+        build_setup_plan("qwen-code", "http://localhost:8000/v1", "local-model")
+
+    assert not (tmp_path / ".qwen").exists()
+
+
+def test_qwen_code_plan_leaves_entries_it_cannot_key_in_place(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    settings_path = tmp_path / ".qwen" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    unkeyed = ["text", 7, None, ["nested"], {"name": "no id"}, {"id": ["odd"]}]
+    settings_path.write_text(json.dumps({"modelProviders": {"openai": unkeyed}}))
+
+    plan = build_setup_plan("qwen-code", "http://localhost:8000/v1", "local-model")
+    apply_setup_plan(plan)
+
+    written = json.loads(settings_path.read_text())["modelProviders"]["openai"]
+    assert written[:-1] == unkeyed
+    assert written[-1]["id"] == "local-model"
+
+
+def test_qwen_code_plan_selects_the_config_for_the_agent_version(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    from rapid_mlx.agents import get_profile
+    from rapid_mlx.agents.base import AgentVersionSpec
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    shipped = get_profile("qwen-code")
+    versioned = replace(
+        shipped,
+        versions=[
+            AgentVersionSpec(
+                version_range=">=9.0",
+                config=replace(shipped.config, path="~/.qwen-next/settings.json"),
+            )
+        ],
+    )
+    monkeypatch.setattr("rapid_mlx.agents.setup._qwen_code_profile", lambda: versioned)
+
+    def plan_path(agent_version):
+        return build_setup_plan(
+            "qwen-code",
+            "http://localhost:8000/v1",
+            "local-model",
+            agent_version=agent_version,
+        ).path
+
+    assert plan_path(None) == (tmp_path / ".qwen" / "settings.json").resolve()
+    assert plan_path("1.0.0") == (tmp_path / ".qwen" / "settings.json").resolve()
+    assert plan_path("9.1.0") == (tmp_path / ".qwen-next" / "settings.json").resolve()
+
+
+def test_qwen_code_plan_refuses_an_unresolvable_settings_path(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    def symlink_loop(self, strict=False):
+        raise RuntimeError(f"Symlink loop from {str(self)!r}")
+
+    # Raised by Path.resolve() on a symlink loop before Python 3.13.
+    with monkeypatch.context() as scoped:
+        scoped.setattr(Path, "resolve", symlink_loop)
+        with pytest.raises(ValueError, match="cannot resolve"):
+            build_setup_plan("qwen-code", "http://localhost:8000/v1", "local-model")
+
+    assert not (tmp_path / ".qwen").exists()
+
+
+@pytest.mark.parametrize("content", [b"{not json", b"\xff\xfe{}"])
+def test_apply_refuses_file_that_stopped_parsing_after_preview(
+    tmp_path, monkeypatch, content
+):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    settings_path = tmp_path / ".qwen" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text("{}")
+    plan = build_setup_plan("qwen-code", "http://localhost:8000/v1", "local-model")
+    settings_path.write_bytes(content)
+
+    with (
+        patch("rapid_mlx.agents.setup.track_agent_configure_failed") as failed,
+        pytest.raises(RuntimeError, match="changed after preview"),
+    ):
+        apply_setup_plan(plan)
+
+    failed.assert_called_once_with("config_changed", "qwen-code")
+    assert settings_path.read_bytes() == content
+    assert not list(settings_path.parent.glob("settings.json.bak.*"))
+
+
+@pytest.mark.parametrize(
+    "existing",
+    [
+        None,
+        {"custom": {"preserved": True}},
+        {"modelProviders": "legacy", "custom": {"preserved": True}},
+        {"modelProviders": {"openai": {"id": "legacy"}, "anthropic": [{"id": "a"}]}},
+    ],
+)
+def test_qwen_code_plan_writes_its_entry_when_no_provider_list_exists(
+    tmp_path, monkeypatch, existing
+):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    settings_path = tmp_path / ".qwen" / "settings.json"
+    if existing is not None:
+        settings_path.parent.mkdir(parents=True)
+        settings_path.write_text(json.dumps(existing))
+
+    plan = build_setup_plan("qwen-code", "http://localhost:8000/v1", "local-model")
+    apply_setup_plan(plan)
+
+    written = json.loads(settings_path.read_text())
+    assert [entry["id"] for entry in written["modelProviders"]["openai"]] == [
+        "local-model"
+    ]
+    assert written["model"] == {"name": "local-model"}
+    if existing and "custom" in existing:
+        assert written["custom"] == {"preserved": True}
+    if existing and isinstance(existing.get("modelProviders"), dict):
+        assert written["modelProviders"]["anthropic"] == [{"id": "a"}]
+
+
+@pytest.mark.parametrize("agent", ["continue", "continue-dev"])
+@pytest.mark.parametrize("config_mode", ["fresh", "yaml", "legacy"])
+@pytest.mark.parametrize(
+    "key_env", [None, "", "test-continue-server-key"], ids=["absent", "empty", "keyed"]
+)
+def test_continue_setup_credential_round_trip(
+    setup_paths, monkeypatch, capsys, agent, config_mode, key_env
+):
+    import yaml
+
+    from rapid_mlx import cli
+
+    if key_env is None:
+        monkeypatch.delenv("RAPID_MLX_API_KEY", raising=False)
+    else:
+        monkeypatch.setenv("RAPID_MLX_API_KEY", key_env)
+    expected_key = key_env or "sk-noop"
+    _, path = setup_paths
+    path.parent.mkdir(parents=True)
+    legacy = path.with_name("config.json")
+    other = {
+        "name": "Other",
+        "provider": "openai",
+        "model": "other-model",
+        "apiKey": "test-other-provider-key",
+    }
+    managed = {**other, "name": "rapid-mlx", "apiKey": "test-obsolete-managed-key"}
+    if config_mode == "yaml":
+        path.write_text(
+            yaml.safe_dump(
+                {
+                    "name": "Mine",
+                    "version": "1.0.0",
+                    "schema": "v1",
+                    "models": [other, managed],
+                }
+            )
+        )
+    elif config_mode == "legacy":
+        legacy.write_text(
+            json.dumps(
+                {
+                    "models": [
+                        {
+                            "title": m["name"],
+                            **{k: v for k, v in m.items() if k != "name"},
+                        }
+                        for m in (other, managed)
+                    ]
+                }
+            )
+        )
+    original_files = {p.name: p.read_bytes() for p in path.parent.iterdir()}
+
+    plan = build_setup_plan(agent, "http://localhost:8000/v1", "local-model")
+    entry = next(m for m in plan.after["models"] if m["name"] == "rapid-mlx")
+    assert entry["apiKey"] == expected_key
+    preview = plan.diff()
+    for secret in (key_env, other["apiKey"], managed["apiKey"]):
+        if secret:
+            assert secret not in preview
+    assert {p.name: p.read_bytes() for p in path.parent.iterdir()} == original_files
+
+    assert apply_setup_plan(plan) == path
+    written = yaml.safe_load(path.read_text())
+    entry = next(m for m in written["models"] if m["name"] == "rapid-mlx")
+    assert entry["apiKey"] == expected_key
+    assert entry["apiBase"] == "http://localhost:8000/v1"
+    assert path.stat().st_mode & 0o777 == 0o600
+    if config_mode != "fresh":
+        expected_other = (
+            {**other, "roles": ["chat"]} if config_mode == "legacy" else other
+        )
+        assert (
+            next(m for m in written["models"] if m["name"] == "Other") == expected_other
+        )
+    if config_mode == "legacy":
+        assert legacy.read_bytes() == original_files["config.json"]
+    assert not build_setup_plan(
+        agent, "http://localhost:8000/v1", "local-model"
+    ).changed
+
+    # The public setup command must leave an already-keyed config untouched.
+    after_apply = {p.name: p.read_bytes() for p in path.parent.iterdir()}
+    written_stat = path.stat()
+    cli.agents_command(
+        SimpleNamespace(
+            agent_name="continue",
+            base_url="http://localhost:8000/v1",
+            test=False,
+            setup=True,
+            model="local-model",
+            agent_version=None,
+            dry_run=False,
+            yes=True,
+            no_check=True,
+        )
+    )
+    output = capsys.readouterr().out
+    assert "Already configured; no file changes needed." in output
+    if key_env:
+        assert key_env not in output
+    assert {p.name: p.read_bytes() for p in path.parent.iterdir()} == after_apply
+    assert (path.stat().st_ino, path.stat().st_mtime_ns) == (
+        written_stat.st_ino,
+        written_stat.st_mtime_ns,
+    )
 
 
 def test_apply_refuses_file_changed_after_preview(setup_paths):
@@ -419,6 +974,38 @@ def test_cli_reports_saved_config_when_connection_check_fails(
     output = capsys.readouterr().out
     assert "Configuration was saved, but the connection check failed" in output
     assert "Setup incomplete" not in output
+
+
+def test_cli_reports_a_failed_config_write_without_a_traceback(
+    setup_paths, monkeypatch, capsys
+):
+    import rapid_mlx.cli as cli
+
+    _, continue_path = setup_paths
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "rapid-mlx",
+            "agents",
+            "continue",
+            "--setup",
+            "--yes",
+            "--no-check",
+            "--model",
+            "qwen3.5-4b-4bit",
+        ],
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.agents.setup.apply_setup_plan",
+        lambda _plan: (_ for _ in ()).throw(PermissionError("read-only directory")),
+    )
+
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main()
+
+    assert exit_info.value.code == 1
+    assert not continue_path.exists()
+    assert "setup failed: read-only directory" in capsys.readouterr().out
 
 
 def test_user_continue_dev_overlay_wins_over_the_builtin_alias(tmp_path, monkeypatch):

@@ -17,6 +17,7 @@ from typing import Any, cast
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 
+from .._env import env_falsey
 from ..api.errors import CHAT_RESPONSE_FORMAT_PARAM, GuidedGenerationCancelledError
 from ..api.models import (
     AssistantMessage,
@@ -692,17 +693,13 @@ def _constrain_tools_opted_out() -> bool:
     """True iff the operator has EXPLICITLY disabled constrained tool-calling.
 
     #558 PR-5 flips the default to ON. ``RAPID_MLX_CONSTRAIN_TOOLS`` is now an
-    OPT-OUT toggle: only the explicit values ``0`` / ``off`` / ``false`` (case-
-    insensitive, whitespace-trimmed) disable the feature; an absent var — or any
+    OPT-OUT toggle: only a falsey value (``rapid_mlx._env.FALSEY_VALUES``, case-
+    insensitive, whitespace-trimmed) disables the feature; an absent var — or any
     other value — leaves it ON. When opted out the chat route restores the
     legacy free-form-then-parse behavior for tool calls, including the #561
     oversized-schema free-form fallback (no HTTP 400).
     """
-    return os.environ.get("RAPID_MLX_CONSTRAIN_TOOLS", "1").strip().lower() in (
-        "0",
-        "off",
-        "false",
-    )
+    return env_falsey("RAPID_MLX_CONSTRAIN_TOOLS")
 
 
 def _tool_parser_supports_grammar(cfg) -> bool:
@@ -6922,6 +6919,18 @@ async def _stream_buffered_chat_response(
     terminal.finish_reason = choice.finish_reason
     terminal.prompt_tokens = response.usage.prompt_tokens
     terminal.completion_tokens = response.usage.completion_tokens
+    if response.metrics is not None:
+        terminal.timing_metrics = (
+            response.metrics.model_dump(
+                exclude_none=True,
+                exclude={"speculative_decoding", "prompt_compression"},
+            )
+            or None
+        )
+        if response.metrics.prompt_compression is not None:
+            terminal.prompt_compression = (
+                response.metrics.prompt_compression.model_dump()
+            )
     if response.usage.prompt_tokens_details is not None:
         terminal.cached_tokens = response.usage.prompt_tokens_details.cached_tokens
     if (

@@ -75,6 +75,7 @@ class _CountingEngine:
             completion_tokens=3,
             finished=True,
             finish_reason="stop",
+            timing_metrics={"time_to_first_token_ms": 250.0, "mean_itl_ms": 20.0},
             spec_decode_metrics={
                 "verify_calls": 2,
                 "correction_tokens": 1,
@@ -145,6 +146,7 @@ def test_repeated_deterministic_request_served_from_cache():
     # (fresh id) carrying the SAME stored completion body. The id differs
     # (each hit is a distinct response), the content is the replayed one.
     assert r1.json()["id"] != r2.json()["id"]
+    assert r1.json()["metrics"]["mean_itl_ms"] == 20.0
     assert r1.json()["metrics"]["speculative_decoding"]["verify_calls"] == 2
     assert "metrics" not in r2.json(), (
         "a response-cache hit must not replay request metrics from the engine "

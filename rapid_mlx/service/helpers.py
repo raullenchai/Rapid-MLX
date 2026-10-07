@@ -27,6 +27,8 @@ from typing import Any, NoReturn, cast
 from fastapi import HTTPException
 from starlette.requests import Request
 
+from .._env import env_falsey
+
 # Re-export of the wire-level sentinel literal + rescue-tail length.
 # Single source of truth lives in :mod:`rapid_mlx.api.constants` to
 # preserve the layering rule (api is the lower layer that service
@@ -1316,9 +1318,8 @@ def _rescue_silent_drop_from_reasoning(
 #: though ``finish_reason="length"`` is set — the rescue string is the
 #: user-facing signal that ``max_tokens`` was too low PLUS a glimpse of
 #: the truncated thought trace. Power callers that prefer the strict-
-#: null shape can opt out with any of the listed spellings on either
-#: env var.
-_CUTOFF_NOTICE_DISABLED_VALUES = frozenset({"0", "false", "no", "off", "disabled"})
+#: null shape can opt out with any falsey spelling
+#: (``rapid_mlx._env.FALSEY_VALUES``) on either env var.
 
 #: Primary R12-8 env var. ``RAPID_MLX_REASONING_RESCUE=off`` disables
 #: the rescue; default is ``on``. Both this name and the legacy alias
@@ -1359,21 +1360,17 @@ def _cutoff_notice_enabled() -> bool:
       rapid-desktop deployments and operator runbooks that already
       reference this name keep working without a rebuild.
 
-    The rescue is DISABLED when EITHER env var is set to a disable
-    spelling (``"0"`` / ``"false"`` / ``"no"`` / ``"off"`` /
-    ``"disabled"``, case-insensitive, whitespace-stripped). Operator
+    The rescue is DISABLED when EITHER env var is set to a falsey
+    spelling (``rapid_mlx._env.FALSEY_VALUES``, case-insensitive,
+    whitespace-stripped). Operator
     intent: "I do not want the rescue", regardless of which name was
-    used. Anything else — including unset, the empty string,
-    ``"1"`` / ``"true"`` / ``"on"`` / ``"yes"`` / ``"enabled"``, or
-    any arbitrary unrecognised value — leaves the rescue enabled.
+    used. Anything else — including unset, the empty string, a truthy
+    spelling, or any arbitrary unrecognised value — leaves the rescue
+    enabled.
     """
-    for env_name in (_RESCUE_ENV_PRIMARY, _RESCUE_ENV_LEGACY):
-        raw = os.environ.get(env_name)
-        if raw is None:
-            continue
-        if raw.strip().lower() in _CUTOFF_NOTICE_DISABLED_VALUES:
-            return False
-    return True
+    return not any(
+        env_falsey(env_name) for env_name in (_RESCUE_ENV_PRIMARY, _RESCUE_ENV_LEGACY)
+    )
 
 
 def _build_reasoning_rescue_payload(reasoning_text: str) -> str:
@@ -2832,20 +2829,24 @@ def _build_prompt_compression(output: Any) -> PromptCompressionMetrics | None:
     )
 
 
-def _build_response_metrics(output: Any) -> PerRequestMetrics | None:
-    """Build terminal response metrics when this request ran MTP or had its
-    prompt compressed by PFlash. ``None`` (omitted on the wire) otherwise."""
+def _build_response_metrics(
+    output: Any, *, include_timing: bool = True
+) -> PerRequestMetrics | None:
+    """Build optional metrics from one completed engine generation."""
     metrics = getattr(output, "spec_decode_metrics", None)
+    timing = getattr(output, "timing_metrics", None) if include_timing else None
     speculative = (
         SpeculativeDecodingMetrics.model_validate(metrics)
         if isinstance(metrics, (dict, SpeculativeDecodingMetrics))
         else None
     )
     compression = _build_prompt_compression(output)
-    if speculative is None and compression is None:
+    if speculative is None and compression is None and not isinstance(timing, dict):
         return None
     return PerRequestMetrics(
-        speculative_decoding=speculative, prompt_compression=compression
+        speculative_decoding=speculative,
+        prompt_compression=compression,
+        **(timing if isinstance(timing, dict) else {}),
     )
 
 
@@ -2863,6 +2864,10 @@ def prompt_compression_headers(metrics: PerRequestMetrics | None) -> dict[str, s
 
 def _merge_response_metrics(outputs: list[Any]) -> PerRequestMetrics | None:
     """Combine per-generation counters for one multi-prompt HTTP request."""
+    # A single generation has a meaningful timing window. Multiple independent
+    # prompts/attempts cannot be represented by one TTFT or mean token interval.
+    if len(outputs) == 1:
+        return _build_response_metrics(outputs[0])
     merged: SpeculativeDecodingMetrics | None = None
     compression: PromptCompressionMetrics | None = None
     for output in outputs:
@@ -2916,6 +2921,7 @@ def _aggregate_generation_attempts(
     metrics = _merge_response_metrics([initial, delivered])
     return replace(
         delivered,
+        timing_metrics=None,
         prompt_tokens=initial.prompt_tokens + delivered.prompt_tokens,
         completion_tokens=(initial.completion_tokens + delivered.completion_tokens),
         cached_tokens=(

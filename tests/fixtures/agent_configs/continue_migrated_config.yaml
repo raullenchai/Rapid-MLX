@@ -1,0 +1,75 @@
+name: Local Config
+version: 1.0.0
+schema: v1
+models:
+- name: Claude
+  provider: anthropic
+  model: claude-sonnet
+  apiKey: sk-ant-example
+  roles:
+  - chat
+  requestOptions:
+    timeout: 30
+  defaultCompletionOptions:
+    temperature: 0.2
+- name: rapid-mlx
+  provider: openai
+  model: qwen3.5-4b-4bit
+  apiKey: sk-noop
+  apiBase: http://127.0.0.1:8000/v1
+  roles:
+  - chat
+- name: Ollama Llama
+  provider: ollama
+  model: llama3
+  roles:
+  - chat
+- name: Autocomplete
+  provider: ollama
+  model: qwen2.5-coder:1.5b
+  roles:
+  - autocomplete
+- name: Embeddings Model
+  provider: ollama
+  model: nomic-embed-text
+  roles:
+  - embed
+- name: Reranker
+  provider: voyage
+  model: rerank-2
+  apiKey: voyage-example
+  roles:
+  - rerank
+context:
+- uses: continuedev/code-context
+- uses: continuedev/open-files-context
+  with:
+    onlyPinned: true
+- provider: web
+  params:
+    n: 5
+- uses: continuedev/jira-context
+  with:
+    JiraToken: jira-example
+    JiraDomain: example.atlassian.net
+rules:
+- Answer briefly.
+prompts:
+- name: test
+  description: Write tests
+  prompt: Write unit tests for {{{ input }}}
+mcpServers:
+- command: uvx
+  args:
+  - mcp-server-git
+  name: git
+- command: node
+  args:
+  - server.js
+  name: MCP Server
+docs:
+- name: MLX
+  startUrl: https://ml-explore.github.io/mlx/
+  faviconUrl: https://example.com/f.ico
+requestOptions:
+  verifySsl: true

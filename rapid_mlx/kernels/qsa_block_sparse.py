@@ -4,10 +4,11 @@
 from __future__ import annotations
 
 import logging
-import os
 from functools import lru_cache
 
 import mlx.core as mx
+
+from .._env import env_truthy
 
 logger = logging.getLogger(__name__)
 
@@ -179,12 +180,7 @@ def block_sparse_decline_reason(
     training: bool = False,
 ) -> str | None:
     """Return ``None`` when the opt-in route is eligible, else why it declined."""
-    enabled = os.environ.get(ENABLE_ENV, "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    enabled = env_truthy(ENABLE_ENV)
     if not enabled:
         return "disabled"
     if training:

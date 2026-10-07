@@ -71,15 +71,31 @@ STEEP_VERIFY_ROW_COST = 0.33
 # Per-class cost of one extra verified row and of one draft step, in one-row
 # steps, as measured round-robin (Qwen3.5-9B-4bit on an M4 Pro: 3-row verify
 # 1.39x, draft 0.14x; Qwen3.5-4B-4bit on an M2 Pro: 1.93x, 0.16x). With
-# :data:`ROUND_OVERHEAD` they reproduce the round costs the adaptive
-# controller learns from the clock on those hosts (M2 Pro: 1.53 / 2.05).
+# :data:`ROUND_OVERHEAD` charged to every round they reproduce the round
+# costs the adaptive controller learned from the clock on those hosts while
+# parked rounds were unpipelined (M2 Pro: 1.53 / 2.05); the steep request
+# curve now charges it to drafting rounds only (see
+# :data:`CLASS_PARK_PAYS_OVERHEAD`).
 CLASS_ROW_COST = {False: 0.2, True: 0.46}
 CLASS_DRAFT_COST = {False: 0.14, True: 0.16}
 
 # The generator's own per-round host work, as a fraction of a one-row step
-# (parked rounds run at ~22 ms against a 17.5 ms forward on an M2 Pro). Added
-# to every round alike, so it dampens the relative cost of wider rounds.
+# (parked rounds ran at ~22 ms against a 17.5 ms forward on an M2 Pro before
+# parked rounds were pipelined). Added to every measured round alike, so it
+# dampens the relative cost of wider rounds.
 ROUND_OVERHEAD = 0.25
+
+# Whether a class's parked round still pays :data:`ROUND_OVERHEAD`. Parked
+# rounds now launch their step ahead of delivery like plain decode, so on a
+# steep host (M2 Pro, 4B) they run at plain-decode speed and only drafting
+# rounds keep that host work: a parked round costs 1.0, a depth-``k`` round
+# ``1 + k * per_depth + ROUND_OVERHEAD``. Charging the overhead to every
+# round there made drafting look ~20% cheaper than it is, and greedy prose
+# drafted where plain steps were faster. The default class keeps its curve:
+# on an M4 Pro the same change costs prose (9B story and summary drafted
+# less and decoded 4-5% slower), because its verify rows are cheap enough
+# that the dampened curve is the better fit.
+CLASS_PARK_PAYS_OVERHEAD = {False: True, True: False}
 
 # Round-robin timing passes: the first compile kernels and are discarded.
 TIMING_WARMUP_ROUNDS = 2
@@ -137,13 +153,29 @@ def round_costs(
     return tuple(costs)
 
 
-def class_round_costs(steep: bool, max_k: int) -> tuple[float, ...]:
+def class_round_costs(
+    steep: bool, max_k: int, *, parks_pipelined: bool = True
+) -> tuple[float, ...]:
     """The class curve a request decides on: depth ``k`` costs ``k`` extra
-    verified rows, ``k`` drafts and the round overhead, in plain rounds."""
+    verified rows, ``k`` drafts and the round overhead, in plain rounds.
+
+    Where a parked round does not pay the overhead
+    (:data:`CLASS_PARK_PAYS_OVERHEAD`), a plain round is one step and only
+    drafting rounds carry it. ``parks_pipelined=False`` (a request whose
+    parked rounds cannot run ahead, e.g. with logits processors) charges it
+    to every round again.
+    """
     per_depth = CLASS_ROW_COST[steep] + CLASS_DRAFT_COST[steep]
-    return tuple(
-        round((1.0 + depth * per_depth + ROUND_OVERHEAD) / (1.0 + ROUND_OVERHEAD), 4)
-        for depth in range(max_k + 1)
+    if CLASS_PARK_PAYS_OVERHEAD[steep] or not parks_pipelined:
+        return tuple(
+            round(
+                (1.0 + depth * per_depth + ROUND_OVERHEAD) / (1.0 + ROUND_OVERHEAD), 4
+            )
+            for depth in range(max_k + 1)
+        )
+    return (1.0,) + tuple(
+        round(1.0 + depth * per_depth + ROUND_OVERHEAD, 4)
+        for depth in range(1, max_k + 1)
     )
 
 
@@ -310,6 +342,28 @@ def request_depth_controller(costs: tuple[float, ...], max_k: int) -> DepthContr
         for _ in range(COST_SEED_MIN_SAMPLES):
             controller.cost.observe(depth, request_round_cost(costs, depth))
     return controller
+
+
+def request_round_costs(
+    schedule: GreedySchedule, *, parks_pipelined: bool
+) -> tuple[float, ...]:
+    """The round-cost curve one request decides on.
+
+    ``schedule.round_costs`` assumes parked rounds run ahead of delivery. A
+    request whose parked rounds cannot (fixed by its own configuration, never
+    by timing) decides on its class curve with the overhead on every round.
+    """
+    if (
+        parks_pipelined
+        or not schedule.round_costs
+        or CLASS_PARK_PAYS_OVERHEAD[schedule.steep_verify]
+    ):
+        return schedule.round_costs
+    return class_round_costs(
+        schedule.steep_verify,
+        len(schedule.round_costs) - 1,
+        parks_pipelined=False,
+    )
 
 
 def request_round_cost(costs: tuple[float, ...], depth: int) -> float:

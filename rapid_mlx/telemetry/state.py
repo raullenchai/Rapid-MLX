@@ -52,6 +52,8 @@ from typing import Any
 
 import yaml
 
+from .._env import is_falsey
+
 ENV_VAR = "RAPID_MLX_TELEMETRY"
 #: Cross-tool opt-out convention (https://consoledonottrack.com): ``1`` or
 #: ``true`` disables telemetry; any other value is ignored, like Orca does.
@@ -620,15 +622,15 @@ def _env_kill_switch_reason() -> str | None:
 
     Three switches, checked in this order:
 
-    * ``RAPID_MLX_TELEMETRY`` falsy (``0`` / ``false`` / ``no`` / ``off`` /
-      empty). Truthy values are intentionally ignored — see the module
+    * ``RAPID_MLX_TELEMETRY`` falsey (see ``rapid_mlx._env.FALSEY_VALUES``)
+      or empty. Truthy values are intentionally ignored — see the module
       docstring for why there is no env-var force-on.
     * ``DO_NOT_TRACK`` truthy (``1`` / ``true``, case-insensitive) — the
       cross-tool convention. Other values are ignored rather than guessed.
     * Any CI marker in ``CI_ENV_VARS`` set to a non-empty value.
     """
     raw = os.environ.get(ENV_VAR)
-    if raw is not None and raw.strip().lower() in ("0", "false", "no", "off", ""):
+    if raw is not None and (raw.strip() == "" or is_falsey(raw)):
         return f"env-var ({ENV_VAR}={raw!r})"
     dnt = os.environ.get(DO_NOT_TRACK_ENV)
     if dnt is not None and dnt.strip().lower() in ("1", "true"):

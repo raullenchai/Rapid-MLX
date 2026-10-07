@@ -271,6 +271,15 @@ class Request:
     # public and positional Request constructor unchanged.
     _admission_deferrals: int = field(default=0, init=False, repr=False)
 
+    # Monotonic twins of ``arrival_time``/``first_token_time`` for the
+    # per-request timing snapshot, so a wall-clock step during generation
+    # cannot skew or drop the reported durations. ``init=False`` keeps the
+    # public and positional Request constructor unchanged.
+    _arrival_monotonic: float = field(
+        default_factory=time.monotonic, init=False, repr=False
+    )
+    _first_token_monotonic: float | None = field(default=None, init=False, repr=False)
+
     @property
     def num_output_tokens(self) -> int:
         """Number of output tokens generated so far."""
@@ -654,6 +663,9 @@ class RequestOutput:
     # when compression actually dropped tokens, else ``None``. Appended
     # last to preserve positional compatibility.
     prompt_compression: dict[str, int] | None = None
+    # Frozen scheduler timings for a successful terminal text generation.
+    # Appended after prompt_compression to preserve its positional index.
+    timing_metrics: dict[str, float] | None = None
 
     @property
     def usage(self) -> dict[str, int]:

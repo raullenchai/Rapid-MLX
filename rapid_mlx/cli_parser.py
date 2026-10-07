@@ -48,6 +48,36 @@ def _log_level_choice(value: str) -> str:
     return value.upper()
 
 
+def _add_disable_disk_caches_arg(parser: argparse.ArgumentParser) -> None:
+    """Register ``--disable-disk-caches`` (serve and the commands that spawn it)."""
+    parser.add_argument(
+        "--disable-disk-caches",
+        action="store_true",
+        help=(
+            "Write no optional caches to disk: no prefix-cache snapshot at "
+            "shutdown or idle unload (and none loaded at startup), no KV "
+            "checkpoints, no vision prefix-cache disk tier. Takes precedence "
+            "over --kv-disk-checkpoint-interval and APC_DISK_ENABLED. Also "
+            "set by RAPID_MLX_DISABLE_DISK_CACHES=1."
+        ),
+    )
+
+
+def _add_log_file_arg(parser: argparse.ArgumentParser) -> None:
+    """Register ``--log-file`` (serve and the commands that spawn it)."""
+    parser.add_argument(
+        "--log-file",
+        metavar="TARGET",
+        default=None,
+        help=(
+            "Send all server output (logs, tracebacks, native-library "
+            "messages) to TARGET instead of stderr: a file path (appended), "
+            "'-' for stdout, /dev/stderr, or /dev/null to discard it. "
+            "Default: $RAPID_MLX_LOG_FILE, else stderr."
+        ),
+    )
+
+
 def _add_video_job_args(parser: argparse.ArgumentParser) -> None:
     """Register the shared video artifact-store option on a serve parser."""
     parser.add_argument(
@@ -556,9 +586,13 @@ def _add_serve_parser(
         "--log-level",
         type=_log_level_choice,
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        default="INFO",
-        help="Log level for Python logging and uvicorn (case-insensitive)",
+        default=None,
+        help=(
+            "Log level for Python logging and uvicorn (case-insensitive). "
+            "Default: $RAPID_MLX_LOG_LEVEL, else INFO."
+        ),
     )
+    _add_log_file_arg(serve_parser)
     serve_parser.add_argument(
         "--max-num-seqs", type=int, default=256, help="Max concurrent sequences"
     )
@@ -618,8 +652,12 @@ def _add_serve_parser(
     serve_parser.add_argument(
         "--disable-prefix-cache",
         action="store_true",
-        help="Disable prefix caching",
+        help=(
+            "Disable prefix caching (in memory, and its on-disk snapshot "
+            "written at shutdown)"
+        ),
     )
+    _add_disable_disk_caches_arg(serve_parser)
     serve_parser.add_argument(
         "--prefix-cache-size",
         type=int,
@@ -2452,6 +2490,8 @@ def _add_chat_parser(
             "effect with --port or --base-url; configure that server directly."
         ),
     )
+    _add_disable_disk_caches_arg(chat_parser)
+    _add_log_file_arg(chat_parser)
 
 
 def _add_info_parser(
@@ -2781,6 +2821,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Do not print the cheetah launch banner. Top-level only "
         "(place it before the subcommand, e.g. 'rapid-mlx --no-banner "
         "serve', like --no-telemetry); equivalent to RAPID_MLX_NO_BANNER=1.",
+    )
+    parser.add_argument(
+        "--disable-version-check",
+        action="store_true",
+        help="Do not check for a newer Rapid-MLX release. Top-level only "
+        "(place it before the subcommand); equivalent to "
+        "RAPID_MLX_DISABLE_VERSION_CHECK=1 and passed on to servers that "
+        "chat, start and share launch.",
     )
     subparsers = parser.add_subparsers(dest="command", metavar="<command>")
 

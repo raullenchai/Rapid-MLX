@@ -3,16 +3,16 @@
 
 from __future__ import annotations
 
-import os
 import sys
+
+from .._env import env_truthy
 
 DEBUG_ENV = "RAPID_MLX_TELEMETRY_DEBUG"
 
 
 def debug_enabled() -> bool:
     """Whether telemetry debug tracing is enabled for this process."""
-    value = os.environ.get(DEBUG_ENV, "").strip().lower()
-    return value not in ("", "0", "false", "no", "off")
+    return env_truthy(DEBUG_ENV)
 
 
 def _log(message: str) -> None:

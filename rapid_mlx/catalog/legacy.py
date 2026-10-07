@@ -69,6 +69,10 @@ def _main_capabilities(profile: Any) -> dict[str, Any]:
         # ``text_generation`` here put embeddinggemma into every first-chat
         # picker (#3116).
         tasks, operations, adapter = ["embedding"], ["embed"], "mlx_embeddings"
+        from ..embedding_backend import is_native_embedding_model
+
+        if is_native_embedding_model(profile.hf_path):
+            adapter = "rapid_mlx/embedding_gemma2"
     else:
         tasks, operations = ["text_generation"], ["chat"]
         if bool(getattr(profile, "supports_image_input", False)):
@@ -84,6 +88,8 @@ def _main_capabilities(profile: Any) -> dict[str, Any]:
         "runtime_adapter": adapter,
         "experimental": bool(getattr(profile, "experimental", False)),
     }
+    if adapter == "rapid_mlx/embedding_gemma2":
+        capabilities["is_text_only"] = True
     for field in ("tool_call_parser", "reasoning_parser", "chat_template_id"):
         value = getattr(profile, field, None)
         if value:

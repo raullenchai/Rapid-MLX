@@ -102,7 +102,7 @@ needed by the application; leave it unset for URL/base64-only deployments.
 | `--kv-cache-turboquant` | TurboQuant KV compression (experimental): bare = `v4` (V-only), `k8v4` (K 8-bit + V 4-bit mix), `none` (explicit off overriding alias auto-resolution). Mutually exclusive with `--kv-cache-quantization`. | None (alias-driven) |
 | `--kv-cache-turboquant-bits` | V-side bit width (3 or 4); ignored in `k8v4` mode | Auto by head_dim |
 | `--kv-cache-turboquant-group-size` | Group size for TurboQuant V-side quantization | `32` |
-| `--kv-disk-checkpoint-interval` | Token interval for KV snapshots to `~/.cache/rapid-mlx/kv_checkpoints/`; write-only, blocks decode per snapshot — external tooling only. `0` disables. | `0` |
+| `--kv-disk-checkpoint-interval` | Token interval for KV snapshots to `~/.cache/rapid-mlx/kv_checkpoints/`; each snapshot writes the whole KV cache of every running request, nothing reads it back, and it blocks decode — external tooling only. `0` disables. Overruled by `--disable-disk-caches`. | `0` |
 | `--metal-cap-kv-bytes-per-token` | Override the projected per-token KV size (bytes) in the admission gate; set when running a quantized KV cache. `0` auto-derives an fp16 figure. | `0` (auto) |
 
 ### Model Loading and Residency Options
@@ -361,6 +361,43 @@ verification round, including ordinary decoding and response-cache hits. The
 whole `metrics` field is omitted when neither block applies. The process-wide
 `/metrics` series remain the right surface for service dashboards.
 
+#### Request timing metrics
+
+Successful requests through the text scheduler report experimental server-side
+`metrics.time_to_first_token_ms` and, when measurable, `metrics.mean_itl_ms`
+on Chat Completions, single-prompt Completions, and Responses. Streaming emits
+these fields once on the terminal event, independently of
+`stream_options.include_usage`.
+
+```json
+{
+  "metrics": {
+    "time_to_first_token_ms": 250.0,
+    "mean_itl_ms": 20.0
+  }
+}
+```
+
+TTFT runs from the engine request's scheduler arrival to its first output
+token. It includes queueing and prefill, including any prefix-cache reuse;
+it is not a pure prefill measurement or HTTP end-to-end latency. Mean ITL is
+`(last_token_time - first_token_time) * 1000 / (completion_tokens - 1)`;
+`1000 / mean_itl_ms` gives the request's post-first-token decode tokens/second.
+All instants are read from a monotonic clock, so wall-clock adjustments
+during generation do not affect the durations. Times are frozen at the scheduler's observation of the final engine token,
+before output decoding, cache finalization, buffering, or response delivery.
+Counts include engine-generated reasoning and stop tokens, even when those
+are not visible in the response text. Concurrent requests have independent
+windows; the rate is per-request wall time, not aggregate batch throughput.
+
+A one-token generation reports only TTFT. Zero-token, failed/cancelled,
+response-cache replay, and unmeasured engine paths omit timing fields.
+Non-positive or non-finite decode windows omit mean ITL. Multi-prompt generations,
+transparent retries, and aggregated repair attempts omit timing rather than combine incompatible
+windows. Anthropic Messages does not expose this experimental extension.
+These fields can coexist with `metrics.speculative_decoding`; existing
+`usage` fields and Prometheus aggregates are unchanged.
+
 #### MTP sidecar heads are not standalone models
 
 The `*-mtp-4bit` aliases — `qwen3.6-27b-mtp-4bit`
@@ -476,6 +513,9 @@ flag always wins over its env-var fallback when both are set.
 | `RAPID_MLX_SSE_KEEPALIVE_SECONDS` | 20 | Interval for SSE keepalive comment lines during silent prefill (defeats proxy idle timeouts). 0 disables the heartbeat. |
 | `RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS` | 15 | Max idle seconds between request-body chunks (slowloris defense); exceeded connections get HTTP 408. 0 disables. |
 | `RAPID_MLX_IDLE_CACHE_CLEAR_SECONDS` | 0 (disabled) | Fallback for `--idle-cache-clear-seconds`: clear reusable KV state after this many idle seconds, keeping model weights loaded. An explicit CLI value (including 0) wins. |
+| `RAPID_MLX_DISABLE_DISK_CACHES` | unset | `1` / `true` / `yes` / `on` / `enable` / `enabled` has the effect of `serve --disable-disk-caches` for every server, including those started by `chat`, `start`, and `share` |
+| `RAPID_MLX_LOG_FILE` | unset (stderr) | Fallback for `--log-file`. Commands run with `--json` reject `-`, because stdout carries their JSON output. |
+| `RAPID_MLX_LOG_LEVEL` | unset (INFO) | Fallback for `serve --log-level`. When set, `chat` and `share` no longer force their own level on the server they start. |
 | `RAPID_MLX_WATCHDOG_PPID` | unset (disabled) | Fallback for `--watchdog-ppid`: self-terminate when the parent with this PID dies |
 | `RAPID_MLX_TELEMETRY` | unset (reporting defaults on) | Telemetry kill switch: `0` / `false` / `no` / `off` / empty force-disables telemetry regardless of stored consent. Truthy values do not force-enable. |
 | `DO_NOT_TRACK` | unset | Cross-tool opt-out convention: `1` / `true` force-disables telemetry regardless of stored consent (other values are ignored). Same precedence as `RAPID_MLX_TELEMETRY=0`; `rapid-mlx telemetry status` reports it as the reason. |
@@ -491,7 +531,7 @@ flag always wins over its env-var fallback when both are set.
 | `RAPID_MLX_MODEL_MIRROR` | `https://models.rapidmlx.com` | Model download mirror base URL; set to an empty string to force downloads from Hugging Face |
 | `RAPID_MLX_EXTRA_MODEL_ROOTS` | unset | Extra local directories to resolve models from, separated by `os.pathsep` (`:` on macOS/Linux), or a JSON array of paths |
 | `RAPID_MLX_DEFAULT_MODEL` | `qwen3.5-4b-4bit` | Default model alias used by `rapid-mlx launch` when `--model` is not given |
-| `RAPID_MLX_DISABLE_VERSION_CHECK` | unset | Set to any non-empty value to skip new-version checks, including the passive `serve` startup-log notice |
+| `RAPID_MLX_DISABLE_VERSION_CHECK` | unset | Any non-empty value other than `0` / `false` / `no` / `off` / `disable` / `disabled` skips new-version checks, including the passive `serve` startup-log notice. Same as the global `--disable-version-check` flag. |
 | `RAPID_MLX_TRUST_REMOTE_CODE` | unset | Set `0`/`false`/`no`/`off` to force `trust_remote_code=False` process-wide for tokenizer loading |
 | `RAPID_MLX_TEST_MODEL` | unset | Default model for tests (legacy `VLLM_MLX_TEST_MODEL` still honored) |
 | `HF_TOKEN` | unset | HuggingFace authentication token |

@@ -16,25 +16,25 @@ from __future__ import annotations
 import hashlib
 import inspect
 import logging
-import os
 import threading
 from collections.abc import Callable
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any
+
+from .._env import env_truthy
 
 logger = logging.getLogger(__name__)
 
 _ENV = "RAPID_MLX_MLA_ABSORBED_VERIFY"
 _STATS_ENV = "RAPID_MLX_MLA_ABSORBED_VERIFY_STATS"
 _QUALIFIED_MLX_LM_VERSION = "0.31.3"
-_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 MIN_CACHE_LENGTH = 1024
 _LOCK = threading.Lock()
 _STATS_LOCK = threading.Lock()
 _INSTALLED = False
 _PROVIDER = "none"
 _ENABLED = False
-_STATS_ENABLED = os.environ.get(_STATS_ENV, "").strip().lower() in _TRUE_VALUES
+_STATS_ENABLED = env_truthy(_STATS_ENV)
 _PATCHED_TARGETS: set[tuple[str, str]] = set()
 
 _STATS = {
@@ -74,7 +74,7 @@ _SUPPORTED_SOURCE_HASHES = {
 
 
 def _feature_enabled() -> bool:
-    return os.environ.get(_ENV, "").strip().lower() in _TRUE_VALUES
+    return env_truthy(_ENV)
 
 
 def _mlx_lm_version() -> str | None:

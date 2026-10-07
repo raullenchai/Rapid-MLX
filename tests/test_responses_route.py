@@ -63,6 +63,7 @@ class _GenerationOutput:
     channel: str | None = None
     tool_calls: list | None = None
     spec_decode_metrics: dict | None = None
+    timing_metrics: dict | None = None
 
 
 class _Engine:
@@ -75,6 +76,7 @@ class _Engine:
         self.build_prompt_calls: list[SimpleNamespace] = []
         self.tokenizer = _Tokenizer()
         self.emit_mtp_metrics = False
+        self.emit_timing_metrics = False
 
     async def chat(self, messages, **kwargs):
         self.calls.append(SimpleNamespace(messages=messages, kwargs=kwargs))
@@ -83,6 +85,9 @@ class _Engine:
             prompt_tokens=3,
             completion_tokens=2,
             finish_reason="stop",
+            timing_metrics={"time_to_first_token_ms": 250.0, "mean_itl_ms": 20.0}
+            if self.emit_timing_metrics
+            else None,
         )
 
     async def stream_chat(self, messages, **kwargs):
@@ -96,6 +101,9 @@ class _Engine:
                 prompt_tokens=3 if i == 0 else 0,
                 completion_tokens=i + 1,
                 finish_reason=None if i < len(chunks) - 1 else "stop",
+                timing_metrics={"time_to_first_token_ms": 250.0, "mean_itl_ms": 20.0}
+                if self.emit_timing_metrics and i == len(chunks) - 1
+                else None,
                 spec_decode_metrics=(
                     {
                         "verify_calls": 2,
@@ -2558,3 +2566,27 @@ def test_responses_route_wires_deepseek_codex_reasoning_budget(
     calls = engine.stream_calls if stream else engine.calls
     processor = calls[-1].kwargs.get("reasoning_budget_logits_processor")
     assert isinstance(processor, ReasoningBudgetLogitsProcessor) is expected
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_responses_terminal_carries_request_timing(responses_client, stream):
+    responses_client.engine.emit_timing_metrics = True
+    response = responses_client.client.post(
+        "/v1/responses",
+        json={"model": "test-model", "input": "hello", "stream": stream},
+        headers={"Authorization": "Bearer test-secret"},
+    )
+    assert response.status_code == 200
+    if stream:
+        events = [
+            json.loads(line[6:])
+            for line in response.text.splitlines()
+            if line.startswith("data: ") and line[6:] != "[DONE]"
+        ]
+        timed = [event for event in events if event.get("response", {}).get("metrics")]
+        assert len(timed) == 1
+        assert timed[0]["type"] == "response.completed"
+        payload = timed[0]["response"]
+    else:
+        payload = response.json()
+    assert payload["metrics"] == {"time_to_first_token_ms": 250.0, "mean_itl_ms": 20.0}

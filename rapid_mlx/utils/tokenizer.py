@@ -12,6 +12,7 @@ import logging
 import os
 from pathlib import Path
 
+from .._env import env_falsey
 from ..model_load_errors import (
     IncompatibleWeights,
     TokenizerLoadFailed,
@@ -24,8 +25,6 @@ from .chat_templates import DEFAULT_CHATML_TEMPLATE, NEMOTRON_CHAT_TEMPLATE
 from .model_file_guard import validate_local_model_file
 
 logger = logging.getLogger(__name__)
-
-_FALSE_ENV_VALUES = frozenset({"0", "false", "no", "off"})
 
 
 def apply_remote_code_policy(
@@ -41,8 +40,7 @@ def apply_remote_code_policy(
     configured = tokenizer_config is not None
     config = dict(tokenizer_config or {})
     requested = bool(config.get("trust_remote_code", True))
-    raw = os.environ.get("RAPID_MLX_TRUST_REMOTE_CODE")
-    if raw is not None and raw.strip().lower() in _FALSE_ENV_VALUES:
+    if env_falsey("RAPID_MLX_TRUST_REMOTE_CODE"):
         config["trust_remote_code"] = False
         return config, False
     return (config if configured else None), requested

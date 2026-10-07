@@ -2317,6 +2317,26 @@
     "suffix_decoding_tier": "unknown",
     "min_memory_gb": 32
   },
+  "embeddinggemma-2-bf16": {
+    "hf_path": "mlx-community/embeddinggemma-2-bf16",
+    "modality": "embedding",
+    "tool_call_parser": null,
+    "reasoning_parser": null,
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": false
+  },
+  "embeddinggemma-2-4bit": {
+    "hf_path": "mlx-community/embeddinggemma-2-4bit",
+    "modality": "embedding",
+    "tool_call_parser": null,
+    "reasoning_parser": null,
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": false
+  },
   "embeddinggemma-300m-6bit": {
     "hf_path": "mlx-community/embeddinggemma-300m-6bit",
     "modality": "embedding",

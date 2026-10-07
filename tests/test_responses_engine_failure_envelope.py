@@ -2291,3 +2291,80 @@ def test_nonstream_failure_with_unprintable_exception_is_still_counted(monkeypat
     finally:
         holder.cleanup()
     assert [(c["result"], c["error_class"]) for c in calls] == [("failed", "other")]
+
+
+@pytest.mark.parametrize("second_answers", [True, False])
+def test_transparent_retry_omits_timing_but_preserves_speculative_metrics(
+    monkeypatch, second_answers
+):
+    class TimedEngine(_DeepSeekStopThenOutcomeEngine):
+        async def stream_chat(self, messages, **kwargs):
+            async for output in super().stream_chat(messages, **kwargs):
+                if output.finished:
+                    output.timing_metrics = {
+                        "time_to_first_token_ms": 25.0,
+                        "mean_itl_ms": 5.0,
+                    }
+                    output.spec_decode_metrics = {"verify_calls": 2}
+                yield output
+
+    holder = _build_client(monkeypatch, lambda: TimedEngine(second_answers))
+    try:
+        from rapid_mlx.config import get_config
+
+        get_config().tool_call_parser = "deepseek_v4_0731"
+        response = holder.client.post(
+            "/v1/responses",
+            json={
+                **PAYLOAD,
+                "stream": True,
+                "tools": _DEEPSEEK_CODEX_TOOLS,
+                "input": _DEEPSEEK_CODEX_INPUT,
+            },
+            headers=HEADERS,
+        )
+        events = _parse_sse(response.text)
+        terminal = [
+            data["response"]
+            for name, data in events
+            if name in {"response.completed", "response.failed"}
+        ]
+        assert holder.engine.calls == 2
+        assert len(terminal) == 1
+        assert terminal[0]["metrics"] == {
+            "speculative_decoding": {
+                "verify_calls": 2,
+                "drafted_by_depth": [],
+                "accepted_by_depth": [],
+                "correction_tokens": 0,
+                "bonus_tokens": 0,
+            }
+        }
+    finally:
+        holder.cleanup()
+
+
+def test_failed_response_omits_single_attempt_timing(monkeypatch):
+    class TimedEngine(_DeepSeekStopThenOutcomeEngine):
+        async def stream_chat(self, messages, **kwargs):
+            async for output in super().stream_chat(messages, **kwargs):
+                if output.finished:
+                    output.timing_metrics = {"time_to_first_token_ms": 25.0}
+                yield output
+
+    holder = _build_client(monkeypatch, TimedEngine)
+    try:
+        response = holder.client.post(
+            "/v1/responses", json={**PAYLOAD, "stream": True}, headers=HEADERS
+        )
+        terminal = [
+            data["response"]
+            for name, data in _parse_sse(response.text)
+            if name == "response.failed"
+        ]
+        assert holder.engine.calls == 1
+        assert len(terminal) == 1
+        assert terminal[0]["error"]["code"] == "model_no_final_answer"
+        assert "metrics" not in terminal[0]
+    finally:
+        holder.cleanup()

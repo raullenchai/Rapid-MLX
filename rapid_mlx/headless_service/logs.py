@@ -39,6 +39,22 @@ def _log_paths(label: str, user: str | None) -> tuple[Path, Path] | None:
     return None
 
 
+def _configured_log_file(label: str) -> str | None:
+    """The ``--log-file`` in the active service config, if readable."""
+    from .config import load_config
+    from .install import _plist_path, log_file_from_serve_args
+    from .plist import parse_plist
+
+    try:
+        program = parse_plist(_plist_path(label).read_bytes()).get(
+            "ProgramArguments", []
+        )
+        config_path = Path(program[program.index("--config") + 1])
+        return log_file_from_serve_args(load_config(config_path).serve_args)
+    except Exception:
+        return None
+
+
 def logs_command(args) -> int:
     label = getattr(args, "label", None) or DEFAULT_LABEL
     user = getattr(args, "service_user", None)
@@ -55,6 +71,18 @@ def logs_command(args) -> int:
         return 1
 
     out_path, err_path = paths
+    target = _configured_log_file(label)
+    if target == "/dev/null":
+        print(
+            "note: the service discards server output (--log-file /dev/null); "
+            "the logs below contain only the service runtime's own messages."
+        )
+    elif target is not None and target not in ("-", "/dev/stderr", "/dev/stdout"):
+        print(
+            f"note: the service writes server output to {target} "
+            "(--log-file); the logs below contain only the service runtime's "
+            "own messages."
+        )
     if follow:
         try:
             subprocess.run(["tail", "-F", str(out_path), str(err_path)], check=True)

@@ -25,8 +25,9 @@ import sys
 import threading
 import urllib.error
 from collections.abc import Callable
-from typing import NoReturn
+from typing import Any, NoReturn
 
+from rapid_mlx._env import env_truthy
 from rapid_mlx.cli_parser import (  # noqa: F401 - re-exported CLI API
     _add_pflash_args,
     _add_video_job_args,
@@ -173,6 +174,46 @@ def _configure_bootstrap_logging(log_level: str) -> None:
     # explicit root level still honors the serve flag.
     logging.basicConfig(level=level)
     logging.getLogger().setLevel(level)
+
+
+_SERVE_LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
+LOG_LEVEL_ENV_VAR = "RAPID_MLX_LOG_LEVEL"
+
+
+def _resolve_serve_log_level(flag_value: str | None) -> str:
+    """``--log-level`` wins, then ``RAPID_MLX_LOG_LEVEL``, then INFO."""
+    if flag_value is not None:
+        return flag_value
+    raw = os.environ.get(LOG_LEVEL_ENV_VAR, "").strip()
+    if not raw:
+        return "INFO"
+    level = raw.upper()
+    if level not in _SERVE_LOG_LEVELS:
+        print(
+            f"error: {LOG_LEVEL_ENV_VAR}={raw!r} is not one of "
+            f"{', '.join(_SERVE_LOG_LEVELS)} (case-insensitive)",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    return level
+
+
+def _log_disk_cache_policy(args, logger) -> None:
+    """Report ``--disable-disk-caches`` and the explicit settings it overrules."""
+    from rapid_mlx import disk_caches
+
+    source = disk_caches.source()
+    if source is None:
+        return
+    logger.info(
+        "Disk caches disabled by %s: no prefix-cache snapshot, KV checkpoints "
+        "or vision prefix-cache disk tier is written",
+        source,
+    )
+    for setting in disk_caches.overruled_settings(
+        kv_disk_checkpoint_interval=getattr(args, "kv_disk_checkpoint_interval", 0) or 0
+    ):
+        logger.warning("%s ignored: disk caches disabled by %s", setting, source)
 
 
 def _auth_feature_str(argv_api_key: str | None) -> str | None:
@@ -1334,8 +1375,12 @@ def _load_embedding_model_or_exit(args, load_fn) -> None:
     machinery.
     """
     from .embedding import require_mlx_embeddings_or_exit
+    from .embedding_backend import is_native_embedding_model
 
-    require_mlx_embeddings_or_exit()
+    if is_native_embedding_model(args.embedding_model):
+        require_mlx_embeddings_or_exit(args.embedding_model)
+    else:
+        require_mlx_embeddings_or_exit()
 
     original_embed = args.embedding_model
     resolved_embed, did_resolve = _resolve_embedding_alias(original_embed)
@@ -5172,7 +5217,20 @@ def serve_command(args):
     import os
     import sys
 
+    from rapid_mlx import disk_caches, log_file
     from rapid_mlx.runtime import optional_runtime
+
+    args.log_level = _resolve_serve_log_level(getattr(args, "log_level", None))
+    try:
+        log_target, log_source = log_file.resolve_validated(
+            getattr(args, "log_file", None)
+        )
+        if log_target is not None and log_source is not None:
+            log_file.apply(log_target, log_source)
+    except log_file.LogFileError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(2) from None
+    disk_caches.configure(getattr(args, "disable_disk_caches", False))
 
     optional_runtime.set_assume_yes(getattr(args, "yes", False))
 
@@ -5309,8 +5367,12 @@ def serve_command(args):
     # the base install (no ``[embeddings]`` extra) keeps booting.
     if getattr(args, "embedding_model", None):
         from .embedding import require_mlx_embeddings_or_exit
+        from .embedding_backend import is_native_embedding_model
 
-        require_mlx_embeddings_or_exit()
+        if is_native_embedding_model(args.embedding_model):
+            require_mlx_embeddings_or_exit(args.embedding_model)
+        else:
+            require_mlx_embeddings_or_exit()
 
     # Resolve speculative intent before selecting the final serving lane.
     # This lets an explicit --mllm suppress an alias-owned MTP default while
@@ -5757,6 +5819,7 @@ def serve_command(args):
 
     logger = logging.getLogger(__name__)
     uvicorn_log_level = server.configure_logging(args.log_level)
+    _log_disk_cache_policy(args, logger)
 
     # Validate tool calling arguments
     if args.enable_auto_tool_choice and not args.tool_call_parser:
@@ -10914,10 +10977,16 @@ def _spawn_chat_server(
     log_handle=None,
     disable_prefix_cache: bool = False,
     context_length: int | None = None,
+    disable_disk_caches: bool = False,
+    log_target: str | None = None,
 ) -> tuple[object, str]:
     """Spawn a `serve` subprocess on an ephemeral port for chat REPL use.
 
     Returns (Popen handle, base_url).
+
+    With ``log_target`` (``--log-file`` / ``RAPID_MLX_LOG_FILE``) the server
+    writes its own output there and inherits this terminal; ``log_path`` stays
+    empty and is removed at teardown.
 
     ``register_in`` is an optional list (typically the chat REPL's
     ``_active_procs``). When provided, the new ``Popen`` is appended to it
@@ -10961,16 +11030,20 @@ def _spawn_chat_server(
         "127.0.0.1",
         "--port",
         str(port),
-        "--log-level",
-        "WARNING",
     ]
+    # The REPL owns the terminal, so the server is quiet unless the operator
+    # chose a level through RAPID_MLX_LOG_LEVEL.
+    if not os.environ.get(LOG_LEVEL_ENV_VAR, "").strip():
+        cmd.extend(["--log-level", "WARNING"])
     if served_name and served_name != model:
         cmd.extend(["--served-model-name", served_name])
     if disable_prefix_cache:
         cmd.append("--disable-prefix-cache")
+    if disable_disk_caches:
+        cmd.append("--disable-disk-caches")
     if context_length is not None:
         cmd.extend(["--context-length", str(context_length)])
-    log = open(log_path, "w")  # noqa: SIM115 — kept open for proc lifetime
+    log = open(log_path, "w") if log_target is None else None  # noqa: SIM115 — kept open for proc lifetime
     # Tell the child main() that the parent already gated (or that this is
     # an internal spawn, where prompting would deadlock anyway because the
     # child stdin is not a TTY). Without this, the child's B2 gate would
@@ -10998,6 +11071,10 @@ def _spawn_chat_server(
     # spawner owns the watchdog relationship for the spawn it just
     # created — overwrite is correct.
     child_env["RAPID_MLX_WATCHDOG_PPID"] = str(os.getpid())
+    if log_target is not None:
+        from rapid_mlx import log_file
+
+        child_env[log_file.ENV_VAR] = log_target
     # Atomic critical section: block SIGTERM/SIGINT delivery around
     # the whole ``Popen()`` + register + attribute-set + ``release()``
     # sequence. We use ``pthread_sigmask(SIG_BLOCK, ...)`` so the
@@ -11054,7 +11131,7 @@ def _spawn_chat_server(
             proc = subprocess.Popen(  # noqa: S603
                 cmd,
                 stdout=log,
-                stderr=subprocess.STDOUT,
+                stderr=subprocess.STDOUT if log is not None else None,
                 start_new_session=True,
                 env=child_env,
                 # Codex pr_validate r3 BLOCKING: clear the inherited
@@ -11068,7 +11145,8 @@ def _spawn_chat_server(
             # Popen raised before constructing the child — the log handle
             # would otherwise leak. Re-raise after closing. The ``finally``
             # below still restores the signal mask / handlers.
-            log.close()
+            if log is not None:
+                log.close()
             raise
         # Register first so a SIGTERM landing between here and the caller's
         # next statement still tears the child down.
@@ -11688,6 +11766,24 @@ def _recover_failed_chat_turn(messages: list[dict], turn_start: int) -> None:
         del messages[turn_start:]
 
 
+def _chat_server_log_target(args) -> str | None:
+    """The validated ``--log-file`` target for the server ``chat`` spawns.
+
+    Attaching to a running server (``--base-url`` / ``--port``) starts none,
+    so an unusable target is ignored there instead of ending the session.
+    """
+    from rapid_mlx import log_file
+
+    try:
+        target, _ = log_file.resolve_validated(getattr(args, "log_file", None))
+    except log_file.LogFileError as exc:
+        if getattr(args, "base_url", None) or getattr(args, "port", None) is not None:
+            return None
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(2)
+    return target
+
+
 def chat_command(args):
     """Interactive REPL chat with a model.
 
@@ -11700,6 +11796,7 @@ def chat_command(args):
     import signal
     import subprocess
 
+    from rapid_mlx import log_file
     from rapid_mlx._tempfile_safe import managed_tempfile_path
     from rapid_mlx.chat_render import supports_rich_output, terminal_safe_text
 
@@ -11707,6 +11804,12 @@ def chat_command(args):
     proc = None
     log_path: str | None = None
     mcp_runtime = None
+    server_log_target = _chat_server_log_target(args)
+    server_spawn_kwargs: dict[str, Any] = {}
+    if getattr(args, "disable_disk_caches", False):
+        server_spawn_kwargs["disable_disk_caches"] = True
+    if server_log_target is not None:
+        server_spawn_kwargs["log_target"] = server_log_target
     # Tracks every spawned server (initial + every /model candidate) so
     # the SIGTERM/atexit cleanup tears down in-flight candidates too —
     # not just the bound ``proc``. A SIGTERM landing while a /model
@@ -11947,11 +12050,16 @@ def chat_command(args):
             prefix="rapid-mlx-chat-", suffix=".log"
         ) as _log_handle:
             log_path = _log_handle.path
-            print(f"\n  Starting server {DIM}(log: {log_path}){RESET} ...")
+            _shown_log = (
+                log_file.describe(server_log_target)
+                if server_log_target is not None
+                else log_path
+            )
+            print(f"\n  Starting server {DIM}(log: {_shown_log}){RESET} ...")
             # If main() resolved an alias, expose the alias as the API model name
             # so the chat request body matches what the user typed.
             original = getattr(args, "_original_alias", None)
-            privacy_kwargs = (
+            privacy_kwargs: dict[str, Any] = (
                 {"disable_prefix_cache": True}
                 if getattr(args, "disable_prefix_cache", False)
                 else {}
@@ -11973,6 +12081,7 @@ def chat_command(args):
                         else {}
                     ),
                     **privacy_kwargs,
+                    **server_spawn_kwargs,
                 )
             finally:
                 _telemetry_chat_auto_selected = False
@@ -12243,8 +12352,7 @@ def chat_command(args):
         #     stdin. ``confirm_or_abort`` self-skips again internally
         #     but skipping ``estimate_repo_size_bytes`` saves the wait.
         if "/" in resolved and not os.path.exists(resolved):
-            _env_val = os.environ.get("RAPID_MLX_AUTO_PULL", "").strip().lower()
-            _auto_yes = _env_val in {"1", "true", "yes"}
+            _auto_yes = env_truthy("RAPID_MLX_AUTO_PULL")
             _interactive = sys.stdin.isatty()
             if not _auto_yes and _interactive:
                 from rapid_mlx._download_gate import (
@@ -12324,13 +12432,18 @@ def chat_command(args):
             prefix="rapid-mlx-chat-", suffix=".log"
         ) as _new_log_handle:
             new_log_path = _new_log_handle.path
-            print(f"  Starting server {DIM}(log: {new_log_path}){RESET} ...")
+            _shown_log = (
+                log_file.describe(server_log_target)
+                if server_log_target is not None
+                else new_log_path
+            )
+            print(f"  Starting server {DIM}(log: {_shown_log}){RESET} ...")
             # ``register_in=_active_procs`` makes the candidate visible to
             # ``_cleanup`` *inside* ``_spawn_chat_server`` — before the
             # readiness wait, before any further Python statement runs in
             # this scope. A SIGTERM/Ctrl-C during the (possibly multi-second)
             # load tears the child down via the cleanup walk.
-            privacy_kwargs = (
+            privacy_kwargs: dict[str, Any] = (
                 {"disable_prefix_cache": True}
                 if getattr(args, "disable_prefix_cache", False)
                 else {}
@@ -12347,6 +12460,7 @@ def chat_command(args):
                     else {}
                 ),
                 **privacy_kwargs,
+                **server_spawn_kwargs,
             )
         try:
             _wait_for_chat_server(new_base_url, new_proc, timeout_s=args.ready_timeout)
@@ -13035,8 +13149,8 @@ def agents_command(args):
             # User specified model — look up *that* model's context window
             context_length = fetch_context_window(base_url, model_id)
 
-        # Claude Code, Continue, DSH and pi have first-class setup flows. They
-        # preview an exact diff, require consent, back up existing config,
+        # Claude Code, Continue, DSH, pi and Qwen Code have first-class setup
+        # flows. They preview an exact diff, require consent, back up existing config,
         # write atomically, and verify the server afterwards. The generic
         # profile writer below still lacks the diff/consent/backup half, but
         # it does honour --dry-run, so a preview never writes on either path.
@@ -13071,6 +13185,7 @@ def agents_command(args):
                     context_length=context_length,
                     supports_reasoning=supports_reasoning,
                     emit_telemetry=not args.dry_run,
+                    agent_version=args.agent_version,
                 )
             except (OSError, ValueError) as exc:
                 print(f"\n  {profile.display_name} setup failed: {exc}\n")
@@ -13091,7 +13206,7 @@ def agents_command(args):
             if plan.changed:
                 try:
                     apply_setup_plan(plan)
-                except RuntimeError as exc:
+                except (OSError, RuntimeError) as exc:
                     print(f"\n  {profile.display_name} setup failed: {exc}\n")
                     sys.exit(1)
                 print(f"\n  Configured {profile.display_name} at {plan.path}.")
@@ -13877,6 +13992,21 @@ def main():
     # Systematic serve-flag passthrough for ``share`` via the standard ``--``
     # end-of-options separator — see ``_parse_args_with_share_passthrough``.
     args = _parse_args_with_share_passthrough(parser, sys.argv[1:])
+    if getattr(args, "disable_version_check", False):
+        # The environment carries the opt-out to every server this command starts.
+        os.environ["RAPID_MLX_DISABLE_VERSION_CHECK"] = "1"
+    if getattr(args, "json", False):
+        from rapid_mlx import log_file
+
+        _log_target, _log_source = log_file.resolve(getattr(args, "log_file", None))
+        if _log_target == log_file.STDOUT:
+            print(
+                f"error: {_log_source}=- sends log output to stdout, which "
+                "--json reserves for its JSON output. Use a file path or "
+                "/dev/stderr instead.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
     # A missing required positional normally makes argparse print the entire
     # serve help (dozens of expert flags) before its one actionable error.
     # Keep the positional optional at parse time so this first-run mistake gets
@@ -13935,9 +14065,8 @@ def main():
     try:
         from rapid_mlx._banner import render_banner, should_show_banner
 
-        _no_banner = getattr(args, "no_banner", False) or (
-            os.environ.get("RAPID_MLX_NO_BANNER", "").strip().lower()
-            in {"1", "true", "yes"}
+        _no_banner = getattr(args, "no_banner", False) or env_truthy(
+            "RAPID_MLX_NO_BANNER"
         )
         if should_show_banner(
             command=getattr(args, "command", None),
@@ -14249,8 +14378,7 @@ def main():
         # without touching the HF API. ``confirm_or_abort`` re-checks
         # both internally; we mirror them here so we can skip the size
         # estimate as well.
-        _env_val = os.environ.get("RAPID_MLX_AUTO_PULL", "").strip().lower()
-        _auto_yes = _env_val in {"1", "true", "yes"}
+        _auto_yes = env_truthy("RAPID_MLX_AUTO_PULL")
         _interactive = sys.stdin.isatty()
         if not _auto_yes and _interactive:
             from rapid_mlx._download_gate import (
