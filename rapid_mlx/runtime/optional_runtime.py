@@ -125,6 +125,12 @@ def optional_extra_install_hint(
     status: OptionalRuntimeStatus = "absent",
 ) -> str:
     """Return consistent human-facing repair guidance for an optional extra."""
+    if is_base_runtime_extra(extra) and _running_in_desktop_sidecar():
+        return (
+            f"The {extra} runtime ships inside Rapid-MLX Desktop but is missing "
+            "or damaged in this copy. Reinstall Rapid-MLX Desktop to restore it; "
+            "do not pip-install into the bundled engine."
+        )
     command = optional_extra_repair_command(
         extra, version=version, include_paths=include_paths, status=status
     )

@@ -34,7 +34,7 @@ def test_desktop_sidecar_installs_and_smokes_computer_use_frameworks() -> None:
     script = (ROOT / "apps/rapid-mac/scripts/build-sidecar.sh").read_text()
     assert "[audio-desktop,computer-use]" in script
     assert "import ApplicationServices, Quartz" in script
-    assert 'MACHO_BASELINE_COUNT="${MACHO_BASELINE_COUNT:-194}"' in script
+    assert 'MACHO_BASELINE_COUNT="${MACHO_BASELINE_COUNT:-322}"' in script
     assert 'rm -rf "$STAGE/site-packages/PyObjCTest"' in script
     assert "-name '*.dSYM'" in script
     assert 'cp "$PYOBJC_LICENSE" "$STAGE/licenses/PyObjC-MIT.txt"' in script

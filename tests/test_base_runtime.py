@@ -92,3 +92,19 @@ def test_python_upgrade_hint_points_at_a_supported_interpreter() -> None:
         f"uv tool install --force --python 3.12 'rapid-mlx=={rapid_mlx.__version__}'"
         in hint
     )
+
+
+def test_desktop_sidecar_bundled_hint_asks_for_an_app_reinstall(monkeypatch) -> None:
+    monkeypatch.setattr(optional_runtime, "_running_in_desktop_sidecar", lambda: True)
+    hint = optional_runtime.optional_extra_install_hint("video", version="1.2.3")
+    assert "Reinstall Rapid-MLX Desktop" in hint
+    assert "pip install" not in hint
+
+
+def test_desktop_sidecar_opt_in_hint_is_unchanged(monkeypatch) -> None:
+    monkeypatch.setattr(optional_runtime, "_running_in_desktop_sidecar", lambda: True)
+    _detect(monkeypatch, "pip")
+    hint = optional_runtime.optional_extra_install_hint(
+        "audio", version="1.2.3", include_paths=False
+    )
+    assert hint.startswith("Install the optional runtime with:")
