@@ -20,6 +20,7 @@ from rapid_mlx.agents import telemetry as agent_telemetry
 from rapid_mlx.agents.server_hint import (
     ServerNotRunningError,
     is_connection_refused,
+    is_local_base_url,
     start_server_command,
 )
 
@@ -99,17 +100,42 @@ def test_start_command_falls_back_to_recommended_model_for_default():
     )
 
 
-def test_start_command_without_recommendation_uses_placeholder_and_host():
+def test_start_command_without_recommendation_uses_placeholder():
     profile = SimpleNamespace(recommended_models=[])
     assert (
-        start_server_command(profile, "http://192.168.1.5:9000", "default")
-        == "rapid-mlx serve <model> --port 9000 --host 192.168.1.5"
+        start_server_command(profile, "http://localhost:9000", "default")
+        == "rapid-mlx serve <model> --port 9000"
+    )
+
+
+def test_start_command_binds_ipv6_loopback_explicitly():
+    # serve binds 127.0.0.1 by default; a config pointing at [::1] needs
+    # the server on the IPv6 loopback instead.
+    profile = SimpleNamespace(recommended_models=[])
+    assert (
+        start_server_command(profile, "http://[::1]:8123/v1", "m")
+        == "rapid-mlx serve m --port 8123 --host ::1"
     )
 
 
 def test_start_command_quotes_model_and_survives_unparseable_url():
     profile = SimpleNamespace(recommended_models=[])
     assert start_server_command(profile, "ftp://x", "a b") == "rapid-mlx serve 'a b'"
+
+
+@pytest.mark.parametrize(
+    "url,expected",
+    [
+        ("http://localhost:8000/v1", True),
+        ("http://127.0.0.1:8000", True),
+        ("http://[::1]:8000/v1", True),
+        ("http://192.168.1.5:8000/v1", False),
+        ("http://studio.local:8000/v1", False),
+        ("ftp://x", False),
+    ],
+)
+def test_only_local_urls_count_as_startable(url, expected):
+    assert is_local_base_url(url) is expected
 
 
 # --- verify_server ---------------------------------------------------------
@@ -120,6 +146,17 @@ def test_verify_server_refused_raises_untracked_not_running(dead_url, events):
     with pytest.raises(ServerNotRunningError, match="no server is running"):
         setup.verify_server(base_url, "default", agent="continue", timeout=1.0)
     assert events == []
+
+
+def test_verify_server_refused_remote_endpoint_is_still_a_failure(monkeypatch, events):
+    def refused(*_args, **_kwargs):
+        raise urllib.error.URLError(ConnectionRefusedError(61, "refused"))
+
+    monkeypatch.setattr(setup.urllib.request, "urlopen", refused)
+    with pytest.raises(RuntimeError, match="server is not ready") as raised:
+        setup.verify_server("http://192.168.1.5:8000/v1", "m", agent="continue")
+    assert not isinstance(raised.value, ServerNotRunningError)
+    assert events == [("configure_failed", "server_not_ready", "continue")]
 
 
 def test_verify_server_other_connection_failure_is_still_tracked(monkeypatch, events):

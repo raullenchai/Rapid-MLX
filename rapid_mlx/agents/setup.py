@@ -20,7 +20,11 @@ from rapid_mlx.agents.config_merge import (
     merge_by_id,
     merge_patch_layers,
 )
-from rapid_mlx.agents.server_hint import ServerNotRunningError, is_connection_refused
+from rapid_mlx.agents.server_hint import (
+    ServerNotRunningError,
+    is_connection_refused,
+    is_local_base_url,
+)
 from rapid_mlx.agents.telemetry import (
     track_agent_configure_failed,
 )
@@ -619,7 +623,8 @@ def verify_server(
     """Verify health and model discovery without performing inference.
 
     Raises :class:`ServerNotRunningError` (a ``RuntimeError``, not tracked here)
-    when the connection is refused; every other failure is tracked.
+    when a local server refuses the connection; every other failure, including
+    a refused remote endpoint, is tracked.
     """
     root = base_url.rstrip("/").removesuffix("/v1")
     try:
@@ -641,7 +646,7 @@ def verify_server(
         ValueError,
         json.JSONDecodeError,
     ) as exc:
-        if is_connection_refused(exc):
+        if is_connection_refused(exc) and is_local_base_url(base_url):
             # Nothing is listening yet. Whether that is a failure depends on
             # the caller (a config saved for a not-yet-started server is a
             # normal first-run order), so the caller owns the telemetry.

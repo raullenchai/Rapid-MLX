@@ -18,7 +18,9 @@ import shlex
 import urllib.error
 from typing import Any
 
-_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+# Hosts a plain ``rapid-mlx serve`` on this machine answers (it binds
+# 127.0.0.1 by default), mapped to the ``--host`` the command needs, if any.
+_LOCAL_HOSTS = {"localhost": None, "127.0.0.1": None, "::1": "::1"}
 
 
 class ServerNotRunningError(RuntimeError):
@@ -36,6 +38,21 @@ def is_connection_refused(exc: BaseException) -> bool:
     return isinstance(exc, urllib.error.URLError) and isinstance(
         exc.reason, ConnectionRefusedError
     )
+
+
+def is_local_base_url(base_url: str) -> bool:
+    """True when *base_url* names a server this machine would start itself.
+
+    A refused remote endpoint is not "not started yet": there is no single
+    local command that brings it up, so callers keep treating it as a failure.
+    """
+    from rapid_mlx.connect import _parse_base_url
+
+    try:
+        host, _port = _parse_base_url(base_url)
+    except ValueError:
+        return False
+    return host in _LOCAL_HOSTS
 
 
 def start_server_command(profile: Any, base_url: str, model_id: str) -> str:
@@ -56,8 +73,9 @@ def start_server_command(profile: Any, base_url: str, model_id: str) -> str:
     # ``serve`` picks the first free port in 8000-8009 by default; pin the one
     # the agent was configured for so the two cannot drift apart.
     parts += ["--port", str(port)]
-    if host.split("%")[0] not in _LOOPBACK_HOSTS:
-        parts += ["--host", shlex.quote(host)]
+    bind_host = _LOCAL_HOSTS.get(host)
+    if bind_host is not None:
+        parts += ["--host", bind_host]
     return " ".join(parts)
 
 
