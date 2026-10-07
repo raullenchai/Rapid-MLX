@@ -190,7 +190,10 @@ def _install_fake_tensorfold(monkeypatch, family, seen: dict) -> None:
         seen.update(steps=steps, budget=budget, tokens=tokens, window=window)
         return max(steps)
 
-    mlx_core = module("mlx.core")
+    mlx_core = module(
+        "mlx.core",
+        clear_cache=lambda: seen.update(cleared=seen.get("cleared", 0) + 1),
+    )
     module("mlx", core=mlx_core)
     module("tensorfold.families", detect=lambda _path: family)
     module(
@@ -304,7 +307,19 @@ def test_loader_follows_the_upstream_serve_construction(
     Package.setup = staticmethod(failing_setup)
     with pytest.raises(RuntimeError, match="setup failed"):
         backend_class.load(str(tmp_path), "", served_name="served")
-    assert stopped == [True]
+    assert stopped == [True] and seen["cleared"] == 1
+
+    # A failure before the app exists still hands the weights back.
+    del Package.setup
+    settings = Package.engine_settings
+    Package.engine_settings = staticmethod(
+        lambda _model: (_ for _ in ()).throw(RuntimeError("settings failed"))
+    )
+    with pytest.raises(RuntimeError, match="settings failed"):
+        backend_class.load(str(tmp_path), "", served_name="served")
+    assert seen["cleared"] == 2
+    Package.engine_settings = settings
+    Package.setup = staticmethod(lambda app, loaded, **options: None)
 
     # A family without optional hooks still loads, and fits its own context.
     del Package.setup, Package.MLX_ENV, Model.resolve_prefill_identity

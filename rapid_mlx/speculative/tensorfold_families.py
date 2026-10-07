@@ -217,54 +217,59 @@ class TensorFoldFamilyBackend(TensorFoldQwen27Backend):
             options["drafter"] = str(drafter)
             options["drafter_bits"] = profile.drafter_bits
         model, tokenizer = package.load(target, **options)
-        settings = dict(package.engine_settings(model))
-        getattr(model, "release_rounds", lambda: None)()
-        wire_resident(mx, memory_limit - PROCESS_BYTES)
-        openers, assistant = message_markers(tokenizer)
-        steps = settings.pop("prefill_steps", None) or (LaneEngine.prefill_step,)
-        step = prefill_step.choose(
-            lambda grid: LaneEngine(model, prefill_plan=PrefillPlan(grid)),
-            steps,
-            memory_limit - PROCESS_BYTES,
-            probe_tokens(tokenizer),
-            int(context_window),
-        )
-        plan = PrefillPlan(step, openers, _MIN_CHUNK, assistant)
-        engine_factory = functools.partial(
-            LaneEngine, prefill_plan=plan, prefill_pass=8, pass_cache=16 * _GIB
-        )
-        resolve_prefill = getattr(model, "resolve_prefill_identity", None)
-        if resolve_prefill is not None:
-            resolve_prefill()
-        app = ChatApp(
-            model,
-            tokenizer,
-            served_name=served_name,
-            engine_factory=engine_factory,
-            lanes=1,
-            max_rows=int(settings.get("max_rows", 16)),
-            max_draft=int(settings.get("max_draft", 32)),
-            default_max_tokens=int(max_tokens),
-            context_window=int(context_window),
-            enable_thinking=True,
-            checkpoint_slots=0,
-            checkpoint_budget_bytes=None,
-            memory_budget_bytes=memory_limit,
-            fit_context=not context_window,
-            use_proposer=True,
-            snapshot_dir=None,
-            model_id=f"{target.resolve()}|tensorfold={SUPPORTED_VERSION}",
-            model_dir=target,
-        )
-        backend = cls(app)
-        hook = getattr(package, "setup", None)
-        if hook is not None:
-            try:
+        backend = None
+        try:
+            settings = dict(package.engine_settings(model))
+            getattr(model, "release_rounds", lambda: None)()
+            wire_resident(mx, memory_limit - PROCESS_BYTES)
+            openers, assistant = message_markers(tokenizer)
+            steps = settings.pop("prefill_steps", None) or (LaneEngine.prefill_step,)
+            step = prefill_step.choose(
+                lambda grid: LaneEngine(model, prefill_plan=PrefillPlan(grid)),
+                steps,
+                memory_limit - PROCESS_BYTES,
+                probe_tokens(tokenizer),
+                int(context_window),
+            )
+            plan = PrefillPlan(step, openers, _MIN_CHUNK, assistant)
+            engine_factory = functools.partial(
+                LaneEngine, prefill_plan=plan, prefill_pass=8, pass_cache=16 * _GIB
+            )
+            resolve_prefill = getattr(model, "resolve_prefill_identity", None)
+            if resolve_prefill is not None:
+                resolve_prefill()
+            app = ChatApp(
+                model,
+                tokenizer,
+                served_name=served_name,
+                engine_factory=engine_factory,
+                lanes=1,
+                max_rows=int(settings.get("max_rows", 16)),
+                max_draft=int(settings.get("max_draft", 32)),
+                default_max_tokens=int(max_tokens),
+                context_window=int(context_window),
+                enable_thinking=True,
+                checkpoint_slots=0,
+                checkpoint_budget_bytes=None,
+                memory_budget_bytes=memory_limit,
+                fit_context=not context_window,
+                use_proposer=True,
+                snapshot_dir=None,
+                model_id=f"{target.resolve()}|tensorfold={SUPPORTED_VERSION}",
+                model_dir=target,
+            )
+            backend = cls(app)
+            hook = getattr(package, "setup", None)
+            if hook is not None:
                 hook(app, model, **options)
-            except BaseException:
-                # The app already runs its scheduler; do not leak it.
+        except BaseException:
+            # Startup failed with the weights already allocated: stop an app
+            # that runs its scheduler, then hand the memory back.
+            if backend is not None:
                 backend.close()
-                raise
+            del model
+            mx.clear_cache()
+            raise
         return backend
 
 
