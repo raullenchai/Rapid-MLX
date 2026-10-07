@@ -195,6 +195,145 @@ def test_continue_plan_reports_invalid_yaml_as_value_error(setup_paths):
         build_setup_plan("continue", "http://localhost:8000", "model")
 
 
+@pytest.fixture
+def qwen_secret_settings(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    path = tmp_path / ".qwen" / "settings.json"
+    path.parent.mkdir(parents=True)
+    existing = {
+        "modelProviders": {
+            "openai": [
+                {
+                    "id": "local-model",
+                    "name": "Old local name",
+                    "apiKey": "synthetic-managed-api-key",
+                    "custom": {"apiKey": "synthetic-nested-api-key", "keep": 42},
+                },
+                {"id": "remote", "apiKey": "synthetic-unmanaged-api-key"},
+            ],
+            "anthropic": [{"id": "other", "apiKey": "synthetic-other-api-key"}],
+        },
+        "custom": {"keep": "user-setting"},
+    }
+    path.write_text(json.dumps(existing))
+    return path, existing
+
+
+def test_qwen_preview_redacts_both_sides_without_changing_written_credentials(
+    qwen_secret_settings,
+):
+    from copy import deepcopy
+    from dataclasses import replace
+
+    path, existing = qwen_secret_settings
+    original_bytes = path.read_bytes()
+    plan = build_setup_plan("qwen-code", "http://localhost:8000/v1", "local-model")
+    original_after = deepcopy(plan.after)
+    changed_after = deepcopy(plan.after)
+    changed_after["modelProviders"]["openai"][0]["apiKey"] = "synthetic-new-api-key"
+    changed_after["modelProviders"]["openai"][0]["custom"]["apiKey"] = (
+        "synthetic-new-nested-api-key"
+    )
+    preview = replace(plan, after=changed_after).diff()
+    assert "synthetic-" not in preview
+    assert "<redacted>" in preview
+    assert "http://localhost:8000/v1" in preview
+    assert plan.before == existing
+    assert plan.after == original_after
+    assert path.read_bytes() == original_bytes
+
+    apply_setup_plan(plan)
+    written = json.loads(path.read_text())
+    providers = written["modelProviders"]
+    assert (
+        providers["openai"][0]["apiKey"]
+        == existing["modelProviders"]["openai"][0]["apiKey"]
+    )
+    assert providers["openai"][0]["custom"] == {
+        "apiKey": "synthetic-nested-api-key",
+        "keep": 42,
+    }
+    assert providers["openai"][1] == existing["modelProviders"]["openai"][1]
+    assert providers["anthropic"] == existing["modelProviders"]["anthropic"]
+    assert written["custom"] == existing["custom"]
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize("mode", ["dry-run", "accepted", "declined"])
+def test_qwen_cli_output_never_discloses_provider_credentials(
+    qwen_secret_settings, capsys, mode
+):
+    from rapid_mlx import cli
+
+    path, existing = qwen_secret_settings
+    original_bytes = path.read_bytes()
+    with (
+        patch("rapid_mlx.agents.adapter.fetch_context_window", return_value=32768),
+        patch("rapid_mlx.agents.telemetry.track_agent_configured"),
+        patch("rapid_mlx.agents.setup.confirm_plan", return_value=False) as consent,
+    ):
+        cli.agents_command(
+            SimpleNamespace(
+                agent_name="qwen-code",
+                base_url="http://localhost:8000/v1",
+                test=False,
+                setup=True,
+                model="local-model",
+                agent_version=None,
+                dry_run=mode == "dry-run",
+                yes=mode == "accepted",
+                no_check=True,
+            )
+        )
+    output = capsys.readouterr().out
+    assert "synthetic-" not in output
+    assert "<redacted>" in output
+    assert "local-model (Rapid-MLX)" in output
+    assert "http://localhost:8000/v1" in output
+    assert consent.call_count == int(mode == "declined")
+    if mode == "accepted":
+        written = json.loads(path.read_text())
+        assert (
+            written["modelProviders"]["openai"][0]["apiKey"]
+            == (existing["modelProviders"]["openai"][0]["apiKey"])
+        )
+        assert (
+            written["modelProviders"]["openai"][0]["custom"]
+            == (existing["modelProviders"]["openai"][0]["custom"])
+        )
+        assert (
+            written["modelProviders"]["openai"][1]
+            == (existing["modelProviders"]["openai"][1])
+        )
+        assert (
+            written["modelProviders"]["anthropic"]
+            == (existing["modelProviders"]["anthropic"])
+        )
+        assert written["custom"] == existing["custom"]
+        assert "Configured Qwen Code" in output
+    else:
+        assert path.read_bytes() == original_bytes
+        assert not list(path.parent.glob("settings.json.bak.*"))
+
+
+@pytest.mark.parametrize("existing", [None, {"apiKey": ""}])
+def test_qwen_preview_without_credentials_keeps_connection_changes_visible(
+    tmp_path, monkeypatch, existing
+):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    if existing is not None:
+        path = tmp_path / ".qwen" / "settings.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps(existing))
+    plan = build_setup_plan("qwen-code", "http://localhost:8000/v1", "local-model")
+    preview = plan.diff()
+    assert "local-model (Rapid-MLX)" in preview
+    assert "http://localhost:8000/v1" in preview
+    assert "contextWindowSize" in preview
+    if existing is not None:
+        assert plan.before["apiKey"] == plan.after["apiKey"] == ""
+
+
 def test_qwen_code_apply_preserves_providers_and_creates_backup(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     settings_path = tmp_path / ".qwen" / "settings.json"
