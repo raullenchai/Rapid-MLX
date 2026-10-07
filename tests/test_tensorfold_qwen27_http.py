@@ -758,6 +758,67 @@ def test_tensorfold_rejects_second_in_flight_request_with_retry_after() -> None:
     assert response.json()["error"]["code"] == "at_capacity"
 
 
+def test_nonstream_answer_stays_content_when_thinking_is_off() -> None:
+    """A template that always opens a think block must not swallow the answer."""
+    from fastapi.testclient import TestClient
+
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.speculative.dflash.server import _build_app
+    from rapid_mlx.speculative.tensorfold_qwen27_server import ProviderResult
+
+    template = (
+        "{% for m in messages %}<|user|>{{ m.content }}{% endfor %}"
+        "{% if add_generation_prompt %}<|assistant|><think>{% endif %}"
+    )
+    replies = {False: "391", True: "17 * 23</think>391"}
+
+    def generate(_model, _processor, _prompt, **kwargs):
+        return ProviderResult(replies[kwargs["enable_thinking"]], [7], 1, 4)
+
+    try:
+        app = _build_app(
+            model=None,
+            processor=SimpleNamespace(eos_token_id=99, chat_template=template),
+            runtime=SimpleNamespace(
+                algorithm="mtp",
+                drafter_repo=None,
+                target_revision="a" * 40,
+                drafter_revision=None,
+            ),
+            served_model_name="glm-tf",
+            default_max_tokens=8,
+            cors_origins=[],
+            reasoning_parser_name="glm5",
+            generate_fn=generate,
+            render_prompt_fn=lambda _p, _m, request, **_kw: "prompt",
+            generation_kwargs_fn=lambda **kw: {"max_tokens": kw["max_tokens"]},
+        )
+        client = TestClient(app)
+
+        def ask(**extra):
+            response = client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "glm-tf",
+                    "messages": [{"role": "user", "content": "17*23?"}],
+                    **extra,
+                },
+            )
+            assert response.status_code == 200, response.text
+            return response.json()["choices"][0]["message"]
+
+        for extra in ({}, {"enable_thinking": False}):
+            message = ask(**extra)
+            assert message["content"] == "391"
+            assert not message.get("reasoning_content")
+
+        thinking = ask(enable_thinking=True)
+        assert thinking["content"] == "391"
+        assert thinking["reasoning_content"] == "17 * 23"
+    finally:
+        reset_config()
+
+
 def test_http_stream_and_nonstream_use_provider_and_reject_tools() -> None:
     from fastapi.testclient import TestClient
 
