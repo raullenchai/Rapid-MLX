@@ -711,7 +711,7 @@ rapid-mlx start [profile] [--model MODEL] [--port PORT] [--host HOST]
   with a clear message.
 - **Setup.** After the endpoint is healthy, `start` prints the agent's
   connection instructions and, for the first-class profiles (`claude-code`,
-  `continue`, `deepseek-harness`), applies the same previewed/backed-up
+  `continue`, `deepseek-harness`, `pi`, `qwen-code`), applies the same previewed/backed-up
   atomic config changes as `rapid-mlx agents <name> --setup`. `--no-setup`
   prints instructions only.
 

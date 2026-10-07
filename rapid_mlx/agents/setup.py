@@ -14,7 +14,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from rapid_mlx.agents.config_merge import deep_merge, merge_patch_layers
+from rapid_mlx.agents.config_merge import (
+    deep_merge,
+    is_id_list,
+    merge_by_id,
+    merge_patch_layers,
+)
 from rapid_mlx.agents.telemetry import (
     track_agent_configure_failed,
 )
@@ -25,7 +30,7 @@ from rapid_mlx.launch import claude_code, continue_dev
 # diff preview, consent (or --yes), a timestamped backup of the existing file
 # and an atomic write. Every CLI entry point routes on this one set.
 FIRST_CLASS_SETUP_AGENTS = frozenset(
-    {"claude-code", "continue", "deepseek-harness", "pi"}
+    {"claude-code", "continue", "deepseek-harness", "pi", "qwen-code"}
 )
 
 
@@ -227,6 +232,39 @@ def _pi_profile() -> Any:
     return profile
 
 
+def _qwen_code_profile() -> Any:
+    from rapid_mlx.agents import get_profile
+
+    profile = get_profile("qwen-code")
+    assert profile is not None, "the qwen-code profile ships with rapid-mlx"
+    return profile
+
+
+def _qwen_code_settings_path(agent_version: str | None = None) -> Path:
+    """Qwen Code's settings file, resolved like the generic setup writer.
+
+    A profile in ``~/.rapid-mlx/agents`` may shadow the shipped one. This flow
+    merges a JSON settings file, so a shadowing profile of any other shape is
+    refused here rather than crashing further down.
+    """
+    from rapid_mlx.agents.adapter import _resolve_config_path
+
+    cfg = _qwen_code_profile().get_config_for_version(agent_version)
+    if (
+        cfg.type != "json"
+        or not (isinstance(cfg.path, str) and cfg.path)
+        or not (isinstance(cfg.template, str) and cfg.template)
+    ):
+        raise ValueError(
+            "the installed qwen-code profile does not describe a JSON settings "
+            "file; fix or remove its override in ~/.rapid-mlx/agents"
+        )
+    try:
+        return _resolve_config_path(cfg).resolve()
+    except RuntimeError as exc:  # a symlink loop, before Python 3.13
+        raise ValueError(f"cannot resolve the Qwen Code settings path: {exc}") from exc
+
+
 def _pi_models_path() -> Path:
     """pi's ``<agent-dir>/models.json``, honouring ``PI_CODING_AGENT_DIR``.
 
@@ -270,6 +308,7 @@ def build_setup_plan(
     supports_reasoning: bool | None = None,
     *,
     emit_telemetry: bool = True,
+    agent_version: str | None = None,
 ) -> SetupPlan:
     """Build a side-effect-free setup plan for a supported client."""
     if agent in {"claude", "claude-code"}:
@@ -430,6 +469,67 @@ def build_setup_plan(
             base_url,
             model,
         )
+    if agent == "qwen-code":
+        path = _qwen_code_settings_path(agent_version)
+        try:
+            loaded_qwen = launch_common.load_json_lenient(path)
+        except OSError:
+            if emit_telemetry:
+                track_agent_configure_failed("other", "qwen-code")
+            raise
+        except (ValueError, RecursionError) as exc:
+            # Undecodable bytes and pathological nesting are refused like any
+            # other file we cannot round-trip, never surfaced as a traceback.
+            if emit_telemetry:
+                track_agent_configure_failed("config_invalid", "qwen-code")
+            raise ValueError(f"{path} is not valid JSON: {exc}") from exc
+        if not isinstance(loaded_qwen, dict):
+            if emit_telemetry:
+                track_agent_configure_failed("config_invalid", "qwen-code")
+            raise ValueError(f"{path} must contain a JSON object")
+        profile = _qwen_code_profile()
+        template = json.loads(
+            profile.render_config(
+                base_url, model, agent_version, context_length=context_length
+            )
+        )
+        incoming_providers = (
+            template.get("modelProviders") if isinstance(template, dict) else None
+        )
+        incoming_openai: Any = (
+            incoming_providers.get("openai")
+            if isinstance(incoming_providers, dict)
+            else None
+        )
+        if not is_id_list(incoming_openai):
+            raise ValueError(
+                "the installed qwen-code profile template must define "
+                "modelProviders.openai entries with an id"
+            )
+        after = deep_merge(loaded_qwen, template)
+
+        # ``modelProviders.openai`` is an id-keyed registry shared with the
+        # user's other OpenAI-compatible endpoints. Generic setup replaces
+        # lists, so preserve existing entries and update only our model id.
+        existing_providers = loaded_qwen.get("modelProviders")
+        existing_openai = (
+            existing_providers.get("openai")
+            if isinstance(existing_providers, dict)
+            else None
+        )
+        if isinstance(existing_openai, list):
+            after["modelProviders"]["openai"] = merge_by_id(
+                existing_openai, incoming_openai
+            )
+        return SetupPlan(
+            "qwen-code",
+            "Qwen Code",
+            path,
+            loaded_qwen,
+            after,
+            base_url,
+            model,
+        )
     # Reserved for defensive callers. The CLIs only route
     # FIRST_CLASS_SETUP_AGENTS here, so this outcome is currently unreachable.
     if emit_telemetry:
@@ -447,7 +547,15 @@ def apply_setup_plan(plan: SetupPlan) -> Path:
     elif plan.format == "yaml":
         current = _load_yaml_mapping(plan.path, plan.agent)
     else:
-        current = launch_common.load_json_lenient(plan.path)
+        try:
+            current = launch_common.load_json_lenient(plan.path)
+        except (ValueError, RecursionError) as exc:
+            # The plan was built from a readable file, so one that no longer
+            # parses was edited after the preview.
+            track_agent_configure_failed("config_changed", plan.agent)
+            raise RuntimeError(
+                f"{plan.path} changed after preview; re-run --setup"
+            ) from exc
     if current != plan.before:
         track_agent_configure_failed("config_changed", plan.agent)
         raise RuntimeError(f"{plan.path} changed after preview; re-run --setup")

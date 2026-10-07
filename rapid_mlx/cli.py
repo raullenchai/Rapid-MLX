@@ -12944,8 +12944,8 @@ def agents_command(args):
             # User specified model — look up *that* model's context window
             context_length = fetch_context_window(base_url, model_id)
 
-        # Claude Code, Continue, DSH and pi have first-class setup flows. They
-        # preview an exact diff, require consent, back up existing config,
+        # Claude Code, Continue, DSH, pi and Qwen Code have first-class setup
+        # flows. They preview an exact diff, require consent, back up existing config,
         # write atomically, and verify the server afterwards. The generic
         # profile writer below still lacks the diff/consent/backup half, but
         # it does honour --dry-run, so a preview never writes on either path.
@@ -12980,6 +12980,7 @@ def agents_command(args):
                     context_length=context_length,
                     supports_reasoning=supports_reasoning,
                     emit_telemetry=not args.dry_run,
+                    agent_version=args.agent_version,
                 )
             except (OSError, ValueError) as exc:
                 print(f"\n  {profile.display_name} setup failed: {exc}\n")
@@ -13000,7 +13001,7 @@ def agents_command(args):
             if plan.changed:
                 try:
                     apply_setup_plan(plan)
-                except RuntimeError as exc:
+                except (OSError, RuntimeError) as exc:
                     print(f"\n  {profile.display_name} setup failed: {exc}\n")
                     sys.exit(1)
                 print(f"\n  Configured {profile.display_name} at {plan.path}.")
