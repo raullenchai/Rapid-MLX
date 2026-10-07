@@ -504,6 +504,16 @@ if [ -n "$GPL_FFMPEG_LIBS" ]; then
     echo "$GPL_FFMPEG_LIBS" >&2
     exit 1
 fi
+# Filenames are not enough: a statically linked FFmpeg embeds its configure
+# line. Reject any staged native binary that carries a GPL/nonfree build.
+GPL_FFMPEG_BINARIES="$(find "$STAGE" -type f \( -name '*.dylib' -o -name '*.so' -o -perm -u+x \) \
+    -not -name '*.py' -not -name '*.pyc' -not -name '*.sh' -print0 \
+    | xargs -0 grep -laE -- '--enable-(gpl|nonfree)' 2>/dev/null || true)"
+if [ -n "$GPL_FFMPEG_BINARIES" ]; then
+    echo "ERR: GPL/nonfree FFmpeg build staged in the Desktop sidecar:" >&2
+    echo "$GPL_FFMPEG_BINARIES" >&2
+    exit 1
+fi
 echo "==> no GPL FFmpeg components staged: OK"
 
 # ----- step 2.7: video encoder routing + LTX-2.5 runtime ----------------

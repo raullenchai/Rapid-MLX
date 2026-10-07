@@ -21,6 +21,7 @@ from .models.mllm import (
     process_video_input,
     save_frames_to_temp,
 )
+from .request import ClientRequestError
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +147,9 @@ class MultimodalProcessor:
                         max_frames=video_max_frames,
                     )
                     frame_paths = save_frames_to_temp(frames)
+                except ClientRequestError:
+                    # Already client-safe (e.g. a build without OpenCV).
+                    raise
                 except Exception as e:
                     raise ValueError(f"Failed to process video: {e}") from e
                 all_images.extend(frame_paths)
