@@ -173,8 +173,13 @@ def refuse_unbootable_log_file(
 ) -> None:
     """Reject a ``--log-file`` the daemon could not open when launchd boots it."""
     target = log_file_from_serve_args(serve_args)
-    if target is None or target == "-" or target.startswith("/dev/"):
+    if target is None or target in ("-", "/dev/null", "/dev/stderr", "/dev/stdout"):
         return
+    if target.startswith("/dev/"):
+        raise ServiceInstallError(
+            f"--log-file {target!r} is not a supported device target; use "
+            "/dev/null, /dev/stderr or /dev/stdout."
+        )
     if not os.path.isabs(target):
         raise ServiceInstallError(
             f"--log-file {target!r} must be an absolute path for the service."

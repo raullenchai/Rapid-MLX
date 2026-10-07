@@ -484,6 +484,9 @@ def test_service_refuses_log_files_unavailable_at_boot(tmp_path):
     )
     with pytest.raises(ServiceInstallError, match="absolute"):
         refuse_unbootable_log_file(("--log-file", "server.log"))
+    refuse_unbootable_log_file(("--log-file", "/dev/stderr"))
+    with pytest.raises(ServiceInstallError, match="supported device target"):
+        refuse_unbootable_log_file(("--log-file", "/dev/not-real"))
     with pytest.raises(ServiceInstallError, match="requires a value"):
         refuse_unbootable_log_file(("--max-num-seqs", "4", "--log-file"))
     with pytest.raises(ServiceInstallError, match="/Volumes"):
