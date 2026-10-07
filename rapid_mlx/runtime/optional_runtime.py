@@ -14,7 +14,11 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Literal, Protocol, cast
 
-from rapid_mlx.runtime.base_runtime import is_base_runtime_extra, runtime_install_spec
+from rapid_mlx.runtime.base_runtime import (
+    homebrew_runtime_hint,
+    is_base_runtime_extra,
+    runtime_install_spec,
+)
 
 OptionalExtra = Literal["vision", "video", "audio", "image"]
 OptionalRuntimeStatus = Literal["absent", "broken", "incompatible"]
@@ -102,11 +106,7 @@ def optional_extra_repair_command(
         return f"sudo pipx install --global --force {shlex.quote(pinned)}"
     if method == "brew":
         if is_base_runtime_extra(extra):
-            return (
-                "The Homebrew build does not carry this runtime. Switch to an "
-                "isolated tool install with:\n"
-                f"    brew uninstall rapid-mlx && uv tool install {shlex.quote(pinned)}"
-            )
+            return homebrew_runtime_hint(extra, version or __version__)
         return (
             "The Homebrew build cannot add Python optional extras in place. "
             "Switch to an isolated tool install with:\n"
@@ -134,6 +134,8 @@ def optional_extra_install_hint(
     command = optional_extra_repair_command(
         extra, version=version, include_paths=include_paths, status=status
     )
+    if is_base_runtime_extra(extra) and command.startswith("The Homebrew formula"):
+        return command
     if is_base_runtime_extra(extra):
         return (
             f"The {extra} runtime ships with rapid-mlx but is missing or damaged "

@@ -59,16 +59,36 @@ def test_opt_in_hint_is_unchanged(monkeypatch) -> None:
     )
 
 
-def test_brew_bundled_repair_switches_to_an_isolated_base_install(
-    monkeypatch,
-) -> None:
+@pytest.mark.parametrize("extra", ["vision", "image", "video"])
+def test_brew_bundled_hint_explains_the_text_only_formula(monkeypatch, extra) -> None:
     _detect(monkeypatch, "brew")
-    command = optional_runtime.optional_extra_repair_command("image", version="1.2.3")
-    assert "does not carry this runtime" in command
-    assert "optional extras" not in command
-    assert command.endswith(
-        "brew uninstall rapid-mlx && uv tool install rapid-mlx==1.2.3"
+    expected = (
+        "The Homebrew formula includes the text runtime but omits the vision, "
+        f"image and video runtimes. To use the {extra} runtime, switch to the "
+        "full PyPI installation:\n"
+        "    brew uninstall rapid-mlx && uv tool install 'rapid-mlx==1.2.3'"
     )
+    assert (
+        optional_runtime.optional_extra_install_hint(extra, version="1.2.3") == expected
+    )
+    assert (
+        optional_runtime.optional_extra_repair_command(extra, version="1.2.3")
+        == expected
+    )
+    assert "missing or damaged" not in expected
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("/opt/homebrew/Cellar/rapid-mlx/0.15.8/libexec/bin/python", True),
+        ("/opt/homebrew/opt/rapid-mlx/libexec/bin/python", True),
+        ("/opt/homebrew/Cellar/python@3.14/3.14.1/bin/python3.14", False),
+        ("/Users/u/.venv/bin/python", False),
+    ],
+)
+def test_is_homebrew_interpreter(path, expected) -> None:
+    assert base_runtime.is_homebrew_interpreter(path) is expected
 
 
 def test_bundled_prompt_offers_a_repair_without_a_size(monkeypatch) -> None:

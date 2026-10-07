@@ -86,8 +86,8 @@ while an absent runtime uses an ordinary pinned install. Prompt telemetry keeps
 an explicit no distinct from timeout/EOF/read failure and Ctrl-C, and Ctrl-C
 retains normal interrupt exit behavior after the failure is recorded.
 
-Homebrew builds its own formula and does not provide Python extras or, unless
-the formula carries them, the vision/image/video runtimes.
+The Homebrew formula ships the text runtime only: it omits the vision, image
+and video runtimes and does not provide Python extras.
 The formula is built as a Homebrew-managed virtualenv, but optional PyPI
 dependencies are not formula resources and an in-place pip mutation is not a
 supported, upgrade-stable repair. Switch to an isolated tool install instead:

@@ -44,3 +44,24 @@ def python_upgrade_hint() -> str:
         "Reinstall rapid-mlx on Python 3.11 or newer, for example:\n"
         f"    uv tool install --force --python 3.12 'rapid-mlx=={__version__}'"
     )
+
+
+def homebrew_runtime_hint(extra: str, version: str) -> str:
+    """Guidance for a bundled runtime on the text-only Homebrew formula.
+
+    Homebrew builds every resource from source, so its formula ships the text
+    runtime and omits the vision, image and video runtimes on purpose. Nothing
+    is damaged there; the user must move to the full PyPI installation.
+    """
+    return (
+        "The Homebrew formula includes the text runtime but omits the vision, "
+        f"image and video runtimes. To use the {extra} runtime, switch to the "
+        "full PyPI installation:\n"
+        f"    brew uninstall rapid-mlx && uv tool install 'rapid-mlx=={version}'"
+    )
+
+
+def is_homebrew_interpreter(path: str) -> bool:
+    """Whether *path* is the Homebrew formula's private interpreter."""
+    lowered = path.lower()
+    return "/cellar/rapid-mlx/" in lowered or "/opt/rapid-mlx/libexec/" in lowered
