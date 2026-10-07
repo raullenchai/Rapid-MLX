@@ -6,6 +6,98 @@ private let communityBenchmarkLeaderboardURL = URL(
     string: "https://rapidmlx.com/leaderboard"
 )!
 
+/// Stable localization keys for interpolated copy shared by the experimental
+/// workspaces. Keeping formatting here lets tests exercise the same production
+/// boundary with a compiled language bundle.
+enum ExperimentalSurfaceCopy {
+    private static func format(
+        _ key: String,
+        fallback: String,
+        bundle: Bundle,
+        _ arguments: CVarArg...
+    ) -> String {
+        String(
+            format: bundle.localizedString(forKey: key, value: fallback, table: nil),
+            arguments: arguments
+        )
+    }
+
+    static func videoProgress(_ progress: Int, bundle: Bundle = .main) -> String {
+        format("experimental.video.generating", fallback: "Generating · %1$d%%", bundle: bundle, progress)
+    }
+
+    static func videoMemory(minimum: Int, available: Int, bundle: Bundle = .main) -> String {
+        format(
+            "experimental.video.memory_requirement",
+            fallback: "Needs at least %1$d GB unified memory; this Mac has %2$d GB.",
+            bundle: bundle,
+            minimum,
+            available
+        )
+    }
+
+    static func benchmarkRounds(_ rounds: Int, bundle: Bundle = .main) -> String {
+        format("experimental.benchmark.rounds", fallback: "%1$d rounds", bundle: bundle, rounds)
+    }
+
+    static func cuaStep(_ step: Int, instruction: String, bundle: Bundle = .main) -> String {
+        format("experimental.cua.step", fallback: "Step %1$d: %2$@", bundle: bundle, step, instruction)
+    }
+
+    static func cuaStepFinished(_ step: Int, bundle: Bundle = .main) -> String {
+        format("experimental.cua.step_finished", fallback: "Step %1$d finished", bundle: bundle, step)
+    }
+
+    static func cuaSwitched(to destination: String, bundle: Bundle = .main) -> String {
+        format("experimental.cua.switched", fallback: "Switched to %1$@", bundle: bundle, destination)
+    }
+
+    static func cuaRun(_ status: String, bundle: Bundle = .main) -> String {
+        format("experimental.cua.run", fallback: "Run %1$@", bundle: bundle, status)
+    }
+
+    static func cuaAppUnavailable(hint: String, bundle: Bundle = .main) -> String {
+        format(
+            "experimental.cua.app_unavailable",
+            fallback: "The app is no longer open. Open it, then try again.%1$@",
+            bundle: bundle,
+            hint
+        )
+    }
+
+    static func cuaWindowUnavailable(hint: String, bundle: Bundle = .main) -> String {
+        format(
+            "experimental.cua.window_unavailable",
+            fallback: "Rapid could not find the app item needed for this task. Open it, then try again.%1$@",
+            bundle: bundle,
+            hint
+        )
+    }
+
+    static func cuaTargetsUnavailable(
+        message: String,
+        hint: String,
+        bundle: Bundle = .main
+    ) -> String {
+        format(
+            "experimental.cua.targets_unavailable",
+            fallback: "Rapid could not find the apps needed for this task: %1$@%2$@",
+            bundle: bundle,
+            message,
+            hint
+        )
+    }
+
+    static func cuaTargetsUnavailable(error: String, bundle: Bundle = .main) -> String {
+        format(
+            "experimental.cua.targets_unavailable_retry",
+            fallback: "Rapid could not find the apps needed for this task: %1$@ Try again.",
+            bundle: bundle,
+            error
+        )
+    }
+}
+
 struct CommunityBenchmarkModel: Identifiable, Hashable {
     let entry: ModelEntry
     let task: ModelTask
@@ -543,7 +635,7 @@ struct CommunityBenchmarkResult: Decodable, Identifiable {
             }
             // Unreachable for summaries produced by `summarize`, which drops
             // cases without a task-appropriate metric.
-            return String(localized: "\(rounds) rounds")
+            return ExperimentalSurfaceCopy.benchmarkRounds(rounds)
         }
 
         static func formatMilliseconds(_ value: Double) -> String {

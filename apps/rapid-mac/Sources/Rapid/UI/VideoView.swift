@@ -330,7 +330,7 @@ struct VideoView: View {
     private func jobStatusTitle(_ job: VideoJob) -> String {
         switch job.status {
         case .queued: return String(localized: "Waiting to generate")
-        case .inProgress: return String(localized: "Generating · \(job.progress)%")
+        case .inProgress: return ExperimentalSurfaceCopy.videoProgress(job.progress)
         case .completed: return viewModel.isLoadingPreview ? String(localized: "Loading preview…") : String(localized: "Video ready")
         case .failed: return String(localized: "Generation failed")
         }
