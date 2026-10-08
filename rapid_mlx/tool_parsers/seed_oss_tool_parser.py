@@ -357,6 +357,33 @@ class SeedOssToolParser(ToolParser):
             return ""
         return full_text[len(self._safe_content_prefix(full_text)) :]
 
+    def finalize_legacy_raw_stream(
+        self, model_output: str, request: dict[str, Any] | None = None
+    ) -> dict[str, Any] | None:
+        """Emit complete calls that followed a structurally malformed close."""
+        if self.in_function or not self.json_closed:
+            return None
+        complete = self.extract_tool_calls(model_output, request)
+        already = len(self.prev_tool_call_arr)
+        if not complete.tools_called or len(complete.tool_calls) <= already:
+            return None
+        fresh = complete.tool_calls[already:]
+        self.prev_tool_call_arr.extend(fresh)
+        return {
+            "tool_calls": [
+                {
+                    "index": index,
+                    "id": call["id"],
+                    "type": "function",
+                    "function": {
+                        "name": call["name"],
+                        "arguments": call["arguments"],
+                    },
+                }
+                for index, call in enumerate(fresh, start=already)
+            ]
+        }
+
     def extract_tool_calls_streaming(
         self,
         previous_text: str,

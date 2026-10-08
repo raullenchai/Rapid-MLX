@@ -15,6 +15,21 @@ from rapid_mlx.engine.base import GenerationOutput
 from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
 from rapid_mlx.service.postprocessor import StreamingPostProcessor
 from rapid_mlx.tool_parsers import ToolParserManager
+from rapid_mlx.tool_parsers.qwen3coder_tool_parser import (
+    Qwen3CoderToolParser,
+)
+from rapid_mlx.tool_parsers.qwen3coder_tool_parser import (
+    _ObjectPairs as QwenObjectPairs,
+)
+from rapid_mlx.tool_parsers.qwen3coder_tool_parser import (
+    _restore_json_value as restore_qwen_json,
+)
+from rapid_mlx.tool_parsers.seed_oss_tool_parser import (
+    _ObjectPairs as SeedObjectPairs,
+)
+from rapid_mlx.tool_parsers.seed_oss_tool_parser import (
+    _restore_json_value as restore_seed_json,
+)
 
 
 def _request(*names):
@@ -204,13 +219,184 @@ def test_nemotron_bare_call_after_wrapped_call():
     assert _run("nemotron", wire, request, [first, second]) == expected_calls
 
 
-@pytest.mark.parametrize("parser_name", ["deepseek", "qwen3_coder_xml"])
+@pytest.mark.parametrize(
+    "parser_name", ["deepseek", "deepseek_v31", "qwen3", "qwen3_coder_xml"]
+)
 def test_partial_tool_opener_at_end_is_content(parser_name):
     wire = "Compare x <"
     assert (
         _run(parser_name, wire, _request("lookup"), list(wire), return_content=True)
         == wire
     )
+
+
+def test_qwen_json_tool_after_prose_with_split_opener():
+    wire = "Working. " + _json_wire("lookup", "hello")
+    request = _request("lookup")
+    expected = ToolParserManager.get_tool_parser("qwen3")(None).extract_tool_calls(
+        wire, request
+    )
+    expected_calls = [(call["name"], call["arguments"]) for call in expected.tool_calls]
+    chunks = ["Working. <", wire[len("Working. <") :]]
+    assert _run("qwen3", wire, request, chunks) == expected_calls
+    assert _run("qwen3", wire, request, chunks, return_content=True) == "Working. "
+
+
+def test_deepseek_tool_after_prose_in_same_chunk():
+    wire = "Working. " + CANONICAL_WIRES["deepseek_v31"]
+    assert (
+        _run("deepseek_v31", wire, _request("lookup"), [wire], return_content=True)
+        == "Working. "
+    )
+
+
+def test_deepseek_repeated_close_does_not_replay_arguments():
+    first = CANONICAL_WIRES["deepseek"]
+    wire = first + "<｜tool▁call▁end｜>"
+    request = _request("lookup")
+    expected = ToolParserManager.get_tool_parser("deepseek")(None).extract_tool_calls(
+        wire, request
+    )
+    expected_calls = [(call["name"], call["arguments"]) for call in expected.tool_calls]
+    assert (
+        _run("deepseek", wire, request, [first, wire[len(first) :]]) == expected_calls
+    )
+
+
+def test_completed_and_partial_opener_flush_behavior():
+    for parser_name, complete in (
+        ("deepseek", CANONICAL_WIRES["deepseek"]),
+        ("seed_oss", CANONICAL_WIRES["seed_oss"]),
+    ):
+        parser = ToolParserManager.get_tool_parser(parser_name)(None)
+        assert parser.flush_held_content(complete) == ""
+        assert parser.flush_held_content("Compare x <") == "<"
+
+
+def test_hermes_escaped_json_string_can_contain_literal_wrapper_close():
+    value = 'escaped \\ slash and \\" quote, then </tool_call> inside'
+    wire = _json_wire("lookup", value)
+    request = _request("lookup")
+    expected = ToolParserManager.get_tool_parser("hermes")(None).extract_tool_calls(
+        wire, request
+    )
+    expected_calls = [(call["name"], call["arguments"]) for call in expected.tool_calls]
+    assert _run("hermes", wire, request, list(wire)) == expected_calls
+
+
+def test_hermes_does_not_close_xml_function_inside_parameter_value():
+    parser = ToolParserManager.get_tool_parser("hermes")(None)
+    wire = "<tool_call><function=lookup><parameter=text>abc</function>def</parameter>"
+    assert (
+        parser.extract_tool_calls_streaming("", wire, wire, request=_request("lookup"))
+        is None
+    )
+
+
+def test_qwen3_coder_incremental_raw_string_and_invalid_quoted_prefix():
+    parser = Qwen3CoderToolParser(None)
+    fragment = parser._emit_string_increment("text", 'hello "world"' + "x" * 20)
+    assert fragment.startswith('"text": "hello \\"world\\"')
+    assert Qwen3CoderToolParser._decoded_json_string_prefix('"bad\nvalue') == ""
+
+
+def test_qwen3_coder_detects_special_token_opener():
+    parser = Qwen3CoderToolParser(None)
+    parser.tool_call_start_token_id = 123
+    assert parser._new_opener_position("ready", "ready", [123]) == len("ready")
+
+
+def test_xml_duplicate_key_recovery_preserves_nested_arrays():
+    raw = '{"nested":{"items":[{"x":1},2]}}'
+    expected = {"nested": {"items": [{"x": 1}, 2]}}
+    for pairs_type, restore in (
+        (QwenObjectPairs, restore_qwen_json),
+        (SeedObjectPairs, restore_seed_json),
+    ):
+        parsed = json.loads(raw, object_pairs_hook=pairs_type)
+        assert restore(parsed) == expected
+
+
+def test_qwen3_coder_finalizer_avoids_reclosing_covered_parameter():
+    parser = Qwen3CoderToolParser(None)
+    parser.in_function = True
+    parser.in_param = True
+    parser.param_count = 1
+    parser.json_closed = False
+    wire = CANONICAL_WIRES["qwen3_coder_xml"]
+    assert parser.finalize_legacy_raw_stream(wire, _request("lookup")) is None
+
+
+def test_xml_parsers_reenter_completed_header_with_final_arguments():
+    for parser_name in ("qwen3_coder_xml", "seed_oss"):
+        wire = CANONICAL_WIRES[parser_name]
+        if parser_name == "qwen3_coder_xml":
+            wire += wire.replace("lookup", "second")
+        request = _request("lookup", "second")
+        parser = ToolParserManager.get_tool_parser(parser_name)(None)
+        parser.is_tool_call_started = True
+        parser.is_thinking_end = True
+        expected = parser.extract_tool_calls(wire, request)
+        delta = parser.extract_tool_calls_streaming(
+            wire, wire + "x", "x", request=request
+        )
+        assert delta and delta["tool_calls"]
+        calls = delta["tool_calls"]
+        assert [
+            (call["function"]["name"], call["function"]["arguments"]) for call in calls
+        ] == [(call["name"], call["arguments"]) for call in expected.tool_calls]
+
+
+def test_seed_oss_valid_call_before_malformed_coalesced_close():
+    first = CANONICAL_WIRES["seed_oss"]
+    second = (
+        "<seed:tool_call><function=second><parameter=text>unfinished"
+        "</function></seed:tool_call>"
+    )
+    wire = first + second
+    request = _request("lookup", "second")
+    expected = ToolParserManager.get_tool_parser("seed_oss")(None).extract_tool_calls(
+        wire, request
+    )
+    expected_calls = [(call["name"], call["arguments"]) for call in expected.tool_calls]
+    cut = first.index("<parameter=")
+    assert _run("seed_oss", wire, request, [wire[:cut], wire[cut:]]) == expected_calls
+
+
+def test_seed_oss_wrapped_call_followed_by_bare_function_close():
+    first = CANONICAL_WIRES["seed_oss"]
+    wire = first + "<function=second></function>"
+    request = _request("lookup", "second")
+    expected = ToolParserManager.get_tool_parser("seed_oss")(None).extract_tool_calls(
+        wire, request
+    )
+    expected_calls = [(call["name"], call["arguments"]) for call in expected.tool_calls]
+    cut = first.index("<parameter=")
+    assert _run("seed_oss", wire, request, [wire[:cut], wire[cut:]]) == expected_calls
+
+
+def test_seed_oss_coalesced_close_keeps_one_available_fragment():
+    first = CANONICAL_WIRES["seed_oss"]
+    second = first.replace("lookup", "second")
+    wire = first + second
+    cut = first.index("<parameter=")
+    parser = ToolParserManager.get_tool_parser("seed_oss")(None)
+    parser.in_function = True
+    parser.is_tool_call_started = True
+    parser.is_thinking_end = True
+    parser.json_started = True
+    parser.json_closed = True
+    parser.header_sent = True
+    delta = parser.extract_tool_calls_streaming(
+        wire[:cut], wire, wire[cut:], request=_request("lookup", "second")
+    )
+    assert delta and delta["tool_calls"][0]["function"]["arguments"]
+
+
+def test_seed_oss_finalizer_waits_while_function_is_open():
+    parser = ToolParserManager.get_tool_parser("seed_oss")(None)
+    parser.in_function = True
+    assert parser.finalize_legacy_raw_stream(CANONICAL_WIRES["seed_oss"]) is None
 
 
 def test_qwen3_coder_plain_content_is_not_replayed_at_end():
@@ -501,7 +687,7 @@ def test_seed_oss_repeated_parameter_after_nested_json():
     chunks = [
         "<seed:tool_call><function=lookup>",
         '<parameter=text>"x"</parameter>',
-        '<parameter=nested>{"x":1}</parameter>',
+        '<parameter=nested>{"x":[1,{"y":2}]}</parameter>',
         "<parameter=text>y</parameter>",
         "</function></seed:tool_call>",
     ]
@@ -511,7 +697,10 @@ def test_seed_oss_repeated_parameter_after_nested_json():
         wire, request
     )
     expected_calls = [(call["name"], call["arguments"]) for call in expected.tool_calls]
-    assert json.loads(expected_calls[0][1]) == {"text": "y", "nested": {"x": 1}}
+    assert json.loads(expected_calls[0][1]) == {
+        "text": "y",
+        "nested": {"x": [1, {"y": 2}]},
+    }
     for stream_chunks in (
         chunks,
         list(wire),
