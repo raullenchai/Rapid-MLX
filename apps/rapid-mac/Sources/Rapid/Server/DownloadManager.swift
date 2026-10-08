@@ -384,6 +384,11 @@ final class DownloadManager {
             return false
         }
         if isDownloading(trimmed) { return false }
+        let effectiveSource = Self.effectiveDownloadSource(
+            source,
+            env: ProcessInfo.processInfo.environment,
+            forceMirror: forceMirror
+        )
         let binaryResolution = Self.resolveBinaryForStart(
             cached: binaryPath,
             shouldRelocate: resolvesBinaryAtStart,
@@ -393,7 +398,10 @@ final class DownloadManager {
             // Record a synthetic failed job so the picker UI can
             // surface "binary not found" inline instead of silently
             // doing nothing.
-            let job = Job(alias: trimmed, hfPath: hfPath, totalBytes: totalBytes, source: source)
+            let job = Job(
+                alias: trimmed, hfPath: hfPath, totalBytes: totalBytes,
+                source: effectiveSource
+            )
             job.failureKind = .downloadFailed
             job.status = .failed(message: binaryResolution.failureMessage)
             jobs[trimmed] = job
@@ -406,7 +414,7 @@ final class DownloadManager {
 
         let job = Job(
             alias: trimmed, hfPath: hfPath, totalBytes: totalBytes,
-            source: source, forceMirror: forceMirror, retryAttempt: retryAttempt
+            source: effectiveSource, forceMirror: forceMirror, retryAttempt: retryAttempt
         )
         jobs[trimmed] = job
         stderrTails[trimmed] = []
@@ -420,7 +428,7 @@ final class DownloadManager {
         process.standardError = stderrPipe
         process.standardInput = FileHandle.nullDevice
         process.environment = augmentedEnv(
-            for: binary, source: source, forceMirror: forceMirror
+            for: binary, source: effectiveSource, forceMirror: forceMirror
         )
 
         // tqdm refreshes via \r when stderr is not a TTY (same shape
@@ -1051,6 +1059,19 @@ final class DownloadManager {
         case .huggingFace:
             env["RAPID_MLX_MODEL_MIRROR"] = ""
         }
+    }
+
+    /// A parent-shell mirror opt-out already sends the default pull to HF.
+    /// Keep the job label in sync so its source toggle actually selects R2.
+    nonisolated static func effectiveDownloadSource(
+        _ requested: DownloadSource,
+        env: [String: String],
+        forceMirror: Bool = false
+    ) -> DownloadSource {
+        if requested == .mirror && !forceMirror && env["RAPID_MLX_MODEL_MIRROR"] == "" {
+            return .huggingFace
+        }
+        return requested
     }
 
     private func cleanupProcessBookkeeping(alias: String, process: Process) {

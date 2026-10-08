@@ -402,6 +402,10 @@ struct DownloadManagerTests {
     @Test("Explicit switch from HF can restore mirror after a parent opt-out")
     func explicitMirrorSwitch() {
         var env = ["RAPID_MLX_MODEL_MIRROR": ""]
+        #expect(DownloadManager.effectiveDownloadSource(.mirror, env: env) == .huggingFace)
+        #expect(DownloadManager.effectiveDownloadSource(
+            .mirror, env: env, forceMirror: true
+        ) == .mirror)
         DownloadManager.applyDownloadSource(.mirror, env: &env)
         #expect(env["RAPID_MLX_MODEL_MIRROR"] == "")
         DownloadManager.applyDownloadSource(.mirror, env: &env, forceMirror: true)
