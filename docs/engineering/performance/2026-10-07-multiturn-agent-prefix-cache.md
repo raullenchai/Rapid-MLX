@@ -81,7 +81,8 @@ and hit them on both routes. The synthetic template test verifies that an XML
 tool completion is an exact prefix of the next turn and that a JSON completion
 keeps the safe boundary fallback. A separate check using the checkpoint's
 actual tokenizer confirmed the XML prefix for all ten constructed turns on
-both route translations.
+both route translations and fetched the saved boundary after divergent JSON
+output.
 
 No cache memory default was changed. The measured workload already has a
 100% warm-turn hit rate. Changing tool-call replay to prefer one syntax would
