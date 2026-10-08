@@ -124,6 +124,7 @@ from ..service.helpers import (
     _validate_tool_call_params,
     _wait_with_disconnect,
     build_extended_sampling_kwargs,
+    context_overflow_from_client_error,
     context_window_exhausted,
     dry_sampling_kwargs,
     enable_thinking_warning_header,
@@ -5651,6 +5652,9 @@ async def _create_chat_completion_impl(
                     timeout=request.timeout or cfg.default_timeout,
                 )
             except ClientRequestError as exc:
+                _context_error = context_overflow_from_client_error(exc)
+                if _context_error is not None:
+                    raise _context_error from exc
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
             except InferenceAbortedError as exc:
                 # #3564: the MLLM preflight runs BEFORE StreamingResponse
@@ -5898,6 +5902,9 @@ async def _create_chat_completion_impl(
             result="failed",
             error_class=_telemetry_inference.classify_inference_failure(e),
         )
+        _context_error = context_overflow_from_client_error(e)
+        if _context_error is not None:
+            raise _context_error from e
         err_msg = str(e)
         if isinstance(e, InferenceAbortedError):
             # Engine aborted the request (e.g. Metal runtime error caught

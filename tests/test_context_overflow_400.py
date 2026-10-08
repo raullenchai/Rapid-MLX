@@ -161,6 +161,24 @@ def _extract_error(body: dict) -> dict:
     return body
 
 
+def test_expanded_media_context_error_has_token_counts_and_remedy():
+    from rapid_mlx.request import ClientRequestError
+    from rapid_mlx.service.helpers import context_overflow_from_client_error
+
+    error = context_overflow_from_client_error(
+        ClientRequestError(
+            "context_length_exceeded: prompt has 101 tokens after media "
+            "expansion, exceeding --context-length 80"
+        )
+    )
+    assert error is not None
+    assert error.status_code == 400
+    assert error.prompt_tokens == 101
+    assert error.limit == 80
+    assert error.detail["error"]["code"] == "context_length_exceeded"
+    assert "--context-length" in error.detail["error"]["message"]
+
+
 # ─── /v1/chat/completions ───────────────────────────────────────────
 
 
@@ -599,7 +617,7 @@ def test_stream_reports_generation_reaching_context_window(surface):
         assert '"code":"context_length_exceeded"' in response.text
     elif surface == "responses":
         assert "event: response.failed" in response.text
-        assert '"code":"context_length_exceeded"' in response.text
+        assert '"code": "context_length_exceeded"' in response.text
     else:
         assert "event: error" in response.text
         assert "prompt is too long: 40961 tokens > 40960 maximum" in response.text

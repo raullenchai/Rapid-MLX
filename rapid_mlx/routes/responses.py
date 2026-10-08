@@ -112,6 +112,7 @@ from ..service.helpers import (
     _validate_tool_call_params,
     _wait_with_disconnect,
     build_extended_sampling_kwargs,
+    context_overflow_from_client_error,
     context_window_exhausted,
     enforce_context_length,
     enforce_context_length_for_messages,
@@ -1889,6 +1890,9 @@ async def _non_stream(
         ):
             error_class = "other"
         _record_nonstream_failure(engine, request, error_class)
+        _context_error = context_overflow_from_client_error(e)
+        if _context_error is not None:
+            raise _context_error from e
         err_msg = str(e)
         if is_chat_template_error(e):
             raise HTTPException(

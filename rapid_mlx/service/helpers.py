@@ -4670,6 +4670,35 @@ async def _disconnect_guard(
                     inference_aborted_error_payload,
                 )
 
+                context_error = context_overflow_from_client_error(exc)
+                if context_error is not None:
+                    path = raw_request.url.path
+                    if path == "/v1/messages":
+                        event = {
+                            "type": "error",
+                            "error": {
+                                "type": "invalid_request_error",
+                                "message": (
+                                    f"prompt is too long: {context_error.prompt_tokens} "
+                                    f"tokens > {context_error.limit} maximum"
+                                ),
+                            },
+                        }
+                        yield f"event: error\ndata: {_json.dumps(event)}\n\n"
+                    elif path == "/v1/responses":
+                        event = {
+                            "type": "response.failed",
+                            "response": {
+                                "status": "failed",
+                                "error": context_error.detail["error"],
+                            },
+                        }
+                        yield f"event: response.failed\ndata: {_json.dumps(event)}\n\n"
+                    else:
+                        yield ("data: " + _json.dumps(context_error.detail) + "\n\n")
+                        yield "data: [DONE]\n\n"
+                    break
+
                 if (
                     isinstance(exc, InferenceAbortedError)
                     and exc.error_kind == "lifecycle"
@@ -5289,6 +5318,36 @@ class ContextLengthExceeded(HTTPException):
                 }
             },
         )
+
+
+def context_overflow_from_client_error(
+    exc: BaseException,
+) -> ContextLengthExceeded | None:
+    """Translate the MLLM post-expansion admission failure without echoing input."""
+    from ..request import ClientRequestError
+
+    if not isinstance(exc, ClientRequestError):
+        return None
+    import re
+
+    match = re.fullmatch(
+        r"context_length_exceeded: prompt has (\d+) tokens after media "
+        r"expansion, exceeding --context-length (\d+)",
+        str(exc),
+    )
+    if match is None:
+        return None
+    prompt_tokens, limit = map(int, match.groups())
+    return ContextLengthExceeded(
+        prompt_tokens=prompt_tokens,
+        limit=limit,
+        message=(
+            f"The prompt contains {prompt_tokens} tokens after media expansion, "
+            f"exceeding this server's {limit}-token context limit. Start a new "
+            "session or compact the conversation, or raise --context-length "
+            "if the model and available memory permit."
+        ),
+    )
 
 
 def context_window_exhausted(
