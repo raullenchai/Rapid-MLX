@@ -112,6 +112,9 @@ from ..service.helpers import (
     _validate_tool_call_params,
     _wait_with_disconnect,
     build_extended_sampling_kwargs,
+    context_overflow_from_client_error,
+    context_overflow_from_guided_limit,
+    context_window_exhausted,
     enforce_context_length,
     enforce_context_length_for_messages,
     ensure_engine_ready,
@@ -1452,6 +1455,7 @@ async def create_response(request: Request):
                     keepalive_factory=lambda: _responses_keepalive_sse(
                         _resp_heartbeat_state
                     ),
+                    response_state=_resp_heartbeat_state,
                 ),
                 media_type="text/event-stream",
                 # ``SSE_RESPONSE_HEADERS`` (Cache-Control no-cache/no-transform +
@@ -1824,6 +1828,11 @@ async def _non_stream(
                     ) from exc
                 raise asyncio.CancelledError() from exc
             except Exception as guided_err:
+                _guided_context_error = context_overflow_from_guided_limit(
+                    engine, guided_err
+                )
+                if _guided_context_error is not None:
+                    raise _guided_context_error from guided_err
                 logger.warning(
                     "Guided generation failed mid-await on /v1/responses "
                     "strict path: %s",
@@ -1888,6 +1897,9 @@ async def _non_stream(
         ):
             error_class = "other"
         _record_nonstream_failure(engine, request, error_class)
+        _context_error = context_overflow_from_client_error(e)
+        if _context_error is not None:
+            raise _context_error from e
         err_msg = str(e)
         if is_chat_template_error(e):
             raise HTTPException(
@@ -1905,6 +1917,12 @@ async def _non_stream(
 
     if output is None:
         return Response(status_code=499)
+
+    _window_error = context_window_exhausted(
+        engine, output.prompt_tokens, output.completion_tokens, output.finish_reason
+    )
+    if _window_error is not None:
+        raise _window_error
 
     usage_detail_output = None
 
@@ -2020,6 +2038,11 @@ async def _non_stream(
                 except (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError):
                     raise
                 except Exception as repair_err:
+                    _repair_context_error = context_overflow_from_guided_limit(
+                        engine, repair_err
+                    ) or context_overflow_from_client_error(repair_err)
+                    if _repair_context_error is not None:
+                        raise _repair_context_error from repair_err
                     # Codex r1 #4 parity with chat.py: a non-timeout,
                     # non-disconnect engine exception during the repair
                     # turn is a SERVER failure, not a client schema-
@@ -4363,6 +4386,45 @@ async def _stream_responses(
             async for ev in _emit_text_delta(remaining):
                 yield ev
 
+        # Check the terminal engine state before forced tool-choice synthesis:
+        # a context-window stop cannot fulfill a tool contract.
+        _window_error = context_window_exhausted(
+            engine, prompt_tokens, completion_tokens, last_finish_reason
+        )
+        if _window_error is not None:
+            _record_failed("prompt_too_large")
+            yield _emit(
+                "response.failed",
+                {
+                    "type": "response.failed",
+                    "response": {
+                        **_initial_response_payload,
+                        "status": "failed",
+                        "error": _window_error.error_payload,
+                        "usage": {
+                            "input_tokens": prompt_tokens,
+                            "output_tokens": completion_tokens,
+                            "total_tokens": prompt_tokens + completion_tokens,
+                            "input_tokens_details": {
+                                "cached_tokens": max(
+                                    0, min(cached_tokens, prompt_tokens)
+                                ),
+                                "cache_write_tokens": 0,
+                            },
+                            "output_tokens_details": {
+                                "reasoning_tokens": min(
+                                    max(1, len(accumulated_reasoning_text) // 4),
+                                    completion_tokens,
+                                )
+                                if accumulated_reasoning_text and completion_tokens
+                                else 0
+                            },
+                        },
+                    },
+                },
+            )
+            return
+
         # Parse tool_calls FIRST so the forced-choice deferred-text
         # resolution (Yuki F6 codex r1 BLOCKING #2) can decide whether
         # the message item should open at all.
@@ -5296,6 +5358,28 @@ async def _stream_responses(
         # response.failed gives Codex a clean shutdown signal instead of
         # a half-stream-then-EOF; matches how the OpenAI cloud
         # Responses API closes errored streams.
+        _context_error = context_overflow_from_client_error(e)
+        if _context_error is not None:
+            _record_failed("prompt_too_large")
+            yield _emit(
+                "response.failed",
+                {
+                    "type": "response.failed",
+                    "response": {
+                        **_initial_response_payload,
+                        "status": "failed",
+                        "error": _context_error.error_payload,
+                        "usage": {
+                            "input_tokens": 0,
+                            "output_tokens": 0,
+                            "total_tokens": 0,
+                            "input_tokens_details": {"cached_tokens": 0},
+                            "output_tokens_details": {"reasoning_tokens": 0},
+                        },
+                    },
+                },
+            )
+            return
         logger.exception("Responses stream failed: %s", e)
         from rapid_mlx.telemetry import inference as _telemetry_inference
 
