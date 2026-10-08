@@ -833,8 +833,8 @@ class HermesToolParser(ToolParser):
                 body = current_text[wrapper + len("<tool_call>") :].lstrip()
                 if body.startswith("<function="):
                     function_end = current_text.find("</function>", wrapper)
-                    wrapper_end = current_text.rfind("</tool_call>")
-                    if function_end < 0 or wrapper_end < function_end:
+                    parameter_end = current_text.rfind("</parameter>", wrapper)
+                    if function_end >= 0 and parameter_end > function_end:
                         return None
             if self._has_incomplete_structured_block(current_text, request):
                 # Inside an incomplete structured block — suppress output.

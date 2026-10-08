@@ -74,7 +74,7 @@ class DeepSeekV40731ToolParser(ToolParser):
 
     def reset(self) -> None:
         super().reset()
-        self._stream_calls_emitted = False
+        self._stream_calls_emitted = 0
 
     @classmethod
     def _safe_content_prefix(cls, text: str) -> str:
@@ -166,8 +166,6 @@ class DeepSeekV40731ToolParser(ToolParser):
     ) -> dict[str, Any] | None:
         if not hasattr(self, "_stream_calls_emitted"):
             self.reset()
-        if self._stream_calls_emitted:
-            return None
         if self._first_start(current_text) is None:
             previous_safe = self._safe_content_prefix(previous_text)
             current_safe = self._safe_content_prefix(current_text)
@@ -178,7 +176,10 @@ class DeepSeekV40731ToolParser(ToolParser):
         result = self.extract_tool_calls(current_text, request)
         if not result.tools_called:
             return None
-        self._stream_calls_emitted = True
+        already = self._stream_calls_emitted
+        if len(result.tool_calls) <= already:
+            return None
+        self._stream_calls_emitted = len(result.tool_calls)
         return {
             "tool_calls": [
                 {
@@ -190,6 +191,6 @@ class DeepSeekV40731ToolParser(ToolParser):
                         "arguments": call["arguments"],
                     },
                 }
-                for i, call in enumerate(result.tool_calls)
+                for i, call in enumerate(result.tool_calls[already:], start=already)
             ]
         }

@@ -285,6 +285,35 @@ class SeedOssToolParser(ToolParser):
         if not previous_text:
             self._reset_streaming_state()
 
+        # One model delta may contain several finished calls. Reconcile all
+        # complete calls before the single-call state machine advances once.
+        if not self.in_function and current_text.count(
+            self.tool_call_end_token
+        ) > previous_text.count(self.tool_call_end_token):
+            complete = self.extract_tool_calls(current_text, request)
+            already = len(self.prev_tool_call_arr)
+            if len(complete.tool_calls) > already:
+                fresh = complete.tool_calls[already:]
+                self.prev_tool_call_arr.extend(fresh)
+                self.current_tool_index = len(complete.tool_calls) - 1
+                self.json_closed = True
+                self.header_sent = True
+                self.is_tool_call_started = True
+                return {
+                    "tool_calls": [
+                        {
+                            "index": index,
+                            "id": call["id"],
+                            "type": "function",
+                            "function": {
+                                "name": call["name"],
+                                "arguments": call["arguments"],
+                            },
+                        }
+                        for index, call in enumerate(fresh, start=already)
+                    ]
+                }
+
         if not delta_text:
             return None
 

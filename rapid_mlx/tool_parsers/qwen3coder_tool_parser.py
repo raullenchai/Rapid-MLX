@@ -1354,6 +1354,36 @@ class Qwen3CoderToolParser(ToolParser):
             self._streaming_request = request
         self._stream_text = current_text
 
+        # A coarse delta can finish several calls at once. The state machine
+        # below normally advances only one call per invocation, so emit every
+        # newly completed call here when it is between function bodies.
+        if not self.in_function and current_text.count(
+            self.function_end_token
+        ) > previous_text.count(self.function_end_token):
+            complete = self.extract_tool_calls(current_text, request)
+            already = len(self.prev_tool_call_arr)
+            if len(complete.tool_calls) > already:
+                fresh = complete.tool_calls[already:]
+                self.prev_tool_call_arr.extend(fresh)
+                self.current_tool_index = len(complete.tool_calls) - 1
+                self.json_closed = True
+                self.header_sent = True
+                self.is_tool_call_started = True
+                return {
+                    "tool_calls": [
+                        {
+                            "index": index,
+                            "id": call["id"],
+                            "type": "function",
+                            "function": {
+                                "name": call["name"],
+                                "arguments": call["arguments"],
+                            },
+                        }
+                        for index, call in enumerate(fresh, start=already)
+                    ]
+                }
+
         if not delta_text:
             return None
 

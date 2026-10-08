@@ -383,6 +383,22 @@ def test_registered_parser_character_boundaries(parser_name, wire):
             assert isinstance(json.loads(arguments), dict)
 
 
+@pytest.mark.parametrize("parser_name,wire", CANONICAL_WIRES.items())
+def test_registered_parser_parallel_calls_when_nonstream_supports_them(
+    parser_name, wire
+):
+    request = _request("lookup", "computer")
+    combined = wire + wire
+    expected = ToolParserManager.get_tool_parser(parser_name)(None).extract_tool_calls(
+        combined, request
+    )
+    if len(expected.tool_calls) != 2:
+        pytest.skip("This wire shape does not represent two calls for this parser")
+    expected_calls = [(call["name"], call["arguments"]) for call in expected.tool_calls]
+    for chunks in (list(combined), [wire, wire], [combined]):
+        assert _run(parser_name, combined, request, chunks) == expected_calls
+
+
 _JSON_WIRE_PARSERS = (
     "deepseek",
     "deepseek_v3",

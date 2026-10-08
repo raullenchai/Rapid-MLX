@@ -406,8 +406,11 @@ class NemotronToolParser(ToolParser):
         function_open = current_text.rfind("<function=")
         wrapper_open = current_text.rfind("<tool_call>", 0, function_open)
         wrapper_before_function = current_text.rfind("</tool_call>", 0, function_open)
-        if wrapper_open > wrapper_before_function and (
-            current_text.rfind("</tool_call>") < current_text.rfind("</function>")
+        if (
+            wrapper_open > wrapper_before_function
+            and current_text.rfind("</parameter>")
+            > current_text.rfind("</function>")
+            >= 0
         ):
             return None
 
