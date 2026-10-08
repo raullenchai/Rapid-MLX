@@ -449,7 +449,6 @@ class Qwen3CoderToolParser(ToolParser):
         # Full text of the current stream (before ``_undeclared_offset``
         # slicing): the Markdown-code check and the finalize log dedup use it.
         self._stream_text = ""
-        self._initial_content_emitted = 0
         # Set once the stream rejects any candidate as content; later blocks
         # are then never dropped (non-streaming: an earlier ``<function=``
         # opener outside dropped blocks) (#4038).
@@ -1138,12 +1137,6 @@ class Qwen3CoderToolParser(ToolParser):
         as in non-streaming, it is returned as content (#4038).
         """
         if self._undeclared_start is None:
-            if not self.prev_tool_call_arr:
-                held = full_text[self._initial_content_emitted :]
-                if held and any(
-                    marker.startswith(held) for marker in ("<tool_call>", "<function=")
-                ):
-                    return held
             return ""
         held: str = self._undeclared_text[self._undeclared_start :]
         self._undeclared_start = None
@@ -1179,7 +1172,7 @@ class Qwen3CoderToolParser(ToolParser):
     def _new_opener_position(
         self, previous_text: str, current_text: str, delta_token_ids: Sequence[int]
     ) -> int:
-        """Find an opener completed by this delta, including split markers.
+        """Find an opener contained in this delta.
 
         Accepts the wrapper token via string OR token-id (tokenizers that
         expose ``<tool_call>`` as a special token), and the bare
@@ -1187,17 +1180,11 @@ class Qwen3CoderToolParser(ToolParser):
         as far as the state machine is concerned — either triggers the
         transition out of content-only mode.
         """
-        start = max(
-            0,
-            len(previous_text)
-            - max(len(self.tool_call_start_token), len(self.tool_call_prefix))
-            + 1,
-        )
+        start = len(previous_text)
         positions = [
             pos
             for marker in (self.tool_call_start_token, self.tool_call_prefix)
             if (pos := current_text.find(marker, start)) >= 0
-            and pos + len(marker) > len(previous_text)
         ]
         if positions:
             return min(positions)
@@ -1345,20 +1332,25 @@ class Qwen3CoderToolParser(ToolParser):
         if not previous_text:
             self._reset_streaming_state()
             self._streaming_request = request
-        elif not self._stream_text:
-            # The postprocessor can pass through ordinary prose before it
-            # starts invoking the tool parser. Those bytes are already on the
-            # wire and must not be emitted again when a split opener arrives.
-            self._initial_content_emitted = len(previous_text)
         elif request is not None and self._streaming_request is None:
             self._streaming_request = request
         self._stream_text = current_text
+
+        if not delta_text:
+            return None
+        declared = self._declared_tool_names(
+            request if request is not None else self._streaming_request
+        )
+        if not declared:
+            # No executable tool exists for this request. Bypass the XML state
+            # machine entirely so protocol examples stream byte-for-byte.
+            return {"content": delta_text}
 
         # Drain a chunk that closes the active function and contains another
         # complete function. The single-call state machine returns after the
         # first close; split at its structural close so the remainder is
         # processed with the updated state.
-        if self.in_function:
+        if self.in_function and not self._undeclared_blocked:
             starts = self._function_start_positions(current_text)
             if self._top_level_function_close_count(current_text, starts) > (
                 self.current_tool_index + 1
@@ -1392,16 +1384,25 @@ class Qwen3CoderToolParser(ToolParser):
         # A coarse delta can finish several calls at once. The state machine
         # below normally advances only one call per invocation, so emit every
         # newly completed call here when it is between function bodies.
-        if not self.in_function and current_text.count(
-            self.function_end_token
-        ) > previous_text.count(self.function_end_token):
+        if (
+            not self.in_function
+            and not self._undeclared_offset
+            and self._undeclared_start is None
+            and not self._undeclared_blocked
+            and current_text.count(self.function_end_token)
+            > previous_text.count(self.function_end_token)
+        ):
             complete = self.extract_tool_calls(current_text, request)
             top_level_starts = self._function_start_positions(current_text)
             closed_count = self._top_level_function_close_count(
                 current_text, top_level_starts
             )
             already = len(self.prev_tool_call_arr)
-            if min(len(complete.tool_calls), closed_count) > already:
+            if (
+                len(complete.tool_calls) > 1
+                and min(len(complete.tool_calls), closed_count) > already
+                and all(call["name"] in declared for call in complete.tool_calls)
+            ):
                 fresh = complete.tool_calls[already:closed_count]
                 self.prev_tool_call_arr.extend(fresh)
                 self.current_tool_index = already + len(fresh) - 1
@@ -1424,23 +1425,10 @@ class Qwen3CoderToolParser(ToolParser):
                 }
                 if already == 0:
                     first_start = self._first_opener_pos(current_text)
-                    prefix = current_text[self._initial_content_emitted : first_start]
+                    prefix = current_text[len(previous_text) : first_start]
                     if prefix:
                         output["content"] = prefix
-                        self._initial_content_emitted = first_start
                 return output
-
-        if not delta_text:
-            return None
-
-        declared = self._declared_tool_names(
-            request if request is not None else self._streaming_request
-        )
-        if not declared:
-            # No executable tool exists for this request. Bypass the XML state
-            # machine entirely so protocol examples stream byte-for-byte and
-            # tool_choice=none cannot be overturned by model-authored markup.
-            return {"content": delta_text}
 
         if self._undeclared_offset:
             previous_text = previous_text[self._undeclared_offset :]
@@ -1577,37 +1565,14 @@ class Qwen3CoderToolParser(ToolParser):
                         ):
                             self._reject_candidate()
                             return {"content": delta_text}
-                if not self.prev_tool_call_arr:
-                    content_before = current_text[
-                        self._initial_content_emitted : opener_start
-                    ]
-                    self._initial_content_emitted = opener_start
-                else:
-                    content_before = delta_text[:opener_pos]
+                content_before = (
+                    delta_text[:opener_pos] if opener_pos < len(delta_text) else ""
+                )
                 if content_before:
                     return {"content": content_before}
                 # Fall through to header parsing below instead of returning
                 # None — the function header may already be in current_text.
             else:
-                if not self.prev_tool_call_arr:
-                    # Hold a suffix that may become a split opener in the next
-                    # token. Only settled prose may reach the content channel.
-                    held = max(
-                        (
-                            n
-                            for marker in (
-                                self.tool_call_start_token,
-                                self.tool_call_prefix,
-                            )
-                            for n in range(1, len(marker))
-                            if current_text.endswith(marker[:n])
-                        ),
-                        default=0,
-                    )
-                    safe_end = len(current_text) - held
-                    settled = current_text[self._initial_content_emitted : safe_end]
-                    self._initial_content_emitted = safe_end
-                    return {"content": settled} if settled else None
                 # Suppress the trailing-wrapper-close whitespace event so
                 # a stream that ends with just ``</tool_call>\n`` doesn't
                 # emit an empty tail. ``</function>`` is the actual tool
