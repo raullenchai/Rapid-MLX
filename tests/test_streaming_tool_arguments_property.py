@@ -393,6 +393,71 @@ def test_qwen3_coder_keeps_fragments_before_raw_string_fallback():
     assert _run("qwen3_coder_xml", wire, request, chunks) == expected_calls
 
 
+def test_qwen3_coder_quoted_parameter_marker_is_value_text():
+    wire = (
+        '<tool_call><function=lookup><parameter=text>"<parameter=nested>x"'
+        "</parameter></function></tool_call>"
+    )
+    request = _request("lookup")
+    expected = ToolParserManager.get_tool_parser("qwen3_coder_xml")(
+        None
+    ).extract_tool_calls(wire, request)
+    expected_calls = [(call["name"], call["arguments"]) for call in expected.tool_calls]
+    assert json.loads(expected_calls[0][1]) == {"text": "<parameter=nested>x"}
+    for chunks in (list(wire), *([wire[:i], wire[i:]] for i in range(1, len(wire)))):
+        assert _run("qwen3_coder_xml", wire, request, chunks) == expected_calls
+
+
+@pytest.mark.parametrize("second", ['"y"', "y"])
+def test_qwen3_coder_repeated_parameters_keep_valid_json(second):
+    wire = (
+        '<tool_call><function=lookup><parameter=text>"x"</parameter>'
+        f"<parameter=text>{second}</parameter></function></tool_call>"
+    )
+    request = _request("lookup")
+    expected = ToolParserManager.get_tool_parser("qwen3_coder_xml")(
+        None
+    ).extract_tool_calls(wire, request)
+    expected_calls = [(call["name"], call["arguments"]) for call in expected.tool_calls]
+    assert json.loads(expected_calls[0][1]) == {"text": "y"}
+    for chunks in (list(wire), *([wire[:i], wire[i:]] for i in range(1, len(wire)))):
+        actual = _run("qwen3_coder_xml", wire, request, chunks)
+        assert actual == expected_calls
+        assert json.loads(actual[0][1]) == {"text": "y"}
+
+
+def test_qwen3_coder_malformed_quoted_suffix_keeps_stream_parity():
+    wire = (
+        '<tool_call><function=lookup><parameter=text>"abc"junk'
+        "</parameter></function></tool_call>"
+    )
+    request = _request("lookup")
+    expected = ToolParserManager.get_tool_parser("qwen3_coder_xml")(
+        None
+    ).extract_tool_calls(wire, request)
+    expected_calls = [(call["name"], call["arguments"]) for call in expected.tool_calls]
+    assert json.loads(expected_calls[0][1]) == {"text": "abcjunk"}
+    for chunks in (list(wire), *([wire[:i], wire[i:]] for i in range(1, len(wire)))):
+        assert _run("qwen3_coder_xml", wire, request, chunks) == expected_calls
+
+
+def test_seed_oss_literal_wrapper_closer_in_value():
+    chunks = [
+        "<seed:tool_call><function=lookup>",
+        "<parameter=text>a",
+        "</seed:tool_call>b</parameter></function></seed:tool_call>",
+    ]
+    wire = "".join(chunks)
+    request = _request("lookup")
+    expected = ToolParserManager.get_tool_parser("seed_oss")(None).extract_tool_calls(
+        wire, request
+    )
+    expected_calls = [(call["name"], call["arguments"]) for call in expected.tool_calls]
+    assert json.loads(expected_calls[0][1]) == {"text": "a</seed:tool_call>b"}
+    for stream_chunks in (chunks, list(wire)):
+        assert _run("seed_oss", wire, request, stream_chunks) == expected_calls
+
+
 @pytest.mark.parametrize("value", ["<parameter=text>x", "null"])
 def test_qwen3_coder_quoted_string_across_parameter_boundaries(value):
     encoded = json.dumps(value)

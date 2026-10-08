@@ -172,6 +172,18 @@ def _generate_tool_id() -> str:
     return f"call_{uuid.uuid4().hex[:8]}"
 
 
+class _ObjectPairs(list):
+    """Distinguish JSON objects from arrays while preserving duplicate keys."""
+
+
+def _restore_json_value(value):
+    if isinstance(value, _ObjectPairs):
+        return {key: _restore_json_value(item) for key, item in value}
+    if isinstance(value, list):
+        return [_restore_json_value(item) for item in value]
+    return value
+
+
 def _field(value: Any, name: str, default: Any = None) -> Any:
     """Read a request field from either its wire dict or Pydantic model."""
     if isinstance(value, dict):
@@ -257,6 +269,17 @@ def _convert_param_value(
             decoded = None
         if isinstance(decoded, str):
             return decoded
+        if param_value.startswith('"'):
+            # The incremental path already decoded the complete prefix of a
+            # quoted string. If the model later appends malformed trailing
+            # text, recover that prefix the same way at EOS so emitted bytes
+            # need no correction (which a stream cannot make).
+            try:
+                prefix, end = json.JSONDecoder().raw_decode(param_value)
+            except json.JSONDecodeError:
+                return param_value[1:]
+            if isinstance(prefix, str):
+                return prefix + param_value[end:]
         return param_value
 
     if param_type.startswith(("int", "uint", "long", "short", "unsigned")):
@@ -598,11 +621,11 @@ class Qwen3CoderToolParser(ToolParser):
         if self.current_tool_index >= len(result.tool_calls):
             return None
         current = result.tool_calls[self.current_tool_index]
-        arguments = json.loads(current["arguments"])
-        remaining = list(arguments.items())[self._legacy_raw_param_count :]
-        prefix = ", " if self._legacy_raw_param_count else ""
+        arguments = json.loads(current["arguments"], object_pairs_hook=_ObjectPairs)
+        remaining = arguments[self._legacy_raw_param_count :]
+        prefix = ", " if self._legacy_raw_param_count and remaining else ""
         suffix = prefix + ", ".join(
-            f"{json.dumps(name, ensure_ascii=False)}: {json.dumps(value, ensure_ascii=False)}"
+            f"{json.dumps(name, ensure_ascii=False)}: {json.dumps(_restore_json_value(value), ensure_ascii=False)}"
             for name, value in remaining
         )
         suffix += "}"
@@ -642,6 +665,7 @@ class Qwen3CoderToolParser(ToolParser):
         param_config = _get_arguments_config(function_name, tools)
         parameters = function_call_str[end_index + 1 :]
         param_dict = {}
+        param_pairs = []
         parsed = (
             split_marked_parameters(
                 parameters,
@@ -652,9 +676,11 @@ class Qwen3CoderToolParser(ToolParser):
             or []
         )
         for p_name, p_value in parsed:
-            param_dict[p_name] = _convert_param_value(
+            converted = _convert_param_value(
                 p_value, p_name, param_config, function_name
             )
+            param_dict[p_name] = converted
+            param_pairs.append((p_name, converted))
         # Preserve the upstream recovery behavior for malformed free-form
         # output that omitted one close tag: the positional scanner correctly
         # protects complete JSON-string payloads, while this fallback recovers
@@ -668,14 +694,33 @@ class Qwen3CoderToolParser(ToolParser):
             p_name = match_text[:idx]
             if p_name in param_dict or p_name not in param_config:
                 continue
+            # A complete quoted value may itself contain a marker. The
+            # positional scan has already accounted for it; the recovery
+            # regex must only fill genuinely unclosed parameters.
+            marker = f"<parameter={p_name}>"
+            if any(
+                marker in value and isinstance(_decode_json_like(value), str)
+                for _, value in parsed
+            ):
+                continue
             p_value = trim_wrapping_newlines(str(match_text[idx + 1 :]))
-            param_dict[p_name] = _convert_param_value(
+            converted = _convert_param_value(
                 p_value, p_name, param_config, function_name
             )
+            param_dict[p_name] = converted
+            param_pairs.append((p_name, converted))
+        arguments = (
+            "{" + ", ".join(
+                f"{json.dumps(key, ensure_ascii=False)}: {json.dumps(value, ensure_ascii=False)}"
+                for key, value in param_pairs
+            ) + "}"
+            if len(param_pairs) != len(param_dict)
+            else json.dumps(param_dict, ensure_ascii=False)
+        )
         return {
             "id": _generate_tool_id(),
             "name": function_name,
-            "arguments": json.dumps(param_dict, ensure_ascii=False),
+            "arguments": arguments,
         }
 
     def _get_function_calls(self, model_output: str) -> list[str]:

@@ -199,9 +199,21 @@ class SeedOssToolParser(ToolParser):
         }
 
     def _get_function_calls(self, model_output: str) -> list[str]:
-        matched_ranges = self.tool_call_regex.findall(model_output)
-        raw_tool_calls = [m[0] if m[0] else m[1] for m in matched_ranges]
-        if not raw_tool_calls:
+        starts = []
+        cursor = 0
+        while (start := model_output.find(self.tool_call_start_token, cursor)) >= 0:
+            starts.append(start)
+            cursor = start + len(self.tool_call_start_token)
+        raw_tool_calls = []
+        for index, start in enumerate(starts):
+            limit = starts[index + 1] if index + 1 < len(starts) else len(model_output)
+            end = model_output.rfind(self.tool_call_end_token, start, limit)
+            raw_tool_calls.append(
+                model_output[
+                    start + len(self.tool_call_start_token) : end if end >= 0 else limit
+                ]
+            )
+        if not starts:
             raw_tool_calls = [model_output]
 
         raw_function_calls = []
@@ -457,7 +469,16 @@ class SeedOssToolParser(ToolParser):
             return None
 
         tool_start_idx = tool_starts[self.current_tool_index]
-        tool_end_idx = current_text.find(self.tool_call_end_token, tool_start_idx)
+        next_start = current_text.find(
+            self.tool_call_start_token,
+            tool_start_idx + len(self.tool_call_start_token),
+        )
+        search_end = next_start if next_start >= 0 else len(current_text)
+        # A literal wrapper closer can occur inside a parameter value. The
+        # last closer before the next wrapper belongs to this call.
+        tool_end_idx = current_text.rfind(
+            self.tool_call_end_token, tool_start_idx, search_end
+        )
         if tool_end_idx == -1:
             tool_text = current_text[tool_start_idx:]
         else:
