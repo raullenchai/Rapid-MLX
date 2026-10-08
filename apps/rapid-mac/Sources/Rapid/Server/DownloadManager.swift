@@ -241,8 +241,17 @@ final class DownloadManager {
         newBytes: Int64?
     ) -> Bool {
         if let newBytes, newBytes > (oldBytes ?? 0) { return true }
-        // Once a byte channel exists, repeated tqdm redraws (or a switch
-        // between its outer and inner bars) cannot disguise zero throughput.
+        // HF fallback can start a fresh per-file transfer after the mirror
+        // removes a bad partial. Its tqdm bar may advance while the aggregate
+        // disk count is still below the old peak.
+        if case .downloading(let newFile, let newDone, _, _, _, _) = newPhase {
+            if case .downloading(let oldFile, let oldDone, _, _, _, _) = oldPhase {
+                if newFile != oldFile || newDone != oldDone { return true }
+            } else {
+                return true
+            }
+        }
+        // Repeated redraws with unchanged counters cannot hide a stall.
         if oldBytes != nil || newBytes != nil { return false }
         switch (oldPhase, newPhase) {
         case (.fetching(let oldDone, _, _), .fetching(let newDone, _, _)):
@@ -508,11 +517,15 @@ final class DownloadManager {
                 // compilation can legitimately be quiet for minutes and is
                 // covered by ServerManager's separate startup watchdog.
                 if case .warmingUp = job.progress.phase { return }
-                if let bytes = job.progress.bytesDownloaded,
-                   bytes > (job.lastObservedBytes ?? 0) {
+                if let bytes = job.progress.bytesDownloaded {
+                    if bytes > (job.lastObservedBytes ?? 0) {
+                        job.lastProgressAt = Date()
+                        job.isStalled = false
+                    }
+                    // A mirror miss can replace a large partial with a fresh
+                    // HF transfer. Follow the new counter so its next bytes
+                    // count as progress below the old high-water mark.
                     job.lastObservedBytes = bytes
-                    job.lastProgressAt = Date()
-                    job.isStalled = false
                 }
                 job.isStalled = Self.isStalled(
                     lastProgressAt: job.lastProgressAt,

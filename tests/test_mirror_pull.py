@@ -678,6 +678,13 @@ def test_hf_only_pull_uses_existing_part_instead_of_restarting(
             headers={"Content-Range": "bytes 400-999/1000"},
         ),
     )
+    credited: list[int] = []
+    original_add = _mirror._ProgressTracker.add
+
+    def record_credit(tracker, delta):
+        credited.append(delta)
+        original_add(tracker, delta)
+
     with (
         patch(
             "huggingface_hub.model_info",
@@ -688,6 +695,7 @@ def test_hf_only_pull_uses_existing_part_instead_of_restarting(
         patch("huggingface_hub.file_download.get_hf_file_metadata") as metadata,
         patch("huggingface_hub.hf_hub_download") as hub_download,
         patch("urllib.request.urlopen", side_effect=router),
+        patch.object(_mirror._ProgressTracker, "add", record_credit),
     ):
         metadata.return_value.location = location
         result = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
@@ -695,11 +703,14 @@ def test_hf_only_pull_uses_existing_part_instead_of_restarting(
     assert result
     assert not hub_download.called
     assert router.requests[0]["headers"]["Range"] == "bytes=400-"
+    assert sum(credited) == len(body)
     target = tmp_path / "models--owner--repo" / "snapshots" / revision / filename
     assert target.read_bytes() == body
 
 
 def test_hf_resumable_falls_back_when_metadata_cannot_prove_a_file(tmp_path: Path):
+    import httpx
+
     repo_root = tmp_path / "models--owner--repo"
     target = repo_root / "snapshots" / ("a" * 40) / "config.json"
     args = (
@@ -728,6 +739,8 @@ def test_hf_resumable_falls_back_when_metadata_cannot_prove_a_file(tmp_path: Pat
     )
     with patch("huggingface_hub.file_download.get_hf_file_metadata") as metadata:
         metadata.side_effect = OSError("unavailable")
+        assert not _mirror._hf_resumable_one(*args)
+        metadata.side_effect = httpx.ReadTimeout("metadata timed out")
         assert not _mirror._hf_resumable_one(*args)
         metadata.side_effect = None
         metadata.return_value.location = "http://unsafe.example.test/file"

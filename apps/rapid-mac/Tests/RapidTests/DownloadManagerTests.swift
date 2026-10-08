@@ -383,6 +383,13 @@ struct DownloadManagerTests {
         #expect(DownloadManager.advanced(
             from: old, oldBytes: 1_000, to: repeated, newBytes: 1_001
         ))
+        let fallback = DownloadProgress.Phase.downloading(
+            file: "model.safetensors", done: "1.1G", total: "3.0G",
+            percent: 37, speed: "1MB/s", eta: "02:00"
+        )
+        #expect(DownloadManager.advanced(
+            from: old, oldBytes: 1_000, to: fallback, newBytes: 900
+        ))
     }
 
     @Test("Transient reconnects are bounded and permanent errors are excluded")

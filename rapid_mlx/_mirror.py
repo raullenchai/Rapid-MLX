@@ -1575,6 +1575,7 @@ def _hf_resumable_one(
     """
     if expected_size is None or (expected_sha256 is None and expected_git_oid is None):
         return False
+    from httpx import HTTPError
     from huggingface_hub import hf_hub_url
     from huggingface_hub.errors import HfHubHTTPError
     from huggingface_hub.file_download import get_hf_file_metadata
@@ -1585,7 +1586,14 @@ def _hf_resumable_one(
             hf_hub_url(repo_id, filename, revision=revision), timeout=_FILE_TIMEOUT
         )
         location = metadata.location
-    except (HfHubHTTPError, RepositoryNotFoundError, OSError, TimeoutError, ValueError):
+    except (
+        HfHubHTTPError,
+        RepositoryNotFoundError,
+        HTTPError,
+        OSError,
+        TimeoutError,
+        ValueError,
+    ):
         return False
     if not location or not location.startswith("https://"):
         return False
@@ -2302,7 +2310,7 @@ def download_with_mirror_fallback(
             progress_tracker,
         ):
             try:
-                return fname, "hf", target.stat().st_size
+                return fname, "hf_streamed", target.stat().st_size
             except OSError:
                 return fname, "miss", 0
         hf_transfer: dict[str, object] = {}
@@ -2392,7 +2400,7 @@ def download_with_mirror_fallback(
                     r2_hits += 1
                     total_bytes += size
                     transferred_bytes += size
-                elif kind == "hf":
+                elif kind in ("hf", "hf_streamed"):
                     hf_hits += 1
                     total_bytes += size
                     transferred_bytes += size
@@ -2405,7 +2413,7 @@ def download_with_mirror_fallback(
                     # broken symlink / disappearing snapshot path), since
                     # ``add(0)`` is a no-op anyway. Belt-and-braces against
                     # future refactors that might surface a non-int ``size``.
-                    if isinstance(size, int) and size > 0:
+                    if kind == "hf" and isinstance(size, int) and size > 0:
                         progress_tracker.add(size)
                 elif kind == "cached":
                     # Already present — count as r2/hf-neutral but include
@@ -2435,7 +2443,7 @@ def download_with_mirror_fallback(
                 # round-1 NIT on PR #657.
                 if kind == "r2":
                     tag = f"{DIM}R2 ({size / 1e6:.0f} MB){RESET}"
-                elif kind == "hf":
+                elif kind in ("hf", "hf_streamed"):
                     tag = f"{DIM}HF ({size / 1e6:.0f} MB, fallback){RESET}"
                 elif kind == "cached":
                     tag = f"{DIM}cached ({size / 1e6:.0f} MB){RESET}"
