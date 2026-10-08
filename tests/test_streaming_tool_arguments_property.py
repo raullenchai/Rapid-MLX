@@ -360,7 +360,45 @@ def test_seed_oss_valid_call_before_malformed_coalesced_close():
     )
     expected_calls = [(call["name"], call["arguments"]) for call in expected.tool_calls]
     cut = first.index("<parameter=")
-    assert _run("seed_oss", wire, request, [wire[:cut], wire[cut:]]) == expected_calls
+    for chunks in (
+        [wire[:cut], wire[cut:]],
+        list(wire),
+        *([wire[:i], wire[i:]] for i in range(1, len(wire))),
+    ):
+        assert _run("seed_oss", wire, request, chunks) == expected_calls
+
+
+def test_seed_oss_single_incomplete_parameter_recovers_at_every_boundary():
+    wire = (
+        "<seed:tool_call><function=lookup><parameter=text>unfinished"
+        "</function></seed:tool_call>"
+    )
+    request = _request("lookup")
+    expected = ToolParserManager.get_tool_parser("seed_oss")(None).extract_tool_calls(
+        wire, request
+    )
+    expected_calls = [(call["name"], call["arguments"]) for call in expected.tool_calls]
+    assert json.loads(expected_calls[0][1]) == {"text": "unfinished</function>"}
+    for chunks in (list(wire), *([wire[:i], wire[i:]] for i in range(1, len(wire)))):
+        assert _run("seed_oss", wire, request, chunks) == expected_calls
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    ["", "</parameter>", "</parameter></function>"],
+)
+def test_seed_oss_truncated_xml_still_closes_streamed_json(suffix):
+    wire = "<seed:tool_call><function=lookup><parameter=text>hello" + suffix
+    request = _request("lookup")
+    expected = ToolParserManager.get_tool_parser("seed_oss")(None).extract_tool_calls(
+        wire, request
+    )
+    expected_calls = [(call["name"], call["arguments"]) for call in expected.tool_calls]
+    assert expected_calls
+    for chunks in (list(wire), [wire]):
+        actual = _run("seed_oss", wire, request, chunks)
+        assert actual == expected_calls
+        json.loads(actual[0][1])
 
 
 def test_seed_oss_wrapped_call_followed_by_bare_function_close():
@@ -393,10 +431,11 @@ def test_seed_oss_coalesced_close_keeps_one_available_fragment():
     assert delta and delta["tool_calls"][0]["function"]["arguments"]
 
 
-def test_seed_oss_finalizer_waits_while_function_is_open():
+def test_seed_oss_finalizer_does_not_replay_completed_call():
     parser = ToolParserManager.get_tool_parser("seed_oss")(None)
-    parser.in_function = True
-    assert parser.finalize_legacy_raw_stream(CANONICAL_WIRES["seed_oss"]) is None
+    wire = CANONICAL_WIRES["seed_oss"]
+    parser.prev_tool_call_arr = parser.extract_tool_calls(wire).tool_calls
+    assert parser.finalize_legacy_raw_stream(wire) is None
 
 
 def test_qwen3_coder_plain_content_is_not_replayed_at_end():
