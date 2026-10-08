@@ -110,6 +110,8 @@ def _stream(
         response.raise_for_status()
         for line in response.iter_lines():
             if line == "data: [DONE]":
+                if not path.endswith("chat/completions"):
+                    raise RuntimeError(f"unexpected terminal event: {path}")
                 finished = True
                 break
             if not line.startswith("data: "):
@@ -120,7 +122,10 @@ def _stream(
             if path.endswith("chat/completions"):
                 if event.get("usage") is not None:
                     usage = event["usage"]
-                    final_usage = True
+                    final_usage = isinstance(usage, dict) and all(
+                        isinstance(usage.get(key), int) and usage[key] > 0
+                        for key in ("prompt_tokens", "completion_tokens")
+                    )
                 delta = (event.get("choices") or [{}])[0].get("delta") or {}
                 fragment = delta.get("content") or ""
                 if fragment and first is None:
@@ -148,9 +153,18 @@ def _stream(
                 if event_type == "message_start":
                     usage = event.get("message", {}).get("usage") or usage
                 elif event_type == "message_delta":
-                    if event.get("usage") is not None:
-                        usage.update(event["usage"])
-                        final_usage = True
+                    delta_usage = event.get("usage")
+                    if isinstance(delta_usage, dict):
+                        usage.update(delta_usage)
+                        final_usage = (
+                            isinstance(usage.get("input_tokens"), int)
+                            and isinstance(usage.get("cache_read_input_tokens", 0), int)
+                            and usage["input_tokens"]
+                            + usage.get("cache_read_input_tokens", 0)
+                            > 0
+                            and isinstance(delta_usage.get("output_tokens"), int)
+                            and delta_usage["output_tokens"] > 0
+                        )
                 elif event_type == "content_block_start":
                     block = event.get("content_block") or {}
                     if block.get("type") == "tool_use":

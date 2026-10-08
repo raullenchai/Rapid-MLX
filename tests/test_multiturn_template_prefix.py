@@ -13,6 +13,7 @@ import pytest
 from rapid_mlx.api.anthropic_adapter import anthropic_to_openai
 from rapid_mlx.api.anthropic_models import AnthropicRequest
 from rapid_mlx.api.utils import extract_multimodal_content
+from rapid_mlx.memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig
 from rapid_mlx.utils.chat_template import apply_chat_template
 
 TEMPLATE = (Path(__file__).parent / "fixtures/qwen35_chat_template.jinja").read_text()
@@ -210,3 +211,50 @@ def test_json_tool_output_keeps_the_boundary_but_not_the_completion():
     )
     assert following.startswith(stable)
     assert not following.startswith(current + generated_json)
+
+
+@pytest.mark.real_hf_cache
+def test_json_tool_output_fetches_the_saved_boundary():
+    """The real token IDs select the prompt boundary over divergent output."""
+    tokenizer_module = pytest.importorskip("transformers")
+    try:
+        tokenizer = tokenizer_module.AutoTokenizer.from_pretrained(
+            "mlx-community/Qwen3.5-4B-MLX-4bit", local_files_only=True
+        )
+    except OSError:
+        pytest.skip("Qwen3.5-4B tokenizer is not cached on this host")
+
+    class FakeArray:
+        def __init__(self, nbytes: int):
+            self.nbytes = nbytes
+
+    class FakeKV:
+        def __init__(self, nbytes: int):
+            self.keys = FakeArray(nbytes)
+            self.values = FakeArray(nbytes)
+
+    messages = [
+        {"role": "system", "content": SYSTEM},
+        {"role": "user", "content": "Search module.py"},
+    ]
+    current = _render("chat", messages, add_generation_prompt=True)
+    stable = _render("chat", messages, add_generation_prompt=False)
+    generated_json = (
+        '<tool_call>\n{"name": "search", "arguments": {"path": "module_0.py"}}'
+        "\n</tool_call><|im_end|>"
+    )
+    boundary = tokenizer.encode(stable)[:-8]
+    completion = tokenizer.encode(current + generated_json)
+    messages.extend(_assistant_and_result("chat", 0))
+    messages.append({"role": "user", "content": "Continue"})
+    following = tokenizer.encode(_render("chat", messages, add_generation_prompt=True))
+
+    cache = MemoryAwarePrefixCache(
+        object(), MemoryCacheConfig(max_memory_mb=1, max_entries=2)
+    )
+    assert cache.store(boundary, [FakeKV(4)], message_boundary=True)
+    assert cache.store(completion, [FakeKV(8)], evict_prefixes=False)
+    hit, remaining = cache.fetch(following)
+    assert hit is not None
+    assert hit[0].keys.nbytes == 4
+    assert remaining == following[len(boundary) :]
