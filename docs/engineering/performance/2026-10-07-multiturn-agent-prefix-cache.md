@@ -56,6 +56,22 @@ TTFT in seconds for every turn; each cell is before / after:
 | 9 | 2.197 / 1.916 | 2.627 / 2.056 | 3.494 / 2.400 | 2.402 / 2.924 |
 | 10 | 2.326 / 1.958 | 1.749 / 1.697 | 1.826 / 2.300 | 1.995 / 2.107 |
 
+Cached-prefix tokens reported by the API on each turn were identical in the
+before and after trials:
+
+| Turn | Base chat | Base messages | MTP chat | MTP messages |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 0 | 0 | 0 | 0 |
+| 2 | 15,680 | 15,586 | 15,680 | 15,545 |
+| 3 | 15,744 | 15,647 | 15,744 | 15,606 |
+| 4 | 15,808 | 15,672 | 15,808 | 15,670 |
+| 5 | 15,872 | 15,736 | 15,872 | 15,734 |
+| 6 | 15,954 | 15,800 | 15,954 | 15,798 |
+| 7 | 16,018 | 15,904 | 16,018 | 15,862 |
+| 8 | 16,082 | 15,967 | 16,082 | 15,926 |
+| 9 | 16,146 | 16,027 | 16,146 | 15,986 |
+| 10 | 16,210 | 16,091 | 16,210 | 16,050 |
+
 The older failures in [#2310](https://github.com/raullenchai/Rapid-MLX/issues/2310)
 and [#2061](https://github.com/raullenchai/Rapid-MLX/issues/2061) did not
 reproduce on current main. Both were addressed by earlier changes. Older
