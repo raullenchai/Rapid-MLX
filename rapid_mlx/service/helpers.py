@@ -5472,7 +5472,8 @@ def enforce_context_length(
         detail = (
             f"This model's maximum context length is {max_context} tokens. "
             f"However, your prompt contains {int(prompt_tokens)} tokens, leaving "
-            "no room for generation. Start a new session or compact the "
+            "no room for generation. Please reduce the length of the messages. "
+            "Start a new session or compact the "
             "conversation, or use a model with a larger context window."
         )
         requested = get_config().context_length
