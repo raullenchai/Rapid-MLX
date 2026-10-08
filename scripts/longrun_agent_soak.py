@@ -41,6 +41,7 @@ FIELDS = (
     "successes",
     "errors",
     "disconnects",
+    "cancellations",
     "stream",
     "nonstream",
     "tool",
@@ -70,15 +71,22 @@ def percentile(values, fraction):
 
 def process_stats(pid):
     result = subprocess.run(
-        ["ps", "-o", "rss=,thcount=", "-p", str(pid)],
+        ["ps", "-o", "rss=", "-p", str(pid)],
         capture_output=True,
         text=True,
         timeout=10,
         check=False,
     )
     parts = result.stdout.split()
-    rss = round(int(parts[0]) / 1024, 1) if len(parts) >= 2 else ""
-    threads = int(parts[1]) if len(parts) >= 2 else ""
+    rss = round(int(parts[0]) / 1024, 1) if parts else ""
+    thread_result = subprocess.run(
+        ["ps", "-M", "-p", str(pid)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    threads = max(0, len(thread_result.stdout.splitlines()) - 1)
     files = subprocess.run(
         ["lsof", "-p", str(pid), "-Fn"],
         capture_output=True,
@@ -110,12 +118,13 @@ class Soak:
             limits=httpx.Limits(max_connections=args.concurrency + 4),
         )
 
-    def record(self, kind, started, error=None, disconnected=False):
+    def record(self, kind, started, error=None, disconnected=False, cancelled=False):
         event = {
             "kind": kind,
             "latency_ms": round((time.monotonic() - started) * 1000, 1),
             "error": error,
             "disconnected": disconnected,
+            "cancelled": cancelled,
         }
         self.events.append(event)
         self.totals[kind] += 1
@@ -123,6 +132,8 @@ class Soak:
         self.totals["errors" if error else "successes"] += 1
         if disconnected:
             self.totals["disconnects"] += 1
+        if cancelled:
+            self.totals["cancellations"] += 1
         if error:
             self.errors.write(
                 json.dumps(
@@ -136,7 +147,9 @@ class Soak:
         sequence = self.sequence
         self.sequence += 1
         kind = (
-            "disconnect"
+            "cancel"
+            if sequence % 23 == 22
+            else "disconnect"
             if sequence % 13 == 12
             else "tool"
             if sequence % 5 == 4
@@ -162,9 +175,9 @@ class Soak:
                 {"role": "system", "content": SHARED_PREFIX},
                 {"role": "user", "content": prompt},
             ],
-            "max_tokens": 80 if kind != "disconnect" else 512,
+            "max_tokens": 512 if kind in {"disconnect", "cancel"} else 80,
             "temperature": 0,
-            "stream": kind in {"stream", "disconnect", "long_prompt"},
+            "stream": kind in {"stream", "disconnect", "cancel", "long_prompt"},
         }
         if kind == "tool":
             payload["tools"] = TOOLS
@@ -172,6 +185,7 @@ class Soak:
         started = time.monotonic()
         error = None
         disconnected = False
+        cancelled = False
         try:
             if payload["stream"]:
                 chunks = 0
@@ -190,8 +204,13 @@ class Soak:
                         if kind == "disconnect" and chunks >= 3:
                             disconnected = True
                             break
+                        if kind == "cancel" and chunks >= 3:
+                            asyncio.current_task().cancel()
+                            await asyncio.sleep(0)
                 if kind == "disconnect" and not disconnected:
                     error = "disconnect stream ended before 3 chunks"
+                elif kind == "cancel":
+                    error = "cancel stream ended before 3 chunks"
                 elif not disconnected and not done:
                     error = "stream missing [DONE]"
             else:
@@ -206,9 +225,36 @@ class Soak:
                     "tool_calls"
                 ):
                     error = "required tool call absent"
+                elif kind == "tool":
+                    assistant = body["choices"][0]["message"]
+                    replies = [
+                        {
+                            "role": "tool",
+                            "tool_call_id": call["id"],
+                            "content": "Found parse_request in server.py.",
+                        }
+                        for call in assistant["tool_calls"]
+                    ]
+                    followup = {
+                        **payload,
+                        "messages": payload["messages"] + [assistant, *replies],
+                        "tool_choice": "none",
+                        "max_tokens": 40,
+                    }
+                    followup_response = await self.client.post(
+                        self.args.url + "/v1/chat/completions", json=followup
+                    )
+                    followup_response.raise_for_status()
+                    if not followup_response.json().get("choices"):
+                        error = "tool follow-up has no choices"
+        except asyncio.CancelledError:
+            if kind == "cancel":
+                cancelled = True
+            else:
+                raise
         except Exception as exc:
             error = f"{type(exc).__name__}: {str(exc)[:240]}"
-        self.record(kind, started, error, disconnected)
+        self.record(kind, started, error, disconnected, cancelled)
 
     async def worker(self, index):
         while time.monotonic() < self.stop:
@@ -228,6 +274,7 @@ class Soak:
             successes=sum(not event["error"] for event in events),
             errors=sum(bool(event["error"]) for event in events),
             disconnects=sum(event["disconnected"] for event in events),
+            cancellations=sum(event["cancelled"] for event in events),
             stream=counts["stream"],
             nonstream=counts["nonstream"],
             tool=counts["tool"],
