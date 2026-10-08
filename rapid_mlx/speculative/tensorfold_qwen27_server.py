@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import functools
 import hashlib
+import importlib
 import json
 import logging
 import os
@@ -19,6 +20,7 @@ from typing import Any, cast
 
 from rapid_mlx.request import RequestOutput
 
+from .request_policy import RequestRefused
 from .tensorfold_qwen27 import TensorFoldQwen27Backend, validate_request
 
 logger = logging.getLogger(__name__)
@@ -117,6 +119,23 @@ def _prompt_boundaries(
         if system_len and 512 <= position < len(prompt_ids)
     )
     return history_len, shared
+
+
+def _as_refusal(error: BaseException) -> BaseException:
+    """Map the runtime's request refusals to a client error instead of a 500."""
+    try:
+        errors = importlib.import_module("tensorfold.server.errors")
+    except ImportError:
+        return error
+    request_error = getattr(errors, "RequestError", None)
+    if request_error is None or not isinstance(error, request_error):
+        return error
+    capacity_error = getattr(errors, "CapacityError", None)
+    refusal = RequestRefused(str(error))
+    if capacity_error is not None and isinstance(error, capacity_error):
+        refusal.status_code = 503
+    refusal.__cause__ = error
+    return refusal
 
 
 class TensorFoldRequestProvider:
@@ -246,7 +265,7 @@ class TensorFoldRequestProvider:
                     outputs.append(output)
                     yield output
             if job.error is not None:
-                raise job.error
+                raise _as_refusal(job.error)
             # Flush text held while it could still be a partial stop string and
             # verify that the streamed surface exactly reconstructs the final
             # batch decode. SSE cannot retract bytes, so fail closed if a future
@@ -566,6 +585,9 @@ def run_tensorfold_qwen27_server(
             supports_reasoning_budget=supports_reasoning_budget,
         ),
         backend_name=backend_label,
+        # One request holds the only lane, so a prompt past the model's
+        # window must be refused before it is prefilled.
+        enforce_model_window=True,
         speculative_info=speculative_info,
         model_info=model_info,
         runtime_status_extra={

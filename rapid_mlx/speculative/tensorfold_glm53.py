@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from .tensorfold_families import _prompt_cache_bytes
 from .tensorfold_qwen27 import TensorFoldQwen27Backend, TensorFoldUnavailable
 from .tensorfold_runtime import (
     INSTALL_HINT as INSTALL_HINT,
@@ -197,8 +198,8 @@ class TensorFoldGLM53Backend(TensorFoldQwen27Backend):
             default_max_tokens=int(max_tokens),
             context_window=int(context_window),
             enable_thinking=True,
-            checkpoint_slots=0,
-            checkpoint_budget_bytes=None,
+            checkpoint_slots=None,
+            checkpoint_budget_bytes=_prompt_cache_bytes(),
             memory_budget_bytes=memory_limit,
             use_proposer=True,
             snapshot_dir=None,

@@ -571,6 +571,10 @@ def test_glm_loader_uses_family_memory_and_lane_contracts(
     assert seen["app"]["max_draft"] == 15
     assert seen["app"]["enable_thinking"] is True
     assert seen["app"]["context_window"] == 4096
+    # The prompt store is on, so a follow-up turn resumes from the last one.
+    assert seen["app"]["checkpoint_slots"] is None
+    assert seen["app"]["checkpoint_budget_bytes"] == adapter._prompt_cache_bytes()
+    assert 0 < adapter._prompt_cache_bytes() <= 16 * 1024**3
     engine_keywords = seen["app"]["engine_factory"].keywords
     assert engine_keywords["prefill_pass"] == 8
     assert engine_keywords["pass_cache"] == 16 * 1024**3
