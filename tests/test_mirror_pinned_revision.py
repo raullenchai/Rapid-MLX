@@ -344,9 +344,11 @@ def test_pinned_snapshot_download_uses_the_local_snapshot_offline(monkeypatch):
 
     # A snapshot that is not on disk still fails, with the Hub's own error.
     missing = LocalEntryNotFoundError("no cached snapshot")
-    with patch("huggingface_hub.snapshot_download", side_effect=[offline, missing]):
-        with pytest.raises(LocalEntryNotFoundError):
-            _mirror.pinned_snapshot_download(REPO, PIN)
+    with (
+        patch("huggingface_hub.snapshot_download", side_effect=[offline, missing]),
+        pytest.raises(LocalEntryNotFoundError),
+    ):
+        _mirror.pinned_snapshot_download(REPO, PIN)
 
 
 def test_pinned_snapshot_download_never_mirrors_a_moving_revision(monkeypatch):
