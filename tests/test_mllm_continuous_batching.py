@@ -370,6 +370,26 @@ class TestMultimodalProcessorBatch:
         assert result.input_ids.tolist() == [[1, 2, 3]]
         assert result.num_tokens == 3
 
+    def test_process_keeps_the_no_opencv_video_error_typed(self, monkeypatch):
+        """Streaming exposes only ClientRequestError text, so the no-OpenCV
+        rejection must not be re-wrapped as a plain ValueError."""
+        from rapid_mlx import multimodal_processor as mp
+        from rapid_mlx.models import mllm as mllm_models
+        from rapid_mlx.request import ClientRequestError
+
+        def no_opencv(_path, **_kwargs):
+            raise ClientRequestError(mllm_models.VIDEO_INPUT_UNAVAILABLE_MESSAGE)
+
+        monkeypatch.setattr(mp, "process_video_input", lambda video: video)
+        monkeypatch.setattr(mp, "extract_video_frames_smart", no_opencv)
+        processor = mp.MultimodalProcessor(
+            SimpleNamespace(), SimpleNamespace(tokenizer=object())
+        )
+
+        with pytest.raises(ClientRequestError) as caught:
+            processor.process("describe", videos=["clip.mp4"])
+        assert str(caught.value) == mllm_models.VIDEO_INPUT_UNAVAILABLE_MESSAGE
+
     def test_batch_pixel_values_empty(self):
         """Test batching empty pixel values."""
         from rapid_mlx.multimodal_processor import MultimodalProcessor

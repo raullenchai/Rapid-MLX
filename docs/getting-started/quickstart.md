@@ -90,8 +90,8 @@ rapid-mlx-chat
 
 ## Multimodal Models
 
-For image / video understanding, use a VLM (requires the `[vision]` extra —
-`pip install 'rapid-mlx[vision]'`):
+For image / video understanding, use a VLM (the vision runtime ships with the
+base install):
 
 ```bash
 rapid-mlx serve gemma-4-26b-4bit --mllm --port 8000

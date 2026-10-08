@@ -2924,7 +2924,7 @@ def test_incompatible_mlx_vlm_names_bounded_extension_repair(tmp_path):
     )
     assert row.status is eh.CheckStatus.FAIL
     assert "requires ==0.7.2" in row.label
-    assert "rapid-mlx[vision]" in row.label
+    assert "rapid-mlx==" in row.label
     assert "transformers>=5.0.0,!=5.13.0,<5.16" in row.label
     assert str(runtime.resolve()) in row.label
 
@@ -5591,3 +5591,76 @@ def test_probe_record_escape_cannot_claim_trusted_anchor(
     entry = probe["packages"]["dogfoodns-stub"]
     assert entry["trusted_origin"] is True
     assert entry["version"] != "9.9.9", entry
+
+
+def test_homebrew_libexec_interpreter_is_labelled_homebrew_not_virtualenv(
+    tmp_path, monkeypatch
+):
+    """The formula's libexec venv must not be offered pip repairs."""
+    libexec_python = (
+        (tmp_path / "opt" / "homebrew" / "Cellar" / "rapid-mlx" / "0.15.8")
+        / "libexec"
+        / "bin"
+        / "python"
+    )
+    libexec_python.parent.mkdir(parents=True)
+    libexec_python.write_text("#!/bin/sh\n")
+    monkeypatch.setenv("VIRTUAL_ENV", str(libexec_python.parent.parent))
+    monkeypatch.setattr(eh.sys, "prefix", str(libexec_python.parent.parent))
+    monkeypatch.setattr(eh.sys, "base_prefix", str(tmp_path / "python@3.14"))
+
+    label, path = eh._install_location(libexec_python)
+    assert label == "Homebrew"
+    assert path == libexec_python.absolute()
+
+
+def test_homebrew_absent_mlx_vlm_points_at_the_full_pypi_install(tmp_path):
+    runtime = (
+        (tmp_path / "opt" / "homebrew" / "Cellar" / "rapid-mlx" / "0.15.8")
+        / "libexec"
+        / "bin"
+        / "python"
+    )
+    runtime.parent.mkdir(parents=True)
+    runtime.write_text("")
+
+    with (
+        mock.patch.object(eh.sys, "executable", str(runtime)),
+        mock.patch.object(eh, "_safe_version", return_value=None),
+        mock.patch.object(eh, "_module_available", return_value=False),
+    ):
+        section = eh.section_optional_packages()
+
+    row = next(c for c in section.checks if c.label.startswith("mlx-vlm (vision"))
+    assert row.status is eh.CheckStatus.WARN
+    assert "The Homebrew formula includes the text runtime" in row.label
+    assert "brew uninstall rapid-mlx && uv tool install 'rapid-mlx==" in row.label
+    assert "pip install" not in row.label
+
+
+def test_homebrew_incompatible_mlx_vlm_points_at_the_full_pypi_install(tmp_path):
+    runtime = (
+        (tmp_path / "opt" / "homebrew" / "Cellar" / "rapid-mlx" / "0.15.8")
+        / "libexec"
+        / "bin"
+        / "python"
+    )
+    runtime.parent.mkdir(parents=True)
+    runtime.write_text("")
+
+    def fake_ver(dist: str, runtime=None) -> str | None:
+        return "0.7.0" if dist == "mlx-vlm" else None
+
+    with (
+        mock.patch.object(eh.sys, "executable", str(runtime)),
+        mock.patch.object(eh, "_safe_version", side_effect=fake_ver),
+    ):
+        section = eh.section_optional_packages()
+
+    row = next(
+        c
+        for c in section.checks
+        if c.label.startswith("mlx-vlm (vision") and "incompatible" in c.label
+    )
+    assert "The Homebrew formula includes the text runtime" in row.label
+    assert "pip install" not in row.label

@@ -173,7 +173,7 @@ def test_base_install_gemma4_boots_text_only_with_warning(monkeypatch, capsys):
     err = capsys.readouterr().err
     assert err.count("warning: vision runtime absent") == 1
     assert "image and video input" in err
-    assert "rapid-mlx[vision]==" in err
+    assert "rapid-mlx==" in err
 
 
 def _cold_cache_with_boot_prefetch(monkeypatch, config) -> dict:
@@ -252,7 +252,7 @@ def test_base_install_gemma4_fresh_cache_degrades(monkeypatch, capsys):
     err = capsys.readouterr().err
     assert err.count("warning: vision runtime absent") == 1
     assert "image and video input" in err
-    assert "[vision]" in err  # the repair command, not a guard failure
+    assert "rapid-mlx==" in err  # the repair command, not a guard failure
 
 
 DIRECT_QWEN3_VL_REPO = "example-org/Qwen3-VL-8B-Instruct-abliterated-4bit"
@@ -309,7 +309,7 @@ def test_base_install_direct_repo_without_prefetch_keeps_guard(monkeypatch, caps
     assert exc_info.value.code == 2
     assert state["fetched"] == [DIRECT_QWEN3_VL_REPO]
     err = capsys.readouterr().err
-    assert "[vision]" in err
+    assert "rapid-mlx==" in err
     assert "warning: vision runtime absent" not in err
 
 
@@ -331,7 +331,7 @@ def test_base_install_direct_repo_unlisted_arch_keeps_guard(monkeypatch, capsys)
     assert exc_info.value.code == 2
     assert state["fetched"] == [repo]
     err = capsys.readouterr().err
-    assert "[vision]" in err
+    assert "rapid-mlx==" in err
     assert "warning: vision runtime absent" not in err
 
 
@@ -537,7 +537,7 @@ def test_bonsai2_pack_still_requires_vision_extra(monkeypatch, capsys):
     with pytest.raises(SystemExit) as exc_info:
         cli.serve_command(args)
     assert exc_info.value.code == 2
-    assert "[vision]" in capsys.readouterr().err
+    assert "rapid-mlx==" in capsys.readouterr().err
     # The boot prefetch targets the profile's repo even when the probe then
     # fails closed (the pack is not text-capable) — once, and nothing more.
     assert fetched == ["prism-ml/Ternary-Bonsai-2-27B-mlx-2bit"]

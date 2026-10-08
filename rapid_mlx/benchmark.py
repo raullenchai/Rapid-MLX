@@ -687,8 +687,7 @@ def download_test_image(url: str, timeout: int = 30) -> "Image.Image":
         from .runtime.optional_runtime import optional_extra_install_hint
 
         raise ImportError(
-            "Image benchmarks require Pillow, which is included in the "
-            "optional vision dependencies.\n" + optional_extra_install_hint("vision")
+            "Image benchmarks require Pillow.\n" + optional_extra_install_hint("vision")
         )
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"

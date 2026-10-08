@@ -494,17 +494,17 @@ def require_mlx_vlm_or_exit(model_name: str, *, text_diffusion: bool = False) ->
     elif text_diffusion:
         message = (
             f"error: model {model_name!r} is a text-diffusion alias and runs "
-            f"on the mlx-vlm DiffusionGemma runtime, which requires the "
-            f"optional `mlx-vlm` dependency (shipped with the [vision] "
-            f"extra).\n" + VLM_EXTRA_INSTALL_HINT
+            f"on the mlx-vlm DiffusionGemma runtime; `mlx-vlm` ships with "
+            f"rapid-mlx but is missing from this environment.\n"
+            + VLM_EXTRA_INSTALL_HINT
         )
         marker_reason = "runtime_extra_missing"
         runtime_status = "absent"
     else:
         message = (
             f"error: model {model_name!r} is a vision/multimodal alias and "
-            f"requires the optional `mlx-vlm` dependency (shipped with the "
-            f"[vision] extra).\n" + VLM_EXTRA_INSTALL_HINT + "\n"
+            f"requires the `mlx-vlm` runtime, which ships with rapid-mlx but "
+            f"is missing from this environment.\n" + VLM_EXTRA_INSTALL_HINT + "\n"
             "Or, if this checkpoint has a text-capable backbone and you only "
             "need text output, `--no-mllm` boots the text-only lane straight "
             "from the base wheel (no mlx-vlm, drops image/vision input)."
@@ -567,8 +567,9 @@ def _require_mlx_vlm(model_name: str | None = None) -> None:
         install_hint=VLM_EXTRA_INSTALL_HINT,
         status="absent",
         detail=(
-            f"Vision/multimodal models{model_context} require the optional `mlx-vlm` "
-            "dependency.\n" + VLM_EXTRA_INSTALL_HINT
+            f"Vision/multimodal models{model_context} require the `mlx-vlm` "
+            "runtime, which is missing from this environment.\n"
+            + VLM_EXTRA_INSTALL_HINT
         ),
     )
 
@@ -1444,6 +1445,13 @@ def smart_nframes(
     return int(nframes)
 
 
+VIDEO_INPUT_UNAVAILABLE_MESSAGE = (
+    "Failed to process video: video input needs OpenCV (opencv-python), which "
+    "this Rapid-MLX installation does not include — Rapid-MLX Desktop omits it. "
+    "Send sampled frames as images instead, or use the pip install."
+)
+
+
 def extract_video_frames_smart(
     video_path: str,
     fps: float = DEFAULT_FPS,
@@ -1464,8 +1472,13 @@ def extract_video_frames_smart(
     """
     try:
         import cv2
-    except ImportError:
-        raise ImportError("opencv-python is required for video processing")
+    except ImportError as exc:
+        # Rapid-MLX Desktop deliberately omits OpenCV (its macOS wheels embed
+        # a GPL-configured FFmpeg). Reject the request with a client-safe 400
+        # instead of letting the ImportError abort the engine as a 503.
+        from rapid_mlx.request import ClientRequestError
+
+        raise ClientRequestError(VIDEO_INPUT_UNAVAILABLE_MESSAGE) from exc
 
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():

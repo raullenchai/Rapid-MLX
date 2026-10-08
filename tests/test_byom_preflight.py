@@ -287,7 +287,7 @@ def test_vlm_snapshot_matches_pinned_runtime():
     from rapid_mlx.byom import _vlm_model_types as snap
 
     pin = re.search(
-        r'"mlx-vlm==([^"]+)"', (REPO_ROOT / "pyproject.toml").read_text()
+        r'"mlx-vlm==([^";]+)', (REPO_ROOT / "pyproject.toml").read_text()
     ).group(1)
     assert pin == snap.MLX_VLM_PIN
     live = pf._installed_types(

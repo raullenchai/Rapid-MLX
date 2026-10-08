@@ -225,7 +225,7 @@ class VideoGenerationEngine:
             from rapid_mlx.runtime.optional_runtime import optional_extra_install_hint
 
             raise VideoBackendUnavailableError(
-                "CogVideoX requires the rapid-mlx[video] dependencies. "
+                "CogVideoX requires the video runtime dependencies. "
                 + optional_extra_install_hint("video")
             ) from exc
 

@@ -70,13 +70,13 @@ def test_lazy_benchmark_hints_are_pinned(monkeypatch) -> None:
     from rapid_mlx import benchmark
 
     monkeypatch.setattr(benchmark, "Image", None)
-    with pytest.raises(ImportError, match=r"rapid-mlx\[vision\]=="):
+    with pytest.raises(ImportError, match=r"rapid-mlx=="):
         benchmark.download_test_image("https://invalid.example")
 
     monkeypatch.setattr(benchmark, "cv2", None)
-    with pytest.raises(ImportError, match=r"rapid-mlx\[vision\]=="):
+    with pytest.raises(ImportError, match=r"rapid-mlx=="):
         benchmark.create_test_video()
-    with pytest.raises(ImportError, match=r"rapid-mlx\[vision\]=="):
+    with pytest.raises(ImportError, match=r"rapid-mlx=="):
         benchmark.get_video_info("missing.mp4")
 
 
@@ -199,18 +199,18 @@ def test_mllm_and_video_lazy_import_failures_use_pinned_hints(monkeypatch) -> No
 
     monkeypatch.setitem(sys.modules, "mlx_vlm", None)
     monkeypatch.setattr(mllm_module, "_require_mlx_vlm", lambda *_a, **_kw: None)
-    with pytest.raises(ImportError, match=r"rapid-mlx\[vision\]=="):
+    with pytest.raises(ImportError, match=r"rapid-mlx=="):
         MLXMultimodalLM("local/model").load()
 
     monkeypatch.setattr(dflash_runtime, "have_runtime", lambda: False)
-    with pytest.raises(RuntimeError, match=r"rapid-mlx\[dflash\]=="):
+    with pytest.raises(RuntimeError, match=r"rapid-mlx=="):
         dflash_runtime.load_runtime("local/drafter")
 
     monkeypatch.setitem(sys.modules, "mlx_video", None)
     monkeypatch.setattr(
         "rapid_mlx.runtime.video_lane._resolve_ffmpeg", lambda: "ffmpeg"
     )
-    with pytest.raises(VideoRuntimeError, match=r"rapid-mlx\[video\]=="):
+    with pytest.raises(VideoRuntimeError, match=r"rapid-mlx=="):
         VideoEngine("ltx-2.3").generate(
             prompt="test",
             output_path=Path("unused.mp4"),
@@ -223,7 +223,7 @@ def test_mllm_and_video_lazy_import_failures_use_pinned_hints(monkeypatch) -> No
         )
 
     engine = VideoGenerationEngine("cog/model")
-    with pytest.raises(VideoBackendUnavailableError, match=r"rapid-mlx\[video\]=="):
+    with pytest.raises(VideoBackendUnavailableError, match=r"rapid-mlx=="):
         engine._load_sync()
 
 

@@ -50,8 +50,8 @@ def image_runtime_issue(model_name: str | None = None) -> str | None:
         from .optional_runtime import optional_extra_install_hint
 
         return (
-            "image generation requires the `rapid-mlx[image]` "
-            "Python extra. " + optional_extra_install_hint("image")
+            f"image generation requires the `{runtime_module}` runtime. "
+            + optional_extra_install_hint("image")
         )
     return None
 
@@ -70,9 +70,15 @@ def require_image_runtime_or_exit(model_name: str | None = None) -> None:
             if "requires Python 3.11 or newer" in issue
             else "runtime_extra_missing"
         )
+        from .base_runtime import python_upgrade_hint
+
         raise OptionalRuntimeMissing(
             extra="image",
-            install_hint=optional_extra_install_hint("image"),
+            install_hint=(
+                python_upgrade_hint()
+                if reason == "python_version_unsupported"
+                else optional_extra_install_hint("image")
+            ),
             detail=f"\n  Error: {issue.rstrip()}\n",
             status=(
                 "incompatible" if reason == "python_version_unsupported" else "absent"

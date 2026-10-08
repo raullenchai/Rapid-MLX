@@ -264,7 +264,10 @@ def _probe_video_artifact_unbounded(path: str) -> tuple[int, int, int, float]:
             return _probe_video_with_ffmpeg(
                 path, ffmpeg, desktop_bundle=_is_sidecar_bundled_ffmpeg(ffmpeg)
             )
-        raise RuntimeError("video artifact validation requires rapid-mlx[video]")
+        raise RuntimeError(
+            "video artifact validation requires ffmpeg "
+            "(bundled with rapid-mlx's video runtime)"
+        )
 
     try:
         reader = imageio.get_reader(path, format="ffmpeg")

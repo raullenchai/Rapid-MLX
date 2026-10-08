@@ -49,4 +49,5 @@ def test_cogvideox_docs_require_no_source_checkout() -> None:
     section = guide.split("## CogVideoX-Fun", 1)[1]
     assert "git clone" not in section
     assert "export PYTHONPATH" not in section
-    assert "pip install 'rapid-mlx[video]'" in section
+    # The video runtime ships with the base install; no extra step.
+    assert "rapid-mlx[video]" not in section

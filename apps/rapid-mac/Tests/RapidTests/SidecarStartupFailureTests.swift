@@ -46,7 +46,7 @@ struct SidecarStartupFailureTests {
         #expect(failure?.reason == .runtimeExtraMissing)
         #expect(failure?.extra == .video)
         #expect(failure?.message ==
-            "The installed engine doesn't include Video support. Open Startup Log for installation details.")
+            "The bundled Video runtime is missing from this copy of Rapid-MLX Desktop. Reinstall Rapid-MLX Desktop to restore it.")
         #expect(failure?.action == .openStartupLog)
 
         let readiness = ModelReadiness.resolve(
@@ -57,6 +57,27 @@ struct SidecarStartupFailureTests {
         )
         #expect(readiness.action == .openStartupLog)
         #expect(readiness.detail == failure?.message)
+    }
+
+    @Test("bundled runtimes ask for a reinstall; audio keeps install guidance")
+    func bundledRuntimesAskForReinstall() {
+        for extra in ["vision", "image", "video"] {
+            let capture = SidecarStartupFailureCapture()
+            capture.ingest(
+                Data("RAPID-MLX-STARTUP-FAILURE: runtime_extra_missing extra=\(extra)\n".utf8),
+                source: .sidecarStderr
+            )
+            #expect(capture.failure?.extra?.isBundled == true)
+            #expect(capture.failure?.message.contains("Reinstall Rapid-MLX Desktop") == true)
+        }
+        let audio = SidecarStartupFailureCapture()
+        audio.ingest(
+            Data("RAPID-MLX-STARTUP-FAILURE: runtime_extra_missing extra=audio\n".utf8),
+            source: .sidecarStderr
+        )
+        #expect(audio.failure?.extra?.isBundled == false)
+        #expect(audio.failure?.message ==
+            "The installed engine doesn't include Audio support. Open Startup Log for installation details.")
     }
 
     @Test("model-not-found marker becomes actionable Hub guidance")

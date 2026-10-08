@@ -79,7 +79,8 @@ def run_native_mtp_server(
     except ImportError as exc:
         raise RuntimeError(
             "native MTP requires "
-            f"mlx-vlm {QUALIFIED_MLX_VLM_VERSION}; install rapid-mlx[mtp]"
+            f"mlx-vlm {QUALIFIED_MLX_VLM_VERSION}, which ships with rapid-mlx; "
+            "reinstall rapid-mlx"
         ) from exc
 
     # Reuse the established serial speculative server's thread-affine API and

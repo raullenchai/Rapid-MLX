@@ -107,7 +107,7 @@ def test_gemma4_load_fallback_prints_validated_runtime(monkeypatch, capsys):
     )
     assert cli._run_submit_flow(args) == 2
     out = capsys.readouterr().out
-    assert "rapid-mlx[vision]" in out
+    assert "rapid-mlx==" in out
     assert "pip install --no-deps 'mlx-vlm==0.7.2'" in out
 
 

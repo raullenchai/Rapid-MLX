@@ -109,7 +109,7 @@ def require_mlx_embeddings_or_exit(model_name: str | None = None) -> None:
         if importlib.util.find_spec("mlx_vlm") is not None:
             return
         print(
-            "error: EmbeddingGemma 2 requires the [vision] native runtime. "
+            "error: EmbeddingGemma 2 requires the mlx-vlm native runtime. "
             + optional_extra_install_hint("vision"),
             file=sys.stderr,
         )
