@@ -21,6 +21,8 @@ boundary without flaky BPE drift.
 
 from __future__ import annotations
 
+import asyncio
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -177,6 +179,50 @@ def test_expanded_media_context_error_has_token_counts_and_remedy():
     assert error.limit == 80
     assert error.detail["error"]["code"] == "context_length_exceeded"
     assert "--context-length" in error.detail["error"]["message"]
+    assert context_overflow_from_client_error(ValueError("internal")) is None
+    assert context_overflow_from_client_error(ClientRequestError("other")) is None
+
+
+@pytest.mark.parametrize(
+    "path", ["/v1/chat/completions", "/v1/responses", "/v1/messages"]
+)
+def test_late_stream_guard_preserves_context_protocol(path):
+    from rapid_mlx.request import ClientRequestError
+    from rapid_mlx.service.helpers import _disconnect_guard
+
+    async def failing_stream():
+        yield "data: first\n\n"
+        raise ClientRequestError(
+            "context_length_exceeded: prompt has 101 tokens after media "
+            "expansion, exceeding --context-length 80"
+        )
+
+    async def is_disconnected():
+        return False
+
+    async def collect():
+        request = SimpleNamespace(
+            url=SimpleNamespace(path=path), is_disconnected=is_disconnected
+        )
+        return [
+            chunk
+            async for chunk in _disconnect_guard(
+                failing_stream(), request, keepalive_seconds=0
+            )
+        ]
+
+    chunks = asyncio.run(collect())
+    assert chunks[0] == "data: first\n\n"
+    wire = "".join(chunks[1:])
+    if path == "/v1/messages":
+        assert "event: error" in wire
+        assert "prompt is too long: 101 tokens > 80 maximum" in wire
+    elif path == "/v1/responses":
+        assert "event: response.failed" in wire
+        assert "context_length_exceeded" in wire
+    else:
+        assert "context_length_exceeded" in wire
+        assert "data: [DONE]" in wire
 
 
 # ─── /v1/chat/completions ───────────────────────────────────────────
