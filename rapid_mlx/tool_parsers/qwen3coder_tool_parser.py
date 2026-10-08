@@ -556,7 +556,12 @@ class Qwen3CoderToolParser(ToolParser):
         return inner
 
     def _close_string_increment(
-        self, param_name: str, full_value: str, param_config: dict
+        self,
+        param_name: str,
+        full_value: str,
+        param_config: dict,
+        *,
+        already_converted: bool = False,
     ) -> str:
         """Emit the closing fragment for an in-flight string param now that
         ``</parameter>`` has arrived. Handles both the long-string case
@@ -564,11 +569,15 @@ class Qwen3CoderToolParser(ToolParser):
         string case (opener never emitted; emit the whole ``"name": "value"``).
         """
         if not self.in_param_opened:
-            converted = _convert_param_value(
-                full_value,
-                param_name,
-                param_config,
-                self.current_function_name or "",
+            converted = (
+                full_value
+                if already_converted
+                else _convert_param_value(
+                    full_value,
+                    param_name,
+                    param_config,
+                    self.current_function_name or "",
+                )
             )
             serialized = json.dumps(converted, ensure_ascii=False)
             prefix = "" if self.param_count == 0 else ", "
@@ -1775,7 +1784,17 @@ class Qwen3CoderToolParser(ToolParser):
                 if si == -1:
                     break
                 param_starts.append(si)
-                si += len(self.parameter_prefix)
+                header_end = tool_text.find(">", si + len(self.parameter_prefix))
+                if header_end == -1:
+                    break
+                close = self._find_parameter_close(tool_text, header_end + 1)
+                if close >= 0:
+                    si = close + len(self.parameter_end_token)
+                else:
+                    value = tool_text[header_end + 1 :]
+                    if value.lstrip().startswith('"'):
+                        break
+                    si = header_end + 1
 
             tools = None
             if self._streaming_request:
@@ -1840,7 +1859,10 @@ class Qwen3CoderToolParser(ToolParser):
                             else pv
                         )
                         frag = self._close_string_increment(
-                            self.in_param_name, close_value, param_config
+                            self.in_param_name,
+                            close_value,
+                            param_config,
+                            already_converted=json_string_pending,
                         )
                         if frag:
                             json_fragments.append(frag)

@@ -393,6 +393,25 @@ def test_qwen3_coder_keeps_fragments_before_raw_string_fallback():
     assert _run("qwen3_coder_xml", wire, request, chunks) == expected_calls
 
 
+@pytest.mark.parametrize("value", ["<parameter=text>x", "null"])
+def test_qwen3_coder_quoted_string_across_parameter_boundaries(value):
+    encoded = json.dumps(value)
+    chunks = [
+        "<tool_call><function=lookup>",
+        '<parameter=text>"',
+        encoded[1:] + "</parameter></function></tool_call>",
+    ]
+    wire = "".join(chunks)
+    request = _request("lookup")
+    expected = ToolParserManager.get_tool_parser("qwen3_coder_xml")(
+        None
+    ).extract_tool_calls(wire, request)
+    expected_calls = [(call["name"], call["arguments"]) for call in expected.tool_calls]
+    assert json.loads(expected_calls[0][1]) == {"text": value}
+    for stream_chunks in (chunks, [chunks[0], chunks[1] + chunks[2]]):
+        assert _run("qwen3_coder_xml", wire, request, stream_chunks) == expected_calls
+
+
 def test_seed_oss_parallel_functions_in_single_wrapper():
     first = CANONICAL_WIRES["seed_oss"]
     second = first.replace("lookup", "second").replace("hello", "world")
