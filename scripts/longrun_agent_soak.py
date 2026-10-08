@@ -116,7 +116,9 @@ class Soak:
         self.csv_file = open(
             args.output / "minutes.csv", "w", newline="", encoding="utf-8"
         )
-        self.writer = csv.DictWriter(self.csv_file, fieldnames=FIELDS)
+        self.writer = csv.DictWriter(
+            self.csv_file, fieldnames=FIELDS, lineterminator="\n"
+        )
         self.writer.writeheader()
         self.totals = Counter()
         self.client = httpx.AsyncClient(
