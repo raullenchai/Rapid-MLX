@@ -113,6 +113,7 @@ from ..service.helpers import (
     _wait_with_disconnect,
     build_extended_sampling_kwargs,
     context_overflow_from_client_error,
+    context_overflow_from_guided_limit,
     context_window_exhausted,
     enforce_context_length,
     enforce_context_length_for_messages,
@@ -1826,6 +1827,11 @@ async def _non_stream(
                     ) from exc
                 raise asyncio.CancelledError() from exc
             except Exception as guided_err:
+                _guided_context_error = context_overflow_from_guided_limit(
+                    engine, guided_err
+                )
+                if _guided_context_error is not None:
+                    raise _guided_context_error from guided_err
                 logger.warning(
                     "Guided generation failed mid-await on /v1/responses "
                     "strict path: %s",
@@ -4374,6 +4380,45 @@ async def _stream_responses(
             async for ev in _emit_text_delta(remaining):
                 yield ev
 
+        # Check the terminal engine state before forced tool-choice synthesis:
+        # a context-window stop cannot fulfill a tool contract.
+        _window_error = context_window_exhausted(
+            engine, prompt_tokens, completion_tokens, last_finish_reason
+        )
+        if _window_error is not None:
+            _record_failed("prompt_too_large")
+            yield _emit(
+                "response.failed",
+                {
+                    "type": "response.failed",
+                    "response": {
+                        **_initial_response_payload,
+                        "status": "failed",
+                        "error": _window_error.detail["error"],
+                        "usage": {
+                            "input_tokens": prompt_tokens,
+                            "output_tokens": completion_tokens,
+                            "total_tokens": prompt_tokens + completion_tokens,
+                            "input_tokens_details": {
+                                "cached_tokens": max(
+                                    0, min(cached_tokens, prompt_tokens)
+                                ),
+                                "cache_write_tokens": 0,
+                            },
+                            "output_tokens_details": {
+                                "reasoning_tokens": min(
+                                    max(1, len(accumulated_reasoning_text) // 4),
+                                    completion_tokens,
+                                )
+                                if accumulated_reasoning_text and completion_tokens
+                                else 0
+                            },
+                        },
+                    },
+                },
+            )
+            return
+
         # Parse tool_calls FIRST so the forced-choice deferred-text
         # resolution (Yuki F6 codex r1 BLOCKING #2) can decide whether
         # the message item should open at all.
@@ -5261,21 +5306,6 @@ async def _stream_responses(
                     "response": _stream_response_payload(
                         "failed",
                         error=cancellation_error(),
-                    ),
-                },
-            )
-            return
-
-        _window_error = context_window_exhausted(
-            engine, prompt_tokens, completion_tokens, last_finish_reason
-        )
-        if _window_error is not None:
-            yield _emit(
-                "response.failed",
-                {
-                    "type": "response.failed",
-                    "response": _stream_response_payload(
-                        "failed", error=_window_error.detail["error"]
                     ),
                 },
             )

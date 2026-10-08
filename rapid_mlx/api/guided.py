@@ -44,7 +44,11 @@ from typing import Any
 # ``from rapid_mlx.api.guided import *``. Adding an ``__all__`` would silently
 # hide every name not listed, breaking existing ``import *`` consumers; leaving
 # it off keeps all module-level public names exported.
-from .errors import GuidedGenerationCancelledError, GuidedSchemaCompileError
+from .errors import (
+    GuidedGenerationCancelledError,
+    GuidedSchemaCompileError,
+    GuidedTokenLimitError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -361,15 +365,11 @@ class GuidedGenerator:
           4. The model is advanced by that one token, appending its KV into
              the same cache.
 
-        Returns the decoded text ONLY when the grammar reached an accepting
-        (fully-satisfied) state; ``None`` otherwise — i.e. if the tokenizer
-        was unavailable, generation was truncated by ``max_tokens``
-        mid-object, or a token was rejected mid-parse. An incomplete result is
-        never returned to the caller, which treats ``None`` as an OPERATIONAL
-        guided failure: under strict mode the route surfaces a sanitized 502
-        ``strict_schema_violation`` (a server-side inability to honor the
-        constraint), and under non-strict mode it degrades to a best-effort
-        unconstrained 200.
+        Returns decoded text only when the grammar reached an accepting state.
+        An incomplete parse at ``max_tokens`` raises ``GuidedTokenLimitError``
+        with actual token counts so the route can distinguish a served context
+        stop from a smaller client output budget. Other incomplete parses
+        return ``None`` and retain the existing guided fallback behavior.
 
         Raises ``GuidedSchemaCompileError`` when llguidance rejects the grammar
         at matcher construction. ``generate_json`` CATCHES it and degrades to
@@ -519,10 +519,10 @@ class GuidedGenerator:
         # Only return output the grammar actually completed. ``is_accepting``
         # is True iff the matcher is in a state where the grammar is fully
         # satisfied and could terminate here. If we fell out of the loop on
-        # ``max_tokens`` with an unclosed object, the parse is incomplete —
-        # return None so the caller degrades on the OPERATIONAL path (strict →
-        # sanitized 502, non-strict → best-effort 200) rather than leaking a
-        # truncated JSON fragment.
+        # An unclosed object at the token budget must reach the route with its
+        # counts; only the route knows whether this was the served window.
+        if not matcher.is_accepting() and len(generated) >= max_tokens:
+            raise GuidedTokenLimitError(len(prompt_ids), len(generated))
         if not generated or not matcher.is_accepting():
             return None
         return tokenizer.decode(generated)
@@ -572,11 +572,11 @@ class GuidedGenerator:
         # ``check_schema_validity`` strict pre-flight). Any schema reaching this
         # method is therefore already structurally VALID, so this layer does NO
         # structural re-check (validate-once — no duplicate work, nothing run on
-        # the event-loop/executor thread twice). Consequently EVERY failure in
-        # this block is OPERATIONAL — a serialization edge case, an
-        # unsupported-but-valid construct, a tokenizer/model-compat issue, an
-        # internal compiler limit, or a truncated parse — NOT a caller fault.
-        # All arms degrade to ``None``, which the engine turns into the
+        # the event-loop/executor thread twice). Runtime failures here are
+        # operational; only token-budget exhaustion carries its counts to the
+        # route so it can distinguish a context stop from a smaller requested
+        # output budget. Other failures degrade to ``None``, which the engine
+        # turns into the
         # operational path (strict → sanitized 502, non-strict → best-effort
         # unconstrained 200), NEVER a 400. ``json.dumps`` is kept INSIDE the
         # ``try`` so a serialization failure follows that same graceful ``None``
@@ -596,7 +596,7 @@ class GuidedGenerator:
             if should_abort is not None:
                 decode_kwargs["should_abort"] = should_abort
             return self._decode_constrained(**decode_kwargs)
-        except GuidedGenerationCancelledError:
+        except (GuidedGenerationCancelledError, GuidedTokenLimitError):
             raise
         except GuidedSchemaCompileError:
             # llguidance rejected the (structurally-valid) schema LAZILY at
@@ -657,7 +657,7 @@ class GuidedGenerator:
             if should_abort is not None:
                 decode_kwargs["should_abort"] = should_abort
             return self._decode_constrained(**decode_kwargs)
-        except GuidedGenerationCancelledError:
+        except (GuidedGenerationCancelledError, GuidedTokenLimitError):
             raise
         except Exception:
             logger.exception("JSON object generation failed")
@@ -739,12 +739,10 @@ def generate_with_schema(
         if should_abort is not None:
             generation_kwargs["should_abort"] = should_abort
         return generator.generate_json(**generation_kwargs)
-    except GuidedGenerationCancelledError:
+    except (GuidedGenerationCancelledError, GuidedTokenLimitError):
         raise
     except Exception as e:
-        # ``generate_json`` already degrades EVERY failure (compile-reject
-        # included) to ``None`` internally, so nothing schema-specific escapes
-        # here; this stays only as a last-resort guard for a wiring failure in
-        # ``GuidedGenerator`` construction.
+        # ``generate_json`` degrades operational failures to ``None``. This
+        # remains a last-resort guard for generator construction failures.
         logger.error(f"generate_with_schema failed: {e}")
         return None

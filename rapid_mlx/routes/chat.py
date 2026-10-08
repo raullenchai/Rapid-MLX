@@ -125,6 +125,7 @@ from ..service.helpers import (
     _wait_with_disconnect,
     build_extended_sampling_kwargs,
     context_overflow_from_client_error,
+    context_overflow_from_guided_limit,
     context_window_exhausted,
     dry_sampling_kwargs,
     enable_thinking_warning_header,
@@ -5824,6 +5825,11 @@ async def _create_chat_completion_impl(
                 # unchanged so the 408 / 499 / 503 mapping kicks in.
                 raise
             except Exception as guided_err:
+                _guided_context_error = context_overflow_from_guided_limit(
+                    engine, guided_err
+                )
+                if _guided_context_error is not None:
+                    raise _guided_context_error from guided_err
                 # Codex r6 BLOCKING parity (non-streaming chat path):
                 # under strict=true, falling back to ``engine.chat``
                 # IS the H-06 hole — the buffered post-decode validator
@@ -8516,7 +8522,9 @@ async def stream_chat_completion_guided(
                 yield event
             return
         except Exception as guided_err:
-            _context_error = context_overflow_from_client_error(guided_err)
+            _context_error = context_overflow_from_client_error(
+                guided_err
+            ) or context_overflow_from_guided_limit(engine, guided_err)
             if _context_error is not None:
                 yield (
                     "event: chat.completion.error\ndata: "

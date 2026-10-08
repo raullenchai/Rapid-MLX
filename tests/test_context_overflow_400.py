@@ -275,8 +275,9 @@ def test_late_stream_guard_preserves_context_protocol(path):
         assert "data: [DONE]" in wire
 
 
-@pytest.mark.parametrize("failure", ["window_end", "expanded_prompt"])
+@pytest.mark.parametrize("failure", ["window_end", "expanded_prompt", "guided_budget"])
 def test_guided_chat_stream_reports_context_error(failure):
+    from rapid_mlx.api.errors import GuidedTokenLimitError
     from rapid_mlx.api.models import ChatCompletionRequest
     from rapid_mlx.engine.base import GenerationOutput
     from rapid_mlx.request import ClientRequestError
@@ -290,6 +291,8 @@ def test_guided_chat_stream_reports_context_error(failure):
                     "context_length_exceeded: prompt has 101 tokens after media "
                     "expansion, exceeding --context-length 80"
                 )
+            if failure == "guided_budget":
+                raise GuidedTokenLimitError(70, 10)
             return GenerationOutput(
                 text="{}",
                 new_text="{}",
@@ -323,6 +326,115 @@ def test_guided_chat_stream_reports_context_error(failure):
     assert "context_length_exceeded" in wire
     assert "strict_schema_violation" not in wire
     assert wire.endswith("data: [DONE]\n\n")
+
+
+def test_guided_budget_only_reports_context_when_window_is_full():
+    from rapid_mlx.api.errors import GuidedTokenLimitError
+    from rapid_mlx.service.helpers import context_overflow_from_guided_limit
+
+    cfg = reset_config()
+    cfg.context_length = 80
+    engine = _StubEngine()
+    assert (
+        context_overflow_from_guided_limit(engine, GuidedTokenLimitError(70, 5)) is None
+    )
+    error = context_overflow_from_guided_limit(engine, GuidedTokenLimitError(70, 10))
+    assert error is not None
+    assert error.detail["error"]["code"] == "context_length_exceeded"
+
+
+def test_guided_token_budget_signal_survives_wrappers(monkeypatch):
+    from rapid_mlx.api import guided
+    from rapid_mlx.api.errors import GuidedTokenLimitError
+    from rapid_mlx.engine import batched
+
+    signal = GuidedTokenLimitError(70, 10)
+
+    class Matcher:
+        @staticmethod
+        def grammar_from_json_schema(*args, **kwargs):  # noqa: ARG004
+            return "grammar"
+
+    def exhausted(*args, **kwargs):  # noqa: ARG001
+        raise signal
+
+    monkeypatch.setattr(guided, "LLMatcher", Matcher)
+    generator = guided.GuidedGenerator(object(), object())
+    monkeypatch.setattr(generator, "_decode_constrained", exhausted)
+    with pytest.raises(GuidedTokenLimitError) as caught:
+        generator.generate_json("hi", {"type": "object"})
+    assert caught.value is signal
+    with pytest.raises(GuidedTokenLimitError):
+        generator.generate_json_object("hi")
+
+    monkeypatch.setattr(guided, "HAS_LLGUIDANCE", True)
+    monkeypatch.setattr(guided, "GuidedGenerator", lambda *_args: generator)
+    with pytest.raises(GuidedTokenLimitError):
+        guided.generate_with_schema(object(), object(), "hi", {"type": "object"})
+
+    monkeypatch.setattr(batched, "GuidedGenerator", lambda *_args: generator)
+    engine = batched.BatchedEngine.__new__(batched.BatchedEngine)
+    engine._model = object()
+    engine._tokenizer = object()
+    engine._is_mllm = False
+    with pytest.raises(GuidedTokenLimitError):
+        engine._run_guided_generation("hi", {"type": "object"}, 10, 0.0)
+
+
+@pytest.mark.parametrize("surface", ["chat", "responses"])
+@pytest.mark.parametrize("stream", [False, True])
+def test_strict_guided_budget_exhaustion_uses_context_error(surface, stream):
+    from rapid_mlx.api.errors import GuidedTokenLimitError
+    from rapid_mlx.routes.chat import router as chat_router
+    from rapid_mlx.routes.responses import router as responses_router
+
+    class GuidedEngine(_StubEngine):
+        supports_guided_generation = True
+
+        async def generate_with_schema(self, **kwargs):  # noqa: ARG002
+            raise GuidedTokenLimitError(70, 10)
+
+    schema = {"type": "object", "properties": {"value": {"type": "integer"}}}
+    cases = {
+        "chat": (
+            chat_router,
+            "/v1/chat/completions",
+            {
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 16,
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "Result",
+                        "schema": schema,
+                        "strict": True,
+                    },
+                },
+            },
+        ),
+        "responses": (
+            responses_router,
+            "/v1/responses",
+            {
+                "input": "hi",
+                "max_output_tokens": 16,
+                "text": {
+                    "format": {
+                        "type": "json_schema",
+                        "name": "Result",
+                        "schema": schema,
+                        "strict": True,
+                    }
+                },
+            },
+        ),
+    }
+    router, path, payload = cases[surface]
+    response = _make_app([router], context_length=80, engine=GuidedEngine()).post(
+        path, json={"model": "qwen3-0.6b-8bit", "stream": stream, **payload}
+    )
+    assert "context_length_exceeded" in response.text, response.text
+    assert "strict_schema_violation" not in response.text
 
 
 @pytest.mark.parametrize("upstream_kind", ["event", "exception"])
@@ -945,6 +1057,41 @@ def test_stream_reports_generation_reaching_context_window(surface):
     else:
         assert "event: error" in response.text
         assert "prompt is too long: 40961 tokens > 40960 maximum" in response.text
+
+
+def test_responses_stream_context_error_precedes_required_tool_failure():
+    import json
+
+    from rapid_mlx.routes.responses import router
+
+    response = _make_app([router], engine=_ClampEngine()).post(
+        "/v1/responses",
+        json={
+            "model": "qwen3-0.6b-8bit",
+            "stream": True,
+            "input": _huge_text(_CONTEXT_WINDOW - 10),
+            "max_output_tokens": 1000,
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "lookup",
+                    "description": "Find a value",
+                    "parameters": {"type": "object", "properties": {}},
+                }
+            ],
+            "tool_choice": "required",
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert '"code": "context_length_exceeded"' in response.text
+    assert "tool_choice_unfulfilled" not in response.text
+    failed = next(
+        json.loads(line[6:])
+        for line in response.text.splitlines()
+        if line.startswith("data: ") and '"response.failed"' in line
+    )
+    assert failed["response"]["usage"]["input_tokens"] == _CONTEXT_WINDOW - 10
+    assert failed["response"]["usage"]["output_tokens"] == 10
 
 
 def test_empty_completion_prompt_keeps_requested_budget(monkeypatch):

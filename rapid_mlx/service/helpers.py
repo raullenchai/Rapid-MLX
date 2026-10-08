@@ -5381,6 +5381,17 @@ def context_window_exhausted(
     )
 
 
+def context_overflow_from_guided_limit(engine, exc) -> ContextLengthExceeded | None:
+    """Classify a constrained decode budget stop against the served window."""
+    from ..api.errors import GuidedTokenLimitError
+
+    if not isinstance(exc, GuidedTokenLimitError):
+        return None
+    return context_window_exhausted(
+        engine, exc.prompt_tokens, exc.completion_tokens, "length"
+    )
+
+
 def enforce_context_length(
     engine,
     prompt_tokens: int,
