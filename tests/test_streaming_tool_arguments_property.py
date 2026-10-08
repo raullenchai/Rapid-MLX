@@ -429,6 +429,28 @@ def test_seed_oss_malformed_wrapper_does_not_duplicate_next_call():
         assert _run("seed_oss", wire, request, chunks) == expected_calls
 
 
+def test_seed_oss_malformed_wrapper_keeps_later_parallel_indices():
+    malformed = "<seed:tool_call><parameter=x>a</parameter></function></seed:tool_call>"
+
+    def call(name, value):
+        return (
+            f"<seed:tool_call><function={name}><parameter=text>{value}"
+            "</parameter></function></seed:tool_call>"
+        )
+
+    first = call("g", "one")
+    second = call("h", "two")
+    wire = malformed + first + second
+    request = _request("g", "h")
+    expected = ToolParserManager.get_tool_parser("seed_oss")(None).extract_tool_calls(
+        wire, request
+    )
+    expected_calls = [(item["name"], item["arguments"]) for item in expected.tool_calls]
+    assert len(expected_calls) == 2
+    for chunks in (list(wire), [wire], [malformed, first, second]):
+        assert _run("seed_oss", wire, request, chunks) == expected_calls
+
+
 def test_seed_oss_missing_parameter_close_keeps_next_function():
     wire = (
         "<seed:tool_call><function=f><parameter=x>a</function>"
@@ -1028,6 +1050,39 @@ def test_registered_parser_parallel_calls_when_nonstream_supports_them(
     expected_calls = [(call["name"], call["arguments"]) for call in expected.tool_calls]
     for chunks in (list(combined), [wire, wire], [combined]):
         assert _run(parser_name, combined, request, chunks) == expected_calls
+
+
+@pytest.mark.parametrize("parser_name,wire", CANONICAL_WIRES.items())
+def test_registered_parser_after_reasoning_prefix(parser_name, wire):
+    reasoned = "<think>Choose arguments.</think>" + wire
+    request = _request("lookup", "computer")
+    request["chat_template_kwargs"] = {"tool_call_format": "xml"}
+    expected = ToolParserManager.get_tool_parser(parser_name)(None).extract_tool_calls(
+        reasoned, request
+    )
+    if not expected.tools_called:
+        pytest.skip("The non-streaming parser does not recognize this reasoning wire")
+    expected_calls = [(call["name"], call["arguments"]) for call in expected.tool_calls]
+    for chunks in (list(reasoned), [reasoned]):
+        assert (
+            _run(parser_name, reasoned, request, chunks, with_reasoning=True)
+            == expected_calls
+        )
+
+
+@pytest.mark.parametrize("parser_name,wire", CANONICAL_WIRES.items())
+def test_registered_parser_after_plain_text(parser_name, wire):
+    prefixed = "Working. " + wire
+    request = _request("lookup", "computer")
+    request["chat_template_kwargs"] = {"tool_call_format": "xml"}
+    expected = ToolParserManager.get_tool_parser(parser_name)(None).extract_tool_calls(
+        prefixed, request
+    )
+    if not expected.tools_called:
+        pytest.skip("The non-streaming parser does not recognize this prefixed wire")
+    expected_calls = [(call["name"], call["arguments"]) for call in expected.tool_calls]
+    for chunks in (list(prefixed), [prefixed]):
+        assert _run(parser_name, prefixed, request, chunks) == expected_calls
 
 
 _JSON_WIRE_PARSERS = (
