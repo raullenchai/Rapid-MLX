@@ -656,10 +656,6 @@ rapid_mlx = [
     "audio/sa3/LICENSE",
     "clef/vendor/LICENSE",
     "clef/vendor/NOTICE",
-    # Decider scoring is adapted from MIT-licensed mlx-vlm; the license text
-    # and provenance notice must travel with every wheel.
-    "system_one/LICENSE-MLX-VLM",
-    "system_one/DECIDER_NOTICE",
     "audio/sa3/NOTICE",
     "audio/sa3/README.md",
     # Vendored HiDream-O1 MLX adapter attribution must ship in wheels and the

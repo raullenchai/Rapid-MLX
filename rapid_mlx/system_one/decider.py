@@ -1,8 +1,41 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: Apache-2.0 AND MIT
+#
+# The prompt layout, label tokens, row batching, calibration and isolated score
+# levels below are adapted from mlx_vlm/models/decider2/decider2.py in
+# https://github.com/Blaizzy/mlx-vlm at revision
+# fdd94f39552a011e298f5d4160ef001238943c1b, which is distributed under the MIT
+# License:
+#
+#   Copyright © 2025 Prince Canuma
+#
+#   Permission is hereby granted, free of charge, to any person obtaining a copy
+#   of this software and associated documentation files (the "Software"), to deal
+#   in the Software without restriction, including without limitation the rights
+#   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+#   copies of the Software, and to permit persons to whom the Software is
+#   furnished to do so, subject to the following conditions:
+#
+#   The above copyright notice and this permission notice shall be included in all
+#   copies or substantial portions of the Software.
+#
+#   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+#   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+#   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+#   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+#   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+#   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+#   SOFTWARE.
+#
+# Changes from that file: the backbone is the mlx-lm Qwen3.5 text model, so
+# position ids are left to it; questions arrive as the System One wire schema
+# and raw probabilities are returned to the System One response builder; the
+# packed (non-independent) scoring mode is not included; calibration values are
+# validated at load; the label readout rows are materialized at construction so
+# requests can run on worker threads.
 """Decider typed-decision scoring on the mlx-lm Qwen3.5 text backbone.
 
 The prompt layout, label tokens, row batching and calibration follow the
-``decider2`` model in mlx-vlm (MIT, see ``DECIDER_NOTICE``), which in turn
+``decider2`` model in mlx-vlm (MIT, see the notice above), which in turn
 follows the published decider-2b release. They are part of what the checkpoint
 was tuned and calibrated on, so they are reproduced here rather than
 redesigned. Decider reads the prompt once and scores answer labels at the last
@@ -121,6 +154,9 @@ def load_decider(path: str | Path) -> tuple[Any, Any, dict[str, Any]]:
         raise ValueError(
             "Decider checkpoint config.json has no decision_config.temperature"
         )
+    limit = settings.get("max_state_tokens", MAX_STATE_TOKENS)
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+        raise ValueError("Decider max_state_tokens must be a positive integer")
     by_type = settings.get("temperature_by_type") or {}
     if not isinstance(by_type, dict):
         raise ValueError("Decider temperature_by_type must be an object")

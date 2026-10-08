@@ -9,9 +9,11 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-import mlx.core as mx
 import pytest
 from fastapi.testclient import TestClient
+
+pytestmark = pytest.mark.requires_mlx
+mx = pytest.importorskip("mlx.core")
 
 from rapid_mlx.cli import _resolve_system_one_backend, build_parser
 from rapid_mlx.system_one import decider as decider_module
@@ -256,7 +258,8 @@ def test_scorer_built_on_one_thread_scores_on_another():
 
     worker = threading.Thread(target=work)
     worker.start()
-    worker.join()
+    worker.join(timeout=60)
+    assert not worker.is_alive()
     assert "error" not in outcome, outcome.get("error")
     assert outcome["answers"]["sure"][1] == pytest.approx([0.5, 0.5])
 
@@ -305,6 +308,13 @@ def test_load_decider_validates_checkpoint_metadata(tmp_path, monkeypatch):
     )
     with pytest.raises(ValueError, match="must be an object"):
         load_decider(tmp_path)
+    for limit in (None, "4096", 0, -1, True, 1.5):
+        settings = {"temperature": 1.0, "max_state_tokens": limit}
+        config.write_text(
+            json.dumps({"model_type": "decider2", "decision_config": settings})
+        )
+        with pytest.raises(ValueError, match="max_state_tokens"):
+            load_decider(tmp_path)
 
     config.write_text(
         json.dumps({"model_type": "decider2", "decision_config": {"temperature": 1.1}})
@@ -477,14 +487,11 @@ def test_decider_cli_selects_and_starts_the_backend(monkeypatch):
     assert observed["kwargs"]["port"] == 8702
 
 
-def test_adapted_scoring_ships_its_license_and_notice():
-    """decider.py is adapted from MIT mlx-vlm: both files must reach the wheel."""
-    root = Path(__file__).resolve().parents[1]
-    package_data = (root / "pyproject.toml").read_text(encoding="utf-8")
-    for name in ("system_one/LICENSE-MLX-VLM", "system_one/DECIDER_NOTICE"):
-        assert f'    "{name}",\n' in package_data
-        assert (root / "rapid_mlx" / name).is_file()
-    license_text = (root / "rapid_mlx/system_one/LICENSE-MLX-VLM").read_text(
-        encoding="utf-8"
-    )
-    assert "MIT License" in license_text
+def test_adapted_scoring_carries_its_license_and_provenance():
+    """decider.py is adapted from MIT mlx-vlm: the notice travels in the file."""
+    source = Path(decider_module.__file__).read_text(encoding="utf-8")
+    header = source.split('"""', 1)[0]
+    assert "Copyright © 2025 Prince Canuma" in header
+    assert "Permission is hereby granted, free of charge" in header
+    assert 'THE SOFTWARE IS PROVIDED "AS IS"' in header
+    assert "fdd94f39552a011e298f5d4160ef001238943c1b" in header
