@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import string
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import mlx.core as mx
@@ -474,3 +475,16 @@ def test_decider_cli_selects_and_starts_the_backend(monkeypatch):
     assert observed["model"] == "/models/my-decider"
     assert observed["device"] == "gpu"
     assert observed["kwargs"]["port"] == 8702
+
+
+def test_adapted_scoring_ships_its_license_and_notice():
+    """decider.py is adapted from MIT mlx-vlm: both files must reach the wheel."""
+    root = Path(__file__).resolve().parents[1]
+    package_data = (root / "pyproject.toml").read_text(encoding="utf-8")
+    for name in ("system_one/LICENSE-MLX-VLM", "system_one/DECIDER_NOTICE"):
+        assert f'    "{name}",\n' in package_data
+        assert (root / "rapid_mlx" / name).is_file()
+    license_text = (root / "rapid_mlx/system_one/LICENSE-MLX-VLM").read_text(
+        encoding="utf-8"
+    )
+    assert "MIT License" in license_text
