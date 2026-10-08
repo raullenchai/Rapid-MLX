@@ -5322,6 +5322,18 @@ async def _stream_responses(
         # response.failed gives Codex a clean shutdown signal instead of
         # a half-stream-then-EOF; matches how the OpenAI cloud
         # Responses API closes errored streams.
+        _context_error = context_overflow_from_client_error(e)
+        if _context_error is not None:
+            yield _emit(
+                "response.failed",
+                {
+                    "type": "response.failed",
+                    "response": _stream_response_payload(
+                        "failed", error=_context_error.detail["error"]
+                    ),
+                },
+            )
+            return
         logger.exception("Responses stream failed: %s", e)
         from rapid_mlx.telemetry import inference as _telemetry_inference
 
