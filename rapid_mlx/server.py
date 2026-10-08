@@ -3977,6 +3977,16 @@ Examples:
         help="Starvation bound for shortest_validated_tail (default: 8 grants).",
     )
     parser.add_argument(
+        "--shared-prefix-wait-tokens",
+        type=int,
+        default=1024,
+        metavar="N",
+        help=(
+            "Uncached prompt tokens a request must share with a prefilling "
+            "request to wait for its prompt state (default: 1024). 0 disables."
+        ),
+    )
+    parser.add_argument(
         "--vision-prefill-token-budget",
         type=int,
         default=None,
@@ -4435,6 +4445,7 @@ def main():
         prefill_step_size=args.prefill_step_size,
         scheduling_policy=args.scheduling_policy,
         scheduling_max_deferrals=args.scheduling_max_deferrals,
+        shared_prefix_wait_tokens=args.shared_prefix_wait_tokens,
         vision_prefill_token_budget=vision_prefill_token_budget,
         vision_min_pixels=args.vision_min_pixels,
         vision_max_pixels=args.vision_max_pixels,

@@ -249,6 +249,11 @@ class Request:
     block_table: Optional["BlockTable"] = None  # Block table for paged cache
     shared_prefix_blocks: int = 0  # Number of shared prefix blocks
 
+    # Shared-prefix wait (scheduler admission): the running request whose
+    # prompt state this one is held for, and whether it already waited once.
+    prefix_wait_leader: str | None = None
+    prefix_wait_done: bool = False
+
     # Multimodal content (images, video) - raw inputs
     images: list[Any] | None = None
     videos: list[Any] | None = None
