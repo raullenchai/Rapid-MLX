@@ -5359,6 +5359,12 @@ def context_window_exhausted(
     limit = get_model_max_context(engine)
     if prompt_tokens + completion_tokens < limit:
         return None
+    flag_remedy = (
+        " This serving window is set by --context-length; raise that flag "
+        "if the model and available memory permit."
+        if get_config().context_length == limit
+        else ""
+    )
     return ContextLengthExceeded(
         prompt_tokens=prompt_tokens + completion_tokens + 1,
         limit=limit,
@@ -5366,7 +5372,7 @@ def context_window_exhausted(
             f"The prompt contains {prompt_tokens} tokens and generation used "
             f"{completion_tokens} tokens, reaching this model's {limit}-token "
             "context limit. Start a new session or compact the conversation, "
-            "or use a model with a larger context window."
+            "or use a model with a larger context window." + flag_remedy
         ),
     )
 
@@ -5406,7 +5412,8 @@ def enforce_context_length(
         detail = (
             f"This server's maximum admitted prompt length is "
             f"{operational_cap} tokens. However, your prompt contains "
-            f"{int(prompt_tokens)} tokens. Please reduce the length of the "
+            f"{int(prompt_tokens)} tokens. The model's context window is "
+            f"{max_context} tokens. Please reduce the length of the "
             "prompt; the limit is this server's --max-prompt-tokens flag, not "
             "the model's context window. Start a new session or compact the "
             "conversation, or raise --max-prompt-tokens if the model and "

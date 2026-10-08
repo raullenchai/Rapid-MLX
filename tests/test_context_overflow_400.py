@@ -183,6 +183,19 @@ def test_expanded_media_context_error_has_token_counts_and_remedy():
     assert context_overflow_from_client_error(ClientRequestError("other")) is None
 
 
+def test_generation_window_error_names_serve_override():
+    from rapid_mlx.service.helpers import context_window_exhausted
+
+    cfg = reset_config()
+    cfg.context_length = 80
+    engine = _StubEngine()
+    assert context_window_exhausted(engine, 70, 9, "length") is None
+    error = context_window_exhausted(engine, 70, 10, "length")
+    assert error is not None
+    assert error.prompt_tokens == 81
+    assert "--context-length" in error.detail["error"]["message"]
+
+
 @pytest.mark.parametrize(
     "path", ["/v1/chat/completions", "/v1/responses", "/v1/messages"]
 )
@@ -747,6 +760,8 @@ def test_expanded_media_late_overflow_uses_route_protocol(surface, stream):
     response = _make_app(
         [router], context_length=80, engine=_LateOverflowEngine()
     ).post(path, json={"model": "qwen3-0.6b-8bit", "stream": stream, **payload})
+    expected_status = 200 if stream else 400
+    assert response.status_code == expected_status, response.text
     if response.status_code == 400:
         body = response.json()
         if surface == "messages":
@@ -756,7 +771,6 @@ def test_expanded_media_late_overflow_uses_route_protocol(surface, stream):
         else:
             assert body["error"]["code"] == "context_length_exceeded"
     else:
-        assert stream and response.status_code == 200, response.text
         if surface == "responses":
             assert "event: response.failed" in response.text
             assert "context_length_exceeded" in response.text
