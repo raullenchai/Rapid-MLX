@@ -255,6 +255,36 @@ def test_deepseek_v31_marker_inside_json_is_not_a_tool_name():
     )
 
 
+def test_seed_oss_unicode_parameter_name_preserves_json_bytes():
+    chunks = [
+        "<seed:tool_call><function=lookup>",
+        "<parameter=文字>",
+        "hello</parameter></function></seed:tool_call>",
+    ]
+    wire = "".join(chunks)
+    request = _request("lookup")
+    expected = ToolParserManager.get_tool_parser("seed_oss")(None).extract_tool_calls(
+        wire, request
+    )
+    expected_calls = [(call["name"], call["arguments"]) for call in expected.tool_calls]
+    assert _run("seed_oss", wire, request, chunks) == expected_calls
+
+
+@pytest.mark.parametrize("parser_name", ["qwen3_coder_xml", "seed_oss"])
+def test_parallel_calls_with_distinct_names_in_separate_chunks(parser_name):
+    first = CANONICAL_WIRES[parser_name]
+    second = first.replace("lookup", "second")
+    wire = first + second
+    request = _request("lookup", "second")
+    expected = ToolParserManager.get_tool_parser(parser_name)(None).extract_tool_calls(
+        wire, request
+    )
+    expected_calls = [(call["name"], call["arguments"]) for call in expected.tool_calls]
+    assert len(expected_calls) == 2
+    for chunks in ([first, second], [wire]):
+        assert _run(parser_name, wire, request, chunks) == expected_calls
+
+
 @pytest.mark.parametrize("parser_name", ["hermes", "qwen3", "qwen3_coder_xml"])
 def test_reasoning_before_tool_call(parser_name):
     render = _xml_wire if parser_name == "qwen3_coder_xml" else _json_wire

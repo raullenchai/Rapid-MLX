@@ -535,7 +535,7 @@ class SeedOssToolParser(ToolParser):
                             closing_arguments = (
                                 prefix
                                 + ", ".join(
-                                    f"{json.dumps(key)}: {json.dumps(value, ensure_ascii=False)}"
+                                    f"{json.dumps(key, ensure_ascii=False)}: {json.dumps(value, ensure_ascii=False)}"
                                     for key, value in remaining
                                 )
                                 + "}"
@@ -593,9 +593,9 @@ class SeedOssToolParser(ToolParser):
                             )
                             serialized = json.dumps(converted, ensure_ascii=False)
                             if self.param_count == 0:
-                                frag = f'"{param_name}": {serialized}'
+                                frag = f"{json.dumps(param_name, ensure_ascii=False)}: {serialized}"
                             else:
-                                frag = f', "{param_name}": {serialized}'
+                                frag = f", {json.dumps(param_name, ensure_ascii=False)}: {serialized}"
                             self.param_count += 1
                             return {
                                 "tool_calls": [
