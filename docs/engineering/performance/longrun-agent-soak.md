@@ -42,3 +42,38 @@ or the large hybrid Qwen3.6 handle ceiling in
 [#2836](https://github.com/raullenchai/Rapid-MLX/issues/2836). It is a
 long-running regression signal for adjacent cancellation, prefix-cache, and
 resource-retention failure modes.
+
+## 2026-10-07 mac-mini result
+
+Three-hour run on an Apple M2 Pro Mac mini (32 GB, macOS 26.5.2), Python
+3.13.11, `mlx-community/Qwen3.5-4B-MLX-4bit`, using the command above and
+base server commit `e77bbeb03`. The server had already warmed up during
+short harness pilots. The [minute-by-minute CSV](longrun-agent-soak-2026-10-07.csv)
+contains all 182 samples, including the initial and final samples. The final
+sample was taken after the last in-flight requests completed. A separate
+[post-load idle sample](longrun-agent-soak-2026-10-07-idle.json) was taken
+30 seconds later.
+
+| Measure | Start | End / total |
+| --- | ---: | ---: |
+| Duration | 0 | 10,803.7 s |
+| Completed agent turns | 0 | 5,533; 0 errors |
+| Disconnects / cancellations | 0 / 0 | 407 / 240 |
+| `/health` and `/v1/models` probes | — | 182 / 182 successful each |
+| Process RSS | 2,603.6 MB | 2,606.2 MB |
+| Metal active / cache, idle | 3.40 / 0.00 GB | 3.60 / 0.00 GB |
+| Threads / open files, idle | 25 / 140 | 23 / 139 |
+| Scheduler running / waiting, idle | 0 / 0 | 0 / 0 |
+
+The highest sampled active Metal allocation was 6.86 GB; the process-reported
+Metal peak was 7.06 GB (6.94 GB had already been reached during pilot warmup).
+The server log recorded 2,773 prefix-cache hits and no Metal resource-limit,
+admission-cap, generation-recovery, or traceback signatures. Completions
+continued throughout the final hour, with no rising RSS, thread, or open-file
+trend. The average of each minute's p95 latency was 11.37 s in the first ten
+minutes and 8.04 s in the last ten; individual long-prompt minutes were higher.
+
+No hang or leak reproduced in this Qwen3.5 text-lane workload. The tested
+symptoms look resolved on current `main` for this workload; the original
+hybrid Qwen3.6 and Gemma 4 MLLM issue configurations still need their own
+model- and hardware-matched qualification. No server fix was needed here.
