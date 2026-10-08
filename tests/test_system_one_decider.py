@@ -427,7 +427,7 @@ def test_decider_backend_resolves_pinned_alias_and_local_directory(
     devices = []
     monkeypatch.setattr(mx, "set_default_device", devices.append)
 
-    for name in ("decider-2b", "nativ-community/decider-2b"):
+    for name in ("decider-2b", "nativ-community/decider-2b", "Decider-2B"):
         backend = DeciderBackend(name)
         assert backend.default_model == "decider-2b"
         assert backend.repo_id == "nativ-community/decider-2b"
@@ -437,7 +437,7 @@ def test_decider_backend_resolves_pinned_alias_and_local_directory(
     local = DeciderBackend(str(tmp_path), device="cpu")
     assert local.default_model == tmp_path.name
     assert loaded[-1] == str(tmp_path)
-    assert devices == [mx.gpu, mx.gpu, mx.cpu]
+    assert devices == [mx.gpu, mx.gpu, mx.gpu, mx.cpu]
 
     with pytest.raises(ValueError, match="unknown Decider model"):
         DeciderBackend("someone/decider-2b")

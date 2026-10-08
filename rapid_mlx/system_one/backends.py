@@ -303,10 +303,11 @@ class DeciderBackend:
             path = str(local)
             self.default_model = local.name
             self.repo_id = str(local)
-        elif selected in self._MODELS and model in {
+        elif selected in self._MODELS and model.lower() in {
             selected,
-            self._MODELS[selected][0],
+            self._MODELS[selected][0].lower(),
         }:
+            # Match the CLI, which routes model names case-insensitively.
             from rapid_mlx._mirror import pinned_snapshot_download
 
             self.default_model = selected
