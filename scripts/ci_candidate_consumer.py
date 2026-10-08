@@ -164,8 +164,20 @@ def _consume(
             or record["source_attempt"] < 1
             or type(record.get("candidate_pr")) is not int
             or record["candidate_pr"] < 1
+            or record.get("checking_base_sha") != record.get("base_sha")
+            or not isinstance(record.get("source_pull_requests"), list)
+            or not 1 <= len(record["source_pull_requests"]) <= 2
+            or any(
+                not isinstance(source, dict)
+                or type(source.get("number")) is not int
+                or source["number"] < 1
+                or not isinstance(source.get("head_sha"), str)
+                for source in record["source_pull_requests"]
+            )
         ):
             raise evidence.EvidenceError("not a full qualification record")
+        for source in record["source_pull_requests"]:
+            evidence._require_sha(source["head_sha"])
         tip = client.json(f"repos/{client.repo}/git/ref/heads/main")["object"]["sha"]
         evidence._require_sha(tip)
         if record.get("base_sha") != tip:

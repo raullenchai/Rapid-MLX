@@ -7,6 +7,11 @@ not require a green main prerequisite.
 
 from __future__ import annotations
 
+import io
+import json
+import re
+import subprocess
+import zipfile
 from typing import Any
 
 from scripts import queue_tree_evidence as evidence
@@ -33,6 +38,115 @@ MAPPED_JOBS = (
     "candidate-canary-unit",
     "tests",
 )
+QUEUE_ARTIFACT_MAX_BYTES = 100_000
+MERGE_SUBJECT = re.compile(r"^Merge of #(\d+)$")
+
+
+def _queue_metadata(client: evidence.GitHubClient, run: dict[str, Any]) -> dict:
+    run_id, attempt, sha = run["id"], run["run_attempt"], run["head_sha"]
+    page = client.json(
+        f"repos/{client.repo}/actions/runs/{run_id}/artifacts", "per_page=100"
+    )
+    artifacts = page.get("artifacts")
+    count = page.get("total_count")
+    if (
+        type(count) is not int
+        or not 0 < count < 100
+        or not isinstance(artifacts, list)
+        or len(artifacts) != count
+    ):
+        raise evidence.EvidenceError("queue metadata artifact listing is malformed")
+    name = f"candidate-queue-identity-{sha}-{run_id}-{attempt}"
+    matches = [item for item in artifacts if item.get("name") == name]
+    if len(matches) != 1:
+        raise evidence.EvidenceError(
+            "missing or duplicate exact-attempt queue metadata"
+        )
+    artifact = matches[0]
+    if (
+        type(artifact.get("id")) is not int
+        or artifact["id"] < 1
+        or artifact.get("expired") is not False
+        or artifact.get("workflow_run", {}).get("id") != run_id
+        or artifact.get("workflow_run", {}).get("head_sha") != sha
+        or type(artifact.get("size_in_bytes")) is not int
+        or not 0 < artifact["size_in_bytes"] <= QUEUE_ARTIFACT_MAX_BYTES
+    ):
+        raise evidence.EvidenceError("queue metadata artifact identity is invalid")
+    raw = subprocess.run(
+        [
+            client.gh,
+            "api",
+            f"repos/{client.repo}/actions/artifacts/{artifact['id']}/zip",
+        ],
+        capture_output=True,
+        timeout=20,
+        check=True,
+    ).stdout
+    if len(raw) > QUEUE_ARTIFACT_MAX_BYTES:
+        raise evidence.EvidenceError("queue metadata artifact exceeds bound")
+    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+        members = archive.infolist()
+        if (
+            len(members) != 1
+            or members[0].filename != "candidate-queue-identity.json"
+            or members[0].file_size > QUEUE_ARTIFACT_MAX_BYTES
+        ):
+            raise evidence.EvidenceError("unexpected queue metadata archive contents")
+        value = json.loads(archive.read(members[0]))
+    if not isinstance(value, dict):
+        raise evidence.EvidenceError("queue metadata is not an object")
+    return value
+
+
+def _source_identity(
+    client: evidence.GitHubClient, run: dict[str, Any], base: str
+) -> list[dict[str, Any]]:
+    metadata = _queue_metadata(client, run)
+    if metadata.get("checking_base_sha") != base:
+        raise evidence.EvidenceError("queue metadata does not bind candidate base")
+    sources = metadata.get("pull_requests")
+    if not isinstance(sources, list) or not 1 <= len(sources) <= 2:
+        raise evidence.EvidenceError("candidate must contain one or two source PRs")
+    numbers: list[int] = []
+    for source in sources:
+        number = source.get("number") if isinstance(source, dict) else None
+        if type(number) is not int or number < 1:
+            raise evidence.EvidenceError("queue metadata source PR is invalid")
+        numbers.append(number)
+    if len(set(numbers)) != len(numbers):
+        raise evidence.EvidenceError("queue metadata source PRs are duplicated")
+
+    current = run["head_sha"]
+    newest: list[tuple[int, str]] = []
+    while current != base and len(newest) <= 2:
+        commit = client.commit(current)
+        parents = commit.get("parents")
+        lines = commit.get("commit", {}).get("message", "").splitlines()
+        message = lines[0] if lines else ""
+        match = MERGE_SUBJECT.fullmatch(message)
+        if not isinstance(parents, list) or len(parents) != 2 or not match:
+            raise evidence.EvidenceError("candidate has malformed integration lineage")
+        parent, source_sha = parents[0].get("sha"), parents[1].get("sha")
+        evidence._require_sha(parent)
+        evidence._require_sha(source_sha)
+        newest.append((int(match.group(1)), source_sha))
+        current = parent
+    ordered = list(reversed(newest))
+    if current != base or [number for number, _ in ordered] != numbers:
+        raise evidence.EvidenceError("queue metadata does not match candidate lineage")
+    identities = []
+    for number, source_sha in ordered:
+        source = client.json(f"repos/{client.repo}/pulls/{number}")
+        if (
+            source.get("head", {}).get("repo", {}).get("full_name") != client.repo
+            or source.get("head", {}).get("sha") != source_sha
+        ):
+            raise evidence.EvidenceError(
+                "source PR current head does not match candidate"
+            )
+        identities.append({"number": number, "head_sha": source_sha})
+    return identities
 
 
 def _latest(client: evidence.GitHubClient, sha: str, branch: str) -> dict[str, Any]:
@@ -60,7 +174,7 @@ def _latest(client: evidence.GitHubClient, sha: str, branch: str) -> dict[str, A
 
 def _candidate(
     client: evidence.GitHubClient, run: dict[str, Any]
-) -> tuple[dict, str, str]:
+) -> tuple[dict, str, str, list[dict[str, Any]]]:
     sha, branch = run["head_sha"], run["head_branch"]
     evidence._require_sha(sha)
     if (
@@ -93,9 +207,8 @@ def _candidate(
     commit = client.commit(sha)
     tree = commit["tree"]["sha"]
     evidence._require_sha(tree)
-    if not commit.get("parents") or commit["parents"][0].get("sha") != base:
-        raise evidence.EvidenceError("candidate first parent does not bind main base")
-    return pull, base, tree
+    sources = _source_identity(client, run, base)
+    return pull, base, tree, sources
 
 
 def _paths(client: evidence.GitHubClient, base: str, sha: str) -> set[str]:
@@ -134,7 +247,7 @@ def qualify_candidate(
     try:
         evidence._require_sha(trusted_ref)
         run = client.json(f"repos/{client.repo}/actions/runs/{source_run_id}")
-        pull, base, tree = _candidate(client, run)
+        pull, base, tree, sources = _candidate(client, run)
         sha, branch = run["head_sha"], run["head_branch"]
         latest = _latest(client, sha, branch)
         if (latest["id"], latest["run_attempt"]) != (source_run_id, run["run_attempt"]):
@@ -144,6 +257,8 @@ def qualify_candidate(
             candidate_tree=tree,
             candidate_pr=pull["number"],
             base_sha=base,
+            checking_base_sha=base,
+            source_pull_requests=sources,
             source_run_id=source_run_id,
             source_attempt=run["run_attempt"],
         )
@@ -239,7 +354,7 @@ def qualify_candidate(
             raise evidence.EvidenceError(
                 "candidate attempt changed during qualification"
             )
-        if _candidate(client, current)[1:] != (base, tree):
+        if _candidate(client, current)[1:] != (base, tree, sources):
             raise evidence.EvidenceError("queue candidate base/tree changed")
         if kind == "mapped" and not qualify_main(client, base)["qualified"]:
             raise evidence.EvidenceError("main changed before mapped qualification")
@@ -252,6 +367,8 @@ def qualify_candidate(
         TypeError,
         ValueError,
         AttributeError,
+        subprocess.SubprocessError,
+        zipfile.BadZipFile,
     ) as exc:
         result["reason"] = str(exc)[:500]
     return result
