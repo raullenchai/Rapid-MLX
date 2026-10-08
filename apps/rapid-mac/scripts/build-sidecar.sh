@@ -994,7 +994,7 @@ MACHOS_LIST="$(mktemp)"
 # Catch INT/TERM in addition to normal exit so Ctrl-C in interactive
 # runs doesn't leak the tmpfile (codex r1 NIT).
 trap 'rm -f "$MACHOS_LIST"' EXIT INT TERM
-"$STAGE/python/bin/python3.12" "$REPO_ROOT/scripts/list-sidecar-machos.py" "$STAGE" "$MACHOS_LIST"
+"$STAGE/python/bin/python3.12" "$ENGINE_ROOT/scripts/sidecar_macho_inventory.py" "$STAGE" "$MACHOS_LIST"
 MACHO_COUNT="$(wc -l < "$MACHOS_LIST" | tr -d ' ')"
 echo "    found $MACHO_COUNT Mach-Os (baseline $MACHO_BASELINE_COUNT, tolerance $MACHO_TOLERANCE)"
 

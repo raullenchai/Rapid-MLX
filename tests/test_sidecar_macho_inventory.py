@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import importlib.util
+import runpy
 import shutil
 import subprocess
 import sys
@@ -9,15 +9,15 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-INVENTORY = ROOT / "apps/rapid-mac/scripts/list-sidecar-machos.py"
-_SPEC = importlib.util.spec_from_file_location("sidecar_macho_inventory", INVENTORY)
-assert _SPEC and _SPEC.loader
-_INVENTORY_MODULE = importlib.util.module_from_spec(_SPEC)
-_SPEC.loader.exec_module(_INVENTORY_MODULE)
+INVENTORY = ROOT / "scripts/sidecar_macho_inventory.py"
+from scripts import sidecar_macho_inventory as inventory_module
+
 BUILD = ROOT / "apps/rapid-mac/scripts/build-sidecar.sh"
 
 
-def test_inventory_covers_extensionless_regular_machos_and_ignores_text(tmp_path: Path):
+def test_inventory_covers_extensionless_regular_machos_and_ignores_text(
+    monkeypatch, tmp_path: Path
+):
     stage = tmp_path / "rapid-mlx"
     torch_bin = stage / "site-packages/torch/bin"
     torch_bin.mkdir(parents=True)
@@ -51,7 +51,8 @@ def test_inventory_covers_extensionless_regular_machos_and_ignores_text(tmp_path
     text_executable.chmod(0o755)
 
     output = tmp_path / "machos.txt"
-    subprocess.run([sys.executable, INVENTORY, stage, output], check=True)
+    monkeypatch.setattr(sys, "argv", [str(INVENTORY), str(stage), str(output)])
+    assert inventory_module.main() == 0
     assert output.read_text().splitlines() == sorted(expected)
     assert (torch_bin / "protoc").stat().st_ino != (
         torch_bin / "protoc-3.21.12.0"
@@ -64,12 +65,9 @@ def test_inventory_fails_closed_when_a_regular_file_cannot_be_read(tmp_path: Pat
     unreadable = stage / "unreadable"
     unreadable.write_bytes(b"fixture")
     unreadable.chmod(0)
-    output = tmp_path / "machos.txt"
     try:
-        result = subprocess.run(
-            [sys.executable, INVENTORY, stage, output], text=True, capture_output=True
-        )
-        assert result.returncode != 0
+        with pytest.raises(PermissionError):
+            inventory_module.is_macho(unreadable)
     finally:
         unreadable.chmod(0o600)
 
@@ -84,9 +82,9 @@ def test_inventory_propagates_traversal_errors(monkeypatch, tmp_path: Path):
         onerror(PermissionError("blocked subtree"))
         return iter(())
 
-    monkeypatch.setattr(_INVENTORY_MODULE.os, "walk", broken_walk)
+    monkeypatch.setattr(inventory_module.os, "walk", broken_walk)
     with pytest.raises(PermissionError, match="blocked subtree"):
-        _INVENTORY_MODULE.list_machos(stage)
+        inventory_module.list_machos(stage)
 
 
 def test_inventory_rejects_newline_path_before_writing_line_protocol(tmp_path: Path):
@@ -94,18 +92,35 @@ def test_inventory_rejects_newline_path_before_writing_line_protocol(tmp_path: P
     stage.mkdir()
     newline = stage / "bad\nname"
     newline.write_bytes(b"\xcf\xfa\xed\xfe" + b"fixture")
-    output = tmp_path / "machos.txt"
-    result = subprocess.run(
-        [sys.executable, INVENTORY, stage, output], text=True, capture_output=True
+    with pytest.raises(ValueError, match="contains a newline"):
+        inventory_module.list_machos(stage)
+
+
+def test_main_usage_invalid_root_and_entrypoint(monkeypatch, tmp_path: Path, capsys):
+    monkeypatch.setattr(sys, "argv", [str(INVENTORY)])
+    assert inventory_module.main() == 2
+    assert "usage:" in capsys.readouterr().err
+
+    output = tmp_path / "output"
+    monkeypatch.setattr(
+        sys, "argv", [str(INVENTORY), str(tmp_path / "missing"), str(output)]
     )
-    assert result.returncode != 0
-    assert "contains a newline" in result.stderr
+    assert inventory_module.main() == 2
+    assert "not a directory" in capsys.readouterr().err
+
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    monkeypatch.setattr(sys, "argv", [str(INVENTORY), str(stage), str(output)])
+    with pytest.raises(SystemExit) as exit_info:
+        runpy.run_path(str(INVENTORY), run_name="__main__")
+    assert exit_info.value.code == 0
+    assert output.read_text() == ""
 
 
 def test_signing_loop_strictly_verifies_every_inventory_entry():
     script = BUILD.read_text()
     assert (
-        '"$STAGE/python/bin/python3.12" "$REPO_ROOT/scripts/list-sidecar-machos.py" "$STAGE" "$MACHOS_LIST"'
+        '"$STAGE/python/bin/python3.12" "$ENGINE_ROOT/scripts/sidecar_macho_inventory.py" "$STAGE" "$MACHOS_LIST"'
         in script
     )
     signing_loop = script.split('echo "==> codesigning', 1)[1].split(
