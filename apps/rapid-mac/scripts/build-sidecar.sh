@@ -119,7 +119,9 @@ LTX25_RUNTIME_SHA256="fa9a66a0c78721c3dce51d0f1dadcabad060682410303be748e529a846
 # image/video runtimes (torch, torchvision, matplotlib, mflux, mlx-video)
 # instead of reduced --no-deps copies; OpenCV and imageio-ffmpeg's binary are
 # excluded (GPL FFmpeg). Measured on an Apple Silicon build host.
-MACHO_BASELINE_COUNT="${MACHO_BASELINE_COUNT:-228}"
+# Re-locked at 231 after the same bundle added three extensionless regular
+# Mach-O executables under torch/bin. Content-based inventory now includes them.
+MACHO_BASELINE_COUNT="${MACHO_BASELINE_COUNT:-231}"
 # Allow modest drift without blocking — wheel updates sometimes shift
 # 1-2 .so files. Bigger drift means a new dependency, needs review.
 # Kept at 5 across the 51 → 77 baseline rebase to give Pillow and
@@ -992,11 +994,7 @@ MACHOS_LIST="$(mktemp)"
 # Catch INT/TERM in addition to normal exit so Ctrl-C in interactive
 # runs doesn't leak the tmpfile (codex r1 NIT).
 trap 'rm -f "$MACHOS_LIST"' EXIT INT TERM
-{
-    find "$STAGE" -type f \( -name '*.so' -o -name '*.dylib' \)
-    echo "$STAGE/python/bin/python3.12"
-    echo "$STAGE/bin/ffmpeg"
-} > "$MACHOS_LIST"
+"$STAGE/python/bin/python3.12" "$REPO_ROOT/scripts/list-sidecar-machos.py" "$STAGE" "$MACHOS_LIST"
 MACHO_COUNT="$(wc -l < "$MACHOS_LIST" | tr -d ' ')"
 echo "    found $MACHO_COUNT Mach-Os (baseline $MACHO_BASELINE_COUNT, tolerance $MACHO_TOLERANCE)"
 
@@ -1050,6 +1048,11 @@ else
                 echo "ERR: codesign failed on $f" >&2
                 exit 1
             }
+        if [ "$DEVELOPER_ID" = "-" ]; then
+            "$REPO_ROOT/scripts/verify-sidecar-signature.sh" "$f"
+        else
+            "$REPO_ROOT/scripts/verify-sidecar-signature.sh" "$f" --official
+        fi
     done < "$MACHOS_LIST"
     automation_events=$(codesign -d --entitlements :- \
         "$STAGE/python/bin/python3.12" 2>/dev/null \
