@@ -248,7 +248,7 @@ struct CUASection: View {
             }
 
         if !viewModel.phase.isBusy, viewModel.targetResolutionApproval == nil {
-          Button(viewModel.isResolvingTargets ? "Finding the right apps…" : "Start") {
+          Button(viewModel.isResolvingTargets ? String(localized: "Finding the right apps…") : String(localized: "Start")) {
             Task { await viewModel.resolveAndStart() }
                 }
                 .buttonStyle(.borderedProminent)
@@ -347,22 +347,22 @@ struct CUASection: View {
           }
 
           VStack(alignment: .leading, spacing: 14) {
-            modelField("Name", help: "For example, My Local Model") {
+            modelField(String(localized: "Name"), help: String(localized: "For example, My Local Model")) {
               TextField("My Local Model", text: $brainDraftName)
                 .accessibilityIdentifier("ComputerUse.Agent.ModelName")
             }
-            modelField("Model name", help: "The model identifier expected by this endpoint") {
+            modelField(String(localized: "Model name"), help: String(localized: "The model identifier expected by this endpoint")) {
               TextField("Model identifier", text: $brainDraftModel)
                 .accessibilityIdentifier("ComputerUse.Agent.ModelNameAtEndpoint")
             }
-            modelField("Endpoint URL", help: "A loopback URL on this Mac or an HTTPS endpoint") {
+            modelField(String(localized: "Endpoint URL"), help: String(localized: "A loopback URL on this Mac or an HTTPS endpoint")) {
               TextField("https://example.com/v1", text: $brainDraftURL)
                 .accessibilityIdentifier("ComputerUse.Agent.ModelURL")
                 .onChange(of: brainDraftURL) { _, _ in
                   brainDraftAllowRemote = false
                 }
             }
-            modelField("API key", help: "Optional. Stored only in your local Computer Use configuration.") {
+            modelField(String(localized: "API key"), help: String(localized: "Optional. Stored only in your local Computer Use configuration.")) {
               SecureField("Optional", text: $brainDraftAPIKey)
                 .accessibilityIdentifier("ComputerUse.Agent.ModelKey")
             }
@@ -639,14 +639,14 @@ struct CUASection: View {
     private var permissionReadinessMessage: String {
         if let permissions = viewModel.executorPermissions {
             if permissions.isReady {
-                return "Rapid-MLX Desktop has Screen Recording access, and its bundled helper has Accessibility access for Computer Use."
+                return String(localized: "Rapid-MLX Desktop has Screen Recording access, and its bundled helper has Accessibility access for Computer Use.")
             }
             if viewModel.supportsPermissionRequest {
-                return "Computer Use needs Screen Recording for Rapid-MLX Desktop and Accessibility for its bundled helper. Each Allow button asks macOS for the app that uses that permission."
+                return String(localized: "Computer Use needs Screen Recording for Rapid-MLX Desktop and Accessibility for its bundled helper. Each Allow button asks macOS for the app that uses that permission.")
             }
-            return "Computer Use needs Screen Recording for Rapid-MLX Desktop and Accessibility for its bundled helper. Allow each app in System Settings, then refresh."
+            return String(localized: "Computer Use needs Screen Recording for Rapid-MLX Desktop and Accessibility for its bundled helper. Allow each app in System Settings, then refresh.")
         }
-        return "Rapid Computer Use could not report its permission status. Review Rapid-MLX Desktop in System Settings, then refresh."
+        return String(localized: "Rapid Computer Use could not report its permission status. Review Rapid-MLX Desktop in System Settings, then refresh.")
     }
 
     private var permissionSettingsLinks: [MacAutomationPermission] {
@@ -662,12 +662,12 @@ struct CUASection: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Label(
-                    viewModel.phase == .starting ? "Starting task" : "Task in progress",
+                    viewModel.phase == .starting ? String(localized: "Starting task") : String(localized: "Task in progress"),
                     systemImage: viewModel.phase == .starting ? "hourglass" : "gearshape.2"
                 )
                 .font(.headline)
                 Spacer()
-                Text(viewModel.phase == .starting ? "STARTING" : "RUNNING")
+                Text(viewModel.phase == .starting ? String(localized: "STARTING") : String(localized: "RUNNING"))
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(.blue)
                     .padding(.horizontal, 7)
@@ -675,8 +675,8 @@ struct CUASection: View {
                     .background(.blue.opacity(0.1), in: Capsule())
                 Button(
                     viewModel.isRecoveringCreate
-                        ? (viewModel.isStopping ? "Recovering…" : "Retry Recovery")
-                        : (viewModel.isStopping ? "Stopping…" : "Stop")
+                        ? (viewModel.isStopping ? String(localized: "Recovering…") : String(localized: "Retry Recovery"))
+                        : (viewModel.isStopping ? String(localized: "Stopping…") : String(localized: "Stop"))
                 ) {
                     Task { await viewModel.cancel() }
                 }
@@ -996,7 +996,7 @@ struct CUASection: View {
                     .tint(.orange)
                     .disabled(!viewModel.canApprove)
                     .accessibilityIdentifier("ComputerUse.Agent.Approve")
-                Button(viewModel.isStopping ? "Stopping…" : "Stop Task") {
+                Button(viewModel.isStopping ? String(localized: "Stopping…") : String(localized: "Stop Task")) {
                     Task { await viewModel.cancel() }
                 }
                     .buttonStyle(.bordered)
@@ -1058,19 +1058,19 @@ struct CUAEventList: View {
         switch event.kind {
         case "plan":
             let instruction = event.stepInstruction ?? event.action ?? "plan"
-            return "Step \(event.step ?? 0): \(instruction)"
+            return ExperimentalSurfaceCopy.cuaStep(event.step ?? 0, instruction: instruction)
         case "executed":
-            return "Step \(event.step ?? 0) finished"
+            return ExperimentalSurfaceCopy.cuaStepFinished(event.step ?? 0)
         case "gate":
-            return "Waiting for your approval at a sign-in page"
+            return String(localized: "Waiting for your approval at a sign-in page")
         case "gate_resolved":
-            return "Approval resolved"
+            return String(localized: "Approval resolved")
         case "target_switched":
             let destination = event.targetID.flatMap { targetNames[$0] }
                 ?? "another app"
-            return "Switched to \(destination)"
+            return ExperimentalSurfaceCopy.cuaSwitched(to: destination)
         case "terminal":
-            return "Run \(event.status ?? "ended")"
+            return ExperimentalSurfaceCopy.cuaRun(event.status ?? "ended")
         default:
             return event.kind
         }

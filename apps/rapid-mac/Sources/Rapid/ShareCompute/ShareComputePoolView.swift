@@ -53,7 +53,7 @@ struct ShareComputePoolTab: View {
     private var capacityPanel: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .center, spacing: RapidTheme.Space.sm) {
-                ShareComputeEyebrow(text: "Live pool capacity", size: 11)
+                ShareComputeEyebrow(text: String(localized: "Live pool capacity"), size: 11)
                 Spacer(minLength: RapidTheme.Space.sm)
                 freshnessBadge
             }
@@ -320,7 +320,7 @@ struct ShareComputePoolTab: View {
         VStack(alignment: .leading, spacing: 18) {
             VStack(alignment: .leading, spacing: 6) {
                 ShareComputeEyebrow(
-                    text: "Community capacity",
+                    text: String(localized: "Community capacity"),
                     tone: RapidTheme.onBrandPrimarySecondary,
                     size: 11
                 )
@@ -374,7 +374,7 @@ struct ShareComputePoolTab: View {
         HStack(alignment: .center, spacing: RapidTheme.Space.md) {
             VStack(alignment: .leading, spacing: 7) {
                 ShareComputeEyebrow(
-                    text: "Model to serve",
+                    text: String(localized: "Model to serve"),
                     tone: RapidTheme.onBrandPrimarySecondary,
                     size: 10
                 )
