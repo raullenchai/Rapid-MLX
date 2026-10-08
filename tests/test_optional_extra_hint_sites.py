@@ -222,6 +222,8 @@ def test_mllm_and_video_lazy_import_failures_use_pinned_hints(monkeypatch) -> No
             image=None,
         )
 
+    # The CogVideoX runtime ships in the base install; hide it for this case.
+    monkeypatch.setitem(sys.modules, "videox_fun_mlx", None)
     engine = VideoGenerationEngine("cog/model")
     with pytest.raises(VideoBackendUnavailableError, match=r"rapid-mlx=="):
         engine._load_sync()
