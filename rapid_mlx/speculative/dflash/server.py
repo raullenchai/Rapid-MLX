@@ -67,6 +67,7 @@ from rapid_mlx.service.helpers import (
 )
 from rapid_mlx.service.postprocessor import StreamingPostProcessor
 
+from ..request_policy import RequestRefused
 from .eligibility import have_runtime
 from .runtime import load_runtime
 
@@ -2324,9 +2325,10 @@ async def _non_stream_completion(
             "DFlash non-stream generate raised: %s", result, exc_info=result
         )
         # A provider marks a request it refused with the status to answer.
-        refused = getattr(result, "status_code", None)
-        if isinstance(refused, int) and 400 <= refused < 600:
-            raise HTTPException(status_code=refused, detail=f"{backend_name}: {result}")
+        if isinstance(result, RequestRefused):
+            raise HTTPException(
+                status_code=result.status_code, detail=f"{backend_name}: {result}"
+            )
         raise HTTPException(
             status_code=500,
             detail=f"{backend_name} runtime error: {type(result).__name__}: {result}",

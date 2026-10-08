@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import functools
 import hashlib
+import importlib
 import json
 import logging
 import os
@@ -19,6 +20,7 @@ from typing import Any, cast
 
 from rapid_mlx.request import RequestOutput
 
+from .request_policy import RequestRefused
 from .tensorfold_qwen27 import TensorFoldQwen27Backend, validate_request
 
 logger = logging.getLogger(__name__)
@@ -119,22 +121,19 @@ def _prompt_boundaries(
     return history_len, shared
 
 
-class RequestRefused(ValueError):  # noqa: N818 - carries an HTTP status
-    """The runtime turned the request down; the HTTP layer answers with ``status_code``."""
-
-    status_code = 400
-
-
 def _as_refusal(error: BaseException) -> BaseException:
     """Map the runtime's request refusals to a client error instead of a 500."""
     try:
-        from tensorfold.server.errors import CapacityError, RequestError
+        errors = importlib.import_module("tensorfold.server.errors")
     except ImportError:
         return error
-    if not isinstance(error, RequestError):
+    request_error = getattr(errors, "RequestError", None)
+    if request_error is None or not isinstance(error, request_error):
         return error
+    capacity_error = getattr(errors, "CapacityError", None)
     refusal = RequestRefused(str(error))
-    refusal.status_code = 503 if isinstance(error, CapacityError) else 400
+    if capacity_error is not None and isinstance(error, capacity_error):
+        refusal.status_code = 503
     refusal.__cause__ = error
     return refusal
 

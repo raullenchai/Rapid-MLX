@@ -976,6 +976,9 @@ def test_runtime_refusals_answer_as_client_errors(monkeypatch) -> None:
     crash = RuntimeError("worker died")
     assert _as_refusal(crash) is crash
 
+    # A runtime without the capacity subtype still classifies refusals.
+    del errors.CapacityError
+    assert _as_refusal(RequestError("too long")).status_code == 400
     # Without the runtime's error types nothing is reclassified.
     monkeypatch.setitem(sys.modules, "tensorfold.server.errors", None)
     plain = RequestError("unknown")
