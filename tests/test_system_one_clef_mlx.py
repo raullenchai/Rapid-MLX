@@ -61,8 +61,8 @@ def test_head_scores_every_option_of_every_question():
     )
     assert logits.shape == (5,)
     assert np.isfinite(np.asarray(logits)).all()
-    # Options compete only inside their own question: changing the second
-    # question's last option leaves the first question's logits alone.
+    # The head reads option text through the spans: pointing the last option
+    # at different tokens changes that question's logits.
     changed = head(
         hidden,
         [(1, 3), (5, 6)],
@@ -349,6 +349,8 @@ def test_load_clef_registers_the_model_type_and_materializes_weights(
         "install_auto_processor_patch",
         lambda model_type, processor: patched.append((model_type, processor)),
     )
+    # A sum is lazy until evaluated, and a lazy array is bound to its thread:
+    # without the load-time evaluation the worker below raises.
     weight = mx.zeros((2,)) + 1
 
     def fake_load(path):
