@@ -9033,7 +9033,7 @@ async def stream_chat_completion_strict_postgen(
                 # terminal error instead of replacing it with a schema error.
                 validation_emitted = True
                 yield chunk_text
-                await upstream_agen.aclose()
+                await cast(AsyncGenerator[str, None], upstream_agen).aclose()
                 return
             # Swallow the upstream [DONE] sentinel — we emit our own
             # [DONE] at the END of validation (codex r6 #1,
@@ -9419,7 +9419,7 @@ async def stream_chat_completion_strict_postgen(
                 # in the except arm above for server-side
                 # diagnostics — that's where operators look.
                 upstream_envelope = (
-                    context_error.detail
+                    {"error": context_error.error_payload}
                     if context_error is not None
                     else {
                         "error": {

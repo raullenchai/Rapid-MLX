@@ -4400,7 +4400,7 @@ async def _stream_responses(
                     "response": {
                         **_initial_response_payload,
                         "status": "failed",
-                        "error": _window_error.detail["error"],
+                        "error": _window_error.error_payload,
                         "usage": {
                             "input_tokens": prompt_tokens,
                             "output_tokens": completion_tokens,
@@ -5368,7 +5368,7 @@ async def _stream_responses(
                     "response": {
                         **_initial_response_payload,
                         "status": "failed",
-                        "error": _context_error.detail["error"],
+                        "error": _context_error.error_payload,
                         "usage": {
                             "input_tokens": 0,
                             "output_tokens": 0,

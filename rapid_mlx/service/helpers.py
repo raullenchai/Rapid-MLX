@@ -4710,8 +4710,8 @@ async def _disconnect_guard(
                         ):
                             response_payload.update(response_state["response"])
                             response_payload["status"] = "failed"
-                        response_payload["error"] = context_error.detail["error"]
-                        event = {
+                        response_payload["error"] = context_error.error_payload
+                        response_event = {
                             "type": "response.failed",
                             "response": response_payload,
                             "sequence_number": 0,
@@ -4720,9 +4720,9 @@ async def _disconnect_guard(
                             response_state.get("sequence_number"), list
                         ):
                             counter = response_state["sequence_number"]
-                            event["sequence_number"] = counter[0]
+                            response_event["sequence_number"] = counter[0]
                             counter[0] += 1
-                        yield f"event: response.failed\ndata: {_json.dumps(event)}\n\n"
+                        yield f"event: response.failed\ndata: {_json.dumps(response_event)}\n\n"
                     else:
                         yield ("data: " + _json.dumps(context_error.detail) + "\n\n")
                         yield "data: [DONE]\n\n"
@@ -5336,16 +5336,15 @@ class ContextLengthExceeded(HTTPException):
     def __init__(self, *, prompt_tokens: int, limit: int, message: str):
         self.prompt_tokens = prompt_tokens
         self.limit = limit
+        self.error_payload = {
+            "message": message,
+            "type": "invalid_request_error",
+            "code": "context_length_exceeded",
+            "param": "messages",
+        }
         super().__init__(
             status_code=400,
-            detail={
-                "error": {
-                    "message": message,
-                    "type": "invalid_request_error",
-                    "code": "context_length_exceeded",
-                    "param": "messages",
-                }
-            },
+            detail={"error": self.error_payload},
         )
 
 
@@ -5499,7 +5498,11 @@ def enforce_context_length(
     )
     raise ContextLengthExceeded(
         prompt_tokens=int(prompt_tokens),
-        limit=operational_cap if prompt_over_operational_cap else max_context,
+        limit=(
+            operational_cap
+            if prompt_over_operational_cap and operational_cap is not None
+            else max_context
+        ),
         message=detail,
     )
 

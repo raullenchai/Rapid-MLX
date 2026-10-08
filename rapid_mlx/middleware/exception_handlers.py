@@ -769,16 +769,17 @@ def _wrap_for_anthropic(
     # Claude Code recognizes Anthropic's prompt-too-long wording and can
     # compact the conversation. The shared admission guard retains the
     # OpenAI error code for the other routes; only this wire format changes.
+    prompt_tokens = getattr(exc, "prompt_tokens", None)
+    limit = getattr(exc, "limit", None)
     if (
-        exc is not None
-        and body["error"].get("code") == "context_length_exceeded"
-        and isinstance(getattr(exc, "prompt_tokens", None), int)
-        and isinstance(getattr(exc, "limit", None), int)
+        body["error"].get("code") == "context_length_exceeded"
+        and isinstance(prompt_tokens, int)
+        and isinstance(limit, int)
     ):
         wrapped["error"] = {
             "type": "invalid_request_error",
             "message": (
-                f"prompt is too long: {exc.prompt_tokens} tokens > {exc.limit} maximum"
+                f"prompt is too long: {prompt_tokens} tokens > {limit} maximum"
             ),
         }
     # Preserve any non-error sibling keys (none expected today but

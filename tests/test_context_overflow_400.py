@@ -390,6 +390,7 @@ def test_guided_token_budget_signal_survives_wrappers(monkeypatch):
     def exhausted(*args, **kwargs):  # noqa: ARG001
         raise signal
 
+    monkeypatch.setattr(guided, "HAS_LLGUIDANCE", True)
     monkeypatch.setattr(guided, "LLMatcher", Matcher)
     generator = guided.GuidedGenerator(object(), object())
     monkeypatch.setattr(generator, "_decode_constrained", exhausted)
@@ -399,7 +400,6 @@ def test_guided_token_budget_signal_survives_wrappers(monkeypatch):
     with pytest.raises(GuidedTokenLimitError):
         generator.generate_json_object("hi")
 
-    monkeypatch.setattr(guided, "HAS_LLGUIDANCE", True)
     monkeypatch.setattr(guided, "GuidedGenerator", lambda *_args: generator)
     with pytest.raises(GuidedTokenLimitError):
         guided.generate_with_schema(object(), object(), "hi", {"type": "object"})
