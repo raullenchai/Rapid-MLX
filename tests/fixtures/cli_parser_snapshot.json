@@ -8199,7 +8199,7 @@
        "const": null,
        "default": "convaiinnovations/laya",
        "dest": "model",
-       "help": "Laya model id/path, CLM public name, clef/clef-flash, clef-mlx/clef-flash-mlx (native MLX), or decider-2b; the native Clef and Decider backends also take a local checkpoint directory",
+       "help": "Laya model id/path, CLM public name, clef/clef-flash, clef-mlx/clef-flash-mlx (native MLX), decider-2b, or openjev (non-commercial weights); the native Clef, Decider and OpenJev backends also take a local checkpoint directory",
        "metavar": null,
        "nargs": "?",
        "option_strings": [],
@@ -8212,7 +8212,8 @@
         "clm",
         "clef",
         "clef-mlx",
-        "decider"
+        "decider",
+        "openjev"
        ],
        "class": "argparse._StoreAction",
        "completer": null,

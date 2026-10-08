@@ -1063,6 +1063,7 @@ jobs:
             tests/test_system_one_clef.py \
             tests/test_system_one_clef_mlx.py \
             tests/test_system_one_decider.py \
+            tests/test_system_one_openjev.py \
             tests/test_system_one_convert_clm.py \
             tests/test_module_import_smoke.py \
             tests/test_dflash_integration.py \

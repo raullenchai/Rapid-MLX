@@ -5035,6 +5035,8 @@ def _resolve_system_one_backend(model: str, requested: str) -> str:
         return "clef-mlx"
     if model_key in {"decider-2b", "nativ-community/decider-2b"}:
         return "decider"
+    if model_key in {"openjev", "openjev/openjev-mlx"}:
+        return "openjev"
     return "laya"
 
 
@@ -5050,6 +5052,7 @@ def system_one_command(args) -> None:
         DeciderBackend,
         DecisionBackend,
         LayaBackend,
+        OpenJevBackend,
     )
     from rapid_mlx.system_one.server import create_app
 
@@ -5090,6 +5093,9 @@ def system_one_command(args) -> None:
         backend = ClefMLXBackend(args.model, device=args.device)
     elif backend_name == "decider":
         backend = DeciderBackend(args.model, device=args.device)
+    elif backend_name == "openjev":
+        backend = OpenJevBackend(args.model, device=args.device)
+        print(f"Note: {OpenJevBackend.LICENSE_NOTICE}")
     else:
         backend = LayaBackend(
             args.model,
