@@ -15,22 +15,25 @@ rapid-mlx serve mlx-community/Qwen3.5-4B-MLX-4bit \
 python scripts/longrun_agent_soak.py \
   --url http://127.0.0.1:18130 --model qwen3.5-4b-4bit \
   --pid SERVER_PID --duration 10800 --concurrency 3 \
-  --max-rss-mb 12288 --output /path/to/run
+  --max-rss-mb 12288 --max-metal-gb 12 --output /path/to/run
 ```
 
 The harness writes `minutes.csv` (per-minute request counts, errors, p50/p95/p99
 latency, process RSS, thread and open-file counts, Metal active/cache/peak
 memory, scheduler running/waiting counts, and probe results), `errors.jsonl`
-(per-request failure details), and `summary.json`. A successful health probe
+(per-request failure details), and `summary.json` (including the pass/fail
+outcome). It exits nonzero on request, probe, telemetry, or budget failure.
+A successful health probe
 alone does not establish liveness: a ghost scheduler slot can leave HTTP
 healthy while chat is stuck. Check that completions continue, timeout counts
 stay flat, and `running`/`waiting` recover after load. RSS and active Metal
 memory overlap on unified-memory Macs; do not add them to estimate total use.
 
-The default `--max-rss-mb` stops the harness above 12 GiB of process RSS. It
-does not stop the server; the operator owns that process and should record its
-PID before the run. The 12 GiB guard is a process RSS guard, not a host-wide
-memory admission controller. A run that reaches the guard is a failed soak.
+The default guards stop the harness above 12 GiB of process RSS or 12 GB of
+active Metal allocations. They do not stop the server; the operator owns that
+process and should record its PID before the run. These are process limits,
+not a host-wide memory admission controller. A run that reaches either guard
+is a failed soak.
 
 Qwen3.5-4B's default multimodal lane serializes ArraysCache requests, so this
 command uses `--no-mllm` to exercise concurrent text scheduling. It cannot

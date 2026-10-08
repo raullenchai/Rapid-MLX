@@ -78,7 +78,9 @@ def process_stats(pid):
         check=False,
     )
     parts = result.stdout.split()
-    rss = round(int(parts[0]) / 1024, 1) if parts else ""
+    if result.returncode or not parts:
+        raise RuntimeError(f"server PID {pid} is missing or RSS is unreadable")
+    rss = round(int(parts[0]) / 1024, 1)
     thread_result = subprocess.run(
         ["ps", "-M", "-p", str(pid)],
         capture_output=True,
@@ -86,6 +88,8 @@ def process_stats(pid):
         timeout=10,
         check=False,
     )
+    if thread_result.returncode:
+        raise RuntimeError(f"thread count unavailable for server PID {pid}")
     threads = max(0, len(thread_result.stdout.splitlines()) - 1)
     files = subprocess.run(
         ["lsof", "-p", str(pid), "-Fn"],
@@ -94,6 +98,8 @@ def process_stats(pid):
         timeout=15,
         check=False,
     )
+    if files.returncode:
+        raise RuntimeError(f"open-file count unavailable for server PID {pid}")
     open_files = sum(line.startswith("n") for line in files.stdout.splitlines())
     return rss, threads, open_files
 
@@ -118,9 +124,22 @@ class Soak:
             limits=httpx.Limits(max_connections=args.concurrency + 4),
         )
 
-    def record(self, kind, started, error=None, disconnected=False, cancelled=False):
+    def record(
+        self,
+        kind,
+        started,
+        worker,
+        sequence,
+        stage,
+        error=None,
+        disconnected=False,
+        cancelled=False,
+    ):
         event = {
             "kind": kind,
+            "worker": worker,
+            "sequence": sequence,
+            "stage": stage,
             "latency_ms": round((time.monotonic() - started) * 1000, 1),
             "error": error,
             "disconnected": disconnected,
@@ -168,7 +187,13 @@ class Soak:
                 + "the request must release resources after cancellation. " * 75
             )
         else:
-            prompt += "Explain one safe way to handle a cancelled request."
+            prompt += self.random.choice(
+                (
+                    "Explain one safe way to handle a cancelled request.",
+                    "Name one check to make before retrying an agent tool call.",
+                    "Summarize how to release a cached resource after a request.",
+                )
+            )
         payload = {
             "model": self.args.model,
             "messages": [
@@ -183,13 +208,45 @@ class Soak:
             payload["tools"] = TOOLS
             payload["tool_choice"] = "required"
         started = time.monotonic()
-        error = None
+        try:
+            disconnected, cancelled, stage, error = await asyncio.wait_for(
+                self.send(kind, payload), timeout=self.args.timeout
+            )
+        except TimeoutError:
+            disconnected, cancelled, stage, error = (
+                False,
+                False,
+                "deadline",
+                "request deadline exceeded",
+            )
+        except httpx.HTTPStatusError as exc:
+            disconnected, cancelled, stage, error = (
+                False,
+                False,
+                "http",
+                f"HTTP {exc.response.status_code}: {exc.response.text[:240]}",
+            )
+        except Exception as exc:
+            disconnected, cancelled, stage, error = (
+                False,
+                False,
+                "request",
+                f"{type(exc).__name__}: {str(exc)[:240]}",
+            )
+        self.record(
+            kind, started, worker, sequence, stage, error, disconnected, cancelled
+        )
+
+    async def send(self, kind, payload):
         disconnected = False
         cancelled = False
+        stage = "initial"
+        error = None
         try:
             if payload["stream"]:
                 chunks = 0
                 done = False
+                finished = False
                 async with self.client.stream(
                     "POST", self.args.url + "/v1/chat/completions", json=payload
                 ) as response:
@@ -199,7 +256,17 @@ class Soak:
                             if line == "data: [DONE]":
                                 done = True
                             else:
-                                json.loads(line[6:])
+                                item = json.loads(line[6:])
+                                if item.get("error"):
+                                    raise ValueError(
+                                        f"stream error: {str(item['error'])[:240]}"
+                                    )
+                                if not isinstance(item.get("choices"), list):
+                                    raise ValueError("stream chunk missing choices")
+                                finished |= any(
+                                    choice.get("finish_reason") is not None
+                                    for choice in item["choices"]
+                                )
                                 chunks += 1
                         if kind == "disconnect" and chunks >= 3:
                             disconnected = True
@@ -211,8 +278,8 @@ class Soak:
                     error = "disconnect stream ended before 3 chunks"
                 elif kind == "cancel":
                     error = "cancel stream ended before 3 chunks"
-                elif not disconnected and not done:
-                    error = "stream missing [DONE]"
+                elif not disconnected and not (done and finished):
+                    error = "stream missing completion marker"
             else:
                 response = await self.client.post(
                     self.args.url + "/v1/chat/completions", json=payload
@@ -241,6 +308,7 @@ class Soak:
                         "tool_choice": "none",
                         "max_tokens": 40,
                     }
+                    stage = "tool_followup"
                     followup_response = await self.client.post(
                         self.args.url + "/v1/chat/completions", json=followup
                     )
@@ -252,9 +320,11 @@ class Soak:
                 cancelled = True
             else:
                 raise
+        except httpx.HTTPStatusError as exc:
+            error = f"HTTP {exc.response.status_code}: {exc.response.text[:240]}"
         except Exception as exc:
             error = f"{type(exc).__name__}: {str(exc)[:240]}"
-        self.record(kind, started, error, disconnected, cancelled)
+        return disconnected, cancelled, stage, error
 
     async def worker(self, index):
         while time.monotonic() < self.stop:
@@ -301,18 +371,29 @@ class Soak:
                 running=status.get("num_running"),
                 waiting=status.get("num_waiting"),
             )
-        except (httpx.HTTPError, ValueError):
-            pass
+        except (httpx.HTTPError, ValueError) as exc:
+            self.totals["telemetry_errors"] += 1
+            status_error = str(exc)[:240]
+        else:
+            status_error = None
         row["rss_mb"], row["threads"], row["open_files"] = await asyncio.to_thread(
             process_stats, self.args.pid
         )
         self.writer.writerow(row)
         self.csv_file.flush()
         print(json.dumps(row), flush=True)
-        if row["rss_mb"] and row["rss_mb"] > self.args.max_rss_mb:
+        self.totals["probe_errors"] += 2 - row["health_ok"] - row["models_ok"]
+        if status_error or row["metal_active_gb"] is None:
+            raise RuntimeError(f"Metal telemetry unavailable: {status_error}")
+        if row["rss_mb"] > self.args.max_rss_mb:
             raise RuntimeError(f"RSS budget exceeded: {row['rss_mb']} MB")
+        if row["metal_active_gb"] > self.args.max_metal_gb:
+            raise RuntimeError(f"Metal budget exceeded: {row['metal_active_gb']} GB")
 
     async def run(self):
+        workers = []
+        minute = 0
+        failure = None
         try:
             await self.sample(0)
             workers = [
@@ -326,11 +407,37 @@ class Soak:
                 )
                 await self.sample(minute)
                 minute += 1
-            await asyncio.gather(*workers)
+            await asyncio.wait_for(
+                asyncio.gather(*workers),
+                timeout=self.args.timeout + self.args.pause + 2,
+            )
+            await self.sample(minute)
+        except Exception as exc:
+            failure = exc
         finally:
+            for worker in workers:
+                worker.cancel()
+            await asyncio.gather(*workers, return_exceptions=True)
             await self.client.aclose()
             self.errors.close()
             self.csv_file.close()
+            required = (
+                "stream",
+                "nonstream",
+                "tool",
+                "long_prompt",
+                "disconnect",
+                "cancel",
+            )
+            passed = (
+                failure is None
+                and self.totals["errors"] == 0
+                and self.totals["probe_errors"] == 0
+                and self.totals["telemetry_errors"] == 0
+                and all(self.totals[kind] > 0 for kind in required)
+                and self.totals["disconnects"] > 0
+                and self.totals["cancellations"] > 0
+            )
             (self.args.output / "summary.json").write_text(
                 json.dumps(
                     {
@@ -338,11 +445,17 @@ class Soak:
                         "server_pid": self.args.pid,
                         "model": self.args.model,
                         "totals": dict(self.totals),
+                        "passed": passed,
+                        "failure": str(failure) if failure else None,
                     },
                     indent=2,
                 )
                 + "\n"
             )
+        if failure:
+            raise failure
+        if not passed:
+            raise RuntimeError("soak failed; see summary.json and errors.jsonl")
 
 
 def main():
@@ -355,6 +468,7 @@ def main():
     parser.add_argument("--pause", type=float, default=0.5)
     parser.add_argument("--timeout", type=float, default=120)
     parser.add_argument("--max-rss-mb", type=float, default=12288)
+    parser.add_argument("--max-metal-gb", type=float, default=12)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
