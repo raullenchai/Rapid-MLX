@@ -122,7 +122,7 @@ def _source_identity(
     while current != base and len(newest) <= 2:
         commit = client.commit(current)
         parents = commit.get("parents")
-        lines = commit.get("commit", {}).get("message", "").splitlines()
+        lines = commit.get("message", "").splitlines()
         message = lines[0] if lines else ""
         match = MERGE_SUBJECT.fullmatch(message)
         if not isinstance(parents, list) or len(parents) != 2 or not match:

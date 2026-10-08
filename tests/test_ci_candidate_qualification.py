@@ -20,8 +20,9 @@ def fixture(monkeypatch, mapped=False):
     client = _configured_client()
     client.responses[f"repos/{REPO}/pulls"][0]["base"]["sha"] = MAIN
     client.commit = lambda sha: {
+        "sha": sha,
+        "message": "Merge of #77",
         "tree": {"sha": client.trees.get(sha, TREE)},
-        "commit": {"message": "Merge of #77"},
         "parents": [{"sha": MAIN}, {"sha": TRUSTED}],
     }
     client.responses[f"repos/{REPO}/pulls/77"] = {
@@ -118,13 +119,15 @@ def test_ordered_two_source_identity(monkeypatch):
     }
     commits = {
         CANDIDATE: {
+            "sha": CANDIDATE,
+            "message": "Merge of #88",
             "tree": {"sha": TREE},
-            "commit": {"message": "Merge of #88"},
             "parents": [{"sha": middle}, {"sha": source_two}],
         },
         middle: {
+            "sha": middle,
+            "message": "Merge of #77",
             "tree": {"sha": "2" * 40},
-            "commit": {"message": "Merge of #77"},
             "parents": [{"sha": MAIN}, {"sha": TRUSTED}],
         },
     }
@@ -143,6 +146,23 @@ def test_ordered_two_source_identity(monkeypatch):
         {"number": 77, "head_sha": TRUSTED},
         {"number": 88, "head_sha": source_two},
     ]
+
+
+def test_pull_commit_message_shape_cannot_substitute_for_git_database_message(
+    monkeypatch,
+):
+    client, _ = fixture(monkeypatch)
+    client.commit = lambda sha: {
+        "sha": sha,
+        "tree": {"sha": client.trees.get(sha, TREE)},
+        "commit": {"message": "Merge of #77"},
+        "parents": [{"sha": MAIN}, {"sha": TRUSTED}],
+    }
+
+    result = qualify.qualify_candidate(client, 20, TRUSTED)
+
+    assert not result["qualified"]
+    assert result["reason"] == "candidate has malformed integration lineage"
 
 
 def test_actual_queue_metadata_archive_is_exact_attempt(monkeypatch):
