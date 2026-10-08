@@ -92,7 +92,7 @@ struct ShareComputeCreditsTab: View {
     private var header: some View {
         HStack(alignment: .top, spacing: RapidTheme.Space.sm) {
             VStack(alignment: .leading, spacing: 4) {
-                ShareComputeEyebrow(text: "QuickSilver · Contributor ledger", size: 11)
+                ShareComputeEyebrow(text: String(localized: "QuickSilver · Contributor ledger"), size: 11)
                 Text("Credit ledger")
                     .font(.system(size: isNarrow ? 21 : 25, weight: .semibold))
                     .foregroundStyle(RapidTheme.bandInk)
@@ -290,7 +290,7 @@ struct ShareComputeCreditsTab: View {
         VStack(alignment: .leading, spacing: 8) {
             VStack(alignment: .leading, spacing: 3) {
                 ShareComputeEyebrow(
-                    text: "Rapid · Local activity on this Mac",
+                    text: String(localized: "Rapid · Local activity on this Mac"),
                     tone: RapidTheme.bandInkSecondary,
                     size: 10
                 )
@@ -420,11 +420,11 @@ struct ShareComputeCreditsTab: View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 6) {
                 ShareComputeEyebrow(
-                    text: state == .unauthorized ? "Read key rejected" : "Connect your ledger",
+                    text: state == .unauthorized ? String(localized: "Read key rejected") : String(localized: "Connect your ledger"),
                     tone: RapidTheme.onBrandPrimarySecondary,
                     size: 11
                 )
-                Text(state == .unauthorized ? "Replace your read key" : "Add a read key")
+                Text(state == .unauthorized ? String(localized: "Replace your read key") : String(localized: "Add a read key"))
                     .font(.system(size: isNarrow ? 22 : 25, weight: .bold))
                     .foregroundStyle(RapidTheme.onBrandPrimary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -540,7 +540,7 @@ struct ShareComputeCreditsTab: View {
         VStack(alignment: .leading, spacing: 13) {
             VStack(alignment: .leading, spacing: 5) {
                 ShareComputeEyebrow(
-                    text: "Monthly credit summary",
+                    text: String(localized: "Monthly credit summary"),
                     tone: RapidTheme.onBrandPrimarySecondary,
                     size: 11
                 )
