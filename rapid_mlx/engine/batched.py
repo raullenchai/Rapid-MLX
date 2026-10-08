@@ -4963,10 +4963,8 @@ class BatchedEngine(BaseEngine):
         except (GuidedGenerationCancelledError, GuidedTokenLimitError):
             raise
         except Exception as e:
-            # ``generate_json`` already degrades every failure — compile-reject
-            # (structural validity is settled at the route boundary) and
-            # transient guided failure alike — to ``None``. This stays only as a
-            # last-resort guard for a wiring failure in the setup above.
+            # ``generate_json`` degrades operational decode failures to
+            # ``None``. This remains a guard for generator setup failures.
             logger.error(f"Guided generation error: {e}")
             return None
 

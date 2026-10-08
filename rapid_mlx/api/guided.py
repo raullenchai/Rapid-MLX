@@ -576,8 +576,7 @@ class GuidedGenerator:
         # operational; only token-budget exhaustion carries its counts to the
         # route so it can distinguish a context stop from a smaller requested
         # output budget. Other failures degrade to ``None``, which the engine
-        # turns into the
-        # operational path (strict → sanitized 502, non-strict → best-effort
+        # turns into the operational path (strict → sanitized 502, non-strict → best-effort
         # unconstrained 200), NEVER a 400. ``json.dumps`` is kept INSIDE the
         # ``try`` so a serialization failure follows that same graceful ``None``
         # path rather than escaping as an unhandled error.
