@@ -21,8 +21,17 @@ def fixture(monkeypatch, mapped=False):
     client.responses[f"repos/{REPO}/pulls"][0]["base"]["sha"] = MAIN
     client.commit = lambda sha: {
         "tree": {"sha": client.trees.get(sha, TREE)},
+        "commit": {"message": "Merge of #77"},
         "parents": [{"sha": MAIN}, {"sha": TRUSTED}],
     }
+    client.responses[f"repos/{REPO}/pulls/77"] = {
+        "head": {"sha": TRUSTED, "repo": {"full_name": REPO}}
+    }
+    monkeypatch.setattr(
+        qualify,
+        "_queue_metadata",
+        lambda *_: {"checking_base_sha": MAIN, "pull_requests": [{"number": 77}]},
+    )
     for path in qualify.CONTROL_PATHS:
         client.blobs[CANDIDATE, path] = client.blobs[TRUSTED, path] = "f" * 40
     client.responses[f"repos/{REPO}/compare/{MAIN}...{CANDIDATE}"] = {
@@ -98,6 +107,202 @@ def fixture(monkeypatch, mapped=False):
         lambda *a: {"qualified": True, "authorizes_reduced_ci": False},
     )
     return client, proof
+
+
+def test_ordered_two_source_identity(monkeypatch):
+    client, _ = fixture(monkeypatch)
+    middle = "e" * 40
+    source_two = "1" * 40
+    client.responses[f"repos/{REPO}/pulls/88"] = {
+        "head": {"sha": source_two, "repo": {"full_name": REPO}}
+    }
+    commits = {
+        CANDIDATE: {
+            "tree": {"sha": TREE},
+            "commit": {"message": "Merge of #88"},
+            "parents": [{"sha": middle}, {"sha": source_two}],
+        },
+        middle: {
+            "tree": {"sha": "2" * 40},
+            "commit": {"message": "Merge of #77"},
+            "parents": [{"sha": MAIN}, {"sha": TRUSTED}],
+        },
+    }
+    client.commit = commits.__getitem__
+    monkeypatch.setattr(
+        qualify,
+        "_queue_metadata",
+        lambda *_: {
+            "checking_base_sha": MAIN,
+            "pull_requests": [{"number": 77}, {"number": 88}],
+        },
+    )
+    result = qualify.qualify_candidate(client, 20, TRUSTED)
+    assert result["qualified"]
+    assert result["source_pull_requests"] == [
+        {"number": 77, "head_sha": TRUSTED},
+        {"number": 88, "head_sha": source_two},
+    ]
+
+
+def test_actual_queue_metadata_archive_is_exact_attempt(monkeypatch):
+    import io
+    import json
+    import zipfile
+    from types import SimpleNamespace
+
+    client, _ = fixture(monkeypatch)
+    monkeypatch.undo()
+    client.gh = "gh"
+    run = client.responses[f"repos/{REPO}/actions/runs/20"]
+    name = f"candidate-queue-identity-{CANDIDATE}-20-1"
+    client.responses[f"repos/{REPO}/actions/runs/20/artifacts"] = {
+        "total_count": 1,
+        "artifacts": [
+            {
+                "id": 501,
+                "name": name,
+                "expired": False,
+                "size_in_bytes": 100,
+                "workflow_run": {"id": 20, "head_sha": CANDIDATE},
+            }
+        ],
+    }
+    payload = {"checking_base_sha": MAIN, "pull_requests": [{"number": 77}]}
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("candidate-queue-identity.json", json.dumps(payload))
+    monkeypatch.setattr(
+        qualify.subprocess,
+        "run",
+        lambda command, **kwargs: SimpleNamespace(stdout=buffer.getvalue()),
+    )
+    assert qualify._queue_metadata(client, run) == payload
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ("listing", "listing is malformed"),
+        ("name", "missing or duplicate"),
+        ("identity", "artifact identity"),
+        ("download", "exceeds bound"),
+        ("member", "unexpected queue metadata"),
+        ("payload", "not an object"),
+    ],
+)
+def test_queue_metadata_archive_fails_closed(monkeypatch, change, message):
+    import io
+    import json
+    import zipfile
+    from types import SimpleNamespace
+
+    client, _ = fixture(monkeypatch)
+    monkeypatch.undo()
+    client.gh = "gh"
+    run = client.responses[f"repos/{REPO}/actions/runs/20"]
+    artifact = {
+        "id": 501,
+        "name": f"candidate-queue-identity-{CANDIDATE}-20-1",
+        "expired": False,
+        "size_in_bytes": 100,
+        "workflow_run": {"id": 20, "head_sha": CANDIDATE},
+    }
+    page = {"total_count": 1, "artifacts": [artifact]}
+    client.responses[f"repos/{REPO}/actions/runs/20/artifacts"] = page
+    payload = (
+        []
+        if change == "payload"
+        else {
+            "checking_base_sha": MAIN,
+            "pull_requests": [{"number": 77}],
+        }
+    )
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr(
+            "other.json" if change == "member" else "candidate-queue-identity.json",
+            json.dumps(payload),
+        )
+    raw = buffer.getvalue()
+    if change == "listing":
+        page["total_count"] = 2
+    elif change == "name":
+        artifact["name"] = "other"
+    elif change == "identity":
+        artifact["workflow_run"]["head_sha"] = MAIN
+    elif change == "download":
+        raw = b"x" * (qualify.QUEUE_ARTIFACT_MAX_BYTES + 1)
+    monkeypatch.setattr(
+        qualify.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout=raw)
+    )
+    with pytest.raises(evidence.EvidenceError, match=message):
+        qualify._queue_metadata(client, run)
+
+
+def test_workflow_publishes_exact_attempt_queue_identity():
+    from pathlib import Path
+
+    import yaml
+
+    workflow = yaml.safe_load(Path(".github/workflows/ci.yml").read_text())
+    steps = workflow["jobs"]["changes"]["steps"]
+    capture = next(step for step in steps if step.get("id") == "candidate-queue-info")
+    upload = next(
+        step
+        for step in steps
+        if step.get("name") == "Upload trusted candidate identity"
+    )
+    assert capture["run"] == "mergify ci queue-info"
+    assert (
+        upload["with"]["name"]
+        == "candidate-queue-identity-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}"
+    )
+
+
+def test_mandatory_linux_coverage_enrolls_candidate_controllers():
+    from pathlib import Path
+
+    import yaml
+
+    workflow = yaml.safe_load(Path(".github/workflows/ci.yml").read_text())
+    steps = workflow["jobs"]["test-matrix"]["steps"]
+    run = next(
+        step["run"]
+        for step in steps
+        if step.get("name") == "Run unit tests (no MLX required)"
+    )
+    required = {
+        "--cov=scripts.ci_candidate_qualification",
+        "--cov=scripts.ci_candidate_consumer",
+        "--cov=scripts.ci_candidate_admission",
+        "--cov=scripts.ci_candidate_execution",
+        "--cov=scripts.ci_candidate_rollout",
+    }
+    assert required <= set(run.split())
+    assert "--cov=rapid_mlx" in run
+
+
+@pytest.mark.parametrize(
+    "change", ["order", "duplicate", "head", "base", "three", "invalid"]
+)
+def test_batch_identity_fails_closed(monkeypatch, change):
+    client, _ = fixture(monkeypatch)
+    metadata = {"checking_base_sha": MAIN, "pull_requests": [{"number": 77}]}
+    if change == "order":
+        metadata["pull_requests"] = [{"number": 88}]
+    elif change == "duplicate":
+        metadata["pull_requests"] *= 2
+    elif change == "head":
+        client.responses[f"repos/{REPO}/pulls/77"]["head"]["sha"] = "3" * 40
+    elif change == "base":
+        metadata["checking_base_sha"] = "4" * 40
+    elif change == "invalid":
+        metadata["pull_requests"] = [{"number": False}]
+    else:
+        metadata["pull_requests"] *= 3
+    monkeypatch.setattr(qualify, "_queue_metadata", lambda *_: metadata)
+    assert not qualify.qualify_candidate(client, 20, TRUSTED)["qualified"]
 
 
 def test_full_repair_does_not_require_green_main(monkeypatch):

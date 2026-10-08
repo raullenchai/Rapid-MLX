@@ -175,7 +175,7 @@ def select_route(
 
 def _not_required(client: evidence.GitHubClient, source_run: int, trusted: str) -> dict:
     run = client.json(f"repos/{client.repo}/actions/runs/{source_run}")
-    pull, base, tree = producer._candidate(client, run)
+    pull, base, tree, sources = producer._candidate(client, run)
     latest = producer._latest(client, run["head_sha"], run["head_branch"])
     if (latest["id"], latest["run_attempt"]) != (run["id"], run["run_attempt"]):
         raise evidence.EvidenceError("policy exemption source is stale")
@@ -221,7 +221,7 @@ def _not_required(client: evidence.GitHubClient, source_run: int, trusted: str) 
             raise evidence.EvidenceError("policy exemption has unexpected engine job")
     if producer._latest(
         client, run["head_sha"], run["head_branch"]
-    ) != latest or producer._candidate(client, run)[1:] != (base, tree):
+    ) != latest or producer._candidate(client, run)[1:] != (base, tree, sources):
         raise evidence.EvidenceError("policy exemption changed")
     if client.json(f"repos/{client.repo}/git/ref/heads/main")["object"]["sha"] != base:
         raise evidence.EvidenceError("policy exemption main changed")
@@ -235,6 +235,8 @@ def _not_required(client: evidence.GitHubClient, source_run: int, trusted: str) 
         "candidate_tree": tree,
         "candidate_pr": pull["number"],
         "base_sha": base,
+        "checking_base_sha": base,
+        "source_pull_requests": sources,
         "source_run_id": source_run,
         "source_attempt": run["run_attempt"],
     }
@@ -248,7 +250,7 @@ def qualify_source(
         return full
     try:
         run = client.json(f"repos/{client.repo}/actions/runs/{source_run}")
-        _, base, _ = producer._candidate(client, run)
+        _, base, _, _ = producer._candidate(client, run)
         if not classify_lanes(producer._paths(client, base, run["head_sha"])).engine:
             return _not_required(client, source_run, trusted)
         generation = ready(client, base)
