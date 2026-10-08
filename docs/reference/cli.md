@@ -274,6 +274,7 @@ are the argparse defaults from `rapid_mlx/cli.py`.
 | `--scheduling-policy` | Prompt-slot admission order: `fcfs`, or opt-in `shortest_validated_tail` to favor cache-hot/short prompts under contention | `fcfs` |
 | `--scheduling-max-deferrals` | Compatible grants that may pass over one request before `shortest_validated_tail` forces it through in FIFO order | 8 |
 | `--prefill-step-size` | Chunk size for prompt prefill processing; larger values use more memory but can improve prefill throughput | 2048 |
+| `--shared-prefix-wait-tokens` | A request sharing at least this many uncached prompt tokens with a request that is still prefilling waits for that prompt state instead of recomputing it (applies to `fcfs` admission with the memory-aware prefix cache); `0` disables | 1024 |
 | `--stream-interval` | Tokens to batch before streaming (1 = smooth, higher = throughput) | 1 |
 | `--gpu-memory-utilization` | Fraction of device memory for the Metal allocation limit and admission cap (0.0-1.0). Advanced override — by default the budget is sized automatically to the loaded model (measured weights + headroom, 0.90–0.97 of the device working-set budget) | auto |
 

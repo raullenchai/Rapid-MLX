@@ -649,6 +649,17 @@ def _add_serve_parser(
         ),
     )
     serve_parser.add_argument(
+        "--shared-prefix-wait-tokens",
+        type=int,
+        default=1024,
+        metavar="N",
+        help=(
+            "A request sharing at least N uncached prompt tokens with a "
+            "request that is still prefilling waits for that prompt state "
+            "instead of recomputing it (default: 1024). 0 disables the wait."
+        ),
+    )
+    serve_parser.add_argument(
         "--enable-prefix-cache",
         action="store_true",
         default=True,
