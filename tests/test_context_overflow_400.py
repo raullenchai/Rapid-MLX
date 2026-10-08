@@ -424,7 +424,7 @@ def test_strict_guided_budget_exhaustion_uses_context_error(surface, stream):
         supports_guided_generation = True
 
         async def generate_with_schema(self, **kwargs):  # noqa: ARG002
-            raise GuidedTokenLimitError(70, 10)
+            raise GuidedTokenLimitError(_CONTEXT_WINDOW - 10, 10)
 
     schema = {"type": "object", "properties": {"value": {"type": "integer"}}}
     cases = {
@@ -462,7 +462,7 @@ def test_strict_guided_budget_exhaustion_uses_context_error(surface, stream):
         ),
     }
     router, path, payload = cases[surface]
-    response = _make_app([router], context_length=80, engine=GuidedEngine()).post(
+    response = _make_app([router], engine=GuidedEngine()).post(
         path, json={"model": "qwen3-0.6b-8bit", "stream": stream, **payload}
     )
     assert "context_length_exceeded" in response.text, response.text
