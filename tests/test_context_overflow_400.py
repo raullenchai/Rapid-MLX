@@ -254,10 +254,21 @@ def test_late_stream_guard_preserves_context_protocol(path):
         request = SimpleNamespace(
             url=SimpleNamespace(path=path), is_disconnected=is_disconnected
         )
+        state = (
+            {
+                "response": {"id": "resp_known", "model": "test-model"},
+                "sequence_number": [2],
+            }
+            if path == "/v1/responses"
+            else None
+        )
         return [
             chunk
             async for chunk in _disconnect_guard(
-                failing_stream(), request, keepalive_seconds=0
+                failing_stream(),
+                request,
+                keepalive_seconds=0,
+                response_state=state,
             )
         ]
 
@@ -289,6 +300,8 @@ def test_late_stream_guard_preserves_context_protocol(path):
             "error",
         ):
             assert key in failed["response"]
+        assert failed["response"]["id"] == "resp_known"
+        assert failed["sequence_number"] == 2
     else:
         assert "context_length_exceeded" in wire
         assert "data: [DONE]" in wire
