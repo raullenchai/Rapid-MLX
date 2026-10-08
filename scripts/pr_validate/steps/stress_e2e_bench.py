@@ -842,7 +842,7 @@ AB_BLOCKS = AB_ROUNDS // 2
 _T95_ONE_SIDED = {9: 1.8331129326536335}
 
 
-def _paired_metric_interval(base: list[float], pr: list[float]) -> dict[str, float]:
+def _paired_metric_interval(base: list[float], pr: list[float]) -> dict[str, Any]:
     """Return the fixed-design CI for paired ABBA block log ratios."""
     if len(base) != AB_ROUNDS or len(pr) != AB_ROUNDS:
         raise ValueError(f"paired A/B requires exactly {AB_ROUNDS} captures per arm")
