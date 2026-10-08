@@ -124,6 +124,7 @@ from ..service.helpers import (
     _validate_tool_call_params,
     _wait_with_disconnect,
     build_extended_sampling_kwargs,
+    context_window_exhausted,
     dry_sampling_kwargs,
     enable_thinking_warning_header,
     enforce_context_length,
@@ -5934,6 +5935,12 @@ async def _create_chat_completion_impl(
     if output is None:
         return Response(status_code=499)
 
+    _window_error = context_window_exhausted(
+        engine, output.prompt_tokens, output.completion_tokens, output.finish_reason
+    )
+    if _window_error is not None:
+        raise _window_error
+
     elapsed = time.perf_counter() - start_time
     tokens_per_sec = output.completion_tokens / elapsed if elapsed > 0 else 0
     logger.info(
@@ -7530,6 +7537,22 @@ async def stream_chat_completion(
             buffered_finish[1].finish_reason
         ):
             return
+
+        if buffered_finish is not None:
+            _window_error = context_window_exhausted(
+                engine,
+                prompt_tokens,
+                completion_tokens,
+                buffered_finish[1].finish_reason,
+            )
+            if _window_error is not None:
+                yield (
+                    "event: chat.completion.error\ndata: "
+                    + json.dumps(_window_error.detail, separators=(",", ":"))
+                    + "\n\n"
+                )
+                yield "data: [DONE]\n\n"
+                return
 
         # Fallback tool call detection (post-stream). Collect ALL fallback
         # tool_call events before emitting; they get merged into the

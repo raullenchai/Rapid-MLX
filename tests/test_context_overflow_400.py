@@ -255,8 +255,14 @@ def test_context_length_override_applies_across_generation_routes():
         resp = client.post(path, json=payload)
         assert resp.status_code == 400, (path, resp.text)
         err = _extract_error(resp.json())
-        assert err.get("code") == "context_length_exceeded"
-        assert "80" in err.get("message", "")
+        if path == "/v1/messages":
+            assert err == {
+                "type": "invalid_request_error",
+                "message": "prompt is too long: 100 tokens > 80 maximum",
+            }
+        else:
+            assert err.get("code") == "context_length_exceeded"
+            assert "80" in err.get("message", "")
 
 
 def test_context_length_override_keeps_native_model_window_visible():

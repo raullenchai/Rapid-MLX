@@ -75,6 +75,7 @@ from ..service.helpers import (
     _validate_tool_call_params,
     _wait_with_disconnect,
     build_extended_sampling_kwargs,
+    context_window_exhausted,
     count_prompt_tokens,
     enforce_context_length,
     enforce_context_length_for_messages,
@@ -1023,6 +1024,12 @@ async def create_anthropic_message(
 
         if is_cancellation_finish_reason(output.finish_reason):
             return Response(status_code=499)
+
+        _window_error = context_window_exhausted(
+            engine, output.prompt_tokens, output.completion_tokens, output.finish_reason
+        )
+        if _window_error is not None:
+            raise _window_error
 
         elapsed = time.perf_counter() - start_time
         tokens_per_sec = output.completion_tokens / elapsed if elapsed > 0 else 0
@@ -3217,6 +3224,23 @@ async def _stream_anthropic_messages(
                 yield ev
         block_index += 1
         streamed_any_content_block = True
+
+    _window_error = context_window_exhausted(
+        engine, prompt_tokens, completion_tokens, stream_finish_reason
+    )
+    if _window_error is not None:
+        error_event = {
+            "type": "error",
+            "error": {
+                "type": "invalid_request_error",
+                "message": (
+                    f"prompt is too long: {_window_error.prompt_tokens} tokens > "
+                    f"{_window_error.limit} maximum"
+                ),
+            },
+        }
+        yield f"event: error\ndata: {json.dumps(error_event)}\n\n"
+        return
 
     # R-06 (r5-A bundle): map the engine's ``finish_reason`` onto the
     # Anthropic ``stop_reason`` enum (``end_turn``, ``max_tokens``,

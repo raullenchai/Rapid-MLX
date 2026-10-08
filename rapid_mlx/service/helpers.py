@@ -5291,6 +5291,27 @@ class ContextLengthExceeded(HTTPException):
         )
 
 
+def context_window_exhausted(
+    engine, prompt_tokens: int, completion_tokens: int, finish_reason: str | None
+) -> ContextLengthExceeded | None:
+    """Recognize a generation that consumed the served context window."""
+    if finish_reason != "length" or prompt_tokens <= 0 or completion_tokens <= 0:
+        return None
+    limit = get_model_max_context(engine)
+    if prompt_tokens + completion_tokens < limit:
+        return None
+    return ContextLengthExceeded(
+        prompt_tokens=prompt_tokens + completion_tokens + 1,
+        limit=limit,
+        message=(
+            f"The prompt contains {prompt_tokens} tokens and generation used "
+            f"{completion_tokens} tokens, reaching this model's {limit}-token "
+            "context limit. Start a new session or compact the conversation, "
+            "or use a model with a larger context window."
+        ),
+    )
+
+
 def enforce_context_length(
     engine,
     prompt_tokens: int,

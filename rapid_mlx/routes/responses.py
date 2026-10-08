@@ -112,6 +112,7 @@ from ..service.helpers import (
     _validate_tool_call_params,
     _wait_with_disconnect,
     build_extended_sampling_kwargs,
+    context_window_exhausted,
     enforce_context_length,
     enforce_context_length_for_messages,
     ensure_engine_ready,
@@ -1905,6 +1906,12 @@ async def _non_stream(
 
     if output is None:
         return Response(status_code=499)
+
+    _window_error = context_window_exhausted(
+        engine, output.prompt_tokens, output.completion_tokens, output.finish_reason
+    )
+    if _window_error is not None:
+        raise _window_error
 
     usage_detail_output = None
 
@@ -5250,6 +5257,21 @@ async def _stream_responses(
                     "response": _stream_response_payload(
                         "failed",
                         error=cancellation_error(),
+                    ),
+                },
+            )
+            return
+
+        _window_error = context_window_exhausted(
+            engine, prompt_tokens, completion_tokens, last_finish_reason
+        )
+        if _window_error is not None:
+            yield _emit(
+                "response.failed",
+                {
+                    "type": "response.failed",
+                    "response": _stream_response_payload(
+                        "failed", error=_window_error.detail["error"]
                     ),
                 },
             )

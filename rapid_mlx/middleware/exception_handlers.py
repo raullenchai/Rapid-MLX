@@ -778,8 +778,7 @@ def _wrap_for_anthropic(
         wrapped["error"] = {
             "type": "invalid_request_error",
             "message": (
-                f"prompt is too long: {exc.prompt_tokens} tokens > "
-                f"{exc.limit} maximum"
+                f"prompt is too long: {exc.prompt_tokens} tokens > {exc.limit} maximum"
             ),
         }
     # Preserve any non-error sibling keys (none expected today but
