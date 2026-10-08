@@ -9,8 +9,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-_SCRIPT = Path(__file__).resolve().parents[1] / "scripts/bench_multiturn_prefix.py"
-_SPEC = importlib.util.spec_from_file_location("bench_multiturn_prefix", _SCRIPT)
+_SCRIPT = Path(__file__).resolve().parents[1] / "scripts/multiturn_prefix_probe.py"
+_SPEC = importlib.util.spec_from_file_location("multiturn_prefix_probe", _SCRIPT)
 assert _SPEC and _SPEC.loader
 bench = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(bench)

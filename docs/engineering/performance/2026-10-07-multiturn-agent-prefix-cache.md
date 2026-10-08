@@ -8,7 +8,7 @@ Date: 2026-10-07. Host: M2 Pro Mac mini, 32 GB unified memory. Base commit:
 
 ## Workload
 
-`scripts/bench_multiturn_prefix.py` sends ten streaming agent turns to each
+`scripts/multiturn_prefix_probe.py` sends ten streaming agent turns to each
 route. The system prompt uses this repository's `AGENTS.md` and the first
 25,000 characters of `README.md` as varied coding guidance and project
 context, followed by 30 OpenAI or Anthropic tool schemas. Each response's
@@ -110,10 +110,10 @@ boundary snapshot when the generated completion cannot be re-rendered exactly.
 After serving the model as above, run each command against a fresh server:
 
 ```bash
-python scripts/bench_multiturn_prefix.py \
+python scripts/multiturn_prefix_probe.py \
   --base-url http://127.0.0.1:18123 \
   --model /path/to/Qwen3.5-4B-MLX-4bit/snapshot --api chat
-python scripts/bench_multiturn_prefix.py \
+python scripts/multiturn_prefix_probe.py \
   --base-url http://127.0.0.1:18124 \
   --model /path/to/Qwen3.5-4B-MLX-4bit/snapshot --api messages
 ```
