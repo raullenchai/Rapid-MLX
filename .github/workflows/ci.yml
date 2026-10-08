@@ -787,6 +787,11 @@ jobs:
             -m "not requires_mlx and not real_hf_cache and not requires_network and not slow and not integration and not needle" \
             -v --tb=short \
             --cov=rapid_mlx \
+            --cov=scripts.ci_candidate_qualification \
+            --cov=scripts.ci_candidate_consumer \
+            --cov=scripts.ci_candidate_admission \
+            --cov=scripts.ci_candidate_execution \
+            --cov=scripts.ci_candidate_rollout \
             --cov-report=term-missing
 
           # These lifecycle contracts install inert MLX modules before import.
