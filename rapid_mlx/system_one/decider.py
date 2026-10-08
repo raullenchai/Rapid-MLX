@@ -243,7 +243,7 @@ class DeciderScorer:
                     logits[row, : widths[index]].astype(mx.float32)
                     / temperatures[index]
                 )
-                results.append([float(p) for p in mx.softmax(values).tolist()])
+                results.append(np.asarray(mx.softmax(values)).astype(float).tolist())
             start = end
         return results
 
