@@ -515,6 +515,71 @@ class _ClampEngine(_StubEngine):
         yield self._output(kwargs.get("max_tokens"))
 
 
+class _LateOverflowEngine(_StubEngine):
+    @staticmethod
+    def _overflow():
+        from rapid_mlx.request import ClientRequestError
+
+        raise ClientRequestError(
+            "context_length_exceeded: prompt has 101 tokens after media "
+            "expansion, exceeding --context-length 80"
+        )
+
+    async def chat(self, **kwargs):  # noqa: ARG002
+        return self._overflow()
+
+    async def stream_chat(self, **kwargs):  # noqa: ARG002
+        yield self._overflow()
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("surface", ["chat", "responses", "messages"])
+def test_expanded_media_late_overflow_uses_route_protocol(surface, stream):
+    from rapid_mlx.routes.anthropic import router as anthropic_router
+    from rapid_mlx.routes.chat import router as chat_router
+    from rapid_mlx.routes.responses import router as responses_router
+
+    cases = {
+        "chat": (
+            chat_router,
+            "/v1/chat/completions",
+            {"messages": [{"role": "user", "content": "hi"}], "max_tokens": 16},
+        ),
+        "responses": (
+            responses_router,
+            "/v1/responses",
+            {"input": "hi", "max_output_tokens": 16},
+        ),
+        "messages": (
+            anthropic_router,
+            "/v1/messages",
+            {"messages": [{"role": "user", "content": "hi"}], "max_tokens": 16},
+        ),
+    }
+    router, path, payload = cases[surface]
+    response = _make_app(
+        [router], context_length=80, engine=_LateOverflowEngine()
+    ).post(path, json={"model": "qwen3-0.6b-8bit", "stream": stream, **payload})
+    if response.status_code == 400:
+        body = response.json()
+        if surface == "messages":
+            assert body["error"]["message"] == (
+                "prompt is too long: 101 tokens > 80 maximum"
+            )
+        else:
+            assert body["error"]["code"] == "context_length_exceeded"
+    else:
+        assert stream and response.status_code == 200, response.text
+        if surface == "responses":
+            assert "event: response.failed" in response.text
+            assert "context_length_exceeded" in response.text
+        elif surface == "messages":
+            assert "event: error" in response.text
+            assert "prompt is too long: 101 tokens > 80 maximum" in response.text
+        else:
+            assert "context_length_exceeded" in response.text
+
+
 @pytest.mark.parametrize("surface", ["chat", "completions", "responses", "messages"])
 def test_routes_clamp_large_completion_budget_and_report_window_end(surface):
     """Every compatibility surface sends only the remaining budget downstream."""

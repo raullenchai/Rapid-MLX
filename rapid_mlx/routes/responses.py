@@ -5328,9 +5328,11 @@ async def _stream_responses(
                 "response.failed",
                 {
                     "type": "response.failed",
-                    "response": _stream_response_payload(
-                        "failed", error=_context_error.detail["error"]
-                    ),
+                    "response": {
+                        "id": response_id,
+                        "status": "failed",
+                        "error": _context_error.detail["error"],
+                    },
                 },
             )
             return
