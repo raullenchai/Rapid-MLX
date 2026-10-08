@@ -5272,6 +5272,25 @@ def count_prompt_tokens(engine, prompt) -> int:
         return 0
 
 
+class ContextLengthExceeded(HTTPException):
+    """Prompt admission failure with token counts for protocol adapters."""
+
+    def __init__(self, *, prompt_tokens: int, limit: int, message: str):
+        self.prompt_tokens = prompt_tokens
+        self.limit = limit
+        super().__init__(
+            status_code=400,
+            detail={
+                "error": {
+                    "message": message,
+                    "type": "invalid_request_error",
+                    "code": "context_length_exceeded",
+                    "param": "messages",
+                }
+            },
+        )
+
+
 def enforce_context_length(
     engine,
     prompt_tokens: int,
@@ -5309,7 +5328,9 @@ def enforce_context_length(
             f"{operational_cap} tokens. However, your prompt contains "
             f"{int(prompt_tokens)} tokens. Please reduce the length of the "
             "prompt; the limit is this server's --max-prompt-tokens flag, not "
-            "the model's context window."
+            "the model's context window. Start a new session or compact the "
+            "conversation, or raise --max-prompt-tokens if the model and "
+            "available memory permit."
         )
         reject_reason = "operational_cap"
     else:
@@ -5320,13 +5341,15 @@ def enforce_context_length(
         detail = (
             f"This model's maximum context length is {max_context} tokens. "
             f"However, your prompt contains {int(prompt_tokens)} tokens, leaving "
-            "no room for generation. Please reduce the length of the messages."
+            "no room for generation. Start a new session or compact the "
+            "conversation, or use a model with a larger context window."
         )
         requested = get_config().context_length
         if requested is not None and int(requested) == max_context:
             detail += (
                 f" This {max_context}-token window is set by the server's "
-                "--context-length flag, not by the model."
+                "--context-length flag, not by the model. Raise "
+                "--context-length if the model and available memory permit."
             )
         reject_reason = "prompt_over_window"
     from rapid_mlx.telemetry.inference import (
@@ -5342,16 +5365,10 @@ def enforce_context_length(
         caller_agent=caller_agent,
         caller_client=caller_client,
     )
-    raise HTTPException(
-        status_code=400,
-        detail={
-            "error": {
-                "message": detail,
-                "type": "invalid_request_error",
-                "code": "context_length_exceeded",
-                "param": "messages",
-            }
-        },
+    raise ContextLengthExceeded(
+        prompt_tokens=int(prompt_tokens),
+        limit=operational_cap if prompt_over_operational_cap else max_context,
+        message=detail,
     )
 
 

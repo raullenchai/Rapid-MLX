@@ -128,6 +128,9 @@ def _make_app(
     app = FastAPI()
     for router in routes:
         app.include_router(router)
+    from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+
+    install_exception_handlers(app)
     return TestClient(app)
 
 
@@ -332,8 +335,54 @@ def test_anthropic_messages_rejects_over_context_window():
     resp = client.post("/v1/messages", json=payload)
     assert resp.status_code == 400, resp.text
     body = resp.json()
-    err = _extract_error(body)
-    assert err.get("code") == "context_length_exceeded"
+    assert body["type"] == "error"
+    assert body["error"]["type"] == "invalid_request_error"
+    assert body["error"]["message"].startswith("prompt is too long: ")
+    assert body["error"]["message"].endswith(" tokens > 40960 maximum")
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("route", ["chat", "responses", "messages"])
+def test_agent_routes_surface_protocol_correct_context_error(route, stream):
+    from rapid_mlx.routes.anthropic import router as anthropic_router
+    from rapid_mlx.routes.chat import router as chat_router
+    from rapid_mlx.routes.responses import router as responses_router
+
+    if route == "chat":
+        router, path = chat_router, "/v1/chat/completions"
+        payload = {"messages": [{"role": "user", "content": _huge_text(100)}]}
+    elif route == "responses":
+        router, path = responses_router, "/v1/responses"
+        payload = {"input": _huge_text(100)}
+    else:
+        router, path = anthropic_router, "/v1/messages"
+        payload = {"messages": [{"role": "user", "content": _huge_text(100)}]}
+    payload.update({"model": "qwen3-0.6b-8bit", "stream": stream})
+    if route == "messages":
+        payload["max_tokens"] = 16
+    elif route == "responses":
+        payload["max_output_tokens"] = 16
+    else:
+        payload["max_tokens"] = 16
+
+    resp = _make_app([router], context_length=80).post(path, json=payload)
+    assert resp.status_code == 400, resp.text
+    body = resp.json()
+    if route == "messages":
+        assert body == {
+            "type": "error",
+            "error": {
+                "type": "invalid_request_error",
+                "message": "prompt is too long: 100 tokens > 80 maximum",
+            },
+        }
+    else:
+        error = body["error"]
+        assert error["code"] == "context_length_exceeded"
+        assert "100 tokens" in error["message"]
+        assert "80 tokens" in error["message"]
+        assert "Start a new session or compact" in error["message"]
+        assert "--context-length" in error["message"]
 
 
 # ─── /v1/responses ──────────────────────────────────────────────────
