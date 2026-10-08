@@ -285,6 +285,28 @@ def test_parallel_calls_with_distinct_names_in_separate_chunks(parser_name):
         assert _run(parser_name, wire, request, chunks) == expected_calls
 
 
+@pytest.mark.parametrize("parser_name", ["deepseek_v3", "granite", "xlam"])
+def test_parallel_calls_in_shared_envelope(parser_name):
+    if parser_name == "deepseek_v3":
+        first = CANONICAL_WIRES[parser_name]
+        block = first[len("<｜tool▁calls▁begin｜>") : -len("<｜tool▁calls▁end｜>")]
+        wire = "<｜tool▁calls▁begin｜>" + block + block + "<｜tool▁calls▁end｜>"
+    else:
+        first = json.loads("[" + CANONICAL_WIRES[parser_name].split("[", 1)[1])
+        # The parser's outer marker, where present, precedes this JSON list.
+        wire = ("<|tool_call|>" if parser_name == "granite" else "") + json.dumps(
+            first + first
+        )
+    request = _request("lookup")
+    expected = ToolParserManager.get_tool_parser(parser_name)(None).extract_tool_calls(
+        wire, request
+    )
+    expected_calls = [(call["name"], call["arguments"]) for call in expected.tool_calls]
+    assert len(expected_calls) == 2
+    for chunks in (list(wire), [wire]):
+        assert _run(parser_name, wire, request, chunks) == expected_calls
+
+
 @pytest.mark.parametrize("parser_name", ["hermes", "qwen3", "qwen3_coder_xml"])
 def test_reasoning_before_tool_call(parser_name):
     render = _xml_wire if parser_name == "qwen3_coder_xml" else _json_wire
