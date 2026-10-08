@@ -75,8 +75,8 @@ The server log, including pilots, recorded 2,773 prefix-cache hits and no
 Metal resource-limit, admission-cap, generation-recovery, or traceback
 signatures. Completions
 continued throughout the final hour, with no rising RSS, thread, or open-file
-trend. The average of each minute's p95 latency was 11.37 s in the first ten
-minutes and 8.04 s in the last ten; individual long-prompt minutes were higher.
+trend. The average of each full minute's p95 latency was 11.37 s in minutes
+1–10 and 8.28 s in minutes 171–180; individual long-prompt minutes were higher.
 
 No hang or leak reproduced in this Qwen3.5 text-lane workload. The tested
 symptoms look resolved on current `main` for this workload; the original

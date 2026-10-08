@@ -242,6 +242,7 @@ class Soak:
     async def send(self, kind, payload):
         disconnected = False
         cancelled = False
+        requested_cancel = False
         stage = "initial"
         error = None
         try:
@@ -252,7 +253,16 @@ class Soak:
                 async with self.client.stream(
                     "POST", self.args.url + "/v1/chat/completions", json=payload
                 ) as response:
-                    response.raise_for_status()
+                    if response.status_code >= 400:
+                        detail = bytearray()
+                        async for chunk in response.aiter_bytes():
+                            detail.extend(chunk[: max(0, 240 - len(detail))])
+                            if len(detail) >= 240:
+                                break
+                        raise ValueError(
+                            f"HTTP {response.status_code}: "
+                            f"{detail.decode(errors='replace')}"
+                        )
                     async for line in response.aiter_lines():
                         if line.startswith("data: "):
                             if line == "data: [DONE]":
@@ -274,6 +284,7 @@ class Soak:
                             disconnected = True
                             break
                         if kind == "cancel" and chunks >= 3:
+                            requested_cancel = True
                             asyncio.current_task().cancel()
                             await asyncio.sleep(0)
                 if kind == "disconnect" and not disconnected:
@@ -318,7 +329,7 @@ class Soak:
                     if not followup_response.json().get("choices"):
                         error = "tool follow-up has no choices"
         except asyncio.CancelledError:
-            if kind == "cancel":
+            if kind == "cancel" and requested_cancel:
                 cancelled = True
             else:
                 raise
@@ -333,9 +344,8 @@ class Soak:
             await self.request(index)
             await asyncio.sleep(self.args.pause)
 
-    async def sample(self, minute):
+    def event_row(self, minute, events):
         elapsed = round(time.monotonic() - self.start, 1)
-        events, self.events = self.events, []
         counts = Counter(event["kind"] for event in events)
         latencies = [event["latency_ms"] for event in events if not event["error"]]
         row = {key: "" for key in FIELDS}
@@ -355,6 +365,11 @@ class Soak:
             latency_p95_ms=percentile(latencies, 0.95),
             latency_p99_ms=percentile(latencies, 0.99),
         )
+        return row
+
+    async def sample(self, minute):
+        events = self.events[:]
+        row = self.event_row(minute, events)
         for path, key in (("/health", "health_ok"), ("/v1/models", "models_ok")):
             try:
                 response = await self.client.get(self.args.url + path, timeout=10)
@@ -383,6 +398,7 @@ class Soak:
         )
         self.writer.writerow(row)
         self.csv_file.flush()
+        del self.events[: len(events)]
         print(json.dumps(row), flush=True)
         self.totals["probe_errors"] += 2 - row["health_ok"] - row["models_ok"]
         if (
@@ -401,6 +417,7 @@ class Soak:
         workers = []
         minute = 0
         failure = None
+        finished_normally = False
         try:
             await self.sample(0)
             workers = [
@@ -419,12 +436,17 @@ class Soak:
                 timeout=self.args.timeout + self.args.pause + 2,
             )
             await self.sample(minute)
-        except Exception as exc:
+            finished_normally = True
+        except BaseException as exc:
             failure = exc
         finally:
             for worker in workers:
                 worker.cancel()
             await asyncio.gather(*workers, return_exceptions=True)
+            if self.events:
+                self.writer.writerow(self.event_row(minute + 1, self.events))
+                self.csv_file.flush()
+                self.events.clear()
             await self.client.aclose()
             self.errors.close()
             self.csv_file.close()
@@ -438,6 +460,8 @@ class Soak:
             )
             passed = (
                 failure is None
+                and finished_normally
+                and time.monotonic() - self.start >= self.args.duration
                 and self.totals["errors"] == 0
                 and self.totals["probe_errors"] == 0
                 and self.totals["telemetry_errors"] == 0
@@ -479,6 +503,8 @@ def main():
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    if args.duration <= 0 or args.timeout <= 0 or args.concurrency <= 0:
+        parser.error("duration, timeout, and concurrency must be positive")
     args.output.mkdir(parents=True, exist_ok=True)
     asyncio.run(Soak(args).run())
 
