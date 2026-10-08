@@ -425,6 +425,7 @@ struct OnboardingSubjectRail: View {
     var bytesLine: String?
     /// "4.4 MB/s · 1 min left", or `nil` until the rate stabilises.
     var rateLine: String?
+    var fileLine: String?
     /// Footer left — "STEP 3 OF 4".
     let stepLabel: String
     /// Footer right — the macro step name.
@@ -474,6 +475,15 @@ struct OnboardingSubjectRail: View {
                         .foregroundStyle(RapidTheme.bandInkSecondary)
                         .padding(.top, 7)
                         .accessibilityIdentifier("Quickstart.Subject.Rate")
+                }
+                if let fileLine {
+                    Text(fileLine)
+                        .scaledSystemFont(12, design: .monospaced)
+                        .foregroundStyle(RapidTheme.bandInkSecondary)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                        .padding(.top, 7)
+                        .accessibilityIdentifier("Quickstart.Subject.File")
                 }
 
                 Spacer(minLength: 0)
@@ -621,6 +631,7 @@ struct OnboardingCompactSubjectBand: View {
     let identity: String
     var fraction: Double?
     var bytesLine: String?
+    var fileLine: String?
 
     var body: some View {
         HStack(spacing: 14) {
@@ -634,6 +645,13 @@ struct OnboardingCompactSubjectBand: View {
                 .foregroundStyle(RapidTheme.bandInk)
                 .lineLimit(1)
                 .truncationMode(.middle)
+            if let fileLine {
+                Text(fileLine)
+                    .scaledSystemFont(10, design: .monospaced)
+                    .foregroundStyle(RapidTheme.bandInkSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
             Spacer(minLength: 8)
             if let bytesLine {
                 Text(bytesLine)
