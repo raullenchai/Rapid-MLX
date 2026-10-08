@@ -269,17 +269,19 @@ def _convert_param_value(
             decoded = None
         if isinstance(decoded, str):
             return decoded
-        if param_value.startswith('"'):
+        if param_value.lstrip().startswith('"'):
             # The incremental path already decoded the complete prefix of a
             # quoted string. If the model later appends malformed trailing
             # text, recover that prefix the same way at EOS so emitted bytes
             # need no correction (which a stream cannot make).
-            try:
-                prefix, end = json.JSONDecoder().raw_decode(param_value)
-            except json.JSONDecodeError:
-                return param_value[1:]
-            if isinstance(prefix, str):
-                return prefix + param_value[end:]
+            wire = param_value.lstrip()
+            prefix, end = Qwen3CoderToolParser._decoded_json_string_prefix(
+                wire, with_end=True
+            )
+            suffix = wire[end:]
+            if suffix.startswith('"'):
+                suffix = suffix[1:]
+            return prefix + suffix
         return param_value
 
     if param_type.startswith(("int", "uint", "long", "short", "unsigned")):
@@ -509,7 +511,9 @@ class Qwen3CoderToolParser(ToolParser):
         return inner
 
     @staticmethod
-    def _decoded_json_string_prefix(value_text: str) -> str:
+    def _decoded_json_string_prefix(
+        value_text: str, *, with_end: bool = False
+    ) -> str | tuple[str, int]:
         """Decode the complete portion of an in-flight JSON string.
 
         Token boundaries may split an escape (including ``\\uXXXX``), so only
@@ -523,6 +527,11 @@ class Qwen3CoderToolParser(ToolParser):
         while i < len(text):
             char = text[i]
             if char == '"':
+                break
+            if char == "<" and '"' not in text[i:]:
+                # An unterminated string may be followed by XML close tags.
+                # Keep these bytes for EOS recovery rather than leaking them
+                # into a value fragment that cannot be retracted.
                 break
             if char != "\\":
                 i += 1
@@ -559,9 +568,10 @@ class Qwen3CoderToolParser(ToolParser):
             safe_end = i
         encoded = text[1:safe_end]
         try:
-            return json.loads(f'"{encoded}"')
+            decoded = json.loads(f'"{encoded}"')
+            return (decoded, safe_end) if with_end else decoded
         except json.JSONDecodeError:
-            return ""
+            return ("", 1) if with_end else ""
 
     def _emit_decoded_string_increment(
         self, param_name: str, decoded_value: str
@@ -612,8 +622,9 @@ class Qwen3CoderToolParser(ToolParser):
     def finalize_legacy_raw_stream(
         self, model_output: str, request: dict[str, Any] | None = None
     ) -> dict | None:
-        """Return the un-emitted JSON suffix for a deferred raw parameter."""
-        if not self._legacy_raw_stream:
+        """Return un-emitted JSON after ambiguous raw or incomplete quoted XML."""
+        pending_quote = self.in_function and not self.json_closed
+        if not self._legacy_raw_stream and not pending_quote:
             return None
         result = self.extract_tool_calls(model_output, request=request)
         if not result.tools_called or not result.tool_calls:
@@ -622,14 +633,32 @@ class Qwen3CoderToolParser(ToolParser):
             return None
         current = result.tool_calls[self.current_tool_index]
         arguments = json.loads(current["arguments"], object_pairs_hook=_ObjectPairs)
-        remaining = arguments[self._legacy_raw_param_count :]
-        prefix = ", " if self._legacy_raw_param_count and remaining else ""
-        suffix = prefix + ", ".join(
+        if pending_quote and self.in_param:
+            if self.param_count >= len(arguments):
+                return None
+            name, value = arguments[self.param_count]
+            suffix = self._close_string_increment(
+                name, _restore_json_value(value), {}, already_converted=True
+            )
+            remaining = arguments[self.param_count + 1 :]
+            prefix = ", " if remaining else ""
+        else:
+            emitted = (
+                self._legacy_raw_param_count
+                if self._legacy_raw_stream
+                else self.param_count
+            )
+            remaining = arguments[emitted:]
+            prefix = ", " if emitted and remaining else ""
+            suffix = ""
+        suffix += prefix + ", ".join(
             f"{json.dumps(name, ensure_ascii=False)}: {json.dumps(_restore_json_value(value), ensure_ascii=False)}"
             for name, value in remaining
         )
         suffix += "}"
         self._legacy_raw_stream = False
+        self.json_closed = True
+        self.in_function = False
         tool_calls = [
             {
                 "index": self.current_tool_index,
@@ -710,10 +739,12 @@ class Qwen3CoderToolParser(ToolParser):
             param_dict[p_name] = converted
             param_pairs.append((p_name, converted))
         arguments = (
-            "{" + ", ".join(
+            "{"
+            + ", ".join(
                 f"{json.dumps(key, ensure_ascii=False)}: {json.dumps(value, ensure_ascii=False)}"
                 for key, value in param_pairs
-            ) + "}"
+            )
+            + "}"
             if len(param_pairs) != len(param_dict)
             else json.dumps(param_dict, ensure_ascii=False)
         )

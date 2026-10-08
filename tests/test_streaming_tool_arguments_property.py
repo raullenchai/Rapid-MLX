@@ -441,6 +441,26 @@ def test_qwen3_coder_malformed_quoted_suffix_keeps_stream_parity():
         assert _run("qwen3_coder_xml", wire, request, chunks) == expected_calls
 
 
+@pytest.mark.parametrize(
+    "value",
+    ['"a\\nb\\q"', ' "abc"junk', '"abc'],
+)
+def test_qwen3_coder_malformed_quoted_value_recovers_at_every_boundary(value):
+    wire = (
+        f"<tool_call><function=lookup><parameter=text>{value}"
+        "</parameter></function></tool_call>"
+    )
+    request = _request("lookup")
+    expected = ToolParserManager.get_tool_parser("qwen3_coder_xml")(
+        None
+    ).extract_tool_calls(wire, request)
+    expected_calls = [(call["name"], call["arguments"]) for call in expected.tool_calls]
+    assert len(expected_calls) == 1
+    json.loads(expected_calls[0][1])
+    for chunks in (list(wire), *([wire[:i], wire[i:]] for i in range(1, len(wire)))):
+        assert _run("qwen3_coder_xml", wire, request, chunks) == expected_calls
+
+
 def test_seed_oss_literal_wrapper_closer_in_value():
     chunks = [
         "<seed:tool_call><function=lookup>",
@@ -454,7 +474,34 @@ def test_seed_oss_literal_wrapper_closer_in_value():
     )
     expected_calls = [(call["name"], call["arguments"]) for call in expected.tool_calls]
     assert json.loads(expected_calls[0][1]) == {"text": "a</seed:tool_call>b"}
-    for stream_chunks in (chunks, list(wire)):
+    for stream_chunks in (
+        chunks,
+        list(wire),
+        *([wire[:i], wire[i:]] for i in range(1, len(wire))),
+    ):
+        assert _run("seed_oss", wire, request, stream_chunks) == expected_calls
+
+
+def test_seed_oss_repeated_parameter_after_nested_json():
+    chunks = [
+        "<seed:tool_call><function=lookup>",
+        '<parameter=text>"x"</parameter>',
+        '<parameter=nested>{"x":1}</parameter>',
+        "<parameter=text>y</parameter>",
+        "</function></seed:tool_call>",
+    ]
+    wire = "".join(chunks)
+    request = _request("lookup")
+    expected = ToolParserManager.get_tool_parser("seed_oss")(None).extract_tool_calls(
+        wire, request
+    )
+    expected_calls = [(call["name"], call["arguments"]) for call in expected.tool_calls]
+    assert json.loads(expected_calls[0][1]) == {"text": "y", "nested": {"x": 1}}
+    for stream_chunks in (
+        chunks,
+        list(wire),
+        *([wire[:i], wire[i:]] for i in range(1, len(wire))),
+    ):
         assert _run("seed_oss", wire, request, stream_chunks) == expected_calls
 
 

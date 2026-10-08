@@ -36,6 +36,18 @@ def _generate_tool_id() -> str:
     return f"call_{uuid.uuid4().hex[:8]}"
 
 
+class _ObjectPairs(list):
+    """Keep repeated JSON object keys distinct from array elements."""
+
+
+def _restore_json_value(value):
+    if isinstance(value, _ObjectPairs):
+        return {key: _restore_json_value(item) for key, item in value}
+    if isinstance(value, list):
+        return [_restore_json_value(item) for item in value]
+    return value
+
+
 def _get_arguments_config(func_name: str, tools: list[dict] | None) -> dict:
     """Extract argument config from tools list for type conversion."""
     if tools is None:
@@ -177,6 +189,7 @@ class SeedOssToolParser(ToolParser):
         param_config = _get_arguments_config(function_name, tools)
         parameters = function_call_str[end_index + 1 :]
         param_dict = {}
+        param_pairs = []
         for match in self.tool_call_parameter_regex.findall(parameters):
             match_text = match[0] if match[0] else match[1]
             try:
@@ -189,13 +202,25 @@ class SeedOssToolParser(ToolParser):
                 p_value = p_value[1:]
             if p_value.endswith("\n"):
                 p_value = p_value[:-1]
-            param_dict[p_name] = _convert_param_value(
+            converted = _convert_param_value(
                 p_value, p_name, param_config, function_name
             )
+            param_dict[p_name] = converted
+            param_pairs.append((p_name, converted))
+        arguments = (
+            "{"
+            + ", ".join(
+                f"{json.dumps(key, ensure_ascii=False)}: {json.dumps(value, ensure_ascii=False)}"
+                for key, value in param_pairs
+            )
+            + "}"
+            if len(param_pairs) != len(param_dict)
+            else json.dumps(param_dict, ensure_ascii=False)
+        )
         return {
             "id": _generate_tool_id(),
             "name": function_name,
-            "arguments": json.dumps(param_dict, ensure_ascii=False),
+            "arguments": arguments,
         }
 
     def _get_function_calls(self, model_output: str) -> list[str]:
@@ -208,6 +233,8 @@ class SeedOssToolParser(ToolParser):
         for index, start in enumerate(starts):
             limit = starts[index + 1] if index + 1 < len(starts) else len(model_output)
             end = model_output.rfind(self.tool_call_end_token, start, limit)
+            if end >= 0 and self.function_end_token in model_output[end:limit]:
+                end = limit
             raw_tool_calls.append(
                 model_output[
                     start + len(self.tool_call_start_token) : end if end >= 0 else limit
@@ -479,6 +506,13 @@ class SeedOssToolParser(ToolParser):
         tool_end_idx = current_text.rfind(
             self.tool_call_end_token, tool_start_idx, search_end
         )
+        if (
+            tool_end_idx >= 0
+            and self.function_end_token in current_text[tool_end_idx:search_end]
+        ):
+            # The only wrapper closer seen so far was inside a parameter;
+            # the function closes later, before its real wrapper closer.
+            tool_end_idx = -1
         if tool_end_idx == -1:
             tool_text = current_text[tool_start_idx:]
         else:
@@ -607,15 +641,16 @@ class SeedOssToolParser(ToolParser):
                         # and the function close together. The older branch
                         # emitted only `}` here, dropping every parameter
                         # not seen on a previous chunk.
-                        remaining = list(json.loads(parsed["arguments"]).items())[
-                            self.param_count :
-                        ]
+                        pairs = json.loads(
+                            parsed["arguments"], object_pairs_hook=_ObjectPairs
+                        )
+                        remaining = pairs[self.param_count :]
                         if remaining:
                             prefix = ", " if self.param_count else ""
                             closing_arguments = (
                                 prefix
                                 + ", ".join(
-                                    f"{json.dumps(key, ensure_ascii=False)}: {json.dumps(value, ensure_ascii=False)}"
+                                    f"{json.dumps(key, ensure_ascii=False)}: {json.dumps(_restore_json_value(value), ensure_ascii=False)}"
                                     for key, value in remaining
                                 )
                                 + "}"
