@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from scripts.ci_test_shard import discover, partition
 from scripts.classify_ci_changes import classify_policy
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -46,11 +47,88 @@ def test_prefilter_runs_all_three_unit_shards_without_claiming_full(path):
 @pytest.mark.parametrize(
     "paths",
     [
+        [
+            "rapid_mlx/byom/support_request.py",
+            "rapid_mlx/cli_parser.py",
+            "tests/fixtures/cli_parser_snapshot.json",
+            "tests/test_byom_support_request.py",
+        ],
+        [
+            "rapid_mlx/_download_gate.py",
+            "rapid_mlx/cli.py",
+            "rapid_mlx/cli_parser.py",
+            "tests/fixtures/cli_parser_snapshot.json",
+            "tests/test_cli_start.py",
+        ],
+        [
+            "rapid_mlx/_banner.py",
+            "rapid_mlx/cli.py",
+            "rapid_mlx/cli_help.py",
+            "rapid_mlx/cli_parser.py",
+            "rapid_mlx/first_run.py",
+            "rapid_mlx/front_door.py",
+            "tests/fixtures/cli_parser_snapshot.json",
+            "tests/test_cli_cheetah_banner.py",
+            "tests/test_cli_help_groups.py",
+            "tests/test_first_run_guide.py",
+            "tests/test_front_door.py",
+        ],
+        [
+            "rapid_mlx/agents/adapter.py",
+            "rapid_mlx/agents/base.py",
+            "rapid_mlx/agents/setup.py",
+            "rapid_mlx/cli.py",
+            "rapid_mlx/cli_parser.py",
+            "tests/fixtures/cli_parser_snapshot.json",
+            "tests/test_agent_first_class_setup.py",
+            "tests/test_cli_start.py",
+        ],
+    ],
+)
+def test_cli_snapshot_historical_unions_use_source_preflight_only(paths):
+    policy = classify_policy(paths, source_preflight=True)
+    assert policy.source_preflight
+    assert policy.linux_matrix_mode == "py311"
+    assert len(json.loads(policy.as_outputs()["test_matrix"])["include"]) == 3
+
+    disabled = classify_policy(paths)
+    assert not disabled.source_preflight
+    assert disabled.linux_matrix_mode == "full"
+
+    promoted = classify_policy(paths, source_preflight=True, force_full=True)
+    assert not promoted.source_preflight
+    assert promoted.linux_matrix_mode == "full"
+    assert len(json.loads(promoted.as_outputs()["test_matrix"])["include"]) == 9
+
+
+def test_cli_snapshot_fixture_has_one_cpu_consumer_and_one_shard():
+    fixture_read = "SNAPSHOT.read_text()"
+    consumers = [
+        path.relative_to(ROOT).as_posix()
+        for path in (ROOT / "tests").rglob("test_*.py")
+        if path.name != Path(__file__).name and fixture_read in path.read_text()
+    ]
+    assert consumers == ["tests/test_cli_parser_snapshot.py"]
+
+    shards = partition(discover(ROOT, "ordinary"), 3)
+    selected = [
+        index
+        for index, shard in enumerate(shards, 1)
+        if any(item.path == consumers[0] for item in shard)
+    ]
+    assert len(selected) == 1
+
+
+@pytest.mark.parametrize(
+    "paths",
+    [
         [],
         ["../rapid_mlx/server.py"],
         ["/rapid_mlx/server.py"],
         ["tests/conftest.py"],
         ["tests/fixtures/config.py"],
+        ["rapid_mlx/cli.py", "tests/fixtures/other.json"],
+        ["rapid_mlx/cli.py", "tests/headless_mlx/test_engine_lifecycle.py"],
         ["tests/test_ci_main_qualification.py"],
         ["tests/test_queue_tree_evidence.py"],
         ["scripts/classify_ci_changes.py"],

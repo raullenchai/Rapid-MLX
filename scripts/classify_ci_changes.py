@@ -325,6 +325,11 @@ _SOURCE_PREFLIGHT_CONTROL_TESTS = {
     "test_community_benchmark_release_provenance.py",
 }
 
+# This generated golden has one ordinary CPU consumer which rebuilds and pins
+# the complete argparse surface. Keep the exception exact: other fixtures can
+# configure collection, runtime, integration, or platform-specific behavior.
+_SOURCE_PREFLIGHT_FIXTURES = {"tests/fixtures/cli_parser_snapshot.json"}
+
 
 def _source_preflight_paths(paths: set[str], lanes: Lanes) -> bool:
     """CPU source prefilter only; combined candidates still enforce every gate.
@@ -340,6 +345,8 @@ def _source_preflight_paths(paths: set[str], lanes: Lanes) -> bool:
         if not pure.parts or pure.is_absolute() or ".." in pure.parts:
             return False
         if path in _DOC_FILES or pure.parts[0] in _DOC_ROOTS:
+            continue
+        if path in _SOURCE_PREFLIGHT_FIXTURES:
             continue
         if len(pure.parts) < 2:
             return False
