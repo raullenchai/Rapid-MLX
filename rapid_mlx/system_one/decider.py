@@ -60,8 +60,10 @@ def render_question(question: Question) -> dict[str, Any]:
     instruction = _text(question.instructions)
     if question.type == "choice":
         assert isinstance(question.criteria, dict)
-        if len(question.criteria) < 2:
-            raise ValueError("Decider choice questions need at least two options")
+        if not 2 <= len(question.criteria) <= _MAX_LABELS:
+            raise ValueError(
+                f"Decider choice questions need 2 to {_MAX_LABELS} options"
+            )
         keys = list(question.criteria)
         options = [
             key
@@ -72,9 +74,9 @@ def render_question(question: Question) -> dict[str, Any]:
         levels: list[str] | None = None
     elif question.type == "score":
         assert isinstance(question.criteria, list)
-        if len(question.criteria) > _MAX_SCORE_LEVELS:
+        if not 2 <= len(question.criteria) <= _MAX_SCORE_LEVELS:
             raise ValueError(
-                f"Decider score questions support at most {_MAX_SCORE_LEVELS} levels"
+                f"Decider score questions need 2 to {_MAX_SCORE_LEVELS} levels"
             )
         keys = [str(index) for index in range(len(question.criteria))]
         levels = [_text(item) for item in question.criteria]

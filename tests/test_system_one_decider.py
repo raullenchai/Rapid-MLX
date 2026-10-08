@@ -101,14 +101,23 @@ def test_render_question_layouts():
 
 
 def test_render_question_rejects_shapes_decider_was_not_trained_on():
-    with pytest.raises(ValueError, match="at least two options"):
-        render_question(
-            Question(type="choice", instructions="Pick", criteria={"only": None})
-        )
-    with pytest.raises(ValueError, match="at most 10 levels"):
-        render_question(
-            Question(type="score", instructions="Rate", criteria=list(range(11)))
-        )
+    # The wire schema already bounds these; the renderer holds the same line
+    # for callers that build questions without it.
+    for count in (1, 256):
+        criteria = {f"o{index}": None for index in range(count)}
+        with pytest.raises(ValueError, match="2 to 255 options"):
+            render_question(
+                Question.model_construct(
+                    type="choice", instructions="Pick", criteria=criteria
+                )
+            )
+    for count in (0, 1, 11):
+        with pytest.raises(ValueError, match="2 to 10 levels"):
+            render_question(
+                Question.model_construct(
+                    type="score", instructions="Rate", criteria=list(range(count))
+                )
+            )
 
 
 def test_scorer_requires_distinct_single_token_labels():
