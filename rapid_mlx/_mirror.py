@@ -2309,10 +2309,7 @@ def download_with_mirror_fallback(
             repo_root,
             progress_tracker,
         ):
-            try:
-                return fname, "hf_streamed", target.stat().st_size
-            except OSError:
-                return fname, "miss", 0
+            return fname, "hf_streamed", target.stat().st_size
         hf_transfer: dict[str, object] = {}
         ok, hf_path = _hf_fallback_one(
             repo_id,
