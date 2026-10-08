@@ -79,6 +79,7 @@ class DeepSeekV31ToolParser(ToolParser):
     def __init__(self, tokenizer=None):
         super().__init__(tokenizer)
         self._streamed_call_count = 0
+        self._streamed_header_count = 0
 
     # -----------------------------------------------------------------
     # Block-wise scanner.
@@ -248,6 +249,7 @@ class DeepSeekV31ToolParser(ToolParser):
     ) -> dict[str, Any] | None:
         if not previous_text:
             self._streamed_call_count = 0
+            self._streamed_header_count = 0
 
         if self.TOOL_CALLS_START not in current_text:
             current_safe = self._safe_content_prefix(current_text)
@@ -258,21 +260,48 @@ class DeepSeekV31ToolParser(ToolParser):
         result = self.extract_tool_calls(current_text, request)
         count = len(result.tool_calls) if result.tools_called else 0
         already = getattr(self, "_streamed_call_count", 0)
-        if count <= already:
-            return None
+        calls = []
+        for index, call in enumerate(result.tool_calls[already:], start=already):
+            if index < self._streamed_header_count:
+                calls.append(
+                    {"index": index, "function": {"arguments": call["arguments"]}}
+                )
+            else:
+                calls.append(
+                    {
+                        "index": index,
+                        "id": call["id"],
+                        "type": "function",
+                        "function": {
+                            "name": call["name"],
+                            "arguments": call["arguments"],
+                        },
+                    }
+                )
         self._streamed_call_count = count
-        calls = [
-            {
-                "index": index,
-                "id": call["id"],
-                "type": "function",
-                "function": {
-                    "name": call["name"],
-                    "arguments": call["arguments"],
-                },
-            }
-            for index, call in enumerate(result.tool_calls[already:], start=already)
-        ]
+
+        # Anchor an unfinished call as soon as its name is known. The service
+        # has a 64 KiB limit for text held before the first tool delta; a
+        # complete but larger JSON body must not be released as prose.
+        inner_start = current_text.rfind(self.TOOL_CALL_START)
+        inner_end = current_text.find(self.TOOL_CALL_END, inner_start)
+        if inner_start >= 0 and inner_end < 0 and self._streamed_header_count <= count:
+            name_start = inner_start + len(self.TOOL_CALL_START)
+            separator = current_text.find(self.TOOL_SEP, name_start)
+            if separator >= 0:
+                name = current_text[name_start:separator].strip()
+                if name:
+                    calls.append(
+                        {
+                            "index": count,
+                            "id": _generate_tool_id(),
+                            "type": "function",
+                            "function": {"name": name, "arguments": ""},
+                        }
+                    )
+                    self._streamed_header_count = count + 1
+        if not calls:
+            return None
         output: dict[str, Any] = {"tool_calls": calls}
         if already == 0:
             prefix = current_text[: current_text.find(self.TOOL_CALLS_START)]

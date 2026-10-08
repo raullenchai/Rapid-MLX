@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from rapid_mlx.engine.base import GenerationOutput
+from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
 from rapid_mlx.service.postprocessor import StreamingPostProcessor
 from rapid_mlx.tool_parsers import ToolParserManager
 
@@ -37,10 +38,12 @@ def _request(*names):
     }
 
 
-def _run(parser_name, wire, request, chunks):
+def _run(
+    parser_name, wire, request, chunks, *, with_reasoning=False, return_content=False
+):
     cfg = MagicMock()
     cfg.engine = None
-    cfg.reasoning_parser = None
+    cfg.reasoning_parser = Qwen3ReasoningParser() if with_reasoning else None
     cfg.reasoning_parser_name = None
     cfg.enable_auto_tool_choice = True
     cfg.tool_call_parser = parser_name
@@ -61,6 +64,8 @@ def _run(parser_name, wire, request, chunks):
             )
         )
     events.extend(processor.finalize())
+    if return_content:
+        return "".join(event.content or "" for event in events)
     names = {}
     arguments = {}
     for event in events:
@@ -138,6 +143,77 @@ def test_parallel_calls_after_text(parser_name):
     expected_calls = [(call["name"], call["arguments"]) for call in expected.tool_calls]
     for chunks in (list(wire), [wire], [wire[:20], wire[20:]]):
         assert _run(parser_name, wire, request, chunks) == expected_calls
+
+
+def test_hermes_nested_marker_inside_json_string_does_not_hide_later_call():
+    wire = _json_wire("first", "plain") + _json_wire(
+        "second", "quoted <tool_call>{ marker inside a JSON string"
+    )
+    request = _request("first", "second")
+    expected = ToolParserManager.get_tool_parser("hermes")(None).extract_tool_calls(
+        wire, request
+    )
+    expected_calls = [(call["name"], call["arguments"]) for call in expected.tool_calls]
+    assert len(expected_calls) == 2
+    for chunks in (list(wire), [wire[: len(wire) // 2], wire[len(wire) // 2 :]]):
+        assert _run("hermes", wire, request, chunks) == expected_calls
+
+
+def test_nemotron_nested_marker_inside_xml_value_does_not_hide_later_call():
+    wire = _xml_wire("first", "plain") + _xml_wire(
+        "second", "literal <tool_call> inside a value"
+    )
+    request = _request("first", "second")
+    expected = ToolParserManager.get_tool_parser("nemotron")(None).extract_tool_calls(
+        wire, request
+    )
+    expected_calls = [(call["name"], call["arguments"]) for call in expected.tool_calls]
+    assert len(expected_calls) == 2
+    for chunks in (list(wire), [wire[: len(wire) // 2], wire[len(wire) // 2 :]]):
+        assert _run("nemotron", wire, request, chunks) == expected_calls
+
+
+@pytest.mark.parametrize("parser_name", ["deepseek", "qwen3_coder_xml"])
+def test_partial_tool_opener_at_end_is_content(parser_name):
+    wire = "Compare x <"
+    assert (
+        _run(parser_name, wire, _request("lookup"), list(wire), return_content=True)
+        == wire
+    )
+
+
+def test_deepseek_v31_large_arguments_survive_suppression_budget():
+    wire = (
+        _DEEPSEEK_OPEN
+        + "lookup<｜tool▁sep｜>"
+        + json.dumps({"text": "x" * 70000})
+        + _DEEPSEEK_CLOSE
+    )
+    request = _request("lookup")
+    expected = ToolParserManager.get_tool_parser("deepseek_v31")(
+        None
+    ).extract_tool_calls(wire, request)
+    expected_calls = [(call["name"], call["arguments"]) for call in expected.tool_calls]
+    chunks = [wire[i : i + 1024] for i in range(0, len(wire), 1024)]
+    assert _run("deepseek_v31", wire, request, chunks) == expected_calls
+
+
+@pytest.mark.parametrize("parser_name", ["hermes", "qwen3", "qwen3_coder_xml"])
+def test_reasoning_before_tool_call(parser_name):
+    render = _xml_wire if parser_name == "qwen3_coder_xml" else _json_wire
+    wire = "<think>Plan the tool arguments.</think>" + render(
+        "lookup", HOSTILE_VALUES[0]
+    )
+    request = _request("lookup")
+    expected = ToolParserManager.get_tool_parser(parser_name)(None).extract_tool_calls(
+        wire, request
+    )
+    expected_calls = [(call["name"], call["arguments"]) for call in expected.tool_calls]
+    for chunks in (list(wire), [wire[: len(wire) // 2], wire[len(wire) // 2 :]]):
+        assert (
+            _run(parser_name, wire, request, chunks, with_reasoning=True)
+            == expected_calls
+        )
 
 
 # One canonical wire example for each concrete registered parser class. The

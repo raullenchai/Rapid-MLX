@@ -1138,6 +1138,8 @@ class Qwen3CoderToolParser(ToolParser):
         as in non-streaming, it is returned as content (#4038).
         """
         if self._undeclared_start is None:
+            if not self.prev_tool_call_arr:
+                return full_text[self._initial_content_emitted :]
             return ""
         held: str = self._undeclared_text[self._undeclared_start :]
         self._undeclared_start = None

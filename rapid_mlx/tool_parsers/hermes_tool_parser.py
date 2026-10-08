@@ -142,6 +142,14 @@ class HermesToolParser(ToolParser):
         "calling_tool_text",
     )
 
+    def __init__(self, tokenizer=None):
+        super().__init__(tokenizer)
+        self._emitted_structured_calls = 0
+
+    def reset(self) -> None:
+        super().reset()
+        self._emitted_structured_calls = 0
+
     # Standard format: <tool_call>{"name": ..., "arguments": ...}</tool_call>
     TOOL_CALL_PATTERN = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
     # Lenient format: <tool_call or <tool_call> followed by JSON (handles malformed tags)
@@ -692,8 +700,11 @@ class HermesToolParser(ToolParser):
         # A literal close tag inside a JSON string does not close the outer
         # wrapper. Keep holding until the JSON document and its real closer
         # arrive, even if a naive open/close tag count appears balanced.
+        completed, _ = cls._scan_tool_call_shapes(text, request)
         last_wrapper = text.rfind("<tool_call>")
-        if last_wrapper >= 0:
+        if last_wrapper >= 0 and not any(
+            start < last_wrapper < end for start, end, _, _ in completed
+        ):
             body_start = last_wrapper + len("<tool_call>")
             if (
                 text[body_start:].lstrip().startswith("{")
@@ -801,6 +812,8 @@ class HermesToolParser(ToolParser):
         doesn't leak them as content deltas before the full opener
         arrives (issue #448 / BUG-3 family-wide leak).
         """
+        if not previous_text:
+            self._emitted_structured_calls = 0
         has_any_opener = (
             "<tool_call>" in current_text
             or "<function=" in current_text
@@ -836,21 +849,20 @@ class HermesToolParser(ToolParser):
             # up bare shapes nested inside (e.g. mid-stream Nemotron
             # XML reaches ``</function>\n`` before its outer
             # ``</tool_call>``).
-            previous_matches, _ = self._scan_tool_call_shapes(previous_text, request)
             current_matches, _ = self._scan_tool_call_shapes(current_text, request)
-            prev_completed = len(previous_matches)
+            already_emitted = getattr(self, "_emitted_structured_calls", 0)
             cur_completed = len(current_matches)
-            if cur_completed > prev_completed:
+            if cur_completed > already_emitted:
                 # Re-run the source-of-truth scan on current_text to
                 # get the WIRE-ORDERED list of completed tool calls in
                 # the dict form the streaming emitter expects, then
                 # slice past the count already emitted.
                 result = self.extract_tool_calls(current_text, request)
-                if result.tools_called and len(result.tool_calls) > prev_completed:
-                    new_calls = result.tool_calls[prev_completed:]
+                if result.tools_called and len(result.tool_calls) > already_emitted:
+                    new_calls = result.tool_calls[already_emitted:]
                     if new_calls:
                         formatted = self._format_streaming_tool_calls(
-                            new_calls, start_index=prev_completed
+                            new_calls, start_index=already_emitted
                         )
                         malformed_prefixes = (
                             "<malformed_function_body>",
@@ -859,7 +871,7 @@ class HermesToolParser(ToolParser):
                         final_call_is_malformed = new_calls[-1]["arguments"].startswith(
                             malformed_prefixes
                         )
-                        new_matches = current_matches[prev_completed:]
+                        new_matches = current_matches[already_emitted:]
                         residual = self._residual_after_malformed_calls(
                             current_text, new_matches, new_calls
                         )
@@ -867,6 +879,7 @@ class HermesToolParser(ToolParser):
                             formatted["content"] = residual
                         if final_call_is_malformed:
                             formatted["preserve_post_tool_content"] = True
+                        self._emitted_structured_calls = len(result.tool_calls)
                         return formatted
 
             # All current tool calls already emitted; emit post-call

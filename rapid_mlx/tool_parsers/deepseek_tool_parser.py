@@ -200,3 +200,14 @@ class DeepSeekToolParser(ToolParser):
                 }
 
         return None
+
+    def flush_held_content(self, full_text: str) -> str:
+        """Release a trailing partial opener if it was ordinary prose."""
+        if self.TOOL_CALLS_START in full_text:
+            return ""
+        marker = self.TOOL_CALLS_START
+        hold = max(
+            (n for n in range(1, len(marker)) if full_text.endswith(marker[:n])),
+            default=0,
+        )
+        return full_text[-hold:] if hold else ""
