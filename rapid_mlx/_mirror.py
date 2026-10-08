@@ -720,6 +720,7 @@ def _download_one_from_r2(
     sidecar_key: str,
     repo_root: Path | None = None,
     progress_tracker: _ProgressTracker | None = None,
+    enforce_floor: bool = True,
 ) -> tuple[bool, str]:
     """Download a single file from R2 into ``target``.
 
@@ -779,6 +780,7 @@ def _download_one_from_r2(
             expected_git_oid=expected_git_oid,
             repo_root=repo_root,
             progress_tracker=progress_tracker,
+            enforce_floor=enforce_floor,
         )
     finally:
         _release_part_lock(lock_fh, lock_path)
@@ -794,6 +796,7 @@ def _do_r2_download(
     expected_git_oid: str | None = None,
     repo_root: Path | None = None,
     progress_tracker: _ProgressTracker | None = None,
+    enforce_floor: bool = True,
 ) -> tuple[bool, str]:
     """Inner R2 download body — runs with the per-file lock held.
 
@@ -939,7 +942,9 @@ def _do_r2_download(
             if existing > 0 and progress_tracker is not None:
                 progress_tracker.add(existing)
                 chunks_credited += existing
-            floor = _ThroughputFloor(_mirror_floor_bytes_per_sec())
+            floor = _ThroughputFloor(
+                _mirror_floor_bytes_per_sec() if enforce_floor else 0
+            )
             # Absolute final size the guard measures completion against. Prefer
             # the response's own length (``total_size`` already folds a resumed
             # prefix into ``existing + Content-Length``); when the response omits
@@ -997,7 +1002,8 @@ def _do_r2_download(
             # dropped silently. Don't rename a truncated file into the
             # snapshot; let HF redownload.
             if length > 0 and read != length:
-                _safe_unlink(tmp)
+                # A short body after valid headers is a transport interruption.
+                # Keep its prefix for a checked Range request on the next run.
                 _rollback_credits(progress_tracker, chunks_credited)
                 return False, f"short-read:{read}!={length}"
 
@@ -1548,6 +1554,64 @@ def _hf_fallback_one(
         return False, None
 
 
+def _hf_resumable_one(
+    repo_id: str,
+    filename: str,
+    revision: str,
+    target: Path,
+    expected_size: int | None,
+    expected_sha256: str | None,
+    expected_git_oid: str | None,
+    sidecar_dir: Path,
+    repo_root: Path,
+    progress_tracker: _ProgressTracker | None,
+) -> bool:
+    """Try HF's resolved file URL using the same verified Range sidecar as R2.
+
+    A public Hub URL can redirect to a signed CDN URL. Resolve it with Hub's
+    metadata client, then send the GET directly to that location; no token is
+    forwarded to a third-party redirect. Gated files and metadata failures
+    retain the normal ``hf_hub_download`` fallback.
+    """
+    if expected_size is None or (expected_sha256 is None and expected_git_oid is None):
+        return False
+    from httpx import HTTPError
+    from huggingface_hub import hf_hub_url
+    from huggingface_hub.errors import HfHubHTTPError
+    from huggingface_hub.file_download import get_hf_file_metadata
+    from huggingface_hub.utils import RepositoryNotFoundError
+
+    try:
+        metadata = get_hf_file_metadata(
+            hf_hub_url(repo_id, filename, revision=revision), timeout=_FILE_TIMEOUT
+        )
+        location = metadata.location
+    except (
+        HfHubHTTPError,
+        RepositoryNotFoundError,
+        HTTPError,
+        OSError,
+        TimeoutError,
+        ValueError,
+    ):
+        return False
+    if not location or not location.startswith("https://"):
+        return False
+    ok, _ = _download_one_from_r2(
+        location,
+        target,
+        expected_size,
+        expected_sha256=expected_sha256,
+        expected_git_oid=None if expected_sha256 else expected_git_oid,
+        sidecar_dir=sidecar_dir,
+        sidecar_key=_sidecar_key_for(filename),
+        repo_root=repo_root,
+        progress_tracker=progress_tracker,
+        enforce_floor=False,
+    )
+    return ok
+
+
 def _print_dim(msg: str) -> None:
     """Quiet status line. Honors NO_COLOR / non-TTY."""
     print(msg)
@@ -1682,10 +1746,10 @@ def download_with_mirror_fallback(
     silence_hf_unauthenticated_warning()
 
     base = _mirror_base()
-    if not base or "/" not in repo_id:
-        # Mirror disabled or repo_id isn't a HF-shaped ``owner/name``.
-        # Local paths fall here too. Defer to caller's HF path.
+    if "/" not in repo_id:
+        # Local paths use the caller's existing HF path.
         return False
+    hf_only = not base
 
     # An explicit revision is served only when it is an immutable commit SHA
     # (the form every pinned catalog download uses). A branch or tag name can
@@ -1823,7 +1887,9 @@ def download_with_mirror_fallback(
     # malformed" (5xx, network error, bad JSON → use HF only). A
     # misconfigured custom mirror returning 500 would otherwise eat
     # ``ceil(files / workers) * 60s`` of per-file timeouts.
-    catalog, catalog_status = fetch_catalog_with_status(base)
+    catalog, catalog_status = (
+        (None, None) if hf_only else fetch_catalog_with_status(base)
+    )
     catalog_entry: dict[str, Any] | None = None
     catalog_mirrored = False
     if catalog is not None:
@@ -1875,13 +1941,15 @@ def download_with_mirror_fallback(
     # below, where the caller keeps the spinner up for its own
     # ``snapshot_download`` banner. The callback must be cheap and
     # exception-safe; a misbehaving hook shouldn't abort a good pull.
-    if use_r2 and on_pull_start is not None:
+    if (use_r2 or hf_only) and on_pull_start is not None:
         try:
             on_pull_start()
         except Exception:
             pass
 
-    if use_r2 and catalog_mirrored:
+    if hf_only:
+        _print_dim(f"  {BOLD}Pulling {repo_id}{RESET} {DIM}(Hugging Face){RESET}")
+    elif use_r2 and catalog_mirrored:
         _print_dim(
             f"  {BOLD}Pulling {repo_id}{RESET} {DIM}(R2 mirror, fallback: HF){RESET}"
         )
@@ -2175,6 +2243,7 @@ def download_with_mirror_fallback(
             and (expected_sha256 is not None or expected_git_oid is not None)
             and (not pinned or expected_size is not None)
         )
+        _print_dim(f"  [current] {_safe_display_name(fname)}")
         if r2_eligible:
             # ``dub`` is set above to either the catalog's
             # download_url_base (default mirror) or the synthetic
@@ -2226,6 +2295,21 @@ def download_with_mirror_fallback(
                 blob_already_local = (repo_root / "blobs" / expected_sha256).is_file()
             except OSError:
                 blob_already_local = False
+        # Preserve the historical Hub fallback for mirror misses. A direct HF
+        # choice uses the verified Range path, including any mirror prefix.
+        if hf_only and _hf_resumable_one(
+            repo_id,
+            fname,
+            revision,
+            target,
+            expected_size,
+            expected_sha256,
+            expected_git_oid,
+            sidecar_dir,
+            repo_root,
+            progress_tracker,
+        ):
+            return fname, "hf_streamed", target.stat().st_size
         hf_transfer: dict[str, object] = {}
         ok, hf_path = _hf_fallback_one(
             repo_id,
@@ -2236,6 +2320,9 @@ def download_with_mirror_fallback(
             out=hf_transfer,
         )
         if ok:
+            # Hub has installed a complete verified cache file. A failed
+            # mirror prefix is no longer useful and would waste disk space.
+            _safe_unlink(sidecar_dir / f"{_sidecar_key_for(fname)}.part")
             # ``hf_hub_download`` returns the resolved snapshot path
             # (typically a symlink to a blob). Stat the path it gave us
             # directly — that's the authoritative success signal. Fall
@@ -2310,7 +2397,7 @@ def download_with_mirror_fallback(
                     r2_hits += 1
                     total_bytes += size
                     transferred_bytes += size
-                elif kind == "hf":
+                elif kind in ("hf", "hf_streamed"):
                     hf_hits += 1
                     total_bytes += size
                     transferred_bytes += size
@@ -2323,7 +2410,7 @@ def download_with_mirror_fallback(
                     # broken symlink / disappearing snapshot path), since
                     # ``add(0)`` is a no-op anyway. Belt-and-braces against
                     # future refactors that might surface a non-int ``size``.
-                    if isinstance(size, int) and size > 0:
+                    if kind == "hf" and isinstance(size, int) and size > 0:
                         progress_tracker.add(size)
                 elif kind == "cached":
                     # Already present — count as r2/hf-neutral but include
@@ -2353,7 +2440,7 @@ def download_with_mirror_fallback(
                 # round-1 NIT on PR #657.
                 if kind == "r2":
                     tag = f"{DIM}R2 ({size / 1e6:.0f} MB){RESET}"
-                elif kind == "hf":
+                elif kind in ("hf", "hf_streamed"):
                     tag = f"{DIM}HF ({size / 1e6:.0f} MB, fallback){RESET}"
                 elif kind == "cached":
                     tag = f"{DIM}cached ({size / 1e6:.0f} MB){RESET}"

@@ -1749,12 +1749,11 @@ struct QuickstartView: View {
             let job = downloads.job(for: coordinator.selection.alias)
             @Bindable var progress = job?.progress ?? DownloadProgress()
             OnboardingCompactSubjectBand(
-                lifecycle: coordinator.phase == .downloading
-                    ? Self.downloadLifecycleName(progress: progress)
-                    : lifecycle,
+                lifecycle: lifecycle,
                 identity: coordinator.selection.alias,
                 fraction: coordinator.phase == .downloading ? progress.progressFraction : nil,
-                bytesLine: Self.subjectBytesLine(job: job)
+                bytesLine: Self.subjectBytesLine(job: job),
+                fileLine: progress.currentFile
             )
         } else {
             OnboardingCompactRail(step: coordinator.step)
@@ -1773,13 +1772,12 @@ struct QuickstartView: View {
             let job = downloads.job(for: coordinator.selection.alias)
             @Bindable var progress = job?.progress ?? DownloadProgress()
             OnboardingSubjectRail(
-                lifecycle: coordinator.phase == .downloading
-                    ? Self.downloadLifecycleName(progress: progress)
-                    : lifecycle,
+                lifecycle: lifecycle,
                 identity: coordinator.selection.alias,
                 fraction: coordinator.phase == .downloading ? progress.progressFraction : nil,
                 bytesLine: Self.subjectBytesLine(job: job),
                 rateLine: Self.subjectRateLine(job: job),
+                fileLine: progress.currentFile.map { "File: \($0)" },
                 stepLabel: "STEP \(coordinator.step.displayNumber) OF \(QuickstartCoordinator.Step.total)",
                 stepName: coordinator.step.railTitle.localizedUppercase
             )
@@ -1803,7 +1801,10 @@ struct QuickstartView: View {
         switch coordinator.phase {
         case .downloading:
             let job = downloads.job(for: coordinator.selection.alias)
-            return Self.downloadLifecycleName(phase: job?.progress.phase)
+            if job?.retryDelaySeconds != nil { return "RECONNECTING" }
+            if job?.isStalled == true { return "STALLED" }
+            return job.map { Self.downloadLifecycleName(progress: $0.progress) }
+                ?? "PREPARING"
         case .starting:
             guard QuickstartView.memoryWarningToPresent(
                 phase: coordinator.phase,
@@ -1864,6 +1865,7 @@ struct QuickstartView: View {
     /// ``DownloadProgress`` has measured one. Paper 05.1.A forbids an ETA
     /// before bytes move, so there is deliberately no pre-download branch.
     static func subjectRateLine(job: DownloadManager.Job?) -> String? {
+        if job?.isStalled == true { return nil }
         guard let progress = job?.progress, let speed = progress.bytesPerSecond, speed > 0
         else { return nil }
         var parts = [DownloadProgress.formatSpeed(bytesPerSecond: speed)]
@@ -4001,7 +4003,7 @@ struct QuickstartView: View {
             OnboardingDisplayTitle(text: "One download,\nthen it's yours.")
 
             Text("The model files are being written into your Hugging Face cache. "
-                 + "This is a plain file transfer from the model mirror — nothing "
+                 + "This is a plain file transfer — nothing "
                  + "about you is sent with it.")
                 .scaledSystemFont(16, relativeTo: .title3)
                 .foregroundStyle(RapidTheme.textSecondary)
@@ -4496,6 +4498,25 @@ struct QuickstartView: View {
                     .disabled(server.isOperating)
                     .accessibilityIdentifier(quickstartActionIdentifier(for: action) ?? "")
                 }
+                if startupFailure == nil,
+                   job != nil,
+                   (kind == .downloadFailed || kind == .downloadSourceUnavailable),
+                   diagnosis.action != .switchDownloadSource {
+                    Button("Switch source") {
+                        handleQuickstartFailureAction(.switchDownloadSource)
+                    }
+                    .buttonStyle(.onboardingOutline)
+                    .accessibilityIdentifier("Quickstart.SwitchSource")
+                }
+                if startupFailure == nil,
+                   job != nil,
+                   kind == .downloadSourceUnavailable {
+                    Button("Retry") {
+                        handleQuickstartFailureAction(.retry)
+                    }
+                    .buttonStyle(.onboardingOutline)
+                    .accessibilityIdentifier("Quickstart.Retry")
+                }
 
                 // The way back to choosing. Every failure and every
                 // cancellation is one model's problem, so the user must be
@@ -4707,16 +4728,19 @@ struct QuickstartView: View {
         case .switchDownloadSource:
             beginDownloadPhase()
             let started: Bool
-            if downloads.job(for: coordinator.selection.alias) != nil {
+            let previous = downloads.job(for: coordinator.selection.alias)
+            let alternate: DownloadManager.DownloadSource = previous?.source == .huggingFace
+                ? .mirror : .huggingFace
+            if previous != nil {
                 started = downloads.retryDownload(
                     alias: coordinator.selection.alias,
-                    source: .huggingFace
+                    source: alternate
                 )
             } else {
                 started = downloads.startDownload(
                     alias: coordinator.selection.alias,
                     hfPath: coordinator.selection.hfRepo,
-                    source: .huggingFace
+                    source: alternate
                 )
             }
             if started {

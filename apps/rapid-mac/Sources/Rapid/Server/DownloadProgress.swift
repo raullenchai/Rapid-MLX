@@ -75,6 +75,9 @@ final class DownloadProgress {
     }
 
     private(set) var phase: Phase = .idle
+    /// Most recently started file in a per-file pull. Several files may be
+    /// active concurrently; the caption names the latest one announced.
+    private(set) var currentFile: String?
 
     /// Wall-clock of the most recent recognised progress tick (any of
     /// `.fetching`, `.downloading`, `.preparing`). The overlay uses
@@ -283,6 +286,7 @@ final class DownloadProgress {
     /// into the next.
     func reset() {
         phase = .idle
+        currentFile = nil
         lastTickAt = .distantPast
         bytesDownloaded = nil
         totalBytes = nil
@@ -448,6 +452,12 @@ final class DownloadProgress {
         let trimmed = stripped.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
         guard trimmed.utf8.count <= Self.maxProgressLineBytes else { return false }
+
+        if trimmed.hasPrefix("[current] ") {
+            currentFile = String(trimmed.dropFirst("[current] ".count))
+            lastTickAt = Date()
+            return true
+        }
 
         // Forward-only invariant only kicks in once we've reached
         // ``.warmingUp`` — that's the genuine end of the download +
@@ -620,6 +630,7 @@ final class DownloadProgress {
         guard line.hasPrefix("Pulling ") else { return false }
         return line.contains("(R2 mirror, fallback: HF)")
             || line.contains("(mirror direct-layout, fallback: HF)")
+            || line.contains("(Hugging Face)")
     }
 
     private struct R2FoundFilesMatch {
