@@ -160,6 +160,9 @@ def test_option_groups_split_long_lists_into_near_equal_readouts():
     groups = option_groups(255)
     assert [len(group) for group in groups] == [51] * 5
     assert [index for group in groups for index in group] == list(range(255))
+    assert len(option_groups(52 * 52)) == 52
+    with pytest.raises(ValueError, match="at most 2704 options"):
+        option_groups(52 * 52 + 1)
 
 
 def test_compose_groups_anchors_each_group_on_its_winner():
@@ -173,6 +176,7 @@ def test_confidence_and_noul_calibration_follow_the_release_formulas():
     assert choice_confidence([1.0]) == 1.0
     assert choice_confidence([0.25] * 4) == 0.0
     assert choice_confidence([0.7, 0.2, 0.1]) == pytest.approx((0.7 - 1 / 3) / (2 / 3))
+    assert score_confidence([1.0]) == 1.0
     assert score_confidence([0.0, 1.0, 0.0]) == 1.0
     assert score_confidence([1 / 3] * 3) == pytest.approx(0.0)
     assert noul_probability(0.5) == pytest.approx(0.5)
@@ -210,13 +214,18 @@ def test_answers_use_the_release_shape_and_rounding():
     }
 
 
-def test_scorer_requires_distinct_letter_tokens():
+def test_scorer_requires_one_distinct_token_per_letter():
     class Colliding(FakeTokenizer):
         def encode(self, text, add_special_tokens=False):
             return [7]
 
-    with pytest.raises(ValueError, match="not distinct tokens"):
-        OpenJevScorer(FakeModel(), Colliding())
+    class Splitting(FakeTokenizer):
+        def encode(self, text, add_special_tokens=False):
+            return super().encode(text) + ([9] if text == "q" else [])
+
+    for tokenizer in (Colliding(), Splitting()):
+        with pytest.raises(ValueError, match="its own single token"):
+            OpenJevScorer(FakeModel(), tokenizer)
 
 
 def test_score_reads_the_letter_logits_with_the_release_temperature():

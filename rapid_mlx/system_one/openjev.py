@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
-"""OpenJev typed decisions on the mlx-lm Qwen3.5 text model.
+"""OpenJev typed decisions through mlx-lm.
 
-OpenJev is a fine-tuned Qwen3.8 chat model. Each readout renders one question
+OpenJev is a fine-tuned Qwen3.8 chat model; mlx-lm loads it with its
+``qwen3_5`` model class. Each readout renders one question
 as a chat prompt and reads the option-letter logits at the first output
 position; nothing is generated. The prompt text, the option letters, the
 splitting of long option lists and the calibration constants follow the
@@ -106,6 +107,9 @@ def render_prompt(state: str, instructions: str, options: list[tuple[str, str]])
 
 def option_groups(count: int) -> list[range]:
     """Split options into near-equal readouts of at most one letter each."""
+    if count > len(LETTERS) ** 2:
+        # The readout over the group winners has one letter per group.
+        raise ValueError(f"OpenJev reads at most {len(LETTERS) ** 2} options")
     if count <= len(LETTERS):
         return [range(count)]
     groups = -(-count // len(LETTERS))
@@ -136,6 +140,8 @@ def choice_confidence(probabilities: list[float]) -> float:
 
 def score_confidence(probabilities: list[float]) -> float:
     count = len(probabilities)
+    if count == 1:
+        return 1.0
     mode = max(range(count), key=probabilities.__getitem__)
     spread = sum(value * abs(index - mode) for index, value in enumerate(probabilities))
     center = (count - 1) / 2
@@ -210,9 +216,14 @@ class OpenJevScorer:
         self._model = model
         self._tokenizer = tokenizer
         self._limit = context_limit
-        letter_ids = [self._encode(letter)[0] for letter in LETTERS]
-        if len(set(letter_ids)) != len(letter_ids):
-            raise ValueError("the OpenJev option letters are not distinct tokens")
+        encoded = [self._encode(letter) for letter in LETTERS]
+        letter_ids = [ids[0] for ids in encoded if len(ids) == 1]
+        if len(set(letter_ids)) != len(LETTERS):
+            # The readout compares one logit per option letter.
+            raise ValueError(
+                "this tokenizer does not give each OpenJev option letter its "
+                "own single token"
+            )
         self._letter_ids = letter_ids
 
     def _encode(self, text: str) -> list[int]:
