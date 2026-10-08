@@ -548,6 +548,54 @@ def test_agent_routes_surface_protocol_correct_context_error(route, stream):
         assert "--context-length" in error["message"]
 
 
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("route", ["chat", "responses", "messages"])
+def test_agent_routes_surface_operational_prompt_cap(route, stream):
+    from rapid_mlx.routes.anthropic import router as anthropic_router
+    from rapid_mlx.routes.chat import router as chat_router
+    from rapid_mlx.routes.responses import router as responses_router
+
+    cases = {
+        "chat": (
+            chat_router,
+            "/v1/chat/completions",
+            {
+                "messages": [{"role": "user", "content": _huge_text(100)}],
+                "max_tokens": 16,
+            },
+        ),
+        "responses": (
+            responses_router,
+            "/v1/responses",
+            {"input": _huge_text(100), "max_output_tokens": 16},
+        ),
+        "messages": (
+            anthropic_router,
+            "/v1/messages",
+            {
+                "messages": [{"role": "user", "content": _huge_text(100)}],
+                "max_tokens": 16,
+            },
+        ),
+    }
+    router, path, payload = cases[route]
+    response = _make_app([router], max_prompt_tokens=80).post(
+        path, json={"model": "qwen3-0.6b-8bit", "stream": stream, **payload}
+    )
+    assert response.status_code == 400, response.text
+    error = response.json()["error"]
+    if route == "messages":
+        assert error == {
+            "type": "invalid_request_error",
+            "message": "prompt is too long: 100 tokens > 80 maximum",
+        }
+    else:
+        assert error["code"] == "context_length_exceeded"
+        assert "100 tokens" in error["message"]
+        assert "80 tokens" in error["message"]
+        assert "--max-prompt-tokens" in error["message"]
+
+
 # ─── /v1/responses ──────────────────────────────────────────────────
 
 
