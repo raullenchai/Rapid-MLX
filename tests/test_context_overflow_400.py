@@ -213,6 +213,26 @@ def test_generic_exception_fallback_keeps_anthropic_overflow_wording():
     )
 
 
+def test_unrelated_anthropic_400_keeps_origin_main_golden_shape():
+    from fastapi import HTTPException
+
+    from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+
+    app = FastAPI()
+
+    @app.get("/v1/messages")
+    def fail():
+        raise HTTPException(status_code=400, detail="bad input")
+
+    install_exception_handlers(app)
+    response = TestClient(app).get("/v1/messages")
+    assert response.status_code == 400
+    assert response.content == (
+        b'{"type":"error","error":{"message":"bad input",'
+        b'"type":"invalid_request_error","code":null,"param":null}}'
+    )
+
+
 @pytest.mark.parametrize(
     "path", ["/v1/chat/completions", "/v1/responses", "/v1/messages"]
 )
