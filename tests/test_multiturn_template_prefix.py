@@ -135,11 +135,10 @@ def _assistant_and_result(api: str, turn: int) -> list[dict]:
 
 @pytest.mark.parametrize("api", ["chat", "messages"])
 def test_ten_tool_turns_extend_the_cached_template_tokens(api):
-    """The previous stable boundary and XML completion are token prefixes.
+    """The previous stable boundary and XML completion are byte prefixes.
 
-    The byte tokenizer is deliberately exact: all template control markers,
-    whitespace and serialized tool arguments participate in the assertion.
-    The live model test checks its actual BPE tokenizer and KV hit counters.
+    This hermetic check covers template markers, whitespace, and tool
+    serialization. The real-tokenizer check below covers BPE boundaries.
     """
     messages = [{"role": "system", "content": SYSTEM}] if api == "chat" else []
     for turn in range(10):
@@ -157,6 +156,37 @@ def test_ten_tool_turns_extend_the_cached_template_tokens(api):
             "<|im_end|>\n"
         ).encode()
         assert following.startswith(current + xml_call), (api, turn, "completion")
+
+
+@pytest.mark.real_hf_cache
+@pytest.mark.parametrize("api", ["chat", "messages"])
+def test_ten_tool_turns_extend_qwen35_token_ids(api):
+    """Check the shipped checkpoint tokenizer, including BPE boundary merges."""
+    tokenizer_module = pytest.importorskip("transformers")
+    try:
+        tokenizer = tokenizer_module.AutoTokenizer.from_pretrained(
+            "mlx-community/Qwen3.5-4B-MLX-4bit", local_files_only=True
+        )
+    except OSError:
+        pytest.skip("Qwen3.5-4B tokenizer is not cached on this host")
+
+    messages = [{"role": "system", "content": SYSTEM}] if api == "chat" else []
+    for turn in range(10):
+        messages.append({"role": "user", "content": f"Search module_{turn}.py"})
+        current = _render(api, messages, add_generation_prompt=True)
+        stable = _render(api, messages, add_generation_prompt=False)
+        messages.extend(_assistant_and_result(api, turn))
+        messages.append({"role": "user", "content": f"Continue after module_{turn}.py"})
+        following = tokenizer.encode(_render(api, messages, add_generation_prompt=True))
+        boundary = tokenizer.encode(stable)[:-8]
+        assert following[: len(boundary)] == boundary, (api, turn, "boundary")
+        xml_call = (
+            f"<tool_call>\n<function=search>\n<parameter=path>\n"
+            f"module_{turn}.py\n</parameter>\n</function>\n</tool_call>"
+            "<|im_end|>\n"
+        )
+        completion = tokenizer.encode(current + xml_call)
+        assert following[: len(completion)] == completion, (api, turn, "completion")
 
 
 def test_json_tool_output_keeps_the_boundary_but_not_the_completion():

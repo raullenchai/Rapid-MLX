@@ -9,16 +9,18 @@ from __future__ import annotations
 import argparse
 import json
 import time
+from pathlib import Path
 
 import httpx
 
+REPOSITORY = Path(__file__).resolve().parents[1]
 SYSTEM = (
     "You are a coding assistant working on a Python package. Keep answers under "
-    "two sentences and use the available repository tools when useful.\n"
-    + (
-        "Repository policy: inspect the relevant file, make a minimal change, "
-        "and report the exact verification command.\n" * 350
-    )
+    "two sentences and use the available repository tools when useful.\n\n"
+    "Repository guidance:\n"
+    + (REPOSITORY / "AGENTS.md").read_text()
+    + "\nProject overview:\n"
+    + (REPOSITORY / "README.md").read_text()[:25000]
 )
 TOOL_NAMES = (
     "read_file",
@@ -27,10 +29,34 @@ TOOL_NAMES = (
     "run_tests",
     "edit_file",
     "git_diff",
-) + tuple(f"repository_op_{index}" for index in range(24))
+    "read_config",
+    "read_test",
+    "read_docs",
+    "find_symbol",
+    "find_references",
+    "inspect_imports",
+    "inspect_types",
+    "inspect_errors",
+    "inspect_logs",
+    "list_branches",
+    "git_status",
+    "git_show",
+    "git_blame",
+    "run_lint",
+    "run_format",
+    "run_typecheck",
+    "run_smoke",
+    "write_test",
+    "write_docs",
+    "compare_files",
+    "inspect_dependencies",
+    "inspect_routes",
+    "inspect_cache",
+    "summarize_change",
+)
 TOOL_DESC = (
     "Use this repository operation to inspect or modify the package. "
-    "Return precise paths and short results; preserve existing behavior. " * 8
+    "Return precise paths and short results; preserve existing behavior. " * 3
 )
 QUESTIONS = (
     "Find the function that formats cache usage in the API response.",
@@ -78,16 +104,23 @@ def _stream(
     usage: dict = {}
     content = ""
     calls: dict[int, dict] = {}
+    finished = False
+    final_usage = False
     with client.stream("POST", path, json=payload, timeout=180) as response:
         response.raise_for_status()
         for line in response.iter_lines():
-            if not line.startswith("data: ") or line == "data: [DONE]":
+            if line == "data: [DONE]":
+                finished = True
+                break
+            if not line.startswith("data: "):
                 continue
             event = json.loads(line[6:])
             if event.get("error") or event.get("type") == "error":
                 raise RuntimeError(f"stream error: {event}")
             if path.endswith("chat/completions"):
-                usage = event.get("usage") or usage
+                if event.get("usage") is not None:
+                    usage = event["usage"]
+                    final_usage = True
                 delta = (event.get("choices") or [{}])[0].get("delta") or {}
                 fragment = delta.get("content") or ""
                 if fragment and first is None:
@@ -110,10 +143,14 @@ def _stream(
                     slot["function"]["arguments"] += function.get("arguments") or ""
             else:
                 event_type = event.get("type")
+                if event_type == "message_stop":
+                    finished = True
                 if event_type == "message_start":
                     usage = event.get("message", {}).get("usage") or usage
                 elif event_type == "message_delta":
-                    usage.update(event.get("usage") or {})
+                    if event.get("usage") is not None:
+                        usage.update(event["usage"])
+                        final_usage = True
                 elif event_type == "content_block_start":
                     block = event.get("content_block") or {}
                     if block.get("type") == "tool_use":
@@ -135,6 +172,10 @@ def _stream(
                         calls[event["index"]]["input"] += (
                             delta.get("partial_json") or ""
                         )
+    if not finished:
+        raise RuntimeError(f"stream ended without terminal event: {path}")
+    if not final_usage:
+        raise RuntimeError(f"stream ended without terminal usage: {path}")
     return first or time.perf_counter() - started, usage, content, list(calls.values())
 
 
@@ -182,10 +223,7 @@ def main() -> None:
         else:
             blocks = [{"type": "text", "text": content}] if content else []
             for call in calls:
-                try:
-                    value = json.loads(call["input"] or "{}")
-                except json.JSONDecodeError:
-                    value = {}
+                value = json.loads(call["input"] or "{}")
                 blocks.append({**call, "input": value})
             messages.append({"role": "assistant", "content": blocks})
             if calls:
