@@ -29,7 +29,7 @@ import logging
 import re
 import uuid
 from collections.abc import Sequence
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, cast
 
 from ..api.tool_calling import _decode_json_like, _schema_type
 from ..tool_call_scan import split_marked_parameters, trim_wrapping_newlines
@@ -282,8 +282,9 @@ def _convert_param_value(
             # text, recover that prefix the same way at EOS so emitted bytes
             # need no correction (which a stream cannot make).
             wire = param_value.lstrip()
-            prefix, end = Qwen3CoderToolParser._decoded_json_string_prefix(
-                wire, with_end=True
+            prefix, end = cast(
+                tuple[str, int],
+                Qwen3CoderToolParser._decoded_json_string_prefix(wire, with_end=True),
             )
             suffix = wire[end:]
             if suffix.startswith('"'):
@@ -1501,7 +1502,7 @@ class Qwen3CoderToolParser(ToolParser):
                 self.json_closed = True
                 self.header_sent = True
                 self.is_tool_call_started = True
-                output = {
+                output: dict[str, Any] = {
                     "tool_calls": [
                         {
                             "index": index,
@@ -1958,7 +1959,7 @@ class Qwen3CoderToolParser(ToolParser):
                         frag = (
                             self._emit_decoded_string_increment(
                                 self.in_param_name,
-                                self._decoded_json_string_prefix(value_text),
+                                cast(str, self._decoded_json_string_prefix(value_text)),
                             )
                             if json_string_pending
                             else self._emit_string_increment(
@@ -2039,7 +2040,7 @@ class Qwen3CoderToolParser(ToolParser):
                     if _is_string_param(current_param_name, param_config):
                         frag = self._emit_decoded_string_increment(
                             current_param_name,
-                            self._decoded_json_string_prefix(value_text),
+                            cast(str, self._decoded_json_string_prefix(value_text)),
                         )
                         if frag:
                             json_fragments.append(frag)

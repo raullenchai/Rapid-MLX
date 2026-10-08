@@ -491,7 +491,7 @@ class SeedOssToolParser(ToolParser):
                 self.json_closed = True
                 self.header_sent = True
                 self.is_tool_call_started = True
-                output = {
+                output: dict[str, Any] = {
                     "tool_calls": [
                         {
                             "index": index,
