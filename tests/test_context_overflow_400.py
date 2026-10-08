@@ -196,6 +196,23 @@ def test_generation_window_error_names_serve_override():
     assert "--context-length" in error.detail["error"]["message"]
 
 
+def test_generic_exception_fallback_keeps_anthropic_overflow_wording():
+    from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+    from rapid_mlx.service.helpers import ContextLengthExceeded
+
+    app = FastAPI()
+    install_exception_handlers(app)
+    handler = app.exception_handlers[Exception]
+    error = ContextLengthExceeded(prompt_tokens=101, limit=80, message="overflow")
+    request = SimpleNamespace(url=SimpleNamespace(path="/v1/messages"))
+    response = asyncio.run(handler(request, error))
+    assert response.status_code == 400
+    assert response.body == (
+        b'{"type":"error","error":{"type":"invalid_request_error",'
+        b'"message":"prompt is too long: 101 tokens > 80 maximum"}}'
+    )
+
+
 @pytest.mark.parametrize(
     "path", ["/v1/chat/completions", "/v1/responses", "/v1/messages"]
 )
@@ -730,6 +747,27 @@ class _LateOverflowEngine(_StubEngine):
 
     async def stream_chat(self, **kwargs):  # noqa: ARG002
         yield self._overflow()
+
+
+def test_chat_mllm_preflight_returns_400_before_stream_commit():
+    from rapid_mlx.routes.chat import router as chat_router
+
+    class MllmLateOverflowEngine(_LateOverflowEngine):
+        is_mllm = True
+
+    response = _make_app(
+        [chat_router], context_length=80, engine=MllmLateOverflowEngine()
+    ).post(
+        "/v1/chat/completions",
+        json={
+            "model": "qwen3-0.6b-8bit",
+            "stream": True,
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 16,
+        },
+    )
+    assert response.status_code == 400, response.text
+    assert response.json()["error"]["code"] == "context_length_exceeded"
 
 
 @pytest.mark.parametrize("stream", [False, True])

@@ -5365,8 +5365,12 @@ def context_window_exhausted(
         if get_config().context_length == limit
         else ""
     )
+    # The next generated token would exceed the window. Anthropic's
+    # prompt-too-long classifier requires N > M; use that next-token total
+    # for its error while the OpenAI message reports the actual prompt and
+    # generated counts separately.
     return ContextLengthExceeded(
-        prompt_tokens=prompt_tokens + completion_tokens + 1,
+        prompt_tokens=max(prompt_tokens + completion_tokens, limit + 1),
         limit=limit,
         message=(
             f"The prompt contains {prompt_tokens} tokens and generation used "
