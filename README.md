@@ -410,8 +410,7 @@ pip install 'rapid-mlx[system-one]'
 rapid-mlx system-one convaiinnovations/laya
 # Decider needs no extra:
 rapid-mlx system-one decider-2b
-# Cloudflare Clef on native MLX (4-bit weights):
-pip install 'rapid-mlx[vision]'
+# Cloudflare Clef on native MLX (4-bit weights), no extra install:
 rapid-mlx system-one clef-flash-mlx
 # Or with the official Torch head (bf16 weights):
 pip install 'rapid-mlx[clef]'

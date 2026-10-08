@@ -102,7 +102,9 @@ same `/v1/rank` endpoint ranks free-form candidates. `model` may be the short
 name or the corresponding `Cloudflare/...` identifier.
 
 For media, send `images` as PNG/JPEG/WebP base64 data URLs. Send `videos` as
-arrays of frame data URLs. Remote URLs and filesystem paths are rejected;
+arrays of frame data URLs. A request has no frame-rate field: frames are
+read as 24 fps footage, the Clef release's default for bare frames. Remote
+URLs and filesystem paths are rejected;
 each image is capped at 4 MiB and 16 MP, with at most eight images or 32
 video frames per request, with at least two frames in each video. All images
 and frames together are capped at 16 MP of decoded pixels. The complete JSON
@@ -128,7 +130,6 @@ backbone, the vision tower and the joint head on MLX. Requests, media limits
 and the response shape are the same as above.
 
 ```bash
-pip install 'rapid-mlx[vision]'
 rapid-mlx system-one clef-flash-mlx --port 8700
 # Larger model:
 rapid-mlx system-one clef-mlx --port 8700

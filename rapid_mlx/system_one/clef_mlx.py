@@ -435,7 +435,13 @@ class ClefScorer:
         return list(self._tokenizer(text, add_special_tokens=False)["input_ids"])
 
     def _sample_videos(self, videos: list[list[Any]]) -> list[dict[str, Any]]:
-        """Pick evenly spaced frames in place and describe them for the processor."""
+        """Pick evenly spaced frames in place and describe them for the processor.
+
+        A request carries bare frames with no frame rate. For that input the
+        Qwen3-VL video processor, which the Clef release uses, assumes 24 fps;
+        the same assumption here keeps frame choice and timestamps identical
+        to the Torch backend.
+        """
         video_processor = self._processor.video_processor
         metadata = []
         for index, frames in enumerate(videos):
