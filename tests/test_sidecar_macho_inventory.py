@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import runpy
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -21,25 +20,24 @@ def test_inventory_covers_extensionless_regular_machos_and_ignores_text(
     stage = tmp_path / "rapid-mlx"
     torch_bin = stage / "site-packages/torch/bin"
     torch_bin.mkdir(parents=True)
-    source = Path("/usr/bin/true")
-    assert "Mach-O" in subprocess.check_output(["file", "-b", source], text=True)
+    thin_macho = b"\xcf\xfa\xed\xfe" + b"portable-thin-fixture"
 
     expected = []
     for name in ("torch_shm_manager", "protoc-3.21.12.0", "protoc"):
         target = torch_bin / name
-        shutil.copyfile(source, target)
+        target.write_bytes(thin_macho)
         target.chmod(0o755)
         expected.append(str(target))
 
     # Extension and executable mode are not trusted as binary classifiers.
     disguised = stage / "lib" / "native.so"
     disguised.parent.mkdir()
-    shutil.copyfile(source, disguised)
+    disguised.write_bytes(thin_macho)
     disguised.chmod(0o644)
     expected.append(str(disguised))
     spaced = stage / "bin" / "tool with space"
     spaced.parent.mkdir()
-    shutil.copyfile(source, spaced)
+    spaced.write_bytes(thin_macho)
     spaced.chmod(0o755)
     expected.append(str(spaced))
     fat = stage / "lib" / "synthetic-fat"
@@ -49,6 +47,9 @@ def test_inventory_covers_extensionless_regular_machos_and_ignores_text(
     text_executable.parent.mkdir(exist_ok=True)
     text_executable.write_text("#!/bin/sh\nexit 0\n")
     text_executable.chmod(0o755)
+    elf_executable = stage / "bin" / "linux-helper"
+    elf_executable.write_bytes(b"\x7fELF" + b"portable-negative-fixture")
+    elf_executable.chmod(0o755)
 
     output = tmp_path / "machos.txt"
     monkeypatch.setattr(sys, "argv", [str(INVENTORY), str(stage), str(output)])
