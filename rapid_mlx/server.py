@@ -3987,6 +3987,16 @@ Examples:
         ),
     )
     parser.add_argument(
+        "--decode-stall-target-ms",
+        type=float,
+        default=500.0,
+        metavar="MS",
+        help=(
+            "Target wait between a decoding request's tokens while another "
+            "prompt prefills (default: 500). 0 disables the bound."
+        ),
+    )
+    parser.add_argument(
         "--vision-prefill-token-budget",
         type=int,
         default=None,
@@ -4446,6 +4456,7 @@ def main():
         scheduling_policy=args.scheduling_policy,
         scheduling_max_deferrals=args.scheduling_max_deferrals,
         shared_prefix_wait_tokens=args.shared_prefix_wait_tokens,
+        decode_stall_target_ms=args.decode_stall_target_ms,
         vision_prefill_token_budget=vision_prefill_token_budget,
         vision_min_pixels=args.vision_min_pixels,
         vision_max_pixels=args.vision_max_pixels,
