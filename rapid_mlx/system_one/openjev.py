@@ -107,6 +107,8 @@ def render_prompt(state: str, instructions: str, options: list[tuple[str, str]])
 
 def option_groups(count: int) -> list[range]:
     """Split options into near-equal readouts of at most one letter each."""
+    if count < 1:
+        raise ValueError("OpenJev questions need at least one option")
     if count > len(LETTERS) ** 2:
         # The readout over the group winners has one letter per group.
         raise ValueError(f"OpenJev reads at most {len(LETTERS) ** 2} options")

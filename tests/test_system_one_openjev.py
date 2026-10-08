@@ -161,6 +161,8 @@ def test_option_groups_split_long_lists_into_near_equal_readouts():
     assert [len(group) for group in groups] == [51] * 5
     assert [index for group in groups for index in group] == list(range(255))
     assert len(option_groups(52 * 52)) == 52
+    with pytest.raises(ValueError, match="at least one option"):
+        option_groups(0)
     with pytest.raises(ValueError, match="at most 2704 options"):
         option_groups(52 * 52 + 1)
 
