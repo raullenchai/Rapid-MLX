@@ -826,8 +826,9 @@ class HermesToolParser(ToolParser):
             # before treating a wrapped XML call as complete. Malformed
             # wrappers remain recoverable by the end-of-stream parser.
             wrapper = current_text.rfind("<tool_call>")
-            if wrapper >= 0 and current_text[wrapper:].lstrip().startswith(
-                "<tool_call>"
+            completed, _ = self._scan_tool_call_shapes(current_text, request)
+            if wrapper >= 0 and not any(
+                start < wrapper < end for start, end, _, _ in completed
             ):
                 body = current_text[wrapper + len("<tool_call>") :].lstrip()
                 if body.startswith("<function="):

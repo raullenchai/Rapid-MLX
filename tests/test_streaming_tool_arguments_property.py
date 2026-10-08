@@ -159,6 +159,20 @@ def test_hermes_nested_marker_inside_json_string_does_not_hide_later_call():
         assert _run("hermes", wire, request, chunks) == expected_calls
 
 
+def test_hermes_nested_xml_opener_inside_json_string():
+    wire = _json_wire("first", "plain") + _json_wire(
+        "second", "literal <tool_call><function= marker"
+    )
+    request = _request("first", "second")
+    expected = ToolParserManager.get_tool_parser("hermes")(None).extract_tool_calls(
+        wire, request
+    )
+    expected_calls = [(call["name"], call["arguments"]) for call in expected.tool_calls]
+    assert len(expected_calls) == 2
+    for chunks in (list(wire), [wire[: len(wire) // 2], wire[len(wire) // 2 :]]):
+        assert _run("hermes", wire, request, chunks) == expected_calls
+
+
 def test_nemotron_nested_marker_inside_xml_value_does_not_hide_later_call():
     wire = _xml_wire("first", "plain") + _xml_wire(
         "second", "literal <tool_call> inside a value"
@@ -173,11 +187,38 @@ def test_nemotron_nested_marker_inside_xml_value_does_not_hide_later_call():
         assert _run("nemotron", wire, request, chunks) == expected_calls
 
 
+def test_nemotron_bare_call_after_wrapped_call():
+    first = _xml_wire("first", "plain")
+    second = (
+        _xml_wire("second", "plain")
+        .replace("<tool_call>", "")
+        .replace("</tool_call>", "")
+    )
+    wire = first + second
+    request = _request("first", "second")
+    expected = ToolParserManager.get_tool_parser("nemotron")(None).extract_tool_calls(
+        wire, request
+    )
+    expected_calls = [(call["name"], call["arguments"]) for call in expected.tool_calls]
+    assert len(expected_calls) == 2
+    assert _run("nemotron", wire, request, [first, second]) == expected_calls
+
+
 @pytest.mark.parametrize("parser_name", ["deepseek", "qwen3_coder_xml"])
 def test_partial_tool_opener_at_end_is_content(parser_name):
     wire = "Compare x <"
     assert (
         _run(parser_name, wire, _request("lookup"), list(wire), return_content=True)
+        == wire
+    )
+
+
+def test_qwen3_coder_plain_content_is_not_replayed_at_end():
+    wire = "Hello world"
+    assert (
+        _run(
+            "qwen3_coder_xml", wire, _request("lookup"), list(wire), return_content=True
+        )
         == wire
     )
 
@@ -196,6 +237,22 @@ def test_deepseek_v31_large_arguments_survive_suppression_budget():
     expected_calls = [(call["name"], call["arguments"]) for call in expected.tool_calls]
     chunks = [wire[i : i + 1024] for i in range(0, len(wire), 1024)]
     assert _run("deepseek_v31", wire, request, chunks) == expected_calls
+
+
+def test_deepseek_v31_marker_inside_json_is_not_a_tool_name():
+    first = _DEEPSEEK_OPEN + "first<｜tool▁sep｜>{}<｜tool▁call▁end｜>"
+    payload = json.dumps({"text": "<｜tool▁call▁begin｜>ghost<｜tool▁sep｜>"})
+    second = "<｜tool▁call▁begin｜>second<｜tool▁sep｜>" + payload
+    wire = first + second + _DEEPSEEK_CLOSE
+    request = _request("first", "second", "ghost")
+    expected = ToolParserManager.get_tool_parser("deepseek_v31")(
+        None
+    ).extract_tool_calls(wire, request)
+    expected_calls = [(call["name"], call["arguments"]) for call in expected.tool_calls]
+    assert (
+        _run("deepseek_v31", wire, request, [first, second, _DEEPSEEK_CLOSE])
+        == expected_calls
+    )
 
 
 @pytest.mark.parametrize("parser_name", ["hermes", "qwen3", "qwen3_coder_xml"])

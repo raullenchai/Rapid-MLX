@@ -283,23 +283,35 @@ class DeepSeekV31ToolParser(ToolParser):
         # Anchor an unfinished call as soon as its name is known. The service
         # has a 64 KiB limit for text held before the first tool delta; a
         # complete but larger JSON body must not be released as prose.
-        inner_start = current_text.rfind(self.TOOL_CALL_START)
-        inner_end = current_text.find(self.TOOL_CALL_END, inner_start)
-        if inner_start >= 0 and inner_end < 0 and self._streamed_header_count <= count:
-            name_start = inner_start + len(self.TOOL_CALL_START)
-            separator = current_text.find(self.TOOL_SEP, name_start)
-            if separator >= 0:
-                name = current_text[name_start:separator].strip()
-                if name:
-                    calls.append(
-                        {
-                            "index": count,
-                            "id": _generate_tool_id(),
-                            "type": "function",
-                            "function": {"name": name, "arguments": ""},
-                        }
-                    )
-                    self._streamed_header_count = count + 1
+        bounds = self._envelope_bounds(current_text)
+        if bounds is not None and self.TOOL_CALLS_END not in current_text[bounds[0] :]:
+            position, inner_end = bounds
+            while position < inner_end:
+                opener = current_text.find(self.TOOL_CALL_START, position, inner_end)
+                if opener < 0:
+                    break
+                name_start = opener + len(self.TOOL_CALL_START)
+                closer = current_text.find(self.TOOL_CALL_END, name_start, inner_end)
+                if closer >= 0:
+                    position = closer + len(self.TOOL_CALL_END)
+                    continue
+                # This is the first unfinished structural block, so any
+                # opener inside its JSON body is argument text, not a name.
+                if self._streamed_header_count <= count:
+                    separator = current_text.find(self.TOOL_SEP, name_start, inner_end)
+                    if separator >= 0:
+                        name = current_text[name_start:separator].strip()
+                        if name:
+                            calls.append(
+                                {
+                                    "index": count,
+                                    "id": _generate_tool_id(),
+                                    "type": "function",
+                                    "function": {"name": name, "arguments": ""},
+                                }
+                            )
+                            self._streamed_header_count = count + 1
+                break
         if not calls:
             return None
         output: dict[str, Any] = {"tool_calls": calls}

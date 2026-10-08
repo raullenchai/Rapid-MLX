@@ -1139,7 +1139,11 @@ class Qwen3CoderToolParser(ToolParser):
         """
         if self._undeclared_start is None:
             if not self.prev_tool_call_arr:
-                return full_text[self._initial_content_emitted :]
+                held = full_text[self._initial_content_emitted :]
+                if held and any(
+                    marker.startswith(held) for marker in ("<tool_call>", "<function=")
+                ):
+                    return held
             return ""
         held: str = self._undeclared_text[self._undeclared_start :]
         self._undeclared_start = None

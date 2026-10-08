@@ -403,9 +403,11 @@ class NemotronToolParser(ToolParser):
         # The XML parameter format has no escaping rule. A literal
         # ``</function>`` inside a value can appear before the structural
         # close; the outer wrapper is the first unambiguous boundary.
-        if "<tool_call>" in current_text and (
+        function_open = current_text.rfind("<function=")
+        wrapper_open = current_text.rfind("<tool_call>", 0, function_open)
+        wrapper_before_function = current_text.rfind("</tool_call>", 0, function_open)
+        if wrapper_open > wrapper_before_function and (
             current_text.rfind("</tool_call>") < current_text.rfind("</function>")
-            or "</tool_call>" not in current_text
         ):
             return None
 
