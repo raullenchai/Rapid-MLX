@@ -223,12 +223,24 @@ class SeedOssToolParser(ToolParser):
             "arguments": arguments,
         }
 
-    def _get_function_calls(self, model_output: str) -> list[str]:
+    def _wrapper_start_positions(self, text: str) -> list[int]:
+        """Find outer wrappers, ignoring marker text inside a parameter."""
         starts = []
         cursor = 0
-        while (start := model_output.find(self.tool_call_start_token, cursor)) >= 0:
-            starts.append(start)
+        while (start := text.find(self.tool_call_start_token, cursor)) >= 0:
             cursor = start + len(self.tool_call_start_token)
+            param_start = text.rfind(self.parameter_prefix, 0, start)
+            param_end = text.rfind(self.parameter_end_token, 0, start)
+            if param_start > param_end:
+                function_end = text.rfind(self.function_end_token, param_start, start)
+                next_body = text[cursor:].lstrip()
+                if function_end < 0 or not next_body.startswith(self.tool_call_prefix):
+                    continue
+            starts.append(start)
+        return starts
+
+    def _get_function_calls(self, model_output: str) -> list[str]:
+        starts = self._wrapper_start_positions(model_output)
         raw_tool_calls = []
         for index, start in enumerate(starts):
             limit = starts[index + 1] if index + 1 < len(starts) else len(model_output)
@@ -268,6 +280,13 @@ class SeedOssToolParser(ToolParser):
                 if param_start >= 0 and param_start < function_end:
                     param_end = text.find(self.parameter_end_token, param_start)
                     if param_end < 0:
+                        break
+                    next_function = text.find(
+                        self.tool_call_prefix,
+                        function_end + len(self.function_end_token),
+                    )
+                    if 0 <= next_function < param_end:
+                        close = function_end
                         break
                     scan = param_end + len(self.parameter_end_token)
                     continue
@@ -455,7 +474,20 @@ class SeedOssToolParser(ToolParser):
             if min(len(complete.tool_calls), closed_count) > already:
                 fresh = complete.tool_calls[already:closed_count]
                 self.prev_tool_call_arr.extend(fresh)
-                self.current_tool_index = already + len(fresh) - 1
+                completed_starts = [
+                    start
+                    for start, close in self._function_spans(current_text)
+                    if close >= 0
+                ]
+                last_start = completed_starts[closed_count - 1]
+                wrapper_index = (
+                    sum(
+                        start <= last_start
+                        for start in self._wrapper_start_positions(current_text)
+                    )
+                    - 1
+                )
+                self.current_tool_index = max(already + len(fresh) - 1, wrapper_index)
                 self.json_closed = True
                 self.header_sent = True
                 self.is_tool_call_started = True
@@ -495,8 +527,8 @@ class SeedOssToolParser(ToolParser):
                 self.param_count = 0
                 self.json_started = False
                 self.json_closed = False
-                if self.current_tool_index >= current_text.count(
-                    self.tool_call_start_token
+                if self.current_tool_index >= len(
+                    self._wrapper_start_positions(current_text)
                 ):
                     self.is_tool_call_started = False
                 return None
@@ -547,32 +579,26 @@ class SeedOssToolParser(ToolParser):
                 return {"content": content} if content else None
 
         # Find current tool call portion
-        tool_starts_count = current_text.count(self.tool_call_start_token)
-        if self.current_tool_index >= tool_starts_count:
-            return None
-
         # Locate tool text
         think_end_idx = 0
         if self.think_end_token in current_text:
             think_end_idx = current_text.find(self.think_end_token) + len(
                 self.think_end_token
             )
-        tool_starts: list[int] = []
-        idx = think_end_idx
-        while True:
-            idx = current_text.find(self.tool_call_start_token, idx)
-            if idx == -1:
-                break
-            tool_starts.append(idx)
-            idx += len(self.tool_call_start_token)
+        tool_starts = [
+            start
+            for start in self._wrapper_start_positions(current_text)
+            if start >= think_end_idx
+        ]
 
         if self.current_tool_index >= len(tool_starts):
             return None
 
         tool_start_idx = tool_starts[self.current_tool_index]
-        next_start = current_text.find(
-            self.tool_call_start_token,
-            tool_start_idx + len(self.tool_call_start_token),
+        next_start = (
+            tool_starts[self.current_tool_index + 1]
+            if self.current_tool_index + 1 < len(tool_starts)
+            else -1
         )
         search_end = next_start if next_start >= 0 else len(current_text)
         # A literal wrapper closer can occur inside a parameter value. The

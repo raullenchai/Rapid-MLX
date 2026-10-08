@@ -413,6 +413,52 @@ def test_seed_oss_wrapped_call_followed_by_bare_function_close():
     assert _run("seed_oss", wire, request, [wire[:cut], wire[cut:]]) == expected_calls
 
 
+def test_seed_oss_malformed_wrapper_does_not_duplicate_next_call():
+    wire = (
+        "<seed:tool_call><parameter=x>a</parameter></function></seed:tool_call>"
+        "<seed:tool_call><function=g><parameter=y>b</parameter>"
+        "</function></seed:tool_call>"
+    )
+    request = _request("g")
+    expected = ToolParserManager.get_tool_parser("seed_oss")(None).extract_tool_calls(
+        wire, request
+    )
+    expected_calls = [(call["name"], call["arguments"]) for call in expected.tool_calls]
+    assert expected_calls == [("g", '{"y": "b"}')]
+    for chunks in (list(wire), [wire]):
+        assert _run("seed_oss", wire, request, chunks) == expected_calls
+
+
+def test_seed_oss_missing_parameter_close_keeps_next_function():
+    wire = (
+        "<seed:tool_call><function=f><parameter=x>a</function>"
+        "<function=g><parameter=y>b</parameter></function></seed:tool_call>"
+    )
+    request = _request("f", "g")
+    expected = ToolParserManager.get_tool_parser("seed_oss")(None).extract_tool_calls(
+        wire, request
+    )
+    expected_calls = [(call["name"], call["arguments"]) for call in expected.tool_calls]
+    assert [call[0] for call in expected_calls] == ["f", "g"]
+    for chunks in (list(wire), [wire]):
+        assert _run("seed_oss", wire, request, chunks) == expected_calls
+
+
+def test_seed_oss_literal_wrapper_opener_stays_inside_parameter():
+    wire = (
+        "<seed:tool_call><function=f><parameter=x>a<seed:tool_call>b"
+        "</parameter></function></seed:tool_call>"
+    )
+    request = _request("f")
+    expected = ToolParserManager.get_tool_parser("seed_oss")(None).extract_tool_calls(
+        wire, request
+    )
+    expected_calls = [(call["name"], call["arguments"]) for call in expected.tool_calls]
+    assert json.loads(expected_calls[0][1]) == {"x": "a<seed:tool_call>b"}
+    for chunks in (list(wire), [wire]):
+        assert _run("seed_oss", wire, request, chunks) == expected_calls
+
+
 def test_seed_oss_coalesced_close_keeps_one_available_fragment():
     first = CANONICAL_WIRES["seed_oss"]
     second = first.replace("lookup", "second")
