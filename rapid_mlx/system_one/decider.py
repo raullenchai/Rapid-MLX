@@ -166,6 +166,9 @@ class DeciderScorer:
         self._label_weights = self._backbone.embed_tokens(
             mx.array(self._label_token_ids)
         )
+        # Requests run on worker threads. A lazy array stays bound to the
+        # thread that built it, so materialize the readout rows now.
+        mx.eval(self._label_weights)
         pad = getattr(tokenizer, "pad_token_id", None)
         self._pad_token_id = int(pad) if pad is not None else 0
 
@@ -282,7 +285,12 @@ class DeciderScorer:
             else:
                 distribution = probabilities[start]
             answers[key] = (rendered[key]["keys"], distribution)
-        # The shared context is read once per row but is one prompt to the
-        # caller, so count it once, as the release does.
-        shared = len(context_ids)
+        # Rows repeat the state, which is one prompt to the caller: count the
+        # prefix every row shares once, as the release does.
+        shared = 0
+        shortest = min(len(prompt) for prompt in prompts)
+        while shared < shortest and all(
+            prompt[shared] == prompts[0][shared] for prompt in prompts
+        ):
+            shared += 1
         return answers, shared + sum(len(prompt) - shared for prompt in prompts)

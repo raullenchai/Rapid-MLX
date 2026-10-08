@@ -159,7 +159,7 @@ def test_score_reads_label_logits_at_the_last_position():
     assert len(backbone.calls) == 1 and backbone.calls[0][0] == 3
     assert backbone.calls[0][1] % 64 == 0
     context = len(FakeTokenizer().encode("Context:\n" + render_state({"k": "v"})))
-    assert tokens > context
+    assert context < tokens < 5 * context + 400
 
 
 def test_score_isolated_levels_normalize_per_level_fits(monkeypatch):
@@ -213,7 +213,10 @@ def test_score_uses_per_type_temperature_and_state_limit(monkeypatch):
     assert all(
         prompt[:4] == FakeTokenizer().encode("Cont") for prompt in seen["prompts"]
     )
-    assert tokens == 4 + sum(len(prompt) - 4 for prompt in seen["prompts"])
+    # The rows share the state and the "\n\nQuestion: " lead-in; that shared
+    # prefix is counted once.
+    shared = 4 + len("\n\nQuestion: ")
+    assert tokens == shared + sum(len(prompt) - shared for prompt in seen["prompts"])
 
 
 def test_score_rows_splits_batches_over_the_token_budget(monkeypatch):
@@ -223,6 +226,29 @@ def test_score_rows_splits_batches_over_the_token_budget(monkeypatch):
     results = scorer._score_rows(prompts, [2, 2, 2], [1.0, 1.0, 1.0])
     assert len(results) == 3
     assert [call[0] for call in backbone.calls] == [2, 1]
+
+
+def test_scorer_built_on_one_thread_scores_on_another():
+    # The server builds the backend on the main thread and answers on worker
+    # threads. MLX keeps a lazy array bound to the thread that created it.
+    import threading
+
+    scorer, _ = _scorer()
+    outcome = {}
+
+    def work():
+        try:
+            outcome["answers"] = scorer.score(
+                "state", {"sure": Question(type="noul", instructions="Sure?")}
+            )[0]
+        except Exception as exc:  # pragma: no cover - only on regression
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=work)
+    worker.start()
+    worker.join()
+    assert "error" not in outcome, outcome.get("error")
+    assert outcome["answers"]["sure"][1] == pytest.approx([0.5, 0.5])
 
 
 def test_scorer_defaults_pad_token_when_tokenizer_has_none():

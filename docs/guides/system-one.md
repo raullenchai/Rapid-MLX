@@ -72,6 +72,11 @@ directory must be a prepared checkpoint: its root `config.json` says
 `decision_config`. Decider is text-only; requests with `images` or `videos`
 are rejected.
 
+On one M3 Ultra Mac the server was ready 5 seconds after launch with the
+weights cached, and held about 4.3 GB of memory. Four questions over the same
+state took 0.2 s at 200 input tokens, 1.1 s at 1,300, 4.9 s at 5,200 and 22 s
+at 21,000. Other Mac sizes are unmeasured.
+
 ## Cloudflare Clef
 
 Clef is a joint-schema decision model. `clef-flash` uses a 9B Qwen3.5
