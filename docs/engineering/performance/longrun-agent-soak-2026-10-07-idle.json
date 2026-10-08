@@ -1,0 +1,11 @@
+{
+  "delay_after_soak_s": 30,
+  "rss_mb": 2606.2,
+  "threads": 23,
+  "open_files": 139,
+  "metal_active_gb": 3.6,
+  "metal_cache_gb": 0.0,
+  "metal_peak_gb": 7.06,
+  "running": 0,
+  "waiting": 0
+}
