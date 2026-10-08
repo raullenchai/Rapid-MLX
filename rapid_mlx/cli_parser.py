@@ -967,7 +967,7 @@ def _add_serve_parser(
         help=(
             "vLLM-style speculative decoding JSON config. This frontend "
             "parses method/model/num_speculative_tokens now. DFlash "
-            "requires the rapid-mlx[dflash] extra and is available with "
+            "ships in the base install and is available with "
             '\'{"method":"dflash"}\', DDTree with '
             '\'{"method":"ddtree"}\', and MTP with '
             '\'{"method":"mtp","num_speculative_tokens":3,'

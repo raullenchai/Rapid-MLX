@@ -52,13 +52,11 @@ def test_video_extra_guard_emits_one_stderr_marker_without_changing_cli_error() 
     )
 
     marker = f"{MARKER_PREFIX} runtime_extra_missing extra=video"
-    human = (
-        "\n  Error: video generation requires the `rapid-mlx[video]` Python extra.\n\n"
-    )
+    human = "\n  Error: video generation requires the mlx-video runtime.\n\n"
     assert result.returncode == 2
     assert result.stdout == ""
     assert result.stderr.startswith(human)
-    assert "pip install 'rapid-mlx[video]==" in result.stderr
+    assert "pip install rapid-mlx==" in result.stderr
     assert result.stderr.endswith(marker + "\n")
     assert result.stderr.count(marker) == 1
 
@@ -77,8 +75,9 @@ def test_video_extra_guard_emits_one_stderr_marker_without_changing_cli_error() 
                  patch("importlib.util.find_spec", return_value=None):
                 lane.require_image_runtime_or_exit("flux2-klein-4b")
             """,
-            "\n  Error: image generation requires the `rapid-mlx[image]` "
-            "Python extra. " + optional_extra_install_hint("image") + "\n\n",
+            "\n  Error: image generation requires the `mflux` runtime. "
+            + optional_extra_install_hint("image")
+            + "\n\n",
             f"{MARKER_PREFIX} runtime_extra_missing extra=image",
         ),
         (
@@ -110,8 +109,8 @@ def test_video_extra_guard_emits_one_stderr_marker_without_changing_cli_error() 
                 require_mlx_vlm_or_exit("ui-tars-1.5-7b-4bit")
             """,
             "error: model 'ui-tars-1.5-7b-4bit' is a vision/multimodal alias "
-            "and requires the optional `mlx-vlm` dependency (shipped with the "
-            "[vision] extra).\n"
+            "and requires the `mlx-vlm` runtime, which ships with rapid-mlx "
+            "but is missing from this environment.\n"
             + VISION_INSTALL_HINT
             + "\nOr, if this checkpoint has a text-capable backbone and you "
             "only need text output, `--no-mllm` boots the text-only lane "
@@ -267,7 +266,7 @@ def test_video_guard_marker_branches_are_covered_in_process(
     monkeypatch.setattr(
         video_lane,
         "_default_video_runtime_requirements",
-        lambda _name: ["rapid-mlx[video]"],
+        lambda _name: ["the mlx-video runtime"],
     )
     with pytest.raises(SystemExit, match="2"):
         _handle_guard(

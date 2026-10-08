@@ -200,7 +200,7 @@ def test_serve_guard_hybrid_vlm_boots_without_vision_extra(monkeypatch, capsys):
 
     err = capsys.readouterr().err
     assert err.count("warning: vision runtime absent") == 1
-    assert "rapid-mlx[vision]==" in err
+    assert "rapid-mlx==" in err
 
 
 def test_serve_guard_text_incapable_vlm_still_requires_vision_extra(
@@ -248,7 +248,7 @@ def test_serve_guard_text_incapable_vlm_still_requires_vision_extra(
 
     err = capsys.readouterr().err
     assert "bonsai2-27b-2bit" in err
-    assert "[vision]" in err
+    assert "rapid-mlx==" in err
     # The guard message also surfaces --no-mllm as the text-only escape hatch.
     assert "--no-mllm" in err
 
@@ -484,6 +484,6 @@ def test_uncached_vlm_named_checkpoint_keeps_safe_vision_default(monkeypatch, ca
     assert exc_info.value.code == 2
 
     err = capsys.readouterr().err
-    assert "[vision]" in err
+    assert "rapid-mlx==" in err
     # The safe-default message still surfaces the text-only escape hatch.
     assert "--no-mllm" in err

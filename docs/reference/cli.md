@@ -383,7 +383,7 @@ binary auto-routing decision has a force-on and force-off pair.
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--embedding-model` | Pre-load an embedding model at startup (`[embeddings]` for legacy models, `[vision]` for native EmbeddingGemma 2) | None |
+| `--embedding-model` | Pre-load an embedding model at startup (`[embeddings]` for legacy models, the base install's vision runtime for native EmbeddingGemma 2) | None |
 | `--embedding-max-length` | Max input length (tokens) for the embedding model; `auto` derives it from the model's declared maximum, or pass a positive integer for a lower operational ceiling. Inputs above the limit follow `--embedding-overflow-policy` (never truncated silently). | auto |
 | `--embedding-overflow-policy` | Overflow handling: `truncate` (discards the tail, logs a warning, increments the `rapid_mlx_embedding_truncations_total` metric) or `error` (HTTP 400 with observed and allowed token counts) | truncate |
 
@@ -484,7 +484,7 @@ rapid-mlx serve qwen3.5-9b-4bit --use-paged-cache --port 8000
 # With MCP tools
 rapid-mlx serve qwen3.5-9b-4bit --mcp-config mcp.json
 
-# Multimodal (vision) model — requires the [vision] extra
+# Multimodal (vision) model — the vision runtime ships with the base install
 rapid-mlx serve gemma-4-26b-4bit --mllm
 
 # Reasoning model — parser is auto-detected, but you can pin it
@@ -497,7 +497,7 @@ rapid-mlx serve deepseek-r1-8b-4bit --reasoning-parser deepseek_r1
 rapid-mlx serve devstral-24b-4bit --enable-auto-tool-choice --tool-call-parser mistral
 
 # DFlash speculative decoding (single-user, curated aliases only).
-# Requires rapid-mlx[dflash]; OpenAI tools and opt-in thinking are supported.
+# The DFlash runtime ships with the base install; OpenAI tools and opt-in thinking are supported.
 rapid-mlx serve qwen3.5-27b-8bit --speculative-config '{"method":"dflash"}' --port 8000
 
 # Muse-Glimmer 30B 8-bit uses its revision-pinned published assistant.

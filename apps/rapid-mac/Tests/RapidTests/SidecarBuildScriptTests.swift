@@ -64,8 +64,8 @@ struct SidecarBuildScriptTests {
         #expect(constraints.contains("mlx-vlm==0.7.2"))
         #expect(constraints.contains("sentencepiece==0.2.2"),
                 "SD3.5's T5 tokenizer dependency must not float in signed builds.")
-        #expect(!script.contains("'mlx-vlm>=0.6.3,!=0.6.4,<0.7'"),
-                "The no-deps sidecar install must never float within a range.")
+        #expect(constraints.contains("torch==") && constraints.contains("opencv-python=="),
+                "The full vision runtime's native stack must be exact-pinned in signed builds.")
         #expect(script.contains(#"--constraint "$SIDECAR_CONSTRAINTS""#),
                 "Every install must consume the shared release constraint set.")
         #expect(script.contains("$REPO_ROOT/scripts/check-sidecar-distributions.py"),
@@ -90,10 +90,14 @@ struct SidecarBuildScriptTests {
                 "The bundled sidecar must prove SD3.5's tokenizer dependency imports.")
         #expect(script.contains("from rapid_mlx.image.sdxl_runtime import SDXL"),
                 "The bundled sidecar must include the vendored SDXL image adapter.")
-        #expect(script.contains(#"find_spec("cv2") is None"#))
-        #expect(script.contains(#"find_spec("torch") is None"#))
-        #expect(script.contains(#"find_spec("torchvision") is None"#),
-                "The reduced vision bundle must prove its advertised paths stay torch/cv2-free.")
+        #expect(script.contains("import torch\nimport torchvision"),
+                "The Desktop ships the base vision runtime and must prove it imports.")
+        #expect(script.contains(#"assert importlib.util.find_spec("cv2") is None, "OpenCV must stay out of the DMG (GPL FFmpeg)""#),
+                "OpenCV (GPL FFmpeg) is excluded from the DMG pending a licensing decision.")
+        #expect(script.contains("ERR: GPL FFmpeg components staged in the Desktop sidecar"),
+                "Any staged GPL FFmpeg component must fail the build.")
+        #expect(!script.contains(#"find_spec("torch") is None"#),
+                "The reduced torch-free vision bundle is gone; do not re-assert it.")
     }
 
     @Test("Desktop MLX wheels target the app's minimum macOS")
@@ -109,34 +113,23 @@ struct SidecarBuildScriptTests {
                 "Core and metallib wheels must be replaced as one matched pair.")
     }
 
-    @Test("Desktop image stack is pinned and its torch-free proof fails closed")
-    func imageStackIsPinnedAndProvenTorchFree() throws {
+    @Test("Desktop image stack is pinned and the full mflux runtime is proven")
+    func imageStackIsPinnedAndComplete() throws {
         let script = try String(contentsOf: Self.scriptURL, encoding: .utf8)
         let constraints = try String(contentsOf: Self.constraintsURL, encoding: .utf8)
 
         #expect(constraints.contains("mflux==0.20.0"),
-                "The no-deps sidecar install must never float within a range.")
-        // The Images tab is only shippable because mflux's module-level
-        // `import torch` is deferred into the three torch-only loading modes —
-        // bundling torch itself would be +363 MB against a 550 MB cap. Both
-        // halves of that argument have to fail closed, or a future mflux bump
-        // ships an Images tab that dies on every generation: the patch must
-        // refuse to guess when weight_loader.py has been reshaped, and the
-        // import probe must prove the result needs no torch.
-        #expect(script.contains("no longer has the eager import"),
-                "The torch-deferral patch must abort on an unrecognised weight_loader.py.")
-        #expect(script.contains("has no single-line def for"),
-                "The torch-deferral patch must abort when a target function moves.")
-        #expect(script.contains("mflux still pulls torch at import time"),
-                "A post-patch import probe must prove the image lane needs no torch.")
-        #expect(script.contains("mflux/models/common/pid_decoder/pid_weight_mapping.py"),
-                "The Qwen Image import path must defer PiD's optional torch checkpoint converter.")
+                "The image runtime must never float within a range in signed builds.")
+        #expect(!script.contains("mflux still pulls torch at import time"),
+                "mflux ships unpatched with torch; the torch-deferral patch is gone.")
         #expect(script.contains(#"importlib.import_module("mflux.models.qwen.variants.txt2img.qwen_image")"#),
-                "The bundle build must prove qwen-image itself imports without torch.")
+                "The bundle build must prove qwen-image imports.")
         #expect(script.contains(#"importlib.import_module("mflux.models.qwen21.variants.txt2img.qwen_image_21")"#),
-                "The bundle build must prove Qwen-Image 2.1 imports without torch.")
+                "The bundle build must prove Qwen-Image 2.1 imports.")
         #expect(script.contains(#"importlib.import_module("rapid_mlx.image.bonsai_runtime")"#),
-                "The bundle build must prove the Desktop-advertised Bonsai adapter imports without torch.")
+                "The bundle build must prove the Desktop-advertised Bonsai adapter imports.")
+        #expect(script.contains(#"assert image_runtime_issue("flux2-klein-4b") is None"#),
+                "The image-lane preflight must see the bundled runtime as present.")
         #expect(script.contains("SIDECAR_IMAGE_SMOKE_MODEL"),
                 "Release-candidate builds must opt into a real image-generation model.")
         #expect(script.contains("$REPO_ROOT/scripts/smoke-sidecar-image.py"),
@@ -182,20 +175,19 @@ struct SidecarBuildScriptTests {
                 "Qwen3 TTS and its mlx-audio 0.5.3 Chatterbox codec closure must survive trimming.")
         #expect(!script.contains(#"rm -rf "$STAGE/site-packages/mlx_audio/tts/models""#),
                 "The trim must never remove the complete TTS model directory.")
-        // 173 pre-CUA Mach-O files plus 21 trimmed PyObjC extension modules.
-        #expect(script.contains(#"MACHO_BASELINE_COUNT="${MACHO_BASELINE_COUNT:-194}""#),
-                "The signing baseline must include FFmpeg and the measured PyObjC closure.")
+        // 194 pre-full-runtime Mach-O files plus torch/torchvision/matplotlib
+        // from the base runtimes (OpenCV excluded for its GPL FFmpeg).
+        #expect(script.contains(#"MACHO_BASELINE_COUNT="${MACHO_BASELINE_COUNT:-228}""#),
+                "The signing baseline must include the measured full-runtime closure.")
     }
 
-    @Test("Desktop video runtime is pinned, OpenCV-free, LGPL, and smoke-proven")
+    @Test("Desktop video runtime is pinned, audited, and smoke-proven")
     func videoRuntimeIsBoundedAndAudited() throws {
         let script = try String(contentsOf: Self.scriptURL, encoding: .utf8)
         let constraints = try String(contentsOf: Self.constraintsURL, encoding: .utf8)
 
         #expect(constraints.contains("mlx-video-with-audio==0.1.36"))
         #expect(constraints.contains("mlx-arsenal==0.12.1"))
-        #expect(script.contains("'mlx-video-with-audio'"))
-        #expect(script.contains("'mlx-arsenal'"))
         #expect(script.contains("LTX25_RUNTIME_VERSION=\"0.14.15\""))
         #expect(script.contains("57952288076766abe27dda3a774b2c24f7346977"))
         #expect(script.contains("fa9a66a0c78721c3dce51d0f1dadcabad060682410303be748e529a846a9d5c9"))
@@ -225,8 +217,6 @@ struct SidecarBuildScriptTests {
                 "The signed runtime smoke must verify its pinned Wan 2.1 architecture preset.")
         #expect(script.contains(#"cp "$LTX25_TAR" \"#),
                 "The complete corresponding LTX source must travel with the runtime.")
-        #expect(!script.contains(#"${RAPID_MLX_INSTALL_TARGET}[video]"#),
-                "The broad video extra would pull OpenCV and a conflicting vision stack.")
         #expect(script.contains("re-audit the OpenCV-free encoder patch"),
                 "Pinned upstream encoder patches must fail closed on source drift.")
         #expect(script.contains("FFMPEG_VERSION=\"7.1.5\""))
@@ -238,8 +228,12 @@ struct SidecarBuildScriptTests {
         #expect(script.contains("unexpectedly enables GPL/nonfree components"))
         #expect(script.contains(#"echo "$STAGE/bin/ffmpeg""#),
                 "The standalone encoder is a signed Mach-O too.")
-        #expect(script.contains(#"assert importlib.util.find_spec("cv2") is None"#))
-        #expect(script.contains(#"assert importlib.util.find_spec("imageio") is None"#))
+        #expect(script.contains(#"assert registered_wan_runtime_issue("wan2.2-ti2v-5b-q8") is None"#),
+                "The video-lane preflight must see the bundled runtime as present.")
+        #expect(script.contains(#"rm -rf "$STAGE/site-packages/imageio_ffmpeg/binaries/"ffmpeg-*"#),
+                "imageio-ffmpeg's GPL, unsigned ffmpeg executable must never ship; Desktop uses its LGPL build.")
+        #expect(script.contains("every bundled platform wheel targets macOS 14 or older"),
+                "Host-resolved native wheels must fail closed above the app's macOS 14 minimum.")
         #expect(script.contains("encode_rgb_video(np.zeros((2, 32, 16, 3)"),
                 "The build must produce a real MP4 with the packaged encoder.")
         #expect(script.contains("VideoEngine._crop_generated_output("),

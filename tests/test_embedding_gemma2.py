@@ -46,7 +46,7 @@ def test_native_missing_runtime_exits_with_own_hint(monkeypatch, capsys):
     with pytest.raises(SystemExit) as error:
         require_mlx_embeddings_or_exit("embeddinggemma-2-4bit")
     assert error.value.code == 2
-    assert "[vision]" in capsys.readouterr().err
+    assert "rapid-mlx==" in capsys.readouterr().err
 
 
 def test_legacy_loader_dispatch_is_preserved(monkeypatch):

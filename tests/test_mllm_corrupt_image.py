@@ -541,3 +541,21 @@ def test_preprocess_propagates_typeerror_unchanged(monkeypatch):
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_preprocess_request_keeps_the_no_opencv_video_message(monkeypatch):
+    """A build without OpenCV (Rapid-MLX Desktop) must reject video input
+    with its own client-safe message, not the generic decode failure."""
+    from rapid_mlx.models import mllm as mllm_models
+
+    def no_opencv(_path, **_kwargs):
+        raise ClientRequestError(mllm_models.VIDEO_INPUT_UNAVAILABLE_MESSAGE)
+
+    monkeypatch.setattr(mllm_models, "process_video_input", lambda video: video)
+    monkeypatch.setattr(mllm_models, "extract_video_frames_smart", no_opencv)
+    request = _make_request([])
+    request.videos = ["clip.mp4"]
+
+    with pytest.raises(ClientRequestError) as caught:
+        _make_generator()._preprocess_request(request)
+    assert str(caught.value) == mllm_models.VIDEO_INPUT_UNAVAILABLE_MESSAGE

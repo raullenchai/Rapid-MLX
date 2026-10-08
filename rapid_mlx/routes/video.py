@@ -900,7 +900,7 @@ def _validate_reference_image(
         raise HTTPException(
             status_code=503,
             detail=(
-                "image-to-video requires the video extra. "
+                "image-to-video requires Pillow. "
                 + optional_extra_install_hint("video", include_paths=False)
             ),
         ) from exc

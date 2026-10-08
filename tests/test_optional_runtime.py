@@ -22,6 +22,7 @@ import pytest
 import rapid_mlx
 from rapid_mlx import cli, server
 from rapid_mlx.runtime import optional_runtime
+from rapid_mlx.runtime.base_runtime import runtime_install_spec
 from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
 from rapid_mlx.telemetry import model_events, registry, server_start
 
@@ -174,7 +175,7 @@ if lane == "video":
         )
     )
     video_lane._default_video_runtime_requirements = lambda _model: [
-        "the `rapid-mlx[video]` Python extra"
+        "the mlx-video runtime"
     ]
     video_lane._resolve_ffmpeg = lambda: "/usr/bin/ffmpeg"
 if lane == "image":
@@ -291,9 +292,10 @@ def _expected_install_hint_line(
     extra: str, *, child_executable: str, status: str = "absent"
 ) -> str:
     reinstall = "--upgrade --force-reinstall " if status == "broken" else ""
+    spec = runtime_install_spec(extra, rapid_mlx.__version__)
     return (
         f"    {shlex.quote(child_executable)} -m pip install "
-        f"{reinstall}'rapid-mlx[{extra}]=={rapid_mlx.__version__}'"
+        f"{reinstall}{shlex.quote(spec)}"
     )
 
 
@@ -313,8 +315,13 @@ def _assert_actionable_failure_contract(
     ]
     assert markers == [expected_marker]
 
-    expected_hint = _expected_install_hint_line(
-        extra, child_executable=child_executable, status=status
+    expected_hint = (
+        f"    uv tool install --force --python 3.12 "
+        f"'rapid-mlx=={rapid_mlx.__version__}'"
+        if marker_reason == "python_version_unsupported"
+        else _expected_install_hint_line(
+            extra, child_executable=child_executable, status=status
+        )
     )
     assert stderr.splitlines().count(expected_hint) == 1
     return expected_marker, expected_hint
@@ -457,7 +464,7 @@ def _lane_failure(monkeypatch, lane: str) -> tuple[OptionalRuntimeMissing, str]:
         monkeypatch.setattr(
             video_lane,
             "_default_video_runtime_requirements",
-            lambda _name: ["the `rapid-mlx[video]` Python extra"],
+            lambda _name: ["the mlx-video runtime"],
         )
         monkeypatch.setattr(video_lane, "_resolve_ffmpeg", lambda: "ffmpeg")
         call = lambda: video_lane.require_video_runtime_or_exit("wan2.2-ti2v-5b-q8")
@@ -864,7 +871,7 @@ def test_bonsai_engine_preflight_is_missing_vision_failure(monkeypatch, capsys) 
         )
 
     assert exited.value.code == 2
-    assert "rapid-mlx[vision]" in capsys.readouterr().err
+    assert "rapid-mlx==" in capsys.readouterr().err
     assert [props for name, props in events if name == "model_serve_failed"] == [
         {
             "error_class": "missing_extra",

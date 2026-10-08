@@ -49,6 +49,13 @@ from typing import Any, cast
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 
+from rapid_mlx import __version__ as _rapid_mlx_version
+from rapid_mlx.runtime.base_runtime import (
+    homebrew_runtime_hint,
+    is_homebrew_interpreter,
+    runtime_install_spec,
+)
+
 # ---------------------------------------------------------------------------
 # Data model
 # ---------------------------------------------------------------------------
@@ -187,7 +194,13 @@ _SUPPORTED_VERSIONS: dict[str, str] = {
 # (warning) not ✗ — that's the whole point of "optional". The hint is
 # echoed verbatim in the report so the user can copy-paste.
 OPTIONAL_PACKAGES: list[tuple[str, str, str]] = [
-    ("mlx-vlm", "mlx-vlm (vision extras)", "rapid-mlx[vision]"),
+    # mlx-vlm ships in the base install; a missing copy is repaired by
+    # reinstalling the pinned base package, not by an opt-in extra.
+    (
+        "mlx-vlm",
+        "mlx-vlm (vision runtime)",
+        runtime_install_spec("vision", _rapid_mlx_version),
+    ),
     ("mlx-audio", "mlx-audio (audio extras)", "rapid-mlx[audio]"),
     (
         "mlx-embeddings",
@@ -1747,6 +1760,10 @@ def _install_location(exe: Path | None = None) -> tuple[str, Path]:
     display = raw.absolute()
     parts = exe.parts
     lower = str(exe).lower()
+    # The Homebrew formula's libexec interpreter looks like a virtualenv; label
+    # it Homebrew first so nobody is told to pip-install into a managed env.
+    if is_homebrew_interpreter(str(display)) or is_homebrew_interpreter(str(exe)):
+        return "Homebrew", display
     if "uv/tools" in lower or "/uv/tools/" in lower:
         return "uv tool", display
     if "pipx" in lower:
@@ -2295,6 +2312,13 @@ def section_optional_packages() -> Section:
     bundled = sidecar_root is not None
     audio_contract = _AUDIO_DESKTOP_IMPORTS if bundled else _AUDIO_IMPORTS
     repair_hint = _sidecar_repair_hint(sidecar_root) if sidecar_root else None
+    # The text-only Homebrew formula omits the vision runtime on purpose:
+    # point at the full PyPI install instead of mutating its managed env.
+    homebrew_vision_hint = (
+        homebrew_runtime_hint("vision", _rapid_mlx_version)
+        if not repair_hint and is_homebrew_interpreter(str(runtime))
+        else None
+    )
     runtime_probe = (
         _probe_runtime(
             runtime,
@@ -2313,6 +2337,8 @@ def section_optional_packages() -> Section:
         hint = (
             repair_hint
             if repair_hint
+            else homebrew_vision_hint
+            if homebrew_vision_hint and dist == "mlx-vlm"
             else _runtime_pip_command(install_hint, runtime=runtime)
         )
         ver = (
@@ -2335,9 +2361,11 @@ def section_optional_packages() -> Section:
             supported = _SUPPORTED_VERSIONS[dist]
             if repair_hint:
                 repair = repair_hint
+            elif homebrew_vision_hint and dist == "mlx-vlm":
+                repair = homebrew_vision_hint
             else:
                 repair = _runtime_pip_command(
-                    "rapid-mlx[vision]",
+                    runtime_install_spec("vision", _rapid_mlx_version),
                     f"transformers{_SUPPORTED_VERSIONS['transformers']}",
                     runtime=runtime,
                 )
@@ -2562,11 +2590,19 @@ def section_optional_packages() -> Section:
     # mlx-embeddings this row is a real contract on a bundled sidecar and stays
     # gradeable; only the remediation wording changes.
     dflash_min = (0, 5, 0)
-    dflash_hint = repair_hint or _runtime_pip_command(
-        "rapid-mlx[dflash]", runtime=runtime
+    dflash_hint = (
+        repair_hint
+        or homebrew_vision_hint
+        or _runtime_pip_command(
+            runtime_install_spec("dflash", _rapid_mlx_version), runtime=runtime
+        )
     )
-    vision_hint = repair_hint or _runtime_pip_command(
-        "rapid-mlx[vision]", runtime=runtime
+    vision_hint = (
+        repair_hint
+        or homebrew_vision_hint
+        or _runtime_pip_command(
+            runtime_install_spec("vision", _rapid_mlx_version), runtime=runtime
+        )
     )
     vlm_ver = (
         _safe_version("mlx-vlm", runtime)

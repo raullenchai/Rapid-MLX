@@ -76,7 +76,8 @@ def test_video_runtime_preflight_fails_before_download(
         require_video_runtime_or_exit()
 
     error = exc.value.format_user_message()
-    assert "rapid-mlx[video]" in error
+    assert "the mlx-video runtime" in error
+    assert "rapid-mlx==" in error
     assert "brew install ffmpeg" in error
 
 

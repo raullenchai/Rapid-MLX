@@ -116,14 +116,16 @@ jobs:
       SIGNED: ${{ secrets.MACOS_DEVID_CERT_P12_BASE64 != '' && secrets.MACOS_DEVID_CERT_PASSWORD != '' && secrets.AC_API_KEY_P8_BASE64 != '' && secrets.AC_API_KEY_ID != '' && secrets.AC_API_ISSUER_ID != '' }}
       # Absolute .app size ceiling — enforced by the "Bundle size gate"
       # step. The bundled sidecar (Contents/Resources/rapid-mlx) dominates.
-      # Signed v0.15.2 measured 549 MiB; Computer Use adds a separate 19 MiB
-      # TCC-stable helper and ~7 MiB of native macOS bridge packages (575 MiB
-      # total). Keep 15 MiB measured headroom. The independent compressed-DMG
-      # delta gate below still caps per-release growth at +50 MiB.
-      BUNDLE_SIZE_CAP_MB: "590"
+      # The sidecar now ships the base vision/image/video runtimes (torch,
+      # mflux, mlx-video; OpenCV excluded pending a licensing decision):
+      # measured 2026-10-07 on an Apple Silicon builder, the .app went
+      # 578 -> 1293 MiB (sidecar 502 -> 1211 MiB). Keep ~20 MiB headroom.
+      BUNDLE_SIZE_CAP_MB: "1315"
       # Per-release DMG growth ceiling — enforced by the "Bundle size delta
-      # gate" step against the previous rapid-mac release.
-      BUNDLE_SIZE_DELTA_CAP_MB: "50"
+      # gate" step against the previous rapid-mac release. The full-runtime
+      # release grows the compressed DMG 133 -> 239 MiB (+106 MiB); restore
+      # this to "50" once a stable release carrying the full runtimes ships.
+      BUNDLE_SIZE_DELTA_CAP_MB: "125"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:

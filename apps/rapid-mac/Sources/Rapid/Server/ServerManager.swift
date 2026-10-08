@@ -7,6 +7,8 @@ extension SidecarStartupFailure {
     var message: String {
         let extraName = extra?.displayName ?? "Optional"
         switch reason {
+        case .runtimeExtraMissing where extra?.isBundled == true:
+            return "The bundled \(extraName) runtime is missing from this copy of Rapid-MLX Desktop. Reinstall Rapid-MLX Desktop to restore it."
         case .runtimeExtraMissing:
             return "The installed engine doesn't include \(extraName) support. Open Startup Log for installation details."
         case .runtimeDependencyMissing:

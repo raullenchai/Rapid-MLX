@@ -254,8 +254,8 @@ class WanVideoEngine:
             wan_generator = import_module("mlx_video.generate_wan")
         except ImportError as exc:
             raise WanBackendError(
-                "Wan generation requires mlx-video-with-audio>=0.1.36; "
-                "install the rapid-mlx video extra"
+                "Wan generation requires mlx-video-with-audio>=0.1.36, which "
+                "ships with rapid-mlx on Python 3.11+; reinstall rapid-mlx"
             ) from exc
 
         generation_kwargs = {

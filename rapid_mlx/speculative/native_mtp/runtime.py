@@ -128,7 +128,8 @@ def load_runtime(
     except ImportError as exc:
         raise RuntimeError(
             "native MTP requires "
-            f"mlx-vlm {QUALIFIED_MLX_VLM_VERSION}; install rapid-mlx[mtp]"
+            f"mlx-vlm {QUALIFIED_MLX_VLM_VERSION}, which ships with rapid-mlx; "
+            "reinstall rapid-mlx"
         ) from exc
 
     # Fail before resolving the sidecar path: ``get_model_path`` may download

@@ -145,7 +145,7 @@ def test_load_native_mtp_runtime_reports_missing_optional_runtime(monkeypatch) -
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", fail_drafter_import)
-    with pytest.raises(RuntimeError, match=r"rapid-mlx\[mtp\]"):
+    with pytest.raises(RuntimeError, match=r"reinstall rapid-mlx"):
         load_runtime(
             "org/drafter",
             target_revision="a" * 40,
@@ -624,7 +624,7 @@ def test_native_mtp_preflight_reports_missing_runtime(monkeypatch, capsys) -> No
         cli._preflight_native_mtp_or_exit(args)
 
     assert exc_info.value.code == 1
-    assert "rapid-mlx[mtp]" in capsys.readouterr().err
+    assert "rapid-mlx==" in capsys.readouterr().err
 
 
 def test_glm_preflight_rejects_old_runtime_before_weight_load(
@@ -825,7 +825,7 @@ def test_native_mtp_server_reports_missing_optional_runtime(monkeypatch) -> None
     from rapid_mlx.speculative.native_mtp import server as native_server
 
     monkeypatch.setitem(sys.modules, "uvicorn", None)
-    with pytest.raises(RuntimeError, match=r"rapid-mlx\[mtp\]"):
+    with pytest.raises(RuntimeError, match=r"reinstall rapid-mlx"):
         native_server.run_native_mtp_server(
             pair=QWEN36_35B_4BIT,
             host="127.0.0.1",

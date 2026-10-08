@@ -3187,6 +3187,9 @@ class MLLMBatchGenerator:
                     all_images.extend(frame_paths)
                 except FileSizeExceededError as e:
                     raise ClientRequestError(f"Failed to process video: {e}") from e
+                except ClientRequestError:
+                    # Already client-safe (e.g. a build without OpenCV).
+                    raise
                 except (OSError, ValueError) as e:
                     # Same rationale as the image branch above: silent
                     # drop hallucinates; the typed error lets the scheduler
