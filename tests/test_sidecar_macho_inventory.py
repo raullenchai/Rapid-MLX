@@ -23,6 +23,11 @@ def test_inventory_covers_extensionless_regular_machos_and_ignores_text(
     thin_macho = b"\xcf\xfa\xed\xfe" + b"portable-thin-fixture"
 
     expected = []
+    ffmpeg = stage / "bin" / "ffmpeg"
+    ffmpeg.parent.mkdir()
+    ffmpeg.write_bytes(thin_macho)
+    ffmpeg.chmod(0o755)
+    expected.append(str(ffmpeg))
     for name in ("torch_shm_manager", "protoc-3.21.12.0", "protoc"):
         target = torch_bin / name
         target.write_bytes(thin_macho)
@@ -36,7 +41,6 @@ def test_inventory_covers_extensionless_regular_machos_and_ignores_text(
     disguised.chmod(0o644)
     expected.append(str(disguised))
     spaced = stage / "bin" / "tool with space"
-    spaced.parent.mkdir()
     spaced.write_bytes(thin_macho)
     spaced.chmod(0o755)
     expected.append(str(spaced))

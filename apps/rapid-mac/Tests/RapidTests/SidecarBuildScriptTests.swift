@@ -226,8 +226,8 @@ struct SidecarBuildScriptTests {
                 "The video-only encoder must not retain FFmpeg's audio resampler.")
         #expect(script.contains("bundled FFmpeg does not target Desktop's macOS 14 minimum"))
         #expect(script.contains("unexpectedly enables GPL/nonfree components"))
-        #expect(script.contains(#"echo "$STAGE/bin/ffmpeg""#),
-                "The standalone encoder is a signed Mach-O too.")
+        #expect(script.contains(#""$STAGE/python/bin/python3.12" "$ENGINE_ROOT/scripts/sidecar_macho_inventory.py" "$STAGE" "$MACHOS_LIST""#),
+                "The standalone encoder must enter the content-based Mach-O signing inventory.")
         #expect(script.contains(#"assert registered_wan_runtime_issue("wan2.2-ti2v-5b-q8") is None"#),
                 "The video-lane preflight must see the bundled runtime as present.")
         #expect(script.contains(#"rm -rf "$STAGE/site-packages/imageio_ffmpeg/binaries/"ffmpeg-*"#),
