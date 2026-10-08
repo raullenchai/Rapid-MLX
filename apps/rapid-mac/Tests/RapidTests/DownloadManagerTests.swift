@@ -367,6 +367,31 @@ struct DownloadManagerTests {
         ))
     }
 
+    @Test("Repeated transfer ticks with no new bytes do not hide a stall")
+    func repeatedTicksDoNotAdvanceWatchdog() {
+        let old = DownloadProgress.Phase.downloading(
+            file: "model.safetensors", done: "1.0G", total: "3.0G",
+            percent: 33, speed: "0MB/s", eta: "02:00"
+        )
+        let repeated = DownloadProgress.Phase.downloading(
+            file: "model.safetensors", done: "1.0G", total: "3.0G",
+            percent: 33, speed: "0MB/s", eta: "03:00"
+        )
+        #expect(!DownloadManager.advanced(
+            from: old, oldBytes: 1_000, to: repeated, newBytes: 1_000
+        ))
+        #expect(DownloadManager.advanced(
+            from: old, oldBytes: 1_000, to: repeated, newBytes: 1_001
+        ))
+    }
+
+    @Test("Transient reconnects are bounded and permanent errors are excluded")
+    func automaticRetryPolicy() {
+        #expect((0...3).map(DownloadManager.retryDelay) == [2, 4, 8, nil])
+        #expect(DownloadManager.isTransientDownloadError("ConnectionResetError: connection reset"))
+        #expect(!DownloadManager.isTransientDownloadError("OSError: No space left on device"))
+    }
+
     // MARK: - Cache generation
     //
     // Dogfood report: "I deleted the two qwens in Settings, but the

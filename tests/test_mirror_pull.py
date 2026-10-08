@@ -586,9 +586,10 @@ def test_env_disable_skips_r2_entirely(
     revision = "ffff" * 10
     files = [("config.json", 100)]
 
-    # Empty env value means "force HF" — production code returns False
-    # from download_with_mirror_fallback before touching the network.
+    # Empty env value means "force HF" while retaining the verified
+    # per-file downloader and its stable resume sidecars.
     monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "")
+    monkeypatch.setattr(_mirror, "_hf_resumable_one", lambda *args: False)
 
     router = _UrlRouter()
     # No routes registered — any HTTP call would AssertionError.
@@ -602,11 +603,55 @@ def test_env_disable_skips_r2_entirely(
     ):
         result = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
 
-    # When the mirror is disabled, the function bails early so the caller
-    # falls through to snapshot_download. No HF or R2 calls were made.
-    assert result is False
+    assert result is True
     assert router.requests == []
-    assert hf_mock.call_count == 0
+    assert hf_mock.call_count == 1
+
+
+def test_hf_resumes_mirror_partial_with_checked_range(tmp_path: Path):
+    """Changing source reuses the same per-file prefix and verifies the blob."""
+    import hashlib
+
+    filename = "model.safetensors"
+    body = b"a" * 400 + b"b" * 600
+    repo_root = tmp_path / "models--owner--repo"
+    sidecar = repo_root / ".rapid-mlx-mirror"
+    sidecar.mkdir(parents=True)
+    part = sidecar / f"{_mirror._sidecar_key_for(filename)}.part"
+    part.write_bytes(body[:400])
+    target = repo_root / "snapshots" / ("a" * 40) / filename
+    location = "https://cdn.example.test/model.safetensors"
+    router = _UrlRouter()
+    router.add(
+        location,
+        _FakeResponse(
+            206,
+            body[400:],
+            headers={"Content-Range": "bytes 400-999/1000"},
+        ),
+    )
+    with (
+        patch("huggingface_hub.file_download.get_hf_file_metadata") as metadata,
+        patch("urllib.request.urlopen", side_effect=router),
+    ):
+        metadata.return_value.location = location
+        ok = _mirror._hf_resumable_one(
+            "owner/repo",
+            filename,
+            "a" * 40,
+            target,
+            len(body),
+            hashlib.sha256(body).hexdigest(),
+            None,
+            sidecar,
+            repo_root,
+            None,
+        )
+
+    assert ok
+    assert target.read_bytes() == body
+    assert router.requests[0]["headers"]["Range"] == "bytes=400-"
+    assert not part.exists()
 
 
 # ---------------------------------------------------------------------------

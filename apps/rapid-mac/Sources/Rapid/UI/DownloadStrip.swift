@@ -174,7 +174,10 @@ struct DownloadStrip: View {
         case .retry:
             downloads.retryDownload(alias: job.alias)
         case .switchDownloadSource:
-            downloads.retryDownload(alias: job.alias, source: .huggingFace)
+            downloads.retryDownload(
+                alias: job.alias,
+                source: job.source == .mirror ? .huggingFace : .mirror
+            )
         case .openModelManagement, .openWebSearchSettings:
             // A download job only ever produces ``.retry`` /
             // ``.switchDownloadSource`` today, so these are latent. Wiring
@@ -212,12 +215,20 @@ struct DownloadStrip: View {
     private func progressDetail(for job: DownloadManager.Job) -> String {
         switch job.status {
         case .running:
-            return DownloadStrip.detail(
+            if let delay = job.retryDelaySeconds {
+                return "Reconnecting in \(delay)s · attempt \(job.retryAttempt + 2) of \(DownloadManager.maxAutomaticRetries + 1)"
+            }
+            if job.isStalled { return "Stalled · no bytes received — reconnecting soon" }
+            let detail = DownloadStrip.detail(
                 phase: job.progress.phase,
                 bytesSubtitle: job.progress.hasDiskObservation
                     ? job.progress.progressSubtitle
                     : nil
             )
+            if let file = job.progress.currentFile {
+                return "\(detail) · \(file)"
+            }
+            return detail
         case .completed:
             return "Downloaded — start from the model picker"
         case .cancelled:
