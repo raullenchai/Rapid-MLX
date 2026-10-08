@@ -1715,6 +1715,35 @@ def test_snapshot_is_stored_when_the_prefill_reaches_the_split(monkeypatch):
     assert store.call_count == 1
 
 
+def test_step_stores_the_snapshot_from_the_prompt_responses(monkeypatch):
+    """``step()`` hands the prompt responses of a tuple result to the hook."""
+    scheduler = _shared_scheduler(monkeypatch)
+    request = _shared_armed(scheduler, position=202, cached=10)
+    scheduler.running = {"r": request}
+    scheduler.batch_generator.next.return_value = (
+        [_shared_segment_end((192, 390))],
+        [],
+    )
+    for name, result in (
+        ("_process_pending_aborts", None),
+        ("_reconcile_orphaned_running_requests", []),
+        ("_schedule_waiting", []),
+        ("_realign_guard_armed", False),
+        ("_apply_adaptive_prefill_size", None),
+        ("_materialize_active_recurrent_cache", None),
+        ("_process_batch_responses", ([], set())),
+        ("_cleanup_finished", None),
+    ):
+        monkeypatch.setattr(scheduler, name, MagicMock(return_value=result))
+
+    scheduler.step()
+
+    scheduler.batch_generator.next.assert_called_once_with()
+    store = scheduler.memory_aware_cache.store
+    assert store.call_args.args == (list(range(202)), ["rebuilt"])
+    assert request.shared_prefix_snapshot_at == 0
+
+
 def test_snapshot_ignores_other_segment_ends(monkeypatch):
     scheduler = _shared_scheduler(monkeypatch)
     request = _shared_armed(scheduler)
