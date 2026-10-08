@@ -630,11 +630,17 @@ def pinned_snapshot_download(
             _hf_cache_root() / f"models--{owner}--{name}" / "snapshots" / revision
         )
     from huggingface_hub import snapshot_download
+    from huggingface_hub.errors import OfflineModeIsEnabled
 
     kwargs: dict[str, Any] = {"revision": revision}
     if allow_patterns is not None:
         kwargs["allow_patterns"] = list(allow_patterns)
-    return str(snapshot_download(repo_id, **kwargs))
+    try:
+        return str(snapshot_download(repo_id, **kwargs))
+    except OfflineModeIsEnabled:
+        # Offline, the Hub still wants a file listing for a snapshot that an
+        # older client downloaded without one. Use what is on disk instead.
+        return str(snapshot_download(repo_id, local_files_only=True, **kwargs))
 
 
 def _hf_cache_root() -> Path:
