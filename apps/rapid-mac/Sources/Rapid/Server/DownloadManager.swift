@@ -226,12 +226,15 @@ final class DownloadManager {
     nonisolated static func isTransientDownloadError(_ output: String) -> Bool {
         let value = output.lowercased()
         return ["timed out", "timeout", "connection reset", "connectionreseterror",
-                "connection aborted", "connection refused", "network is unreachable",
+                "connection aborted", "connection refused", "connectionerror",
+                "connection error", "network is unreachable", "name resolution",
+                "name or service not known", "nodename nor servname",
                 "temporary failure", "incomplete read", "incompleteread",
                 "unexpected_eof", "remote disconnected", "remotedisconnected",
-                "service unavailable", "bad gateway", "gateway timeout", "http 429",
+                "service unavailable", "internal server error", "bad gateway",
+                "gateway timeout", "http 429", "http 500",
                 "http 502", "http 503", "http 504", " 429 ", " 502 ",
-                " 503 ", " 504 "].contains { value.contains($0) }
+                " 500 ", " 503 ", " 504 "].contains { value.contains($0) }
     }
 
     nonisolated static func advanced(

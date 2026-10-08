@@ -396,6 +396,8 @@ struct DownloadManagerTests {
     func automaticRetryPolicy() {
         #expect((0...3).map(DownloadManager.retryDelay) == [2, 4, 8, nil])
         #expect(DownloadManager.isTransientDownloadError("ConnectionResetError: connection reset"))
+        #expect(DownloadManager.isTransientDownloadError("nodename nor servname provided"))
+        #expect(DownloadManager.isTransientDownloadError("HTTP Error 500: Internal Server Error"))
         #expect(!DownloadManager.isTransientDownloadError("OSError: No space left on device"))
     }
 
