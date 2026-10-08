@@ -7370,6 +7370,20 @@ async def stream_chat_completion(
                 prompt_tokens = output.prompt_tokens
             if hasattr(output, "completion_tokens") and output.completion_tokens:
                 completion_tokens = output.completion_tokens
+            _window_error = context_window_exhausted(
+                engine,
+                prompt_tokens,
+                completion_tokens,
+                getattr(output, "finish_reason", None),
+            )
+            if _window_error is not None:
+                yield (
+                    "event: chat.completion.error\ndata: "
+                    + json.dumps(_window_error.detail, separators=(",", ":"))
+                    + "\n\n"
+                )
+                yield "data: [DONE]\n\n"
+                return
             # ``cached_tokens`` is a single per-request value (the
             # prefix-cache hit count set once when the request is
             # scheduled), so re-reading it on every chunk just
@@ -7544,22 +7558,6 @@ async def stream_chat_completion(
             buffered_finish[1].finish_reason
         ):
             return
-
-        if buffered_finish is not None:
-            _window_error = context_window_exhausted(
-                engine,
-                prompt_tokens,
-                completion_tokens,
-                buffered_finish[1].finish_reason,
-            )
-            if _window_error is not None:
-                yield (
-                    "event: chat.completion.error\ndata: "
-                    + json.dumps(_window_error.detail, separators=(",", ":"))
-                    + "\n\n"
-                )
-                yield "data: [DONE]\n\n"
-                return
 
         # Fallback tool call detection (post-stream). Collect ALL fallback
         # tool_call events before emitting; they get merged into the
@@ -8518,6 +8516,15 @@ async def stream_chat_completion_guided(
                 yield event
             return
         except Exception as guided_err:
+            _context_error = context_overflow_from_client_error(guided_err)
+            if _context_error is not None:
+                yield (
+                    "event: chat.completion.error\ndata: "
+                    + json.dumps(_context_error.detail, separators=(",", ":"))
+                    + "\n\n"
+                )
+                yield "data: [DONE]\n\n"
+                return
             # Log only the schema's top-level shape, not the full body —
             # user-supplied schemas may embed PII (default values),
             # internal endpoint names, or be megabytes large. Keys +
@@ -8638,6 +8645,21 @@ async def stream_chat_completion_guided(
                 admission_task.cancel()
             if not guided_task.done():
                 guided_task.cancel()
+
+        _window_error = context_window_exhausted(
+            engine,
+            output.prompt_tokens,
+            output.completion_tokens,
+            output.finish_reason,
+        )
+        if _window_error is not None:
+            yield (
+                "event: chat.completion.error\ndata: "
+                + json.dumps(_window_error.detail, separators=(",", ":"))
+                + "\n\n"
+            )
+            yield "data: [DONE]\n\n"
+            return
 
         content = output.text or ""
 
@@ -8993,6 +9015,13 @@ async def stream_chat_completion_strict_postgen(
     )
     try:
         async for chunk_text in upstream_agen:
+            if chunk_text.startswith("event: chat.completion.error\n"):
+                # The upstream already diagnosed a context failure. Keep its
+                # terminal error instead of replacing it with a schema error.
+                validation_emitted = True
+                yield chunk_text
+                await upstream_agen.aclose()
+                return
             # Swallow the upstream [DONE] sentinel — we emit our own
             # [DONE] at the END of validation (codex r6 #1,
             # unconditional) so post-validation chunks land BEFORE the
@@ -9363,6 +9392,7 @@ async def stream_chat_completion_strict_postgen(
             # can branch, same envelope shape so handler code is
             # reusable.
             if upstream_raised is not None and not validation_emitted:
+                context_error = context_overflow_from_client_error(upstream_raised)
                 # Codex r12 #2: do NOT leak ``str(upstream_raised)``
                 # into the client-visible SSE payload. Exception
                 # messages from the inference stack can include
@@ -9375,22 +9405,26 @@ async def stream_chat_completion_strict_postgen(
                 # entry). The full ``str(exc)`` was already logged
                 # in the except arm above for server-side
                 # diagnostics — that's where operators look.
-                upstream_envelope = {
-                    "error": {
-                        "type": "upstream_error",
-                        "code": "strict_stream_upstream_error",
-                        "message": (
-                            "strict json_schema streaming generation "
-                            "aborted before validation. See server logs "
-                            f"for response_id={response_id}."
-                        ),
-                        "param": "response_format.json_schema",
-                        "details": {
-                            "exception_type": type(upstream_raised).__name__,
-                            "response_id": response_id,
-                        },
+                upstream_envelope = (
+                    context_error.detail
+                    if context_error is not None
+                    else {
+                        "error": {
+                            "type": "upstream_error",
+                            "code": "strict_stream_upstream_error",
+                            "message": (
+                                "strict json_schema streaming generation "
+                                "aborted before validation. See server logs "
+                                f"for response_id={response_id}."
+                            ),
+                            "param": "response_format.json_schema",
+                            "details": {
+                                "exception_type": type(upstream_raised).__name__,
+                                "response_id": response_id,
+                            },
+                        }
                     }
-                }
+                )
                 err_obj = {
                     "id": response_id,
                     "object": "chat.completion.error",

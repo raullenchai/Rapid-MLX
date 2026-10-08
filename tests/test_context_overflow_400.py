@@ -225,6 +225,99 @@ def test_late_stream_guard_preserves_context_protocol(path):
         assert "data: [DONE]" in wire
 
 
+@pytest.mark.parametrize("failure", ["window_end", "expanded_prompt"])
+def test_guided_chat_stream_reports_context_error(failure):
+    from rapid_mlx.api.models import ChatCompletionRequest
+    from rapid_mlx.engine.base import GenerationOutput
+    from rapid_mlx.request import ClientRequestError
+    from rapid_mlx.routes.chat import stream_chat_completion_guided
+
+    class GuidedEngine(_StubEngine):
+        async def generate_with_schema(self, **kwargs):
+            kwargs["request_admitted_event"].set()
+            if failure == "expanded_prompt":
+                raise ClientRequestError(
+                    "context_length_exceeded: prompt has 101 tokens after media "
+                    "expansion, exceeding --context-length 80"
+                )
+            return GenerationOutput(
+                text="{}",
+                new_text="{}",
+                prompt_tokens=70,
+                completion_tokens=10,
+                finished=True,
+                finish_reason="length",
+            )
+
+    cfg = reset_config()
+    cfg.context_length = 80
+    request = ChatCompletionRequest(
+        model="qwen3-0.6b-8bit",
+        messages=[{"role": "user", "content": "hi"}],
+        stream=True,
+    )
+
+    async def collect():
+        return [
+            chunk
+            async for chunk in stream_chat_completion_guided(
+                GuidedEngine(),
+                request.messages,
+                request,
+                {"type": "object"},
+                strict_mode=True,
+            )
+        ]
+
+    wire = "".join(asyncio.run(collect()))
+    assert "context_length_exceeded" in wire
+    assert "strict_schema_violation" not in wire
+    assert wire.endswith("data: [DONE]\n\n")
+
+
+@pytest.mark.parametrize("upstream_kind", ["event", "exception"])
+def test_strict_chat_wrapper_preserves_context_error(monkeypatch, upstream_kind):
+    from rapid_mlx.api.models import ChatCompletionRequest
+    from rapid_mlx.request import ClientRequestError
+    from rapid_mlx.routes import chat as chat_module
+
+    def raise_overflow():
+        raise ClientRequestError(
+            "context_length_exceeded: prompt has 101 tokens after media "
+            "expansion, exceeding --context-length 80"
+        )
+
+    async def upstream(*args, **kwargs):  # noqa: ARG001
+        if upstream_kind == "event":
+            yield (
+                "event: chat.completion.error\ndata: "
+                '{"error":{"code":"context_length_exceeded"}}\n\n'
+            )
+        else:
+            yield raise_overflow()
+
+    monkeypatch.setattr(chat_module, "stream_chat_completion", upstream)
+    request = ChatCompletionRequest(
+        model="qwen3-0.6b-8bit",
+        messages=[{"role": "user", "content": "hi"}],
+        stream=True,
+    )
+
+    async def collect():
+        return [
+            chunk
+            async for chunk in chat_module.stream_chat_completion_strict_postgen(
+                _StubEngine(), request.messages, request, {"type": "object"}
+            )
+        ]
+
+    wire = "".join(asyncio.run(collect()))
+    assert "context_length_exceeded" in wire
+    assert "strict_schema_violation" not in wire
+    assert wire.count("event: chat.completion.error") == 1
+    assert wire.endswith("data: [DONE]\n\n")
+
+
 # ─── /v1/chat/completions ───────────────────────────────────────────
 
 
