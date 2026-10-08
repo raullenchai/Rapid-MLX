@@ -1890,6 +1890,15 @@ class Qwen3CoderToolParser(ToolParser):
                     # EOS parsing select the final structural closer.
                     self._legacy_raw_stream = True
                     self._legacy_raw_param_count = self.param_count
+                    if json_fragments:
+                        return {
+                            "tool_calls": [
+                                {
+                                    "index": self.current_tool_index,
+                                    "function": {"arguments": "".join(json_fragments)},
+                                }
+                            ]
+                        }
                     return None
 
                 param_end_idx = self._find_parameter_close(value_text, 0)

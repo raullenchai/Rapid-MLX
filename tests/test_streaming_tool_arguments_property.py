@@ -375,6 +375,24 @@ def test_qwen3_coder_parameter_names_are_json_escaped(key):
         assert _run("qwen3_coder_xml", wire, request, chunks) == expected_calls
 
 
+def test_qwen3_coder_keeps_fragments_before_raw_string_fallback():
+    chunks = [
+        "<tool_call><function=lookup>",
+        '<parameter=a>"x"</parameter><parameter=b>y</parameter></function></tool_call>',
+    ]
+    wire = "".join(chunks)
+    request = _request("lookup")
+    request["tools"][0]["function"]["parameters"]["properties"] = {
+        "a": {"type": "string"},
+        "b": {"type": "string"},
+    }
+    expected = ToolParserManager.get_tool_parser("qwen3_coder_xml")(
+        None
+    ).extract_tool_calls(wire, request)
+    expected_calls = [(call["name"], call["arguments"]) for call in expected.tool_calls]
+    assert _run("qwen3_coder_xml", wire, request, chunks) == expected_calls
+
+
 def test_seed_oss_parallel_functions_in_single_wrapper():
     first = CANONICAL_WIRES["seed_oss"]
     second = first.replace("lookup", "second").replace("hello", "world")
