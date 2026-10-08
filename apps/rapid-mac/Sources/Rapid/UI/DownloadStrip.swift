@@ -145,6 +145,15 @@ struct DownloadStrip: View {
                     ),
                     onAction: { action in handleFailureAction(action, for: job) }
                 )
+                Button(job.failureKind == .downloadSourceUnavailable ? "Retry" : "Switch source") {
+                    handleFailureAction(
+                        job.failureKind == .downloadSourceUnavailable ? .retry : .switchDownloadSource,
+                        for: job
+                    )
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .accessibilityIdentifier("DownloadStrip.SecondaryRecovery.\(job.alias)")
                 trailingAffordance(for: job)
             }
         } else {
@@ -215,10 +224,13 @@ struct DownloadStrip: View {
     private func progressDetail(for job: DownloadManager.Job) -> String {
         switch job.status {
         case .running:
+            let bytes = job.progress.bytesDownloaded.map {
+                " · \(DownloadProgress.formatBytes($0)) received"
+            } ?? ""
             if let delay = job.retryDelaySeconds {
-                return "Reconnecting in \(delay)s · attempt \(job.retryAttempt + 2) of \(DownloadManager.maxAutomaticRetries + 1)"
+                return "Reconnecting in \(delay)s · attempt \(job.retryAttempt + 2) of \(DownloadManager.maxAutomaticRetries + 1)\(bytes)"
             }
-            if job.isStalled { return "Stalled · no bytes received — reconnecting soon" }
+            if job.isStalled { return "Stalled · no new bytes — reconnecting soon\(bytes)" }
             let detail = DownloadStrip.detail(
                 phase: job.progress.phase,
                 bytesSubtitle: job.progress.hasDiskObservation

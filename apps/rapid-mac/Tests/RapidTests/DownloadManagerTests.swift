@@ -392,6 +392,15 @@ struct DownloadManagerTests {
         #expect(!DownloadManager.isTransientDownloadError("OSError: No space left on device"))
     }
 
+    @Test("Explicit switch from HF can restore mirror after a parent opt-out")
+    func explicitMirrorSwitch() {
+        var env = ["RAPID_MLX_MODEL_MIRROR": ""]
+        DownloadManager.applyDownloadSource(.mirror, env: &env)
+        #expect(env["RAPID_MLX_MODEL_MIRROR"] == "")
+        DownloadManager.applyDownloadSource(.mirror, env: &env, forceMirror: true)
+        #expect(env["RAPID_MLX_MODEL_MIRROR"] == "https://models.rapidmlx.com")
+    }
+
     // MARK: - Cache generation
     //
     // Dogfood report: "I deleted the two qwens in Settings, but the

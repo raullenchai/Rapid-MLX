@@ -95,6 +95,7 @@ final class DownloadManager {
         let hfPath: String?
         let totalBytes: Int64?
         let source: DownloadSource
+        let forceMirror: Bool
         /// Number of automatic reconnects already attempted for this pull.
         let retryAttempt: Int
         fileprivate(set) var retryDelaySeconds: Int?
@@ -132,6 +133,7 @@ final class DownloadManager {
             hfPath: String? = nil,
             totalBytes: Int64? = nil,
             source: DownloadSource = .mirror,
+            forceMirror: Bool = false,
             retryAttempt: Int = 0
         ) {
             self.id = alias
@@ -142,6 +144,7 @@ final class DownloadManager {
             self.hfPath = hfPath
             self.totalBytes = totalBytes
             self.source = source
+            self.forceMirror = forceMirror
             self.retryAttempt = retryAttempt
             self.retryDelaySeconds = nil
             self.failureKind = nil
@@ -357,6 +360,7 @@ final class DownloadManager {
         hfPath: String? = nil,
         totalBytes: Int64? = nil,
         source: DownloadSource = .mirror,
+        forceMirror: Bool = false,
         retryAttempt: Int = 0
     ) -> Bool {
         let trimmed = alias.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -393,7 +397,7 @@ final class DownloadManager {
 
         let job = Job(
             alias: trimmed, hfPath: hfPath, totalBytes: totalBytes,
-            source: source, retryAttempt: retryAttempt
+            source: source, forceMirror: forceMirror, retryAttempt: retryAttempt
         )
         jobs[trimmed] = job
         stderrTails[trimmed] = []
@@ -406,7 +410,9 @@ final class DownloadManager {
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
         process.standardInput = FileHandle.nullDevice
-        process.environment = augmentedEnv(for: binary, source: source)
+        process.environment = augmentedEnv(
+            for: binary, source: source, forceMirror: forceMirror
+        )
 
         // tqdm refreshes via \r when stderr is not a TTY (same shape
         // ServerManager parses). Split on both separators.
@@ -549,13 +555,16 @@ final class DownloadManager {
         let hfPath = previous.hfPath
         let totalBytes = previous.totalBytes
         let nextSource = source ?? previous.source
+        let forceMirror = nextSource == .mirror
+            && (previous.source == .huggingFace || previous.forceMirror)
         retryTasks.removeValue(forKey: trimmed)?.cancel()
         dismissJob(alias: trimmed)
         return startDownload(
             alias: trimmed,
             hfPath: hfPath,
             totalBytes: totalBytes,
-            source: nextSource
+            source: nextSource,
+            forceMirror: forceMirror
         )
     }
 
@@ -835,7 +844,8 @@ final class DownloadManager {
             self.jobs.removeValue(forKey: alias)
             _ = self.startDownload(
                 alias: alias, hfPath: job.hfPath, totalBytes: job.totalBytes,
-                source: job.source, retryAttempt: job.retryAttempt + 1
+                source: job.source, forceMirror: job.forceMirror,
+                retryAttempt: job.retryAttempt + 1
             )
         }
         return true
@@ -882,7 +892,11 @@ final class DownloadManager {
         }
     }
 
-    private func augmentedEnv(for binary: URL, source: DownloadSource) -> [String: String] {
+    private func augmentedEnv(
+        for binary: URL,
+        source: DownloadSource,
+        forceMirror: Bool
+    ) -> [String: String] {
         var env = ProcessInfo.processInfo.environment
         let existingPath = env["PATH"] ?? ""
         let augmented = [
@@ -895,7 +909,7 @@ final class DownloadManager {
         ].filter { !$0.isEmpty }.joined(separator: ":")
         env["PATH"] = augmented
         DownloadManager.applyXetConcurrencyCaps(env: &env)
-        DownloadManager.applyDownloadSource(source, env: &env)
+        DownloadManager.applyDownloadSource(source, env: &env, forceMirror: forceMirror)
         DownloadManager.applyModelsFolderOverride(env: &env)
         return EngineProcessEnvironment.sidecar(env)
     }
@@ -1011,11 +1025,16 @@ final class DownloadManager {
     /// retry, but never mutates the parent process or stored preferences.
     nonisolated static func applyDownloadSource(
         _ source: DownloadSource,
-        env: inout [String: String]
+        env: inout [String: String],
+        forceMirror: Bool = false
     ) {
         switch source {
         case .mirror:
-            applyModelMirror(env: &env)
+            if forceMirror && env["RAPID_MLX_MODEL_MIRROR", default: ""].isEmpty {
+                env["RAPID_MLX_MODEL_MIRROR"] = "https://models.rapidmlx.com"
+            } else {
+                applyModelMirror(env: &env)
+            }
         case .huggingFace:
             env["RAPID_MLX_MODEL_MIRROR"] = ""
         }

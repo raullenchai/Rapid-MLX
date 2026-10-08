@@ -654,6 +654,118 @@ def test_hf_resumes_mirror_partial_with_checked_range(tmp_path: Path):
     assert not part.exists()
 
 
+def test_hf_only_pull_uses_existing_part_instead_of_restarting(
+    tmp_path: Path, monkeypatch
+):
+    """The CLI's HF source choice must use the resumable pull path."""
+    import hashlib
+
+    repo_id = "owner/repo"
+    filename = "model.safetensors"
+    revision = "a" * 40
+    body = b"a" * 400 + b"b" * 600
+    part = _sidecar_part_path(tmp_path, repo_id, filename)
+    part.parent.mkdir(parents=True)
+    part.write_bytes(body[:400])
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "")
+    location = "https://cdn.example.test/model.safetensors"
+    router = _UrlRouter()
+    router.add(
+        location,
+        _FakeResponse(
+            206,
+            body[400:],
+            headers={"Content-Range": "bytes 400-999/1000"},
+        ),
+    )
+    with (
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(
+                revision, [(filename, len(body), hashlib.sha256(body).hexdigest())]
+            ),
+        ),
+        patch("huggingface_hub.file_download.get_hf_file_metadata") as metadata,
+        patch("huggingface_hub.hf_hub_download") as hub_download,
+        patch("urllib.request.urlopen", side_effect=router),
+    ):
+        metadata.return_value.location = location
+        result = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    assert result
+    assert not hub_download.called
+    assert router.requests[0]["headers"]["Range"] == "bytes=400-"
+    target = tmp_path / "models--owner--repo" / "snapshots" / revision / filename
+    assert target.read_bytes() == body
+
+
+def test_hf_resumable_falls_back_when_metadata_cannot_prove_a_file(tmp_path: Path):
+    repo_root = tmp_path / "models--owner--repo"
+    target = repo_root / "snapshots" / ("a" * 40) / "config.json"
+    args = (
+        "owner/repo",
+        "config.json",
+        "a" * 40,
+        target,
+        100,
+        None,
+        _git_oid(b"x" * 100),
+        repo_root / ".rapid-mlx-mirror",
+        repo_root,
+        None,
+    )
+    assert not _mirror._hf_resumable_one(
+        args[0],
+        args[1],
+        args[2],
+        args[3],
+        None,
+        None,
+        None,
+        args[7],
+        args[8],
+        args[9],
+    )
+    with patch("huggingface_hub.file_download.get_hf_file_metadata") as metadata:
+        metadata.side_effect = OSError("unavailable")
+        assert not _mirror._hf_resumable_one(*args)
+        metadata.side_effect = None
+        metadata.return_value.location = "http://unsafe.example.test/file"
+        assert not _mirror._hf_resumable_one(*args)
+
+
+def test_hf_resumable_keeps_partial_after_transport_error(tmp_path: Path):
+    filename = "model.safetensors"
+    repo_root = tmp_path / "models--owner--repo"
+    sidecar = repo_root / ".rapid-mlx-mirror"
+    part = sidecar / f"{_mirror._sidecar_key_for(filename)}.part"
+    part.parent.mkdir(parents=True)
+    part.write_bytes(b"a" * 40)
+    target = repo_root / "snapshots" / ("a" * 40) / filename
+    location = "https://cdn.example.test/model.safetensors"
+    router = _UrlRouter()
+    router.add(location, urllib.error.URLError("connection reset"))
+    with (
+        patch("huggingface_hub.file_download.get_hf_file_metadata") as metadata,
+        patch("urllib.request.urlopen", side_effect=router),
+    ):
+        metadata.return_value.location = location
+        assert not _mirror._hf_resumable_one(
+            "owner/repo",
+            filename,
+            "a" * 40,
+            target,
+            100,
+            "a" * 64,
+            None,
+            sidecar,
+            repo_root,
+            None,
+        )
+    assert part.read_bytes() == b"a" * 40
+    assert router.requests[0]["headers"]["Range"] == "bytes=40-"
+
+
 # ---------------------------------------------------------------------------
 # 6. Size mismatch — R2 returns bytes whose size disagrees with HF.
 # ---------------------------------------------------------------------------

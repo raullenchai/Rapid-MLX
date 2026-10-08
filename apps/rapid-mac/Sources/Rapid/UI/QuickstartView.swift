@@ -4508,6 +4508,15 @@ struct QuickstartView: View {
                     .buttonStyle(.onboardingOutline)
                     .accessibilityIdentifier("Quickstart.SwitchSource")
                 }
+                if startupFailure == nil,
+                   job != nil,
+                   kind == .downloadSourceUnavailable {
+                    Button("Retry") {
+                        handleQuickstartFailureAction(.retry)
+                    }
+                    .buttonStyle(.onboardingOutline)
+                    .accessibilityIdentifier("Quickstart.Retry")
+                }
 
                 // The way back to choosing. Every failure and every
                 // cancellation is one model's problem, so the user must be
