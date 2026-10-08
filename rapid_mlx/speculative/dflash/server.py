@@ -2361,7 +2361,10 @@ async def _non_stream_completion(
             chat_template = getattr(
                 getattr(processor, "tokenizer", None), "chat_template", None
             )
-        prompt_thinking_active = _should_start_in_thinking(
+        # With thinking off this lane's reply is the answer, as the streaming
+        # path already treats it; a template that always opens a think block
+        # must not turn that answer into reasoning.
+        prompt_thinking_active = bool(enable_thinking) and _should_start_in_thinking(
             chat_template,
             enable_thinking,
             unconditional=bool(
