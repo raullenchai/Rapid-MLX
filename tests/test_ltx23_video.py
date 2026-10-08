@@ -71,6 +71,8 @@ def test_video_runtime_preflight_fails_before_download(
     monkeypatch.setattr("importlib.util.find_spec", lambda _: None)
     monkeypatch.setattr("shutil.which", lambda _: None)
     monkeypatch.setattr(video_lane, "_FFMPEG_FALLBACK_PATHS", ())
+    # The base install bundles an ffmpeg binary; this case has none anywhere.
+    monkeypatch.setattr(video_lane, "_resolve_imageio_ffmpeg", lambda: None)
 
     with pytest.raises(OptionalRuntimeMissing) as exc:
         require_video_runtime_or_exit()
