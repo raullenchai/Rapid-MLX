@@ -338,6 +338,50 @@ def test_finishing_started_call_and_next_call_in_same_chunk(parser_name):
     )
 
 
+def test_qwen3_coder_quoted_value_then_coalesced_call():
+    first = _xml_wire("lookup", '"hello"')
+    second = _xml_wire("second", '"world"')
+    split = first.index("<parameter=")
+    wire = first + second
+    request = _request("lookup", "second")
+    expected = ToolParserManager.get_tool_parser("qwen3_coder_xml")(
+        None
+    ).extract_tool_calls(wire, request)
+    expected_calls = [(call["name"], call["arguments"]) for call in expected.tool_calls]
+    assert (
+        _run("qwen3_coder_xml", wire, request, [first[:split], first[split:] + second])
+        == expected_calls
+    )
+
+
+def test_seed_oss_parallel_functions_in_single_wrapper():
+    first = CANONICAL_WIRES["seed_oss"]
+    second = first.replace("lookup", "second").replace("hello", "world")
+    wire = (first + second).replace("</seed:tool_call><seed:tool_call>", "")
+    request = _request("lookup", "second")
+    expected = ToolParserManager.get_tool_parser("seed_oss")(None).extract_tool_calls(
+        wire, request
+    )
+    expected_calls = [(call["name"], call["arguments"]) for call in expected.tool_calls]
+    assert len(expected_calls) == 2
+    assert _run("seed_oss", wire, request, [wire]) == expected_calls
+
+
+def test_seed_oss_split_opener_does_not_leak_into_content():
+    first = CANONICAL_WIRES["seed_oss"]
+    wire = "Working. " + first
+    assert (
+        _run(
+            "seed_oss",
+            wire,
+            _request("lookup"),
+            ["Working. <", first[1:]],
+            return_content=True,
+        )
+        == "Working. "
+    )
+
+
 @pytest.mark.parametrize("parser_name", ["deepseek_v3", "granite", "xlam"])
 def test_parallel_calls_in_shared_envelope(parser_name):
     if parser_name == "deepseek_v3":

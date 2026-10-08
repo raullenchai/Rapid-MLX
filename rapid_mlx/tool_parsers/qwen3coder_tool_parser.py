@@ -1354,6 +1354,41 @@ class Qwen3CoderToolParser(ToolParser):
             self._streaming_request = request
         self._stream_text = current_text
 
+        # Drain a chunk that closes the active function and contains another
+        # complete function. The single-call state machine returns after the
+        # first close; split at its structural close so the remainder is
+        # processed with the updated state.
+        if self.in_function:
+            starts = self._function_start_positions(current_text)
+            if self._top_level_function_close_count(current_text, starts) > (
+                self.current_tool_index + 1
+            ) and self.current_tool_index < len(starts):
+                close = self._top_level_function_close(
+                    current_text, starts[self.current_tool_index]
+                )
+                split = close + len(self.function_end_token)
+                if close >= 0 and split > len(previous_text):
+                    first = self.extract_tool_calls_streaming(
+                        previous_text,
+                        current_text[:split],
+                        current_text[len(previous_text) : split],
+                        request=request,
+                    )
+                    second = self.extract_tool_calls_streaming(
+                        current_text[:split],
+                        current_text,
+                        current_text[split:],
+                        request=request,
+                    )
+                    if first and second:
+                        return {
+                            "tool_calls": first.get("tool_calls", [])
+                            + second.get("tool_calls", []),
+                            "content": first.get("content", "")
+                            + second.get("content", ""),
+                        }
+                    return first or second
+
         # A coarse delta can finish several calls at once. The state machine
         # below normally advances only one call per invocation, so emit every
         # newly completed call here when it is between function bodies.

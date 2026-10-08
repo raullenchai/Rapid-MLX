@@ -270,7 +270,21 @@ class SeedOssToolParser(ToolParser):
             self.TOOL_CALL_START in text
             or self.tool_call_prefix in text
             or self.has_text_format_tool_call(text)
+            or self._safe_content_prefix(text) != text
         )
+
+    def _safe_content_prefix(self, text: str) -> str:
+        marker = self.tool_call_start_token
+        hold = max(
+            (n for n in range(1, len(marker)) if text.endswith(marker[:n])),
+            default=0,
+        )
+        return text[:-hold] if hold else text
+
+    def flush_held_content(self, full_text: str) -> str:
+        if self.tool_call_start_token in full_text:
+            return ""
+        return full_text[len(self._safe_content_prefix(full_text)) :]
 
     def extract_tool_calls_streaming(
         self,
@@ -289,15 +303,15 @@ class SeedOssToolParser(ToolParser):
         # finish the active call first, then feed the remainder through the
         # completed-call reconciliation below. Otherwise the single-call
         # state machine returns after the first function close.
-        previous_closes = previous_text.count(self.tool_call_end_token)
-        current_closes = current_text.count(self.tool_call_end_token)
+        previous_closes = previous_text.count(self.function_end_token)
+        current_closes = current_text.count(self.function_end_token)
         if self.in_function and current_closes - previous_closes > 1:
             split = 0
             for _ in range(previous_closes + 1):
-                split = current_text.find(self.tool_call_end_token, split)
+                split = current_text.find(self.function_end_token, split)
                 if split < 0:
                     break
-                split += len(self.tool_call_end_token)
+                split += len(self.function_end_token)
             if split > len(previous_text):
                 first = self.extract_tool_calls_streaming(
                     previous_text,
@@ -321,11 +335,9 @@ class SeedOssToolParser(ToolParser):
 
         # One model delta may contain several finished calls. Reconcile all
         # complete calls before the single-call state machine advances once.
-        if not self.in_function and current_text.count(
-            self.tool_call_end_token
-        ) > previous_text.count(self.tool_call_end_token):
+        if not self.in_function and current_closes > previous_closes:
             complete = self.extract_tool_calls(current_text, request)
-            closed_count = current_text.count(self.tool_call_end_token)
+            closed_count = current_closes
             already = len(self.prev_tool_call_arr)
             if min(len(complete.tool_calls), closed_count) > already:
                 fresh = complete.tool_calls[already:closed_count]
@@ -397,7 +409,10 @@ class SeedOssToolParser(ToolParser):
             if (
                 self.tool_call_start_token_id is not None
                 and self.tool_call_start_token_id in delta_token_ids
-            ) or self.tool_call_start_token in delta_text:
+            ) or (
+                self.tool_call_start_token in current_text
+                and self.tool_call_start_token not in previous_text
+            ):
                 self.is_tool_call_started = True
                 if self.tool_call_start_token in delta_text:
                     content_before = delta_text[
@@ -413,7 +428,10 @@ class SeedOssToolParser(ToolParser):
                     and delta_text.strip() == ""
                 ):
                     return None
-                return {"content": delta_text}
+                current_safe = self._safe_content_prefix(current_text)
+                previous_safe = self._safe_content_prefix(previous_text)
+                content = current_safe[len(previous_safe) :]
+                return {"content": content} if content else None
 
         # Find current tool call portion
         tool_starts_count = current_text.count(self.tool_call_start_token)
