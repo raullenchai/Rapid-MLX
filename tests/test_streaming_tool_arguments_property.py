@@ -354,6 +354,27 @@ def test_qwen3_coder_quoted_value_then_coalesced_call():
     )
 
 
+@pytest.mark.parametrize("key", ['a"b', "文字"])
+def test_qwen3_coder_parameter_names_are_json_escaped(key):
+    value = 'quoted "value" and 你好' * 3
+    wire = (
+        f"<tool_call><function=lookup><parameter={key}>"
+        + json.dumps(value, ensure_ascii=False)
+        + "</parameter></function></tool_call>"
+    )
+    request = _request("lookup")
+    request["tools"][0]["function"]["parameters"]["properties"] = {
+        key: {"type": "string"}
+    }
+    expected = ToolParserManager.get_tool_parser("qwen3_coder_xml")(
+        None
+    ).extract_tool_calls(wire, request)
+    expected_calls = [(call["name"], call["arguments"]) for call in expected.tool_calls]
+    assert json.loads(expected_calls[0][1]) == {key: value}
+    for chunks in (list(wire), [wire[: len(wire) // 2], wire[len(wire) // 2 :]]):
+        assert _run("qwen3_coder_xml", wire, request, chunks) == expected_calls
+
+
 def test_seed_oss_parallel_functions_in_single_wrapper():
     first = CANONICAL_WIRES["seed_oss"]
     second = first.replace("lookup", "second").replace("hello", "world")

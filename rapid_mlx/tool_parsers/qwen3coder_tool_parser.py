@@ -483,7 +483,7 @@ class Qwen3CoderToolParser(ToolParser):
         if not self.in_param_opened:
             self.in_param_opened = True
             prefix = "" if self.param_count == 0 else ", "
-            return f'{prefix}"{param_name}": "{inner}'
+            return f'{prefix}{json.dumps(param_name, ensure_ascii=False)}: "{inner}'
         return inner
 
     @staticmethod
@@ -553,7 +553,7 @@ class Qwen3CoderToolParser(ToolParser):
         if not self.in_param_opened:
             self.in_param_opened = True
             prefix = "" if self.param_count == 0 else ", "
-            return f'{prefix}"{param_name}": "{inner}'
+            return f'{prefix}{json.dumps(param_name, ensure_ascii=False)}: "{inner}'
         return inner
 
     def _close_string_increment(
@@ -573,7 +573,7 @@ class Qwen3CoderToolParser(ToolParser):
             )
             serialized = json.dumps(converted, ensure_ascii=False)
             prefix = "" if self.param_count == 0 else ", "
-            return f'{prefix}"{param_name}": {serialized}'
+            return f"{prefix}{json.dumps(param_name, ensure_ascii=False)}: {serialized}"
         tail = full_value[self.in_param_emitted_chars :]
         inner = json.dumps(tail, ensure_ascii=False)[1:-1]
         return f'{inner}"'
@@ -594,7 +594,7 @@ class Qwen3CoderToolParser(ToolParser):
         remaining = list(arguments.items())[self._legacy_raw_param_count :]
         prefix = ", " if self._legacy_raw_param_count else ""
         suffix = prefix + ", ".join(
-            f"{json.dumps(name)}: {json.dumps(value, ensure_ascii=False)}"
+            f"{json.dumps(name, ensure_ascii=False)}: {json.dumps(value, ensure_ascii=False)}"
             for name, value in remaining
         )
         suffix += "}"
@@ -1986,9 +1986,9 @@ class Qwen3CoderToolParser(ToolParser):
                 serialized = json.dumps(converted, ensure_ascii=False)
 
                 if self.param_count == 0:
-                    frag = f'"{current_param_name}": {serialized}'
+                    frag = f"{json.dumps(current_param_name, ensure_ascii=False)}: {serialized}"
                 else:
-                    frag = f', "{current_param_name}": {serialized}'
+                    frag = f", {json.dumps(current_param_name, ensure_ascii=False)}: {serialized}"
                 self.param_count += 1
                 json_fragments.append(frag)
 
