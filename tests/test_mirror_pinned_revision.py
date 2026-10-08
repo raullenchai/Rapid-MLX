@@ -329,6 +329,28 @@ def test_pinned_snapshot_download_falls_back_at_the_pin(monkeypatch):
     assert snap.call_args_list[1].kwargs == {"revision": PIN, "allow_patterns": ["x"]}
 
 
+def test_pinned_snapshot_download_uses_the_local_snapshot_offline(monkeypatch):
+    from huggingface_hub.errors import LocalEntryNotFoundError, OfflineModeIsEnabled
+
+    monkeypatch.setattr(
+        _mirror, "download_with_mirror_fallback", lambda *_a, **_k: False
+    )
+    offline = OfflineModeIsEnabled("offline mode is enabled")
+    with patch(
+        "huggingface_hub.snapshot_download", side_effect=[offline, "/snap"]
+    ) as snap:
+        assert _mirror.pinned_snapshot_download(REPO, PIN) == "/snap"
+    assert snap.call_args_list[1].kwargs == {"revision": PIN, "local_files_only": True}
+
+    # A snapshot that is not on disk still fails, with the Hub's own error.
+    missing = LocalEntryNotFoundError("no cached snapshot")
+    with (
+        patch("huggingface_hub.snapshot_download", side_effect=[offline, missing]),
+        pytest.raises(LocalEntryNotFoundError),
+    ):
+        _mirror.pinned_snapshot_download(REPO, PIN)
+
+
 def test_pinned_snapshot_download_never_mirrors_a_moving_revision(monkeypatch):
     monkeypatch.setattr(
         _mirror,
