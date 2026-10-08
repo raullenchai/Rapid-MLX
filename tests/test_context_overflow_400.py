@@ -268,8 +268,27 @@ def test_late_stream_guard_preserves_context_protocol(path):
         assert "event: error" in wire
         assert "prompt is too long: 101 tokens > 80 maximum" in wire
     elif path == "/v1/responses":
+        import json
+
         assert "event: response.failed" in wire
         assert "context_length_exceeded" in wire
+        failed = json.loads(
+            next(line[6:] for line in wire.splitlines() if line.startswith("data: "))
+        )
+        for key in (
+            "id",
+            "object",
+            "created_at",
+            "status",
+            "model",
+            "output",
+            "usage",
+            "parallel_tool_calls",
+            "tool_choice",
+            "tools",
+            "error",
+        ):
+            assert key in failed["response"]
     else:
         assert "context_length_exceeded" in wire
         assert "data: [DONE]" in wire
@@ -435,6 +454,90 @@ def test_strict_guided_budget_exhaustion_uses_context_error(surface, stream):
     )
     assert "context_length_exceeded" in response.text, response.text
     assert "strict_schema_violation" not in response.text
+
+
+@pytest.mark.parametrize("surface", ["chat", "responses"])
+@pytest.mark.parametrize("stream", [False, True])
+def test_strict_tool_repair_context_exhaustion_is_not_schema_failure(surface, stream):
+    from rapid_mlx.api.errors import GuidedTokenLimitError
+    from rapid_mlx.engine.base import GenerationOutput
+    from rapid_mlx.routes.chat import router as chat_router
+    from rapid_mlx.routes.responses import router as responses_router
+
+    class RepairEngine(_StubEngine):
+        supports_guided_generation = True
+
+        async def chat(self, **kwargs):  # noqa: ARG002
+            return GenerationOutput(
+                text='{"bad":1}',
+                new_text='{"bad":1}',
+                prompt_tokens=1,
+                completion_tokens=1,
+                finished=True,
+                finish_reason="stop",
+            )
+
+        async def generate_with_schema(self, **kwargs):  # noqa: ARG002
+            raise GuidedTokenLimitError(_CONTEXT_WINDOW - 10, 10)
+
+    schema = {
+        "type": "object",
+        "properties": {"value": {"type": "integer"}},
+        "required": ["value"],
+        "additionalProperties": False,
+    }
+    tool = {
+        "type": "function",
+        "name": "lookup",
+        "description": "Find a value",
+        "parameters": {"type": "object", "properties": {}},
+    }
+    cases = {
+        "chat": (
+            chat_router,
+            "/v1/chat/completions",
+            {
+                "messages": [{"role": "user", "content": "hi"}],
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "Result",
+                        "schema": schema,
+                        "strict": True,
+                    },
+                },
+                "tools": [{"type": "function", "function": tool}],
+            },
+        ),
+        "responses": (
+            responses_router,
+            "/v1/responses",
+            {
+                "input": "hi",
+                "text": {
+                    "format": {
+                        "type": "json_schema",
+                        "name": "Result",
+                        "schema": schema,
+                        "strict": True,
+                    }
+                },
+                "tools": [tool],
+            },
+        ),
+    }
+    router, path, payload = cases[surface]
+    response = _make_app([router], engine=RepairEngine()).post(
+        path,
+        json={
+            "model": "qwen3-0.6b-8bit",
+            "stream": stream,
+            "max_tokens" if surface == "chat" else "max_output_tokens": 64,
+            **payload,
+        },
+    )
+    assert "context_length_exceeded" in response.text, response.text
+    assert "strict_repair_engine_failure" not in response.text
 
 
 @pytest.mark.parametrize("upstream_kind", ["event", "exception"])
@@ -942,8 +1045,17 @@ def test_expanded_media_late_overflow_uses_route_protocol(surface, stream):
             assert body["error"]["code"] == "context_length_exceeded"
     else:
         if surface == "responses":
+            import json
+
             assert "event: response.failed" in response.text
             assert "context_length_exceeded" in response.text
+            failed = next(
+                json.loads(line[6:])
+                for line in response.text.splitlines()
+                if line.startswith("data: ") and '"response.failed"' in line
+            )
+            assert failed["response"]["object"] == "response"
+            assert "usage" in failed["response"]
         elif surface == "messages":
             assert "event: error" in response.text
             assert "prompt is too long: 101 tokens > 80 maximum" in response.text
@@ -1092,6 +1204,40 @@ def test_responses_stream_context_error_precedes_required_tool_failure():
     )
     assert failed["response"]["usage"]["input_tokens"] == _CONTEXT_WINDOW - 10
     assert failed["response"]["usage"]["output_tokens"] == 10
+
+
+def test_anthropic_stream_context_error_precedes_required_tool_failure():
+    from rapid_mlx.routes.anthropic import router
+
+    response = _make_app([router], engine=_ClampEngine()).post(
+        "/v1/messages",
+        json={
+            "model": "qwen3-0.6b-8bit",
+            "stream": True,
+            "messages": [
+                {"role": "user", "content": _huge_text(_CONTEXT_WINDOW - 1000)}
+            ],
+            "max_tokens": 1000,
+            "tools": [
+                {
+                    "name": "lookup",
+                    "description": "Find a value",
+                    "input_schema": {"type": "object", "properties": {}},
+                },
+                {
+                    "name": "search",
+                    "description": "Search for a value",
+                    "input_schema": {"type": "object", "properties": {}},
+                },
+            ],
+            "tool_choice": {"type": "any"},
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.text.count("event: error") == 1
+    assert "prompt is too long:" in response.text
+    assert "tokens > 40960 maximum" in response.text
+    assert "tool_choice" not in response.text
 
 
 def test_empty_completion_prompt_keeps_requested_budget(monkeypatch):

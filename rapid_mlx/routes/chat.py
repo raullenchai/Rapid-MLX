@@ -6156,6 +6156,11 @@ async def _create_chat_completion_impl(
                 except (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError):
                     raise
                 except Exception as repair_err:
+                    _repair_context_error = context_overflow_from_guided_limit(
+                        engine, repair_err
+                    ) or context_overflow_from_client_error(repair_err)
+                    if _repair_context_error is not None:
+                        raise _repair_context_error from repair_err
                     # Codex r1 #3: a non-timeout, non-disconnect engine
                     # exception during the repair turn is a SERVER failure
                     # (the engine couldn't produce ANY output for the

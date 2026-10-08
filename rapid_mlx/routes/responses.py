@@ -1455,6 +1455,7 @@ async def create_response(request: Request):
                     keepalive_factory=lambda: _responses_keepalive_sse(
                         _resp_heartbeat_state
                     ),
+                    response_state=_resp_heartbeat_state,
                 ),
                 media_type="text/event-stream",
                 # ``SSE_RESPONSE_HEADERS`` (Cache-Control no-cache/no-transform +
@@ -2037,6 +2038,11 @@ async def _non_stream(
                 except (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError):
                     raise
                 except Exception as repair_err:
+                    _repair_context_error = context_overflow_from_guided_limit(
+                        engine, repair_err
+                    ) or context_overflow_from_client_error(repair_err)
+                    if _repair_context_error is not None:
+                        raise _repair_context_error from repair_err
                     # Codex r1 #4 parity with chat.py: a non-timeout,
                     # non-disconnect engine exception during the repair
                     # turn is a SERVER failure, not a client schema-
@@ -5354,14 +5360,22 @@ async def _stream_responses(
         # Responses API closes errored streams.
         _context_error = context_overflow_from_client_error(e)
         if _context_error is not None:
+            _record_failed("prompt_too_large")
             yield _emit(
                 "response.failed",
                 {
                     "type": "response.failed",
                     "response": {
-                        "id": response_id,
+                        **_initial_response_payload,
                         "status": "failed",
                         "error": _context_error.detail["error"],
+                        "usage": {
+                            "input_tokens": 0,
+                            "output_tokens": 0,
+                            "total_tokens": 0,
+                            "input_tokens_details": {"cached_tokens": 0},
+                            "output_tokens_details": {"reasoning_tokens": 0},
+                        },
                     },
                 },
             )
