@@ -305,7 +305,10 @@ class ClefMLXBackend:
         local = Path(model).expanduser()
         repos = {repo.lower(): name for name, (repo, _) in self._MODELS.items()}
         selected = repos.get(model.lower(), model.lower())
-        if not local.is_dir() and selected not in self._MODELS:
+        # A published name always means the pinned release, even when a
+        # directory of the same name sits in the working directory.
+        named = selected in self._MODELS
+        if not named and not local.is_dir():
             raise ValueError(
                 f"unknown native Clef model {model!r}; choose "
                 f"{', '.join(self._MODELS)} or a local checkpoint directory"
@@ -315,17 +318,17 @@ class ClefMLXBackend:
                 "native Clef requires the vision runtime: "
                 "pip install 'rapid-mlx[vision]'"
             )
-        if local.is_dir():
-            # A local directory serves other prepared conversions (8-bit, NVFP4).
-            path = str(local)
-            self.default_model = local.name
-            self.repo_id = str(local)
-        else:
+        if named:
             from rapid_mlx._mirror import pinned_snapshot_download
 
             self.default_model = selected
             self.repo_id, revision = self._MODELS[selected]
             path = pinned_snapshot_download(self.repo_id, revision)
+        else:
+            # A local directory serves other prepared conversions (8-bit, NVFP4).
+            path = str(local)
+            self.default_model = local.name
+            self.repo_id = str(local)
 
         import mlx.core as mx
 

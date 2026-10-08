@@ -651,11 +651,17 @@ def test_backend_resolves_pinned_aliases_and_local_directories(tmp_path, monkeyp
     large = ClefMLXBackend("clef-mlx")
     assert large.repo_id == "nativ-community/clef-MLX-MXFP4"
     assert loaded[-1].endswith("@b94c97b0d0b80fdda6d7d36c745d289890d1c4e1")
+    # A same-named directory in the working directory does not shadow it.
+    (tmp_path / "clef-mlx").mkdir()
+    monkeypatch.chdir(tmp_path)
+    assert ClefMLXBackend("clef-mlx").repo_id == "nativ-community/clef-MLX-MXFP4"
+    assert ClefMLXBackend("./clef-mlx").default_model == "clef-mlx"
+    assert loaded[-1] == "clef-mlx"
     local = ClefMLXBackend(str(tmp_path), device="cpu")
     assert local.default_model == tmp_path.name
     assert local.repo_id == str(tmp_path)
     assert loaded[-1] == str(tmp_path)
-    assert devices == [mx.gpu] * 4 + [mx.cpu]
+    assert devices == [mx.gpu] * 6 + [mx.cpu]
 
     # The Torch release names belong to the other backend.
     for unknown in ("clef-flash", "Cloudflare/clef", "someone/clef-flash-mlx"):
