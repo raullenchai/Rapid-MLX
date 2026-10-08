@@ -493,9 +493,12 @@ class _ClampEngine(_StubEngine):
     async def generate(self, **kwargs):
         return self._output(kwargs.get("max_tokens"))
 
+    async def stream_chat(self, *args, **kwargs):  # noqa: ARG002
+        yield self._output(kwargs.get("max_tokens"))
+
 
 @pytest.mark.parametrize("surface", ["chat", "completions", "responses", "messages"])
-def test_routes_clamp_large_completion_budget_and_report_length(surface):
+def test_routes_clamp_large_completion_budget_and_report_window_end(surface):
     """Every compatibility surface sends only the remaining budget downstream."""
     from rapid_mlx.routes.anthropic import router as anthropic_router
     from rapid_mlx.routes.chat import router as chat_router
@@ -545,16 +548,61 @@ def test_routes_clamp_large_completion_budget_and_report_length(surface):
     router, path, payload = cases[surface]
     response = _make_app([router], engine=engine).post(path, json=payload)
 
-    assert response.status_code == 200, response.text
     assert engine.captured_max_tokens == [10]
     body = response.json()
-    if surface in {"chat", "completions"}:
+    if surface == "completions":
+        assert response.status_code == 200, response.text
         assert body["choices"][0]["finish_reason"] == "length"
-    elif surface == "responses":
-        assert body["status"] == "incomplete"
-        assert body["incomplete_details"]["reason"] == "max_output_tokens"
+    elif surface == "messages":
+        assert response.status_code == 400, response.text
+        assert body["error"]["message"] == (
+            "prompt is too long: 40961 tokens > 40960 maximum"
+        )
     else:
-        assert body["stop_reason"] == "max_tokens"
+        assert response.status_code == 400, response.text
+        assert body["error"]["code"] == "context_length_exceeded"
+        assert "40950 tokens" in body["error"]["message"]
+
+
+@pytest.mark.parametrize("surface", ["chat", "responses", "messages"])
+def test_stream_reports_generation_reaching_context_window(surface):
+    from rapid_mlx.routes.anthropic import router as anthropic_router
+    from rapid_mlx.routes.chat import router as chat_router
+    from rapid_mlx.routes.responses import router as responses_router
+
+    prompt = _huge_text(_CONTEXT_WINDOW - 10)
+    cases = {
+        "chat": (
+            chat_router,
+            "/v1/chat/completions",
+            {"messages": [{"role": "user", "content": prompt}], "max_tokens": 1000},
+        ),
+        "responses": (
+            responses_router,
+            "/v1/responses",
+            {"input": prompt, "max_output_tokens": 1000},
+        ),
+        "messages": (
+            anthropic_router,
+            "/v1/messages",
+            {"messages": [{"role": "user", "content": prompt}], "max_tokens": 1000},
+        ),
+    }
+    engine = _ClampEngine()
+    router, path, payload = cases[surface]
+    response = _make_app([router], engine=engine).post(
+        path, json={"model": "qwen3-0.6b-8bit", "stream": True, **payload}
+    )
+    assert response.status_code == 200, response.text
+    if surface == "chat":
+        assert "event: chat.completion.error" in response.text
+        assert '"code":"context_length_exceeded"' in response.text
+    elif surface == "responses":
+        assert "event: response.failed" in response.text
+        assert '"code":"context_length_exceeded"' in response.text
+    else:
+        assert "event: error" in response.text
+        assert "prompt is too long: 40961 tokens > 40960 maximum" in response.text
 
 
 def test_empty_completion_prompt_keeps_requested_budget(monkeypatch):
