@@ -281,6 +281,30 @@ def test_load_decider_validates_checkpoint_metadata(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="decision_config.temperature"):
         load_decider(tmp_path)
 
+    for bad in (
+        {"temperature": 0},
+        {"temperature": -1.0},
+        {"temperature": True},
+        {"temperature": "1"},
+        {"temperature": float("inf")},
+        {"temperature": 1.0, "temperature_by_type": {"noul": float("nan")}},
+    ):
+        config.write_text(
+            json.dumps({"model_type": "decider2", "decision_config": bad})
+        )
+        with pytest.raises(ValueError, match="positive finite number"):
+            load_decider(tmp_path)
+    config.write_text(
+        json.dumps(
+            {
+                "model_type": "decider2",
+                "decision_config": {"temperature": 1.0, "temperature_by_type": [1]},
+            }
+        )
+    )
+    with pytest.raises(ValueError, match="must be an object"):
+        load_decider(tmp_path)
+
     config.write_text(
         json.dumps({"model_type": "decider2", "decision_config": {"temperature": 1.1}})
     )

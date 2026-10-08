@@ -12,6 +12,7 @@ position; it never generates text.
 from __future__ import annotations
 
 import json
+import math
 import re
 import string
 from pathlib import Path
@@ -120,6 +121,19 @@ def load_decider(path: str | Path) -> tuple[Any, Any, dict[str, Any]]:
         raise ValueError(
             "Decider checkpoint config.json has no decision_config.temperature"
         )
+    by_type = settings.get("temperature_by_type") or {}
+    if not isinstance(by_type, dict):
+        raise ValueError("Decider temperature_by_type must be an object")
+    for name, value in {"temperature": settings["temperature"], **by_type}.items():
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value <= 0
+        ):
+            raise ValueError(
+                f"Decider calibration {name!r} must be a positive finite number"
+            )
 
     from mlx_lm.models import qwen3_5
     from mlx_lm.utils import load_model
