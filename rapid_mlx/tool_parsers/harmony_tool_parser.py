@@ -335,7 +335,8 @@ class HarmonyToolParser(ToolParser):
             result = self.extract_tool_calls(current_text)
             if result.tools_called:
                 already = getattr(self, "_streamed_calls_emitted", 0)
-                self._streamed_calls_emitted = len(result.tool_calls)
+                complete_count = min(len(result.tool_calls), curr_call_count)
+                self._streamed_calls_emitted = complete_count
                 return {
                     "tool_calls": [
                         {
@@ -348,7 +349,7 @@ class HarmonyToolParser(ToolParser):
                             },
                         }
                         for i, tc in enumerate(
-                            result.tool_calls[already:], start=already
+                            result.tool_calls[already:complete_count], start=already
                         )
                     ]
                 }

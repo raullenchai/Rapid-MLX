@@ -285,6 +285,33 @@ def test_parallel_calls_with_distinct_names_in_separate_chunks(parser_name):
         assert _run(parser_name, wire, request, chunks) == expected_calls
 
 
+@pytest.mark.parametrize(
+    "parser_name",
+    ["qwen3_coder_xml", "seed_oss", "harmony", "functionary", "glm47", "kimi"],
+)
+def test_second_call_header_cannot_emit_empty_arguments(parser_name):
+    first = CANONICAL_WIRES[parser_name]
+    second = first.replace("lookup", "second")
+    wire = first + second
+    request = _request("lookup", "second")
+    expected = ToolParserManager.get_tool_parser(parser_name)(None).extract_tool_calls(
+        wire, request
+    )
+    expected_calls = [(call["name"], call["arguments"]) for call in expected.tool_calls]
+    assert len(expected_calls) == 2
+    header_end = second.find(">", second.find("second")) + 1
+    if parser_name == "harmony":
+        header_end = second.find("<|message|>") + len("<|message|>")
+    elif parser_name == "glm47":
+        header_end = second.find("\n", second.find("second")) + 1
+    elif parser_name == "kimi":
+        header_end = second.find("<|tool_call_argument_begin|>") + len(
+            "<|tool_call_argument_begin|>"
+        )
+    chunks = [first + second[:header_end], second[header_end:]]
+    assert _run(parser_name, wire, request, chunks) == expected_calls
+
+
 @pytest.mark.parametrize("parser_name", ["deepseek_v3", "granite", "xlam"])
 def test_parallel_calls_in_shared_envelope(parser_name):
     if parser_name == "deepseek_v3":

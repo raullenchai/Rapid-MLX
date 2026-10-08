@@ -1361,11 +1361,15 @@ class Qwen3CoderToolParser(ToolParser):
             self.function_end_token
         ) > previous_text.count(self.function_end_token):
             complete = self.extract_tool_calls(current_text, request)
+            top_level_starts = self._function_start_positions(current_text)
+            closed_count = self._top_level_function_close_count(
+                current_text, top_level_starts
+            )
             already = len(self.prev_tool_call_arr)
-            if len(complete.tool_calls) > already:
-                fresh = complete.tool_calls[already:]
+            if min(len(complete.tool_calls), closed_count) > already:
+                fresh = complete.tool_calls[already:closed_count]
                 self.prev_tool_call_arr.extend(fresh)
-                self.current_tool_index = len(complete.tool_calls) - 1
+                self.current_tool_index = already + len(fresh) - 1
                 self.json_closed = True
                 self.header_sent = True
                 self.is_tool_call_started = True
