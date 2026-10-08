@@ -235,10 +235,10 @@ struct DownloadManagerTests {
         #expect(job.completedCacheGeneration == mgr.cacheGeneration)
     }
 
-    @Test("Non-zero exit → failed status with a generic message (raw stderr is never surfaced)")
+    @Test("Exhausted transient exits show a generic failure without raw stderr")
     func failedExitUsesGenericMessage() {
         let mgr = DownloadManager()
-        _ = mgr._testingSeedJob(alias: "qwen3.6-27b")
+        _ = mgr._testingSeedJob(alias: "qwen3.6-27b", retryAttempt: 3)
         // Raw child stderr (engine name, Python tracebacks, HTTP codes)
         // is logged for support but MUST NOT reach the user-facing
         // failure message.
@@ -253,6 +253,21 @@ struct DownloadManagerTests {
         } else {
             Issue.record("Expected .failed, got \(String(describing: job?.status))")
         }
+    }
+
+    @Test("A transient exit waits to reconnect and can be cancelled")
+    func transientExitCanBeCancelled() {
+        let mgr = DownloadManager()
+        let job = mgr._testingSeedJob(alias: "qwen3.6-27b")
+        mgr._testingIngestStderr(alias: "qwen3.6-27b", line: "ConnectionResetError: peer reset")
+        mgr._testingFinish(alias: "qwen3.6-27b", status: 1, reason: .exit)
+        #expect(job.status == .running)
+        #expect(job.retryDelaySeconds == 2)
+        #expect(job.isStalled)
+
+        mgr.cancelDownload(alias: "qwen3.6-27b")
+        #expect(job.status == .cancelled)
+        #expect(job.failureKind == .downloadCancelled)
     }
 
     @Test("Failed exit with empty stderr falls back to a generic retry message (no raw status code)")

@@ -1164,13 +1164,15 @@ final class DownloadManager {
         alias: String,
         hfPath: String? = nil,
         totalBytes: Int64? = nil,
-        source: DownloadSource = .mirror
+        source: DownloadSource = .mirror,
+        retryAttempt: Int = 0
     ) -> Job {
         let job = Job(
             alias: alias,
             hfPath: hfPath,
             totalBytes: totalBytes,
-            source: source
+            source: source,
+            retryAttempt: retryAttempt
         )
         jobs[alias] = job
         stderrTails[alias] = []
