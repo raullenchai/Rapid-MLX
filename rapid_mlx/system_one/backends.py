@@ -574,9 +574,10 @@ class OpenJevBackend:
         selected = repos.get(model.lower(), model.lower())
         if local.is_dir():
             # A local directory serves other conversions, such as a 4-bit build.
+            # /v1/models reports its name, not where it sits on this machine.
             path = str(local)
             self.default_model = local.name
-            self.repo_id = str(local)
+            self.repo_id = local.name
         elif selected in self._MODELS:
             from rapid_mlx._mirror import pinned_snapshot_download
 

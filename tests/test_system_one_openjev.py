@@ -456,7 +456,9 @@ def test_backend_resolves_the_pinned_alias_and_local_directories(tmp_path, monke
     )
     local = OpenJevBackend(str(tmp_path), device="cpu")
     assert local.default_model == tmp_path.name
-    assert local.repo_id == loaded[-1] == str(tmp_path)
+    assert loaded[-1] == str(tmp_path)
+    # The server's directory layout stays out of /v1/models.
+    assert local.models()[0]["hf_id"] == tmp_path.name
     assert devices == [mx.gpu, mx.gpu, mx.gpu, mx.cpu]
 
     with pytest.raises(ValueError, match="unknown OpenJev model"):
