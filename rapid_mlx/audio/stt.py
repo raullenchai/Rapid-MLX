@@ -646,6 +646,9 @@ class STTEngine:
         if self._loaded:
             return
 
+        from .. import model_downloads
+
+        model_downloads.require_local(self.model_name)
         try:
             from mlx_audio.stt.utils import load_model
 
@@ -731,7 +734,12 @@ class STTEngine:
             return
 
         try:
-            processor = WhisperProcessor.from_pretrained(processor_source)
+            from .. import model_downloads
+
+            local_only = (
+                {"local_files_only": True} if model_downloads.disabled() else {}
+            )
+            processor = WhisperProcessor.from_pretrained(processor_source, **local_only)
         except Exception as e:  # noqa: BLE001
             # Network failure, gated repo, unsupported revision — log
             # and bail. The upstream ValueError surfaces at first

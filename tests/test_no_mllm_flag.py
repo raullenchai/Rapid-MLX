@@ -217,6 +217,9 @@ NON_ROUTING_FLAGS_ALLOWLIST: frozenset[str] = frozenset(
         # release check. Neither selects a model, parser, tier, or route.
         "--disable-disk-caches",
         "--disable-version-check",
+        # Refuses to fetch a model that is not on disk; selects no model,
+        # parser, tier, or route.
+        "--disable-model-downloads",
         # ``rapid-mlx feedback --no-open`` suppresses the browser launch
         # so the command only prints the community invite URL. Pure UX
         # knob on a read-only subcommand: it selects no model, parser,

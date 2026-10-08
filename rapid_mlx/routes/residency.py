@@ -15,6 +15,7 @@ from ..middleware.exception_handlers import (
     register_request_path,
 )
 from ..model_aliases import resolve_profile
+from ..model_downloads import ModelDownloadsDisabledError
 from ..runtime.resident_models import (
     ResidentModelBusyError,
     ResidentModelCapacityError,
@@ -193,7 +194,7 @@ async def load_resident_model(request: ModelLoadRequest):
             memory_policy=request.memory_policy,
             resolved_group=resolved_group,
         )
-    except HTTPException:
+    except (HTTPException, ModelDownloadsDisabledError):
         raise
     except KVCacheQuantizationUnsupportedError as exc:
         # Explicit quantized-KV request the model can't serve (#78):

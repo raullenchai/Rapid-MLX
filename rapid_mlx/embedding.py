@@ -198,6 +198,9 @@ class EmbeddingEngine:
 
     def load(self) -> None:
         """Load the embedding model and tokenizer."""
+        from . import model_downloads
+
+        model_downloads.require_local(self.model_name)
         if is_native_embedding_model(self.model_name):
             from .models.embedding_gemma2.loader import load as load_native
 

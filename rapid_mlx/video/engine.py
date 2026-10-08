@@ -64,6 +64,9 @@ def _resolve_tokenizer_path(model_path: str, snapshot_download) -> str:
             local_files_only=True,
         )
     except Exception:
+        from .. import model_downloads
+
+        model_downloads.check(_COGVIDEOX_TOKENIZER_REPO)
         return snapshot_download(
             _COGVIDEOX_TOKENIZER_REPO, allow_patterns=allow_patterns
         )
@@ -234,11 +237,13 @@ class VideoGenerationEngine:
         # warm cache included, and that request has no timeout of its own — on
         # a blackholed route it hangs instead of failing fast. Falls back to
         # the download whenever the cache can't be vouched for.
+        from .. import model_downloads
         from .._download_gate import split_model_local_snapshot
 
-        model_path = split_model_local_snapshot(self.model_id) or snapshot_download(
-            self.model_id
-        )
+        model_path = split_model_local_snapshot(self.model_id)
+        if model_path is None:
+            model_downloads.check(self.model_id)
+            model_path = snapshot_download(self.model_id)
         logger.info("Loading CogVideoX video pipeline from %s", model_path)
         vae = AutoencoderKLCogVideoX.from_pretrained(model_path)
         transformer = CogVideoXTransformer3DModel.from_pretrained(model_path)

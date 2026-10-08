@@ -3039,6 +3039,9 @@ async def _load_dynamic_resident_model(
     resolved_path = resolve_model(
         model_path or (profile.hf_path if profile is not None else model_name)
     )
+    from . import model_downloads
+
+    model_downloads.require_local(resolved_path)
     modality = profile.modality if profile is not None else "text"
     profile_force_text = bool(profile is not None and profile.is_text_only)
     load_path = resolved_path

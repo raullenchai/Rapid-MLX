@@ -127,7 +127,19 @@ class MusicEngine:
                     "huggingface_hub is required to auto-download SA3 weights.\n"
                     "Run:  pip install huggingface_hub"
                 ) from e
+            from rapid_mlx import model_downloads
+
             for name in to_fetch:
+                if model_downloads.disabled():
+                    from huggingface_hub import try_to_load_from_cache
+
+                    if not isinstance(
+                        try_to_load_from_cache(
+                            _SA3_REPO_ID, f"MLX/{name}", revision=_SA3_REVISION
+                        ),
+                        str,
+                    ):
+                        model_downloads.check(_SA3_REPO_ID)
                 cached = hf_hub_download(
                     repo_id=_SA3_REPO_ID,
                     filename=f"MLX/{name}",

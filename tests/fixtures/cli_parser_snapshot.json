@@ -2152,6 +2152,21 @@
        "type": null
       },
       {
+       "class": "argparse._StoreTrueAction",
+       "completer": null,
+       "const": true,
+       "default": false,
+       "dest": "disable_model_downloads",
+       "help": "Never download a model: serve only models that are already on disk and reject requests for any other model. Provision models with 'rapid-mlx pull'. Also set by RAPID_MLX_DISABLE_MODEL_DOWNLOADS=1.",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "--disable-model-downloads"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
        "class": "argparse._StoreAction",
        "completer": null,
        "const": null,
@@ -2199,6 +2214,7 @@
         "mcp_max_rounds",
         "disable_prefix_cache",
         "disable_disk_caches",
+        "disable_model_downloads",
         "log_file"
        ],
        "title": "options"
@@ -3853,6 +3869,21 @@
        "type": null
       },
       {
+       "class": "argparse._StoreTrueAction",
+       "completer": null,
+       "const": true,
+       "default": false,
+       "dest": "disable_model_downloads",
+       "help": "Never download a model: serve only models that are already on disk and reject requests for any other model. Provision models with 'rapid-mlx pull'. Also set by RAPID_MLX_DISABLE_MODEL_DOWNLOADS=1.",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "--disable-model-downloads"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
        "class": "argparse._StoreAction",
        "completer": null,
        "const": null,
@@ -3900,6 +3931,7 @@
         "mcp_max_rounds",
         "disable_prefix_cache",
         "disable_disk_caches",
+        "disable_model_downloads",
         "log_file"
        ],
        "title": "options"
@@ -4309,6 +4341,21 @@
        "nargs": 0,
        "option_strings": [
         "--disable-disk-caches"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreTrueAction",
+       "completer": null,
+       "const": true,
+       "default": false,
+       "dest": "disable_model_downloads",
+       "help": "Never download a model: serve only models that are already on disk and reject requests for any other model. Provision models with 'rapid-mlx pull'. Also set by RAPID_MLX_DISABLE_MODEL_DOWNLOADS=1.",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "--disable-model-downloads"
        ],
        "required": false,
        "type": null
@@ -6143,6 +6190,7 @@
         "enable_prefix_cache",
         "disable_prefix_cache",
         "disable_disk_caches",
+        "disable_model_downloads",
         "prefix_cache_size",
         "cache_memory_mb",
         "cache_memory_percent",
@@ -7751,6 +7799,21 @@
        "type": null
       },
       {
+       "class": "argparse._StoreTrueAction",
+       "completer": null,
+       "const": true,
+       "default": false,
+       "dest": "disable_model_downloads",
+       "help": "Never download a model: serve only models that are already on disk and reject requests for any other model. Provision models with 'rapid-mlx pull'. Also set by RAPID_MLX_DISABLE_MODEL_DOWNLOADS=1.",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "--disable-model-downloads"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
        "class": "argparse._StoreAction",
        "completer": null,
        "const": null,
@@ -7925,6 +7988,7 @@
         "rate_limit",
         "chat_frontend",
         "disable_disk_caches",
+        "disable_model_downloads",
         "log_file",
         "quicksilver",
         "provider_key",
@@ -8109,6 +8173,21 @@
        "type": null
       },
       {
+       "class": "argparse._StoreTrueAction",
+       "completer": null,
+       "const": true,
+       "default": false,
+       "dest": "disable_model_downloads",
+       "help": "Never download a model: serve only models that are already on disk and reject requests for any other model. Provision models with 'rapid-mlx pull'. Also set by RAPID_MLX_DISABLE_MODEL_DOWNLOADS=1.",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "--disable-model-downloads"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
        "class": "argparse._StoreAction",
        "completer": null,
        "const": null,
@@ -8151,6 +8230,7 @@
         "no_setup",
         "ready_timeout",
         "disable_disk_caches",
+        "disable_model_downloads",
         "log_file"
        ],
        "title": "options"

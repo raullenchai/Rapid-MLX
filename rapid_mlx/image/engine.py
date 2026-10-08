@@ -679,11 +679,13 @@ class ImageGenerationEngine:
         assets = image_runtime_assets_for(self.model_name)
         if not assets:
             return
+        from .. import model_downloads
         from .._mirror import pinned_snapshot_download
 
         for repo_id, revision, allow_patterns in assets:
             if pinned_image_snapshot(repo_id) is not None:
                 continue
+            model_downloads.check(repo_id)
             try:
                 pinned_snapshot_download(
                     repo_id,
@@ -962,6 +964,9 @@ class ImageGenerationEngine:
             self._loaded_mode = None
             _release_allocator_cache()
         if self._model is None:
+            from .. import model_downloads
+
+            model_downloads.require_local(self.model_name)
             self._ensure_runtime_assets()
             self._verify_weights_complete()
             try:

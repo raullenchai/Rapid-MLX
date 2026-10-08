@@ -614,6 +614,10 @@ class TTSEngine:
         if self._loaded:
             return
 
+        from .. import model_downloads
+
+        model_downloads.require_local(self.model_name)
+
         # F5-TTS is a standalone pure-MLX package (not mlx_audio's load_model
         # path): EN+ZH multilingual, zero-shot voice cloning, no torch. It fills
         # the Chinese expressive/cloneable gap Qwen3-TTS (flat) and Chatterbox
