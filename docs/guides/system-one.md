@@ -51,6 +51,32 @@ The converter uses `torch.load(..., weights_only=True)` and writes
 files. Use the BF16 reference encoder for calibrated output. Quantized Qwen3
 backbones have not been qualified for ranking or probability parity.
 
+## Decider
+
+Decider is a compact typed-decision model on a Qwen3.5 2B text backbone. It
+reads the state and one question, then scores the answer labels at the last
+position with the checkpoint's own per-type calibration. It does not generate
+text. Rapid runs it on native MLX with the text backbone it already ships, so
+no extra install is needed.
+
+```bash
+rapid-mlx system-one decider-2b --port 8700
+# A converted or fine-tuned checkpoint directory:
+rapid-mlx system-one /path/to/decider --backend decider --port 8700
+```
+
+The first start downloads the pinned `nativ-community/decider-2b` weights
+(Apache-2.0, 3.8 GB, bf16) into the normal Hugging Face cache. A local
+directory must be a prepared checkpoint: its root `config.json` says
+`model_type: "decider2"` and carries the published calibration under
+`decision_config`. Decider is text-only; requests with `images` or `videos`
+are rejected.
+
+On one M3 Ultra Mac the server was ready 5 seconds after launch with the
+weights cached, and held about 4.3 GB of memory. Four questions over the same
+state took 0.2 s at 200 input tokens, 1.1 s at 1,300, 4.9 s at 5,200 and 22 s
+at 21,000. Other Mac sizes are unmeasured.
+
 ## Cloudflare Clef
 
 Clef is a joint-schema decision model. `clef-flash` uses a 9B Qwen3.5
@@ -142,6 +168,12 @@ nesting-depth protection.
 
 - One service process hosts one decision backend.
 - Laya uses checkpoint calibration and accepts `temperature=1` only.
+- Decider requires `temperature=1` too. It accepts `choice` questions with
+  2 to 255 options and `score` questions with 2 to 10 levels; other shapes
+  receive HTTP 422. Each `score` level is judged on its own and the fits are
+  normalized, as the checkpoint was calibrated. State longer than 32,768
+  tokens is truncated. Every question is one full forward pass over the state,
+  so latency grows with both state length and question count.
 - Clef also requires `temperature=1` for checkpoint calibration. Its input
   encoder follows Cloudflare's 16,384-token default and may truncate a long
   state to leave room for the schema.

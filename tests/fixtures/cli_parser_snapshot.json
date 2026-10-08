@@ -8183,7 +8183,7 @@
        "const": null,
        "default": "convaiinnovations/laya",
        "dest": "model",
-       "help": "Laya model id/path, CLM public name, or clef/clef-flash",
+       "help": "Laya model id/path, CLM public name, clef/clef-flash, or decider-2b / a local Decider checkpoint directory",
        "metavar": null,
        "nargs": "?",
        "option_strings": [],
@@ -8194,7 +8194,8 @@
         "auto",
         "laya",
         "clm",
-        "clef"
+        "clef",
+        "decider"
        ],
        "class": "argparse._StoreAction",
        "completer": null,
@@ -8286,7 +8287,7 @@
        "const": null,
        "default": "gpu",
        "dest": "device",
-       "help": "MLX device for Laya/CLM; Metal/MPS device for Clef",
+       "help": "MLX device for Laya/CLM/Decider; Metal/MPS device for Clef",
        "metavar": null,
        "nargs": null,
        "option_strings": [
