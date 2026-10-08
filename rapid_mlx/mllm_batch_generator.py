@@ -2798,18 +2798,23 @@ class MLLMBatchGenerator:
         if found is None:
             return 0
         lock, entries = found
-        limit = len(full_ids) - 1
+        prompt = tuple(full_ids[:-1])
         best = 0
         with lock:
             for entry in entries.values():
                 if getattr(entry, "extra_hash", None) != extra_hash:
                     continue
-                shared = 0
-                for a, b in zip(full_ids, entry.token_ids):
-                    if a != b:
-                        break
-                    shared += 1
-                best = max(best, min(shared, limit))
+                stored = tuple(entry.token_ids)
+                # Bisect on slice equality: the comparisons run in C, so a
+                # long prompt costs a few passes rather than a Python loop.
+                low, high = 0, min(len(prompt), len(stored))
+                while low < high:
+                    mid = (low + high + 1) // 2
+                    if prompt[low:mid] == stored[low:mid]:
+                        low = mid
+                    else:
+                        high = mid - 1
+                best = max(best, low)
         return best
 
     def _snap_exact_text_prefix(
