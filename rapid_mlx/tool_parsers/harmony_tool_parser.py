@@ -297,6 +297,10 @@ class HarmonyToolParser(ToolParser):
         """
         return full_text[len(self._safe_content_prefix(full_text)) :]
 
+    def reset(self) -> None:
+        super().reset()
+        self._streamed_calls_emitted = 0
+
     def extract_tool_calls_streaming(
         self,
         previous_text: str,
@@ -330,6 +334,9 @@ class HarmonyToolParser(ToolParser):
         if curr_call_count > prev_call_count:
             result = self.extract_tool_calls(current_text)
             if result.tools_called:
+                already = getattr(self, "_streamed_calls_emitted", 0)
+                complete_count = min(len(result.tool_calls), curr_call_count)
+                self._streamed_calls_emitted = complete_count
                 return {
                     "tool_calls": [
                         {
@@ -341,7 +348,9 @@ class HarmonyToolParser(ToolParser):
                                 "arguments": tc["arguments"],
                             },
                         }
-                        for i, tc in enumerate(result.tool_calls)
+                        for i, tc in enumerate(
+                            result.tool_calls[already:complete_count], start=already
+                        )
                     ]
                 }
 
