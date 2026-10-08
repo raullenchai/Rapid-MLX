@@ -103,6 +103,8 @@ def verify_admission(
             producer_attempt=run["run_attempt"],
             source_run_id=consumed["qualification"]["source_run_id"],
             source_attempt=consumed["qualification"]["source_attempt"],
+            checking_base_sha=consumed["qualification"]["checking_base_sha"],
+            source_pull_requests=consumed["qualification"]["source_pull_requests"],
             kind=consumed["kind"],
         )
     except (

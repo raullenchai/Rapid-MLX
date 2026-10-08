@@ -57,7 +57,7 @@ def select_shadow(
         if type(run_id) is not int or run_id < 1:
             raise evidence.EvidenceError("invalid shadow run")
         run = client.json(f"repos/{client.repo}/actions/runs/{run_id}")
-        _, actual_base, _ = producer._candidate(client, run)
+        _, actual_base, _, _ = producer._candidate(client, run)
         _current_run(client, run)
         if (
             run.get("id") != run_id

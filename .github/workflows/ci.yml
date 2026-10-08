@@ -130,6 +130,61 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Install Mergify CLI for candidate identity
+        if: >-
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.user.login == 'mergify[bot]' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          startsWith(github.head_ref, 'mergify/merge-queue/')
+        uses: Mergifyio/setup-cli@dc99f07e699b94b39e5495c24596372813eadcbc  # v1.3.0
+        with:
+          mergify_cli_version: 2026.8.28.1
+
+      - name: Pin candidate head for queue metadata
+        if: >-
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.user.login == 'mergify[bot]' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          startsWith(github.head_ref, 'mergify/merge-queue/')
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha }}
+        run: git checkout --detach "$CANDIDATE_SHA"
+
+      - name: Capture trusted candidate identity
+        id: candidate-queue-info
+        if: >-
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.user.login == 'mergify[bot]' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          startsWith(github.head_ref, 'mergify/merge-queue/')
+        run: mergify ci queue-info
+
+      - name: Materialize trusted candidate identity
+        id: candidate-queue-identity
+        if: steps.candidate-queue-info.outcome == 'success'
+        env:
+          IDENTITY_FILE: ${{ runner.temp }}/candidate-queue-identity.json
+          QUEUE_METADATA: ${{ steps.candidate-queue-info.outputs.queue_metadata }}
+        run: printf '%s' "$QUEUE_METADATA" > "$IDENTITY_FILE"
+
+      - name: Restore workflow checkout
+        if: >-
+          always() &&
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.user.login == 'mergify[bot]' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          startsWith(github.head_ref, 'mergify/merge-queue/')
+        run: git checkout --detach "$GITHUB_SHA"
+
+      - name: Upload trusted candidate identity
+        if: steps.candidate-queue-identity.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v4.6.2
+        with:
+          name: candidate-queue-identity-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/candidate-queue-identity.json
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Classify validation lanes
         id: policy
         env:
