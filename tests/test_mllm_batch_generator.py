@@ -2837,3 +2837,115 @@ def test_rewind_exact_entry_refuses_layers_it_cannot_rewind():
     stubborn.update_and_fetch(mx.zeros((1, 1, 100, 4)), mx.zeros((1, 1, 100, 4)))
     stubborn.trim = lambda n: 0
     assert rewind([stubborn], 50) is None
+
+
+def test_lookup_marks_the_end_of_a_long_shared_prefix(monkeypatch):
+    """A prompt that shares a long span with a stored entry it cannot resume
+    from records where the shared span ends; a short one does not."""
+    from rapid_mlx import mllm_batch_generator as module
+
+    monkeypatch.setattr(module, "_SHARED_PREFIX_STORE_MIN_TOKENS", 50)
+    gen = _make_real_apc_generator(monkeypatch)
+    # Recurrent state without a checkpoint: the entry cannot be rewound.
+    _store_entry_with_checkpoints(gen, list(range(100)), [])
+
+    request = _make_ids_request(100)
+    request.input_ids = mx.array(list(range(90)) + [999] * 10, dtype=mx.int32)
+    assert gen._lookup_exact_text_prefix(request) is None
+    assert request.shared_prefix_store_at == 90
+
+    short = _make_ids_request(100)
+    short.input_ids = mx.array(list(range(40)) + [999] * 60, dtype=mx.int32)
+    assert gen._lookup_exact_text_prefix(short) is None
+    assert short.shared_prefix_store_at == 0
+
+    # A prompt wholly contained in the stored entry keeps a suffix to prefill.
+    contained = _make_ids_request(80)
+    assert gen._lookup_exact_text_prefix(contained) is None
+    assert contained.shared_prefix_store_at == 79
+
+
+def test_lookup_counts_only_what_a_restore_leaves_uncovered(monkeypatch):
+    from rapid_mlx import mllm_batch_generator as module
+
+    monkeypatch.setattr(module, "_SHARED_PREFIX_STORE_MIN_TOKENS", 50)
+    gen = _make_real_apc_generator(monkeypatch)
+    _store_entry_with_checkpoints(gen, list(range(100)), [80])
+
+    # Resumes at the checkpoint at 80; the 10 tokens beyond it are too few.
+    request = _make_ids_request(100)
+    request.input_ids = mx.array(list(range(90)) + [999] * 10, dtype=mx.int32)
+    assert gen._lookup_exact_text_prefix(request) is not None
+    assert request.cached_tokens == 80
+    assert request.shared_prefix_store_at == 0
+
+    # An entry stored under other request semantics is not a shared prefix.
+    gen._prefix_cache_extra_hash = 12345
+    other = _make_ids_request(100)
+    other.input_ids = mx.array(list(range(90)) + [999] * 10, dtype=mx.int32)
+    assert gen._lookup_exact_text_prefix(other) is None
+    assert other.shared_prefix_store_at == 0
+    assert gen._longest_shared_prefix(object(), list(range(9)), 0) == 0
+
+
+def test_text_prefill_stores_a_snapshot_where_the_shared_prefix_ends(monkeypatch):
+    from mlx_vlm.models.cache import ArraysCache
+
+    gen = _make_real_apc_generator(monkeypatch)
+    model = _RecurrentRecordingModel()
+    gen.model = model
+    gen.language_model = model.language_model
+    gen.prefill_step_size = 10
+    request = _make_ids_request(60)
+    request.full_prompt_token_ids = list(range(60))
+    request.prefix_boundary = 50
+    request.shared_prefix_store_at = 24
+    cache = [ArraysCache(1)]
+
+    gen._run_vision_encoding(request, cache=cache)
+
+    # The chunk that would cross position 24 ends there; the rest is unchanged.
+    assert [seqlen for seqlen, _ in model.calls] == [10, 10, 4, 10, 10, 6, 9, 1]
+    stored = {entry.token_ids for entry in _stored_entries(gen)}
+    assert stored == {tuple(range(24)), tuple(range(50))}
+
+    # The next prompt with that shared span resumes from the new snapshot.
+    follow = _make_ids_request(60)
+    follow.input_ids = mx.array(list(range(24)) + [777] * 36, dtype=mx.int32)
+    assert gen._lookup_exact_text_prefix(follow) is not None
+    assert follow.cached_tokens == 24
+    assert follow.shared_prefix_store_at == 0
+
+
+def test_text_prefill_shared_prefix_position_alone_selects_the_chunked_path(
+    monkeypatch,
+):
+    from mlx_vlm.models.cache import ArraysCache
+
+    gen = _make_real_apc_generator(monkeypatch)
+    model = _RecurrentRecordingModel()
+    gen.model = model
+    gen.language_model = model.language_model
+    gen.prefill_step_size = 100
+    # Resumed at 10 of 40 tokens; the shared span ends at 24, and the position
+    # that coincides with the conversation boundary is stored once.
+    request = _make_ids_request(40)
+    request.full_prompt_token_ids = list(range(40))
+    request.cached_tokens = 10
+    request.input_ids = request.input_ids[10:]
+    request.shared_prefix_store_at = 24
+    cache = [ArraysCache(1)]
+    cache[0].cache = [mx.full((1, 2), 10.0)]
+
+    gen._run_vision_encoding(request, cache=cache)
+
+    assert [seqlen for seqlen, _ in model.calls] == [14, 15, 1]
+    assert {e.token_ids for e in _stored_entries(gen)} == {tuple(range(24))}
+
+    same = _make_ids_request(40)
+    same.full_prompt_token_ids = list(range(40))
+    same.prefix_boundary = 24
+    same.shared_prefix_store_at = 24
+    model.calls.clear()
+    gen._run_vision_encoding(same, cache=[ArraysCache(1)])
+    assert [seqlen for seqlen, _ in model.calls] == [24, 15, 1]
