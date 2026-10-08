@@ -402,11 +402,14 @@ Serve fast `noul`, `choice`, and `score` decisions through a
 TypeSafe-compatible `/v1/systemone` API. Laya-MLX is the compact default;
 CLM-8B uses a native MLX Qwen3-8B encoder and cached state/action projections.
 Cloudflare Clef adds joint-schema decisions from text, images, and video frames
-using its official head on Torch/Metal.
+using its official head on Torch/Metal. Decider-2b runs on native MLX with no
+extra install.
 
 ```bash
 pip install 'rapid-mlx[system-one]'
 rapid-mlx system-one convaiinnovations/laya
+# Decider needs no extra:
+rapid-mlx system-one decider-2b
 # Optional Cloudflare backend:
 pip install 'rapid-mlx[clef]'
 rapid-mlx system-one clef-flash
@@ -415,7 +418,7 @@ rapid-mlx system-one clef-flash
 CLM uses a converted copy of its upstream projection head and does not require
 PyTorch or vLLM while serving.
 
-→ [Laya, CLM, and Clef setup, API examples, and compatibility limits](https://github.com/raullenchai/Rapid-MLX/blob/main/docs/guides/system-one.md)
+→ [Laya, CLM, Decider, and Clef setup, API examples, and compatibility limits](https://github.com/raullenchai/Rapid-MLX/blob/main/docs/guides/system-one.md)
 
 ---
 

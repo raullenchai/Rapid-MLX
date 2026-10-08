@@ -278,6 +278,124 @@ class ClefBackend:
         ]
 
 
+class DeciderBackend:
+    """Decider typed decisions on the native MLX Qwen3.5 text backbone.
+
+    Decider reads the state and one question, then scores the answer labels at
+    the last position with the checkpoint's own per-type calibration. It does
+    not generate text, so it cannot be served as a chat model.
+    """
+
+    _MODELS = {
+        "decider-2b": (
+            "nativ-community/decider-2b",
+            "acbae4ecce4dbcc0aea8c5a501c9f54008458a70",
+        ),
+    }
+
+    def __init__(self, model: str, *, device: str = "gpu") -> None:
+        if device not in {"gpu", "cpu"}:
+            raise ValueError("Decider device must be 'gpu' or 'cpu'")
+        local = Path(model).expanduser()
+        selected = model.rsplit("/", 1)[-1].lower()
+        if local.is_dir():
+            # A local directory serves converted or fine-tuned checkpoints.
+            path = str(local)
+            self.default_model = local.name
+            self.repo_id = str(local)
+        elif selected in self._MODELS and model in {
+            selected,
+            self._MODELS[selected][0],
+        }:
+            from rapid_mlx._mirror import pinned_snapshot_download
+
+            self.default_model = selected
+            self.repo_id, revision = self._MODELS[selected]
+            path = pinned_snapshot_download(self.repo_id, revision)
+        else:
+            raise ValueError(
+                f"unknown Decider model {model!r}; choose "
+                f"{', '.join(self._MODELS)} or a local checkpoint directory"
+            )
+
+        import mlx.core as mx
+
+        from .decider import DeciderScorer, load_decider
+
+        mx.set_default_device(mx.gpu if device == "gpu" else mx.cpu)
+        text_model, tokenizer, settings = load_decider(path)
+        self._scorer = DeciderScorer(text_model, tokenizer, settings)
+        self._lock = threading.Lock()
+
+    def _check(self, model: str, temperature: float) -> None:
+        if model not in (self.default_model, self.repo_id):
+            raise KeyError(f"unknown model {model!r}; available: {self.default_model}")
+        if temperature != 1.0:
+            raise ValueError(
+                "Decider uses checkpoint calibration and requires temperature=1"
+            )
+
+    def _score(self, state: Any, questions: dict[str, Question]):
+        with self._lock:
+            return self._scorer.score(state, questions)
+
+    def answer(
+        self, state: Any, questions: dict[str, Question], model: str, temperature: float
+    ) -> dict:
+        self._check(model, temperature)
+        scored, tokens = self._score(state, questions)
+        answers_out = {}
+        for question_id, (keys, probabilities) in scored.items():
+            answer = answer_from_probabilities(
+                questions[question_id], keys, probabilities
+            )
+            # Decider publishes the winning probability as its confidence.
+            if "confidence" in answer:
+                answer["confidence"] = max(probabilities)
+            answers_out[question_id] = answer
+        return {
+            "model": self.default_model,
+            "answers": answers_out,
+            "usage": {
+                "billing_units": len(questions),
+                "input_tokens": tokens,
+                "output_tokens": 0,
+            },
+        }
+
+    def rank(
+        self,
+        context: Any,
+        question: str | None,
+        answers: list[str],
+        model: str,
+        temperature: float,
+    ) -> list[dict]:
+        self._check(model, temperature)
+        request = Question(
+            type="choice",
+            instructions=question or "Choose the best answer.",
+            criteria={str(index): value for index, value in enumerate(answers)},
+        )
+        scored, _ = self._score(context, {"rank": request})
+        keys, probabilities = scored["rank"]
+        ordered = sorted(zip(keys, probabilities), key=lambda item: -item[1])
+        return [
+            {"rank": rank + 1, "candidate": answers[int(index)], "prob": probability}
+            for rank, (index, probability) in enumerate(ordered)
+        ]
+
+    def models(self) -> list[dict]:
+        return [
+            {
+                "name": self.default_model,
+                "backend": "decider-mlx",
+                "hf_id": self.repo_id,
+                "description": "Decider typed decisions on native MLX",
+            }
+        ]
+
+
 class _ProjectionHead:
     def __init__(self, config: dict[str, Any]):
         import mlx.nn as nn
