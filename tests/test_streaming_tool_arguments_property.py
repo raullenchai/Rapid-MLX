@@ -461,6 +461,21 @@ def test_qwen3_coder_malformed_quoted_value_recovers_at_every_boundary(value):
         assert _run("qwen3_coder_xml", wire, request, chunks) == expected_calls
 
 
+def test_qwen3_coder_missing_parameter_close_keeps_later_declared_parameter():
+    wire = (
+        "<tool_call><function=lookup><parameter=text>Dallas"
+        '<parameter=nested>{"x":1}</parameter></function></tool_call>'
+    )
+    request = _request("lookup")
+    expected = ToolParserManager.get_tool_parser("qwen3_coder_xml")(
+        None
+    ).extract_tool_calls(wire, request)
+    expected_calls = [(call["name"], call["arguments"]) for call in expected.tool_calls]
+    assert json.loads(expected_calls[0][1])["nested"] == {"x": 1}
+    for chunks in (list(wire), *([wire[:i], wire[i:]] for i in range(1, len(wire)))):
+        assert _run("qwen3_coder_xml", wire, request, chunks) == expected_calls
+
+
 def test_seed_oss_literal_wrapper_closer_in_value():
     chunks = [
         "<seed:tool_call><function=lookup>",

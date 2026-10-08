@@ -172,6 +172,13 @@ def _generate_tool_id() -> str:
     return f"call_{uuid.uuid4().hex[:8]}"
 
 
+def _is_complete_json_string(value: str) -> bool:
+    try:
+        return isinstance(json.loads(value), str)
+    except json.JSONDecodeError:
+        return False
+
+
 class _ObjectPairs(list):
     """Distinguish JSON objects from arrays while preserving duplicate keys."""
 
@@ -728,7 +735,7 @@ class Qwen3CoderToolParser(ToolParser):
             # regex must only fill genuinely unclosed parameters.
             marker = f"<parameter={p_name}>"
             if any(
-                marker in value and isinstance(_decode_json_like(value), str)
+                marker in value and _is_complete_json_string(value)
                 for _, value in parsed
             ):
                 continue
