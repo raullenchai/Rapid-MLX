@@ -444,6 +444,26 @@ class SeedOssToolParser(ToolParser):
         if self.in_function:
             if not self.json_started:
                 self.json_started = True
+                if self.function_end_token in tool_text:
+                    tools = request.get("tools") if isinstance(request, dict) else None
+                    start = tool_text.find(self.tool_call_prefix) + len(
+                        self.tool_call_prefix
+                    )
+                    end = tool_text.find(self.function_end_token, start)
+                    parsed = self._parse_xml_function_call(tool_text[start:end], tools)
+                    arguments = parsed["arguments"] if parsed else "{}"
+                    self.json_closed = True
+                    self.in_function = False
+                    if parsed:
+                        self.prev_tool_call_arr.append(parsed)
+                    return {
+                        "tool_calls": [
+                            {
+                                "index": self.current_tool_index,
+                                "function": {"arguments": arguments},
+                            }
+                        ]
+                    }
                 return {
                     "tool_calls": [
                         {
@@ -466,6 +486,7 @@ class SeedOssToolParser(ToolParser):
                     self.tool_call_prefix
                 )
                 func_content_end = tool_text.find(self.function_end_token, func_start)
+                closing_arguments = "}"
                 if func_content_end != -1:
                     fc = tool_text[func_start:func_content_end]
                     parsed = self._parse_xml_function_call(fc, tools)
@@ -473,12 +494,29 @@ class SeedOssToolParser(ToolParser):
                         self.prev_tool_call_arr.append(
                             {"name": parsed["name"], "arguments": parsed["arguments"]}
                         )
+                        # A chunk can contain the remaining parameter tags
+                        # and the function close together. The older branch
+                        # emitted only `}` here, dropping every parameter
+                        # not seen on a previous chunk.
+                        remaining = list(json.loads(parsed["arguments"]).items())[
+                            self.param_count :
+                        ]
+                        if remaining:
+                            prefix = ", " if self.param_count else ""
+                            closing_arguments = (
+                                prefix
+                                + ", ".join(
+                                    f"{json.dumps(key)}: {json.dumps(value, ensure_ascii=False)}"
+                                    for key, value in remaining
+                                )
+                                + "}"
+                            )
 
                 return {
                     "tool_calls": [
                         {
                             "index": self.current_tool_index,
-                            "function": {"arguments": "}"},
+                            "function": {"arguments": closing_arguments},
                         }
                     ]
                 }

@@ -298,6 +298,27 @@ class HermesToolParser(ToolParser):
         """
         if shape == "tool_call":
             # Shape #1: <tool_call>{json}</tool_call>
+            body_start = pos + len("<tool_call>")
+            while body_start < len(text) and text[body_start].isspace():
+                body_start += 1
+            if body_start < len(text) and text[body_start] == "{":
+                try:
+                    data, body_end = json.JSONDecoder().raw_decode(text, body_start)
+                except json.JSONDecodeError:
+                    data = None
+                else:
+                    closing = text.find("</tool_call>", body_end)
+                    if closing >= 0 and not text[body_end:closing].strip():
+                        name = data.get("name", "") if isinstance(data, dict) else ""
+                        if name:
+                            arguments = data.get("arguments", {})
+                            return (
+                                closing + len("</tool_call>"),
+                                name,
+                                json.dumps(arguments, ensure_ascii=False)
+                                if isinstance(arguments, dict)
+                                else str(arguments),
+                            )
             m = cls.TOOL_CALL_PATTERN.match(text, pos)
             if m is not None:
                 body = m.group(1)
@@ -349,6 +370,19 @@ class HermesToolParser(ToolParser):
             # intent, but invalid JSON must remain invalid for the executor.
             wrapper_end = text.find("</tool_call>", pos)
             if wrapper_end >= 0:
+                # A delimiter-looking substring inside an unfinished JSON
+                # string is payload. The real wrapper close may arrive later.
+                escaped = False
+                in_string = False
+                for char in text[body_start:wrapper_end]:
+                    if escaped:
+                        escaped = False
+                    elif char == "\\" and in_string:
+                        escaped = True
+                    elif char == '"':
+                        in_string = not in_string
+                if in_string:
+                    return None
                 end = wrapper_end + len("</tool_call>")
                 body = text[pos + len("<tool_call>") : wrapper_end].strip()
                 intent_match = cls.MALFORMED_JSON_INTENT_PATTERN.match(body)
@@ -655,6 +689,19 @@ class HermesToolParser(ToolParser):
         block of any of the three wire shapes? Used by the streaming
         branch to decide whether to suppress emit while a block is
         being assembled."""
+        # A literal close tag inside a JSON string does not close the outer
+        # wrapper. Keep holding until the JSON document and its real closer
+        # arrive, even if a naive open/close tag count appears balanced.
+        last_wrapper = text.rfind("<tool_call>")
+        if last_wrapper >= 0:
+            body_start = last_wrapper + len("<tool_call>")
+            if (
+                text[body_start:].lstrip().startswith("{")
+                and cls._try_consume_at(text, last_wrapper, "tool_call", request)
+                is None
+            ):
+                return True
+
         # Remove every block the request-aware scanner can already account
         # for. This matters for a closed outer wrapper whose inner function
         # XML is malformed: its missing ``</function>`` must not keep the
@@ -761,6 +808,20 @@ class HermesToolParser(ToolParser):
         )
 
         if has_any_opener:
+            # A raw XML parameter may contain a literal outer close tag.
+            # Wait for the function close followed by the real wrapper close
+            # before treating a wrapped XML call as complete. Malformed
+            # wrappers remain recoverable by the end-of-stream parser.
+            wrapper = current_text.rfind("<tool_call>")
+            if wrapper >= 0 and current_text[wrapper:].lstrip().startswith(
+                "<tool_call>"
+            ):
+                body = current_text[wrapper + len("<tool_call>") :].lstrip()
+                if body.startswith("<function="):
+                    function_end = current_text.find("</function>", wrapper)
+                    wrapper_end = current_text.rfind("</tool_call>")
+                    if function_end < 0 or wrapper_end < function_end:
+                        return None
             if self._has_incomplete_structured_block(current_text, request):
                 # Inside an incomplete structured block — suppress output.
                 return None

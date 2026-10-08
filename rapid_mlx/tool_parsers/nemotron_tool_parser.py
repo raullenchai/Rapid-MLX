@@ -400,6 +400,12 @@ class NemotronToolParser(ToolParser):
             self._content_upto = len(current_text)
             return {"content": delta_text}
 
+        # The XML parameter format has no escaping rule. A literal
+        # ``</function>`` inside a value can appear before the structural
+        # close; the outer wrapper is the first unambiguous boundary.
+        if current_text.count("<tool_call>") > current_text.count("</tool_call>"):
+            return None
+
         # Trigger from the COMPLETION STATE of current_text, NOT from a close
         # tag appearing inside a single delta_text. We fire only when a NEW
         # close tag finished in this delta — i.e. the close-tag count in

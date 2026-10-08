@@ -153,12 +153,37 @@ class DeepSeekToolParser(ToolParser):
         Extract tool calls from streaming DeepSeek model output.
         """
         if self.TOOL_CALLS_START not in current_text:
-            return {"content": delta_text}
+            marker = self.TOOL_CALLS_START
+            current_hold = max(
+                (n for n in range(1, len(marker)) if current_text.endswith(marker[:n])),
+                default=0,
+            )
+            previous_hold = max(
+                (
+                    n
+                    for n in range(1, len(marker))
+                    if previous_text.endswith(marker[:n])
+                ),
+                default=0,
+            )
+            current_safe = len(current_text) - current_hold
+            previous_safe = len(previous_text) - previous_hold
+            content = current_text[previous_safe:current_safe]
+            return {"content": content} if content else None
 
-        # If we see the end marker, parse the complete output
-        if self.TOOL_CALL_END in delta_text or self.TOOL_CALLS_END in delta_text:
+        # Compare complete parsed blocks, not close markers in this delta:
+        # the outer close often arrives after the block close and must not
+        # replay the same call (or miss a split close token).
+        if current_text.count(self.TOOL_CALL_END) > previous_text.count(
+            self.TOOL_CALL_END
+        ):
             result = self.extract_tool_calls(current_text)
             if result.tools_called:
+                previous = self.extract_tool_calls(previous_text)
+                already = len(previous.tool_calls) if previous.tools_called else 0
+                new_calls = result.tool_calls[already:]
+                if not new_calls:
+                    return None
                 return {
                     "tool_calls": [
                         {
@@ -170,7 +195,7 @@ class DeepSeekToolParser(ToolParser):
                                 "arguments": tc["arguments"],
                             },
                         }
-                        for i, tc in enumerate(result.tool_calls)
+                        for i, tc in enumerate(new_calls, start=already)
                     ]
                 }
 
