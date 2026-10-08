@@ -456,12 +456,17 @@ def test_backend_resolves_the_pinned_alias_and_local_directories(tmp_path, monke
     assert loaded[0] == (
         "/snap/openjev/openjev-MLX@a9dcc20aa827a6c7eae478f6ebb3b255bb135451"
     )
+    # A same-named directory in the working directory does not shadow it.
+    (tmp_path / "openjev").mkdir()
+    monkeypatch.chdir(tmp_path)
+    assert OpenJevBackend("openjev").repo_id == "openjev/openjev-MLX"
+    assert OpenJevBackend("./openjev").default_model == "openjev"
     local = OpenJevBackend(str(tmp_path), device="cpu")
     assert local.default_model == tmp_path.name
     assert loaded[-1] == str(tmp_path)
     # The server's directory layout stays out of /v1/models.
     assert local.models()[0]["hf_id"] == tmp_path.name
-    assert devices == [mx.gpu, mx.gpu, mx.gpu, mx.cpu]
+    assert devices == [mx.gpu] * 5 + [mx.cpu]
 
     with pytest.raises(ValueError, match="unknown OpenJev model"):
         OpenJevBackend("someone/openjev")

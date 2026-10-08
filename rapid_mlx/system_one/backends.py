@@ -446,21 +446,23 @@ class DeciderBackend:
             raise ValueError("Decider device must be 'gpu' or 'cpu'")
         local = Path(model).expanduser()
         selected = model.rsplit("/", 1)[-1].lower()
-        if local.is_dir():
-            # A local directory serves converted or fine-tuned checkpoints.
-            path = str(local)
-            self.default_model = local.name
-            self.repo_id = str(local)
-        elif selected in self._MODELS and model.lower() in {
+        if selected in self._MODELS and model.lower() in {
             selected,
             self._MODELS[selected][0].lower(),
         }:
-            # Match the CLI, which routes model names case-insensitively.
+            # Match the CLI, which routes model names case-insensitively. A
+            # published name always means the pinned release, even when a
+            # directory of the same name sits in the working directory.
             from rapid_mlx._mirror import pinned_snapshot_download
 
             self.default_model = selected
             self.repo_id, revision = self._MODELS[selected]
             path = pinned_snapshot_download(self.repo_id, revision)
+        elif local.is_dir():
+            # A local directory serves converted or fine-tuned checkpoints.
+            path = str(local)
+            self.default_model = local.name
+            self.repo_id = str(local)
         else:
             raise ValueError(
                 f"unknown Decider model {model!r}; choose "
@@ -572,18 +574,20 @@ class OpenJevBackend:
         local = Path(model).expanduser()
         repos = {repo.lower(): name for name, (repo, _) in self._MODELS.items()}
         selected = repos.get(model.lower(), model.lower())
-        if local.is_dir():
-            # A local directory serves other conversions, such as a 4-bit build.
-            # /v1/models reports its name, not where it sits on this machine.
-            path = str(local)
-            self.default_model = local.name
-            self.repo_id = local.name
-        elif selected in self._MODELS:
+        if selected in self._MODELS:
+            # A published name always means the pinned release, even when a
+            # directory of the same name sits in the working directory.
             from rapid_mlx._mirror import pinned_snapshot_download
 
             self.default_model = selected
             self.repo_id, revision = self._MODELS[selected]
             path = pinned_snapshot_download(self.repo_id, revision)
+        elif local.is_dir():
+            # A local directory serves other conversions, such as a 4-bit build.
+            # /v1/models reports its name, not where it sits on this machine.
+            path = str(local)
+            self.default_model = local.name
+            self.repo_id = local.name
         else:
             raise ValueError(
                 f"unknown OpenJev model {model!r}; choose "
