@@ -1373,7 +1373,7 @@ class Qwen3CoderToolParser(ToolParser):
                 self.json_closed = True
                 self.header_sent = True
                 self.is_tool_call_started = True
-                return {
+                output = {
                     "tool_calls": [
                         {
                             "index": index,
@@ -1387,6 +1387,13 @@ class Qwen3CoderToolParser(ToolParser):
                         for index, call in enumerate(fresh, start=already)
                     ]
                 }
+                if already == 0:
+                    first_start = self._first_opener_pos(current_text)
+                    prefix = current_text[self._initial_content_emitted : first_start]
+                    if prefix:
+                        output["content"] = prefix
+                        self._initial_content_emitted = first_start
+                return output
 
         if not delta_text:
             return None

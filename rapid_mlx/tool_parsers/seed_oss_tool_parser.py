@@ -285,6 +285,40 @@ class SeedOssToolParser(ToolParser):
         if not previous_text:
             self._reset_streaming_state()
 
+        # If an in-flight call and another complete call arrive together,
+        # finish the active call first, then feed the remainder through the
+        # completed-call reconciliation below. Otherwise the single-call
+        # state machine returns after the first function close.
+        previous_closes = previous_text.count(self.tool_call_end_token)
+        current_closes = current_text.count(self.tool_call_end_token)
+        if self.in_function and current_closes - previous_closes > 1:
+            split = 0
+            for _ in range(previous_closes + 1):
+                split = current_text.find(self.tool_call_end_token, split)
+                if split < 0:
+                    break
+                split += len(self.tool_call_end_token)
+            if split > len(previous_text):
+                first = self.extract_tool_calls_streaming(
+                    previous_text,
+                    current_text[:split],
+                    current_text[len(previous_text) : split],
+                    request=request,
+                )
+                second = self.extract_tool_calls_streaming(
+                    current_text[:split],
+                    current_text,
+                    current_text[split:],
+                    request=request,
+                )
+                if first and second:
+                    return {
+                        "tool_calls": first.get("tool_calls", [])
+                        + second.get("tool_calls", []),
+                        "content": first.get("content", "") + second.get("content", ""),
+                    }
+                return first or second
+
         # One model delta may contain several finished calls. Reconcile all
         # complete calls before the single-call state machine advances once.
         if not self.in_function and current_text.count(
@@ -300,7 +334,7 @@ class SeedOssToolParser(ToolParser):
                 self.json_closed = True
                 self.header_sent = True
                 self.is_tool_call_started = True
-                return {
+                output = {
                     "tool_calls": [
                         {
                             "index": index,
@@ -314,6 +348,12 @@ class SeedOssToolParser(ToolParser):
                         for index, call in enumerate(fresh, start=already)
                     ]
                 }
+                if already == 0:
+                    first_start = current_text.find(self.tool_call_start_token)
+                    prefix = current_text[len(previous_text) : first_start]
+                    if prefix:
+                        output["content"] = prefix
+                return output
 
         if not delta_text:
             return None
