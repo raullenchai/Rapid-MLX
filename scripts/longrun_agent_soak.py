@@ -385,12 +385,17 @@ class Soak:
         self.csv_file.flush()
         print(json.dumps(row), flush=True)
         self.totals["probe_errors"] += 2 - row["health_ok"] - row["models_ok"]
-        if status_error or row["metal_active_gb"] is None:
+        if (
+            status_error
+            or row["metal_active_gb"] is None
+            or row["metal_cache_gb"] is None
+        ):
             raise RuntimeError(f"Metal telemetry unavailable: {status_error}")
         if row["rss_mb"] > self.args.max_rss_mb:
             raise RuntimeError(f"RSS budget exceeded: {row['rss_mb']} MB")
-        if row["metal_active_gb"] > self.args.max_metal_gb:
-            raise RuntimeError(f"Metal budget exceeded: {row['metal_active_gb']} GB")
+        metal_total = row["metal_active_gb"] + row["metal_cache_gb"]
+        if metal_total > self.args.max_metal_gb:
+            raise RuntimeError(f"Metal budget exceeded: {metal_total} GB")
 
     async def run(self):
         workers = []
@@ -469,7 +474,7 @@ def main():
     parser.add_argument("--concurrency", type=int, default=3)
     parser.add_argument("--pause", type=float, default=0.5)
     parser.add_argument("--timeout", type=float, default=120)
-    parser.add_argument("--max-rss-mb", type=float, default=12288)
+    parser.add_argument("--max-rss-mb", type=float, default=11444)
     parser.add_argument("--max-metal-gb", type=float, default=12)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--output", type=Path, required=True)

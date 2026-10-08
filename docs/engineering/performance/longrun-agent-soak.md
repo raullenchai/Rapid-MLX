@@ -15,7 +15,7 @@ rapid-mlx serve mlx-community/Qwen3.5-4B-MLX-4bit \
 python scripts/longrun_agent_soak.py \
   --url http://127.0.0.1:18130 --model qwen3.5-4b-4bit \
   --pid SERVER_PID --duration 10800 --concurrency 3 \
-  --max-rss-mb 12288 --max-metal-gb 12 --output /path/to/run
+  --max-rss-mb 11444 --max-metal-gb 12 --output /path/to/run
 ```
 
 The harness writes `minutes.csv` (per-minute request counts, errors, p50/p95/p99
@@ -29,9 +29,10 @@ healthy while chat is stuck. Check that completions continue, timeout counts
 stay flat, and `running`/`waiting` recover after load. RSS and active Metal
 memory overlap on unified-memory Macs; do not add them to estimate total use.
 
-The default guards stop the harness above 12 GiB of process RSS or 12 GB of
-active Metal allocations. They do not stop the server; the operator owns that
-process and should record its PID before the run. These are process limits,
+The default guards stop the harness above 12 GB of process RSS or 12 GB of
+active plus cached Metal allocations. They do not stop the server; the
+operator owns that process and should record its PID before the run. These
+are process limits,
 not a host-wide memory admission controller. A run that reaches either guard
 is a failed soak.
 
@@ -46,8 +47,10 @@ resource-retention failure modes.
 ## 2026-10-07 mac-mini result
 
 Three-hour run on an Apple M2 Pro Mac mini (32 GB, macOS 26.5.2), Python
-3.13.11, `mlx-community/Qwen3.5-4B-MLX-4bit`, using the command above and
-base server commit `e77bbeb03`. The server had already warmed up during
+3.13.11, `mlx-community/Qwen3.5-4B-MLX-4bit`, using the server flags above and
+base server commit `e77bbeb03`. The run used the earlier 12,288 MiB RSS guard;
+the current replay command tightens it to 11,444 MiB (under 12 GB). Observed
+RSS stayed below 2,613 MiB. The server had already warmed up during
 short harness pilots. The [minute-by-minute CSV](longrun-agent-soak-2026-10-07.csv)
 contains all 182 samples, including the initial and final samples. The final
 sample was taken after the last in-flight requests completed. A separate
@@ -65,10 +68,12 @@ sample was taken after the last in-flight requests completed. A separate
 | Threads / open files, idle | 25 / 140 | 23 / 139 |
 | Scheduler running / waiting, idle | 0 / 0 | 0 / 0 |
 
-The highest sampled active Metal allocation was 6.86 GB; the process-reported
-Metal peak was 7.06 GB (6.94 GB had already been reached during pilot warmup).
-The server log recorded 2,773 prefix-cache hits and no Metal resource-limit,
-admission-cap, generation-recovery, or traceback signatures. Completions
+The highest sampled active Metal allocation was 6.86 GB; the highest sampled
+active plus cached allocation was 7.61 GB. The process-reported Metal peak
+was 7.06 GB (6.94 GB had already been reached during pilot warmup).
+The server log, including pilots, recorded 2,773 prefix-cache hits and no
+Metal resource-limit, admission-cap, generation-recovery, or traceback
+signatures. Completions
 continued throughout the final hour, with no rising RSS, thread, or open-file
 trend. The average of each minute's p95 latency was 11.37 s in the first ten
 minutes and 8.04 s in the last ten; individual long-prompt minutes were higher.
