@@ -162,6 +162,11 @@ def test_official_signature_verification_requires_all_notary_properties(tmp_path
         )
         result = _verify(tmp_path, details)
         assert result.returncode == 1, (missing, result.stderr)
+    no_timestamp = complete.replace(
+        "Timestamp=Oct 7, 2026 at 10:00:00 PM", "Timestamp=none"
+    )
+    result = _verify(tmp_path, no_timestamp)
+    assert result.returncode == 1, result.stderr
 
 
 def test_strict_integrity_failure_is_fatal_but_adhoc_skips_release_properties(

@@ -24,10 +24,11 @@ printf '%s\n' "$details" | grep -q '^Authority=Developer ID Application:' || {
     echo "ERR: Developer ID Application authority missing on $binary" >&2
     exit 1
 }
-printf '%s\n' "$details" | grep -q '^Timestamp=' || {
+timestamp="$(printf '%s\n' "$details" | sed -n 's/^Timestamp=//p' | head -n 1)"
+if [ -z "$timestamp" ] || [ "$(printf '%s' "$timestamp" | tr '[:upper:]' '[:lower:]')" = "none" ]; then
     echo "ERR: secure timestamp missing on $binary" >&2
     exit 1
-}
+fi
 printf '%s\n' "$details" | grep -Eq '^CodeDirectory .*flags=.*\(.*runtime.*\)' || {
     echo "ERR: hardened runtime flag missing on $binary" >&2
     exit 1
