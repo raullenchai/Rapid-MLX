@@ -505,6 +505,29 @@ def test_seed_oss_repeated_parameter_after_nested_json():
         assert _run("seed_oss", wire, request, stream_chunks) == expected_calls
 
 
+def test_seed_oss_literal_function_closer_before_parallel_call():
+    chunks = [
+        '<seed:tool_call><function=lookup><parameter=text>"a</function>b"'
+        "</parameter></function></seed:tool_call><seed:tool_call><function=second>",
+        "<parameter=text>done</parameter></function></seed:tool_call>",
+    ]
+    wire = "".join(chunks)
+    request = _request("lookup", "second")
+    expected = ToolParserManager.get_tool_parser("seed_oss")(None).extract_tool_calls(
+        wire, request
+    )
+    expected_calls = [(call["name"], call["arguments"]) for call in expected.tool_calls]
+    assert len(expected_calls) == 2
+    assert json.loads(expected_calls[0][1]) == {"text": '"a</function>b"'}
+    assert json.loads(expected_calls[1][1]) == {"text": "done"}
+    for stream_chunks in (
+        chunks,
+        list(wire),
+        *([wire[:i], wire[i:]] for i in range(1, len(wire))),
+    ):
+        assert _run("seed_oss", wire, request, stream_chunks) == expected_calls
+
+
 @pytest.mark.parametrize("value", ["<parameter=text>x", "null"])
 def test_qwen3_coder_quoted_string_across_parameter_boundaries(value):
     encoded = json.dumps(value)

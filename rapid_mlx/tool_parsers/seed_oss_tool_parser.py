@@ -243,10 +243,42 @@ class SeedOssToolParser(ToolParser):
         if not starts:
             raw_tool_calls = [model_output]
 
-        raw_function_calls = []
+        function_calls = []
         for tc in raw_tool_calls:
-            raw_function_calls.extend(self.tool_call_function_regex.findall(tc))
-        return [m[0] if m[0] else m[1] for m in raw_function_calls]
+            for start, close in self._function_spans(tc):
+                body_start = start + len(self.tool_call_prefix)
+                function_calls.append(tc[body_start : close if close >= 0 else len(tc)])
+        return function_calls
+
+    def _function_spans(self, text: str) -> list[tuple[int, int]]:
+        """Locate function closes outside parameter values."""
+        spans = []
+        cursor = 0
+        while (start := text.find(self.tool_call_prefix, cursor)) >= 0:
+            header_end = text.find(">", start + len(self.tool_call_prefix))
+            if header_end < 0:
+                break
+            scan = header_end + 1
+            close = -1
+            while True:
+                param_start = text.find(self.parameter_prefix, scan)
+                function_end = text.find(self.function_end_token, scan)
+                if function_end < 0:
+                    break
+                if param_start >= 0 and param_start < function_end:
+                    param_end = text.find(self.parameter_end_token, param_start)
+                    if param_end < 0:
+                        break
+                    scan = param_end + len(self.parameter_end_token)
+                    continue
+                close = function_end
+                break
+            spans.append((start, close))
+            cursor = close + len(self.function_end_token) if close >= 0 else len(text)
+        return spans
+
+    def _function_close_positions(self, text: str) -> list[int]:
+        return [close for _, close in self._function_spans(text) if close >= 0]
 
     def extract_tool_calls(
         self, model_output: str, request: dict[str, Any] | None = None
@@ -342,15 +374,11 @@ class SeedOssToolParser(ToolParser):
         # finish the active call first, then feed the remainder through the
         # completed-call reconciliation below. Otherwise the single-call
         # state machine returns after the first function close.
-        previous_closes = previous_text.count(self.function_end_token)
-        current_closes = current_text.count(self.function_end_token)
+        previous_closes = len(self._function_close_positions(previous_text))
+        close_positions = self._function_close_positions(current_text)
+        current_closes = len(close_positions)
         if self.in_function and current_closes - previous_closes > 1:
-            split = 0
-            for _ in range(previous_closes + 1):
-                split = current_text.find(self.function_end_token, split)
-                if split < 0:
-                    break
-                split += len(self.function_end_token)
+            split = close_positions[previous_closes] + len(self.function_end_token)
             if split > len(previous_text):
                 first = self.extract_tool_calls_streaming(
                     previous_text,
@@ -519,6 +547,8 @@ class SeedOssToolParser(ToolParser):
             tool_text = current_text[
                 tool_start_idx : tool_end_idx + len(self.tool_call_end_token)
             ]
+        function_closes = self._function_close_positions(tool_text)
+        function_close = function_closes[0] if function_closes else -1
 
         # Parse function header
         if not self.header_sent:
@@ -537,15 +567,11 @@ class SeedOssToolParser(ToolParser):
                     # tool call in one chunk.  This prevents header-only output
                     # when coarse deltas (or max_tokens truncation) leave no
                     # further parser calls to emit the arguments.
-                    if self.function_end_token in tool_text:
+                    if function_close >= 0:
                         tools = None
                         if request and isinstance(request, dict):
                             tools = request.get("tools")
-                        fc = tool_text[
-                            func_start : tool_text.find(
-                                self.function_end_token, func_start
-                            )
-                        ]
+                        fc = tool_text[func_start:function_close]
                         parsed = self._parse_xml_function_call(fc, tools)
                         args = parsed["arguments"] if parsed else "{}"
                         self.json_started = True
@@ -587,13 +613,14 @@ class SeedOssToolParser(ToolParser):
         if self.in_function:
             if not self.json_started:
                 self.json_started = True
-                if self.function_end_token in tool_text:
+                if function_close >= 0:
                     tools = request.get("tools") if isinstance(request, dict) else None
                     start = tool_text.find(self.tool_call_prefix) + len(
                         self.tool_call_prefix
                     )
-                    end = tool_text.find(self.function_end_token, start)
-                    parsed = self._parse_xml_function_call(tool_text[start:end], tools)
+                    parsed = self._parse_xml_function_call(
+                        tool_text[start:function_close], tools
+                    )
                     arguments = parsed["arguments"] if parsed else "{}"
                     self.json_closed = True
                     self.in_function = False
@@ -617,7 +644,7 @@ class SeedOssToolParser(ToolParser):
                 }
 
             # Check for function end
-            if not self.json_closed and self.function_end_token in tool_text:
+            if not self.json_closed and function_close >= 0:
                 self.json_closed = True
                 self.in_function = False
 
@@ -628,7 +655,7 @@ class SeedOssToolParser(ToolParser):
                 func_start = tool_text.find(self.tool_call_prefix) + len(
                     self.tool_call_prefix
                 )
-                func_content_end = tool_text.find(self.function_end_token, func_start)
+                func_content_end = function_close
                 closing_arguments = "}"
                 if func_content_end != -1:
                     fc = tool_text[func_start:func_content_end]
