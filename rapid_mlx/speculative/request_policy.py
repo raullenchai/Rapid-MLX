@@ -12,6 +12,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+
+class RequestRefused(ValueError):  # noqa: N818 - carries an HTTP status
+    """A provider turned the request down; the HTTP layer answers ``status_code``."""
+
+    status_code = 400
+
+
 SpeculativeRequestFallbackFeature = Literal["tools"]
 
 
