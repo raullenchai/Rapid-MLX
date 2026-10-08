@@ -4406,6 +4406,7 @@ async def _disconnect_guard(
     request_id_holder: list | None = None,
     keepalive_factory=None,
     disconnect_state: list[bool] | None = None,
+    response_state: dict | None = None,
 ) -> AsyncIterator[str]:
     """Wrap streaming generator to abort on client disconnect.
 
@@ -4669,6 +4670,63 @@ async def _disconnect_guard(
                     InferenceAbortedError,
                     inference_aborted_error_payload,
                 )
+
+                context_error = context_overflow_from_client_error(exc)
+                if context_error is not None:
+                    path = raw_request.url.path
+                    if path == "/v1/messages":
+                        event = {
+                            "type": "error",
+                            "error": {
+                                "type": "invalid_request_error",
+                                "message": (
+                                    f"prompt is too long: {context_error.prompt_tokens} "
+                                    f"tokens > {context_error.limit} maximum"
+                                ),
+                            },
+                        }
+                        yield f"event: error\ndata: {_json.dumps(event)}\n\n"
+                    elif path == "/v1/responses":
+                        response_payload = {
+                            "id": f"resp_{uuid.uuid4().hex[:24]}",
+                            "object": "response",
+                            "created_at": int(_time.time()),
+                            "status": "failed",
+                            "model": get_config().model_name or "<custom>",
+                            "output": [],
+                            "usage": {
+                                "input_tokens": 0,
+                                "output_tokens": 0,
+                                "total_tokens": 0,
+                                "input_tokens_details": {"cached_tokens": 0},
+                                "output_tokens_details": {"reasoning_tokens": 0},
+                            },
+                            "parallel_tool_calls": False,
+                            "tool_choice": "auto",
+                            "tools": [],
+                        }
+                        if response_state and isinstance(
+                            response_state.get("response"), dict
+                        ):
+                            response_payload.update(response_state["response"])
+                            response_payload["status"] = "failed"
+                        response_payload["error"] = context_error.error_payload
+                        response_event = {
+                            "type": "response.failed",
+                            "response": response_payload,
+                            "sequence_number": 0,
+                        }
+                        if response_state and isinstance(
+                            response_state.get("sequence_number"), list
+                        ):
+                            counter = response_state["sequence_number"]
+                            response_event["sequence_number"] = counter[0]
+                            counter[0] += 1
+                        yield f"event: response.failed\ndata: {_json.dumps(response_event)}\n\n"
+                    else:
+                        yield ("data: " + _json.dumps(context_error.detail) + "\n\n")
+                        yield "data: [DONE]\n\n"
+                    break
 
                 if (
                     isinstance(exc, InferenceAbortedError)
@@ -5272,6 +5330,96 @@ def count_prompt_tokens(engine, prompt) -> int:
         return 0
 
 
+class ContextLengthExceeded(HTTPException):
+    """Prompt admission failure with token counts for protocol adapters."""
+
+    def __init__(self, *, prompt_tokens: int, limit: int, message: str):
+        self.prompt_tokens = prompt_tokens
+        self.limit = limit
+        self.error_payload = {
+            "message": message,
+            "type": "invalid_request_error",
+            "code": "context_length_exceeded",
+            "param": "messages",
+        }
+        super().__init__(
+            status_code=400,
+            detail={"error": self.error_payload},
+        )
+
+
+def context_overflow_from_client_error(
+    exc: BaseException,
+) -> ContextLengthExceeded | None:
+    """Translate the MLLM post-expansion admission failure without echoing input."""
+    from ..request import ClientRequestError
+
+    if not isinstance(exc, ClientRequestError):
+        return None
+    import re
+
+    match = re.fullmatch(
+        r"context_length_exceeded: prompt has (\d+) tokens after media "
+        r"expansion, exceeding --context-length (\d+)",
+        str(exc),
+    )
+    if match is None:
+        return None
+    prompt_tokens, limit = map(int, match.groups())
+    return ContextLengthExceeded(
+        prompt_tokens=prompt_tokens,
+        limit=limit,
+        message=(
+            f"The prompt contains {prompt_tokens} tokens after media expansion, "
+            f"exceeding this server's {limit}-token context limit. Start a new "
+            "session or compact the conversation, or raise --context-length "
+            "if the model and available memory permit."
+        ),
+    )
+
+
+def context_window_exhausted(
+    engine, prompt_tokens: int, completion_tokens: int, finish_reason: str | None
+) -> ContextLengthExceeded | None:
+    """Recognize a generation that consumed the served context window."""
+    if finish_reason != "length" or prompt_tokens <= 0 or completion_tokens <= 0:
+        return None
+    limit = get_model_max_context(engine)
+    if prompt_tokens + completion_tokens < limit:
+        return None
+    flag_remedy = (
+        " This serving window is set by --context-length; raise that flag "
+        "if the model and available memory permit."
+        if get_config().context_length == limit
+        else ""
+    )
+    # The next generated token would exceed the window. Anthropic's
+    # prompt-too-long classifier requires N > M; use that next-token total
+    # for its error while the OpenAI message reports the actual prompt and
+    # generated counts separately.
+    return ContextLengthExceeded(
+        prompt_tokens=max(prompt_tokens + completion_tokens, limit + 1),
+        limit=limit,
+        message=(
+            f"The prompt contains {prompt_tokens} tokens and generation used "
+            f"{completion_tokens} tokens, reaching this model's {limit}-token "
+            "context limit. Start a new session or compact the conversation, "
+            "or use a model with a larger context window." + flag_remedy
+        ),
+    )
+
+
+def context_overflow_from_guided_limit(engine, exc) -> ContextLengthExceeded | None:
+    """Classify a constrained decode budget stop against the served window."""
+    from ..api.errors import GuidedTokenLimitError
+
+    if not isinstance(exc, GuidedTokenLimitError):
+        return None
+    return context_window_exhausted(
+        engine, exc.prompt_tokens, exc.completion_tokens, "length"
+    )
+
+
 def enforce_context_length(
     engine,
     prompt_tokens: int,
@@ -5307,9 +5455,12 @@ def enforce_context_length(
         detail = (
             f"This server's maximum admitted prompt length is "
             f"{operational_cap} tokens. However, your prompt contains "
-            f"{int(prompt_tokens)} tokens. Please reduce the length of the "
+            f"{int(prompt_tokens)} tokens. The model's context window is "
+            f"{max_context} tokens. Please reduce the length of the "
             "prompt; the limit is this server's --max-prompt-tokens flag, not "
-            "the model's context window."
+            "the model's context window. Start a new session or compact the "
+            "conversation, or raise --max-prompt-tokens if the model and "
+            "available memory permit."
         )
         reject_reason = "operational_cap"
     else:
@@ -5320,13 +5471,16 @@ def enforce_context_length(
         detail = (
             f"This model's maximum context length is {max_context} tokens. "
             f"However, your prompt contains {int(prompt_tokens)} tokens, leaving "
-            "no room for generation. Please reduce the length of the messages."
+            "no room for generation. Please reduce the length of the messages. "
+            "Start a new session or compact the "
+            "conversation, or use a model with a larger context window."
         )
         requested = get_config().context_length
         if requested is not None and int(requested) == max_context:
             detail += (
                 f" This {max_context}-token window is set by the server's "
-                "--context-length flag, not by the model."
+                "--context-length flag, not by the model. Raise "
+                "--context-length if the model and available memory permit."
             )
         reject_reason = "prompt_over_window"
     from rapid_mlx.telemetry.inference import (
@@ -5342,16 +5496,14 @@ def enforce_context_length(
         caller_agent=caller_agent,
         caller_client=caller_client,
     )
-    raise HTTPException(
-        status_code=400,
-        detail={
-            "error": {
-                "message": detail,
-                "type": "invalid_request_error",
-                "code": "context_length_exceeded",
-                "param": "messages",
-            }
-        },
+    raise ContextLengthExceeded(
+        prompt_tokens=int(prompt_tokens),
+        limit=(
+            operational_cap
+            if prompt_over_operational_cap and operational_cap is not None
+            else max_context
+        ),
+        message=detail,
     )
 
 

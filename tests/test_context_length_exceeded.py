@@ -1022,11 +1022,12 @@ def test_enforce_over_cap_names_the_remedy_for_a_native_window():
     assert err["code"] == "context_length_exceeded"
     assert "reduce the length of the messages" in err["message"]
     assert "--context-length" not in err["message"]  # native window: no flag
-    assert err["message"] == (
+    assert err["message"].startswith(
         "This model's maximum context length is 2048 tokens. However, your "
         "prompt contains 3000 tokens, leaving no room for generation. "
         "Please reduce the length of the messages."
-    )  # byte-identical to origin/main
+    )  # origin/main's classifier-compatible lead
+    assert "Start a new session or compact" in err["message"]
 
 
 def test_enforce_over_cap_attributes_operator_window_to_the_flag():
