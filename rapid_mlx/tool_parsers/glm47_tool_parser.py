@@ -162,9 +162,11 @@ class Glm47ToolParser(ToolParser):
         # the non-streaming path sets content=None (reasoning before the
         # tag should not leak as regular content).
         if "<tool_call>" in current_text:
-            if "</tool_call>" in delta_text:
+            if current_text.count("</tool_call>") > previous_text.count("</tool_call>"):
                 result = self.extract_tool_calls(current_text, request)
                 if result.tools_called:
+                    previous = self.extract_tool_calls(previous_text, request)
+                    already = len(previous.tool_calls) if previous.tools_called else 0
                     return {
                         "tool_calls": [
                             {
@@ -176,7 +178,9 @@ class Glm47ToolParser(ToolParser):
                                     "arguments": tc["arguments"],
                                 },
                             }
-                            for i, tc in enumerate(result.tool_calls)
+                            for i, tc in enumerate(
+                                result.tool_calls[already:], start=already
+                            )
                         ]
                     }
             return None

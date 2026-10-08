@@ -147,7 +147,7 @@ rapid_mlx/tool_parsers/minimax_tool_parser.py 1
 rapid_mlx/tool_parsers/mistral_tool_parser.py 1
 rapid_mlx/tool_parsers/muse_tool_parser.py 4
 rapid_mlx/tool_parsers/nemotron_tool_parser.py 1
-rapid_mlx/tool_parsers/qwen3coder_tool_parser.py 3
+rapid_mlx/tool_parsers/qwen3coder_tool_parser.py 2
 rapid_mlx/tool_parsers/qwen_tool_parser.py 1
 rapid_mlx/tool_parsers/seed_oss_tool_parser.py 3
 rapid_mlx/tool_parsers/ui_tars_tool_parser.py 1

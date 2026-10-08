@@ -173,9 +173,11 @@ class FunctionaryToolParser(ToolParser):
             return {"content": delta_text}
 
         end_markers = ["<|content|>", "</function>", "]"]
-        if any(m in delta_text for m in end_markers):
+        if any(current_text.count(m) > previous_text.count(m) for m in end_markers):
             result = self.extract_tool_calls(current_text)
             if result.tools_called:
+                previous = self.extract_tool_calls(previous_text)
+                already = len(previous.tool_calls) if previous.tools_called else 0
                 return {
                     "tool_calls": [
                         {
@@ -187,7 +189,9 @@ class FunctionaryToolParser(ToolParser):
                                 "arguments": tc["arguments"],
                             },
                         }
-                        for i, tc in enumerate(result.tool_calls)
+                        for i, tc in enumerate(
+                            result.tool_calls[already:], start=already
+                        )
                     ]
                 }
 

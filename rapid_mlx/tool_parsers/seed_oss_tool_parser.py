@@ -36,6 +36,18 @@ def _generate_tool_id() -> str:
     return f"call_{uuid.uuid4().hex[:8]}"
 
 
+class _ObjectPairs(list):
+    """Keep repeated JSON object keys distinct from array elements."""
+
+
+def _restore_json_value(value):
+    if isinstance(value, _ObjectPairs):
+        return {key: _restore_json_value(item) for key, item in value}
+    if isinstance(value, list):
+        return [_restore_json_value(item) for item in value]
+    return value
+
+
 def _get_arguments_config(func_name: str, tools: list[dict] | None) -> dict:
     """Extract argument config from tools list for type conversion."""
     if tools is None:
@@ -177,6 +189,7 @@ class SeedOssToolParser(ToolParser):
         param_config = _get_arguments_config(function_name, tools)
         parameters = function_call_str[end_index + 1 :]
         param_dict = {}
+        param_pairs = []
         for match in self.tool_call_parameter_regex.findall(parameters):
             match_text = match[0] if match[0] else match[1]
             try:
@@ -189,25 +202,102 @@ class SeedOssToolParser(ToolParser):
                 p_value = p_value[1:]
             if p_value.endswith("\n"):
                 p_value = p_value[:-1]
-            param_dict[p_name] = _convert_param_value(
+            converted = _convert_param_value(
                 p_value, p_name, param_config, function_name
             )
+            param_dict[p_name] = converted
+            param_pairs.append((p_name, converted))
+        arguments = (
+            "{"
+            + ", ".join(
+                f"{json.dumps(key, ensure_ascii=False)}: {json.dumps(value, ensure_ascii=False)}"
+                for key, value in param_pairs
+            )
+            + "}"
+            if len(param_pairs) != len(param_dict)
+            else json.dumps(param_dict, ensure_ascii=False)
+        )
         return {
             "id": _generate_tool_id(),
             "name": function_name,
-            "arguments": json.dumps(param_dict, ensure_ascii=False),
+            "arguments": arguments,
         }
 
+    def _wrapper_start_positions(self, text: str) -> list[int]:
+        """Find outer wrappers, ignoring marker text inside a parameter."""
+        starts = []
+        cursor = 0
+        while (start := text.find(self.tool_call_start_token, cursor)) >= 0:
+            cursor = start + len(self.tool_call_start_token)
+            param_start = text.rfind(self.parameter_prefix, 0, start)
+            param_end = text.rfind(self.parameter_end_token, 0, start)
+            if param_start > param_end:
+                function_end = text.rfind(self.function_end_token, param_start, start)
+                next_body = text[cursor:].lstrip()
+                if function_end < 0 or not next_body.startswith(self.tool_call_prefix):
+                    continue
+            starts.append(start)
+        return starts
+
     def _get_function_calls(self, model_output: str) -> list[str]:
-        matched_ranges = self.tool_call_regex.findall(model_output)
-        raw_tool_calls = [m[0] if m[0] else m[1] for m in matched_ranges]
-        if not raw_tool_calls:
+        starts = self._wrapper_start_positions(model_output)
+        raw_tool_calls = []
+        for index, start in enumerate(starts):
+            limit = starts[index + 1] if index + 1 < len(starts) else len(model_output)
+            end = model_output.rfind(self.tool_call_end_token, start, limit)
+            if end >= 0 and self.function_end_token in model_output[end:limit]:
+                end = limit
+            raw_tool_calls.append(
+                model_output[
+                    start + len(self.tool_call_start_token) : end if end >= 0 else limit
+                ]
+            )
+        if not starts:
             raw_tool_calls = [model_output]
 
-        raw_function_calls = []
+        function_calls = []
         for tc in raw_tool_calls:
-            raw_function_calls.extend(self.tool_call_function_regex.findall(tc))
-        return [m[0] if m[0] else m[1] for m in raw_function_calls]
+            for start, close in self._function_spans(tc):
+                body_start = start + len(self.tool_call_prefix)
+                function_calls.append(tc[body_start : close if close >= 0 else len(tc)])
+        return function_calls
+
+    def _function_spans(self, text: str) -> list[tuple[int, int]]:
+        """Locate function closes outside parameter values."""
+        spans = []
+        cursor = 0
+        while (start := text.find(self.tool_call_prefix, cursor)) >= 0:
+            header_end = text.find(">", start + len(self.tool_call_prefix))
+            if header_end < 0:
+                break
+            scan = header_end + 1
+            close = -1
+            while True:
+                param_start = text.find(self.parameter_prefix, scan)
+                function_end = text.find(self.function_end_token, scan)
+                if function_end < 0:
+                    break
+                if param_start >= 0 and param_start < function_end:
+                    param_end = text.find(self.parameter_end_token, param_start)
+                    if param_end < 0:
+                        break
+                    next_function = text.find(
+                        self.tool_call_prefix,
+                        function_end + len(self.function_end_token),
+                    )
+                    if 0 <= next_function < param_end:
+                        close = function_end
+                        break
+                    scan = param_end + len(self.parameter_end_token)
+                    continue
+                close = function_end
+                break
+            spans.append((start, close))
+            cursor = close + len(self.function_end_token) if close >= 0 else len(text)
+        return spans
+
+    def _function_close_positions(self, text: str) -> list[int]:
+        return [close for _, close in self._function_spans(text) if close >= 0]
 
     def extract_tool_calls(
         self, model_output: str, request: dict[str, Any] | None = None
@@ -270,7 +360,67 @@ class SeedOssToolParser(ToolParser):
             self.TOOL_CALL_START in text
             or self.tool_call_prefix in text
             or self.has_text_format_tool_call(text)
+            or self._safe_content_prefix(text) != text
         )
+
+    def _safe_content_prefix(self, text: str) -> str:
+        marker = self.tool_call_start_token
+        hold = max(
+            (n for n in range(1, len(marker)) if text.endswith(marker[:n])),
+            default=0,
+        )
+        return text[:-hold] if hold else text
+
+    def flush_held_content(self, full_text: str) -> str:
+        if self.tool_call_start_token in full_text:
+            return ""
+        return full_text[len(self._safe_content_prefix(full_text)) :]
+
+    def finalize_legacy_raw_stream(
+        self, model_output: str, request: dict[str, Any] | None = None
+    ) -> dict[str, Any] | None:
+        """Finish an active call and append calls missed after malformed XML."""
+        complete = self.extract_tool_calls(model_output, request)
+        already = len(self.prev_tool_call_arr)
+        if not complete.tools_called or len(complete.tool_calls) <= already:
+            return None
+        fresh = complete.tool_calls[already:]
+        calls = []
+        if self.in_function and self.header_sent:
+            current = fresh.pop(0)
+            if self.json_started:
+                pairs = json.loads(current["arguments"], object_pairs_hook=_ObjectPairs)
+                remaining = pairs[self.param_count :]
+                prefix = ", " if self.param_count and remaining else ""
+                suffix = (
+                    prefix
+                    + ", ".join(
+                        f"{json.dumps(key, ensure_ascii=False)}: {json.dumps(_restore_json_value(value), ensure_ascii=False)}"
+                        for key, value in remaining
+                    )
+                    + "}"
+                )
+            else:
+                suffix = current["arguments"]
+            calls.append({"index": already, "function": {"arguments": suffix}})
+            self.prev_tool_call_arr.append(current)
+            already += 1
+        calls.extend(
+            {
+                "index": index,
+                "id": call["id"],
+                "type": "function",
+                "function": {
+                    "name": call["name"],
+                    "arguments": call["arguments"],
+                },
+            }
+            for index, call in enumerate(fresh, start=already)
+        )
+        self.prev_tool_call_arr.extend(fresh)
+        self.in_function = False
+        self.json_closed = True
+        return {"tool_calls": calls}
 
     def extract_tool_calls_streaming(
         self,
@@ -284,6 +434,83 @@ class SeedOssToolParser(ToolParser):
     ) -> dict[str, Any] | None:
         if not previous_text:
             self._reset_streaming_state()
+
+        # If an in-flight call and another complete call arrive together,
+        # finish the active call first, then feed the remainder through the
+        # completed-call reconciliation below. Otherwise the single-call
+        # state machine returns after the first function close.
+        previous_closes = len(self._function_close_positions(previous_text))
+        close_positions = self._function_close_positions(current_text)
+        current_closes = len(close_positions)
+        if self.in_function and current_closes - previous_closes > 1:
+            split = close_positions[previous_closes] + len(self.function_end_token)
+            if split > len(previous_text):
+                first = self.extract_tool_calls_streaming(
+                    previous_text,
+                    current_text[:split],
+                    current_text[len(previous_text) : split],
+                    request=request,
+                )
+                second = self.extract_tool_calls_streaming(
+                    current_text[:split],
+                    current_text,
+                    current_text[split:],
+                    request=request,
+                )
+                if first and second:
+                    return {
+                        "tool_calls": first.get("tool_calls", [])
+                        + second.get("tool_calls", []),
+                        "content": first.get("content", "") + second.get("content", ""),
+                    }
+                return first or second
+
+        # One model delta may contain several finished calls. Reconcile all
+        # complete calls before the single-call state machine advances once.
+        if not self.in_function and current_closes > previous_closes:
+            complete = self.extract_tool_calls(current_text, request)
+            closed_count = current_closes
+            already = len(self.prev_tool_call_arr)
+            if min(len(complete.tool_calls), closed_count) > already:
+                fresh = complete.tool_calls[already:closed_count]
+                self.prev_tool_call_arr.extend(fresh)
+                completed_starts = [
+                    start
+                    for start, close in self._function_spans(current_text)
+                    if close >= 0
+                ]
+                last_start = completed_starts[closed_count - 1]
+                wrapper_index = (
+                    sum(
+                        start <= last_start
+                        for start in self._wrapper_start_positions(current_text)
+                    )
+                    - 1
+                )
+                self.current_tool_index = max(already + len(fresh) - 1, wrapper_index)
+                self.json_closed = True
+                self.header_sent = True
+                self.is_tool_call_started = True
+                output: dict[str, Any] = {
+                    "tool_calls": [
+                        {
+                            "index": index,
+                            "id": call["id"],
+                            "type": "function",
+                            "function": {
+                                "name": call["name"],
+                                "arguments": call["arguments"],
+                            },
+                        }
+                        for index, call in enumerate(fresh, start=already)
+                    ]
+                }
+                if already == 0:
+                    first_start = current_text.find(self.tool_call_start_token)
+                    prefix = current_text[len(previous_text) : first_start]
+                    if prefix:
+                        output["content"] = prefix
+                return output
 
         if not delta_text:
             return None
@@ -300,8 +527,8 @@ class SeedOssToolParser(ToolParser):
                 self.param_count = 0
                 self.json_started = False
                 self.json_closed = False
-                if self.current_tool_index >= current_text.count(
-                    self.tool_call_start_token
+                if self.current_tool_index >= len(
+                    self._wrapper_start_positions(current_text)
                 ):
                     self.is_tool_call_started = False
                 return None
@@ -327,7 +554,10 @@ class SeedOssToolParser(ToolParser):
             if (
                 self.tool_call_start_token_id is not None
                 and self.tool_call_start_token_id in delta_token_ids
-            ) or self.tool_call_start_token in delta_text:
+            ) or (
+                self.tool_call_start_token in current_text
+                and self.tool_call_start_token not in previous_text
+            ):
                 self.is_tool_call_started = True
                 if self.tool_call_start_token in delta_text:
                     content_before = delta_text[
@@ -343,39 +573,54 @@ class SeedOssToolParser(ToolParser):
                     and delta_text.strip() == ""
                 ):
                     return None
-                return {"content": delta_text}
+                current_safe = self._safe_content_prefix(current_text)
+                previous_safe = self._safe_content_prefix(previous_text)
+                content = current_safe[len(previous_safe) :]
+                return {"content": content} if content else None
 
         # Find current tool call portion
-        tool_starts_count = current_text.count(self.tool_call_start_token)
-        if self.current_tool_index >= tool_starts_count:
-            return None
-
         # Locate tool text
         think_end_idx = 0
         if self.think_end_token in current_text:
             think_end_idx = current_text.find(self.think_end_token) + len(
                 self.think_end_token
             )
-        tool_starts: list[int] = []
-        idx = think_end_idx
-        while True:
-            idx = current_text.find(self.tool_call_start_token, idx)
-            if idx == -1:
-                break
-            tool_starts.append(idx)
-            idx += len(self.tool_call_start_token)
+        tool_starts = [
+            start
+            for start in self._wrapper_start_positions(current_text)
+            if start >= think_end_idx
+        ]
 
         if self.current_tool_index >= len(tool_starts):
             return None
 
         tool_start_idx = tool_starts[self.current_tool_index]
-        tool_end_idx = current_text.find(self.tool_call_end_token, tool_start_idx)
+        next_start = (
+            tool_starts[self.current_tool_index + 1]
+            if self.current_tool_index + 1 < len(tool_starts)
+            else -1
+        )
+        search_end = next_start if next_start >= 0 else len(current_text)
+        # A literal wrapper closer can occur inside a parameter value. The
+        # last closer before the next wrapper belongs to this call.
+        tool_end_idx = current_text.rfind(
+            self.tool_call_end_token, tool_start_idx, search_end
+        )
+        if (
+            tool_end_idx >= 0
+            and self.function_end_token in current_text[tool_end_idx:search_end]
+        ):
+            # The only wrapper closer seen so far was inside a parameter;
+            # the function closes later, before its real wrapper closer.
+            tool_end_idx = -1
         if tool_end_idx == -1:
             tool_text = current_text[tool_start_idx:]
         else:
             tool_text = current_text[
                 tool_start_idx : tool_end_idx + len(self.tool_call_end_token)
             ]
+        function_closes = self._function_close_positions(tool_text)
+        function_close = function_closes[0] if function_closes else -1
 
         # Parse function header
         if not self.header_sent:
@@ -394,15 +639,11 @@ class SeedOssToolParser(ToolParser):
                     # tool call in one chunk.  This prevents header-only output
                     # when coarse deltas (or max_tokens truncation) leave no
                     # further parser calls to emit the arguments.
-                    if self.function_end_token in tool_text:
+                    if function_close >= 0:
                         tools = None
                         if request and isinstance(request, dict):
                             tools = request.get("tools")
-                        fc = tool_text[
-                            func_start : tool_text.find(
-                                self.function_end_token, func_start
-                            )
-                        ]
+                        fc = tool_text[func_start:function_close]
                         parsed = self._parse_xml_function_call(fc, tools)
                         args = parsed["arguments"] if parsed else "{}"
                         self.json_started = True
@@ -444,6 +685,27 @@ class SeedOssToolParser(ToolParser):
         if self.in_function:
             if not self.json_started:
                 self.json_started = True
+                if function_close >= 0:
+                    tools = request.get("tools") if isinstance(request, dict) else None
+                    start = tool_text.find(self.tool_call_prefix) + len(
+                        self.tool_call_prefix
+                    )
+                    parsed = self._parse_xml_function_call(
+                        tool_text[start:function_close], tools
+                    )
+                    arguments = parsed["arguments"] if parsed else "{}"
+                    self.json_closed = True
+                    self.in_function = False
+                    if parsed:
+                        self.prev_tool_call_arr.append(parsed)
+                    return {
+                        "tool_calls": [
+                            {
+                                "index": self.current_tool_index,
+                                "function": {"arguments": arguments},
+                            }
+                        ]
+                    }
                 return {
                     "tool_calls": [
                         {
@@ -454,7 +716,7 @@ class SeedOssToolParser(ToolParser):
                 }
 
             # Check for function end
-            if not self.json_closed and self.function_end_token in tool_text:
+            if not self.json_closed and function_close >= 0:
                 self.json_closed = True
                 self.in_function = False
 
@@ -465,7 +727,8 @@ class SeedOssToolParser(ToolParser):
                 func_start = tool_text.find(self.tool_call_prefix) + len(
                     self.tool_call_prefix
                 )
-                func_content_end = tool_text.find(self.function_end_token, func_start)
+                func_content_end = function_close
+                closing_arguments = "}"
                 if func_content_end != -1:
                     fc = tool_text[func_start:func_content_end]
                     parsed = self._parse_xml_function_call(fc, tools)
@@ -473,12 +736,30 @@ class SeedOssToolParser(ToolParser):
                         self.prev_tool_call_arr.append(
                             {"name": parsed["name"], "arguments": parsed["arguments"]}
                         )
+                        # A chunk can contain the remaining parameter tags
+                        # and the function close together. The older branch
+                        # emitted only `}` here, dropping every parameter
+                        # not seen on a previous chunk.
+                        pairs = json.loads(
+                            parsed["arguments"], object_pairs_hook=_ObjectPairs
+                        )
+                        remaining = pairs[self.param_count :]
+                        if remaining:
+                            prefix = ", " if self.param_count else ""
+                            closing_arguments = (
+                                prefix
+                                + ", ".join(
+                                    f"{json.dumps(key, ensure_ascii=False)}: {json.dumps(_restore_json_value(value), ensure_ascii=False)}"
+                                    for key, value in remaining
+                                )
+                                + "}"
+                            )
 
                 return {
                     "tool_calls": [
                         {
                             "index": self.current_tool_index,
-                            "function": {"arguments": "}"},
+                            "function": {"arguments": closing_arguments},
                         }
                     ]
                 }
@@ -526,9 +807,9 @@ class SeedOssToolParser(ToolParser):
                             )
                             serialized = json.dumps(converted, ensure_ascii=False)
                             if self.param_count == 0:
-                                frag = f'"{param_name}": {serialized}'
+                                frag = f"{json.dumps(param_name, ensure_ascii=False)}: {serialized}"
                             else:
-                                frag = f', "{param_name}": {serialized}'
+                                frag = f", {json.dumps(param_name, ensure_ascii=False)}: {serialized}"
                             self.param_count += 1
                             return {
                                 "tool_calls": [

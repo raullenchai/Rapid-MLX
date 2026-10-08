@@ -58,6 +58,23 @@ class QwenToolParser(ToolParser):
     BRACKET_PATTERN = re.compile(r"\[Calling tool:\s*(\w+)\((\{.*?\})\)\]", re.DOTALL)
 
     _GRAMMAR_SENTINELS = ("<tool_call>", "</tool_call>")
+    _STREAMING_SENTINELS = ("<tool_call>", "[Calling tool:")
+
+    @classmethod
+    def _safe_content_prefix(cls, text: str) -> str:
+        hold = max(
+            (
+                n
+                for marker in cls._STREAMING_SENTINELS
+                for n in range(1, len(marker))
+                if text.endswith(marker[:n])
+            ),
+            default=0,
+        )
+        return text[: len(text) - hold] if hold else text
+
+    def flush_held_content(self, full_text: str) -> str:
+        return full_text[len(self._safe_content_prefix(full_text)) :]
 
     # Grammar-CAPABLE (#558/#1144): overrides ``structure_info`` below. The
     # class-level marker lets the route gate decide the constrained path is
@@ -200,7 +217,11 @@ class QwenToolParser(ToolParser):
         )
 
         if not has_tool_marker:
-            return {"content": delta_text}
+            safe_current = self._safe_content_prefix(current_text)
+            safe_previous = self._safe_content_prefix(previous_text)
+            if len(safe_current) > len(safe_previous):
+                return {"content": safe_current[len(safe_previous) :]}
+            return None
 
         # Use the count of *successfully parsed* tool calls in previous_text
         # as the dedup offset, not raw close-marker count. If a malformed
