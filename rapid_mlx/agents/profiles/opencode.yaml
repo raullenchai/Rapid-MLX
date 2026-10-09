@@ -1,11 +1,12 @@
 name: opencode
 display_name: "OpenCode"
-repo: "sst/opencode"
+repo: "anomalyco/opencode"
 stars: 16000
 
 # OpenCode (opencode.ai) is a Claude-Code-like terminal coding agent.
-# It speaks the OpenAI-compatible chat completions API via the
-# ``@ai-sdk/openai-compatible`` provider; we point that at rapid-mlx.
+# OpenCode 1.x reads `provider`; 2.x reads `providers`.  Keep both shapes in
+# one file so setup works with either installed CLI.  2.x accepts the legacy
+# field but can omit a custom provider from its available model registry.
 #
 # Config lives at ~/.config/opencode/opencode.json (or ./opencode.json in
 # a project root). The ``$schema`` URL is canonical from opencode.ai.
@@ -28,6 +29,23 @@ config:
           }
         }
       },
+      "providers": {
+        "rapid-mlx": {
+          "package": "@opencode/ai/providers/openai-compatible",
+          "name": "Rapid-MLX",
+          "settings": {
+            "baseURL": "{base_url}",
+            "apiKey": "{rapid_api_key}"
+          },
+          "models": {
+            "{model_id}": {
+              "name": "{model_id}",
+              "limit": {"context": {context_length}, "output": 8192},
+              "capabilities": {"tools": true, "input": ["text"], "output": ["text"]}
+            }
+          }
+        }
+      },
       "model": "rapid-mlx/{model_id}"
     }
 
@@ -44,18 +62,42 @@ streaming:
 
 testing:
   binary: opencode
-  # `opencode run '<prompt>'` is the headless one-shot mode (verified
-  # 2026-10-02, opencode 1.18.34: T1–T6 + follow-up pass). `--continue`
-  # appends to the last session in the cwd.
+  # `opencode run '<prompt>'` is headless in both 1.x and 2.x. The test
+  # runner adds `--standalone` for 2.x so it leaves no background service.
   query_cmd: "opencode run '{query}'"
   query_timeout: 120
-  install_cmd: "brew install sst/tap/opencode  # or: npm install -g opencode-ai"
+  install_cmd: "npm install -g @opencode/cli@2  # 1.x: npm install -g opencode-ai@1"
+
+versions:
+  # Early 1.x releases reject unknown top-level keys such as `providers`.
+  - range: ">=1.0,<2.0"
+    config:
+      type: json
+      path: "~/.config/opencode/opencode.json"
+      template: |
+        {
+          "$schema": "https://opencode.ai/config.json",
+          "provider": {
+            "rapid-mlx": {
+              "npm": "@ai-sdk/openai-compatible",
+              "name": "Rapid-MLX",
+              "options": {
+                "baseURL": "{base_url}",
+                "apiKey": "{rapid_api_key}"
+              },
+              "models": {
+                "{model_id}": {}
+              }
+            }
+          },
+          "model": "rapid-mlx/{model_id}"
+        }
 
 capabilities:
   function_calling: true
   streaming: true
 
 known_issues:
-  - "Config schema may need updating across OpenCode versions — if this template doesn't load, run `opencode --help` and check `~/.config/opencode/opencode.json` against the docs at opencode.ai."
-  - "First run of OpenCode may prompt for an Anthropic API key — choose 'skip' since rapid-mlx is providing the model via the openai-compat provider."
-  - "Follow-ups in headless mode: `opencode run --continue '<query>'` reuses the last session in the cwd (verified)."
+  - "OpenCode 2.x may show no models on the first `opencode models` call after service startup; repeat the command. If the model remains absent after setup, run `opencode service restart`."
+  - "After changing OpenCode major versions, re-run setup so 1.x receives only its supported `provider` key."
+  - "Follow-ups in headless mode: `opencode run --continue '<query>'` reuses the last session in the cwd (verified on 1.x)."

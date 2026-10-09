@@ -244,6 +244,11 @@ def setup_agent_config(
         if not dry_run:
             track_agent_configure_failed(error_class, profile.name)
 
+    if profile.name == "opencode" and agent_version is None:
+        from .opencode_version import installed_version
+
+        agent_version = installed_version()
+
     try:
         rendered = profile.render_config(
             base_url, model_id, agent_version, context_length=context_length
@@ -333,6 +338,20 @@ def setup_agent_config(
                 f"Cannot parse existing config at {config_path} ({exc}). "
                 "Fix or remove it manually, then re-run --setup."
             )
+
+        if profile.name == "opencode":
+            import json
+
+            from .opencode_config import reconcile
+
+            try:
+                before = json.loads(merged_text)
+                merged = reconcile(json.loads(merged_text), agent_version)
+            except ValueError as exc:
+                track_failure("config_invalid")
+                return str(exc)
+            if merged != before:
+                merged_text = json.dumps(merged, indent=2, ensure_ascii=False) + "\n"
 
         if dry_run:
             if merged_text == rendered:
@@ -757,6 +776,11 @@ def get_setup_instructions(
             model_id = detected_model
         if context_length is None and detected_ctx is not None:
             context_length = detected_ctx
+
+    if profile.name == "opencode" and agent_version is None:
+        from .opencode_version import installed_version
+
+        agent_version = installed_version()
 
     cfg = profile.get_config_for_version(agent_version)
     rendered = profile.render_config(
