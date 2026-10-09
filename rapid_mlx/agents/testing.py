@@ -997,6 +997,11 @@ def _agent_query(
         for key in _ANTHROPIC_REMOTE_ENV:
             child_env.pop(key, None)
     child_env.update(env_overrides or {})
+    # OpenCode 2.x resolves its workspace from PWD before falling back to the
+    # process cwd. subprocess.run(cwd=...) alone therefore sends its tools to
+    # the caller's repo instead of the fresh E2E workspace.
+    if cwd and Path(binary_path).name == "opencode":
+        child_env["PWD"] = cwd
 
     # DSH rc.6 imports Node's Zstd stream API during profile boot but its npm
     # manifest declares no minimum Node engine.  Node 23.6 therefore installs

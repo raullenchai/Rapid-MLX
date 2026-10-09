@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from rapid_mlx.agents import get_profile, load_profiles
-from rapid_mlx.agents.testing import AgentTestRunner
+from rapid_mlx.agents.testing import AgentTestRunner, _agent_query
 
 
 def setup_function():
@@ -74,3 +74,17 @@ def test_opencode_test_runner_uses_private_server_for_v2():
         assert runner._opencode_query_cmd("opencode run '{query}'") == (
             "opencode run '{query}'"
         )
+
+
+def test_opencode_query_pwd_matches_throwaway_workspace(tmp_path, monkeypatch):
+    monkeypatch.setenv("PWD", "/some/other/repo")
+    with (
+        patch("rapid_mlx.agents.testing.shutil.which", return_value="/bin/opencode"),
+        patch("rapid_mlx.agents.testing.subprocess.run") as run,
+    ):
+        run.return_value = SimpleNamespace(stdout="ok", stderr="", returncode=0)
+        assert _agent_query(
+            "opencode", "opencode run '{query}'", "hello", cwd=str(tmp_path)
+        ) == ("ok", None)
+    assert run.call_args.kwargs["cwd"] == str(tmp_path)
+    assert run.call_args.kwargs["env"]["PWD"] == str(tmp_path)
