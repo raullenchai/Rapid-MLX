@@ -4284,6 +4284,21 @@
        "type": "builtins.int"
       },
       {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": 500.0,
+       "dest": "decode_stall_target_ms",
+       "help": "While a request is decoding, size prompt chunks of a concurrent prefill so the decoder waits about this long between tokens (default: 500). 0 disables the bound.",
+       "metavar": "MS",
+       "nargs": null,
+       "option_strings": [
+        "--decode-stall-target-ms"
+       ],
+       "required": false,
+       "type": "builtins.float"
+      },
+      {
        "class": "argparse._StoreTrueAction",
        "completer": null,
        "const": true,
@@ -6156,6 +6171,7 @@
         "scheduling_policy",
         "scheduling_max_deferrals",
         "shared_prefix_wait_tokens",
+        "decode_stall_target_ms",
         "enable_prefix_cache",
         "disable_prefix_cache",
         "disable_disk_caches",

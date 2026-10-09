@@ -15,6 +15,7 @@ from rapid_mlx import server
 from rapid_mlx.cli import build_parser
 from rapid_mlx.request import Request, RequestStatus, SamplingParams
 from rapid_mlx.scheduler import Scheduler, SchedulerConfig
+from tests.test_adaptive_prefill import _scheduler as _prefill_scheduler
 
 
 def _request(request_id: str, tail: int, *, stop_ids=()) -> Request:
@@ -424,3 +425,156 @@ def test_standalone_server_parser_registers_admission_flags(monkeypatch, capsys)
 
     assert exc.value.code == 2
     assert "invalid choice" in capsys.readouterr().err
+
+
+# --- Decode-stall bound while another prompt prefills ----------------------
+
+
+def _contended(scheduler, *, decoding=1, processed=0, samples=()):
+    bg = scheduler.batch_generator
+    bg._generation_batch = [object()] * decoding
+    bg._currently_processing[0][1] = processed
+    bg.prefill_batch_size = 8
+    scheduler._prefill_cost_samples = deque(samples, maxlen=4)
+    scheduler._decode_stall_chunk_size = None
+    scheduler._decode_stall_bounded_chunks = 0
+    return scheduler
+
+
+def test_decode_stall_bound_is_idle_without_a_decoding_row():
+    scheduler = _contended(_prefill_scheduler(prompt_tokens=16_000), decoding=0)
+    scheduler._prefill_cost_samples.append(0.003)
+    assert scheduler._apply_adaptive_prefill_size() == 2048
+    assert scheduler._decode_stall_bounded_chunks == 0
+
+
+def test_decode_stall_bound_sizes_chunk_from_slowest_recent_cost():
+    # 500 ms at 3.6 ms per row-token is 138 tokens: four whole 32-row tiles.
+    scheduler = _contended(
+        _prefill_scheduler(prompt_tokens=16_000), samples=(0.003, 0.0036)
+    )
+    assert scheduler._apply_adaptive_prefill_size() == 128
+    assert scheduler.batch_generator.prefill_step_size == 128
+    assert scheduler.batch_generator._prompt_batch.prefill_step_size == 128
+    assert scheduler._decode_stall_bounded_chunks == 1
+    # The memory policy's own record is untouched, so the bound releases.
+    assert scheduler._last_adaptive_prefill_size == 2048
+    scheduler.batch_generator._generation_batch = []
+    assert scheduler._apply_adaptive_prefill_size() == 2048
+    assert scheduler._decode_stall_chunk_size is None
+
+
+def test_decode_stall_bound_divides_budget_across_prefilling_rows():
+    scheduler = _contended(_prefill_scheduler(prompt_tokens=16_000), samples=(0.001,))
+    scheduler.batch_generator._currently_processing.append([[[0]], 0, 16_000])
+    assert scheduler._apply_adaptive_prefill_size() == 224  # 500 / 2 rows, tiled
+
+
+def test_decode_stall_bound_respects_floor_and_cold_start():
+    slow = _contended(_prefill_scheduler(prompt_tokens=16_000), samples=(0.1,))
+    assert slow._apply_adaptive_prefill_size() == 64
+    cold = _contended(_prefill_scheduler(prompt_tokens=16_000))
+    assert cold._apply_adaptive_prefill_size() == 256
+
+
+def test_decode_stall_bound_keeps_chunks_on_the_configured_grid():
+    scheduler = _contended(
+        _prefill_scheduler(prompt_tokens=16_000), processed=2048 - 40, samples=(0.0036,)
+    )
+    assert scheduler._apply_adaptive_prefill_size() == 40
+
+
+def test_decode_stall_bound_keeps_every_row_on_the_grid():
+    scheduler = _contended(
+        _prefill_scheduler(prompt_tokens=16_000), processed=2048 - 40, samples=(0.0036,)
+    )
+    rows = scheduler.batch_generator._currently_processing
+    rows.append([[[0]], 100, 16_000])
+    visited = [{row[1]} for row in rows]
+    for _ in range(200):
+        chunk = scheduler._apply_adaptive_prefill_size()
+        for row, seen in zip(rows, visited):
+            row[1] += chunk
+            seen.add(row[1])
+    # Rows at different offsets each end a chunk on every grid position.
+    for row, seen in zip(rows, visited):
+        assert row[1] > 3 * 2048
+        assert {2048, 4096, 6144} <= seen
+
+
+def test_decode_stall_bound_keeps_a_newly_admitted_row_on_the_grid():
+    scheduler = _contended(
+        _prefill_scheduler(prompt_tokens=16_000), processed=2048 - 40, samples=(0.0036,)
+    )
+    bg = scheduler.batch_generator
+    bg._unprocessed_sequences = [object()]
+    # mlx-lm admits a queued row at progress 0 in the same dispatch.
+    chunk = scheduler._apply_adaptive_prefill_size()
+    admitted = [[[0]], 0, 16_000]
+    assert 0 < chunk <= 2048 - admitted[1]
+    bg._currently_processing.append(admitted)
+    bg._unprocessed_sequences = []
+    visited = {0}
+    for row in bg._currently_processing:
+        row[1] += chunk
+    for _ in range(200):
+        chunk = scheduler._apply_adaptive_prefill_size()
+        for row in bg._currently_processing:
+            row[1] += chunk
+        visited.add(admitted[1])
+    assert {2048, 4096} <= visited
+
+
+def test_decode_stall_bound_tolerates_an_unreachable_target():
+    scheduler = _contended(_prefill_scheduler(prompt_tokens=16_000), samples=(1e-9,))
+    scheduler.config.decode_stall_target_ms = 1e308
+    assert scheduler._apply_adaptive_prefill_size() == 2048
+
+
+def test_decode_stall_bound_disabled_by_zero_target():
+    scheduler = _contended(_prefill_scheduler(prompt_tokens=16_000), samples=(0.0036,))
+    scheduler.config.decode_stall_target_ms = 0
+    assert scheduler._apply_adaptive_prefill_size() == 2048
+
+
+def test_prefill_cost_sample_ignores_tiny_chunks():
+    scheduler = _contended(_prefill_scheduler(prompt_tokens=16_000))
+    bg = scheduler.batch_generator
+    bg._prompt_tokens_counter, bg._prompt_time_counter = 0, 0.0
+    before = scheduler._prefill_cost_probe()
+    bg._prompt_tokens_counter, bg._prompt_time_counter = 8, 0.08
+    scheduler._record_prefill_cost(before)
+    assert not scheduler._prefill_cost_samples
+    before = scheduler._prefill_cost_probe()
+    bg._prompt_tokens_counter, bg._prompt_time_counter = 136, 0.48
+    scheduler._record_prefill_cost(before)
+    assert list(scheduler._prefill_cost_samples) == [pytest.approx(0.4 / 128)]
+
+
+def test_decode_stall_config_rejects_invalid_values():
+    with pytest.raises(ValueError):
+        SchedulerConfig(decode_stall_target_ms=-1)
+    with pytest.raises(ValueError):
+        SchedulerConfig(decode_stall_min_chunk_size=0)
+
+
+def test_decode_stall_bound_applies_with_the_pressure_policy_disabled():
+    scheduler = _contended(_prefill_scheduler(prompt_tokens=16_000), samples=[0.001])
+    scheduler.config.adaptive_prefill = False
+    scheduler.config.decode_stall_target_ms = 500
+    dispatched = scheduler._apply_adaptive_prefill_size()
+    assert dispatched == 480
+    bg = scheduler.batch_generator
+    assert bg.prefill_step_size == dispatched
+    assert bg._prompt_batch.prefill_step_size == dispatched
+    assert scheduler._last_adaptive_prefill_size == 2048
+
+
+def test_decode_stall_bound_skips_rows_it_cannot_read():
+    scheduler = _contended(_prefill_scheduler(prompt_tokens=16_000), samples=[0.001])
+    scheduler.config.decode_stall_target_ms = 500
+    bg = scheduler.batch_generator
+    bg._currently_processing = [[[list(range(1))]], [[list(range(1))], 0, 16_000]]
+    assert scheduler._bound_prefill_chunk_for_decode(2048) == 224
+    bg._generation_batch = 3
+    assert scheduler._bound_prefill_chunk_for_decode(2048) == 2048
