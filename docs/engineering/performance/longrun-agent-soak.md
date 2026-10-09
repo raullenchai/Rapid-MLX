@@ -36,6 +36,38 @@ are process limits,
 not a host-wide memory admission controller. A run that reaches either guard
 is a failed soak.
 
+## Background service mode
+
+`--daemon` gives each worker its own HTTP client and growing chat history. The
+history rotates after `--session-max-turns` request attempts to bound a
+24-hour run; each new session starts with its own system prompt. The client
+reconnects after `--reconnect-every` requests. All workers send during each
+`--burst-seconds` window and stop during `--idle-seconds`. Use the primary-model
+`--idle-unload-seconds` serve flag and pass the same value to the harness as
+`--expected-ttl-seconds`. The idle window must also cover the request deadline,
+the server's TTL monitor interval, and the ten-second early probe, so a request
+started at the end of a burst cannot consume the whole idle gap.
+The verdict requires one observed unload per complete idle cycle and a reload
+before each subsequent burst, plus reconnects, session rotations, completed
+answers, correct tool arguments, and the existing cancellation, disconnect,
+probe, and resource checks. It takes an extra probe ten seconds before each
+new burst to prove that cycle unloaded, and checks the reported server TTL.
+During standby the server has no Metal telemetry; the harness checks RSS,
+threads, and open files against the first settled unloaded sample instead.
+
+```sh
+rapid-mlx serve mlx-community/Qwen3.5-4B-MLX-4bit \
+  --host 127.0.0.1 --port 18620 --served-model-name qwen3.5-4b-4bit \
+  --max-num-seqs 6 --cache-memory-mb 1024 \
+  --gpu-memory-utilization 0.35 --enable-prefix-cache --no-thinking --no-mllm \
+  --idle-unload-seconds 30
+python scripts/longrun_agent_soak.py \
+  --daemon --url http://127.0.0.1:18620 --model qwen3.5-4b-4bit \
+  --pid SERVER_PID --duration 86400 --concurrency 6 \
+  --burst-seconds 120 --idle-seconds 180 --expected-ttl-seconds 30 \
+  --output /path/to/run-24h
+```
+
 Qwen3.5-4B's default multimodal lane serializes ArraysCache requests, so this
 command uses `--no-mllm` to exercise concurrent text scheduling. It cannot
 validate the Gemma 4 MLLM failure in [#3303](https://github.com/raullenchai/Rapid-MLX/issues/3303)
@@ -82,3 +114,22 @@ No hang or leak reproduced in this Qwen3.5 text-lane workload. The tested
 symptoms look resolved on current `main` for this workload; the original
 hybrid Qwen3.6 and Gemma 4 MLLM issue configurations still need their own
 model- and hardware-matched qualification. No server fix was needed here.
+
+## 2026-10-08 background service validation
+
+The 30-minute mac-mini validation used six clients, 120-second bursts,
+180-second idle gaps, and a 30-second server idle TTL on
+`mlx-community/Qwen3.5-4B-MLX-4bit`. See the [summary](daemon-soak-2026-10-08-summary.json)
+and [minute samples](daemon-soak-2026-10-08.csv). The harness passed with 183
+successful requests and zero request, probe, or telemetry errors. It completed
+six idle unload cycles and checked five subsequent reloads. The requests
+included 33 required tool calls, 14 stream disconnects, seven cancellations,
+20 client reconnects, and eight session rotations.
+
+The six settled idle RSS samples were 1,544.9, 1,897.7, 2,089.9, 1,348.8,
+1,743.8, and 2,134.1 MB; the last was 589.2 MB above the first, under the
+1,024 MB growth guard. Open files stayed at 200 in every settled idle sample,
+and threads rose from 28 to 33, under the ten-thread guard. The highest sampled
+process RSS was 4,489.4 MB; the highest reported Metal peak was 9.36 GB.
+This 30-minute result qualifies the harness for a detached 24-hour run; the
+24-hour verdict is pending.

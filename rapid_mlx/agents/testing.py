@@ -32,6 +32,7 @@ import httpx
 from ..client_header import RAPID_CLIENT_AGENTS
 from ..http_auth import rapid_mlx_client_headers
 from .base import AgentProfile
+from .opencode_version import installed_version
 
 logger = logging.getLogger(__name__)
 
@@ -997,6 +998,11 @@ def _agent_query(
         for key in _ANTHROPIC_REMOTE_ENV:
             child_env.pop(key, None)
     child_env.update(env_overrides or {})
+    # OpenCode 2.x resolves its workspace from PWD before falling back to the
+    # process cwd. subprocess.run(cwd=...) alone therefore sends its tools to
+    # the caller's repo instead of the fresh E2E workspace.
+    if cwd and Path(binary_path).name == "opencode":
+        child_env["PWD"] = cwd
 
     # DSH rc.6 imports Node's Zstd stream API during profile boot but its npm
     # manifest declares no minimum Node engine.  Node 23.6 therefore installs
@@ -1312,7 +1318,13 @@ def _test_e2e_file_read(
             binary,
             query_cmd,
             (
-                "Read pyproject.toml and copy its first physical line exactly, "
+                "Read "
+                + (
+                    str(Path(workdir, "pyproject.toml"))
+                    if Path(binary).name == "opencode" and " --standalone " in query_cmd
+                    else "pyproject.toml"
+                )
+                + " and copy its first physical line exactly, "
                 "including any leading punctuation. Do not skip comment lines."
             ),
             timeout,
@@ -1439,7 +1451,11 @@ class AgentTestRunner:
     ):
         self.profile = profile
         self.base_url = base_url
-        self.agent_version = agent_version
+        self.agent_version = (
+            installed_version()
+            if profile.name == "opencode" and agent_version is None
+            else agent_version
+        )
 
         # Auto-detect model from server if not specified
         if model_id:
@@ -1487,6 +1503,12 @@ class AgentTestRunner:
         if "/" not in binary and not binary.startswith("~"):
             return shutil.which(binary) is not None
         return os.path.exists(os.path.expanduser(binary))
+
+    def _opencode_query_cmd(self, query_cmd: str) -> str:
+        """Use a private 2.x server so a test cannot leave a service behind."""
+        if self.agent_version and self.agent_version.startswith("2."):
+            return query_cmd.replace("opencode run ", "opencode run --standalone ", 1)
+        return query_cmd
 
     def build_test_plan(self) -> list[str]:
         """Build the list of test names that will run for this profile."""
@@ -1714,6 +1736,8 @@ class AgentTestRunner:
             query_cmd = testing.query_cmd.replace(
                 "{model_id}", shlex.quote(self.model_id)
             )
+            if self.profile.name == "opencode":
+                query_cmd = self._opencode_query_cmd(query_cmd)
             # No shared workspace here on purpose: each _test_e2e_* opens
             # its own, so one invocation's leftovers cannot become the
             # next one's starting condition.

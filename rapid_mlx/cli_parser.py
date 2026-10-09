@@ -675,6 +675,17 @@ def _add_serve_parser(
         ),
     )
     serve_parser.add_argument(
+        "--decode-stall-target-ms",
+        type=float,
+        default=500.0,
+        metavar="MS",
+        help=(
+            "While a request is decoding, size prompt chunks of a concurrent "
+            "prefill so the decoder waits about this long between tokens "
+            "(default: 500). 0 disables the bound."
+        ),
+    )
+    serve_parser.add_argument(
         "--enable-prefix-cache",
         action="store_true",
         default=True,

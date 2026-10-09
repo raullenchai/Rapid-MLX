@@ -289,6 +289,11 @@ def _assemble_stop_tokens(
 # Rows per tile in MLX's quantized matmuls; see
 # ``Scheduler._prefill_tile_rows`` for the measurements behind it.
 _PREFILL_TILE_ROWS = 32
+# Decode-stall bound: prefill cost samples kept, the smallest chunk that
+# counts as a sample, and the row-tokens assumed before any sample exists.
+_PREFILL_COST_SAMPLES = 4
+_PREFILL_COST_MIN_TOKENS = 32
+_PREFILL_COST_COLD_ROW_TOKENS = 256
 # Agent-session prefix policy (docs/engineering/decisions/
 # 2026-09-27-agent-session-prefix-cache.md).
 #
@@ -669,6 +674,18 @@ class SchedulerConfig:
     # beside it. ``0`` disables the wait. Appended for positional callers.
     shared_prefix_wait_tokens: int = 1024
 
+    # Decode-stall bound for prefill beside live decode. mlx-lm runs one
+    # decode step and then one prompt chunk per ``BatchGenerator.next()``, so
+    # a decoding request waits a whole chunk between tokens while a long
+    # prompt prefills next to it. While at least one row is decoding, the
+    # chunk is capped so its predicted time stays near this target; an
+    # uncontended prefill keeps the configured chunk. ``0`` disables the
+    # bound. Appended for positional callers.
+    decode_stall_target_ms: float = 500.0
+    # Smallest chunk the cost estimate may select (per prefilling row). The
+    # last chunk before a grid position can still be shorter.
+    decode_stall_min_chunk_size: int = 64
+
     def __post_init__(self) -> None:
         if (
             isinstance(self.shared_prefix_wait_tokens, bool)
@@ -676,6 +693,19 @@ class SchedulerConfig:
             or self.shared_prefix_wait_tokens < 0
         ):
             raise ValueError("shared_prefix_wait_tokens must be an integer >= 0")
+        if (
+            isinstance(self.decode_stall_target_ms, bool)
+            or not isinstance(self.decode_stall_target_ms, (int, float))
+            or not math.isfinite(self.decode_stall_target_ms)
+            or self.decode_stall_target_ms < 0
+        ):
+            raise ValueError("decode_stall_target_ms must be finite and >= 0")
+        if (
+            isinstance(self.decode_stall_min_chunk_size, bool)
+            or not isinstance(self.decode_stall_min_chunk_size, int)
+            or self.decode_stall_min_chunk_size < 1
+        ):
+            raise ValueError("decode_stall_min_chunk_size must be a positive integer")
         if self.mllm_singleton_fastpath not in ("auto", "off"):
             raise ValueError(
                 "mllm_singleton_fastpath must be 'auto' or 'off', "
@@ -4570,6 +4600,12 @@ class Scheduler:
         self._adaptive_prefill_protected_chunks = 0
         self._adaptive_prefill_reduced_chunks = 0
         self._shared_prefix_waits = 0
+        # Recent prefill cost samples (seconds per row-token) feeding the
+        # decode-stall bound; kept for the scheduler's lifetime so a
+        # contended prefill rarely starts without one.
+        self._prefill_cost_samples: deque[float] = deque(maxlen=_PREFILL_COST_SAMPLES)
+        self._decode_stall_chunk_size: int | None = None
+        self._decode_stall_bounded_chunks = 0
         # D-METAL-CAP: cached per-token KV-cache size for the
         # projection-based admission gate. Auto-derived from the
         # model config on first use (operator override via
@@ -6608,12 +6644,13 @@ class Scheduler:
             return 0
         configured = max(1, int(getattr(self.config, "prefill_step_size", 2048)))
         if not getattr(self.config, "adaptive_prefill", True):
-            bg.prefill_step_size = configured
+            dispatched = self._bound_prefill_chunk_for_decode(configured)
+            bg.prefill_step_size = dispatched
             prompt_batch = getattr(bg, "_prompt_batch", None)
             if prompt_batch is not None:
-                prompt_batch.prefill_step_size = configured
+                prompt_batch.prefill_step_size = dispatched
             self._last_adaptive_prefill_size = configured
-            return configured
+            return dispatched
         selected = self._select_adaptive_prefill_size()
         prompt_tokens = self._active_prefill_token_count()
         minimum_prompt = max(
@@ -6630,10 +6667,14 @@ class Scheduler:
             self._adaptive_prefill_protected_chunks += 1
             if selected < configured:
                 self._adaptive_prefill_reduced_chunks += 1
-        bg.prefill_step_size = selected
+        # The memory policy above is sticky within one prefill; the decode
+        # bound is not, so it is applied to the dispatched size only and
+        # never recorded as the memory-selected chunk.
+        dispatched = self._bound_prefill_chunk_for_decode(selected)
+        bg.prefill_step_size = dispatched
         prompt_batch = getattr(bg, "_prompt_batch", None)
         if prompt_batch is not None:
-            prompt_batch.prefill_step_size = selected
+            prompt_batch.prefill_step_size = dispatched
         previous = getattr(self, "_last_adaptive_prefill_size", None)
         if previous != selected:
             logger.info(
@@ -6647,7 +6688,101 @@ class Scheduler:
                 self._resolve_metal_cap_bytes() / 1e9,
             )
             self._last_adaptive_prefill_size = selected
-        return selected
+        return dispatched
+
+    def _prefill_cost_probe(self) -> tuple[int, float] | None:
+        """Snapshot mlx-lm's prompt counters before a ``next()`` call."""
+        bg: Any = getattr(self, "batch_generator", None)
+        try:
+            return (
+                int(bg._prompt_tokens_counter),
+                float(bg._prompt_time_counter),
+            )
+        except (AttributeError, TypeError, ValueError):
+            return None
+
+    def _record_prefill_cost(self, before: tuple[int, float] | None) -> None:
+        """Record the seconds-per-row-token cost of the chunk just processed."""
+        after = self._prefill_cost_probe()
+        if before is None or after is None:
+            return
+        tokens = after[0] - before[0]
+        elapsed = after[1] - before[1]
+        # A tiny chunk is dominated by the fixed per-forward cost and would
+        # read as an extreme per-token price.
+        if tokens < _PREFILL_COST_MIN_TOKENS or elapsed <= 0:
+            return
+        samples = getattr(self, "_prefill_cost_samples", None)
+        if samples is not None:
+            samples.append(elapsed / tokens)
+
+    def _bound_prefill_chunk_for_decode(self, selected: int) -> int:
+        """Cap the next prompt chunk so a decoding neighbour is not stalled.
+
+        ``selected`` is the chunk the memory policy would dispatch. While a
+        row is decoding, the chunk is sized so that its predicted time, at the
+        slowest recently observed per-row-token cost, stays near
+        ``decode_stall_target_ms``. Each sample amortizes the fixed
+        per-forward cost over its chunk, so the bound settles at the chunk
+        whose whole forward meets the target rather than collapsing. Chunks
+        still end on the ``selected`` grid, so recurrent-state checkpoints
+        land where an unbounded prefill would put them.
+        """
+        target_ms = getattr(self.config, "decode_stall_target_ms", 0) or 0
+        bg = getattr(self, "batch_generator", None)
+        if target_ms <= 0 or bg is None:
+            return selected
+        try:
+            decoding = len(getattr(bg, "_generation_batch", ()) or ())
+        except TypeError:
+            decoding = 0
+        processing = getattr(bg, "_currently_processing", ()) or ()
+        queued = getattr(bg, "_unprocessed_sequences", ()) or ()
+        rows = len(processing)
+        if queued:
+            slots = max(0, int(getattr(bg, "prefill_batch_size", 1)) - rows)
+            rows += min(len(queued), slots)
+        if decoding <= 0 or rows <= 0:
+            if getattr(self, "_decode_stall_chunk_size", None) is not None:
+                logger.info("[decode_stall] prefill chunk bound released")
+                self._decode_stall_chunk_size = None
+            return selected
+        samples = getattr(self, "_prefill_cost_samples", None)
+        if samples:
+            row_tokens = (target_ms / 1000.0) / max(samples)
+        else:
+            row_tokens = _PREFILL_COST_COLD_ROW_TOKENS
+        floor = max(1, int(getattr(self.config, "decode_stall_min_chunk_size", 64)))
+        per_row = int(min(float(selected), row_tokens / rows))
+        # Whole quantized-matmul tiles: a partial tile costs a full one.
+        per_row -= per_row % _PREFILL_TILE_ROWS
+        bounded = min(selected, max(floor, per_row))
+        # One chunk size serves every row, so it stops at the nearest grid
+        # position of any row: no row steps over one of its own, and each
+        # still ends a chunk on every multiple of ``selected``.
+        # A row admitted from the queue in this dispatch starts at 0, a whole
+        # ``selected`` from its first grid position, so it needs no entry.
+        for item in processing:
+            try:
+                to_grid = selected - int(item[1]) % selected
+            except (IndexError, TypeError, ValueError):
+                continue
+            bounded = min(bounded, to_grid)
+        if bounded < selected:
+            self._decode_stall_bounded_chunks = (
+                getattr(self, "_decode_stall_bounded_chunks", 0) + 1
+            )
+        if getattr(self, "_decode_stall_chunk_size", None) is None:
+            logger.info(
+                "[decode_stall] bounding prefill chunk to ~%d tokens "
+                "(target=%.0fms decoding=%d prefilling=%d)",
+                bounded,
+                target_ms,
+                decoding,
+                rows,
+            )
+        self._decode_stall_chunk_size = bounded
+        return bounded
 
     def _infer_kv_dtype_bytes(self, model_config: Any) -> int:
         """Best-effort KV-cache dtype-bytes inference.
@@ -10712,6 +10847,7 @@ class Scheduler:
                     # Tighten that chunk before dispatch when a long cold or
                     # cache-miss prefill is approaching the unified-memory cap.
                     self._apply_adaptive_prefill_size()
+                    _prefill_cost_before = self._prefill_cost_probe()
                     if self._step_timing_enabled:
                         st = getattr(self, "_steptime", None)
                         if st is None:
@@ -10744,6 +10880,7 @@ class Scheduler:
                             st[0], st[1] = [], []
                     else:
                         raw_next = self.batch_generator.next()
+                    self._record_prefill_cost(_prefill_cost_before)
                     # Bound functional recurrent-state graphs without forcing
                     # a host synchronization on every token. The barrier fires
                     # off the live chain DEPTH (steps since the last barrier),
@@ -11425,6 +11562,10 @@ class Scheduler:
                 self, "_adaptive_prefill_reduced_chunks", 0
             ),
             "shared_prefix_waits": getattr(self, "_shared_prefix_waits", 0),
+            "decode_stall_chunk_size": getattr(self, "_decode_stall_chunk_size", None),
+            "decode_stall_bounded_chunks": getattr(
+                self, "_decode_stall_bounded_chunks", 0
+            ),
         }
         # R15-P1 (task #296): disk-backed KV checkpoint counters.
         # Folded straight from the module-level ``disk_kv_checkpoint``
