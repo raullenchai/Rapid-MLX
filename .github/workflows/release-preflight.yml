@@ -250,12 +250,16 @@ jobs:
           # Evaluate the structured JSON offline (no text/regex). check_release_
           # environment.py is unit-tested with mocked responses so the contract
           # is pinned: exactly one required_reviewers rule, reviewer login exactly
-          # raullenchai, prevent_self_review=false, exactly one branch policy
-          # {name: main, type: branch}, and can_admins_bypass exactly false
+          # raullenchai, prevent_self_review=false, exactly the approved branch
+          # inventory (main plus the retained 0.16 policy, if present), and can_admins_bypass exactly false
           # (admin bypass must be disabled; true or missing fails closed).
+          # A normal release accepts the exact approved inventory before or
+          # after cleanup of the 0.16 policy. The frozen route still requires it.
           EXPECTED_BRANCH_ARGS=(--expected-branch main)
           if [ "$TARGET_BRANCH" = "release/0.16.0" ]; then
             EXPECTED_BRANCH_ARGS+=(--expected-branch release/0.16.0)
+          else
+            EXPECTED_BRANCH_ARGS+=(--allow-retained-0160-policy)
           fi
           python3 scripts/check_release_environment.py \
             --environment-json "$RUNNER_TEMP/pf3-env.json" \
