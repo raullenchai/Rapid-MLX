@@ -3,10 +3,12 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import logging
 import os
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from ..config import get_config
@@ -42,6 +44,37 @@ _COMMIT_HEADROOM_SEC = 0.4
 # the v0.12.19 dogfood: a cache written for an older checkpoint / KV dtype was
 # structurally loadable but produced token-id-0-style garbage after restart.
 _PREFIX_CACHE_NAMESPACE_VERSION = 2
+_AUTO_LOAD_SKIPPED_ATTR = "_rapid_mlx_auto_cache_load_skipped"
+
+
+@contextmanager
+def _exclusive_cache_lock(cache_dir: str, *, operation: str):
+    """Protect shared ``.new``/``.old`` paths across automatic load and save.
+
+    Shutdown has a short grace period, so contention skips this best-effort
+    operation. Startup loads also skip: they may run in a deferred task that
+    shutdown waits for, so blocking here could hang teardown behind another
+    process's long save.
+    The lockfile is a permanent sibling: unlinking it would split flock users
+    across different inodes.
+    """
+    lock_path = cache_dir.rstrip(os.sep) + ".txlock"
+    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            logger.warning(
+                "[cache_persist] another server is using %s; skipping automatic %s",
+                cache_dir,
+                operation,
+            )
+            yield False
+            return
+        yield True
+    finally:
+        os.close(fd)
 
 
 def _shutdown_budget_sec() -> float:
@@ -86,12 +119,17 @@ def load_prefix_cache_from_disk() -> None:
         # ``hybrid_reuse_max_entries`` cap. ``protected_import=False`` makes
         # reloaded non-trimmable entries obey the retention bound at commit;
         # only the EXPLICIT ``POST /v1/cache/import`` (#476) pins its entries.
-        loaded = cfg.engine.load_cache_from_disk(d, protected_import=False)
-        if loaded > 0:
-            logger.debug(f"[lifespan] Loaded {loaded} prefix cache entries")
-        else:
-            logger.debug("[lifespan] No prefix cache entries found on disk")
-        _load_radix_index_after_cache(cfg.engine, d)
+        with _exclusive_cache_lock(d, operation="load") as acquired:
+            if not acquired:
+                setattr(cfg.engine, _AUTO_LOAD_SKIPPED_ATTR, True)
+                return
+            loaded = cfg.engine.load_cache_from_disk(d, protected_import=False)
+            if loaded > 0:
+                logger.debug(f"[lifespan] Loaded {loaded} prefix cache entries")
+            else:
+                logger.debug("[lifespan] No prefix cache entries found on disk")
+            _load_radix_index_after_cache(cfg.engine, d)
+            setattr(cfg.engine, _AUTO_LOAD_SKIPPED_ATTR, False)
     except Exception as e:
         logger.warning(f"[lifespan] Failed to load cache from disk: {e}", exc_info=True)
 
@@ -202,31 +240,39 @@ def save_prefix_cache_to_disk(budget_sec: float | None = None) -> None:
     cfg = get_config()
     if cfg.engine is None:
         return
+    if getattr(cfg.engine, _AUTO_LOAD_SKIPPED_ATTR, False):
+        logger.warning(
+            "[cache_persist] startup restore skipped under contention; "
+            "preserving the existing disk snapshot instead of saving an incomplete one"
+        )
+        return
     if budget_sec is None:
         budget_sec = _shutdown_budget_sec()
     should_abort = _make_should_abort(budget_sec) if budget_sec > 0 else None
     try:
         d = get_cache_dir()
-        if should_abort is not None:
-            logger.info(
-                f"[lifespan] Saving prefix cache to {d} "
-                f"(shutdown budget {budget_sec:.1f}s, "
-                f"commit headroom {_COMMIT_HEADROOM_SEC:.1f}s)"
-            )
-        else:
-            logger.info(f"[lifespan] Saving prefix cache to {d} (no shutdown budget)")
-        saved = _call_save_cache_to_disk(cfg.engine, d, should_abort)
-        if saved:
-            logger.info(f"[lifespan] Saved prefix cache to {d}")
-        else:
-            logger.info("[lifespan] No cache to save")
-        # R15-P1 (task #303): radix-index persistence runs AFTER the
-        # entry-cache commit so a torn shutdown can never leave a
-        # ``radix.index`` referencing entries that didn't make it to
-        # disk. The radix is a best-effort accelerator — if this fails,
-        # the next boot just rebuilds from ``_entries``.
-        if saved:
-            _save_radix_index_after_cache(cfg.engine, d)
+        with _exclusive_cache_lock(d, operation="save") as acquired:
+            if not acquired:
+                return
+            if should_abort is not None:
+                logger.info(
+                    f"[lifespan] Saving prefix cache to {d} "
+                    f"(shutdown budget {budget_sec:.1f}s, "
+                    f"commit headroom {_COMMIT_HEADROOM_SEC:.1f}s)"
+                )
+            else:
+                logger.info(
+                    f"[lifespan] Saving prefix cache to {d} (no shutdown budget)"
+                )
+            saved = _call_save_cache_to_disk(cfg.engine, d, should_abort)
+            if saved:
+                logger.info(f"[lifespan] Saved prefix cache to {d}")
+            else:
+                logger.info("[lifespan] No cache to save")
+            # The radix index belongs to the same transaction as the entry
+            # cache; another writer must not replace its directory first.
+            if saved:
+                _save_radix_index_after_cache(cfg.engine, d)
     except Exception as e:
         logger.warning(f"[lifespan] Failed to save cache to disk: {e}", exc_info=True)
 
