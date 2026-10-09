@@ -604,6 +604,8 @@ jobs:
               && inputs.promote_run_id != ''
               && inputs.promote_sha != ''))
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
       - name: Download the notarised DMG artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
@@ -665,8 +667,8 @@ jobs:
           VERSIONED_KEY="rapid-mac/${VERSION}/rapid-mlx-desktop-${DMG_SHA256}.dmg"
           DMG_URL="${CDN_BASE%/}/${VERSIONED_KEY}"
 
-          npx --yes wrangler@4.120.0 r2 object put "${R2_BUCKET}/${VERSIONED_KEY}" \
-            --file "$DMG" --content-type application/x-apple-diskimage --remote
+          python3 scripts/upload_release_r2.py "$DMG" "$R2_BUCKET" "$VERSIONED_KEY" \
+            application/x-apple-diskimage
 
           if [[ "${{ needs.desktop-ready.outputs.signed }}" == "true" ]]; then
             SPARKLE_ZIP="$(find sparkle -maxdepth 1 -type f -name '*.zip' -print -quit)"
@@ -675,8 +677,8 @@ jobs:
               exit 1
             }
             SPARKLE_KEY="rapid-mac/${VERSION}/$(basename "$SPARKLE_ZIP")"
-            npx --yes wrangler@4.120.0 r2 object put "${R2_BUCKET}/${SPARKLE_KEY}" \
-              --file "$SPARKLE_ZIP" --content-type application/zip --remote
+            python3 scripts/upload_release_r2.py "$SPARKLE_ZIP" "$R2_BUCKET" "$SPARKLE_KEY" \
+              application/zip
           fi
 
           # The GitHub Release does not exist yet — it is created only once this
