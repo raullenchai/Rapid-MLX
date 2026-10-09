@@ -8,13 +8,20 @@ claim cost a skipped e2e gate for no reason.
 """
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from rapid_mlx.agents import get_profile, load_profiles
 from rapid_mlx.agents.adapter import setup_agent_config
 from rapid_mlx.agents.opencode_version import installed_version
-from rapid_mlx.agents.testing import AgentTestRunner, _agent_query
+from rapid_mlx.agents.testing import (
+    E2E_FIRST_LINE_TOKEN,
+    AgentTestRunner,
+    TestStatus,
+    _agent_query,
+    _test_e2e_file_read,
+)
 
 
 def setup_function():
@@ -135,3 +142,16 @@ def test_opencode_query_pwd_matches_throwaway_workspace(tmp_path, monkeypatch):
         ) == ("ok", None)
     assert run.call_args.kwargs["cwd"] == str(tmp_path)
     assert run.call_args.kwargs["env"]["PWD"] == str(tmp_path)
+
+
+def test_opencode_file_read_names_the_disposable_file():
+    def answer(binary, query_cmd, query, timeout, cwd, env_overrides):
+        path = Path(cwd, "pyproject.toml")
+        assert binary == "opencode"
+        assert str(path) in query
+        assert path.read_text().startswith(E2E_FIRST_LINE_TOKEN)
+        return E2E_FIRST_LINE_TOKEN, None
+
+    with patch("rapid_mlx.agents.testing._agent_query", side_effect=answer):
+        result = _test_e2e_file_read("opencode", "opencode run '{query}'", 120)
+    assert result.status == TestStatus.PASS

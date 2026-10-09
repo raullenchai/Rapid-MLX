@@ -1318,7 +1318,13 @@ def _test_e2e_file_read(
             binary,
             query_cmd,
             (
-                "Read pyproject.toml and copy its first physical line exactly, "
+                "Read "
+                + (
+                    str(Path(workdir, "pyproject.toml"))
+                    if Path(binary).name == "opencode"
+                    else "pyproject.toml"
+                )
+                + " and copy its first physical line exactly, "
                 "including any leading punctuation. Do not skip comment lines."
             ),
             timeout,
