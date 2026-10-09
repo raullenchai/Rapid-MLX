@@ -179,3 +179,18 @@ def test_unrelated_plist_mutation_is_rejected(inputs, monkeypatch):
     monkeypatch.setattr(target, "replace_plist", corrupt)
     with pytest.raises(ValueError, match="unexpected plist"):
         target.render(**inputs)
+
+
+def test_direct_metadata_import_matches_package_renderer(monkeypatch, inputs):
+    """Exercise fresh direct-script imports even after full-suite collection."""
+    import runpy
+    import sys
+    from unittest.mock import patch
+
+    script = Path(__file__).parents[1] / "scripts" / "release_prepare.py"
+    monkeypatch.syspath_prepend(str(script.parent))
+    with patch.dict(sys.modules):
+        for name in ("check_release_notes", "release_version"):
+            sys.modules.pop(name, None)
+        direct = runpy.run_path(str(script), run_name="__direct_metadata_import__")
+        assert direct["render"](**inputs) == target.render(**inputs)

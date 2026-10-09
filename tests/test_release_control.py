@@ -787,3 +787,25 @@ def test_cli_refuses_noncanonical_origin(tmp_path, monkeypatch, capsys):
     )
     assert target.main(["status", "--version", "0.16.1"]) == 1
     assert "canonical release repository" in capsys.readouterr().err
+
+
+def test_package_cli_import_is_independent_of_prior_script_imports(monkeypatch, capsys):
+    """Full-suite collection must not hide the package-entry compatibility path."""
+    import runpy
+    import sys
+    from unittest.mock import patch
+
+    script = Path(__file__).parents[1] / "scripts" / "release_control.py"
+    monkeypatch.setattr(
+        sys,
+        "path",
+        [entry for entry in sys.path if Path(entry).resolve() != script.parent],
+    )
+    monkeypatch.setattr(sys, "argv", [str(script), "status", "--version", "../bad"])
+    with patch.dict(sys.modules):
+        for name in ("release_prepare", "release_version", "check_release_notes"):
+            sys.modules.pop(name, None)
+        with pytest.raises(SystemExit) as result:
+            runpy.run_path(str(script), run_name="__main__")
+    assert result.value.code == 1
+    assert "invalid release version" in capsys.readouterr().err
