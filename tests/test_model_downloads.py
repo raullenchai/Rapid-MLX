@@ -3,8 +3,9 @@
 import asyncio
 import importlib
 import subprocess
+import sys
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import huggingface_hub
 import pytest
@@ -132,6 +133,21 @@ def test_pinned_download_refuses_a_missing_snapshot(monkeypatch):
     monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot_download)
     monkeypatch.setattr(_mirror, "download_with_mirror_fallback", _fail)
     with pytest.raises(ModelDownloadsDisabledError):
+        _mirror.pinned_snapshot_download("acme/model", _REVISION)
+
+
+def test_pinned_download_cache_miss_stays_failed_if_policy_changes(monkeypatch):
+    from rapid_mlx import _mirror
+
+    model_downloads.configure(True)
+
+    def missing_then_reenable(_repo_id, **_kwargs):
+        model_downloads.configure(False)
+        raise LocalEntryNotFoundError("not cached")
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", missing_then_reenable)
+    monkeypatch.setattr(_mirror, "download_with_mirror_fallback", _fail)
+    with pytest.raises(LocalEntryNotFoundError):
         _mirror.pinned_snapshot_download("acme/model", _REVISION)
 
 
@@ -425,3 +441,155 @@ def test_chat_spawn_forwards_the_flag(monkeypatch, tmp_path, cli):
     )
     proc._rapid_mlx_log.close()
     assert "--disable-model-downloads" in captured["cmd"]
+
+
+def test_whisper_processor_patch_forces_cache_only(monkeypatch):
+    from rapid_mlx.audio.stt import STTEngine
+
+    model_downloads.configure(True)
+    calls = []
+
+    class Processor:
+        @staticmethod
+        def from_pretrained(name, **kwargs):
+            calls.append((name, kwargs))
+            return "processor"
+
+    monkeypatch.setitem(
+        sys.modules, "transformers", SimpleNamespace(WhisperProcessor=Processor)
+    )
+    engine = STTEngine("mlx-community/whisper-large-v3-turbo")
+    engine.model = SimpleNamespace(_processor=None)
+    engine._ensure_whisper_processor()
+    assert engine.model._processor == "processor"
+    assert calls == [("openai/whisper-large-v3-turbo", {"local_files_only": True})]
+
+
+def test_anthropic_download_policy_error_keeps_anthropic_envelope():
+    from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+
+    app = FastAPI()
+    install_exception_handlers(app)
+
+    @app.get("/v1/messages")
+    async def missing():
+        raise ModelDownloadsDisabledError("acme/model", "flag")
+
+    with TestClient(app) as client:
+        response = client.get("/v1/messages")
+    assert response.status_code == 404
+    assert response.json()["type"] == "error"
+    assert response.json()["error"]["type"] == "not_found_error"
+
+
+def test_gemma_remote_loader_stops_at_download_policy(monkeypatch):
+    from rapid_mlx.models import gemma4_text
+
+    model_downloads.configure(True)
+    monkeypatch.setattr(
+        model_downloads,
+        "snapshot_download",
+        lambda _model: model_downloads.check(_model),
+    )
+    monkeypatch.setitem(
+        sys.modules, "mlx_lm.utils", SimpleNamespace(load_tokenizer=_fail)
+    )
+    with pytest.raises(ModelDownloadsDisabledError):
+        gemma4_text._load_gemma4_text_impl(
+            "acme/uncached", resolve_classes=_fail, default_model_type="gemma4"
+        )
+
+
+def test_pinned_hy3_sidecar_stops_at_download_policy(monkeypatch):
+    from rapid_mlx.spec_decode.mtp import hy3_inject
+
+    model_downloads.configure(True)
+    monkeypatch.setattr(
+        model_downloads,
+        "snapshot_download",
+        lambda repo_id, *, revision: model_downloads.check(repo_id),
+    )
+    with pytest.raises(ModelDownloadsDisabledError):
+        hy3_inject._resolve_sidecar_file("acme/sidecar", revision="a" * 40)
+
+
+def test_video_tokenizer_and_model_fallbacks_fail_before_network(monkeypatch):
+    from rapid_mlx.video import engine as video
+
+    model_downloads.configure(True)
+    with pytest.raises(ModelDownloadsDisabledError):
+        video._resolve_tokenizer_path(
+            "/missing", lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("miss"))
+        )
+
+    mlx = ModuleType("mlx")
+    mlx.core = ModuleType("mlx.core")
+
+    class Loader:
+        @classmethod
+        def from_pretrained(cls, path):
+            return (cls.__name__, path)
+
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
+    fake_modules = {
+        "mlx": mlx,
+        "mlx.core": mlx.core,
+        "videox_fun_mlx.models.cogvideox_transformer3d": SimpleNamespace(
+            CogVideoXTransformer3DModel=Loader
+        ),
+        "videox_fun_mlx.models.cogvideox_vae": SimpleNamespace(
+            AutoencoderKLCogVideoX=Loader
+        ),
+        "videox_fun_mlx.models.t5_encoder": SimpleNamespace(T5Encoder=Loader),
+        "videox_fun_mlx.models.tokenizer": SimpleNamespace(T5Tokenizer=Loader),
+        "videox_fun_mlx.pipeline.pipeline_cogvideox_fun_inpaint": SimpleNamespace(
+            CogVideoXFunInpaintPipeline=Loader
+        ),
+        "videox_fun_mlx.pipeline.scheduler": SimpleNamespace(DDIMScheduler=Loader),
+    }
+    for name, module in fake_modules.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setattr(
+        "rapid_mlx._download_gate.split_model_local_snapshot", lambda _model: None
+    )
+    with pytest.raises(ModelDownloadsDisabledError):
+        video.VideoGenerationEngine("acme/uncached")._load_sync()
+
+    model_downloads.configure(False)
+    monkeypatch.setattr(
+        model_downloads, "snapshot_download", lambda _model: "/cached/snapshot"
+    )
+    monkeypatch.setattr(
+        video, "_resolve_tokenizer_path", lambda *_args: "/cached/tokenizer"
+    )
+    pipeline = video.VideoGenerationEngine("acme/model")._load_sync()
+    assert pipeline.kwargs["tokenizer"].args == ("/cached/tokenizer",)
+
+
+@pytest.mark.parametrize(
+    "target,args",
+    [
+        ("rapid_mlx.utils.tokenizer._resolve_model_path", ("acme/model",)),
+        ("rapid_mlx.utils.tokenizer._is_vendored_arch_model", ("acme/model",)),
+        ("rapid_mlx.utils.tokenizer._load_strict_false", ("acme/model",)),
+        ("rapid_mlx.utils.tokenizer._load_with_tokenizer_fallback", ("acme/model",)),
+    ],
+)
+def test_tokenizer_remote_boundaries_use_policy(monkeypatch, target, args):
+    model_downloads.configure(True)
+    function = getattr(
+        importlib.import_module(target.rsplit(".", 1)[0]), target.rsplit(".", 1)[1]
+    )
+    monkeypatch.setattr(
+        model_downloads,
+        "snapshot_download",
+        lambda _model, **_kwargs: model_downloads.check(_model),
+    )
+    if target.endswith(("_load_strict_false", "_load_with_tokenizer_fallback")):
+        with pytest.raises(ModelDownloadsDisabledError):
+            function(*args)
+    else:
+        assert function(*args) in (None, False)
