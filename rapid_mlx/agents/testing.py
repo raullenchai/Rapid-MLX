@@ -32,6 +32,7 @@ import httpx
 from ..client_header import RAPID_CLIENT_AGENTS
 from ..http_auth import rapid_mlx_client_headers
 from .base import AgentProfile
+from .opencode_version import installed_version
 
 logger = logging.getLogger(__name__)
 
@@ -1444,7 +1445,11 @@ class AgentTestRunner:
     ):
         self.profile = profile
         self.base_url = base_url
-        self.agent_version = agent_version
+        self.agent_version = (
+            installed_version()
+            if profile.name == "opencode" and agent_version is None
+            else agent_version
+        )
 
         # Auto-detect model from server if not specified
         if model_id:
@@ -1495,23 +1500,8 @@ class AgentTestRunner:
 
     def _opencode_query_cmd(self, query_cmd: str) -> str:
         """Use a private 2.x server so a test cannot leave a service behind."""
-        version = self.agent_version
-        if version is None:
-            binary = self.profile.testing.binary or "opencode"
-            try:
-                version = subprocess.run(
-                    [binary, "--version"],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                    check=True,
-                ).stdout.strip()
-            except (OSError, subprocess.SubprocessError):
-                return query_cmd
-        if re.search(r"\bv?2\.\d+", version):
-            return query_cmd.replace(
-                "opencode run ", "opencode run --standalone --format json ", 1
-            )
+        if self.agent_version and self.agent_version.startswith("2."):
+            return query_cmd.replace("opencode run ", "opencode run --standalone ", 1)
         return query_cmd
 
     def build_test_plan(self) -> list[str]:

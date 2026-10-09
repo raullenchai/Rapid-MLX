@@ -69,6 +69,31 @@ testing:
   query_timeout: 120
   install_cmd: "brew install sst/tap/opencode  # or: npm install -g opencode-ai"
 
+versions:
+  # Early 1.x releases reject unknown top-level keys such as `providers`.
+  - range: ">=1.0,<2.0"
+    config:
+      type: json
+      path: "~/.config/opencode/opencode.json"
+      template: |
+        {
+          "$schema": "https://opencode.ai/config.json",
+          "provider": {
+            "rapid-mlx": {
+              "npm": "@ai-sdk/openai-compatible",
+              "name": "Rapid-MLX",
+              "options": {
+                "baseURL": "{base_url}",
+                "apiKey": "{rapid_api_key}"
+              },
+              "models": {
+                "{model_id}": {}
+              }
+            }
+          },
+          "model": "rapid-mlx/{model_id}"
+        }
+
 capabilities:
   function_calling: true
   streaming: true

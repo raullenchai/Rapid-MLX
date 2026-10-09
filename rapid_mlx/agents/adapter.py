@@ -244,6 +244,11 @@ def setup_agent_config(
         if not dry_run:
             track_agent_configure_failed(error_class, profile.name)
 
+    if profile.name == "opencode" and agent_version is None:
+        from .opencode_version import installed_version
+
+        agent_version = installed_version()
+
     try:
         rendered = profile.render_config(
             base_url, model_id, agent_version, context_length=context_length
@@ -333,6 +338,21 @@ def setup_agent_config(
                 f"Cannot parse existing config at {config_path} ({exc}). "
                 "Fix or remove it manually, then re-run --setup."
             )
+
+        if (
+            profile.name == "opencode"
+            and agent_version
+            and agent_version.startswith("1.")
+        ):
+            import json
+
+            merged = json.loads(merged_text)
+            native = merged.get("providers")
+            if isinstance(native, dict) and "rapid-mlx" in native:
+                del native["rapid-mlx"]
+                if not native:
+                    del merged["providers"]
+                merged_text = json.dumps(merged, indent=2, ensure_ascii=False) + "\n"
 
         if dry_run:
             if merged_text == rendered:

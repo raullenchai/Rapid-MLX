@@ -2,8 +2,9 @@
 
 [OpenCode](https://github.com/anomalyco/opencode) can use a local rapid-mlx
 model through its OpenAI-compatible chat completions endpoint. OpenCode 1.x
-and 2.x use different custom-provider config keys; `rapid-mlx agents
-opencode --setup` writes both into `~/.config/opencode/opencode.json`.
+and 2.x use different custom-provider config keys. `rapid-mlx agents
+opencode --setup` detects the installed CLI and writes its supported shape
+to `~/.config/opencode/opencode.json`.
 
 ## Setup
 
@@ -24,17 +25,17 @@ already-running service. OpenCode 2.0.26 can return an empty model list on
 the first `opencode models` call after service startup; repeat the command.
 If the list remains stale after setup, run `opencode service restart`, then
 repeat `opencode models`.
-`rapid-mlx agents opencode --test` runs 2.x with `--standalone --format json`,
-which starts a private server for each headless test, exposes tool results to
-the test runner, and closes it afterward. The 1.x test
+`rapid-mlx agents opencode --test` runs 2.x with `--standalone`, which starts a
+private server for each headless test and closes it afterward. The 1.x test
 path continues to use `opencode run`.
 
 ## Config file
 
 The global file is `~/.config/opencode/opencode.json`; a project can also
-provide `opencode.json`. The generated file has these two provider entries
-for the same model. Setup substitutes the actual model ID and context limit
-reported by the running rapid-mlx server.
+provide `opencode.json`. For 2.x, setup writes both provider entries below.
+For 1.x, it writes only the singular `provider` entry because older 1.x
+releases reject the plural key. Setup substitutes the actual model ID and
+context limit reported by the running rapid-mlx server.
 
 ```json
 {
@@ -72,7 +73,9 @@ reported by the running rapid-mlx server.
 ```
 
 The singular `provider` entry is for 1.x. The plural `providers` entry is
-the native 2.x form. Both versions can read this combined file. If your
+the native 2.x form. Re-run setup after changing OpenCode major versions.
+If the CLI is not on `PATH`, pass `--agent-version 1.18.35` or
+`--agent-version 2.0.26` to select the intended shape. If your
 rapid-mlx server requires an API key, setup uses `{env:RAPID_MLX_API_KEY}`
 instead of `not-needed`; export that variable before launching OpenCode.
 

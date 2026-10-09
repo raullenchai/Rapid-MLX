@@ -12,6 +12,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from rapid_mlx.agents import get_profile, load_profiles
+from rapid_mlx.agents.adapter import setup_agent_config
+from rapid_mlx.agents.opencode_version import installed_version
 from rapid_mlx.agents.testing import AgentTestRunner, _agent_query
 
 
@@ -55,25 +57,70 @@ def test_opencode_config_supports_v1_and_v2_custom_providers():
     assert native["models"][model]["limit"] == {"context": 32768, "output": 8192}
     assert native["models"][model]["capabilities"]["tools"] is True
     assert config["model"] == f"rapid-mlx/{model}"
+    old = json.loads(
+        profile.render_config(
+            "http://127.0.0.1:18610/v1", model, "1.2.27", context_length=32768
+        )
+    )
+    assert "providers" not in old
+    assert old["provider"]["rapid-mlx"] == legacy
+
+
+def test_opencode_setup_replaces_own_v2_config_when_using_v1(tmp_path, monkeypatch):
+    profile = get_profile("opencode")
+    assert profile is not None
+    monkeypatch.setenv("HOME", str(tmp_path))
+    with patch(
+        "rapid_mlx.agents.opencode_version.installed_version", return_value="2.0.26"
+    ):
+        setup_agent_config(profile, model_id="local-model")
+    path = tmp_path / ".config/opencode/opencode.json"
+    config = json.loads(path.read_text())
+    assert "providers" in config
+    config["user_setting"] = "preserved"
+    path.write_text(json.dumps(config))
+    with patch(
+        "rapid_mlx.agents.opencode_version.installed_version", return_value="1.2.27"
+    ):
+        setup_agent_config(profile, model_id="local-model")
+    config = json.loads(path.read_text())
+    assert "providers" not in config
+    assert config["provider"]["rapid-mlx"]["options"]["apiKey"] == "not-needed"
+    assert config["user_setting"] == "preserved"
+
+
+def test_opencode_version_detection_parses_major_from_start():
+    with (
+        patch(
+            "rapid_mlx.agents.opencode_version.shutil.which",
+            return_value="/bin/opencode",
+        ) as which,
+        patch("rapid_mlx.agents.opencode_version.subprocess.run") as run,
+    ):
+        run.return_value = SimpleNamespace(stdout="1.2.27\n")
+        assert installed_version() == "1.2.27"
+        run.return_value = SimpleNamespace(stdout="opencode v2.0.26\n")
+        assert installed_version() == "2.0.26"
+        run.return_value = SimpleNamespace(stdout="unknown")
+        assert installed_version() is None
+        run.side_effect = FileNotFoundError("opencode")
+        assert installed_version() is None
+        which.return_value = None
+        assert installed_version() is None
 
 
 def test_opencode_test_runner_uses_private_server_for_v2():
     profile = get_profile("opencode")
     assert profile is not None
-    with patch("rapid_mlx.agents.testing.subprocess.run") as run:
-        run.return_value = SimpleNamespace(stdout="opencode v2.0.26\n")
+    with patch("rapid_mlx.agents.testing.installed_version", return_value="2.0.26"):
         runner = AgentTestRunner(profile, model_id="local-model")
         assert runner._opencode_query_cmd("opencode run '{query}'") == (
-            "opencode run --standalone --format json '{query}'"
+            "opencode run --standalone '{query}'"
         )
-        run.return_value = SimpleNamespace(stdout="1.18.35\n")
-        assert runner._opencode_query_cmd("opencode run '{query}'") == (
-            "opencode run '{query}'"
-        )
-        run.side_effect = FileNotFoundError("opencode")
-        assert runner._opencode_query_cmd("opencode run '{query}'") == (
-            "opencode run '{query}'"
-        )
+    runner = AgentTestRunner(profile, model_id="local-model", agent_version="1.2.27")
+    assert runner._opencode_query_cmd("opencode run '{query}'") == (
+        "opencode run '{query}'"
+    )
 
 
 def test_opencode_query_pwd_matches_throwaway_workspace(tmp_path, monkeypatch):
