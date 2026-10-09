@@ -297,6 +297,12 @@ _PREFILL_TILE_ROWS = 32
 # (an exact repeat cannot trim-one into it). When that gap is this small the
 # second ~full-size entry is not worth its memory.
 _BOUNDARY_SUPERSEDES_PROMPT_MAX_GAP = 64
+
+# A prompt must share at least this many tokens with a stored entry, beyond
+# what the lookup restored, before the prefill stores a snapshot at the end of
+# the shared span. Below it the stored copy costs more than the prefill it
+# would save.
+_SHARED_PREFIX_SNAPSHOT_MIN_TOKENS = 1024
 # Transient memory of a long prefill beyond its own KV (attention scores,
 # chunk activations, recurrent scratch), as a multiple of the prompt's KV.
 # Measured on Qwen3.5-9B-4bit, 23k-token cold prefill, 2048-token chunks:
@@ -9047,6 +9053,98 @@ class Scheduler:
             return 0
         return cached + aligned
 
+    def _shared_prefix_local_split(self, request: Request, pending: int) -> int | None:
+        """Where to split the pending prefill so a snapshot can be stored at
+        the end of the span this prompt shares with a stored entry.
+
+        A prompt can share a long prefix with a stored entry and still not
+        resume from it: prompt state that cannot be rewound is only reusable at
+        the exact length it was stored at. Storing a snapshot where the shared
+        span ends lets the next prompt with that prefix resume there. Returns
+        the split as an offset into the pending tokens, or None.
+        """
+        request.shared_prefix_snapshot_at = 0
+        store: Any = getattr(self, "memory_aware_cache", None)
+        prompt = request.prompt_token_ids or []
+        if store is None or _pflash_compressed(request) or pending <= 1:
+            return None
+        cached = int(request.cached_tokens or 0)
+        shared = min(store.shared_prefix_length(prompt), len(prompt) - 1)
+        if shared - cached < _SHARED_PREFIX_SNAPSHOT_MIN_TOKENS:
+            return None
+        # A split at a tile multiple costs the prefill nothing.
+        local = int(shared - cached)
+        local -= local % self._prefill_tile_rows()
+        if not 0 < local < pending:
+            return None
+        request.shared_prefix_snapshot_at = cached + local
+        return local
+
+    def _snapshot_shared_prefix_segments(self, prompt_responses) -> None:
+        """Store a snapshot when a prefill reaches the split armed by
+        ``_shared_prefix_local_split``."""
+        generator: Any = self.batch_generator
+        if self.memory_aware_cache is None or not prompt_responses:
+            return
+        due: dict[int, Request] = {}
+        for resp in prompt_responses:
+            if getattr(resp, "end_of_prompt", False) or not getattr(
+                resp, "end_of_segment", False
+            ):
+                continue
+            request = self.requests.get(self.uid_to_request_id.get(resp.uid, ""))
+            position = int(getattr(request, "shared_prefix_snapshot_at", 0) or 0)
+            progress = getattr(resp, "progress", None)
+            if (
+                request is None
+                or position <= 0
+                or getattr(request, "output_token_ids", None)
+                or not isinstance(progress, tuple)
+                or not progress
+                or progress[0] != position - int(request.cached_tokens or 0)
+            ):
+                continue
+            due[resp.uid] = request
+        if not due:
+            return
+        try:
+            extracted = generator.extract_cache(list(due))
+        except Exception as exc:
+            logger.debug("[shared_prefix_snapshot] extract_cache failed: %s", exc)
+            return
+        for uid, payload in extracted.items():
+            request = due.get(uid)
+            if request is None or not (
+                isinstance(payload, tuple) and len(payload) == 2
+            ):
+                continue
+            position = int(request.shared_prefix_snapshot_at)
+            # One attempt per request, whatever the outcome.
+            request.shared_prefix_snapshot_at = 0
+            states = self._extract_cache_states(payload[0])
+            reconstructed = (
+                self._reconstruct_cache_from_states(states) if states else None
+            )
+            if not reconstructed:
+                continue
+            self._attach_hybrid_checkpoints(uid, reconstructed, length=position)
+            try:
+                stored = self.memory_aware_cache.store(
+                    list((request.prompt_token_ids or [])[:position]),
+                    reconstructed,
+                    evict_prefixes=False,
+                )
+            except Exception as exc:
+                logger.debug("[shared_prefix_snapshot] store failed: %s", exc)
+                continue
+            if stored:
+                logger.info(
+                    "[shared_prefix_snapshot] request=%s saved %d tokens at the "
+                    "end of a shared prefix",
+                    request.request_id[:12],
+                    position,
+                )
+
     def _resolve_snapshot_boundary(self, request: Request) -> int:
         """Return a usable prompt boundary, arming N-1 reuse when needed.
 
@@ -9525,8 +9623,32 @@ class Scheduler:
                 if 0 < _local < len(tokens_to_process):
                     boundary_local_split = _local
 
+            shared_local_split = self._shared_prefix_local_split(
+                request, len(tokens_to_process)
+            )
+            if shared_local_split == boundary_local_split:
+                shared_local_split = None
+                request.shared_prefix_snapshot_at = 0
+
             try:
-                if boundary_local_split is not None:
+                if shared_local_split is not None:
+                    splits = sorted(
+                        {shared_local_split, boundary_local_split or 0} - {0}
+                    )
+                    edges = [0, *splits, len(tokens_to_process)]
+                    uids = self.batch_generator.insert_segments(
+                        [
+                            [
+                                tokens_to_process[start:end]
+                                for start, end in zip(edges, edges[1:])
+                            ]
+                        ],
+                        max_tokens=[request.sampling_params.max_tokens],
+                        caches=[cache_to_use] if cache_to_use else None,
+                        samplers=[request_sampler],
+                        logits_processors=request_logits_processors,
+                    )
+                elif boundary_local_split is not None:
                     uids = self.batch_generator.insert_segments(
                         [
                             [
@@ -9558,6 +9680,8 @@ class Scheduler:
                     request.cached_tokens = 0
                     request.remaining_tokens = request.prompt_token_ids
                     tokens_to_process = request.prompt_token_ids
+                    # The retry keeps only the message boundary split.
+                    request.shared_prefix_snapshot_at = 0
                     # Recompute split against the now-full prompt
                     # (cached_tokens=0 so boundary == split).
                     retry_boundary = getattr(
@@ -10667,6 +10791,7 @@ class Scheduler:
                         # multi-turn hybrid workloads (segment finished
                         # but prompt still has tail to process).
                         self._snapshot_boundary_segments(prompt_responses)
+                        self._snapshot_shared_prefix_segments(prompt_responses)
                     else:
                         self._fallback_from_unobservable_prompt_runtime()
                         responses = raw_next
