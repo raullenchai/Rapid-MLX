@@ -352,6 +352,68 @@ def test_serve_audio_alias_refuses_offline_uncached(monkeypatch, capsys):
     assert reached_audio_boot == []
 
 
+def test_serve_audio_alias_refuses_when_model_downloads_disabled(monkeypatch, capsys):
+    from rapid_mlx import model_downloads
+    from rapid_mlx.audio import probe
+    from rapid_mlx.audio.registry import AudioAliasEntry
+
+    entry = AudioAliasEntry(
+        alias="whisper",
+        type="stt",
+        hf_id="mlx-community/whisper-tiny-mlx",
+        family="whisper",
+    )
+    monkeypatch.setattr(probe, "is_audio_model_alias", lambda _name: True)
+    monkeypatch.setattr(probe, "require_audio_or_exit", lambda _name: None)
+    monkeypatch.setattr(cli, "_cache_entry_is_runnable", lambda _name: False)
+    monkeypatch.setattr(cli, "_offline_hub_mode_active", lambda: False)
+    monkeypatch.setattr(
+        cli, "_serve_audio_mode", lambda *_a: pytest.fail("audio server booted")
+    )
+    model_downloads.configure(True)
+    try:
+        with (
+            patch.object(cli, "_resolve_audio_model_for_serve", return_value=entry),
+            pytest.raises(SystemExit) as exc,
+        ):
+            cli.serve_command(_make_serve_args("whisper"))
+    finally:
+        model_downloads.configure(False)
+    assert exc.value.code == 1
+    assert "disabled by --disable-model-downloads" in capsys.readouterr().err
+
+
+def test_main_refuses_uncached_repo_when_model_downloads_disabled(monkeypatch, capsys):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "rapid-mlx",
+            "--disable-version-check",
+            "serve",
+            "acme/uncached-model",
+            "--disable-model-downloads",
+        ],
+    )
+    monkeypatch.setattr(cli.os.path, "exists", lambda _path: False)
+    monkeypatch.setattr(cli, "_cache_runnability", lambda _model: False)
+    monkeypatch.setattr(cli, "_offline_hub_mode_active", lambda: False)
+    monkeypatch.setattr(cli, "_offline_complete_cached_snapshot", lambda _model: None)
+    monkeypatch.delenv("RAPID_MLX_AUTO_PULL", raising=False)
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(
+        "rapid_mlx._download_gate.require_repo_cache_probe", lambda _model: False
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.byom.preflight.run_cli_preflight", lambda *_a, **_kw: None
+    )
+    monkeypatch.setattr(cli, "serve_command", lambda *_a: pytest.fail("server booted"))
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 1
+    assert "disabled by --disable-model-downloads" in capsys.readouterr().err
+
+
 def test_gate_does_not_refuse_when_wan_local_dir_set(monkeypatch, capsys, tmp_path):
     """An offline user serving a Wan video alias with a valid
     ``RAPID_MLX_WAN_MODEL_DIR`` local checkpoint must NOT be refused — Wan's

@@ -200,6 +200,10 @@ _HUNK_SPECS = {
     ),
     "install_auto_processor_patch": (
         (
+            "                    from rapid_mlx.model_downloads import hf_hub_download\n",
+            "                    from huggingface_hub import hf_hub_download\n",
+        ),
+        (
             "            # VENDOR-DEVIATION(security): discovering a matching remote model\n"
             "            # type is not consent to execute repository code. Only intercept\n"
             "            # after the caller explicitly opts in.\n"

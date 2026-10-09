@@ -634,7 +634,7 @@ def install_auto_processor_patch(target_model_types, processor_cls):
                         cfg = _json.load(f)
             else:
                 try:
-                    from huggingface_hub import hf_hub_download
+                    from rapid_mlx.model_downloads import hf_hub_download
 
                     cfg_path = hf_hub_download(
                         pretrained_model_name_or_path, "config.json"

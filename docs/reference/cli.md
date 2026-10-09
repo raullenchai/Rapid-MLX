@@ -286,6 +286,7 @@ are the argparse defaults from `rapid_mlx/cli.py`.
 | `--enable-prefix-cache` | Enable prefix caching for repeated prompts | enabled |
 | `--disable-prefix-cache` | Disable prefix caching, in memory and its on-disk snapshot written at shutdown | off |
 | `--disable-disk-caches` | Write no optional caches to disk: no prefix-cache snapshot (none is loaded at startup either), no KV checkpoints, no vision prefix-cache disk tier. Takes precedence over `--kv-disk-checkpoint-interval`, `APC_DISK_ENABLED`, and `RAPID_MLX_PREFIX_CACHE_AUTOLOAD`. Falls back to `RAPID_MLX_DISABLE_DISK_CACHES`. | off |
+| `--disable-model-downloads` | Never download a model. The server starts only when its model is already on disk, and a request that would load any other model (`/v1/audio/*`, `POST /v1/models/load`) gets HTTP 404 `model_not_found`. Provision models with `rapid-mlx pull`, which this switch does not affect. Falls back to `RAPID_MLX_DISABLE_MODEL_DOWNLOADS`. | off |
 | `--prefix-cache-index` | Prefix-cache lookup index: `radix` (token trie, surfaces dedup-bytes-saved on `/metrics`) or `hash` (legacy bisect path) | radix |
 | `--prefix-cache-size` | Max entries in the prefix cache (legacy entry-count mode only) | 100 |
 | `--cache-memory-mb` | Cache memory limit in MB | Auto (~20% of RAM) |
@@ -650,6 +651,7 @@ rapid-mlx chat [model] [options]
 | `--mcp-max-rounds` | Maximum tool-call rounds per turn when `--mcp-config` is set; multi-step tasks may need more | 8 |
 | `--disable-prefix-cache` | Disable reusable on-disk prefix caching for a server spawned by `chat` | off |
 | `--disable-disk-caches` | Pass `--disable-disk-caches` to the server spawned by `chat` | off |
+| `--disable-model-downloads` | Download no model, and pass `--disable-model-downloads` to the server spawned by `chat` | off |
 | `--log-file` | Where the spawned server writes its output (see `serve --log-file`); without it, `chat` keeps the server output in a temporary log file. `-` prints it into the chat session. | temporary log file |
 
 > The REPL defaults to `--no-think` because reasoning models (Qwen3.5, etc.)
@@ -709,7 +711,7 @@ into a single foreground verb.
 rapid-mlx start [profile] [--model MODEL] [--port PORT] [--host HOST]
                 [--no-download] [--dry-run] [--yes] [--no-setup]
                 [--ready-timeout SECONDS] [--disable-disk-caches]
-                [--log-file TARGET]
+                [--disable-model-downloads] [--log-file TARGET]
 ```
 
 ### Options
@@ -726,6 +728,7 @@ rapid-mlx start [profile] [--model MODEL] [--port PORT] [--host HOST]
 | `--no-setup` | Do not write agent configuration after the server is ready; only print instructions. | off |
 | `--ready-timeout` | Seconds to wait for the spawned server to become ready. | `600` |
 | `--disable-disk-caches` | Pass `--disable-disk-caches` to the server. | off |
+| `--disable-model-downloads` | Select only cached models, like `--no-download`, and pass `--disable-model-downloads` to the server. | off |
 | `--log-file` | Where the server writes its output (see `serve --log-file`). | stderr |
 
 ### Behavior
@@ -832,6 +835,7 @@ flag always wins over its env-var fallback when both are set.
 | `RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS` | 15 | Max idle seconds between request-body chunks (slowloris defense); exceeded connections get HTTP 408. 0 disables. |
 | `RAPID_MLX_IDLE_CACHE_CLEAR_SECONDS` | 0 (disabled) | Fallback for `--idle-cache-clear-seconds`: clear reusable KV state after this many idle seconds, keeping model weights loaded. An explicit CLI value (including 0) wins. |
 | `RAPID_MLX_DISABLE_DISK_CACHES` | unset | `1` / `true` / `yes` / `on` / `enable` / `enabled` has the effect of `--disable-disk-caches` for every server, including those started by `chat`, `start`, and `share` |
+| `RAPID_MLX_DISABLE_MODEL_DOWNLOADS` | unset | `1` / `true` / `yes` / `on` / `enable` / `enabled` has the effect of `--disable-model-downloads` for every command and server except `pull` |
 | `RAPID_MLX_LOG_FILE` | unset (stderr) | Fallback for `--log-file`. Commands run with `--json` reject `-`, because stdout carries their JSON output. |
 | `RAPID_MLX_LOG_LEVEL` | unset (INFO) | Fallback for `serve --log-level`. When set, `chat` and `share` no longer force their own level on the server they start. |
 | `RAPID_MLX_WATCHDOG_PPID` | unset (disabled) | Fallback for `--watchdog-ppid`: self-terminate when the parent with this PID dies |

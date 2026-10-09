@@ -2121,7 +2121,7 @@ def _prefetch_config_for_text_lane_guard(model_ref: str) -> None:
     if os.path.exists(model_ref) or hub_offline_mode_active():
         return
     try:
-        from huggingface_hub import hf_hub_download
+        from rapid_mlx.model_downloads import hf_hub_download
 
         hf_hub_download(model_ref, "config.json")
     except Exception:  # noqa: BLE001 — best-effort probe, never fatal
@@ -3039,6 +3039,9 @@ async def _load_dynamic_resident_model(
     resolved_path = resolve_model(
         model_path or (profile.hf_path if profile is not None else model_name)
     )
+    from . import model_downloads
+
+    model_downloads.require_local(resolved_path)
     modality = profile.modality if profile is not None else "text"
     profile_force_text = bool(profile is not None and profile.is_text_only)
     load_path = resolved_path

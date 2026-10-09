@@ -155,7 +155,7 @@ rapid_mlx/tool_parsers/xlam_tool_parser.py 1
 rapid_mlx/turboquant.py 1
 rapid_mlx/utils/chat_template.py 6
 rapid_mlx/utils/decode.py 2
-rapid_mlx/utils/tokenizer.py 18
+rapid_mlx/utils/tokenizer.py 17
 rapid_mlx/video/engine.py 2
 rapid_mlx/video/wan.py 1
 videox_fun_mlx/models/cogvideox_transformer3d.py 2
