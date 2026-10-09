@@ -62,6 +62,7 @@ FIELDS = (
     "model_loaded",
     "model_load_total",
     "model_unload_total",
+    "model_idle_ttl_s",
 )
 
 
@@ -129,6 +130,10 @@ class Soak:
         self.last_load_total = None
         self.last_unload_total = None
         self.unloaded_baseline = None
+        self.last_idle_unload = None
+        self.last_burst_load = None
+        self.completed_idle_cycles = 0
+        self.completed_reload_checks = 0
         self.client = httpx.AsyncClient(
             timeout=httpx.Timeout(args.timeout),
             limits=httpx.Limits(max_connections=args.concurrency + 4),
@@ -461,7 +466,23 @@ class Soak:
         )
         return row
 
-    async def sample(self, minute):
+    def record_lifecycle(self, row, lifecycle):
+        row["model_loaded"] = lifecycle.get("model_loaded", "")
+        row["model_load_total"] = lifecycle.get("load_total", "")
+        row["model_unload_total"] = lifecycle.get("unload_total", "")
+        row["model_idle_ttl_s"] = lifecycle.get("idle_unload_seconds", "")
+        if isinstance(row["model_load_total"], int):
+            if self.first_load_total is None:
+                self.first_load_total = row["model_load_total"]
+            self.last_load_total = row["model_load_total"]
+        if isinstance(row["model_unload_total"], int):
+            if self.first_unload_total is None:
+                self.first_unload_total = row["model_unload_total"]
+            self.last_unload_total = row["model_unload_total"]
+            if self.last_idle_unload is None:
+                self.last_idle_unload = row["model_unload_total"]
+
+    async def sample(self, minute, *, idle_probe=False, burst_probe=False):
         events = self.events[:]
         row = self.event_row(minute, events)
         for path, key in (("/health", "health_ok"), ("/v1/models", "models_ok")):
@@ -469,18 +490,9 @@ class Soak:
                 response = await self.client.get(self.args.url + path, timeout=10)
                 row[key] = int(response.status_code == 200)
                 if path == "/health" and row[key]:
-                    lifecycle = response.json().get("model_lifecycle") or {}
-                    row["model_loaded"] = lifecycle.get("model_loaded", "")
-                    row["model_load_total"] = lifecycle.get("load_total", "")
-                    row["model_unload_total"] = lifecycle.get("unload_total", "")
-                    if isinstance(row["model_load_total"], int):
-                        if self.first_load_total is None:
-                            self.first_load_total = row["model_load_total"]
-                        self.last_load_total = row["model_load_total"]
-                    if isinstance(row["model_unload_total"], int):
-                        if self.first_unload_total is None:
-                            self.first_unload_total = row["model_unload_total"]
-                        self.last_unload_total = row["model_unload_total"]
+                    self.record_lifecycle(
+                        row, response.json().get("model_lifecycle") or {}
+                    )
             except httpx.HTTPError:
                 row[key] = 0
         try:
@@ -518,20 +530,19 @@ class Soak:
             # field from that normal lifecycle transition.
             response = await self.client.get(self.args.url + "/health", timeout=10)
             response.raise_for_status()
-            lifecycle = response.json().get("model_lifecycle") or {}
-            row["model_loaded"] = lifecycle.get("model_loaded", "")
-            row["model_load_total"] = lifecycle.get("load_total", "")
-            row["model_unload_total"] = lifecycle.get("unload_total", "")
-            if isinstance(row["model_load_total"], int):
-                self.last_load_total = row["model_load_total"]
-            if isinstance(row["model_unload_total"], int):
-                self.last_unload_total = row["model_unload_total"]
+            self.record_lifecycle(row, response.json().get("model_lifecycle") or {})
         if self.args.daemon and (
             not isinstance(row["model_loaded"], bool)
             or not isinstance(row["model_load_total"], int)
             or not isinstance(row["model_unload_total"], int)
+            or not isinstance(row["model_idle_ttl_s"], (int, float))
         ):
             raise RuntimeError("model lifecycle telemetry unavailable")
+        if (
+            self.args.daemon
+            and abs(row["model_idle_ttl_s"] - self.args.expected_ttl_seconds) > 0.001
+        ):
+            raise RuntimeError("server idle TTL differs from expected TTL")
         if status_error or (
             row["model_loaded"] is not False
             and (row["metal_active_gb"] is None or row["metal_cache_gb"] is None)
@@ -541,8 +552,8 @@ class Soak:
             raise RuntimeError(f"RSS budget exceeded: {row['rss_mb']} MB")
         cycle = self.args.burst_seconds + self.args.idle_seconds
         phase = (time.monotonic() - self.start) % cycle
-        settled_idle = (
-            self.args.daemon and self.args.burst_seconds <= phase < cycle - 15
+        settled_idle = self.args.daemon and (
+            idle_probe or self.args.burst_seconds <= phase < cycle - 15
         )
         if row["model_loaded"] is False and settled_idle:
             if self.unloaded_baseline is None:
@@ -559,6 +570,19 @@ class Soak:
             metal_total = row["metal_active_gb"] + row["metal_cache_gb"]
             if metal_total > self.args.max_metal_gb:
                 raise RuntimeError(f"Metal budget exceeded: {metal_total} GB")
+        if idle_probe:
+            if row["model_loaded"] is not False:
+                raise RuntimeError("model still loaded at end of idle window")
+            if row["model_unload_total"] <= self.last_idle_unload:
+                raise RuntimeError("model did not unload in this idle cycle")
+            self.last_idle_unload = row["model_unload_total"]
+            self.completed_idle_cycles += 1
+        if burst_probe:
+            if self.last_burst_load is not None:
+                if row["model_load_total"] <= self.last_burst_load:
+                    raise RuntimeError("model did not reload for this burst")
+                self.completed_reload_checks += 1
+            self.last_burst_load = row["model_load_total"]
 
     async def run(self):
         workers = []
@@ -572,11 +596,33 @@ class Soak:
                 for i in range(self.args.concurrency)
             ]
             minute = 1
+            cycle_minutes = int((self.args.burst_seconds + self.args.idle_seconds) / 60)
             while time.monotonic() < self.stop:
                 await asyncio.sleep(
                     max(0, min(self.stop, self.start + minute * 60) - time.monotonic())
                 )
-                await self.sample(minute)
+                await self.sample(
+                    minute,
+                    burst_probe=(
+                        self.args.daemon
+                        and minute % cycle_minutes == 1
+                        and minute * 60 < self.args.duration
+                    ),
+                )
+                if (
+                    self.args.daemon
+                    and (minute + 1) % cycle_minutes == 0
+                    and (minute + 1) * 60 <= self.args.duration
+                ):
+                    await asyncio.sleep(
+                        max(
+                            0,
+                            self.start + (minute + 1) * 60 - 10 - time.monotonic(),
+                        )
+                    )
+                    await self.sample(
+                        f"idle-{(minute + 1) // cycle_minutes}", idle_probe=True
+                    )
                 minute += 1
             await asyncio.wait_for(
                 asyncio.gather(*workers),
@@ -623,10 +669,9 @@ class Soak:
                     or (
                         self.last_load_total is not None
                         and self.last_unload_total is not None
-                        and self.last_load_total - self.first_load_total
+                        and self.completed_reload_checks
                         >= max(0, expected_idle_cycles - 1)
-                        and self.last_unload_total - self.first_unload_total
-                        >= expected_idle_cycles
+                        and self.completed_idle_cycles >= expected_idle_cycles
                         and self.unloaded_baseline is not None
                         and self.totals["reconnects"] > 0
                         and self.totals["session_rotations"] > 0
@@ -651,6 +696,8 @@ class Soak:
                         "expected_idle_cycles": expected_idle_cycles
                         if self.args.daemon
                         else None,
+                        "completed_idle_cycles": self.completed_idle_cycles,
+                        "completed_reload_checks": self.completed_reload_checks,
                         "passed": passed,
                         "failure": str(failure) if failure else None,
                     },
@@ -707,6 +754,12 @@ def main():
     ):
         parser.error(
             "idle-seconds must cover the request deadline, idle TTL, and a 30-second monitor margin"
+        )
+    if args.daemon and (
+        args.burst_seconds < 60 or (args.burst_seconds + args.idle_seconds) % 60 != 0
+    ):
+        parser.error(
+            "daemon bursts must be at least 60 seconds and cycles must align to minutes"
         )
     args.output.mkdir(parents=True, exist_ok=True)
     asyncio.run(Soak(args).run())

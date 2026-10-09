@@ -50,9 +50,10 @@ the end of a burst cannot consume the whole idle gap.
 The verdict requires one observed unload per complete idle cycle and a reload
 before each subsequent burst, plus reconnects, session rotations, completed
 answers, correct tool arguments, and the existing cancellation, disconnect,
-probe, and resource checks. During standby the server has no Metal telemetry;
-the harness checks RSS, threads, and open files against the first settled
-unloaded sample instead.
+probe, and resource checks. It takes an extra probe ten seconds before each
+new burst to prove that cycle unloaded, and checks the reported server TTL.
+During standby the server has no Metal telemetry; the harness checks RSS,
+threads, and open files against the first settled unloaded sample instead.
 
 ```sh
 rapid-mlx serve mlx-community/Qwen3.5-4B-MLX-4bit \
