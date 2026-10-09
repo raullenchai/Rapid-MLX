@@ -677,6 +677,67 @@ def test_serve_command_downloads_qualified_glm_tensorfold_target(
     assert ns.model == "/pinned/glm-target"
 
 
+@pytest.mark.parametrize(
+    "alias",
+    [
+        "nemotron-3.5-lightning-tensorfold",
+        "qwen3.8-flash-next-tensorfold",
+        "deepseek-v4-flash-tensorfold",
+    ],
+)
+def test_serve_command_downloads_qualified_family_tensorfold_target(
+    stub_heavy_serve_deps, monkeypatch, scheduler_config_stub, alias
+):
+    from types import SimpleNamespace
+
+    from rapid_mlx.speculative import tensorfold_families
+
+    family = tensorfold_families.PROFILES[alias]
+    head_path = "/pinned/family-head" if family.drafter else ""
+    disk_checks: list[tuple[str, str | None]] = []
+    downloaded = []
+    monkeypatch.setattr(cli, "_check_alias_min_memory", lambda *_a, **_k: None)
+    monkeypatch.setattr(cli, "_preflight_tensorfold_qwen27_or_exit", lambda _args: None)
+    monkeypatch.setattr(
+        cli,
+        "_check_disk_space",
+        lambda repo, *, revision_override=None, **_kwargs: disk_checks.append(
+            (repo, revision_override)
+        ),
+    )
+
+    def fake_download(profile, *, before_drafter):
+        # The target lands first; the real resolver then runs the hook.
+        downloaded.append(profile)
+        assert disk_checks == [(family.target, family.target_revision)]
+        if profile.drafter is not None:
+            before_drafter()
+        return SimpleNamespace(
+            target_path="/pinned/family-target", drafter_path=head_path
+        )
+
+    monkeypatch.setattr(
+        tensorfold_families, "download_qualified_artifacts", fake_download
+    )
+    monkeypatch.setattr(
+        cli, "_serve_tensorfold_mtp_if_requested", lambda *_a, **_k: True
+    )
+    ns = _minimal_serve_ns()
+    ns.model = family.target
+    ns._original_alias = alias
+    ns.mtp_backend = "tensorfold"
+
+    cli.serve_command(ns)
+
+    assert downloaded == [family]
+    expected_checks = [(family.target, family.target_revision)]
+    if family.drafter is not None:
+        expected_checks.append((family.drafter, family.drafter_revision))
+    assert disk_checks == expected_checks
+    assert ns.model == "/pinned/family-target"
+    assert ns._tensorfold_head_path == head_path
+
+
 def test_tensorfold_alias_preflights_downloads_pair_and_dispatches_server(
     stub_heavy_serve_deps, monkeypatch, scheduler_config_stub
 ):
@@ -737,6 +798,53 @@ def test_tensorfold_alias_preflights_downloads_pair_and_dispatches_server(
     assert kwargs["main_model_revision"] is None
     assert kwargs["drafter_revision"] is None
     assert kwargs["experimental_opt_in"] is True
+
+
+def test_paired_family_alias_downloads_its_pair_and_dispatches_family_server(
+    stub_heavy_serve_deps, monkeypatch, scheduler_config_stub
+):
+    """A repository shared with an ordinary alias still reaches its profile."""
+    from types import SimpleNamespace
+
+    from rapid_mlx.speculative import tensorfold_families
+
+    family = tensorfold_families.PROFILES["bonsai2-27b-tensorfold"]
+    events: list[object] = []
+    artifacts = SimpleNamespace(
+        target_path="/qualified/target", drafter_path="/qualified/drafter"
+    )
+    monkeypatch.setattr(
+        cli,
+        "_preflight_tensorfold_qwen27_or_exit",
+        lambda args: events.append(("preflight", args._original_alias)),
+    )
+    monkeypatch.setattr(cli, "_check_alias_min_memory", lambda *_a, **_k: None)
+    monkeypatch.setattr(cli, "_check_disk_space", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        tensorfold_families,
+        "download_qualified_artifacts",
+        lambda profile: events.append(("download", profile)) or artifacts,
+    )
+    monkeypatch.setattr(
+        tensorfold_families,
+        "run_tensorfold_family_server",
+        lambda profile, **kwargs: events.append(("server", profile, kwargs)),
+    )
+
+    ns = _minimal_serve_ns()
+    ns.model = family.target
+    ns._original_alias = family.profile_id
+    ns._dflash_experimental = True
+
+    cli.serve_command(ns)
+
+    assert events[0] == ("preflight", family.profile_id)
+    assert events[1] == ("download", family)
+    kind, profile, kwargs = events[-1]
+    assert (kind, profile) == ("server", family)
+    assert kwargs["main_model_repo"] == artifacts.target_path
+    assert kwargs["drafter_repo"] == artifacts.drafter_path
+    assert kwargs["served_model_name"] == family.profile_id
 
 
 def test_serve_command_threads_auto_detected_hybrid_into_cache_admission(

@@ -188,6 +188,7 @@ class RequestOutputCollector:
                 new.spec_decode_metrics or existing.spec_decode_metrics
             ),
             prompt_compression=(new.prompt_compression or existing.prompt_compression),
+            timing_metrics=new.timing_metrics or existing.timing_metrics,
         )
 
     def clear(self) -> None:

@@ -49,6 +49,13 @@ from typing import Any, cast
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 
+from rapid_mlx import __version__ as _rapid_mlx_version
+from rapid_mlx.runtime.base_runtime import (
+    homebrew_runtime_hint,
+    is_homebrew_interpreter,
+    runtime_install_spec,
+)
+
 # ---------------------------------------------------------------------------
 # Data model
 # ---------------------------------------------------------------------------
@@ -187,7 +194,13 @@ _SUPPORTED_VERSIONS: dict[str, str] = {
 # (warning) not ✗ — that's the whole point of "optional". The hint is
 # echoed verbatim in the report so the user can copy-paste.
 OPTIONAL_PACKAGES: list[tuple[str, str, str]] = [
-    ("mlx-vlm", "mlx-vlm (vision extras)", "rapid-mlx[vision]"),
+    # mlx-vlm ships in the base install; a missing copy is repaired by
+    # reinstalling the pinned base package, not by an opt-in extra.
+    (
+        "mlx-vlm",
+        "mlx-vlm (vision runtime)",
+        runtime_install_spec("vision", _rapid_mlx_version),
+    ),
     ("mlx-audio", "mlx-audio (audio extras)", "rapid-mlx[audio]"),
     (
         "mlx-embeddings",
@@ -1747,6 +1760,10 @@ def _install_location(exe: Path | None = None) -> tuple[str, Path]:
     display = raw.absolute()
     parts = exe.parts
     lower = str(exe).lower()
+    # The Homebrew formula's libexec interpreter looks like a virtualenv; label
+    # it Homebrew first so nobody is told to pip-install into a managed env.
+    if is_homebrew_interpreter(str(display)) or is_homebrew_interpreter(str(exe)):
+        return "Homebrew", display
     if "uv/tools" in lower or "/uv/tools/" in lower:
         return "uv tool", display
     if "pipx" in lower:
@@ -2295,6 +2312,13 @@ def section_optional_packages() -> Section:
     bundled = sidecar_root is not None
     audio_contract = _AUDIO_DESKTOP_IMPORTS if bundled else _AUDIO_IMPORTS
     repair_hint = _sidecar_repair_hint(sidecar_root) if sidecar_root else None
+    # The text-only Homebrew formula omits the vision runtime on purpose:
+    # point at the full PyPI install instead of mutating its managed env.
+    homebrew_vision_hint = (
+        homebrew_runtime_hint("vision", _rapid_mlx_version)
+        if not repair_hint and is_homebrew_interpreter(str(runtime))
+        else None
+    )
     runtime_probe = (
         _probe_runtime(
             runtime,
@@ -2313,6 +2337,8 @@ def section_optional_packages() -> Section:
         hint = (
             repair_hint
             if repair_hint
+            else homebrew_vision_hint
+            if homebrew_vision_hint and dist == "mlx-vlm"
             else _runtime_pip_command(install_hint, runtime=runtime)
         )
         ver = (
@@ -2335,9 +2361,11 @@ def section_optional_packages() -> Section:
             supported = _SUPPORTED_VERSIONS[dist]
             if repair_hint:
                 repair = repair_hint
+            elif homebrew_vision_hint and dist == "mlx-vlm":
+                repair = homebrew_vision_hint
             else:
                 repair = _runtime_pip_command(
-                    "rapid-mlx[vision]",
+                    runtime_install_spec("vision", _rapid_mlx_version),
                     f"transformers{_SUPPORTED_VERSIONS['transformers']}",
                     runtime=runtime,
                 )
@@ -2562,11 +2590,19 @@ def section_optional_packages() -> Section:
     # mlx-embeddings this row is a real contract on a bundled sidecar and stays
     # gradeable; only the remediation wording changes.
     dflash_min = (0, 5, 0)
-    dflash_hint = repair_hint or _runtime_pip_command(
-        "rapid-mlx[dflash]", runtime=runtime
+    dflash_hint = (
+        repair_hint
+        or homebrew_vision_hint
+        or _runtime_pip_command(
+            runtime_install_spec("dflash", _rapid_mlx_version), runtime=runtime
+        )
     )
-    vision_hint = repair_hint or _runtime_pip_command(
-        "rapid-mlx[vision]", runtime=runtime
+    vision_hint = (
+        repair_hint
+        or homebrew_vision_hint
+        or _runtime_pip_command(
+            runtime_install_spec("vision", _rapid_mlx_version), runtime=runtime
+        )
     )
     vlm_ver = (
         _safe_version("mlx-vlm", runtime)
@@ -3066,24 +3102,52 @@ def section_optional_tools(
 # ---------------------------------------------------------------------------
 
 
+def _continue_config_path(home: Path) -> Path:
+    """The file Continue reads: config.yaml when present, else config.json
+    (Continue's ``getPrimaryConfigFilePath``), under ``CONTINUE_GLOBAL_DIR``
+    or ``~/.continue``."""
+    configured = os.environ.get("CONTINUE_GLOBAL_DIR", "").strip()
+    root = Path(configured).expanduser() if configured else home / ".continue"
+    yaml_path = root / "config.yaml"
+    return yaml_path if yaml_path.is_file() else root / "config.json"
+
+
+def _cline_providers_path(home: Path) -> Path:
+    """Cline's shared provider settings (CLI and VS Code extension)."""
+    data_dir = os.environ.get("CLINE_DATA_DIR", "").strip()
+    if data_dir:
+        return Path(data_dir).expanduser() / "settings/providers.json"
+    cline_dir = os.environ.get("CLINE_DIR", "").strip()
+    root = Path(cline_dir).expanduser() if cline_dir else home / ".cline"
+    return root / "data/settings/providers.json"
+
+
+def _cline_file_is_valid(data: object) -> bool:
+    """Cline reads a providers.json failing its schema as empty."""
+    from rapid_mlx.launch.cline import is_valid_providers_file
+
+    return is_valid_providers_file(data)
+
+
+def _read_config(path: Path) -> object:
+    text = path.read_text(encoding="utf-8")
+    if path.suffix == ".yaml":
+        import yaml
+
+        try:
+            return yaml.safe_load(text)
+        except yaml.YAMLError as exc:
+            raise ValueError(str(exc)) from exc
+    return json.loads(text)
+
+
 def _agent_integrations(home: Path) -> list[tuple[str, Path, str | None]]:
     """Read the local endpoint selected by each supported agent client."""
     configs = [
         ("Claude Code", home / ".claude/settings.json"),
-        ("Continue.dev", home / ".continue/config.json"),
+        ("Continue.dev", _continue_config_path(home)),
+        ("Cline", _cline_providers_path(home)),
     ]
-    cline_roots = (
-        home / "Library/Application Support/Code/User/globalStorage",
-        home / "Library/Application Support/Code - Insiders/User/globalStorage",
-        home / "Library/Application Support/VSCodium/User/globalStorage",
-        home / ".config/Code/User/globalStorage",
-        home / ".config/Code - Insiders/User/globalStorage",
-        home / ".config/VSCodium/User/globalStorage",
-    )
-    configs.extend(
-        ("Cline", root / "saoudrizwan.claude-dev/settings/cline_mcp_settings.json")
-        for root in cline_roots
-    )
 
     integrations: list[tuple[str, Path, str | None]] = []
     for name, path in configs:
@@ -3091,26 +3155,34 @@ def _agent_integrations(home: Path) -> list[tuple[str, Path, str | None]]:
             continue
         url = None
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = _read_config(path)
             if not isinstance(data, dict):
                 integrations.append((name, path, None))
                 continue
             if name == "Claude Code" and isinstance(data.get("env"), dict):
                 url = data["env"].get("ANTHROPIC_BASE_URL")
             elif name == "Continue.dev" and isinstance(data.get("models"), list):
+                # config.yaml names models ``name``; legacy config.json ``title``.
                 url = next(
                     (
                         model.get("apiBase")
                         for model in data["models"]
                         if isinstance(model, dict)
-                        and model.get("title") == "rapid-mlx"
+                        and (model.get("name") or model.get("title")) == "rapid-mlx"
                         and model.get("provider") == "openai"
                     ),
                     None,
                 )
-            elif name == "Cline" and data.get("apiProvider") == "openai":
-                url = data.get("openAiBaseUrl")
-        except (OSError, UnicodeError, json.JSONDecodeError):
+            elif name == "Cline" and _cline_file_is_valid(data):
+                entry = data["providers"].get("openai-compatible")
+                settings = entry.get("settings") if isinstance(entry, dict) else None
+                if data.get("lastUsedProvider") == "openai-compatible" and isinstance(
+                    settings, dict
+                ):
+                    url = settings.get("baseUrl")
+        except (OSError, UnicodeError, ValueError):
+            # Unreadable or unparsable (JSONDecodeError, wrapped YAMLError):
+            # reported as "not configured".
             pass
         integrations.append((name, path, url if isinstance(url, str) else None))
     return integrations

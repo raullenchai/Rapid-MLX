@@ -249,6 +249,15 @@ class TestIncrementalCacheEval:
         mock_request.arrival_time = now - 2.0
         mock_request._prefill_started_at = now - 1.5
         mock_request.first_token_time = now - 1.0
+        # Monotonic twins read by the terminal timing snapshot.
+        mono = time.monotonic()
+        mock_request._arrival_monotonic = mono - 2.0
+        mock_request._first_token_monotonic = mono - 1.0
+        # No reasoning parser on this request. A bare MagicMock here reads
+        # as "scope stop strings to the answer" and sends mock text into
+        # the real stop matcher.
+        mock_request.sampling_params.stop = []
+        mock_request.sampling_params.reasoning_stop_scope = None
         scheduler.running["req-1"] = mock_request
         scheduler.uid_to_request_id[42] = "req-1"
 

@@ -17,6 +17,7 @@ from typing import Any, cast
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 
+from .._env import env_falsey
 from ..api.errors import CHAT_RESPONSE_FORMAT_PARAM, GuidedGenerationCancelledError
 from ..api.models import (
     AssistantMessage,
@@ -123,6 +124,9 @@ from ..service.helpers import (
     _validate_tool_call_params,
     _wait_with_disconnect,
     build_extended_sampling_kwargs,
+    context_overflow_from_client_error,
+    context_overflow_from_guided_limit,
+    context_window_exhausted,
     dry_sampling_kwargs,
     enable_thinking_warning_header,
     enforce_context_length,
@@ -692,17 +696,13 @@ def _constrain_tools_opted_out() -> bool:
     """True iff the operator has EXPLICITLY disabled constrained tool-calling.
 
     #558 PR-5 flips the default to ON. ``RAPID_MLX_CONSTRAIN_TOOLS`` is now an
-    OPT-OUT toggle: only the explicit values ``0`` / ``off`` / ``false`` (case-
-    insensitive, whitespace-trimmed) disable the feature; an absent var — or any
+    OPT-OUT toggle: only a falsey value (``rapid_mlx._env.FALSEY_VALUES``, case-
+    insensitive, whitespace-trimmed) disables the feature; an absent var — or any
     other value — leaves it ON. When opted out the chat route restores the
     legacy free-form-then-parse behavior for tool calls, including the #561
     oversized-schema free-form fallback (no HTTP 400).
     """
-    return os.environ.get("RAPID_MLX_CONSTRAIN_TOOLS", "1").strip().lower() in (
-        "0",
-        "off",
-        "false",
-    )
+    return env_falsey("RAPID_MLX_CONSTRAIN_TOOLS")
 
 
 def _tool_parser_supports_grammar(cfg) -> bool:
@@ -5653,6 +5653,9 @@ async def _create_chat_completion_impl(
                     timeout=request.timeout or cfg.default_timeout,
                 )
             except ClientRequestError as exc:
+                _context_error = context_overflow_from_client_error(exc)
+                if _context_error is not None:
+                    raise _context_error from exc
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
             except InferenceAbortedError as exc:
                 # #3564: the MLLM preflight runs BEFORE StreamingResponse
@@ -5822,6 +5825,11 @@ async def _create_chat_completion_impl(
                 # unchanged so the 408 / 499 / 503 mapping kicks in.
                 raise
             except Exception as guided_err:
+                _guided_context_error = context_overflow_from_guided_limit(
+                    engine, guided_err
+                )
+                if _guided_context_error is not None:
+                    raise _guided_context_error from guided_err
                 # Codex r6 BLOCKING parity (non-streaming chat path):
                 # under strict=true, falling back to ``engine.chat``
                 # IS the H-06 hole — the buffered post-decode validator
@@ -5900,6 +5908,9 @@ async def _create_chat_completion_impl(
             result="failed",
             error_class=_telemetry_inference.classify_inference_failure(e),
         )
+        _context_error = context_overflow_from_client_error(e)
+        if _context_error is not None:
+            raise _context_error from e
         err_msg = str(e)
         if isinstance(e, InferenceAbortedError):
             # Engine aborted the request (e.g. Metal runtime error caught
@@ -5936,6 +5947,12 @@ async def _create_chat_completion_impl(
 
     if output is None:
         return Response(status_code=499)
+
+    _window_error = context_window_exhausted(
+        engine, output.prompt_tokens, output.completion_tokens, output.finish_reason
+    )
+    if _window_error is not None:
+        raise _window_error
 
     elapsed = time.perf_counter() - start_time
     tokens_per_sec = output.completion_tokens / elapsed if elapsed > 0 else 0
@@ -6139,6 +6156,11 @@ async def _create_chat_completion_impl(
                 except (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError):
                     raise
                 except Exception as repair_err:
+                    _repair_context_error = context_overflow_from_guided_limit(
+                        engine, repair_err
+                    ) or context_overflow_from_client_error(repair_err)
+                    if _repair_context_error is not None:
+                        raise _repair_context_error from repair_err
                     # Codex r1 #3: a non-timeout, non-disconnect engine
                     # exception during the repair turn is a SERVER failure
                     # (the engine couldn't produce ANY output for the
@@ -6922,6 +6944,18 @@ async def _stream_buffered_chat_response(
     terminal.finish_reason = choice.finish_reason
     terminal.prompt_tokens = response.usage.prompt_tokens
     terminal.completion_tokens = response.usage.completion_tokens
+    if response.metrics is not None:
+        terminal.timing_metrics = (
+            response.metrics.model_dump(
+                exclude_none=True,
+                exclude={"speculative_decoding", "prompt_compression"},
+            )
+            or None
+        )
+        if response.metrics.prompt_compression is not None:
+            terminal.prompt_compression = (
+                response.metrics.prompt_compression.model_dump()
+            )
     if response.usage.prompt_tokens_details is not None:
         terminal.cached_tokens = response.usage.prompt_tokens_details.cached_tokens
     if (
@@ -7347,6 +7381,20 @@ async def stream_chat_completion(
                 prompt_tokens = output.prompt_tokens
             if hasattr(output, "completion_tokens") and output.completion_tokens:
                 completion_tokens = output.completion_tokens
+            _window_error = context_window_exhausted(
+                engine,
+                prompt_tokens,
+                completion_tokens,
+                getattr(output, "finish_reason", None),
+            )
+            if _window_error is not None:
+                yield (
+                    "event: chat.completion.error\ndata: "
+                    + json.dumps(_window_error.detail, separators=(",", ":"))
+                    + "\n\n"
+                )
+                yield "data: [DONE]\n\n"
+                return
             # ``cached_tokens`` is a single per-request value (the
             # prefix-cache hit count set once when the request is
             # scheduled), so re-reading it on every chunk just
@@ -8479,6 +8527,17 @@ async def stream_chat_completion_guided(
                 yield event
             return
         except Exception as guided_err:
+            _context_error = context_overflow_from_client_error(
+                guided_err
+            ) or context_overflow_from_guided_limit(engine, guided_err)
+            if _context_error is not None:
+                yield (
+                    "event: chat.completion.error\ndata: "
+                    + json.dumps(_context_error.detail, separators=(",", ":"))
+                    + "\n\n"
+                )
+                yield "data: [DONE]\n\n"
+                return
             # Log only the schema's top-level shape, not the full body —
             # user-supplied schemas may embed PII (default values),
             # internal endpoint names, or be megabytes large. Keys +
@@ -8599,6 +8658,21 @@ async def stream_chat_completion_guided(
                 admission_task.cancel()
             if not guided_task.done():
                 guided_task.cancel()
+
+        _window_error = context_window_exhausted(
+            engine,
+            output.prompt_tokens,
+            output.completion_tokens,
+            output.finish_reason,
+        )
+        if _window_error is not None:
+            yield (
+                "event: chat.completion.error\ndata: "
+                + json.dumps(_window_error.detail, separators=(",", ":"))
+                + "\n\n"
+            )
+            yield "data: [DONE]\n\n"
+            return
 
         content = output.text or ""
 
@@ -8954,6 +9028,13 @@ async def stream_chat_completion_strict_postgen(
     )
     try:
         async for chunk_text in upstream_agen:
+            if chunk_text.startswith("event: chat.completion.error\n"):
+                # The upstream already diagnosed a context failure. Keep its
+                # terminal error instead of replacing it with a schema error.
+                validation_emitted = True
+                yield chunk_text
+                await cast(AsyncGenerator[str, None], upstream_agen).aclose()
+                return
             # Swallow the upstream [DONE] sentinel — we emit our own
             # [DONE] at the END of validation (codex r6 #1,
             # unconditional) so post-validation chunks land BEFORE the
@@ -9324,6 +9405,7 @@ async def stream_chat_completion_strict_postgen(
             # can branch, same envelope shape so handler code is
             # reusable.
             if upstream_raised is not None and not validation_emitted:
+                context_error = context_overflow_from_client_error(upstream_raised)
                 # Codex r12 #2: do NOT leak ``str(upstream_raised)``
                 # into the client-visible SSE payload. Exception
                 # messages from the inference stack can include
@@ -9336,22 +9418,26 @@ async def stream_chat_completion_strict_postgen(
                 # entry). The full ``str(exc)`` was already logged
                 # in the except arm above for server-side
                 # diagnostics — that's where operators look.
-                upstream_envelope = {
-                    "error": {
-                        "type": "upstream_error",
-                        "code": "strict_stream_upstream_error",
-                        "message": (
-                            "strict json_schema streaming generation "
-                            "aborted before validation. See server logs "
-                            f"for response_id={response_id}."
-                        ),
-                        "param": "response_format.json_schema",
-                        "details": {
-                            "exception_type": type(upstream_raised).__name__,
-                            "response_id": response_id,
-                        },
+                upstream_envelope = (
+                    {"error": context_error.error_payload}
+                    if context_error is not None
+                    else {
+                        "error": {
+                            "type": "upstream_error",
+                            "code": "strict_stream_upstream_error",
+                            "message": (
+                                "strict json_schema streaming generation "
+                                "aborted before validation. See server logs "
+                                f"for response_id={response_id}."
+                            ),
+                            "param": "response_format.json_schema",
+                            "details": {
+                                "exception_type": type(upstream_raised).__name__,
+                                "response_id": response_id,
+                            },
+                        }
                     }
-                }
+                )
                 err_obj = {
                     "id": response_id,
                     "object": "chat.completion.error",

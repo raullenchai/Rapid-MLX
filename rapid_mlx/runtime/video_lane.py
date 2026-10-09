@@ -120,6 +120,11 @@ def _submodule_spec_exists_without_import(parent: str, child: str) -> bool:
     )
 
 
+# The mlx-video runtime ships in the base install (Python 3.11+ on macOS), so
+# its absence means a damaged environment; the install hint repairs it.
+_VIDEO_RUNTIME_LABEL = "the mlx-video runtime"
+
+
 def _default_video_runtime_requirements(model_name: str | None) -> list[str]:
     """Pure dependency probe for the default/Wan mlx-video runtime."""
 
@@ -129,7 +134,7 @@ def _default_video_runtime_requirements(model_name: str | None) -> list[str]:
         and _submodule_spec_exists_without_import("mlx_video", "generate_wan")
     )
     if not mlx_video_available or not wan_available:
-        return ["the `rapid-mlx[video]` Python extra"]
+        return [_VIDEO_RUNTIME_LABEL]
     return []
 
 
@@ -153,12 +158,13 @@ def registered_wan_runtime_issue(model_name: str) -> str | None:
 
 def require_video_runtime_or_exit(model_name: str | None = None) -> None:
     """Fail before model download when the optional video stack is absent."""
+    from .base_runtime import python_upgrade_hint
     from .optional_runtime import OptionalRuntimeMissing, optional_extra_install_hint
 
     if sys.version_info < (3, 11):
         raise OptionalRuntimeMissing(
             extra="video",
-            install_hint=optional_extra_install_hint("video"),
+            install_hint=python_upgrade_hint(),
             status="incompatible",
             marker_reason="python_version_unsupported",
             detail=(
@@ -242,7 +248,7 @@ def require_video_runtime_or_exit(model_name: str | None = None) -> None:
             message += "\n" + setup_hint
         reason = (
             "runtime_extra_missing"
-            if any("rapid-mlx[video]" in item for item in missing)
+            if _VIDEO_RUNTIME_LABEL in missing
             else "runtime_dependency_missing"
         )
         status = "absent" if reason == "runtime_extra_missing" else "broken"
@@ -313,6 +319,33 @@ class VideoEngine:
         from ..server import _emit_primary_model_served_once
 
         _emit_primary_model_served_once(self)
+
+    def extend(
+        self,
+        *,
+        prompt: str,
+        source_video: Path,
+        output_path: Path,
+        extend_frames: int,
+        seed: int,
+    ) -> None:
+        """Append video using the LTX-2.5 runtime's temporal conditioning."""
+        if self._ltx25_engine is None:
+            raise VideoRuntimeError("Video extension requires LTX-2.5.")
+        from ..video.ltx25 import LTX25BackendError
+
+        try:
+            with self._generation_lock:
+                self._ltx25_engine.extend(
+                    prompt=prompt,
+                    source_video=source_video,
+                    output_path=output_path,
+                    extend_frames=extend_frames,
+                    seed=seed,
+                    on_loaded=self._emit_model_served,
+                )
+        except LTX25BackendError as exc:
+            raise VideoRuntimeError(str(exc)) from exc
 
     def generate(
         self,

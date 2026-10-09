@@ -107,7 +107,7 @@ def test_gemma4_load_fallback_prints_validated_runtime(monkeypatch, capsys):
     )
     assert cli._run_submit_flow(args) == 2
     out = capsys.readouterr().out
-    assert "rapid-mlx[vision]" in out
+    assert "rapid-mlx==" in out
     assert "pip install --no-deps 'mlx-vlm==0.7.2'" in out
 
 
@@ -333,6 +333,25 @@ def test_retired_ministral_alias_fails_before_server_start(capsys):
     assert captured.out == ""
     assert "alias was retired" in captured.err
     assert "--no-mllm" in captured.err
+
+
+def test_retired_qwopus_8bit_alias_points_to_live_sibling(capsys):
+    """An alias whose upstream vanished fails in preflight with its successor."""
+    import pytest
+
+    with (
+        patch.object(sys, "argv", ["rapid-mlx", "pull", "qwopus-27b-8bit"]),
+        patch.object(cli, "pull_command") as pull,
+        pytest.raises(SystemExit) as exc,
+    ):
+        cli.main()
+
+    assert exc.value.code == 1
+    assert not pull.called
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "no longer accessible" in captured.err
+    assert "qwopus-27b-4bit" in captured.err
 
 
 # ----------------------------------------------------------------------

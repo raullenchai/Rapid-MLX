@@ -12,27 +12,27 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from .tensorfold_families import _prompt_cache_bytes
 from .tensorfold_qwen27 import TensorFoldQwen27Backend, TensorFoldUnavailable
+from .tensorfold_runtime import (
+    INSTALL_HINT as INSTALL_HINT,
+)
+from .tensorfold_runtime import (
+    SUPPORTED_MLX_VERSION,
+    SUPPORTED_VERSION,
+)
+from .tensorfold_runtime import SUPPORTED_REVISION as SUPPORTED_RUNTIME_REVISION
 
-SUPPORTED_VERSION = "0.6.0"
-SUPPORTED_MLX_VERSION = "0.32.3"
 SUPPORTED_TARGET = "Vontra/GLM-5.3-Flash-MLX-4bit-MTP"
 SUPPORTED_TARGET_REVISION = "76add2a341a1cd90ad0e86bb69839ea9c35827c6"
-SUPPORTED_RUNTIME_REVISION = "c4646171139ee8a3c38103eaa1699dad226ec12b"
-INSTALL_HINT = (
-    "Install the qualified TensorFold runtime from its vetted revision with:\n"
-    '    python -m pip install "tensorfold @ '
-    "git+https://github.com/ashhart/TensorFold.git@"
-    f'{SUPPORTED_RUNTIME_REVISION}"'
-)
 
 
 def download_qualified_target() -> str:
     """Resolve the immutable target through the process-wide Hub cache."""
 
-    from huggingface_hub import snapshot_download
+    from .._mirror import pinned_snapshot_download
 
-    target = snapshot_download(SUPPORTED_TARGET, revision=SUPPORTED_TARGET_REVISION)
+    target = pinned_snapshot_download(SUPPORTED_TARGET, SUPPORTED_TARGET_REVISION)
     validate_target(Path(target))
     return str(target)
 
@@ -198,8 +198,8 @@ class TensorFoldGLM53Backend(TensorFoldQwen27Backend):
             default_max_tokens=int(max_tokens),
             context_window=int(context_window),
             enable_thinking=True,
-            checkpoint_slots=0,
-            checkpoint_budget_bytes=None,
+            checkpoint_slots=None,
+            checkpoint_budget_bytes=_prompt_cache_bytes(),
             memory_budget_bytes=memory_limit,
             use_proposer=True,
             snapshot_dir=None,

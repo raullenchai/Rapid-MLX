@@ -123,8 +123,7 @@ def test_legacy_projection_is_complete_deduplicated_and_schema_valid() -> None:
     ]
     assert abliterated_model["source"] == {
         "provider": "huggingface",
-        "repo_id": "windowsxp811203/Qwen3.8-27B-Abliterated-MLX-MTP",
-        "subfolder": "oQ4e",
+        "repo_id": "windowsxp811203/Qwen3.8-27B-Abliterated-MLX-oQ4e-mtp",
     }
     assert abliterated_model["estimated_download_size_bytes"] == 16_998_733_375
     assert aliases["flux2-klein-4b"]["capabilities"]["operation_modes"] == [
@@ -206,7 +205,11 @@ def test_product_recommendation_policy_is_atomic_ssot_and_validates_tasks() -> N
     first = policy["tiers"][0]["picks"][0]
     assert policy["machine_dimension"] == "physical_memory_mib"
     assert first["footprint_mib"] == 3 * 1024
-    assert first["decode_tokens_per_second_x100"] == 9350
+    assert all(
+        "decode_tokens_per_second_x100" not in pick
+        for tier in policy["tiers"]
+        for pick in tier["picks"]
+    )
     assert first["evidence_status"] == "legacy_measured"
 
     aliases = {item["alias"]: item for item in snapshot["aliases"]}

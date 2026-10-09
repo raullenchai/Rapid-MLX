@@ -476,6 +476,42 @@ def test_external_ref_timeout_degrades_to_cache_miss_by_default(tmp_path, monkey
     assert gate._resolved_snapshot_sha(str(repo_root)) is None
 
 
+@pytest.mark.parametrize(
+    "terminal,expected",
+    [
+        ("Apple_Terminal", "Terminal"),
+        ("iTerm.app", "iTerm"),
+        (None, "the app that launched this command"),
+    ],
+)
+def test_external_permission_recovery_targets_the_launching_app(
+    monkeypatch, terminal, expected
+):
+    if terminal is None:
+        monkeypatch.delenv("TERM_PROGRAM", raising=False)
+    else:
+        monkeypatch.setenv("TERM_PROGRAM", terminal)
+    message = gate.CacheProbePermissionError(
+        "/Volumes/Models/hf/refs/main"
+    ).user_message()
+    assert "Access was denied" in message
+    assert f"Under {expected}, enable Removable Volumes" in message
+    assert "open 'x-apple.systempreferences:" in message
+    assert "Run the same rapid-mlx command again" in message
+    assert "Keep the existing cache" in message
+
+
+def test_external_timeout_does_not_claim_a_permission_denial(monkeypatch):
+    monkeypatch.setenv("TERM_PROGRAM", "unrecognized terminal")
+    message = gate.CacheProbeTimeoutError(
+        "/Volumes/Models/hf/refs/main", 2
+    ).user_message()
+    assert "check that the volume is connected and responsive" in message
+    assert "Access was denied" not in message
+    assert "Under the app that launched this command" in message
+    assert "unrecognized terminal" not in message
+
+
 def test_external_ref_reader_unavailable_is_a_cache_miss(tmp_path, monkeypatch):
     """A missing or unlaunchable system reader cannot make startup fail."""
     repo_root = tmp_path / "repo"

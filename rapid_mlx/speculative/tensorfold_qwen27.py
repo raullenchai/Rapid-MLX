@@ -19,16 +19,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
-SUPPORTED_VERSION = "0.5.0"
-SUPPORTED_REVISION = "9cd52ab4daba68ddd09be89be8f23ad43175e821"
-SUPPORTED_RUNTIME_URL = "https://github.com/ashhart/TensorFold.git"
-SUPPORTED_MLX_VERSION = "0.32.3"
-INSTALL_HINT = (
-    "Install the qualified TensorFold runtime from its vetted revision with:\n"
-    '    python -m pip install "tensorfold @ '
-    "git+https://github.com/ashhart/TensorFold.git@"
-    f'{SUPPORTED_REVISION}"'
+from .tensorfold_runtime import (
+    INSTALL_HINT as INSTALL_HINT,
 )
+from .tensorfold_runtime import (
+    SUPPORTED_MLX_VERSION,
+    SUPPORTED_REVISION,
+    SUPPORTED_RUNTIME_URL,
+    SUPPORTED_VERSION,
+)
+
 SUPPORTED_MODEL_TYPE = "qwen3_5"
 SUPPORTED_TARGET = "Vontra/Qwen3.8-27B-MLX-4bit"
 SUPPORTED_DRAFTER = "z-lab/Qwen3.8-27B-DFlash2"
@@ -45,13 +45,13 @@ class QualifiedPairArtifacts:
 def download_qualified_pair() -> QualifiedPairArtifacts:
     """Resolve the product pair into the default HF cache at immutable SHAs."""
 
-    from huggingface_hub import snapshot_download
+    from .._mirror import pinned_snapshot_download
 
-    target = snapshot_download(
-        SUPPORTED_TARGET, revision=next(iter(SUPPORTED_TARGET_REVISIONS))
+    target = pinned_snapshot_download(
+        SUPPORTED_TARGET, next(iter(SUPPORTED_TARGET_REVISIONS))
     )
-    drafter = snapshot_download(
-        SUPPORTED_DRAFTER, revision=next(iter(SUPPORTED_DRAFTER_REVISIONS))
+    drafter = pinned_snapshot_download(
+        SUPPORTED_DRAFTER, next(iter(SUPPORTED_DRAFTER_REVISIONS))
     )
     validate_pair(Path(target), Path(drafter))
     return QualifiedPairArtifacts(target_path=target, drafter_path=drafter)
@@ -188,7 +188,7 @@ def require_runtime(
         found = version or importlib.metadata.version("tensorfold")
     except importlib.metadata.PackageNotFoundError as exc:
         raise TensorFoldUnavailable(
-            "tensorfold-qwen27 requires the optional tensorfold==0.5.0 runtime"
+            f"tensorfold-qwen27 requires the optional tensorfold=={SUPPORTED_VERSION} runtime"
         ) from exc
     if found != SUPPORTED_VERSION:
         raise TensorFoldUnavailable(
@@ -218,7 +218,9 @@ def require_environment(
     try:
         found = mlx_version or importlib.metadata.version("mlx")
     except importlib.metadata.PackageNotFoundError as exc:
-        raise TensorFoldUnavailable("tensorfold-qwen27 requires mlx==0.32.3") from exc
+        raise TensorFoldUnavailable(
+            f"tensorfold-qwen27 requires mlx=={SUPPORTED_MLX_VERSION}"
+        ) from exc
     if found != SUPPORTED_MLX_VERSION:
         raise TensorFoldUnavailable(
             f"tensorfold-qwen27 requires mlx=={SUPPORTED_MLX_VERSION}; found {found}"
@@ -230,7 +232,7 @@ class TensorFoldQwen27Backend:
 
     ``app`` is injectable so lifecycle and protocol contracts are testable
     without loading model weights.  Production construction is deliberately
-    centralized in :meth:`load` because TensorFold 0.5.0's builder is internal.
+    centralized in :meth:`load` because TensorFold's builder is internal.
     """
 
     def __init__(
@@ -255,7 +257,7 @@ class TensorFoldQwen27Backend:
         context_window: int = 8192,
         max_tokens: int = 4096,
     ) -> TensorFoldQwen27Backend:
-        """Load the exact 0.5.0 family/app boundary used by the proof."""
+        """Load the pinned family/app boundary used by the proof."""
         require_runtime()
         require_environment()
         from tensorfold.families import detect

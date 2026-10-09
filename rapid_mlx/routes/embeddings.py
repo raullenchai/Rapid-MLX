@@ -34,6 +34,7 @@ async def create_embeddings(
     from ..embedding import (
         EMBEDDINGS_EXTRA_HTTP_INSTALL_HINT,
         EmbeddingInputTooLongError,
+        EmbeddingUnsupportedMediaError,
     )
     from ..server import load_embedding_model
 
@@ -215,6 +216,18 @@ async def create_embeddings(
                 prompt_tokens = cfg.embedding_engine.count_tokens(texts)
                 embeddings = cfg.embedding_engine.embed(texts)
                 n_inputs = len(texts)
+        except EmbeddingUnsupportedMediaError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": {
+                        "message": str(exc),
+                        "type": "invalid_request_error",
+                        "code": "unsupported_embedding_modality",
+                        "param": "input",
+                    }
+                },
+            ) from exc
         except EmbeddingInputTooLongError as exc:
             # overflow_policy == "error": reject with the observed/allowed
             # token counts so the caller can react instead of silently

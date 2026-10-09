@@ -27,6 +27,12 @@ struct SidecarStartupFailure: Equatable, Sendable {
         var displayName: String {
             rawValue.capitalized
         }
+
+        /// Vision, image and video runtimes ship inside the Desktop's engine,
+        /// so their absence means a damaged install, not an opt-in to add.
+        var isBundled: Bool {
+            self != .audio
+        }
     }
 
     enum RecoveryAction: Equatable, Sendable {

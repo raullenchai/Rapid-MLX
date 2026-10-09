@@ -357,8 +357,8 @@ enum ResidentModelLoadResult: Sendable, Equatable {
 /// A resident-model load that the engine rejected, kept long enough for the
 /// surface that initiated the load to read and present the reason verbatim
 /// instead of only writing it to the log pane (#1838). The engine's own
-/// `detail` string (e.g. `image generation requires the 'rapid-mlx[image]'
-/// Python extra (pip install 'rapid-mlx[image]')`) is specific and actionable,
+/// `detail` string (e.g. `image generation requires the `mflux` runtime.
+/// The image runtime ships with rapid-mlx ...`) is specific and actionable,
 /// so it is preserved here rather than flattened to a generic "couldn't load".
 struct ResidentLoadFailure: Sendable, Equatable {
     let alias: String

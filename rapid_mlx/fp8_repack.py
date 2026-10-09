@@ -45,7 +45,6 @@ from __future__ import annotations
 import importlib
 import json
 import logging
-import os
 import struct
 from pathlib import Path
 
@@ -53,6 +52,7 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 
+from ._env import env_truthy
 from .model_load_errors import load_weights_checked, quantize_checked
 
 logger = logging.getLogger(__name__)
@@ -324,7 +324,7 @@ def load_fp8_model_online(model_path: Path) -> nn.Module:
     # RAPID_MLX_FP8_LM_HEAD_AFFINE8=1 quantizes the untied bf16 lm_head
     # to affine 8-bit from its just-loaded real values — ~+10% decode on
     # tiny for a measured-zero top-1 change (see module docstring).
-    want_q = os.environ.get("RAPID_MLX_FP8_LM_HEAD_AFFINE8", "") == "1"
+    want_q = env_truthy("RAPID_MLX_FP8_LM_HEAD_AFFINE8")
     if want_q and isinstance(getattr(model, "lm_head", None), nn.Linear):
         quantize_checked(
             nn.quantize,

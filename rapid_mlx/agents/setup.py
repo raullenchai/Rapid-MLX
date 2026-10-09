@@ -14,7 +14,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from rapid_mlx.agents.config_merge import deep_merge, merge_patch_layers
+from rapid_mlx.agents.config_merge import (
+    deep_merge,
+    is_id_list,
+    merge_by_id,
+    merge_patch_layers,
+)
+from rapid_mlx.agents.server_hint import (
+    ServerNotRunningError,
+    is_connection_refused,
+    is_local_base_url,
+)
 from rapid_mlx.agents.telemetry import (
     track_agent_configure_failed,
 )
@@ -25,7 +35,7 @@ from rapid_mlx.launch import claude_code, continue_dev
 # diff preview, consent (or --yes), a timestamped backup of the existing file
 # and an atomic write. Every CLI entry point routes on this one set.
 FIRST_CLASS_SETUP_AGENTS = frozenset(
-    {"claude-code", "continue", "deepseek-harness", "pi"}
+    {"claude-code", "continue", "deepseek-harness", "pi", "qwen-code"}
 )
 
 
@@ -44,6 +54,11 @@ class SetupPlan:
     credentials_path: Path | None = None
     credentials_before: dict[str, Any] | None = None
     credentials_after: dict[str, Any] | None = None
+    # A source file the plan reads but never writes (Continue's config.json
+    # when config.yaml is first created from it); re-checked before applying.
+    migrated_from: Path | None = None
+    migrated_from_before: dict[str, Any] | None = None
+    notes: tuple[str, ...] = ()
 
     @property
     def changed(self) -> bool:
@@ -53,8 +68,24 @@ class SetupPlan:
         )
 
     def diff(self) -> str:
+        if self.agent == "continue" and isinstance(self.after, dict):
+            # Migrated or patched Continue configs can hold real keys for
+            # other providers; the preview hides them like Claude's.
+            diff = launch_common.unified_diff(
+                _serialize(launch_common.redact_secrets(self.before), "yaml")
+                if self.before
+                else "",
+                _serialize(launch_common.redact_secrets(self.after), "yaml"),
+                self.path,
+            )
+            return "\n".join([diff, *(f"  Note: {note}" for note in self.notes)])
         before_data = self.before
         after_data = self.after
+        if self.agent == "qwen-code":
+            # Preserved provider credentials belong in the file, never in
+            # the preview printed before consent or during a dry run.
+            before_data = launch_common.redact_secrets(self.before)
+            after_data = launch_common.redact_secrets(self.after)
         secret_changed = False
         if (
             self.agent == "claude-code"
@@ -211,6 +242,39 @@ def _pi_profile() -> Any:
     return profile
 
 
+def _qwen_code_profile() -> Any:
+    from rapid_mlx.agents import get_profile
+
+    profile = get_profile("qwen-code")
+    assert profile is not None, "the qwen-code profile ships with rapid-mlx"
+    return profile
+
+
+def _qwen_code_settings_path(agent_version: str | None = None) -> Path:
+    """Qwen Code's settings file, resolved like the generic setup writer.
+
+    A profile in ``~/.rapid-mlx/agents`` may shadow the shipped one. This flow
+    merges a JSON settings file, so a shadowing profile of any other shape is
+    refused here rather than crashing further down.
+    """
+    from rapid_mlx.agents.adapter import _resolve_config_path
+
+    cfg = _qwen_code_profile().get_config_for_version(agent_version)
+    if (
+        cfg.type != "json"
+        or not (isinstance(cfg.path, str) and cfg.path)
+        or not (isinstance(cfg.template, str) and cfg.template)
+    ):
+        raise ValueError(
+            "the installed qwen-code profile does not describe a JSON settings "
+            "file; fix or remove its override in ~/.rapid-mlx/agents"
+        )
+    try:
+        return _resolve_config_path(cfg).resolve()
+    except RuntimeError as exc:  # a symlink loop, before Python 3.13
+        raise ValueError(f"cannot resolve the Qwen Code settings path: {exc}") from exc
+
+
 def _pi_models_path() -> Path:
     """pi's ``<agent-dir>/models.json``, honouring ``PI_CODING_AGENT_DIR``.
 
@@ -254,6 +318,7 @@ def build_setup_plan(
     supports_reasoning: bool | None = None,
     *,
     emit_telemetry: bool = True,
+    agent_version: str | None = None,
 ) -> SetupPlan:
     """Build a side-effect-free setup plan for a supported client."""
     if agent in {"claude", "claude-code"}:
@@ -274,12 +339,31 @@ def build_setup_plan(
             "claude-code", "Claude Code", path, before, after, base_url, model
         )
     if agent in {"continue", "continue-dev"}:
-        path = continue_dev.current_config_path()
-        assert path is not None
-        before = launch_common.load_json_lenient(path)
-        after = continue_dev.patched_config(before, base_url, model)
+        # Continue reads config.yaml (the cn CLI reads nothing else). A plan
+        # that creates it from a populated config.json carries the converted
+        # JSON settings over and leaves config.json itself untouched.
+        try:
+            continue_plan = continue_dev.build_plan(
+                base_url,
+                model,
+                api_key=os.environ.get("RAPID_MLX_API_KEY") or "sk-noop",
+            )
+        except ValueError:
+            if emit_telemetry:
+                track_agent_configure_failed("config_invalid", "continue")
+            raise
         return SetupPlan(
-            "continue", "Continue.dev", path, before, after, base_url, model
+            "continue",
+            "Continue.dev",
+            continue_plan.path,
+            continue_plan.before,
+            continue_plan.after,
+            base_url,
+            model,
+            "yaml",
+            migrated_from=continue_plan.migrated_from,
+            migrated_from_before=continue_plan.migrated_from_before,
+            notes=continue_plan.notes,
         )
     if agent in {"deepseek-harness", "dsh"}:
         # Resolve each managed file independently before backup + atomic
@@ -399,6 +483,67 @@ def build_setup_plan(
             base_url,
             model,
         )
+    if agent == "qwen-code":
+        path = _qwen_code_settings_path(agent_version)
+        try:
+            loaded_qwen = launch_common.load_json_lenient(path)
+        except OSError:
+            if emit_telemetry:
+                track_agent_configure_failed("other", "qwen-code")
+            raise
+        except (ValueError, RecursionError) as exc:
+            # Undecodable bytes and pathological nesting are refused like any
+            # other file we cannot round-trip, never surfaced as a traceback.
+            if emit_telemetry:
+                track_agent_configure_failed("config_invalid", "qwen-code")
+            raise ValueError(f"{path} is not valid JSON: {exc}") from exc
+        if not isinstance(loaded_qwen, dict):
+            if emit_telemetry:
+                track_agent_configure_failed("config_invalid", "qwen-code")
+            raise ValueError(f"{path} must contain a JSON object")
+        profile = _qwen_code_profile()
+        template = json.loads(
+            profile.render_config(
+                base_url, model, agent_version, context_length=context_length
+            )
+        )
+        incoming_providers = (
+            template.get("modelProviders") if isinstance(template, dict) else None
+        )
+        incoming_openai: Any = (
+            incoming_providers.get("openai")
+            if isinstance(incoming_providers, dict)
+            else None
+        )
+        if not is_id_list(incoming_openai):
+            raise ValueError(
+                "the installed qwen-code profile template must define "
+                "modelProviders.openai entries with an id"
+            )
+        after = deep_merge(loaded_qwen, template)
+
+        # ``modelProviders.openai`` is an id-keyed registry shared with the
+        # user's other OpenAI-compatible endpoints. Generic setup replaces
+        # lists, so preserve existing entries and update only our model id.
+        existing_providers = loaded_qwen.get("modelProviders")
+        existing_openai = (
+            existing_providers.get("openai")
+            if isinstance(existing_providers, dict)
+            else None
+        )
+        if isinstance(existing_openai, list):
+            after["modelProviders"]["openai"] = merge_by_id(
+                existing_openai, incoming_openai
+            )
+        return SetupPlan(
+            "qwen-code",
+            "Qwen Code",
+            path,
+            loaded_qwen,
+            after,
+            base_url,
+            model,
+        )
     # Reserved for defensive callers. The CLIs only route
     # FIRST_CLASS_SETUP_AGENTS here, so this outcome is currently unreachable.
     if emit_telemetry:
@@ -416,10 +561,29 @@ def apply_setup_plan(plan: SetupPlan) -> Path:
     elif plan.format == "yaml":
         current = _load_yaml_mapping(plan.path, plan.agent)
     else:
-        current = launch_common.load_json_lenient(plan.path)
+        try:
+            current = launch_common.load_json_lenient(plan.path)
+        except (ValueError, RecursionError) as exc:
+            # The plan was built from a readable file, so one that no longer
+            # parses was edited after the preview.
+            track_agent_configure_failed("config_changed", plan.agent)
+            raise RuntimeError(
+                f"{plan.path} changed after preview; re-run --setup"
+            ) from exc
     if current != plan.before:
         track_agent_configure_failed("config_changed", plan.agent)
         raise RuntimeError(f"{plan.path} changed after preview; re-run --setup")
+    if plan.migrated_from is not None:
+        try:
+            source_current: Any = launch_common.load_json_lenient(plan.migrated_from)
+        except (OSError, ValueError):
+            # Unreadable now (e.g. a half-saved edit): it changed after preview.
+            source_current = None
+        if source_current != plan.migrated_from_before:
+            track_agent_configure_failed("config_changed", plan.agent)
+            raise RuntimeError(
+                f"{plan.migrated_from} changed after preview; re-run --setup"
+            )
     if plan.credentials_path is not None:
         credentials_current = _load_yaml_mapping(plan.credentials_path, plan.agent)
         if credentials_current != (plan.credentials_before or {}):
@@ -456,7 +620,12 @@ def verify_server(
     *,
     agent: str,
 ) -> str:
-    """Verify health and model discovery without performing inference."""
+    """Verify health and model discovery without performing inference.
+
+    Raises :class:`ServerNotRunningError` (a ``RuntimeError``, not tracked here)
+    when a local server refuses the connection; every other failure, including
+    a refused remote endpoint, is tracked.
+    """
     root = base_url.rstrip("/").removesuffix("/v1")
     try:
         with urllib.request.urlopen(f"{root}/health", timeout=timeout) as response:
@@ -477,6 +646,11 @@ def verify_server(
         ValueError,
         json.JSONDecodeError,
     ) as exc:
+        if is_connection_refused(exc) and is_local_base_url(base_url):
+            # Nothing is listening yet. Whether that is a failure depends on
+            # the caller (a config saved for a not-yet-started server is a
+            # normal first-run order), so the caller owns the telemetry.
+            raise ServerNotRunningError(f"no server is running at {root}") from exc
         track_agent_configure_failed("server_not_ready", agent)
         raise RuntimeError(f"server is not ready at {root}: {exc}") from exc
     models = payload.get("data", []) if isinstance(payload, dict) else []
@@ -489,7 +663,11 @@ def verify_server(
         raise RuntimeError(
             f"server does not advertise model {expected_model!r} (found: {', '.join(ids)})"
         )
-    return ids[0]
+    return (
+        expected_model
+        if expected_model != "default" and expected_model in ids
+        else ids[0]
+    )
 
 
 def confirm_plan(plan: SetupPlan) -> bool:

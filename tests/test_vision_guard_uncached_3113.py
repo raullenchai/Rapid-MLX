@@ -299,7 +299,7 @@ def test_text_diffusion_guard_message_drops_no_mllm_hint(monkeypatch):
         require_mlx_vlm_or_exit("diffusion-gemma-26b-4bit", text_diffusion=True)
     err = exc_info.value.format_user_message()
     assert "text-diffusion alias" in err
-    assert "rapid-mlx[vision]" in err.replace("'", "")
+    assert "rapid-mlx==" in err
     assert "--no-mllm" not in err
 
 

@@ -4,15 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rapid-mlx"
-version = "0.15.6"
-description = "Rapid-MLX is an open-source (Apache 2.0) OpenAI- and Anthropic-compatible LLM inference server and Mac app for Apple Silicon, built on MLX, focused on reliable tool calling for coding agents."
+version = "0.15.7"
+description = "Rapid-MLX is an open-source (Apache 2.0) OpenAI- and Anthropic-compatible LLM inference server for Apple Silicon, built on MLX, focused on reliable tool calling for coding agents; up to 4× faster decoding than Apple's MLX (mlx-lm) on the same weights."
 readme = "README.md"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.10"
 authors = [
     {name = "Rapid-MLX contributors"}
 ]
-keywords = ["llm", "mlx", "apple-silicon", "inference", "transformers"]
+keywords = ["llm", "mlx", "mlx-lm", "apple-silicon", "inference-server", "openai-compatible", "anthropic", "tool-calling", "coding-agents", "local-llm", "macos"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -53,7 +53,6 @@ dependencies = [
     # is a gated coherence event — see scripts/check_mlx_bound_move.py.
     "mlx>=0.32.1,<0.33",
     "mlx-lm>=0.31.3,<0.32",  # 0.31.1+ required for presence_penalty/frequency_penalty kwargs on make_logits_processors (#512); 0.31.3 added thread-local generation_stream but cross-thread eval is still broken (see shim sites). Upper cap <0.32 (#1248).
-    # mlx-vlm is opt-in via [vision] extras (saves ~322 MB for text-only users)
     #
     # transformers 5.13.0 tightened
     # ``AutoTokenizer.register`` to dereference ``key.__module__`` while mlx-lm
@@ -85,8 +84,6 @@ dependencies = [
     "huggingface-hub>=1.1.0",
     "numpy>=1.24.0",
     "tqdm>=4.66.0",
-    # pillow is opt-in via [vision] extras — only the MLLM paths (mllm.py,
-    # benchmark.py image mode) touch PIL, and mlx-vlm requires it anyway.
     "pyyaml>=6.0",
     # Writing TOML, so ``rapid-mlx agents codex --setup`` can deep-merge into
     # an existing ~/.codex/config.toml instead of replacing it (#1532).
@@ -155,6 +152,36 @@ dependencies = [
     # are RETAINED as defense-in-depth (a broken/incompatible install still
     # degrades gracefully rather than crashing).
     "llguidance>=1.7.6",
+    # Vision, image- and video-generation runtimes ship in the base install so
+    # the first serve of a multimodal alias (Qwen3.5+/Gemma 4) accepts images
+    # and an image/video-gen alias starts without an extra-install round trip.
+    # The historical [vision]/[image]/[video]/[dflash]/[mtp] extras stay valid
+    # aliases (see rapid_mlx/runtime/base_runtime.py). Every module here is
+    # imported lazily; tests/test_base_runtime_lazy_imports.py guards the CLI
+    # front door.
+    #
+    # Markers are carried over unchanged from the extras they came from: the
+    # [vision] requirements were never platform-gated (so the vision runtime is
+    # base on every platform and its repair is always a base reinstall), while
+    # the [image]/[video] requirements keep their Darwin and Python >=3.11
+    # gates (the image/video preflight gives 3.10 users an upgrade diagnostic;
+    # SDXL/SD3.5 still run on 3.10 with Pillow + sentencepiece).
+    #
+    # mlx-vlm stays exactly pinned to the signed Desktop sidecar's validated
+    # runtime; moving it is a gated coherence event (#1248).
+    "mlx-vlm==0.7.2",
+    "opencv-python>=4.8.0",
+    "torch>=2.3.0",
+    "torchvision>=0.18.0",
+    "pillow>=10.0.0",
+    "mflux>=0.20.0,<0.21; platform_system == 'Darwin' and python_version >= '3.11'",
+    "sentencepiece>=0.2.0; platform_system == 'Darwin'",
+    # Video-generation runtime (LTX-2.3 / Wan). Upstream requires Python
+    # >=3.11; the video-lane preflight gives 3.10 users an upgrade diagnostic.
+    # imageio[ffmpeg] brings a self-contained ffmpeg wheel — no system ffmpeg.
+    "mlx-video-with-audio==0.1.36; platform_system == 'Darwin' and python_version >= '3.11'",
+    "mlx-arsenal>=0.10.1; platform_system == 'Darwin' and python_version >= '3.11'",
+    "imageio[ffmpeg]>=2.34.0; platform_system == 'Darwin' and python_version >= '3.11'",
 ]
 
 [project.optional-dependencies]
@@ -164,9 +191,9 @@ computer-use = [
     "pyobjc-framework-ApplicationServices==12.2.2; platform_system == 'Darwin'",
     "pyobjc-framework-Quartz==12.2.2; platform_system == 'Darwin'",
 ]
-# Vision/multimodal models (Gemma 4, Qwen-VL, etc.) — adds ~322 MB
-# Required for any model with vision input. Text-only models work without this.
-# 0.5.0+ also unlocks DFlash speculative decoding (see [dflash] extras).
+# Vision/multimodal runtime. These requirements already ship in the base
+# install, so ``rapid-mlx[vision]`` is an accepted no-op alias kept for
+# existing docs, scripts and installers.
 vision = [
     # Keep the optional runtime identical to the signed Desktop sidecar.
     # A floating 0.6.x range backtracks to 0.6.3 under older Transformers
@@ -518,6 +545,8 @@ audio-desktop = [
     # rapid_mlx.audio.tts encodes the in-memory result with libsndfile.
     "soundfile>=0.12.0",
 ]
+# Video-generation runtime. Already part of the base install on macOS
+# (Python 3.11+); kept as an accepted no-op alias for existing docs/scripts.
 video = [
     # MLX-native LTX-2.3 T2V/I2V with synchronized audio. 0.1.36 is the
     # first verified release with the split-format LTX-2.3 VAE fixes. The
@@ -532,6 +561,8 @@ video = [
     "pillow>=10.0.0; platform_system == 'Darwin' and python_version >= '3.11'",
     "sentencepiece>=0.2.0; platform_system == 'Darwin' and python_version >= '3.11'",
 ]
+# Image-generation runtime. Already part of the base install on macOS; kept as
+# an accepted no-op alias for existing docs, scripts and installers.
 image = [
     # MLX-native text-to-image / image-edit (FLUX.1-schnell, Qwen-Image,
     # Qwen-Image-Edit, Qwen-Image-2.1) via mflux. mflux 0.20.0 adds Qwen-Image-2.1
@@ -649,6 +680,8 @@ rapid_mlx = [
     # The vendored mlx-vlm APC/cache implementation is MIT-licensed; its
     # license text must travel with every wheel that redistributes the source.
     "models/mlx_vlm_vendored/LICENSE",
+    "models/embedding_gemma2/LICENSE",
+    "models/embedding_gemma2/NOTICE",
 ]
 videox_fun_mlx = ["LICENSE", "NOTICE"]
 

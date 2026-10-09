@@ -47,7 +47,9 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from .. import log_file
 from .._completion import alias_completer
+from .._env import env_truthy
 from . import warning, ws_tunnel
 
 # Pulled out so the routing-shape audit (tests/test_no_out_of_band_routing.py)
@@ -360,6 +362,7 @@ def _spawn_serve(
     api_key: str,
     log_path: Path,
     extra_args: list[str],
+    log_target: str | None = None,
 ) -> subprocess.Popen[bytes]:
     # Use sys.executable + ``-m`` instead of the ``rapid-mlx`` script so
     # the share command works inside editable installs and CI environments
@@ -383,8 +386,11 @@ def _spawn_serve(
         "127.0.0.1",
         "--port",
         str(port),
-        "--log-level",
-        "INFO",
+        *(
+            []
+            if os.environ.get("RAPID_MLX_LOG_LEVEL", "").strip()
+            else ["--log-level", "INFO"]
+        ),
         *extra_args,
     ]
     env = dict(os.environ)
@@ -403,6 +409,15 @@ def _spawn_serve(
     # not ``rapid-mlx share``'s) and self-terminate immediately. The
     # spawner owns the watchdog relationship — overwrite is correct.
     env["RAPID_MLX_WATCHDOG_PPID"] = str(os.getpid())
+    if log_target is not None:
+        # serve writes its own output to the target and inherits our stdio.
+        env[log_file.ENV_VAR] = log_target
+        return subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            env=env,
+            start_new_session=True,
+        )
     log_fp = log_path.open("ab", buffering=0)
     # Tighten permissions: log files default to umask-derived modes
     # (often 644 = world-readable). If serve ever logs the key as part
@@ -453,8 +468,7 @@ def _maybe_confirm_download(alias: str) -> None:
         # Grandchild safety: a parent ``rapid-mlx`` invocation already
         # gated and set this marker. Don't re-prompt.
         return
-    env_val = os.environ.get("RAPID_MLX_AUTO_PULL", "").strip().lower()
-    if env_val in {"1", "true", "yes"}:
+    if env_truthy("RAPID_MLX_AUTO_PULL"):
         return
     if not sys.stdin.isatty():
         return
@@ -514,7 +528,15 @@ def share_command(args: argparse.Namespace) -> None:
         print(f"share: {exc}", file=sys.stderr)
         sys.exit(2)
 
+    try:
+        log_target, _ = log_file.resolve_validated(getattr(args, "log_file", None))
+    except log_file.LogFileError as exc:
+        print(f"share: {exc}", file=sys.stderr)
+        sys.exit(2)
+
     extra_serve_args: list[str] = []
+    if getattr(args, "disable_disk_caches", False):
+        extra_serve_args.append("--disable-disk-caches")
     # ``args.thinking`` comes from BooleanOptionalAction so ``--thinking``
     # turns it on and ``--no-thinking`` (or the default) turns it off. We
     # forward ``--no-thinking`` to serve only when explicitly disabled —
@@ -576,6 +598,7 @@ def share_command(args: argparse.Namespace) -> None:
             "--port": "use `rapid-mlx share --port` instead",
             "--listen-fd": "share owns the serve process lifecycle",
             "--log-level": "share sets the serve log level",
+            "--log-file": "use `rapid-mlx share --log-file` instead",
         }
         for token in passthrough:
             flag = token.split("=", 1)[0]
@@ -658,6 +681,9 @@ def share_command(args: argparse.Namespace) -> None:
         sys.exit(1)
     state_dir = _state_dir()
     serve_log = state_dir / "serve.log"
+    serve_output = (
+        log_file.describe(log_target) if log_target is not None else str(serve_log)
+    )
 
     # Relay URL — defaults to the production rapidserver Worker, but
     # operator-set ``RAPID_MLX_RELAY_URL`` overrides (self-host /
@@ -705,10 +731,11 @@ def share_command(args: argparse.Namespace) -> None:
             api_key=api_key,
             log_path=serve_log,
             extra_args=extra_serve_args,
+            log_target=log_target,
         )
         if not _wait_for_healthz(port, serve_proc):
             print(
-                f"serve exited before becoming ready — see {serve_log}",
+                f"serve exited before becoming ready — see {serve_output}",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -798,7 +825,7 @@ def share_command(args: argparse.Namespace) -> None:
                 if serve_rc == 0:
                     print(
                         f"share: serve process exited cleanly but the "
-                        f"public share is no longer live — see {serve_log}.",
+                        f"public share is no longer live — see {serve_output}.",
                         file=sys.stderr,
                     )
                 break
@@ -881,7 +908,8 @@ def register(subparsers: argparse._SubParsersAction) -> None:
             '        --force-spec-decode --speculative-config \'{"method":"mtp"}\'\n'
             "\n"
             "  (`--host` / `--api-key` / `--port` / `--listen-fd` /\n"
-            "  `--log-level` are owned by share and rejected if forwarded.)"
+            "  `--log-level` / `--log-file` are owned by share and rejected\n"
+            "  if forwarded.)"
         ),
     )
     p.add_argument(
@@ -961,6 +989,10 @@ def register(subparsers: argparse._SubParsersAction) -> None:
             "you wire it up by hand)."
         ),
     )
+    from ..cli_parser import _add_disable_disk_caches_arg, _add_log_file_arg
+
+    _add_disable_disk_caches_arg(p)
+    _add_log_file_arg(p)
 
     # ── QuickSilver compute-pool mode (provider spec §4) ─────────────
     # A mode of ``share`` — it never opens the public URL/key flow above;

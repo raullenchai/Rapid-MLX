@@ -1,0 +1,21 @@
+#!/bin/sh
+# human <op> [key=value ...]   the user channel: fill ref=e9 text=... | done window_id=cg:1
+# Values that parse as JSON (numbers, true, lists) are sent as JSON.
+op="$1"; shift
+exec "${CUA_PYTHON:-python3}" - "$op" "$@" <<'EOF'
+import json, sys, urllib.request
+op, args = sys.argv[1], sys.argv[2:]
+body = {"op": op}
+for a in args:
+    k, _, v = a.partition("=")
+    try:
+        body[k] = json.loads(v) if v[:1] in "[{0123456789-" or v in ("true", "false", "null") else v
+    except ValueError:
+        body[k] = v
+req = urllib.request.Request("http://127.0.0.1:8799/human", json.dumps(body).encode(), {"Content-Type": "application/json"})
+try:
+    print(urllib.request.urlopen(req, timeout=120).read().decode())
+except urllib.error.HTTPError as e:
+    print(e.read().decode())
+    sys.exit(1)
+EOF

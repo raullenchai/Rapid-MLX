@@ -1453,6 +1453,13 @@ class TestChunkedPrefillAndEmptyPrompt:
             "forward pass AFTER the token that stopped the matcher (finding #3)"
         )
 
+        from rapid_mlx.api.errors import GuidedTokenLimitError
+
+        with pytest.raises(GuidedTokenLimitError) as excinfo:
+            gen.generate_json_object(prompt, max_tokens=1, temperature=0.0)
+        assert excinfo.value.prompt_tokens == prompt_len
+        assert excinfo.value.completion_tokens == 1
+
 
 # ---------------------------------------------------------------------------
 # Import diagnostics on missing/broken llguidance (codex finding #4)

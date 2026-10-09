@@ -1774,3 +1774,62 @@ def test_uploader_redirect_and_http_helpers(monkeypatch):
     monkeypatch.setattr(mirror, "_PUBLIC_OPENER", Opener(error=TimeoutError()))
     assert mirror._http_head_status("https://example") == 0
     assert mirror._http_range_get_status("https://example") == 0
+
+
+def _non_lfs_report(item, probe, *, sync=False):
+    report = drift.AliasReport("a", "main", "org/a", True, "org/a", "mirrored")
+    drift._apply_probe_result(
+        report, item, probe, None, has_r2=False, sync_in_progress=sync
+    )
+    return {(f.kind, f.severity) for f in report.findings}, report
+
+
+def _oid(body: bytes) -> str:
+    return drift._git_blob_oid(body)
+
+
+def test_same_size_stale_required_config_stays_an_error():
+    """Size-only clients serve this file: it is a real stale-config defect."""
+    fresh, stale = b'{"v":"new"}', b'{"v":"old"}'
+    item = drift.HfFile("config.json", len(fresh), None, _oid(fresh))
+    kinds, _ = _non_lfs_report(
+        item, drift.MirrorProbe(200, len(stale), None, _oid(stale))
+    )
+    assert kinds == {("content_mismatch", "error")}
+
+
+def test_size_differing_required_config_is_a_warning():
+    """No client serves a wrong-size body; size_mismatch still fails the run."""
+    fresh, stale = b'{"v":"newer"}', b'{"v":"old"}'
+    item = drift.HfFile("config.json", len(fresh), None, _oid(fresh))
+    kinds, report = _non_lfs_report(
+        item, drift.MirrorProbe(200, len(stale), None, _oid(stale))
+    )
+    assert kinds == {("size_mismatch", "error"), ("content_mismatch", "warning")}
+    assert drift._fails([report], "error")
+    content = next(f for f in report.findings if f.kind == "content_mismatch")
+    assert "every client falls back to HF" in (content.detail or "")
+
+
+def test_content_mismatch_without_hf_size_stays_an_error():
+    """Without HF's size no client can reject by size, so it may be served."""
+    fresh, stale = b'{"v":"newer"}', b'{"v":"old"}'
+    item = drift.HfFile("config.json", None, None, _oid(fresh))
+    kinds, _ = _non_lfs_report(
+        item, drift.MirrorProbe(200, len(stale), None, _oid(stale))
+    )
+    assert kinds == {("content_mismatch", "error")}
+
+
+def test_readme_and_sync_severities_are_unchanged():
+    fresh, stale = b"# new readme\n", b"# old\n"
+    readme = drift.HfFile("README.md", len(fresh), None, _oid(fresh))
+    kinds, _ = _non_lfs_report(
+        readme, drift.MirrorProbe(200, len(stale), None, _oid(stale))
+    )
+    assert kinds == {("size_mismatch", "info"), ("content_mismatch", "info")}
+    config = drift.HfFile("config.json", len(fresh), None, _oid(fresh))
+    kinds, _ = _non_lfs_report(
+        config, drift.MirrorProbe(200, len(stale), None, _oid(stale)), sync=True
+    )
+    assert kinds == {("size_mismatch", "warning"), ("content_mismatch", "warning")}

@@ -12,10 +12,10 @@ enum ModelKind: String, Sendable, Hashable, CaseIterable, Identifiable {
     /// Tab label in Model Management.
     var tabLabel: String {
         switch self {
-        case .chat: return "Chat"
-        case .image: return "Image"
-        case .audio: return "Audio"
-        case .video: return "Video"
+        case .chat: return String(localized: "Chat models")
+        case .image: return String(localized: "Image models")
+        case .audio: return String(localized: "Audio models")
+        case .video: return String(localized: "Video models")
         }
     }
 }
@@ -81,9 +81,9 @@ enum ImageModelCapability: String, Sendable, Hashable {
     var supportsEditing: Bool { self != .generation }
     var label: String {
         switch self {
-        case .generation: return "Image generation"
-        case .editing: return "Image editing"
-        case .generationAndEditing: return "Image generation and editing"
+        case .generation: return String(localized: "Image generation")
+        case .editing: return String(localized: "Image editing")
+        case .generationAndEditing: return String(localized: "Image generation and editing")
         }
     }
 }
@@ -210,7 +210,7 @@ struct SpeculativeDecodingPreset: Codable, Sendable, Hashable {
         switch method {
         case .mtp: return "MTP"
         case .dflash: return "DFlash"
-        case .suffix: return "Suffix decoding"
+        case .suffix: return String(localized: "Suffix decoding")
         }
     }
 
@@ -365,6 +365,8 @@ typealias CachedModelInventoryEntry = (
 /// short-lived subprocesses concurrently. Cancellation propagates to the
 /// children via ``Task.checkCancellation`` between phases.
 enum ModelCatalog {
+    private static let processRegistry = CatalogProcessRegistry()
+
     /// Aliases whose complete generation and encoding closure is present in
     /// the signed Desktop sidecar. Exact names make a new engine alias fail
     /// closed until its runtime has been bundled and smoke-tested here.
@@ -2262,7 +2264,10 @@ enum ModelCatalog {
     private static func runRapidMlxResult(
         binary: URL,
         args: [String],
-        hubCacheOverride: URL? = nil
+        hubCacheOverride: URL? = nil,
+        processRegistry: CatalogProcessRegistry = processRegistry,
+        beforeLaunch: (@Sendable () -> Void)? = nil,
+        afterLaunch: (@Sendable () -> Void)? = nil
     ) async -> RapidMlxResult {
         let processBox = CatalogProcessBox()
         return await withTaskCancellationHandler {
@@ -2321,6 +2326,7 @@ enum ModelCatalog {
 
             task.terminationHandler = { _ in
                 drainGroup.wait()
+                processRegistry.remove(task)
                 processBox.clear(task)
                 if resumedBox.tryConsume() {
                     let text = String(data: stdoutBox.data, encoding: .utf8) ?? ""
@@ -2332,22 +2338,25 @@ enum ModelCatalog {
             }
 
             processBox.set(task)
+            let launched: Bool
             do {
-                try task.run()
-                // The child now holds its own dup of both write ends, so
-                // drop OUR copies. While the parent keeps a write end
-                // open the pipe can never reach EOF — ``readPipeData``
-                // then blocks forever even after the child exits, and
-                // ``terminationHandler``'s ``drainGroup.wait()`` deadlocks
-                // the continuation with it. The launch-failure branch
-                // below has always closed them; the success path is where
-                // a long-lived or hung child actually makes it matter.
+                launched = try processRegistry.launchUnlessShuttingDown(
+                    task,
+                    beforeLaunch: beforeLaunch,
+                    afterLaunch: afterLaunch
+                )
+            } catch {
                 try? stdout.fileHandleForWriting.close()
                 try? stderr.fileHandleForWriting.close()
-                processBox.terminateIfCancelled()
-            } catch {
-                // Close write ends so the drainers see EOF instead
-                // of blocking forever on a never-written pipe.
+                drainGroup.wait()
+                processRegistry.remove(task)
+                processBox.clear(task)
+                if resumedBox.tryConsume() {
+                    continuation.resume(returning: RapidMlxResult(stdout: "", succeeded: false))
+                }
+                return
+            }
+            guard launched else {
                 try? stdout.fileHandleForWriting.close()
                 try? stderr.fileHandleForWriting.close()
                 drainGroup.wait()
@@ -2357,6 +2366,13 @@ enum ModelCatalog {
                 }
                 return
             }
+            // The child now holds its own dup of both write ends, so drop OUR
+            // copies. While the parent keeps a write end open the pipe can
+            // never reach EOF after child exit.
+            try? stdout.fileHandleForWriting.close()
+            try? stderr.fileHandleForWriting.close()
+            processBox.terminateIfCancelled()
+            processRegistry.terminateIfShuttingDown(task)
             }
         } onCancel: {
             processBox.cancel()
@@ -2397,6 +2413,30 @@ enum ModelCatalog {
         await runRapidMlx(binary: binary, args: args)
     }
 
+    static func _testingRunRapidMlx(
+        binary: URL,
+        args: [String],
+        processRegistry: CatalogProcessRegistry,
+        beforeLaunch: @escaping @Sendable () -> Void,
+        afterLaunch: @escaping @Sendable () -> Void = {}
+    ) async -> String {
+        await runRapidMlxResult(
+            binary: binary,
+            args: args,
+            processRegistry: processRegistry,
+            beforeLaunch: beforeLaunch,
+            afterLaunch: afterLaunch
+        ).stdout
+    }
+
+    static func beginShutdown() {
+        processRegistry.beginShutdown()
+    }
+
+    static func finishShutdown() {
+        processRegistry.finishShutdown()
+    }
+
     /// Environment for app-owned, read-only catalog probes. These invocations
     /// are implementation details, not engine sessions: one picker refresh can
     /// execute `models`, `ls`, and several `info` commands. Letting each emit a
@@ -2419,6 +2459,87 @@ enum ModelCatalog {
         }
         return EngineProcessEnvironment.sidecar(env)
     }
+}
+
+/// App-lifetime ownership for short-lived catalog probes. Swift task
+/// cancellation handles view/task teardown; this registry covers process-wide
+/// termination, when SwiftUI task destruction is not guaranteed to run before
+/// AppKit exits the parent process.
+final class CatalogProcessRegistry: @unchecked Sendable {
+    private let lock = NSLock()
+    private var processes: [ObjectIdentifier: Process] = [:]
+    private var shuttingDown = false
+    private static let gracefulShutdownSeconds: TimeInterval = 0.25
+    private static let forcedShutdownSeconds: TimeInterval = 1.0
+
+    func launchUnlessShuttingDown(
+        _ process: Process,
+        beforeLaunch: (@Sendable () -> Void)? = nil,
+        afterLaunch: (@Sendable () -> Void)? = nil
+    ) throws -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !shuttingDown else {
+            return false
+        }
+        processes[ObjectIdentifier(process)] = process
+        beforeLaunch?()
+        try process.run()
+        afterLaunch?()
+        return true
+    }
+
+    func remove(_ process: Process) {
+        lock.lock()
+        processes.removeValue(forKey: ObjectIdentifier(process))
+        lock.unlock()
+    }
+
+    func terminateIfShuttingDown(_ process: Process) {
+        lock.lock()
+        let shouldTerminate = shuttingDown
+        lock.unlock()
+        if shouldTerminate, process.isRunning {
+            process.terminate()
+        }
+    }
+
+    func beginShutdown() {
+        lock.lock()
+        shuttingDown = true
+        let snapshot = Array(processes.values)
+        lock.unlock()
+        for process in snapshot where process.isRunning {
+            process.terminate()
+        }
+    }
+
+    func finishShutdown() {
+        beginShutdown()
+        waitForRegistryToDrain(until: Date().addingTimeInterval(Self.gracefulShutdownSeconds))
+        let survivors = snapshot().filter(\.isRunning)
+        for process in survivors {
+            kill(process.processIdentifier, SIGKILL)
+        }
+        waitForRegistryToDrain(until: Date().addingTimeInterval(Self.forcedShutdownSeconds))
+    }
+
+    private func snapshot() -> [Process] {
+        lock.lock()
+        defer { lock.unlock() }
+        return Array(processes.values)
+    }
+
+    var activeCount: Int {
+        snapshot().count
+    }
+
+    private func waitForRegistryToDrain(until deadline: Date) {
+        while Date() < deadline && !snapshot().isEmpty {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+    }
+
 }
 
 /// Mutable reference box for letting two background drainer closures

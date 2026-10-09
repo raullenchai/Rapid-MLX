@@ -106,8 +106,7 @@ def _resolve_model_path(model_name: str) -> Path:
             "check the server log for the resolved path"
         )
 
-    from huggingface_hub import snapshot_download
-
+    from .._mirror import pinned_snapshot_download
     from ..model_aliases import resolve_model
 
     repository = resolve_model(model_name)
@@ -118,7 +117,7 @@ def _resolve_model_path(model_name: str) -> Path:
             "revision; use a registered alias or RAPID_MLX_WAN_MODEL_DIR"
         )
     try:
-        return Path(snapshot_download(repository, revision=revision))
+        return Path(pinned_snapshot_download(repository, revision))
     except Exception as exc:
         logger.exception("Could not resolve Wan checkpoint %s", repository)
         raise WanBackendError(
@@ -255,8 +254,8 @@ class WanVideoEngine:
             wan_generator = import_module("mlx_video.generate_wan")
         except ImportError as exc:
             raise WanBackendError(
-                "Wan generation requires mlx-video-with-audio>=0.1.36; "
-                "install the rapid-mlx video extra"
+                "Wan generation requires mlx-video-with-audio>=0.1.36, which "
+                "ships with rapid-mlx on Python 3.11+; reinstall rapid-mlx"
             ) from exc
 
         generation_kwargs = {

@@ -516,14 +516,58 @@ def test_scheduler_overrides_openai_penalty_context_size():
             f"penalty over the entire generated sequence. Use ≥ 4096."
         )
 
-    # Repetition penalty is a rapid-mlx extension (not OpenAI-spec) and
-    # is documented as multiplicative over a rolling window — leaving it
-    # at mlx-lm's default 20 is intentional. Assert we don't accidentally
-    # bump it (which would silently change semantics for existing users).
-    assert "repetition_context_size" not in call_args, (
-        "repetition_context_size should NOT be overridden in the scheduler. "
-        "repetition_penalty is rapid-mlx's multiplicative rolling-window "
-        "extension; only the OpenAI-spec frequency/presence penalties need "
-        "the larger window. If you're intentionally changing this, update "
-        "the test and document the semantic change."
+
+@pytest.mark.parametrize(
+    ("requested", "expected"),
+    [(None, 20), (64, 64), (0, 0)],
+    ids=["unset-keeps-default-20", "explicit-window", "zero-means-whole-context"],
+)
+def test_scheduler_passes_the_repetition_window_per_request(
+    monkeypatch, requested, expected
+):
+    """Repetition penalty is a rapid-mlx extension (not OpenAI-spec) and is
+    documented as multiplicative over a rolling window. A request may set
+    that window; when it does not, the window stays at mlx-lm's default 20 —
+    bumping the fallback would silently change semantics for existing users.
+    The OpenAI-spec penalties keep their wide window either way (#470).
+
+    Drives a real admission and inspects the arguments the scheduler hands
+    to ``make_logits_processors``.
+    """
+    from unittest.mock import MagicMock
+
+    import rapid_mlx.scheduler as scheduler_module
+    from rapid_mlx.request import Request, SamplingParams
+    from tests.test_prompt_cache_snapshot import _make_scheduler_with_cache
+
+    build = MagicMock(return_value=[])
+    monkeypatch.setattr(scheduler_module, "make_logits_processors", build)
+
+    scheduler = _make_scheduler_with_cache()
+    params = {"max_tokens": 4, "repetition_penalty": 1.2, "presence_penalty": 0.5}
+    if requested is not None:
+        params["repetition_context_size"] = requested
+    request = Request(
+        request_id="req-window",
+        prompt="ignored",
+        prompt_token_ids=[10, 20, 30, 40],
+        sampling_params=SamplingParams(**params),
     )
+    scheduler.waiting.append(request)
+    batch_generator = MagicMock()
+    batch_generator.insert_segments.return_value = [104]
+    scheduler.batch_generator = batch_generator
+    scheduler._ensure_batch_generator = MagicMock(return_value=True)
+    scheduler._get_request_sampler = MagicMock(return_value=MagicMock())
+    scheduler._register_uid_processors = MagicMock()
+
+    assert scheduler._schedule_waiting() == [request]
+
+    build.assert_called_once()
+    passed = build.call_args.kwargs
+    assert passed["repetition_penalty"] == 1.2
+    assert passed["repetition_context_size"] == expected
+    assert passed["presence_penalty"] == 0.5
+    assert passed["presence_context_size"] >= 4096
+    assert passed["frequency_penalty"] is None
+    assert passed["frequency_context_size"] >= 4096

@@ -1,0 +1,23 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Twin notes</title>
+<style>body { font: 15px system-ui; max-width: 480px; margin: 24px auto; } input { font: inherit; width: 100%; }</style>
+<h1>Twin notes</h1>
+<p id="which"></p>
+<label for="note">Note</label><input type="text" id="note">
+<button id="save">Save note</button>
+<p id="outcome" role="status"></p>
+<script src="../common.js"></script>
+<script>
+Mock.start(() => {
+  const copy = new URLSearchParams(location.search).get("copy") || "?";
+  which.textContent = `Copy ${copy}`;
+  // Every key and click that lands here is evidence of where input went.
+  note.addEventListener("input", () => Mock.log("hands", "twin_input", { copy, value: note.value }));
+  document.addEventListener("keydown", (e) => Mock.log("hands", "twin_key", { copy, key: e.key }));
+  save.addEventListener("click", () => {
+    Mock.log("hands", "twin_saved", { copy, value: note.value });
+    outcome.textContent = `Saved in copy ${copy}`;
+  });
+});
+</script>

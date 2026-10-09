@@ -734,6 +734,58 @@ def test_agent_reachability_maps_child_result(stdout, expected):
     )
 
 
+def test_agent_integrations_read_continue_yaml_and_cline_providers(
+    tmp_path, monkeypatch
+):
+    for name in ("CONTINUE_GLOBAL_DIR", "CLINE_DIR", "CLINE_DATA_DIR"):
+        monkeypatch.delenv(name, raising=False)
+    cont = tmp_path / ".continue"
+    cont.mkdir()
+    # config.yaml wins over config.json, exactly as in Continue.
+    (cont / "config.json").write_text(
+        '{"models":[{"title":"rapid-mlx","provider":"openai",'
+        '"apiBase":"http://localhost:9999/v1"}]}'
+    )
+    (cont / "config.yaml").write_text(
+        "models:\n- name: rapid-mlx\n  provider: openai\n"
+        "  apiBase: http://localhost:8001/v1\n"
+    )
+    cline = tmp_path / ".cline/data/settings/providers.json"
+    cline.parent.mkdir(parents=True)
+    cline.write_text(
+        '{"version":1,"lastUsedProvider":"openai-compatible","providers":'
+        '{"openai-compatible":{"settings":{"provider":"openai-compatible",'
+        '"baseUrl":"http://localhost:8002/v1"},"updatedAt":"2026-10-06T00:00:00Z"}}}'
+    )
+
+    assert eh._agent_integrations(tmp_path) == [
+        ("Continue.dev", cont / "config.yaml", "http://localhost:8001/v1"),
+        ("Cline", cline, "http://localhost:8002/v1"),
+    ]
+
+    (cont / "config.yaml").write_text("models: [unclosed\n")
+    assert eh._agent_integrations(tmp_path)[0] == (
+        "Continue.dev",
+        cont / "config.yaml",
+        None,
+    )
+
+
+def test_agent_integration_paths_follow_client_environment(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTINUE_GLOBAL_DIR", str(tmp_path / "cont"))
+    monkeypatch.setenv("CLINE_DIR", str(tmp_path / "cl"))
+    monkeypatch.delenv("CLINE_DATA_DIR", raising=False)
+    assert eh._continue_config_path(tmp_path) == tmp_path / "cont/config.json"
+    assert (
+        eh._cline_providers_path(tmp_path)
+        == tmp_path / "cl/data/settings/providers.json"
+    )
+    monkeypatch.setenv("CLINE_DATA_DIR", str(tmp_path / "data"))
+    assert (
+        eh._cline_providers_path(tmp_path) == tmp_path / "data/settings/providers.json"
+    )
+
+
 @pytest.mark.parametrize("claude_config", ["not json", "null", "[]"])
 def test_agent_integrations_warn_for_malformed_or_inactive_config(
     tmp_path, claude_config
@@ -741,14 +793,11 @@ def test_agent_integrations_warn_for_malformed_or_inactive_config(
     claude = tmp_path / ".claude/settings.json"
     claude.parent.mkdir(parents=True)
     claude.write_text(claude_config)
-    cline = (
-        tmp_path
-        / "Library/Application Support/Code/User/globalStorage"
-        / "saoudrizwan.claude-dev/settings/cline_mcp_settings.json"
-    )
+    cline = tmp_path / ".cline/data/settings/providers.json"
     cline.parent.mkdir(parents=True)
     cline.write_text(
-        '{"apiProvider":"anthropic","openAiBaseUrl":"http://localhost:8000/v1"}'
+        '{"version":1,"lastUsedProvider":"anthropic","providers":'
+        '{"openai-compatible":{"settings":{"baseUrl":"http://localhost:8000/v1"}}}}'
     )
 
     section = eh.section_agent_integrations(
@@ -2875,7 +2924,7 @@ def test_incompatible_mlx_vlm_names_bounded_extension_repair(tmp_path):
     )
     assert row.status is eh.CheckStatus.FAIL
     assert "requires ==0.7.2" in row.label
-    assert "rapid-mlx[vision]" in row.label
+    assert "rapid-mlx==" in row.label
     assert "transformers>=5.0.0,!=5.13.0,<5.16" in row.label
     assert str(runtime.resolve()) in row.label
 
@@ -5542,3 +5591,76 @@ def test_probe_record_escape_cannot_claim_trusted_anchor(
     entry = probe["packages"]["dogfoodns-stub"]
     assert entry["trusted_origin"] is True
     assert entry["version"] != "9.9.9", entry
+
+
+def test_homebrew_libexec_interpreter_is_labelled_homebrew_not_virtualenv(
+    tmp_path, monkeypatch
+):
+    """The formula's libexec venv must not be offered pip repairs."""
+    libexec_python = (
+        (tmp_path / "opt" / "homebrew" / "Cellar" / "rapid-mlx" / "0.15.8")
+        / "libexec"
+        / "bin"
+        / "python"
+    )
+    libexec_python.parent.mkdir(parents=True)
+    libexec_python.write_text("#!/bin/sh\n")
+    monkeypatch.setenv("VIRTUAL_ENV", str(libexec_python.parent.parent))
+    monkeypatch.setattr(eh.sys, "prefix", str(libexec_python.parent.parent))
+    monkeypatch.setattr(eh.sys, "base_prefix", str(tmp_path / "python@3.14"))
+
+    label, path = eh._install_location(libexec_python)
+    assert label == "Homebrew"
+    assert path == libexec_python.absolute()
+
+
+def test_homebrew_absent_mlx_vlm_points_at_the_full_pypi_install(tmp_path):
+    runtime = (
+        (tmp_path / "opt" / "homebrew" / "Cellar" / "rapid-mlx" / "0.15.8")
+        / "libexec"
+        / "bin"
+        / "python"
+    )
+    runtime.parent.mkdir(parents=True)
+    runtime.write_text("")
+
+    with (
+        mock.patch.object(eh.sys, "executable", str(runtime)),
+        mock.patch.object(eh, "_safe_version", return_value=None),
+        mock.patch.object(eh, "_module_available", return_value=False),
+    ):
+        section = eh.section_optional_packages()
+
+    row = next(c for c in section.checks if c.label.startswith("mlx-vlm (vision"))
+    assert row.status is eh.CheckStatus.WARN
+    assert "The Homebrew formula includes the text runtime" in row.label
+    assert "brew uninstall rapid-mlx && uv tool install 'rapid-mlx==" in row.label
+    assert "pip install" not in row.label
+
+
+def test_homebrew_incompatible_mlx_vlm_points_at_the_full_pypi_install(tmp_path):
+    runtime = (
+        (tmp_path / "opt" / "homebrew" / "Cellar" / "rapid-mlx" / "0.15.8")
+        / "libexec"
+        / "bin"
+        / "python"
+    )
+    runtime.parent.mkdir(parents=True)
+    runtime.write_text("")
+
+    def fake_ver(dist: str, runtime=None) -> str | None:
+        return "0.7.0" if dist == "mlx-vlm" else None
+
+    with (
+        mock.patch.object(eh.sys, "executable", str(runtime)),
+        mock.patch.object(eh, "_safe_version", side_effect=fake_ver),
+    ):
+        section = eh.section_optional_packages()
+
+    row = next(
+        c
+        for c in section.checks
+        if c.label.startswith("mlx-vlm (vision") and "incompatible" in c.label
+    )
+    assert "The Homebrew formula includes the text runtime" in row.label
+    assert "pip install" not in row.label

@@ -17,7 +17,6 @@
             "curated_general_purpose",
             "fits_memory_tier"
           ],
-          "decode_tokens_per_second_x100": 9350,
           "limitation_ids": [
             "not_for_coding"
           ]
@@ -32,7 +31,6 @@
             "curated_general_purpose",
             "fits_memory_tier"
           ],
-          "decode_tokens_per_second_x100": 20840,
           "limitation_ids": [
             "basic_chat"
           ]
@@ -51,8 +49,7 @@
           "reason_ids": [
             "curated_general_purpose",
             "fits_memory_tier"
-          ],
-          "decode_tokens_per_second_x100": 6070
+          ]
         },
         {
           "role": "fast",
@@ -64,7 +61,6 @@
             "curated_general_purpose",
             "fits_memory_tier"
           ],
-          "decode_tokens_per_second_x100": 20840,
           "limitation_ids": [
             "basic_chat"
           ]
@@ -83,8 +79,7 @@
           "reason_ids": [
             "curated_general_purpose",
             "fits_memory_tier"
-          ],
-          "decode_tokens_per_second_x100": 3570
+          ]
         },
         {
           "role": "fast",
@@ -95,8 +90,7 @@
           "reason_ids": [
             "curated_general_purpose",
             "fits_memory_tier"
-          ],
-          "decode_tokens_per_second_x100": 6070
+          ]
         }
       ]
     },
@@ -112,8 +106,7 @@
           "reason_ids": [
             "curated_general_purpose",
             "fits_memory_tier"
-          ],
-          "decode_tokens_per_second_x100": 1750
+          ]
         },
         {
           "role": "fast",
@@ -124,8 +117,7 @@
           "reason_ids": [
             "curated_general_purpose",
             "fits_memory_tier"
-          ],
-          "decode_tokens_per_second_x100": 6070
+          ]
         }
       ]
     },
@@ -141,8 +133,7 @@
           "reason_ids": [
             "curated_general_purpose",
             "fits_memory_tier"
-          ],
-          "decode_tokens_per_second_x100": 4070
+          ]
         },
         {
           "role": "fast",
@@ -153,8 +144,7 @@
           "reason_ids": [
             "curated_general_purpose",
             "fits_memory_tier"
-          ],
-          "decode_tokens_per_second_x100": 6070
+          ]
         }
       ]
     },
@@ -170,8 +160,7 @@
           "reason_ids": [
             "curated_general_purpose",
             "fits_memory_tier"
-          ],
-          "decode_tokens_per_second_x100": 4070
+          ]
         },
         {
           "role": "fast",
@@ -182,8 +171,7 @@
           "reason_ids": [
             "curated_general_purpose",
             "fits_memory_tier"
-          ],
-          "decode_tokens_per_second_x100": 6000
+          ]
         }
       ]
     },
@@ -199,8 +187,7 @@
           "reason_ids": [
             "curated_general_purpose",
             "fits_memory_tier"
-          ],
-          "decode_tokens_per_second_x100": 4070
+          ]
         },
         {
           "role": "fast",
@@ -211,8 +198,7 @@
           "reason_ids": [
             "curated_general_purpose",
             "fits_memory_tier"
-          ],
-          "decode_tokens_per_second_x100": 6000
+          ]
         }
       ]
     },
@@ -228,8 +214,7 @@
           "reason_ids": [
             "curated_general_purpose",
             "fits_memory_tier"
-          ],
-          "decode_tokens_per_second_x100": 4070
+          ]
         },
         {
           "role": "fast",
@@ -240,11 +225,10 @@
           "reason_ids": [
             "curated_general_purpose",
             "fits_memory_tier"
-          ],
-          "decode_tokens_per_second_x100": 6000
+          ]
         }
       ]
     }
   ],
-  "policy_digest": "sha256:35b8ab8b971e70f0200a80021f9c6a06b4c42dcfda447303554576564a090f99"
+  "policy_digest": "sha256:cad2d9b551808ed3d488a182d671ac9959c9e5b8c44ab8c5f5c99d5e4e403645"
 }

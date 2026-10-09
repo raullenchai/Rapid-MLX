@@ -1124,10 +1124,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         signalShareCompute: () -> Void,
         signalServer: () -> Void,
         signalCUAServer: () -> Void = {},
+        signalCatalog: () -> Void = {},
         signalDownloads: () -> Void,
         reapShareCompute: () -> Void,
         reapServer: () -> Void,
         reapCUAServer: () -> Void = {},
+        reapCatalog: () -> Void = {},
         reapDownloads: () -> Void,
         flushConversations: () -> Void,
         flushFolders: () -> Void
@@ -1145,12 +1147,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         signalShareCompute()
         signalServer()
         signalCUAServer()
+        signalCatalog()
         signalDownloads()
         // Reap phase — blocking. Server first: its grace is the long
         // one, and by the time it returns the download children have
         // had that entire window to exit.
         reapServer()
         reapCUAServer()
+        reapCatalog()
         reapShareCompute()
         reapDownloads()
         // Drain any queued conversation-history write so the last turn /
@@ -1184,10 +1188,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             signalShareCompute: { AppDelegate.shared.shareCompute?.beginShutdown() },
             signalServer: { AppDelegate.shared.server?.beginShutdown() },
             signalCUAServer: { AppDelegate.shared.cuaServer?.beginShutdown() },
+            signalCatalog: { ModelCatalog.beginShutdown() },
             signalDownloads: { AppDelegate.shared.downloads?.beginShutdown() },
             reapShareCompute: { AppDelegate.shared.shareCompute?.finishShutdown() },
             reapServer: { AppDelegate.shared.server?.shutdownSync() },
             reapCUAServer: { AppDelegate.shared.cuaServer?.shutdownSync() },
+            reapCatalog: { ModelCatalog.finishShutdown() },
             reapDownloads: { AppDelegate.shared.downloads?.finishShutdown() },
             flushConversations: { ConversationStore.flush() },
             flushFolders: { ConversationFolderStore.flush() }

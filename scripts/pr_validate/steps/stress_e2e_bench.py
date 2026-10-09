@@ -28,10 +28,12 @@ Implementation notes:
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shutil
 import socket
+import statistics
 import subprocess
 import tempfile
 import time
@@ -814,14 +816,84 @@ _ENVIRONMENT_DEFINING = (
 )
 
 
+# ``setup.py`` / ``setup.cfg`` define the environment only as the project's
+# own build files at the repository root. The same basename deeper in the
+# tree is ordinary source (``rapid_mlx/agents/setup.py`` is the agent setup
+# flow), and refusing the A/B for it leaves baseline drift with no way out.
+_ROOT_ONLY_ENVIRONMENT_DEFINING = ("setup.py", "setup.cfg")
+
+
 def _diff_defines_the_environment(files_changed: list[str]) -> bool:
-    return any(
-        Path(f).name in _ENVIRONMENT_DEFINING or Path(f).name.startswith("requirements")
-        for f in files_changed
+    for changed in files_changed:
+        path = Path(changed)
+        if path.name in _ROOT_ONLY_ENVIRONMENT_DEFINING:
+            if len(path.parts) == 1:
+                return True
+        elif path.name in _ENVIRONMENT_DEFINING or path.name.startswith("requirements"):
+            return True
+    return False
+
+
+AB_ROUNDS = 20
+AB_BLOCKS = AB_ROUNDS // 2
+# One-sided 95% Student-t critical value for the fixed ten-block design
+# (df = 9). The sample count is part of the protocol; accepting another count
+# with this value would silently change the confidence level.
+_T95_ONE_SIDED = {9: 1.8331129326536335}
+
+
+def _paired_metric_interval(base: list[float], pr: list[float]) -> dict[str, Any]:
+    """Return the fixed-design CI for paired ABBA block log ratios."""
+    if len(base) != AB_ROUNDS or len(pr) != AB_ROUNDS:
+        raise ValueError(f"paired A/B requires exactly {AB_ROUNDS} captures per arm")
+    values = [*base, *pr]
+    if any(not math.isfinite(value) or value <= 0 for value in values):
+        raise ValueError("paired A/B metrics must be finite and positive")
+    effects = []
+    for offset in range(0, AB_ROUNDS, 2):
+        effects.append(
+            statistics.mean(math.log(value) for value in pr[offset : offset + 2])
+            - statistics.mean(math.log(value) for value in base[offset : offset + 2])
+        )
+    degrees_of_freedom = len(effects) - 1
+    critical = _T95_ONE_SIDED[degrees_of_freedom]
+    mean = statistics.mean(effects)
+    standard_error = statistics.stdev(effects) / math.sqrt(len(effects))
+    return {
+        "mean_log_ratio": mean,
+        "lower_log_ratio": mean - critical * standard_error,
+        "upper_log_ratio": mean + critical * standard_error,
+        "block_log_ratios": effects,
+    }
+
+
+def _paired_metric_decision(
+    base: list[float], pr: list[float], threshold_pct: float
+) -> dict[str, Any]:
+    if not math.isfinite(threshold_pct) or threshold_pct < 0:
+        raise ValueError("paired A/B threshold must be finite and nonnegative")
+    interval = _paired_metric_interval(base, pr)
+    threshold_log = math.log1p(threshold_pct / 100)
+    at_upper_boundary = math.isclose(
+        interval["upper_log_ratio"], threshold_log, rel_tol=1e-12, abs_tol=1e-15
     )
-
-
-AB_ROUNDS = 2
+    at_lower_boundary = math.isclose(
+        interval["lower_log_ratio"], threshold_log, rel_tol=1e-12, abs_tol=1e-15
+    )
+    if interval["upper_log_ratio"] <= threshold_log or at_upper_boundary:
+        status = "pass"
+    elif interval["lower_log_ratio"] > threshold_log and not at_lower_boundary:
+        status = "fail"
+    else:
+        status = "skip"
+    return {
+        **interval,
+        "status": status,
+        "mean_pct": math.expm1(interval["mean_log_ratio"]) * 100,
+        "lower_pct": math.expm1(interval["lower_log_ratio"]) * 100,
+        "upper_pct": math.expm1(interval["upper_log_ratio"]) * 100,
+        "threshold_pct": threshold_pct,
+    }
 
 
 def _bench_ab_against_base(
@@ -903,96 +975,68 @@ def _bench_ab_against_base(
     def values(arm: str, key: str) -> list[float]:
         return [float(item[key]) for item in captures[arm]]
 
-    def spread(items: list[float]) -> float:
-        lo, hi = min(items), max(items)
-        return (hi / lo - 1) * 100 if lo else 0.0
-
     thresholds = {
         "cold": float(comparison["cold_threshold"]),
         "warm": float(comparison["warm_threshold"]),
     }
-    spreads = {
-        f"{arm}_{metric}": spread(values(arm, f"{metric}_request_ms_median"))
-        for arm in ("base", "pr")
-        for metric in ("cold", "warm")
-    }
-    # Warm is the steady-state latency users actually live with; if either arm's
-    # WARM capture is noisy the machine genuinely is not quiet enough to judge.
-    #
-    # Cold-start latency is different in kind, not just degree: on the large-model
-    # matrix each round evicts the previous model from the page cache and pays a
-    # fresh per-process Metal kernel compilation, so cold spread is dominated by
-    # intrinsic, non-ambient variance (see #2118 and the artifact note in
-    # ``_measure_bench``). Gating on it made the quiet-machine check structurally
-    # unsatisfiable for high-blast PRs — every run went INCONCLUSIVE while the
-    # measured A/B delta was within noise. So a noisy cold spread no longer blocks:
-    # the warm A/B still decides the verdict, and the cold delta is demoted to
-    # advisory (unmeasurable here) rather than forcing a maintainer merge call.
-    warm_noisy = [
-        f"{name} {value:.1f}%"
-        for name, value in spreads.items()
-        if name.endswith("_warm") and value > thresholds["warm"]
-    ]
-    cold_noisy = [
-        f"{name} {value:.1f}%"
-        for name, value in spreads.items()
-        if name.endswith("_cold") and value > thresholds["cold"]
-    ]
-    best = {
-        arm: {
-            metric: min(values(arm, f"{metric}_request_ms_median"))
+    measurement_error = None
+    try:
+        decisions = {
+            metric: _paired_metric_decision(
+                values("base", f"{metric}_request_ms_median"),
+                values("pr", f"{metric}_request_ms_median"),
+                thresholds[metric],
+            )
             for metric in ("cold", "warm")
         }
-        for arm in ("base", "pr")
-    }
-    delta = {
-        metric: (best["pr"][metric] / best["base"][metric] - 1) * 100
-        for metric in ("cold", "warm")
-    }
-    # Judge cold only when its capture was quiet; otherwise warm alone decides.
-    judged = ("cold", "warm") if not cold_noisy else ("warm",)
+    except (KeyError, TypeError, ValueError) as exc:
+        decisions = {}
+        measurement_error = str(exc)
     artifact = ctx.artifact_path(f"bench-ab-{_safe_name(choice.model_id)}.json")
     artifact.write_text(
         json.dumps(
             {
                 "model": choice.model_id,
                 "rounds": AB_ROUNDS,
+                "blocks": AB_BLOCKS,
                 "base_captures": captures["base"],
                 "pr_captures": captures["pr"],
-                "capture_spread_pct": spreads,
-                "best": best,
-                "delta_pct": delta,
-                "judged_metrics": list(judged),
-                "cold_advisory": bool(cold_noisy),
+                "paired_decisions": decisions,
+                "measurement_error": measurement_error,
             },
             indent=2,
         )
     )
-    detail = f"cold {delta['cold']:+.1f}%, warm {delta['warm']:+.1f}% vs base"
-    if warm_noisy:
-        noisy = warm_noisy + cold_noisy
+    if measurement_error is not None:
         return {
-            "status": "skip",
-            "summary": f"machine not quiet enough to judge ({', '.join(noisy)}); {detail}",
+            "status": "fail",
+            "summary": f"bench A/B produced invalid measurements ({measurement_error})",
             "artifact": str(artifact),
             "executed": True,
         }
-    advisory = ""
-    if cold_noisy:
-        advisory = (
-            f"; cold spread too high to judge ({', '.join(cold_noisy)}) — "
-            "cold delta advisory only, verdict on warm"
-        )
-    if any(delta[m] > thresholds[m] for m in judged):
+    detail = ", ".join(
+        f"{metric} mean {decision['mean_pct']:+.1f}% "
+        f"(one-sided 95% bounds {decision['lower_pct']:+.1f}%.."
+        f"{decision['upper_pct']:+.1f}%, threshold {thresholds[metric]:g}%)"
+        for metric, decision in decisions.items()
+    )
+    if any(decision["status"] == "fail" for decision in decisions.values()):
         return {
             "status": "fail",
-            "summary": f"perf regression confirmed: {detail}{advisory}",
+            "summary": f"perf regression confirmed: {detail}",
+            "artifact": str(artifact),
+            "executed": True,
+        }
+    if any(decision["status"] == "skip" for decision in decisions.values()):
+        return {
+            "status": "skip",
+            "summary": f"paired A/B uncertainty overlaps the regression limit: {detail}",
             "artifact": str(artifact),
             "executed": True,
         }
     return {
         "status": "pass",
-        "summary": f"not this PR: {detail}{advisory}",
+        "summary": f"not this PR: {detail}",
         "artifact": str(artifact),
         "executed": True,
     }

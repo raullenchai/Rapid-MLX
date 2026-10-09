@@ -1,0 +1,74 @@
+name: Candidate routing shadow
+
+on:
+  workflow_run:
+    workflows: [Queue tree attestation]
+    types: [completed]
+
+# Observations cannot publish commit statuses or change repository policy.
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  observe:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out trusted observer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Locate one complete CI artifact from the trusted attestation
+        id: artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ATTESTATION_RUN: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$ATTESTATION_RUN/artifacts?per_page=100" > "$RUNNER_TEMP/artifacts.json"
+          python - <<'PY'
+          import json, os, re
+          from pathlib import Path
+          page = json.loads((Path(os.environ['RUNNER_TEMP']) / 'artifacts.json').read_text())
+          matches = [a for a in page['artifacts'] if re.fullmatch(r'queue-tree-evidence-ci-[0-9a-f]{40}', a['name']) and a.get('expired') is False]
+          name = matches[0]['name'] if len(matches) == 1 and page['total_count'] < 100 else ''
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('found=' + str(bool(name)).lower() + '\n')
+              if name:
+                  output.write('name=' + name + '\n')
+          PY
+
+      - name: Download only the trusted full artifact
+        if: steps.artifact.outputs.found == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: ${{ steps.artifact.outputs.name }}
+          path: ${{ runner.temp }}/shadow-input
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Observe candidate path and base qualification
+        if: steps.artifact.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ATTESTATION_RUN: ${{ github.event.workflow_run.id }}
+        run: |
+          python -m scripts.ci_candidate_shadow \
+            --repo "$GITHUB_REPOSITORY" \
+            --full-evidence "$RUNNER_TEMP/shadow-input/evidence.json" \
+            --attestation-run-id "$ATTESTATION_RUN" \
+            --output "$RUNNER_TEMP/candidate-route-shadow.json"
+
+      - name: Upload advisory snapshot
+        if: steps.artifact.outputs.found == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: candidate-route-shadow-${{ github.event.workflow_run.id }}
+          path: ${{ runner.temp }}/candidate-route-shadow.json
+          if-no-files-found: error
+          retention-days: 7

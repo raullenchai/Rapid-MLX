@@ -251,6 +251,8 @@ The largest and most self-contained components:
 | GLM-5 Next text runtime | https://github.com/Blaizzy/mlx-vlm (`f9e2c50`, `bffd485`) | MIT | `rapid_mlx/patches/glm5_next_runtime.py` |
 | Cache-owned MTP transaction and GLM drafter adapter | https://github.com/Blaizzy/mlx-vlm (PR #2206) | MIT | `rapid_mlx/speculative/native_mtp/transaction.py`, `glm5_compat.py` |
 | Gemma 4 model classes | https://github.com/Blaizzy/mlx-vlm (v0.6.3) | MIT | `rapid_mlx/models/gemma4_vendored/` |
+| Decider typed-decision scoring, adapted | https://github.com/Blaizzy/mlx-vlm (`fdd94f3`) | MIT | `rapid_mlx/system_one/decider.py` (license and provenance in the file header) |
+| Native MLX Clef head and prompt, adapted | https://github.com/Blaizzy/mlx-vlm (`fdd94f3`) | MIT | `rapid_mlx/system_one/clef_mlx.py` (license and provenance in the file header) |
 | Hunyuan 3 model class | https://github.com/ml-explore/mlx-lm (PR #1211) | MIT | `rapid_mlx/models/hy_v3.py` |
 | DeepSeek V4 model classes | https://github.com/ml-explore/mlx-lm (`_ds4` branch, © Apple Inc.) | MIT | `rapid_mlx/models/deepseek_v4.py`, `deepseek_v4_cache.py`, `deepseek_v4_hyper_connection.py`, `deepseek_v4_switch.py` |
 | Stable Diffusion 3.5 Large MLX runtime | https://github.com/argmaxinc/DiffusionKit (`498e5db`) | MIT | `rapid_mlx/image/sd35_runtime/` (`LICENSE`, `NOTICE`) |

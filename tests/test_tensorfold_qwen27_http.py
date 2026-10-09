@@ -132,11 +132,16 @@ def test_http_gate_rejects_unqualified_features_and_maps_sampling() -> None:
     assert exc.value.status_code == 400
 
     request = SimpleNamespace(
+        top_p=0.9,
         top_k=20,
         min_p=0.05,
         seed=42,
         stop=["END"],
-        messages=[SimpleNamespace(content="hi")],
+        messages=[
+            SimpleNamespace(
+                content="hi", model_dump=lambda exclude_none: {"content": "hi"}
+            )
+        ],
         tools=None,
         response_format=None,
         repetition_penalty=None,
@@ -155,6 +160,7 @@ def test_http_gate_rejects_unqualified_features_and_maps_sampling() -> None:
         "min_p": 0.05,
         "seed": 42,
         "stop": ["END"],
+        "messages": [{"content": "hi"}],
     }
 
     request.messages = [SimpleNamespace(content=[{"type": "image_url"}])]
@@ -198,6 +204,81 @@ def test_http_gate_accepts_only_neutral_penalties_and_boolean_thinking() -> None
     with pytest.raises(HTTPException, match="chat_template_kwargs") as exc:
         validate_http_request(request)
     assert exc.value.status_code == 400
+
+
+class _BoundaryTokenizer:
+    """Renders each message as its content tokens, then a generation suffix."""
+
+    def apply_chat_template(
+        self, messages, *, tokenize, add_generation_prompt, enable_thinking
+    ):
+        assert tokenize is False
+        body = " ".join(message["content"] for message in messages)
+        suffix = (" 900 901" if enable_thinking else " 900") * add_generation_prompt
+        return body + suffix
+
+    def encode(self, text):
+        return [int(token) for token in text.split()]
+
+
+def _boundary_app(system_len: int = 0, tokenizer=None):
+    seen = {}
+
+    def system_prefix_len(messages, tools, prompt_ids, thinking=None):
+        seen.update(tools=tools, prompt=list(prompt_ids), thinking=thinking)
+        return system_len
+
+    app = SimpleNamespace(
+        tokenizer=tokenizer or _BoundaryTokenizer(),
+        tokenizer_lock=__import__("threading").Lock(),
+        system_prefix_len=system_prefix_len,
+    )
+    return app, seen
+
+
+def test_prompt_boundaries_mark_history_end_and_long_system_block() -> None:
+    from rapid_mlx.speculative.tensorfold_qwen27_server import _prompt_boundaries
+
+    messages = [{"role": "user", "content": "1 2 3"}]
+    app, seen = _boundary_app()
+    assert _prompt_boundaries(app, [1, 2, 3, 900, 901], messages, True) == (3, ())
+    assert seen == {"tools": None, "prompt": [1, 2, 3, 900, 901], "thinking": True}
+
+    # A system block is kept before and at its end, as far back as 512 tokens.
+    long_prompt = [1, 2, 3, *([900] * 4000)]
+    app, _ = _boundary_app(system_len=3000)
+    assert _prompt_boundaries(app, long_prompt, messages, False) == (
+        3,
+        (952, 2488, 3000),
+    )
+    app, _ = _boundary_app(system_len=1000)
+    assert _prompt_boundaries(app, long_prompt, messages, False)[1] == (1000,)
+    # A reported system length at or past the prompt end names no position.
+    app, _ = _boundary_app(system_len=3000)
+    assert _prompt_boundaries(app, long_prompt[:2600], messages, False)[1] == (
+        952,
+        2488,
+    )
+
+
+def test_prompt_boundaries_give_no_position_they_cannot_prove() -> None:
+    from rapid_mlx.speculative.tensorfold_qwen27_server import _prompt_boundaries
+
+    messages = [{"role": "user", "content": "1 2 3"}]
+    app, _ = _boundary_app(system_len=3000)
+    # No messages: a raw-prompt caller keeps today's behavior.
+    assert _prompt_boundaries(app, [1, 2, 3, 900], None, False) == (0, ())
+    # The history rendering does not prefix the prompt that will be prefilled.
+    assert _prompt_boundaries(app, [1, 7, 3, 900], messages, False)[0] == 0
+    # The history is the whole prompt: nothing follows it to resume into.
+    assert _prompt_boundaries(app, [1, 2, 3], messages, False)[0] == 0
+
+    class Broken(_BoundaryTokenizer):
+        def apply_chat_template(self, *args, **kwargs):
+            raise ValueError("template rejects this conversation")
+
+    app, _ = _boundary_app(system_len=3000, tokenizer=Broken())
+    assert _prompt_boundaries(app, [1, 2, 3, 900], messages, False) == (0, ())
 
 
 def test_provider_preserves_exact_token_ids_and_request_outputs(
@@ -274,9 +355,28 @@ def test_provider_preserves_exact_token_ids_and_request_outputs(
     provider = TensorFoldRequestProvider(
         SimpleNamespace(_app=app), audit_path=str(audit)
     )
+    app.tokenizer.apply_chat_template = lambda messages, **kwargs: "history"
+    app.tokenizer.encode = lambda text: [10] if text == "history" else [10, 11]
+    app.system_prefix_len = lambda *args, **kwargs: 0
     chunks = list(
-        provider.stream_generate(None, None, "prompt", max_tokens=8, thinking_budget=5)
+        provider.stream_generate(
+            None,
+            None,
+            "prompt",
+            max_tokens=8,
+            thinking_budget=5,
+            messages=[{"role": "user", "content": "hi"}],
+            enable_thinking=True,
+            temperature=0.7,
+            seed=5,
+        )
     )
+    assert scheduler.job.prompt_ids == [10, 11]
+    assert scheduler.job.history_len == 1
+    assert scheduler.job.shared_prefix_lens == ()
+    # The runtime reads temperature from the mapping, not the positional value.
+    assert scheduler.job.sampling == ({"seed": 5, "temperature": 0.7}, 0.7)
+    assert scheduler.job.temperature == 0.7
 
     assert [chunk.token for chunk in chunks] == [21, 22]
     assert [chunk.text for chunk in chunks] == ["A", ""]
@@ -291,6 +391,61 @@ def test_provider_preserves_exact_token_ids_and_request_outputs(
     record = json.loads(audit.read_text())
     assert record["token_ids"] == [21, 22]
     assert len(record["token_sha256"]) == 64
+
+    # No seed: sampled requests draw a fresh one each time, greedy ones none.
+    drawn = iter((11, 12, 13))
+    monkeypatch.setattr(
+        "rapid_mlx.speculative.tensorfold_qwen27_server.secrets.randbelow",
+        lambda _bound: next(drawn),
+    )
+    seeds = []
+    for _ in range(3):
+        list(provider.stream_generate(None, None, "prompt", temperature=0.7))
+        seeds.append(scheduler.job.sampling[0]["seed"])
+    assert seeds == [11, 12, 13]
+    list(provider.stream_generate(None, None, "prompt", temperature=0.0))
+    assert scheduler.job.sampling == ({"temperature": 0.0}, 0.0)
+
+    # Truncation the request omits comes from the model; what it sets wins.
+    provider = TensorFoldRequestProvider(
+        SimpleNamespace(_app=app), sampling_defaults={"top_k": 20, "top_p": 0.95}
+    )
+    list(provider.stream_generate(None, None, "prompt", temperature=0.7, seed=1))
+    assert scheduler.job.sampling[0] == {
+        "top_k": 20,
+        "top_p": 0.95,
+        "seed": 1,
+        "temperature": 0.7,
+    }
+    list(
+        provider.stream_generate(
+            None, None, "prompt", temperature=0.7, seed=1, top_p=1.0, top_k=0
+        )
+    )
+    assert scheduler.job.sampling[0]["top_p"] == 1.0
+    assert scheduler.job.sampling[0]["top_k"] == 0
+
+
+def test_model_truncation_defaults_and_omitted_top_p(tmp_path) -> None:
+    from rapid_mlx.speculative.tensorfold_qwen27_server import (
+        _model_sampling_defaults,
+        generation_kwargs,
+    )
+
+    (tmp_path / "generation_config.json").write_text(
+        '{"temperature": 1.0, "top_k": 20, "top_p": 0.95, "repetition_penalty": 1.1}'
+    )
+    assert _model_sampling_defaults(str(tmp_path)) == {"top_p": 0.95, "top_k": 20}
+    assert _model_sampling_defaults(str(tmp_path / "missing")) == {}
+
+    # The shared app's 1.0 stands in for an omitted top_p; it is not forwarded.
+    omitted = SimpleNamespace(top_p=None, top_k=None, min_p=None, seed=None, stop=None)
+    assert (
+        generation_kwargs(max_tokens=1, temperature=0.7, top_p=1.0, request=omitted)[
+            "top_p"
+        ]
+        is None
+    )
 
 
 def test_provider_closed_timeout_error_and_generate(
@@ -619,6 +774,7 @@ def test_render_prompt_and_server_bootstrap(monkeypatch) -> None:
     )
     assert closed == [True]
     assert captured["max_concurrent_requests"] == 1
+    assert captured["enforce_model_window"] is True
     assert (
         captured["runtime_status_extra"]["profile"]["compatibility"]["state"] == "ready"
     )
@@ -662,6 +818,199 @@ def test_tensorfold_rejects_second_in_flight_request_with_retry_after() -> None:
     assert response.status_code == 503
     assert response.headers["Retry-After"] == "1"
     assert response.json()["error"]["code"] == "at_capacity"
+
+
+def test_nonstream_answer_stays_content_when_thinking_is_off() -> None:
+    """A template that always opens a think block must not swallow the answer."""
+    from fastapi.testclient import TestClient
+
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.speculative.dflash.server import _build_app
+    from rapid_mlx.speculative.tensorfold_qwen27_server import ProviderResult
+
+    template = (
+        "{% for m in messages %}<|user|>{{ m.content }}{% endfor %}"
+        "{% if add_generation_prompt %}<|assistant|><think>{% endif %}"
+    )
+    replies = {False: "391", True: "17 * 23</think>391"}
+
+    def generate(_model, _processor, _prompt, **kwargs):
+        return ProviderResult(replies[kwargs["enable_thinking"]], [7], 1, 4)
+
+    try:
+        app = _build_app(
+            model=None,
+            processor=SimpleNamespace(eos_token_id=99, chat_template=template),
+            runtime=SimpleNamespace(
+                algorithm="mtp",
+                drafter_repo=None,
+                target_revision="a" * 40,
+                drafter_revision=None,
+            ),
+            served_model_name="glm-tf",
+            default_max_tokens=8,
+            cors_origins=[],
+            reasoning_parser_name="glm5",
+            generate_fn=generate,
+            render_prompt_fn=lambda _p, _m, request, **_kw: "prompt",
+            generation_kwargs_fn=lambda **kw: {"max_tokens": kw["max_tokens"]},
+        )
+        client = TestClient(app)
+
+        def ask(**extra):
+            response = client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "glm-tf",
+                    "messages": [{"role": "user", "content": "17*23?"}],
+                    **extra,
+                },
+            )
+            assert response.status_code == 200, response.text
+            return response.json()["choices"][0]["message"]
+
+        for extra in ({}, {"enable_thinking": False}):
+            message = ask(**extra)
+            assert message["content"] == "391"
+            assert not message.get("reasoning_content")
+
+        thinking = ask(enable_thinking=True)
+        assert thinking["content"] == "391"
+        assert thinking["reasoning_content"] == "17 * 23"
+    finally:
+        reset_config()
+
+
+def test_http_refuses_a_prompt_past_the_model_window() -> None:
+    from fastapi.testclient import TestClient
+
+    from rapid_mlx.speculative.dflash.server import _build_app
+
+    class Processor:
+        eos_token_id = 99
+        chat_template = "template"
+        model_max_length = 16
+
+        def __init__(self):
+            self.tokenizer = self
+
+        def apply_chat_template(self, messages, **kwargs):
+            return messages[-1]["content"]
+
+        def encode(self, text, **_kwargs):
+            return list(range(len(text)))
+
+    seen: list[int] = []
+
+    def generate(_model, _processor, _prompt, **kwargs):
+        seen.append(kwargs["max_tokens"])
+        from rapid_mlx.speculative.tensorfold_qwen27_server import ProviderResult
+
+        return ProviderResult("ok", [7], 1, 4)
+
+    app = _build_app(
+        model=None,
+        processor=Processor(),
+        runtime=SimpleNamespace(
+            algorithm="dflash2",
+            drafter_repo="pinned-drafter",
+            target_revision="a" * 40,
+            drafter_revision="b" * 40,
+        ),
+        served_model_name="qwen27-tf",
+        default_max_tokens=8,
+        cors_origins=[],
+        generate_fn=generate,
+        render_prompt_fn=lambda _p, _m, request, **_kw: request.messages[-1].content,
+        generation_kwargs_fn=lambda **kw: {"max_tokens": kw["max_tokens"]},
+        enforce_model_window=True,
+    )
+    client = TestClient(app)
+
+    def post(content: str, max_tokens: int):
+        return client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "qwen27-tf",
+                "messages": [{"role": "user", "content": content}],
+                "max_tokens": max_tokens,
+            },
+        )
+
+    too_long = post("x" * 32, 4)
+    assert too_long.status_code == 400
+    assert too_long.json()["error"]["code"] == "context_length_exceeded"
+    assert seen == []
+
+    assert post("x" * 10, 10_000_000).status_code == 200
+    assert seen == [6]
+
+
+def test_runtime_refusals_answer_as_client_errors(monkeypatch) -> None:
+    import sys
+    from types import ModuleType
+
+    from fastapi.testclient import TestClient
+
+    from rapid_mlx.speculative.dflash.server import _build_app
+    from rapid_mlx.speculative.tensorfold_qwen27_server import (
+        RequestRefused,
+        _as_refusal,
+    )
+
+    class RequestError(ValueError):
+        pass
+
+    class CapacityError(RequestError):
+        pass
+
+    errors = ModuleType("tensorfold.server.errors")
+    errors.RequestError = RequestError
+    errors.CapacityError = CapacityError
+    monkeypatch.setitem(sys.modules, "tensorfold.server.errors", errors)
+
+    refused = _as_refusal(RequestError("needs 228 GiB"))
+    assert isinstance(refused, RequestRefused) and refused.status_code == 400
+    assert str(refused) == "needs 228 GiB"
+    assert _as_refusal(CapacityError("busy")).status_code == 503
+    crash = RuntimeError("worker died")
+    assert _as_refusal(crash) is crash
+
+    # A runtime without the capacity subtype still classifies refusals.
+    del errors.CapacityError
+    assert _as_refusal(RequestError("too long")).status_code == 400
+    # Without the runtime's error types nothing is reclassified.
+    monkeypatch.setitem(sys.modules, "tensorfold.server.errors", None)
+    plain = RequestError("unknown")
+    assert _as_refusal(plain) is plain
+
+    raised: list[BaseException] = [refused, crash]
+
+    def generate(_model, _processor, _prompt, **_kwargs):
+        raise raised.pop(0)
+
+    app = _build_app(
+        model=None,
+        processor=SimpleNamespace(eos_token_id=99, chat_template="template"),
+        runtime=SimpleNamespace(
+            algorithm="dflash2",
+            drafter_repo="pinned-drafter",
+            target_revision="a" * 40,
+            drafter_revision="b" * 40,
+        ),
+        served_model_name="qwen27-tf",
+        default_max_tokens=8,
+        cors_origins=[],
+        generate_fn=generate,
+        render_prompt_fn=lambda _p, _m, request, **_kw: request.messages[-1].content,
+        generation_kwargs_fn=lambda **kw: {"max_tokens": kw["max_tokens"]},
+    )
+    client = TestClient(app)
+    body = {"model": "qwen27-tf", "messages": [{"role": "user", "content": "hi"}]}
+    first = client.post("/v1/chat/completions", json=body)
+    assert first.status_code == 400
+    assert "needs 228 GiB" in first.json()["error"]["message"]
+    assert client.post("/v1/chat/completions", json=body).status_code == 500
 
 
 def test_http_stream_and_nonstream_use_provider_and_reject_tools() -> None:

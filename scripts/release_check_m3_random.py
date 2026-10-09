@@ -51,6 +51,8 @@ Eligibility filter (sample pool):
                        issue #686 + huggingface/google/gemma-4-12B-it
                        discussion #41 — would burn 156s+ per round on
                        a known-bad model and add zero signal)
+  * agentic_coverage is not false (aliases measured unable to choose tool calls
+                       retain deterministic forced-tool coverage in L1)
 """
 
 from __future__ import annotations
@@ -242,6 +244,14 @@ def _eligible_aliases(aliases_path: Path) -> list[tuple[str, str]]:
             # per-round timeout (esp. hermes) and add false-fail spam,
             # not coverage signal (same class as the gemma-4 exclude).
             # G0a/G0b already cover hybrids on non-agentic prompts.
+            continue
+        if isinstance(entry, dict) and entry.get("agentic_coverage") is False:
+            # G12 asks models to choose and drive multi-step tool calls. A
+            # measured model-side inability to select a tool makes every draw
+            # red without exercising an engine regression (#1331/#1676).
+            # This explicit capability flag is deliberately local to G12;
+            # required L1 forced-tool coverage still exercises formatting,
+            # streaming hygiene, and tool-result replay for these aliases.
             continue
         # Use .get() — a future schema change that omits ``hf_path``
         # should silently skip the entry, not crash the gauntlet.

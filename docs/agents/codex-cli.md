@@ -36,6 +36,22 @@ codex                              # interactive
 codex exec "explain this repo"     # one-shot
 ```
 
+After setup, check the **Saved Codex defaults** report: it reads the model,
+provider, endpoint and model catalog back from the files written to
+`CODEX_HOME` (or `~/.codex`). The catalog must contain the saved model's exact
+ID. A passed connection check verifies the server's health and model list;
+it does not mean a coding task has run. `--no-check` explicitly skips that
+live check, and `--dry-run` writes nothing.
+
+Project settings, selected profiles and `codex --model` / `--config` flags
+can override those saved defaults. If Codex reports an unknown model or falls
+back to generic model metadata, compare its selected model ID with the ID
+printed by setup. A full Hugging Face repository name and its short alias
+are different catalog IDs even when they identify the same weights. Start
+with `codex` using the generated defaults; if you need a different model ID,
+rerun setup with `--model` set to that ID so the catalog matches. Existing
+custom settings and sandbox choices remain subject to the usual merge rules.
+
 ## Manual config
 
 `rapid-mlx agents codex --setup` writes this block; write it by hand if you

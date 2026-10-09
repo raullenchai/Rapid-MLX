@@ -195,6 +195,18 @@ def _tty(monkeypatch, stdin: bool, stdout: bool, answer: object = "n"):
     monkeypatch.setattr("builtins.input", _input)
 
 
+def test_consent_prompt_names_every_payload_field():
+    prompt = sr.CONSENT_PROMPT
+    for field in (
+        "repo id",
+        "architecture",
+        "format",
+        "failure class",
+        "Rapid-MLX version",
+    ):
+        assert field in prompt
+
+
 def test_request_flag_sends_without_asking(wire, monkeypatch, capsys):
     _tty(monkeypatch, False, False, answer=AssertionError("must not prompt"))
     insp = _arch_insp()
@@ -209,7 +221,10 @@ def test_non_interactive_without_flag_only_hints(wire, monkeypatch, capsys):
     _tty(monkeypatch, False, True)
     insp = _arch_insp()
     sr.offer(argparse.Namespace(), insp, _verdict(insp), "0.15.4")
-    assert "re-run with --request" in capsys.readouterr().err
+    hint = capsys.readouterr().err
+    assert "re-run with --request" in hint
+    for field in ("repo id", "architecture", "format", "failure class", "version"):
+        assert field in hint
     assert wire[0] == []
 
 

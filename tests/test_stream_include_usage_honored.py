@@ -57,10 +57,15 @@ class _PlainChatEngine:
     tokenizer = None
 
     def __init__(
-        self, deltas: list[str] | None = None, *, with_mtp_metrics: bool = False
+        self,
+        deltas: list[str] | None = None,
+        *,
+        with_mtp_metrics: bool = False,
+        with_timing: bool = False,
     ) -> None:
         self._deltas = deltas or ["Hello", " world", "."]
         self._with_mtp_metrics = with_mtp_metrics
+        self._with_timing = with_timing
 
     def build_prompt(self, messages, tools=None, enable_thinking=None):
         return "PROMPT"
@@ -78,6 +83,11 @@ class _PlainChatEngine:
                 finished=is_last,
                 finish_reason="stop" if is_last else None,
                 channel=None,
+                timing_metrics=(
+                    {"time_to_first_token_ms": 250.0, "mean_itl_ms": 20.0}
+                    if is_last and self._with_timing
+                    else None
+                ),
                 spec_decode_metrics=(
                     {
                         "verify_calls": 2,
@@ -104,10 +114,15 @@ class _PlainCompletionsEngine:
     tokenizer = None
 
     def __init__(
-        self, deltas: list[str] | None = None, *, with_mtp_metrics: bool = False
+        self,
+        deltas: list[str] | None = None,
+        *,
+        with_mtp_metrics: bool = False,
+        with_timing: bool = False,
     ) -> None:
         self._deltas = deltas or ["foo", "bar", "baz"]
         self._with_mtp_metrics = with_mtp_metrics
+        self._with_timing = with_timing
 
     async def stream_generate(self, prompt, **kwargs):
         accumulated = ""
@@ -122,6 +137,11 @@ class _PlainCompletionsEngine:
                 finished=is_last,
                 finish_reason="stop" if is_last else None,
                 channel=None,
+                timing_metrics=(
+                    {"time_to_first_token_ms": 250.0, "mean_itl_ms": 20.0}
+                    if is_last and self._with_timing
+                    else None
+                ),
                 spec_decode_metrics=(
                     {
                         "verify_calls": 2,
@@ -513,3 +533,37 @@ def test_no_usage_in_per_token_chunks_when_include_usage_true(endpoint, body):
         f"{endpoint}: per-token chunks must not carry a populated "
         f"usage block when include_usage=true; got {len(per_token_with_usage)}"
     )
+
+
+@pytest.mark.parametrize("include_usage", [False, True])
+@pytest.mark.parametrize("route", ["chat", "completions"])
+def test_terminal_timing_is_emitted_once_independently_of_usage(route, include_usage):
+    if route == "chat":
+        client = _make_chat_client(_PlainChatEngine(with_timing=True))
+        body = {"messages": [{"role": "user", "content": "hello"}]}
+        endpoint = "/v1/chat/completions"
+    else:
+        client = _make_completions_client(_PlainCompletionsEngine(with_timing=True))
+        body = {"prompt": "hello"}
+        endpoint = "/v1/completions"
+    try:
+        response = client.post(
+            endpoint,
+            json={
+                **body,
+                "model": "test-model",
+                "stream": True,
+                "stream_options": {"include_usage": include_usage},
+            },
+        )
+        assert response.status_code == 200
+        events = _parse_sse(response.text)
+        timed = [e for e in events if e.get("metrics")]
+        assert len(timed) == 1
+        assert timed[0]["metrics"] == {
+            "time_to_first_token_ms": 250.0,
+            "mean_itl_ms": 20.0,
+        }
+        assert timed == _finish_chunks(events)
+    finally:
+        reset_config()

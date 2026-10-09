@@ -1,8 +1,9 @@
+import Darwin
 import Foundation
 import Testing
 @testable import Rapid
 
-@Suite("Download/catalog hardening")
+@Suite("Download/catalog hardening", .serialized)
 struct DownloadCatalogHardeningTests {
     private func atomicCatalog(withTextRows textRows: [[String: Any]]) throws -> String {
         let alias = "qwen3.8-27b-tensorfold"
@@ -523,6 +524,160 @@ struct DownloadCatalogHardeningTests {
             (try? String(contentsOf: marker, encoding: .utf8).contains("terminated")) == true
         })
     }
+
+    @Test("App shutdown force-reaps a catalog child that ignores SIGTERM")
+    func modelCatalogShutdownReapsSignalIgnoringChild() async throws {
+        let registry = CatalogProcessRegistry()
+        let dir = try makeTemporaryDirectory()
+        let pidFile = dir.appendingPathComponent("pid.txt")
+        let script = try makeExecutableScript(
+            """
+            #!/bin/sh
+            echo $$ > \(shellQuote(pidFile.path))
+            trap '' TERM
+            while :; do :; done
+            """
+        )
+        let task = Task {
+            await ModelCatalog._testingRunRapidMlx(
+                binary: script,
+                args: ["models"],
+                processRegistry: registry,
+                beforeLaunch: {}
+            )
+        }
+        #expect(await waitUntil(timeoutNanoseconds: 1_000_000_000) {
+            FileManager.default.fileExists(atPath: pidFile.path)
+        })
+        let pid = pid_t(try #require(Int32(
+            String(contentsOf: pidFile, encoding: .utf8)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        )))
+
+        registry.beginShutdown()
+        registry.finishShutdown()
+        _ = await task.value
+
+        #expect(Darwin.kill(pid, 0) == -1)
+        #expect(errno == ESRCH)
+        #expect(registry.activeCount == 0)
+    }
+
+    @Test("Shutdown cannot pass an admitted catalog launch")
+    func modelCatalogShutdownCoversAdmittedLaunchRace() async throws {
+        let registry = CatalogProcessRegistry()
+        let dir = try makeTemporaryDirectory()
+        let pidFile = dir.appendingPathComponent("pid.txt")
+        let script = try makeExecutableScript(
+            """
+            #!/bin/sh
+            echo $$ > \(shellQuote(pidFile.path))
+            trap '' TERM
+            while :; do :; done
+            """
+        )
+        let admitted = DispatchSemaphore(value: 0)
+        let allowLaunch = DispatchSemaphore(value: 0)
+        let finishReturned = DispatchSemaphore(value: 0)
+
+        let task = Task {
+            await ModelCatalog._testingRunRapidMlx(
+                binary: script,
+                args: ["models"],
+                processRegistry: registry,
+                beforeLaunch: {
+                    admitted.signal()
+                    allowLaunch.wait()
+                },
+                afterLaunch: {
+                    let deadline = Date().addingTimeInterval(1)
+                    while Date() < deadline,
+                          !FileManager.default.fileExists(atPath: pidFile.path) {
+                        Thread.sleep(forTimeInterval: 0.01)
+                    }
+                }
+            )
+        }
+        let admittedResult = await waitForSemaphore(admitted, timeout: .now() + 1)
+        #expect(admittedResult == .success)
+        let shutdown = Task.detached {
+            registry.beginShutdown()
+            registry.finishShutdown()
+            finishReturned.signal()
+        }
+        // Exceed both of the old implementation's shutdown waits (0.25 + 1.0
+        // seconds). If shutdown can miss an admitted, not-yet-running process,
+        // it will return before this timeout expires.
+        let earlyFinish = await waitForSemaphore(finishReturned, timeout: .now() + 1.5)
+        #expect(earlyFinish == .timedOut)
+
+        allowLaunch.signal()
+        #expect(await waitUntil(timeoutNanoseconds: 1_000_000_000) {
+            FileManager.default.fileExists(atPath: pidFile.path)
+        })
+        let pid = pid_t(try #require(Int32(
+            String(contentsOf: pidFile, encoding: .utf8)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        )))
+        // Keep a deliberately broken launch ordering from leaving the
+        // TERM-ignoring fixture alive or hanging task.value below.
+        if earlyFinish == .success {
+            Darwin.kill(pid, SIGKILL)
+        }
+        _ = await shutdown.value
+        let output = await task.value
+
+        #expect(output.isEmpty)
+        #expect(Darwin.kill(pid, 0) == -1)
+        #expect(errno == ESRCH)
+        #expect(registry.activeCount == 0)
+    }
+
+    @Test("A catalog probe requested after shutdown is latched never launches")
+    func modelCatalogShutdownRejectsPostLatchLaunch() async throws {
+        let registry = CatalogProcessRegistry()
+        registry.beginShutdown()
+        let dir = try makeTemporaryDirectory()
+        let marker = dir.appendingPathComponent("launched.txt")
+        let script = try makeExecutableScript(
+            """
+            #!/bin/sh
+            touch \(shellQuote(marker.path))
+            """
+        )
+
+        let output = await ModelCatalog._testingRunRapidMlx(
+            binary: script,
+            args: ["models"],
+            processRegistry: registry,
+            beforeLaunch: {}
+        )
+
+        #expect(output.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: marker.path))
+        #expect(registry.activeCount == 0)
+    }
+
+    @Test("A naturally exited catalog child is absent from shutdown reaping")
+    func modelCatalogNaturalExitUnregisters() async throws {
+        let registry = CatalogProcessRegistry()
+        let script = try makeExecutableScript(
+            """
+            #!/bin/sh
+            printf done
+            """
+        )
+
+        #expect(await ModelCatalog._testingRunRapidMlx(
+            binary: script,
+            args: ["models"],
+            processRegistry: registry,
+            beforeLaunch: {}
+        ) == "done")
+        #expect(registry.activeCount == 0)
+        registry.beginShutdown()
+        registry.finishShutdown()
+    }
 }
 
 @MainActor
@@ -590,4 +745,15 @@ private func waitUntil(
         try? await Task.sleep(nanoseconds: 25_000_000)
     }
     return condition()
+}
+
+private func waitForSemaphore(
+    _ semaphore: DispatchSemaphore,
+    timeout: DispatchTime
+) async -> DispatchTimeoutResult {
+    await withCheckedContinuation { continuation in
+        DispatchQueue.global(qos: .userInitiated).async {
+            continuation.resume(returning: semaphore.wait(timeout: timeout))
+        }
+    }
 }

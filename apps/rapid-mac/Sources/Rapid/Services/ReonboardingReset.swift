@@ -49,37 +49,35 @@ enum ReonboardingReset {
     static func confirmation(for scope: ReonboardingScope) -> Confirmation {
         var losses: [String] = []
         if scope.contains(.conversations) {
-            losses.append("every conversation in the sidebar, permanently")
+            losses.append(String(localized: "every conversation in the sidebar, permanently"))
         }
         if scope.contains(.preferences) {
-            losses.append("every setting, back to first-install defaults")
+            losses.append(String(localized: "every setting, back to first-install defaults"))
         }
         if scope.contains(.telemetry) {
             losses.append(
-                "the telemetry decision — this one is shared with the "
-                    + "rapid-mlx CLI, so both surfaces will return to the default policy"
+                String(localized: "the telemetry decision — this one is shared with the rapid-mlx CLI, so both surfaces will return to the default policy")
             )
         }
         if scope.contains(.onboarding) {
-            losses.append("the record that Quickstart has run")
+            losses.append(String(localized: "the record that Quickstart has run"))
         }
 
         let message: String
         if losses.isEmpty {
-            message = "Nothing is selected, so nothing will be erased."
+            message = String(localized: "Nothing is selected, so nothing will be erased.")
         } else {
-            message = "This erases " + Self.sentenceList(losses)
-                + ". Rapid restarts immediately afterwards."
+            message = String(localized: "This erases \(Self.sentenceList(losses)). Rapid restarts immediately afterwards.")
         }
 
         return Confirmation(
             title: scope == .onboarding
-                ? "Run guided setup again?"
-                : "Erase this Mac's Rapid state and restart?",
+                ? String(localized: "Run guided setup again?")
+                : String(localized: "Erase this Mac's Rapid state and restart?"),
             message: message,
             confirmTitle: scope.contains(.conversations)
-                ? "Erase and restart"
-                : "Restart into onboarding"
+                ? String(localized: "Erase and restart")
+                : String(localized: "Restart into onboarding")
         )
     }
 
@@ -89,10 +87,10 @@ enum ReonboardingReset {
         switch items.count {
         case 0: return ""
         case 1: return items[0]
-        case 2: return "\(items[0]) and \(items[1])"
+        case 2: return String(localized: "\(items[0]) and \(items[1])")
         default:
-            return items.dropLast().joined(separator: ", ")
-                + ", and " + items[items.count - 1]
+            let head = items.dropLast().joined(separator: String(localized: ", "))
+            return String(localized: "\(head), and \(items[items.count - 1])")
         }
     }
 

@@ -460,6 +460,11 @@ class MLLMBatchRequest:
     # snapshot so a later prompt that diverges inside the stored prefix can
     # resume at the newest checkpoint below the divergence.
     hybrid_checkpoints: list[Any] | None = None
+    # Absolute prompt position where this request stops sharing tokens with
+    # the closest stored snapshot, when the lookup could not resume that far.
+    # The chunked text prefill stores a snapshot there so the next prompt
+    # with the same shared prefix resumes from it. 0 means no such position.
+    shared_prefix_store_at: int = 0
 
     # Vision state (populated after initial VLM forward pass)
     vision_encoded: bool = False
@@ -723,6 +728,12 @@ def _batched_leaf_types() -> tuple[tuple[type, ...], tuple[type, ...]]:
 # is cheaper to redo. Mirrors the role of mlx-vlm's ``APC_EXACT_MIN_TOKENS``
 # (default 16) on the text APC.
 _MEDIA_BOUNDARY_MIN_TOKENS = 16
+
+# A prompt must share at least this many tokens with a stored snapshot, beyond
+# what the lookup already restored, before the prefill stores a snapshot at
+# the end of the shared span. Below it the stored copy costs more than the
+# prefill it would save.
+_SHARED_PREFIX_STORE_MIN_TOKENS = 1024
 
 # Decode headroom cloned beyond the live sequence on both the store and the
 # resume snapshot paths — one constant so the two capacities stay identical.
@@ -1309,12 +1320,15 @@ class MLLMBatchGenerator:
                     # cache, so do not start writing a new home-directory
                     # cache merely because the dependency was upgraded.  An
                     # operator can still opt in explicitly through APC's
-                    # documented environment switch.
+                    # documented environment switch, unless
+                    # --disable-disk-caches overrules it.
                     apc_overrides: dict[str, Any] = {
                         "enabled": True,
                         "num_blocks": 0,
                     }
-                    if "APC_DISK_ENABLED" not in os.environ:
+                    from rapid_mlx import disk_caches
+
+                    if disk_caches.disabled() or "APC_DISK_ENABLED" not in os.environ:
                         apc_overrides["disk_enabled"] = False
                     self._prefix_cache = _apc.from_env(overrides=apc_overrides)
                     self._prefix_cache_mode = mode
@@ -1551,6 +1565,9 @@ class MLLMBatchGenerator:
         if snapped is not None:
             warm_cache, prefix_len, holders = snapped
             how = "SNAP"
+        shared = self._longest_shared_prefix(cache, full_ids, extra_hash)
+        if shared - int(prefix_len) >= _SHARED_PREFIX_STORE_MIN_TOKENS:
+            request.shared_prefix_store_at = shared
         if warm_cache is None:
             self._prefix_cache_misses += 1
             return None
@@ -2772,6 +2789,34 @@ class MLLMBatchGenerator:
             out.append(rewound)
         return out
 
+    def _longest_shared_prefix(
+        self, cache: Any, full_ids: list[int], extra_hash: int
+    ) -> int:
+        """Most leading tokens ``full_ids`` shares with any stored entry,
+        capped one below the prompt length so a prefill suffix remains."""
+        found = self._exact_entries(cache)
+        if found is None:
+            return 0
+        lock, entries = found
+        prompt = tuple(full_ids[:-1])
+        best = 0
+        with lock:
+            for entry in entries.values():
+                if getattr(entry, "extra_hash", None) != extra_hash:
+                    continue
+                stored = tuple(entry.token_ids)
+                # Bisect on slice equality: the comparisons run in C, so a
+                # long prompt costs a few passes rather than a Python loop.
+                low, high = 0, min(len(prompt), len(stored))
+                while low < high:
+                    mid = (low + high + 1) // 2
+                    if prompt[low:mid] == stored[low:mid]:
+                        low = mid
+                    else:
+                        high = mid - 1
+                best = max(best, low)
+        return best
+
     def _snap_exact_text_prefix(
         self,
         cache: Any,
@@ -3184,6 +3229,9 @@ class MLLMBatchGenerator:
                     all_images.extend(frame_paths)
                 except FileSizeExceededError as e:
                     raise ClientRequestError(f"Failed to process video: {e}") from e
+                except ClientRequestError:
+                    # Already client-safe (e.g. a build without OpenCV).
+                    raise
                 except (OSError, ValueError) as e:
                     # Same rationale as the image branch above: silent
                     # drop hallucinates; the typed error lets the scheduler
@@ -3695,6 +3743,7 @@ class MLLMBatchGenerator:
             and (
                 prompt_length > chunk
                 or 0 < request.prefix_boundary - request.cached_tokens < prompt_length
+                or request.shared_prefix_store_at > request.cached_tokens
             )
             and is_text_only
             and no_extra_kwargs
@@ -3715,11 +3764,16 @@ class MLLMBatchGenerator:
             boundary = request.prefix_boundary - request.cached_tokens
             if not 0 < boundary <= prefix_len:
                 boundary = 0
+            shared = request.shared_prefix_store_at - request.cached_tokens
+            if not 0 < shared <= prefix_len or shared == boundary:
+                shared = 0
             pos = 0
             while pos < prefix_len:
                 n = min(chunk, prefix_len - pos)
                 if pos < boundary < pos + n:
                     n = boundary - pos
+                if pos < shared < pos + n:
+                    n = shared - pos
                 # No pixel_values (text-only); pass None explicitly because
                 # some mlx-vlm classes (Gemma3/Gemma4) declare it a required
                 # positional kwarg even for the text path (see note above).
@@ -3737,6 +3791,12 @@ class MLLMBatchGenerator:
                         request,
                         cache,
                         prefix_len=request.prefix_boundary,
+                    )
+                if pos == shared:
+                    self._store_exact_text_prefix(
+                        request,
+                        cache,
+                        prefix_len=request.shared_prefix_store_at,
                     )
             output = self.model(input_ids[:, -1:], cache=cache, pixel_values=None)
         elif (

@@ -404,6 +404,8 @@ _pin_system_prompt: bool = False  # Auto-pin system prompt prefix cache blocks
 _pinned_system_prompt_hash: str | None = None  # Hash of pinned system prompt
 
 
+from . import disk_caches
+from ._env import env_falsey, env_truthy, is_falsey, is_truthy
 from .runtime.cache import (
     load_prefix_cache_from_disk as _load_prefix_cache_from_disk,
 )
@@ -419,8 +421,9 @@ def _automatic_prefix_cache_persistence_enabled() -> bool:
     disk snapshot at shutdown would discard entries this process never loaded.
     Explicit cache import/export endpoints do not use this lifecycle gate.
     """
-    raw = os.environ.get("RAPID_MLX_PREFIX_CACHE_AUTOLOAD", "1")
-    return raw.strip().lower() not in ("0", "false", "no", "off")
+    if disk_caches.disabled():
+        return False
+    return not env_falsey("RAPID_MLX_PREFIX_CACHE_AUTOLOAD")
 
 
 async def _shutdown_save_prefix_cache() -> None:
@@ -444,10 +447,16 @@ async def _shutdown_save_prefix_cache() -> None:
     (...)`` line below with a direct call, the regression fires.
     """
     if not _automatic_prefix_cache_persistence_enabled():
-        logger.info(
-            "[lifespan] Prefix-cache auto-save disabled with auto-load by "
-            "RAPID_MLX_PREFIX_CACHE_AUTOLOAD"
-        )
+        if disk_caches.disabled():
+            logger.info(
+                "[lifespan] Prefix-cache auto-save skipped: disk caches disabled by %s",
+                disk_caches.source(),
+            )
+        else:
+            logger.info(
+                "[lifespan] Prefix-cache auto-save disabled with auto-load by "
+                "RAPID_MLX_PREFIX_CACHE_AUTOLOAD"
+            )
         return
     if _engine is None or not hasattr(_engine, "save_cache_to_disk"):
         return
@@ -470,10 +479,16 @@ async def _deferred_load_prefix_cache() -> None:
     costs a few early prefix recomputes, never a wedged server.
     """
     if not _automatic_prefix_cache_persistence_enabled():
-        logger.info(
-            "[lifespan] Prefix-cache auto-load disabled by "
-            "RAPID_MLX_PREFIX_CACHE_AUTOLOAD"
-        )
+        if disk_caches.disabled():
+            logger.info(
+                "[lifespan] Prefix-cache auto-load skipped: disk caches disabled by %s",
+                disk_caches.source(),
+            )
+        else:
+            logger.info(
+                "[lifespan] Prefix-cache auto-load disabled by "
+                "RAPID_MLX_PREFIX_CACHE_AUTOLOAD"
+            )
         return
     if _engine is None or not hasattr(_engine, "load_cache_from_disk"):
         return
@@ -1017,8 +1032,7 @@ async def lifespan(app: FastAPI):
     # ``RAPID_MLX_AUDIO_DEEP_PROBE=False`` (capital F) and ``NO``
     # (uppercase) are treated as falsy, not truthy. Mirrors the
     # convention used by every other ``RAPID_MLX_*`` boolean knob.
-    _audio_deep_probe = os.environ.get("RAPID_MLX_AUDIO_DEEP_PROBE", "").strip().lower()
-    if _audio_deep_probe and _audio_deep_probe not in ("0", "false", "no"):
+    if env_truthy("RAPID_MLX_AUDIO_DEEP_PROBE"):
         try:
             from .audio.probe import deep_probe_audio_lane as _deep_probe
 
@@ -1667,12 +1681,12 @@ def configure_cors_from_env(
     # ``configure_cors(origins)`` callers in tests / share / dflash still
     # see the legacy behavior — those callers don't go through this
     # resolver.
-    creds_env = os.environ.get("RAPID_MLX_CORS_ALLOW_CREDENTIALS", "").strip().lower()
+    creds_env = os.environ.get("RAPID_MLX_CORS_ALLOW_CREDENTIALS", "").strip()
     allow_credentials: bool = False
     if creds_env:
-        if creds_env in ("1", "true", "yes", "on"):
+        if is_truthy(creds_env):
             allow_credentials = True
-        elif creds_env in ("0", "false", "no", "off"):
+        elif is_falsey(creds_env):
             allow_credentials = False
         else:
             logger.warning(
@@ -3963,6 +3977,16 @@ Examples:
         help="Starvation bound for shortest_validated_tail (default: 8 grants).",
     )
     parser.add_argument(
+        "--shared-prefix-wait-tokens",
+        type=int,
+        default=1024,
+        metavar="N",
+        help=(
+            "Uncached prompt tokens a request must share with a prefilling "
+            "request to wait for its prompt state (default: 1024). 0 disables."
+        ),
+    )
+    parser.add_argument(
         "--vision-prefill-token-budget",
         type=int,
         default=None,
@@ -4078,8 +4102,12 @@ def main():
     # error first with nothing else on stderr/stdout before it.
     if getattr(args, "embedding_model", None):
         from .embedding import require_mlx_embeddings_or_exit
+        from .embedding_backend import is_native_embedding_model
 
-        require_mlx_embeddings_or_exit()
+        if is_native_embedding_model(args.embedding_model):
+            require_mlx_embeddings_or_exit(args.embedding_model)
+        else:
+            require_mlx_embeddings_or_exit()
 
     uvicorn_log_level = configure_logging(args.log_level)
 
@@ -4417,6 +4445,7 @@ def main():
         prefill_step_size=args.prefill_step_size,
         scheduling_policy=args.scheduling_policy,
         scheduling_max_deferrals=args.scheduling_max_deferrals,
+        shared_prefix_wait_tokens=args.shared_prefix_wait_tokens,
         vision_prefill_token_budget=vision_prefill_token_budget,
         vision_min_pixels=args.vision_min_pixels,
         vision_max_pixels=args.vision_max_pixels,

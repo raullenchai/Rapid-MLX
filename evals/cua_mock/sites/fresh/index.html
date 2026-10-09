@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>BulkFresh Same-Day Delivery</title>
+<style>
+  body { margin: 0; font: 15px/1.45 -apple-system, Helvetica, Arial, sans-serif; background: #fff; color: #1b1b1b; }
+  header { background: #e31837; color: #fff; display: flex; align-items: center; gap: 20px; padding: 12px 28px; position: sticky; top: 0; z-index: 5; }
+  header .logo { font-weight: 800; font-size: 22px; }
+  header form { flex: 1; display: flex; max-width: 560px; }
+  header input { flex: 1; padding: 9px 12px; border: 0; border-radius: 4px 0 0 4px; }
+  header form button { border: 0; padding: 0 16px; background: #005daa; color: #fff; border-radius: 0 4px 4px 0; }
+  header .cart { margin-left: auto; color: #fff; background: none; border: 1px solid #fff8; padding: 7px 14px; border-radius: 4px; cursor: pointer; }
+  .depts { display: flex; gap: 18px; padding: 8px 28px; background: #f3f3f3; font-size: 14px; }
+  .depts a { color: #005daa; text-decoration: none; }
+  main { max-width: 1040px; margin: 20px auto; padding: 0 20px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
+  .card { border: 1px solid #ddd; border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 4px; }
+  .card .img { height: 90px; background: #f4f6f8; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: #999; font-size: 12px; }
+  .card .price { font-weight: 700; font-size: 17px; }
+  .card .size, .muted { color: #666; font-size: 13px; }
+  .card .oos { color: #b00020; font-weight: 600; font-size: 13px; }
+  .qty { display: flex; align-items: center; gap: 6px; }
+  .qty button { width: 30px; height: 30px; border-radius: 50%; border: 1px solid #005daa; background: #fff; color: #005daa; font-size: 16px; cursor: pointer; }
+  .add { background: #005daa; color: #fff; border: 0; padding: 8px; border-radius: 4px; cursor: pointer; }
+  .add:disabled { background: #aaa; }
+  .row { display: flex; align-items: center; gap: 14px; border-bottom: 1px solid #eee; padding: 10px 0; }
+  .row .name { flex: 1; }
+  .primary { background: #e31837; color: #fff; border: 0; padding: 11px 22px; border-radius: 4px; font-size: 16px; cursor: pointer; }
+  #cookie { position: fixed; left: 0; right: 0; bottom: 0; background: #222; color: #fff; padding: 16px 28px; display: none; gap: 16px; align-items: center; z-index: 20; }
+  #cookie button { padding: 8px 16px; }
+  .modal { position: fixed; inset: 0; background: #0008; display: none; align-items: center; justify-content: center; z-index: 30; }
+  .modal .box { background: #fff; padding: 24px; border-radius: 10px; width: 420px; position: relative; }
+  .modal .x { position: absolute; right: 10px; top: 8px; border: 0; background: none; font-size: 20px; cursor: pointer; }
+  .slots { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .slots fieldset { border: 1px solid #ddd; border-radius: 6px; }
+  .slots label { display: block; padding: 4px 0; }
+  .slots .full { color: #999; }
+</style>
+<script src="/common.js"></script>
+<script src="catalog.js"></script>
+</head>
+<body>
+<header>
+  <span class="logo">BulkFresh</span>
+  <form id="search" role="search">
+    <input id="q" type="search" placeholder="Search BulkFresh" aria-label="Search BulkFresh">
+    <button type="submit">Search</button>
+  </form>
+  <button class="cart" id="cart-btn">Cart (0)</button>
+</header>
+<div class="depts"><a href="#">Produce</a><a href="#">Dairy & Eggs</a><a href="#">Bakery</a><a href="#">Pantry</a><a href="#">Meat & Seafood</a><a href="#">Frozen</a><a href="#">Household</a><span class="muted">Delivering to 94301</span></div>
+<main id="view"></main>
+
+<div id="cookie" role="region" aria-label="Cookie consent">
+  <span style="flex:1">We use cookies to personalize content and ads and to analyze our traffic. By clicking "Accept All Cookies" you agree to this use.</span>
+  <button id="cookie-manage">Cookie Settings</button>
+  <button id="cookie-accept">Accept All Cookies</button>
+</div>
+
+<div class="modal" id="member" role="dialog" aria-label="Membership offer">
+  <div class="box">
+    <button class="x" aria-label="Close" data-close="member">×</button>
+    <h2>Upgrade to Executive and earn 2% back</h2>
+    <p>Executive members earn 2% on qualifying purchases, up to $1,250 a year.</p>
+    <button class="primary" id="member-join">Upgrade for $65</button>
+    <button id="member-no">No thanks</button>
+  </div>
+</div>
+
+<div class="modal" id="subst" role="dialog" aria-label="Item unavailable">
+  <div class="box">
+    <button class="x" aria-label="Close" data-close="subst">×</button>
+    <h2 id="subst-title">This item is out of stock</h2>
+    <p>Choose a replacement, or we'll leave it out.</p>
+    <div id="subst-options"></div>
+    <p><button id="subst-skip">Don't replace</button></p>
+  </div>
+</div>
+
+<script>
+const cart = () => Mock.get("fresh.cart", {});
+const setCart = (c) => { Mock.set("fresh.cart", c); renderCartButton(); Mock.log("fresh", "cart", { cart: c }); };
+const bySku = (s) => CATALOG.find((p) => p.sku === s);
+const label = (p) => `${p.name}, ${p.size}`;
+const view = document.getElementById("view");
+
+function renderCartButton() {
+  const count = Object.values(cart()).reduce((a, b) => a + b, 0);
+  document.getElementById("cart-btn").textContent = `Cart (${count})`;
+}
+function addToCart(p, qty) {
+  if (!p.stock) return offerSubstitute(p);
+  const c = cart();
+  c[p.sku] = (c[p.sku] || 0) + qty;
+  setCart(c);
+  if (!Mock.get("fresh.memberShown", false)) {
+    Mock.set("fresh.memberShown", true);
+    setTimeout(() => (document.getElementById("member").style.display = "flex"), 1200);
+  }
+}
+function offerSubstitute(p) {
+  const words = p.name.toLowerCase().split(" ").filter((w) => w.length > 3);
+  const alts = CATALOG.filter((x) => x.stock && x !== p && words.some((w) => x.name.toLowerCase().includes(w)) && x.size === p.size).slice(0, 3);
+  document.getElementById("subst-title").textContent = `${label(p)} is out of stock`;
+  const box = document.getElementById("subst-options");
+  box.innerHTML = "";
+  for (const alt of alts) {
+    const b = document.createElement("button");
+    b.textContent = `Replace with ${label(alt)} – ${Mock.money(alt.price)}`;
+    b.addEventListener("click", () => {
+      document.getElementById("subst").style.display = "none";
+      Mock.log("fresh", "substitute", { from: p.sku, to: alt.sku });
+      addToCart(alt, 1);
+    });
+    box.appendChild(b);
+    box.appendChild(document.createElement("br"));
+  }
+  document.getElementById("subst").style.display = "flex";
+  Mock.log("fresh", "out_of_stock_seen", { sku: p.sku });
+}
+document.getElementById("subst-skip").addEventListener("click", () => {
+  document.getElementById("subst").style.display = "none";
+  Mock.log("fresh", "substitute", { to: null });
+});
+document.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("click", () => (document.getElementById(b.dataset.close).style.display = "none")));
+document.getElementById("member-no").addEventListener("click", () => (document.getElementById("member").style.display = "none"));
+document.getElementById("member-join").addEventListener("click", () => {
+  document.getElementById("member").style.display = "none";
+  Mock.set("fresh.upgrade", true);
+  Mock.log("fresh", "upgrade_added", { via: "modal" });
+});
+
+function card(p) {
+  const div = document.createElement("article");
+  div.className = "card";
+  div.setAttribute("aria-label", label(p));
+  div.innerHTML = `<div class="img">image</div>
+    <strong>${p.name}</strong><span class="size">${p.size}</span>
+    <span class="price">${Mock.money(p.price)}</span>
+    ${p.stock ? "" : '<span class="oos">Out of stock</span>'}`;
+  const qty = document.createElement("div");
+  qty.className = "qty";
+  let n = 1;
+  qty.innerHTML = `<button aria-label="Decrease quantity">−</button><span aria-label="Quantity">1</span><button aria-label="Increase quantity">+</button>`;
+  const [minus, num, plus] = qty.children;
+  minus.addEventListener("click", () => { n = Math.max(1, n - 1); num.textContent = n; });
+  plus.addEventListener("click", () => { n += 1; num.textContent = n; });
+  const add = document.createElement("button");
+  add.className = "add";
+  add.textContent = "Add to cart";
+  add.addEventListener("click", () => {
+    addToCart(p, n);
+    if (p.stock) { add.textContent = "Added ✓"; setTimeout(() => (add.textContent = "Add to cart"), 1500); }
+  });
+  div.append(qty, add);
+  return div;
+}
+
+function showSearch(q) {
+  const terms = q.toLowerCase().split(/\s+/).filter(Boolean).map((t) => t.replace(/s$/, ""));
+  const hits = CATALOG.filter((p) => terms.every((t) => (p.name + " " + p.size).toLowerCase().includes(t)));
+  // Sponsored results first, like real stores.
+  hits.sort((a, b) => (b.price > 10) - (a.price > 10));
+  // q comes from the URL: text, never markup.
+  view.innerHTML = `<h1></h1><p class="muted">${hits.length} items</p>`;
+  view.querySelector("h1").textContent = `Results for "${q}"`;
+  const grid = document.createElement("div");
+  grid.className = "grid";
+  hits.forEach((p) => grid.appendChild(card(p)));
+  view.appendChild(grid);
+  Mock.log("fresh", "search", { q, hits: hits.length });
+}
+
+function showHome() {
+  view.innerHTML = `<h1>Shop same-day delivery</h1><p class="muted">Popular right now</p>`;
+  const grid = document.createElement("div");
+  grid.className = "grid";
+  CATALOG.filter((_, i) => i % 9 === 3).slice(0, 24).forEach((p) => grid.appendChild(card(p)));
+  view.appendChild(grid);
+}
+
+function totals() {
+  const c = cart();
+  const sub = Object.entries(c).reduce((s, [sku, q]) => s + bySku(sku).price * q, 0);
+  const upgrade = Mock.get("fresh.upgrade", true) ? 65 : 0;
+  const fee = sub >= 75 ? 0 : 9.99;
+  return { sub, upgrade, fee, total: sub + upgrade + fee };
+}
+
+function showCart() {
+  const c = cart();
+  view.innerHTML = `<h1>Cart</h1>`;
+  if (!Object.keys(c).length) view.innerHTML += `<p>Your cart is empty.</p>`;
+  for (const [sku, q] of Object.entries(c)) {
+    const p = bySku(sku);
+    const row = document.createElement("div");
+    row.className = "row";
+    row.innerHTML = `<span class="name">${label(p)}</span>
+      <span class="qty"><button aria-label="Decrease quantity of ${p.name}">−</button><span>${q}</span><button aria-label="Increase quantity of ${p.name}">+</button></span>
+      <span>${Mock.money(p.price * q)}</span><button aria-label="Remove ${p.name}">Remove</button>`;
+    const [minus, , plus] = row.querySelector(".qty").children;
+    const set = (v) => { const cc = cart(); if (v <= 0) delete cc[sku]; else cc[sku] = v; setCart(cc); showCart(); };
+    minus.addEventListener("click", () => set(q - 1));
+    plus.addEventListener("click", () => set(q + 1));
+    row.lastElementChild.addEventListener("click", () => set(0));
+    view.appendChild(row);
+  }
+  const t = totals();
+  view.insertAdjacentHTML("beforeend", `
+    <p><label><input type="checkbox" id="upgrade" ${Mock.get("fresh.upgrade", true) ? "checked" : ""}> Add Executive Membership upgrade ($65.00/yr) <em>Recommended</em></label></p>
+    <p>Subtotal ${Mock.money(t.sub)} · Delivery fee ${t.fee ? Mock.money(t.fee) : "Free"}${t.upgrade ? " · Membership upgrade $65.00" : ""}</p>
+    <h2>Estimated total ${Mock.money(t.total)}</h2>
+    <button class="primary" id="checkout">Continue to checkout</button>`);
+  document.getElementById("upgrade").addEventListener("change", (e) => {
+    Mock.set("fresh.upgrade", e.target.checked);
+    Mock.log("fresh", "upgrade_toggled", { on: e.target.checked });
+    showCart();
+  });
+  document.getElementById("checkout").addEventListener("click", () => (location.hash = "#/checkout"));
+  Mock.log("fresh", "page", { page: "cart" });
+}
+
+const SLOTS = {
+  "Fri, Oct 9": [["8–10 AM", false], ["10 AM–12 PM", false], ["2–4 PM", true], ["6–8 PM", true]],
+  "Sat, Oct 10": [["8–10 AM", false], ["10 AM–12 PM", false], ["12–2 PM", true], ["4–6 PM", true]],
+  "Sun, Oct 11": [["8–10 AM", true], ["10 AM–12 PM", true], ["2–4 PM", true], ["6–8 PM", true]],
+};
+
+function showCheckout() {
+  const t = totals();
+  view.innerHTML = `<h1>Checkout</h1><h2>Choose a delivery window</h2><div class="slots" role="radiogroup" aria-label="Delivery windows"></div>`;
+  const slots = view.querySelector(".slots");
+  for (const [day, list] of Object.entries(SLOTS)) {
+    const fs = document.createElement("fieldset");
+    fs.innerHTML = `<legend>${day}</legend>`;
+    for (const [time, open] of list) {
+      fs.insertAdjacentHTML("beforeend", `<label class="${open ? "" : "full"}"><input type="radio" name="slot" value="${day} ${time}" ${open ? "" : "disabled"}> ${time}${open ? "" : " (Full)"}</label>`);
+    }
+    slots.appendChild(fs);
+  }
+  view.insertAdjacentHTML("beforeend", `
+    <h2>Delivery address</h2><p>Alex Rivera · 410 Cowper St, Palo Alto, CA 94301</p>
+    <h2>Payment</h2><p>Visa ending 4242</p>
+    <p><label>Driver tip <select id="tip" aria-label="Driver tip"><option>$0</option><option selected>$5</option><option>$10</option></select></label></p>
+    <h2>Order total <span id="total">${Mock.money(t.total + 5)}</span></h2>
+    <p class="muted">By placing your order you agree to be charged the total above.</p>
+    <button class="primary" id="place">Place order</button> <span id="err" style="color:#b00020"></span>`);
+  view.querySelectorAll("input[name=slot]").forEach((r) => r.addEventListener("change", () => Mock.log("fresh", "slot", { slot: r.value })));
+  document.getElementById("tip").addEventListener("change", (e) => {
+    document.getElementById("total").textContent = Mock.money(t.total + Number(e.target.value.slice(1)));
+  });
+  document.getElementById("place").addEventListener("click", () => {
+    const slot = view.querySelector("input[name=slot]:checked");
+    if (!slot) return (document.getElementById("err").textContent = "Choose a delivery window.");
+    const tip = Number(document.getElementById("tip").value.slice(1));
+    const id = "BF-" + (700000 + Math.floor(Math.random() * 99999));
+    Mock.log("fresh", "order_placed", { id, cart: cart(), slot: slot.value, upgrade: !!t.upgrade, tip, total: Math.round((t.total + tip) * 100) / 100 });
+    Mock.set("fresh.cart", {});
+    view.innerHTML = `<h1>Thanks, your order is placed</h1><p>Order ${id} · ${slot.value}</p><p>Charged ${Mock.money(t.total + tip)} to Visa ending 4242.</p>`;
+    renderCartButton();
+  });
+  Mock.log("fresh", "page", { page: "checkout" });
+}
+
+function route() {
+  const h = location.hash;
+  if (h.startsWith("#/search")) return showSearch(decodeURIComponent(h.split("q=")[1] || ""));
+  if (h === "#/cart") return showCart();
+  if (h === "#/checkout") return showCheckout();
+  showHome();
+}
+
+Mock.start(() => {
+  document.getElementById("search").addEventListener("submit", (e) => {
+    e.preventDefault();
+    location.hash = "#/search?q=" + encodeURIComponent(document.getElementById("q").value.trim());
+  });
+  document.getElementById("cart-btn").addEventListener("click", () => (location.hash = "#/cart"));
+  if (!Mock.get("fresh.cookies", false)) document.getElementById("cookie").style.display = "flex";
+  for (const id of ["cookie-accept", "cookie-manage"]) {
+    document.getElementById(id).addEventListener("click", () => {
+      Mock.set("fresh.cookies", true);
+      document.getElementById("cookie").style.display = "none";
+    });
+  }
+  window.addEventListener("hashchange", route);
+  renderCartButton();
+  route();
+});
+</script>
+</body>
+</html>

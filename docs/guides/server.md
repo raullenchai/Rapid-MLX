@@ -14,6 +14,19 @@ rapid-mlx serve qwen3.5-4b-4bit --port 8000
 Short aliases (see `rapid-mlx models`) work everywhere a model name is
 accepted. Full HuggingFace repo IDs (`mlx-community/...`) work too.
 
+### An external model cache cannot be read
+
+If startup reports that the Hugging Face cache on an external volume cannot
+be read, keep the existing cache. An access error does not mean the model is
+missing. For a timeout, first check that the volume is connected and responsive.
+
+If macOS denied access, open **System Settings → Privacy & Security → Files &
+Folders** using the command printed with the error. Under the app you launched
+the command from (for example, Terminal), enable **Removable Volumes**, or
+accept its **Allow** prompt. Then retry the same `rapid-mlx serve` command in
+that app. Permission for a different terminal or editor does not authorize
+the app you are using. Rapid-MLX does not reset permissions or move your cache.
+
 ### With Paged Cache
 
 Memory-efficient caching for production / shared system prompts:
@@ -62,6 +75,7 @@ flag visible in `rapid-mlx serve --help`, grouped by category — lives in the
 | `--prefill-batch-size` | Max prompts prefilled together in one cold wave; lower for better first-token latency under concurrent cold load | 8 |
 | `--completion-batch-size` | Completion batch size | 32 |
 | `--prefill-step-size` | Chunk size for prompt prefill processing | 2048 |
+| `--shared-prefix-wait-tokens` | A request sharing at least this many uncached prompt tokens with a request that is still prefilling waits for that prompt state instead of recomputing it; `0` disables | 1024 |
 | `--gpu-memory-utilization` | Fraction of device memory for the Metal allocation limit (0.0-1.0); advanced override of the automatic per-model budget | auto |
 | `--context-length` | Operator-selected per-request window in tokens (prompt plus output), up to the model's declared limit; requests still need to fit available memory | auto |
 
@@ -79,7 +93,7 @@ flag visible in `rapid-mlx serve --help`, grouped by category — lives in the
 | `--stream-interval` | Tokens per stream chunk | 1 |
 | `--mcp-config` | Path to MCP config file | None |
 | `--reasoning-parser` | Reasoning parser (`qwen3`, `deepseek_r1`, `deepseek_r1_distill`, `deepseek_v4`, `gemma4`, `glm4`, `gpt_oss`, `harmony`, `hy3`/`hy_v3`, `minimax`, `muse`, `ui_tars`, `vibethinker`). Auto-detected from the alias profile; explicit flag overrides. There is no literal `auto` value — omit the flag for auto-detection. | None (auto-detected) |
-| `--embedding-model` | Pre-load an embedding model at startup (requires `pip install 'rapid-mlx[embeddings]'`; companions: `--embedding-max-length`, `--embedding-overflow-policy`) | None |
+| `--embedding-model` | Pre-load an embedding model at startup (`[embeddings]` for legacy models, the base install's vision runtime for native EmbeddingGemma 2; companions: `--embedding-max-length`, `--embedding-overflow-policy`) | None |
 | `--enable-auto-tool-choice` | Enable automatic tool calling | False |
 | `--tool-call-parser` | Tool call parser (see [Tool Calling](tool-calling.md)) | None |
 | `--mllm` / `--no-mllm` | Force multimodal (vision) loading / force text-only loading, overriding auto-detection | auto-detect |

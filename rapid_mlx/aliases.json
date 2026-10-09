@@ -482,8 +482,7 @@
   },
   "qwen3.8-27b-abliterated-4bit": {
     "supports_image_input": true,
-    "hf_path": "windowsxp811203/Qwen3.8-27B-Abliterated-MLX-MTP",
-    "subfolder": "oQ4e",
+    "hf_path": "windowsxp811203/Qwen3.8-27B-Abliterated-MLX-oQ4e-mtp",
     "tool_call_parser": "qwen3_coder_xml",
     "reasoning_parser": "qwen3",
     "is_hybrid": true,
@@ -514,6 +513,21 @@
     "mtp_speculative_tokens": 1,
     "mtp_default_enabled": false,
     "min_memory_gb": 128,
+    "enforce_min_memory": true,
+    "experimental": true
+  },
+  "qwen3.8-flash-next-tensorfold": {
+    "hf_path": "TensorFold/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": true,
+    "is_hybrid_explicit": true,
+    "is_moe": true,
+    "is_text_only": true,
+    "supports_spec_decode": false,
+    "tensorfold_mtp": true,
+    "tensorfold_target_revision": "2b170fa6309d5d1ee380b35636075fac7945f286",
+    "tensorfold_runtime_revision": "cb2ebf0540f42604e2759b2ddef497861e928248",
+    "min_memory_gb": 192,
     "enforce_min_memory": true,
     "experimental": true
   },
@@ -637,6 +651,19 @@
     "reasoning_parser": "deepseek_v4",
     "is_hybrid": false,
     "supports_spec_decode": true
+  },
+  "deepseek-v4-flash-tensorfold": {
+    "hf_path": "mlx-community/DeepSeek-V4-Flash-4bit",
+    "reasoning_parser": "deepseek_v4",
+    "is_hybrid": false,
+    "is_text_only": true,
+    "supports_spec_decode": false,
+    "tensorfold_mtp": true,
+    "tensorfold_target_revision": "38c0bd20a6fba70f22c5ee2940ec0092b36ab936",
+    "tensorfold_runtime_revision": "cb2ebf0540f42604e2759b2ddef497861e928248",
+    "min_memory_gb": 256,
+    "enforce_min_memory": true,
+    "experimental": true
   },
   "deepseek-v4-flash-0731-mxfp4": {
     "hf_path": "Vontra/DeepSeek-V4-Flash-0731-MXFP4-MLX",
@@ -970,6 +997,25 @@
     "is_hybrid": false,
     "is_moe": false,
     "supports_spec_decode": true,
+    "recommended_sampling": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 64
+    }
+  },
+  "gemma-4-26b-tensorfold": {
+    "hf_path": "mlx-community/gemma-4-26b-a4b-it-4bit",
+    "reasoning_parser": "gemma4",
+    "is_hybrid": false,
+    "is_moe": true,
+    "is_text_only": true,
+    "supports_spec_decode": false,
+    "tensorfold_kernel": true,
+    "tensorfold_target_revision": "0d77464eeb233a2da68ebf9d7dc4edaac7db956d",
+    "tensorfold_runtime_revision": "cb2ebf0540f42604e2759b2ddef497861e928248",
+    "min_memory_gb": 48,
+    "enforce_min_memory": true,
+    "experimental": true,
     "recommended_sampling": {
       "temperature": 1.0,
       "top_p": 0.95,
@@ -1336,7 +1382,7 @@
     "supports_spec_decode": false,
     "tensorfold_mtp": true,
     "tensorfold_target_revision": "76add2a341a1cd90ad0e86bb69839ea9c35827c6",
-    "tensorfold_runtime_revision": "c4646171139ee8a3c38103eaa1699dad226ec12b",
+    "tensorfold_runtime_revision": "cb2ebf0540f42604e2759b2ddef497861e928248",
     "min_memory_gb": 256,
     "enforce_min_memory": true,
     "experimental": true,
@@ -1479,6 +1525,7 @@
     "hf_path": "mlx-community/DeepSeek-R1-0528-Qwen3-8B-4bit",
     "tool_call_parser": "deepseek_v3",
     "reasoning_parser": "deepseek_r1",
+    "agentic_coverage": false,
     "is_hybrid": false,
     "supports_spec_decode": true,
     "suffix_decoding_tier": "avoid",
@@ -1511,13 +1558,6 @@
   },
   "qwopus-27b-4bit": {
     "hf_path": "Jackrong/MLX-Qwopus3.5-27B-v3-4bit",
-    "tool_call_parser": "hermes",
-    "reasoning_parser": "qwen3",
-    "is_hybrid": true,
-    "supports_spec_decode": false
-  },
-  "qwopus-27b-8bit": {
-    "hf_path": "Jackrong/MLX-Qwopus3.5-27B-v3-8bit",
     "tool_call_parser": "hermes",
     "reasoning_parser": "qwen3",
     "is_hybrid": true,
@@ -1735,6 +1775,21 @@
     "supports_spec_decode": false,
     "is_moe": true
   },
+  "nemotron-3.5-lightning-tensorfold": {
+    "hf_path": "TensorFold/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": true,
+    "is_hybrid_explicit": true,
+    "is_moe": true,
+    "is_text_only": true,
+    "supports_spec_decode": false,
+    "tensorfold_mtp": true,
+    "tensorfold_target_revision": "d9d758fb83953437f7263256b0d96157e2a348b8",
+    "tensorfold_runtime_revision": "cb2ebf0540f42604e2759b2ddef497861e928248",
+    "min_memory_gb": 48,
+    "enforce_min_memory": true,
+    "experimental": true
+  },
   "nemotron-labs-diffusion-3b-4bit": {
     "hf_path": "mlx-community/Nemotron-Labs-Diffusion-3B-4bit",
     "supports_spec_decode": true,
@@ -1780,6 +1835,23 @@
       "top_p": 0.95,
       "top_k": 20
     }
+  },
+  "bonsai2-27b-tensorfold": {
+    "hf_path": "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": true,
+    "is_hybrid_explicit": true,
+    "is_text_only": true,
+    "supports_spec_decode": false,
+    "supports_dflash": true,
+    "dflash_draft_model": "z-lab/Qwen3.8-27B-DFlash2",
+    "dflash_target_revision": "fcba37d2117a7077eac6b613b2668d14d9779edd",
+    "dflash_draft_revision": "50307d4c4cde6860d4eee73e2547cd786fe8e8a4",
+    "dflash_algorithm": "dflash2",
+    "dflash_backend": "tensorfold",
+    "min_memory_gb": 96,
+    "enforce_min_memory": true,
+    "experimental": true
   },
   "smollm3-3b-4bit": {
     "hf_path": "mlx-community/SmolLM3-3B-4bit",
@@ -2294,6 +2366,26 @@
     "supports_dflash": false,
     "suffix_decoding_tier": "unknown",
     "min_memory_gb": 32
+  },
+  "embeddinggemma-2-bf16": {
+    "hf_path": "mlx-community/embeddinggemma-2-bf16",
+    "modality": "embedding",
+    "tool_call_parser": null,
+    "reasoning_parser": null,
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": false
+  },
+  "embeddinggemma-2-4bit": {
+    "hf_path": "mlx-community/embeddinggemma-2-4bit",
+    "modality": "embedding",
+    "tool_call_parser": null,
+    "reasoning_parser": null,
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": false
   },
   "embeddinggemma-300m-6bit": {
     "hf_path": "mlx-community/embeddinggemma-300m-6bit",

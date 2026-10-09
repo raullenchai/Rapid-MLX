@@ -34,7 +34,7 @@ from rapid_mlx.utils.tokenizer import _resolve_subfolder_checkpoint
 ALIAS = "lfm2.5-2.6b-4bit"
 REPO = "LiquidAI/LFM2.5-2.6B-MLX"
 ABLITERATED_ALIAS = "qwen3.8-27b-abliterated-4bit"
-ABLITERATED_REPO = "windowsxp811203/Qwen3.8-27B-Abliterated-MLX-MTP"
+ABLITERATED_REPO = "windowsxp811203/Qwen3.8-27B-Abliterated-MLX-oQ4e-mtp"
 
 
 # --------------------------------------------------------------------------
@@ -69,7 +69,7 @@ def test_most_aliases_have_no_subfolder():
     with_subfolder = {
         alias for alias, p in list_profiles().items() if p.subfolder is not None
     }
-    assert with_subfolder == {ALIAS, ABLITERATED_ALIAS}, (
+    assert with_subfolder == {ALIAS}, (
         "A new subfolder alias landed without updating this test. That is "
         "fine — but confirm the download path passes allow_patterns for it, "
         "or the pull fetches every quant in the repo."
@@ -188,14 +188,16 @@ def test_allow_patterns_fetch_only_the_declared_folder():
     assert subfolder_allow_patterns(REPO) == ["4bit/*"]
 
 
-def test_abliterated_alias_fetches_only_the_oq4e_checkpoint():
-    """Do not download the sibling 6/8-bit, bf16, eval, or drafter trees."""
+def test_abliterated_alias_uses_the_single_build_repo_without_a_subfolder():
+    """#4141: the publisher moved the oQ4e build into its own repository.
+
+    The old multi-build repository is gone; the successor holds only that
+    build, so a subfolder (and its narrowed allow-list) no longer applies.
+    """
 
     assert resolve_model(ABLITERATED_ALIAS) == ABLITERATED_REPO
-    assert resolve_subfolder(ABLITERATED_ALIAS) == "oQ4e"
-    assert resolve_subfolder(ABLITERATED_REPO) == "oQ4e"
-    assert subfolder_allow_patterns(ABLITERATED_ALIAS) == ["oQ4e/*"]
-    assert subfolder_allow_patterns(ABLITERATED_REPO) == ["oQ4e/*"]
+    assert resolve_subfolder(ABLITERATED_ALIAS) is None
+    assert subfolder_allow_patterns(ABLITERATED_ALIAS) is None
 
 
 def test_allow_patterns_is_none_for_flat_repos():

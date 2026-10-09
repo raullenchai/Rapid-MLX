@@ -116,6 +116,11 @@ _RETIRED_MODEL_ALIASES: dict[str, str] = {
         "text-only testing, use 'mlx-community/Ministral-3-3B-Instruct-2512-4bit' "
         "with --no-mllm."
     ),
+    "qwopus-27b-8bit": (
+        "The 'qwopus-27b-8bit' alias was retired because its upstream "
+        "repository is no longer accessible. Use 'qwopus-27b-4bit' for the "
+        "same Qwopus3.5 27B v3 model from the same publisher."
+    ),
 }
 
 
@@ -209,6 +214,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             "dflash_algorithm",
             "dflash_backend",
             "tensorfold_mtp",
+            "tensorfold_kernel",
             "tensorfold_target_revision",
             "tensorfold_runtime_revision",
             "supports_ddtree",
@@ -223,6 +229,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             "pflash_tier",
             "pflash_keep_ratio",
             "turboquant_tier",
+            "agentic_coverage",
         }
     )
     unknown_keys = set(value.keys()) - _ALLOWED_PROFILE_KEYS
@@ -427,13 +434,23 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         "tensorfold_target_revision": tensorfold_target_revision,
         "tensorfold_runtime_revision": tensorfold_runtime_revision,
     }
-    if tensorfold_mtp and any(v is None for v in tensorfold_revisions.values()):
+    tensorfold_kernel = _strict_bool("tensorfold_kernel", False)
+    if tensorfold_mtp and tensorfold_kernel:
         raise ValueError(
-            f"alias {alias!r}: tensorfold_mtp=true requires immutable target and runtime revisions"
+            f"alias {alias!r}: tensorfold_mtp and tensorfold_kernel are mutually exclusive"
         )
-    if not tensorfold_mtp and any(v is not None for v in tensorfold_revisions.values()):
+    tensorfold_target_only = tensorfold_mtp or tensorfold_kernel
+    if tensorfold_target_only and any(v is None for v in tensorfold_revisions.values()):
+        flag = "tensorfold_kernel" if tensorfold_kernel else "tensorfold_mtp"
+        raise ValueError(
+            f"alias {alias!r}: {flag}=true requires immutable target and runtime revisions"
+        )
+    if not tensorfold_target_only and any(
+        v is not None for v in tensorfold_revisions.values()
+    ):
         raise ValueError(
             f"alias {alias!r}: TensorFold revisions require tensorfold_mtp=true"
+            " or tensorfold_kernel=true"
         )
     for key, revision in tensorfold_revisions.items():
         if revision is not None and (
@@ -766,6 +783,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         dflash_algorithm=dflash_algorithm,
         dflash_backend=dflash_backend,
         tensorfold_mtp=tensorfold_mtp,
+        tensorfold_kernel=tensorfold_kernel,
         tensorfold_target_revision=tensorfold_target_revision,
         tensorfold_runtime_revision=tensorfold_runtime_revision,
         supports_ddtree=supports_ddtree,
@@ -780,6 +798,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         enforce_min_memory=_strict_bool("enforce_min_memory", False),
         vision_min_memory_gb=vision_min_memory_gb,
         experimental=_strict_bool("experimental", False),
+        agentic_coverage=_strict_bool("agentic_coverage", True),
     )
 
 

@@ -408,6 +408,7 @@ def test_share_unknown_flag_without_double_dash_is_a_hard_error():
         ["--port", "9999"],
         ["--listen-fd", "7"],
         ["--log-level", "DEBUG"],
+        ["--log-file", "/tmp/serve.log"],
     ],
 )
 def test_share_rejects_denied_passthrough_flags_incl_abbreviations(denied_tokens):
@@ -496,7 +497,7 @@ def test_main_routes_share_passthrough_to_spawned_serve(monkeypatch):
     tunnel = _fake_tunnel()
     captured: list[str] = []
 
-    def fake_spawn(*, alias, port, api_key, log_path, extra_args):  # noqa: ARG001
+    def fake_spawn(*, alias, port, api_key, log_path, extra_args, log_target):  # noqa: ARG001
         captured.extend(extra_args)
         return serve_proc
 
@@ -565,6 +566,107 @@ def test_spawn_serve_passes_api_key_via_env_not_argv():
     env = mock_popen.call_args.kwargs["env"]
     assert "SECRET_KEY_HERE" not in " ".join(argv)
     assert env["RAPID_MLX_API_KEY"] == "SECRET_KEY_HERE"
+
+
+def test_spawn_serve_without_log_target_captures_output_in_share_log(
+    monkeypatch, tmp_path
+):
+    monkeypatch.delenv("RAPID_MLX_LOG_LEVEL", raising=False)
+    monkeypatch.delenv("RAPID_MLX_LOG_FILE", raising=False)
+    with patch("subprocess.Popen") as mock_popen:
+        share_cli._spawn_serve(
+            alias="qwen3.5-4b-4bit",
+            port=18765,
+            api_key="K",
+            log_path=tmp_path / "serve.log",
+            extra_args=[],
+        )
+    argv = mock_popen.call_args.args[0]
+    kwargs = mock_popen.call_args.kwargs
+    assert argv[argv.index("--log-level") + 1] == "INFO"
+    assert kwargs["stdout"].name == str(tmp_path / "serve.log")
+    assert "RAPID_MLX_LOG_FILE" not in kwargs["env"]
+    kwargs["stdout"].close()
+
+
+def test_spawn_serve_with_log_target_inherits_stdio(monkeypatch, tmp_path):
+    """With ``--log-file`` serve writes its own output to the target: no
+    share log is opened and stdio is inherited."""
+    monkeypatch.delenv("RAPID_MLX_LOG_LEVEL", raising=False)
+    with patch("subprocess.Popen") as mock_popen:
+        share_cli._spawn_serve(
+            alias="qwen3.5-4b-4bit",
+            port=18765,
+            api_key="K",
+            log_path=tmp_path / "serve.log",
+            extra_args=[],
+            log_target="/dev/null",
+        )
+    kwargs = mock_popen.call_args.kwargs
+    assert "stdout" not in kwargs
+    assert "stderr" not in kwargs
+    assert kwargs["env"]["RAPID_MLX_LOG_FILE"] == "/dev/null"
+    assert not (tmp_path / "serve.log").exists()
+
+
+def test_spawn_serve_leaves_level_to_environment(monkeypatch):
+    monkeypatch.setenv("RAPID_MLX_LOG_LEVEL", "DEBUG")
+    with patch("subprocess.Popen") as mock_popen:
+        share_cli._spawn_serve(
+            alias="qwen3.5-4b-4bit",
+            port=18765,
+            api_key="K",
+            log_path=MagicMock(),
+            extra_args=[],
+            log_target="-",
+        )
+    assert "--log-level" not in mock_popen.call_args.args[0]
+
+
+def test_share_command_forwards_disk_caches_and_log_target(monkeypatch, capsys):
+    monkeypatch.delenv("RAPID_MLX_LOG_FILE", raising=False)
+    serve_proc = MagicMock()
+    serve_proc.poll.return_value = None
+    tunnel = _fake_tunnel()
+    spawn_kwargs: dict = {}
+
+    def fake_spawn(**kwargs):
+        spawn_kwargs.update(kwargs)
+        return serve_proc
+
+    with (
+        patch.object(share_cli, "_spawn_serve", side_effect=fake_spawn),
+        patch.object(share_cli, "_wait_for_healthz", return_value=True),
+        patch.object(share_cli, "_verify_auth_gate", return_value=True),
+        patch.object(share_cli.ws_tunnel, "TunnelClient", return_value=tunnel),
+        patch.object(share_cli.ws_tunnel, "wait_for_public_url", return_value=True),
+        patch.object(share_cli, "_pick_port", return_value=18765),
+        patch.object(share_cli, "_maybe_confirm_download"),
+        patch.object(
+            share_cli, "_resolve_served_model_name", return_value="qwen3.5-4b-4bit"
+        ),
+        patch("time.sleep", side_effect=_ctrl_c_in_monitor_loop()),
+    ):
+        share_cli.share_command(
+            _make_args(disable_disk_caches=True, log_file="/dev/null")
+        )
+
+    assert "--disable-disk-caches" in spawn_kwargs["extra_args"]
+    assert spawn_kwargs["log_target"] == "/dev/null"
+
+
+def test_share_command_rejects_unusable_log_file(monkeypatch, tmp_path, capsys):
+    monkeypatch.delenv("RAPID_MLX_LOG_FILE", raising=False)
+    with (
+        patch.object(share_cli, "_spawn_serve") as spawn,
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        share_cli.share_command(
+            _make_args(log_file=str(tmp_path / "missing" / "serve.log"))
+        )
+    assert exc_info.value.code == 2
+    assert "does not exist" in capsys.readouterr().err
+    spawn.assert_not_called()
 
 
 def test_wait_for_healthz_returns_false_if_serve_exits():
@@ -896,7 +998,7 @@ def test_share_command_forwards_multiple_cors_origins_to_child(capsys):
     tunnel = _fake_tunnel()
     spawn_argv: list[str] = []
 
-    def fake_spawn(*, alias, port, api_key, log_path, extra_args):  # noqa: ARG001
+    def fake_spawn(*, alias, port, api_key, log_path, extra_args, log_target):  # noqa: ARG001
         spawn_argv.extend(extra_args)
         return serve_proc
 
@@ -943,7 +1045,7 @@ def _drive_share_capture(args, *, extra_patches=()):
     tunnel = _fake_tunnel()
     captured: list[str] = []
 
-    def fake_spawn(*, alias, port, api_key, log_path, extra_args):  # noqa: ARG001
+    def fake_spawn(*, alias, port, api_key, log_path, extra_args, log_target):  # noqa: ARG001
         captured.extend(extra_args)
         return serve_proc
 
@@ -1061,7 +1163,7 @@ def test_share_command_forwards_original_alias_to_child(capsys):
     tunnel = _fake_tunnel()
     spawn_argv: list[str] = []
 
-    def fake_spawn(*, alias, port, api_key, log_path, extra_args):  # noqa: ARG001
+    def fake_spawn(*, alias, port, api_key, log_path, extra_args, log_target):  # noqa: ARG001
         # ``alias`` is the first arg the parent passes to ``serve``.
         spawn_argv.append(alias)
         return serve_proc
@@ -1094,7 +1196,7 @@ def test_share_command_falls_back_to_args_model_when_no_original_alias(capsys):
     tunnel = _fake_tunnel()
     spawn_argv: list[str] = []
 
-    def fake_spawn(*, alias, port, api_key, log_path, extra_args):  # noqa: ARG001
+    def fake_spawn(*, alias, port, api_key, log_path, extra_args, log_target):  # noqa: ARG001
         spawn_argv.append(alias)
         return serve_proc
 

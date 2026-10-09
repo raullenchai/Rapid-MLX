@@ -25,8 +25,9 @@ import sys
 import threading
 import urllib.error
 from collections.abc import Callable
-from typing import NoReturn
+from typing import Any, NoReturn
 
+from rapid_mlx._env import env_truthy
 from rapid_mlx.cli_parser import (  # noqa: F401 - re-exported CLI API
     _add_pflash_args,
     _add_video_job_args,
@@ -173,6 +174,46 @@ def _configure_bootstrap_logging(log_level: str) -> None:
     # explicit root level still honors the serve flag.
     logging.basicConfig(level=level)
     logging.getLogger().setLevel(level)
+
+
+_SERVE_LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
+LOG_LEVEL_ENV_VAR = "RAPID_MLX_LOG_LEVEL"
+
+
+def _resolve_serve_log_level(flag_value: str | None) -> str:
+    """``--log-level`` wins, then ``RAPID_MLX_LOG_LEVEL``, then INFO."""
+    if flag_value is not None:
+        return flag_value
+    raw = os.environ.get(LOG_LEVEL_ENV_VAR, "").strip()
+    if not raw:
+        return "INFO"
+    level = raw.upper()
+    if level not in _SERVE_LOG_LEVELS:
+        print(
+            f"error: {LOG_LEVEL_ENV_VAR}={raw!r} is not one of "
+            f"{', '.join(_SERVE_LOG_LEVELS)} (case-insensitive)",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    return level
+
+
+def _log_disk_cache_policy(args, logger) -> None:
+    """Report ``--disable-disk-caches`` and the explicit settings it overrules."""
+    from rapid_mlx import disk_caches
+
+    source = disk_caches.source()
+    if source is None:
+        return
+    logger.info(
+        "Disk caches disabled by %s: no prefix-cache snapshot, KV checkpoints "
+        "or vision prefix-cache disk tier is written",
+        source,
+    )
+    for setting in disk_caches.overruled_settings(
+        kv_disk_checkpoint_interval=getattr(args, "kv_disk_checkpoint_interval", 0) or 0
+    ):
+        logger.warning("%s ignored: disk caches disabled by %s", setting, source)
 
 
 def _auth_feature_str(argv_api_key: str | None) -> str | None:
@@ -1334,8 +1375,12 @@ def _load_embedding_model_or_exit(args, load_fn) -> None:
     machinery.
     """
     from .embedding import require_mlx_embeddings_or_exit
+    from .embedding_backend import is_native_embedding_model
 
-    require_mlx_embeddings_or_exit()
+    if is_native_embedding_model(args.embedding_model):
+        require_mlx_embeddings_or_exit(args.embedding_model)
+    else:
+        require_mlx_embeddings_or_exit()
 
     original_embed = args.embedding_model
     resolved_embed, did_resolve = _resolve_embedding_alias(original_embed)
@@ -2549,6 +2594,13 @@ def _ensure_model_downloaded(
             )
             raise
     if mirror_ok:
+        if pinned_image_revision is not None:
+            # Same ref transaction as the pinned HF download below: the
+            # warm-cache gate reads ``refs/main``, which a SHA-addressed
+            # snapshot never writes on its own.
+            from rapid_mlx._download_gate import pin_main_ref
+
+            pin_main_ref(model_name, pinned_image_revision)
         if mirror_out.get("network_fetch") is True:
             _emit_completed_model_pull(
                 model_name,
@@ -2863,14 +2915,69 @@ def _tensorfold_product_profile(model_name: str | None):
 
 
 def _tensorfold_mtp_profile(model_name: str | None):
-    """Return a catalog-qualified target-only TensorFold MTP profile."""
+    """Return a catalog-qualified target-only TensorFold profile (MTP or kernel)."""
 
     if not model_name:
         return None
     from .model_aliases import resolve_profile
 
     profile = resolve_profile(model_name)
-    return profile if profile and getattr(profile, "tensorfold_mtp", False) else None
+    if profile is None:
+        return None
+    if getattr(profile, "tensorfold_mtp", False) or getattr(
+        profile, "tensorfold_kernel", False
+    ):
+        return profile
+    return None
+
+
+def _reject_tensorfold_family_opt_out_or_exit(args) -> None:
+    """Stop an opt-out on a profile whose alias has no ordinary serving mode."""
+
+    from .speculative.tensorfold_families import profile_for
+
+    family = profile_for(
+        getattr(args, "_original_alias", None) or getattr(args, "model", None)
+    )
+    if family is None or family.ordinary_engine:
+        return
+    if getattr(args, "no_spec_decode", False) or getattr(args, "mllm", False):
+        print(
+            f"error: {family.profile_id} has no ordinary serving mode. "
+            f"Use {family.fallback_model} instead.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+
+def _require_tensorfold_family_lane_or_exit(args) -> None:
+    """Stop any effective configuration that leaves such a profile's lane.
+
+    An explicit ``--speculative-config`` can select another method or backend
+    for the alias, which would hand its checkpoint to the ordinary loader.
+    """
+
+    from .speculative.tensorfold_families import profile_for
+
+    family = profile_for(
+        getattr(args, "_original_alias", None) or getattr(args, "model", None)
+    )
+    if family is None or family.ordinary_engine:
+        return
+    if family.method == "dflash":
+        on_lane = (
+            getattr(args, "enable_dflash", False)
+            and getattr(args, "dflash_backend", None) == "tensorfold"
+        )
+    else:
+        on_lane = getattr(args, "mtp_backend", None) == "tensorfold"
+    if not on_lane:
+        print(
+            f"error: {family.profile_id} serves only through its TensorFold "
+            f"profile. Use {family.fallback_model} for other configurations.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
 
 
 def _normalize_speculative_config_or_exit(args):
@@ -2884,6 +2991,7 @@ def _normalize_speculative_config_or_exit(args):
         require_migrated_speculative_config,
     )
 
+    _reject_tensorfold_family_opt_out_or_exit(args)
     raw_config = getattr(args, "speculative_config", None)
     raw_config_was_explicit = raw_config is not None
     config = None
@@ -3143,17 +3251,29 @@ def _normalize_speculative_config_or_exit(args):
         elif (
             not getattr(args, "no_spec_decode", False)
             and not getattr(args, "mllm", False)
-            and _tensorfold_mtp_profile(
-                getattr(args, "_original_alias", None) or getattr(args, "model", None)
+            and (
+                target_only := _tensorfold_mtp_profile(
+                    getattr(args, "_original_alias", None)
+                    or getattr(args, "model", None)
+                )
             )
             is not None
         ):
-            raw_config = '{"method":"mtp","backend":"tensorfold"}'
+            raw_config = (
+                '{"method":"suffix","backend":"tensorfold"}'
+                if getattr(target_only, "tensorfold_kernel", False)
+                else '{"method":"mtp","backend":"tensorfold"}'
+            )
             args.speculative_config = raw_config
         elif (
             not getattr(args, "no_spec_decode", False)
             and not getattr(args, "mllm", False)
-            and (profile := _tensorfold_product_profile(getattr(args, "model", None)))
+            and (
+                profile := _tensorfold_product_profile(
+                    getattr(args, "_original_alias", None)
+                    or getattr(args, "model", None)
+                )
+            )
             is not None
         ):
             raw_config = json.dumps(
@@ -3365,6 +3485,10 @@ def _normalize_speculative_config_or_exit(args):
             args.mtp_max_k = 3
         if config.disable_auto_k is not None:
             args.mtp_disable_auto_k = config.disable_auto_k
+    elif config.method == "suffix" and config.backend == "tensorfold":
+        # A kernel profile's suffix lookup lives inside the TensorFold runtime,
+        # so it shares the target-only lane instead of Rapid's suffix decoder.
+        args.mtp_backend = "tensorfold"
     elif config.method == "suffix":
         args.suffix_decoding = True
         if config.num_speculative_tokens is not None:
@@ -3525,22 +3649,41 @@ def _serve_tensorfold_mtp_if_requested(
         return False
     alias_name = getattr(args, "_original_alias", None) or args.model
     profile = _tensorfold_mtp_profile(alias_name)
-    if profile is None:
+    requested = getattr(getattr(args, "_speculative_config", None), "method", None)
+    qualified = (
+        None
+        if profile is None
+        else "suffix"
+        if getattr(profile, "tensorfold_kernel", False)
+        else "mtp"
+    )
+    if qualified is None or requested not in (None, qualified):
         print(
-            "error: backend='tensorfold' for MTP requires a qualified catalog alias",
+            "error: backend='tensorfold' requires a catalog alias qualified for "
+            "that method",
             file=sys.stderr,
         )
         raise SystemExit(2)
 
+    from .speculative.tensorfold_families import (
+        profile_for,
+        run_tensorfold_family_server,
+    )
     from .speculative.tensorfold_glm53 import run_tensorfold_glm53_server
 
+    family = profile_for(alias_name)
+    run_server = (
+        functools.partial(run_tensorfold_family_server, family)
+        if family is not None
+        else run_tensorfold_glm53_server
+    )
     _check_disk_space(args.model, force=getattr(args, "force_disk_check", False))
     _check_memory_capacity(args.model, alias=alias_name)
     server_module._sync_config()
-    run_tensorfold_glm53_server(
+    run_server(
         main_model_repo=args.model,
         main_model_revision=None,
-        drafter_repo="",
+        drafter_repo=getattr(args, "_tensorfold_head_path", ""),
         drafter_revision=None,
         host=args.host,
         port=_resolved_serve_port(args),
@@ -3748,14 +3891,35 @@ def _preflight_dflash_mutexes_or_exit(args) -> None:
 def _preflight_tensorfold_qwen27_or_exit(args=None) -> None:
     """Reject an unusable qualified TensorFold runtime before downloads."""
 
-    profile = _tensorfold_mtp_profile(
+    alias_name = (
         (getattr(args, "_original_alias", None) or getattr(args, "model", None))
         if args is not None
         else None
     )
+    profile = _tensorfold_mtp_profile(alias_name)
     runtime_probe: Callable[[], None]
     environment_probe: Callable[[], None]
-    if profile is not None:
+    from .speculative.tensorfold_families import profile_for
+
+    family = profile_for(alias_name)
+    if family is not None:
+        from .speculative.tensorfold_families import require_memory
+        from .speculative.tensorfold_qwen27 import (
+            INSTALL_HINT,
+            TensorFoldUnavailable,
+            require_environment,
+            require_runtime,
+        )
+
+        def _family_environment() -> None:
+            require_environment()
+            require_memory(family)
+
+        install_hint = INSTALL_HINT
+        label = family.label.removeprefix("TensorFold ")
+        runtime_probe = require_runtime
+        environment_probe = _family_environment
+    elif profile is not None:
         from .speculative.tensorfold_glm53 import (
             INSTALL_HINT,
             TensorFoldUnavailable,
@@ -4583,7 +4747,7 @@ def _warn_vision_text_only_degrade(profile, *, args=None) -> bool:
         return False
     print(
         "warning: vision runtime absent; serving this text-capable checkpoint "
-        "text-only (image and video input unavailable). Enable the vision "
+        "text-only (image and video input unavailable). Restore the vision "
         "runtime with: " + optional_extra_repair_command("vision"),
         file=sys.stderr,
     )
@@ -4862,6 +5026,15 @@ def _resolve_system_one_backend(model: str, requested: str) -> str:
         return "clm"
     if model_key in {"clef", "clef-flash", "cloudflare/clef", "cloudflare/clef-flash"}:
         return "clef"
+    if model_key in {
+        "clef-mlx",
+        "clef-flash-mlx",
+        "nativ-community/clef-mlx-mxfp4",
+        "nativ-community/clef-flash-mlx-mxfp4",
+    }:
+        return "clef-mlx"
+    if model_key in {"decider-2b", "nativ-community/decider-2b"}:
+        return "decider"
     return "laya"
 
 
@@ -4872,7 +5045,9 @@ def system_one_command(args) -> None:
     from rapid_mlx._uvicorn import run_uvicorn
     from rapid_mlx.system_one.backends import (
         ClefBackend,
+        ClefMLXBackend,
         CLMBackend,
+        DeciderBackend,
         DecisionBackend,
         LayaBackend,
     )
@@ -4911,6 +5086,10 @@ def system_one_command(args) -> None:
         )
     elif backend_name == "clef":
         backend = ClefBackend(args.model, device=args.device)
+    elif backend_name == "clef-mlx":
+        backend = ClefMLXBackend(args.model, device=args.device)
+    elif backend_name == "decider":
+        backend = DeciderBackend(args.model, device=args.device)
     else:
         backend = LayaBackend(
             args.model,
@@ -5084,7 +5263,20 @@ def serve_command(args):
     import os
     import sys
 
+    from rapid_mlx import disk_caches, log_file
     from rapid_mlx.runtime import optional_runtime
+
+    args.log_level = _resolve_serve_log_level(getattr(args, "log_level", None))
+    try:
+        log_target, log_source = log_file.resolve_validated(
+            getattr(args, "log_file", None)
+        )
+        if log_target is not None and log_source is not None:
+            log_file.apply(log_target, log_source)
+    except log_file.LogFileError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(2) from None
+    disk_caches.configure(getattr(args, "disable_disk_caches", False))
 
     optional_runtime.set_assume_yes(getattr(args, "yes", False))
 
@@ -5221,14 +5413,19 @@ def serve_command(args):
     # the base install (no ``[embeddings]`` extra) keeps booting.
     if getattr(args, "embedding_model", None):
         from .embedding import require_mlx_embeddings_or_exit
+        from .embedding_backend import is_native_embedding_model
 
-        require_mlx_embeddings_or_exit()
+        if is_native_embedding_model(args.embedding_model):
+            require_mlx_embeddings_or_exit(args.embedding_model)
+        else:
+            require_mlx_embeddings_or_exit()
 
     # Resolve speculative intent before selecting the final serving lane.
     # This lets an explicit --mllm suppress an alias-owned MTP default while
     # rejecting an explicit MLLM/speculative conflict before optional-runtime
     # checks or model downloads can obscure the actionable error.
     _normalize_speculative_config_or_exit(args)
+    _require_tensorfold_family_lane_or_exit(args)
     _reject_unsupported_listen_fd_lane(
         args, owns_v41_product_download=_owns_v41_product_download
     )
@@ -5298,7 +5495,11 @@ def serve_command(args):
         _spec_config is not None and _spec_config.backend == "tensorfold"
     )
     if _wants_tensorfold:
-        if _spec_config.method == "mtp":
+        from .speculative.tensorfold_families import profile_for as _tf_family_for
+
+        if _spec_config.method == "mtp" or _tf_family_for(
+            getattr(args, "_original_alias", None) or getattr(args, "model", None)
+        ):
             _preflight_tensorfold_qwen27_or_exit(args)
         else:
             _preflight_tensorfold_qwen27_or_exit()
@@ -5578,8 +5779,13 @@ def serve_command(args):
     ):
         from rapid_mlx.telemetry.server_start import failure_stage
 
+        from .speculative.tensorfold_families import (
+            download_qualified_artifacts,
+            profile_for,
+        )
         from .speculative.tensorfold_qwen27 import download_qualified_pair
 
+        _tf_family = profile_for(getattr(args, "_original_alias", None) or args.model)
         with failure_stage("download"):
             _check_disk_space(
                 _tf_profile.hf_path,
@@ -5591,7 +5797,11 @@ def serve_command(args):
                 force=getattr(args, "force_disk_check", False),
                 revision_override=_tf_profile.dflash_draft_revision,
             )
-            _tf_artifacts = download_qualified_pair()
+            _tf_artifacts = (
+                download_qualified_artifacts(_tf_family)
+                if _tf_family is not None
+                else download_qualified_pair()
+            )
         args.model = _tf_artifacts.target_path
         args._dflash_drafter_repo = _tf_artifacts.drafter_path
     elif (
@@ -5605,15 +5815,36 @@ def serve_command(args):
     ):
         from rapid_mlx.telemetry.server_start import failure_stage
 
+        from .speculative.tensorfold_families import (
+            download_qualified_artifacts,
+            profile_for,
+        )
         from .speculative.tensorfold_glm53 import download_qualified_target
 
+        _tf_family = profile_for(getattr(args, "_original_alias", None) or args.model)
         with failure_stage("download"):
             _check_disk_space(
                 _tf_profile.hf_path,
                 force=getattr(args, "force_disk_check", False),
                 revision_override=_tf_profile.tensorfold_target_revision,
             )
-            args.model = download_qualified_target()
+            if _tf_family is None:
+                args.model = download_qualified_target()
+            else:
+                # A pinned head is checked after the target lands, so the check
+                # sees the space the target took.
+                _tf_artifacts = download_qualified_artifacts(
+                    _tf_family,
+                    before_drafter=functools.partial(
+                        _check_disk_space,
+                        _tf_family.drafter,
+                        force=getattr(args, "force_disk_check", False),
+                        revision_override=_tf_family.drafter_revision,
+                    ),
+                )
+                args.model = _tf_artifacts.target_path
+                # A draft head the profile pins rides along with its target.
+                args._tensorfold_head_path = _tf_artifacts.drafter_path
     elif not _is_wan_video:
         if getattr(args, "force_disk_check", False):
             _ensure_model_downloaded(args.model, force_disk_check=True)
@@ -5659,6 +5890,7 @@ def serve_command(args):
 
     logger = logging.getLogger(__name__)
     uvicorn_log_level = server.configure_logging(args.log_level)
+    _log_disk_cache_policy(args, logger)
 
     # Validate tool calling arguments
     if args.enable_auto_tool_choice and not args.tool_call_parser:
@@ -6448,7 +6680,16 @@ def serve_command(args):
             ),
         )
         if _dflash_backend == "tensorfold":
-            run_tensorfold_qwen27_server(**_dflash_kwargs)
+            from .speculative.tensorfold_families import (
+                profile_for,
+                run_tensorfold_family_server,
+            )
+
+            _tf_family = profile_for(_alias_name)
+            if _tf_family is not None:
+                run_tensorfold_family_server(_tf_family, **_dflash_kwargs)
+            else:
+                run_tensorfold_qwen27_server(**_dflash_kwargs)
             return
         run_dflash_server(
             main_model_repo=_profile.hf_path if _profile else args.model,
@@ -6749,6 +6990,7 @@ def serve_command(args):
         completion_batch_size=args.completion_batch_size,
         scheduling_policy=args.scheduling_policy,
         scheduling_max_deferrals=args.scheduling_max_deferrals,
+        shared_prefix_wait_tokens=args.shared_prefix_wait_tokens,
         enable_prefix_cache=_effective_runtime_values.enable_prefix_cache,
         prefix_cache_size=args.prefix_cache_size,
         # R15-P1 (task #303): radix-tree prefix-cache index.
@@ -7681,16 +7923,17 @@ def _run_submit_flow(
             if needs_vision:
                 print()
                 print(
-                    "  Error: this model needs the vision extras (Gemma 4 "
-                    "architecture classes live in mlx-vlm)."
+                    "  Error: this model needs the vision runtime (Gemma 4 "
+                    "architecture classes live in mlx-vlm), which ships with "
+                    "rapid-mlx but is missing from this environment."
                 )
-                print("  Install them and re-run:")
+                print("  Repair the install and re-run:")
                 print()
                 print("   ", optional_extra_repair_command("vision"))
                 print()
                 print(
-                    "  Or, if you only need text inference (smaller "
-                    "footprint, ~16 MB vs ~450 MB):"
+                    "  Or restore only the model classes (text inference, "
+                    "no torch/cv2):"
                 )
                 # Match the validated runtime used by the vision extra and
                 # packaged app so every recovery path installs the same lane.
@@ -9201,6 +9444,7 @@ def _available_models_json_payload() -> dict:
             ),
             "mtp_default_enabled": bool(getattr(p, "mtp_default_enabled", True)),
             "tensorfold_mtp": bool(getattr(p, "tensorfold_mtp", False)),
+            "tensorfold_kernel": bool(getattr(p, "tensorfold_kernel", False)),
             "tensorfold_target_revision": getattr(
                 p, "tensorfold_target_revision", None
             ),
@@ -9209,6 +9453,7 @@ def _available_models_json_payload() -> dict:
             ),
             "tensorfold_backend": "tensorfold"
             if getattr(p, "tensorfold_mtp", False)
+            or getattr(p, "tensorfold_kernel", False)
             else None,
             "modality": modality,
             "video_modes": list(p.video_modes or ()),
@@ -10201,8 +10446,20 @@ def _pull_repository(
     # ``https://models.rapidmlx.com``; set ``RAPID_MLX_MODEL_MIRROR=""``
     # to force HF only. The function prints its own progress + summary.
     try:
-        mirror_ok = revision_override is None and _try_mirror_prefetch(
-            repo_id, allow_patterns=variant_allow, out=_mirror_out
+        # A pinned revision goes through the mirror too: the mirror accepts a
+        # file for an exact commit only when its bytes are proven identical
+        # to that commit, and falls back to HF per file otherwise.
+        mirror_ok = (
+            _try_mirror_prefetch(
+                repo_id,
+                allow_patterns=variant_allow,
+                out=_mirror_out,
+                revision=revision_override,
+            )
+            if revision_override
+            else _try_mirror_prefetch(
+                repo_id, allow_patterns=variant_allow, out=_mirror_out
+            )
         )
     except Exception as exc:
         if emit_lifecycle_event:
@@ -10224,7 +10481,12 @@ def _pull_repository(
         owner, _, repo = repo_id.partition("/")
         repo_root = cache_root / f"models--{owner}--{repo}"
         try:
-            rev = (repo_root / "refs" / "main").read_text().strip()
+            # A pinned pull lands in ``snapshots/<sha>`` and writes no ref.
+            rev = (
+                revision_override
+                if revision_override and revision_override != "main"
+                else (repo_root / "refs" / "main").read_text().strip()
+            )
             snapshot_dir = repo_root / "snapshots" / rev
             print(f"  Cached at: {snapshot_dir}")
         except OSError:
@@ -10393,6 +10655,14 @@ def _pull_repository(
     )
 
 
+def _pinned_checkpoint_revision(repo_id: str) -> str | None:
+    """Commit an image/video checkpoint is served from, or ``None``."""
+    from rapid_mlx._download_gate import IMAGE_MODEL_REVISIONS
+    from rapid_mlx.video.wan import WAN_REVISIONS
+
+    return IMAGE_MODEL_REVISIONS.get(repo_id) or WAN_REVISIONS.get(repo_id)
+
+
 def pull_command(args):
     """Download a model and prepare every catalog-declared requirement."""
 
@@ -10453,6 +10723,11 @@ def pull_command(args):
             allow_patterns_override=list(IMAGE_MODEL_DATA_FILES[primary_repo]),
             revision_override=IMAGE_MODEL_REVISIONS[primary_repo],
         )
+    elif (pinned_revision := _pinned_checkpoint_revision(primary_repo)) is not None:
+        # Image and video checkpoints are served from their pinned commit, so
+        # pull exactly that commit (mirror first, proven per file) rather
+        # than moving ``main``, which a later serve would not use.
+        _pull_repository(primary_args, revision_override=pinned_revision)
     else:
         _pull_repository(primary_args)
     if primary_repo == TARGET_REPO:
@@ -10786,10 +11061,16 @@ def _spawn_chat_server(
     log_handle=None,
     disable_prefix_cache: bool = False,
     context_length: int | None = None,
+    disable_disk_caches: bool = False,
+    log_target: str | None = None,
 ) -> tuple[object, str]:
     """Spawn a `serve` subprocess on an ephemeral port for chat REPL use.
 
     Returns (Popen handle, base_url).
+
+    With ``log_target`` (``--log-file`` / ``RAPID_MLX_LOG_FILE``) the server
+    writes its own output there and inherits this terminal; ``log_path`` stays
+    empty and is removed at teardown.
 
     ``register_in`` is an optional list (typically the chat REPL's
     ``_active_procs``). When provided, the new ``Popen`` is appended to it
@@ -10833,16 +11114,20 @@ def _spawn_chat_server(
         "127.0.0.1",
         "--port",
         str(port),
-        "--log-level",
-        "WARNING",
     ]
+    # The REPL owns the terminal, so the server is quiet unless the operator
+    # chose a level through RAPID_MLX_LOG_LEVEL.
+    if not os.environ.get(LOG_LEVEL_ENV_VAR, "").strip():
+        cmd.extend(["--log-level", "WARNING"])
     if served_name and served_name != model:
         cmd.extend(["--served-model-name", served_name])
     if disable_prefix_cache:
         cmd.append("--disable-prefix-cache")
+    if disable_disk_caches:
+        cmd.append("--disable-disk-caches")
     if context_length is not None:
         cmd.extend(["--context-length", str(context_length)])
-    log = open(log_path, "w")  # noqa: SIM115 — kept open for proc lifetime
+    log = open(log_path, "w") if log_target is None else None  # noqa: SIM115 — kept open for proc lifetime
     # Tell the child main() that the parent already gated (or that this is
     # an internal spawn, where prompting would deadlock anyway because the
     # child stdin is not a TTY). Without this, the child's B2 gate would
@@ -10870,6 +11155,10 @@ def _spawn_chat_server(
     # spawner owns the watchdog relationship for the spawn it just
     # created — overwrite is correct.
     child_env["RAPID_MLX_WATCHDOG_PPID"] = str(os.getpid())
+    if log_target is not None:
+        from rapid_mlx import log_file
+
+        child_env[log_file.ENV_VAR] = log_target
     # Atomic critical section: block SIGTERM/SIGINT delivery around
     # the whole ``Popen()`` + register + attribute-set + ``release()``
     # sequence. We use ``pthread_sigmask(SIG_BLOCK, ...)`` so the
@@ -10926,7 +11215,7 @@ def _spawn_chat_server(
             proc = subprocess.Popen(  # noqa: S603
                 cmd,
                 stdout=log,
-                stderr=subprocess.STDOUT,
+                stderr=subprocess.STDOUT if log is not None else None,
                 start_new_session=True,
                 env=child_env,
                 # Codex pr_validate r3 BLOCKING: clear the inherited
@@ -10940,7 +11229,8 @@ def _spawn_chat_server(
             # Popen raised before constructing the child — the log handle
             # would otherwise leak. Re-raise after closing. The ``finally``
             # below still restores the signal mask / handlers.
-            log.close()
+            if log is not None:
+                log.close()
             raise
         # Register first so a SIGTERM landing between here and the caller's
         # next statement still tears the child down.
@@ -11560,6 +11850,24 @@ def _recover_failed_chat_turn(messages: list[dict], turn_start: int) -> None:
         del messages[turn_start:]
 
 
+def _chat_server_log_target(args) -> str | None:
+    """The validated ``--log-file`` target for the server ``chat`` spawns.
+
+    Attaching to a running server (``--base-url`` / ``--port``) starts none,
+    so an unusable target is ignored there instead of ending the session.
+    """
+    from rapid_mlx import log_file
+
+    try:
+        target, _ = log_file.resolve_validated(getattr(args, "log_file", None))
+    except log_file.LogFileError as exc:
+        if getattr(args, "base_url", None) or getattr(args, "port", None) is not None:
+            return None
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(2)
+    return target
+
+
 def chat_command(args):
     """Interactive REPL chat with a model.
 
@@ -11572,6 +11880,7 @@ def chat_command(args):
     import signal
     import subprocess
 
+    from rapid_mlx import log_file
     from rapid_mlx._tempfile_safe import managed_tempfile_path
     from rapid_mlx.chat_render import supports_rich_output, terminal_safe_text
 
@@ -11579,6 +11888,12 @@ def chat_command(args):
     proc = None
     log_path: str | None = None
     mcp_runtime = None
+    server_log_target = _chat_server_log_target(args)
+    server_spawn_kwargs: dict[str, Any] = {}
+    if getattr(args, "disable_disk_caches", False):
+        server_spawn_kwargs["disable_disk_caches"] = True
+    if server_log_target is not None:
+        server_spawn_kwargs["log_target"] = server_log_target
     # Tracks every spawned server (initial + every /model candidate) so
     # the SIGTERM/atexit cleanup tears down in-flight candidates too —
     # not just the bound ``proc``. A SIGTERM landing while a /model
@@ -11819,11 +12134,16 @@ def chat_command(args):
             prefix="rapid-mlx-chat-", suffix=".log"
         ) as _log_handle:
             log_path = _log_handle.path
-            print(f"\n  Starting server {DIM}(log: {log_path}){RESET} ...")
+            _shown_log = (
+                log_file.describe(server_log_target)
+                if server_log_target is not None
+                else log_path
+            )
+            print(f"\n  Starting server {DIM}(log: {_shown_log}){RESET} ...")
             # If main() resolved an alias, expose the alias as the API model name
             # so the chat request body matches what the user typed.
             original = getattr(args, "_original_alias", None)
-            privacy_kwargs = (
+            privacy_kwargs: dict[str, Any] = (
                 {"disable_prefix_cache": True}
                 if getattr(args, "disable_prefix_cache", False)
                 else {}
@@ -11845,6 +12165,7 @@ def chat_command(args):
                         else {}
                     ),
                     **privacy_kwargs,
+                    **server_spawn_kwargs,
                 )
             finally:
                 _telemetry_chat_auto_selected = False
@@ -12115,8 +12436,7 @@ def chat_command(args):
         #     stdin. ``confirm_or_abort`` self-skips again internally
         #     but skipping ``estimate_repo_size_bytes`` saves the wait.
         if "/" in resolved and not os.path.exists(resolved):
-            _env_val = os.environ.get("RAPID_MLX_AUTO_PULL", "").strip().lower()
-            _auto_yes = _env_val in {"1", "true", "yes"}
+            _auto_yes = env_truthy("RAPID_MLX_AUTO_PULL")
             _interactive = sys.stdin.isatty()
             if not _auto_yes and _interactive:
                 from rapid_mlx._download_gate import (
@@ -12196,13 +12516,18 @@ def chat_command(args):
             prefix="rapid-mlx-chat-", suffix=".log"
         ) as _new_log_handle:
             new_log_path = _new_log_handle.path
-            print(f"  Starting server {DIM}(log: {new_log_path}){RESET} ...")
+            _shown_log = (
+                log_file.describe(server_log_target)
+                if server_log_target is not None
+                else new_log_path
+            )
+            print(f"  Starting server {DIM}(log: {_shown_log}){RESET} ...")
             # ``register_in=_active_procs`` makes the candidate visible to
             # ``_cleanup`` *inside* ``_spawn_chat_server`` — before the
             # readiness wait, before any further Python statement runs in
             # this scope. A SIGTERM/Ctrl-C during the (possibly multi-second)
             # load tears the child down via the cleanup walk.
-            privacy_kwargs = (
+            privacy_kwargs: dict[str, Any] = (
                 {"disable_prefix_cache": True}
                 if getattr(args, "disable_prefix_cache", False)
                 else {}
@@ -12219,6 +12544,7 @@ def chat_command(args):
                     else {}
                 ),
                 **privacy_kwargs,
+                **server_spawn_kwargs,
             )
         try:
             _wait_for_chat_server(new_base_url, new_proc, timeout_s=args.ready_timeout)
@@ -12639,7 +12965,7 @@ def _print_dflash_status(alias: str, profile) -> None:
         ),
         (
             "mlx-vlm 0.5.0+",
-            _yes(have_runtime(), "installed", "missing (need rapid-mlx[dflash])"),
+            _yes(have_runtime(), "installed", "missing (reinstall rapid-mlx)"),
         ),
     ]
 
@@ -12907,8 +13233,8 @@ def agents_command(args):
             # User specified model — look up *that* model's context window
             context_length = fetch_context_window(base_url, model_id)
 
-        # Claude Code, Continue, DSH and pi have first-class setup flows. They
-        # preview an exact diff, require consent, back up existing config,
+        # Claude Code, Continue, DSH, pi and Qwen Code have first-class setup
+        # flows. They preview an exact diff, require consent, back up existing config,
         # write atomically, and verify the server afterwards. The generic
         # profile writer below still lacks the diff/consent/backup half, but
         # it does honour --dry-run, so a preview never writes on either path.
@@ -12943,6 +13269,7 @@ def agents_command(args):
                     context_length=context_length,
                     supports_reasoning=supports_reasoning,
                     emit_telemetry=not args.dry_run,
+                    agent_version=args.agent_version,
                 )
             except (OSError, ValueError) as exc:
                 print(f"\n  {profile.display_name} setup failed: {exc}\n")
@@ -12963,13 +13290,23 @@ def agents_command(args):
             if plan.changed:
                 try:
                     apply_setup_plan(plan)
-                except RuntimeError as exc:
+                except (OSError, RuntimeError) as exc:
                     print(f"\n  {profile.display_name} setup failed: {exc}\n")
                     sys.exit(1)
                 print(f"\n  Configured {profile.display_name} at {plan.path}.")
             if not args.no_check:
+                from rapid_mlx.agents.server_hint import (
+                    ServerNotRunningError,
+                    not_running_lines,
+                )
+
                 try:
                     advertised = verify_server(base_url, model_id, agent=profile.name)
+                except ServerNotRunningError:
+                    # Configuring before `serve` is the normal first-run
+                    # order: the saved config is complete, so finish with the
+                    # one command that starts a matching server.
+                    print("\n".join(not_running_lines(profile, base_url, model_id)))
                 except RuntimeError as exc:
                     status = (
                         "Configuration was saved"
@@ -12978,29 +13315,61 @@ def agents_command(args):
                     )
                     print(f"\n  {status}, but the connection check failed: {exc}\n")
                     sys.exit(1)
-                print(f"  Connection check passed (model: {advertised}).")
+                else:
+                    print(f"  Connection check passed (model: {advertised}).")
             if plan.changed:
-                # A configured event means a config mutation completed and,
-                # unless the operator explicitly skipped it, verification passed.
+                # A configured event means a config mutation completed and
+                # verification passed, was skipped with --no-check, or was
+                # deferred because no server was running yet.
                 track_agent_configured(plan.agent)
             print()
             return
 
         # Generic file writers do not have the first-class plan's post-write
-        # verifier. Refuse before mutation when the endpoint is unavailable so
-        # a failed setup cannot leave a new `model = default` config behind.
+        # verifier. Refuse before mutation when the endpoint is broken, or when
+        # no server is running and no --model was given, so a failed setup
+        # cannot leave a new `model = default` config behind. With --model, a
+        # not-yet-started server is the normal first-run order: write it.
         # --no-check remains the explicit offline-config escape hatch, and a
         # dry run remains side-effect-free preview even without a live server.
+        server_not_running = False
         if cfg.type != "env" and not args.dry_run and not args.no_check:
+            from rapid_mlx.agents.server_hint import (
+                ServerNotRunningError,
+                start_server_command,
+            )
             from rapid_mlx.agents.setup import verify_server
 
             try:
                 advertised = verify_server(base_url, model_id, agent=profile.name)
+            except ServerNotRunningError as exc:
+                if model_id == "default":
+                    # Without a live server or --model there is no model id
+                    # to write, and these writers never persist `default`.
+                    from rapid_mlx.agents.telemetry import (
+                        track_agent_configure_failed,
+                    )
+
+                    track_agent_configure_failed("server_not_ready", profile.name)
+                    print(
+                        f"\n  {profile.display_name} setup needs the model name: {exc}."
+                    )
+                    print(
+                        "  Start the server first:  "
+                        f"{start_server_command(profile, base_url, model_id)}"
+                    )
+                    retry = f"rapid-mlx agents {profile.name} --setup --model <name>"
+                    if base_url != "http://localhost:8000/v1":
+                        retry += f" --base-url {shlex.quote(base_url)}"
+                    print(f"  Or configure it now:     {retry}\n")
+                    sys.exit(1)
+                server_not_running = True
             except RuntimeError as exc:
                 print(f"\n  {profile.display_name} setup failed: {exc}\n")
                 sys.exit(1)
-            if model_id == "default":
-                model_id = advertised
+            else:
+                if model_id == "default":
+                    model_id = advertised
 
         summary = setup_agent_config(
             profile,
@@ -13019,11 +13388,34 @@ def agents_command(args):
             print(f"\n  {summary}")
             print("\n  Dry run only; nothing was written.\n")
             return
+        report = None
+        if profile.name == "codex" and cfg.type == "toml" and cfg.path:
+            from rapid_mlx.agents.adapter import codex_setup_report
+
+            try:
+                report = codex_setup_report(profile, args.agent_version)
+            except (OSError, ValueError) as exc:
+                print(
+                    f"\n  Configuration was saved, but Codex config verification failed: {exc}\n"
+                )
+                sys.exit(1)
         if summary.startswith("Already configured"):
             print(f"\n  {profile.display_name} is already configured.")
         else:
             print(f"\n  {profile.display_name} configured!")
         print(f"  {summary}")
+        if report:
+            print(f"  {report}")
+            if args.no_check:
+                print(
+                    "  Connection check skipped (--no-check); no live model was verified."
+                )
+            elif not server_not_running:
+                print(f"  Connection check passed (advertised model: {advertised}).")
+        if server_not_running:
+            from rapid_mlx.agents.server_hint import not_running_lines
+
+            print("\n".join(not_running_lines(profile, base_url, model_id)))
         print()
         return
 
@@ -13648,9 +14040,68 @@ def _start_v2_lifecycle(command: str | None) -> None:
         if telemetry_v2.set_surface_for_role(role) or role is ProcessRole.SIDECAR:
             return
 
-        telemetry_v2.start_lifecycle("server" if command == "serve" else "cli")
+        telemetry_v2.start_lifecycle("server" if command == "serve" else "cli", command)
     except Exception:
         # Telemetry cannot alter the host command's exit code or output.
+        return
+
+
+def _help_or_version_flag(raw_argv: list[str]) -> str | None:
+    """``help`` / ``version`` for the -h / -V flag action argparse ran first."""
+    head = raw_argv[: raw_argv.index("--")] if "--" in raw_argv else raw_argv
+    for token in head:
+        if token in ("-h", "--help"):
+            return "help"
+        if token in ("-V", "--version"):
+            return "version"
+    return None
+
+
+def _argv_disables_telemetry(raw_argv: list[str]) -> bool:
+    """Whether argv opts out, including argparse's unique-prefix spellings
+    (``--no-t``). Over-matching only ever suppresses telemetry."""
+    return any(
+        len(token) > len("--no-") and "--no-telemetry".startswith(token)
+        for token in raw_argv
+    )
+
+
+def _start_quiet_lifecycle(command: str, *, no_telemetry: bool) -> None:
+    """Lifecycle for entry points that must stay free of the disclosure.
+
+    Bare ``rapid-mlx`` and the ``--help`` / ``--version`` flags never print
+    the telemetry notice (that stays with the first real command, unchanged)
+    nor consent diagnostics. They therefore report ``app_opened`` only when
+    the notice was already delivered on an earlier run; until then they send
+    nothing.
+    """
+    try:
+        from rapid_mlx.telemetry import consent_runtime
+        from rapid_mlx.telemetry.state import set_cli_kill_switch
+
+        set_cli_kill_switch(no_telemetry)
+        # An unreadable consent record logs a warning while resolving; keep
+        # these output-clean paths byte-identical (the record then blocks
+        # uploads anyway, and the next real command surfaces it).
+        import logging
+        import threading
+
+        caller = threading.get_ident()
+
+        def _quiet(record: logging.LogRecord) -> bool:
+            # Drop only this thread's consent records, only for this call.
+            return bool(record.thread != caller)
+
+        consent_logger = consent_runtime.logger
+        consent_logger.addFilter(_quiet)
+        try:
+            if consent_runtime.resolve().deliver_notice:
+                return
+            consent_runtime.startup()
+        finally:
+            consent_logger.removeFilter(_quiet)
+        _start_v2_lifecycle(command)
+    except Exception:
         return
 
 
@@ -13729,7 +14180,31 @@ def main():
 
     # Systematic serve-flag passthrough for ``share`` via the standard ``--``
     # end-of-options separator — see ``_parse_args_with_share_passthrough``.
-    args = _parse_args_with_share_passthrough(parser, sys.argv[1:])
+    try:
+        args = _parse_args_with_share_passthrough(parser, sys.argv[1:])
+    except SystemExit as exc:
+        # ``-h`` / ``--help`` / ``-V`` / ``--version`` exit 0 inside argparse.
+        flag = _help_or_version_flag(sys.argv[1:]) if exc.code in (0, None) else None
+        if flag is not None:
+            _start_quiet_lifecycle(
+                flag, no_telemetry=_argv_disables_telemetry(sys.argv[1:])
+            )
+        raise
+    if getattr(args, "disable_version_check", False):
+        # The environment carries the opt-out to every server this command starts.
+        os.environ["RAPID_MLX_DISABLE_VERSION_CHECK"] = "1"
+    if getattr(args, "json", False):
+        from rapid_mlx import log_file
+
+        _log_target, _log_source = log_file.resolve(getattr(args, "log_file", None))
+        if _log_target == log_file.STDOUT:
+            print(
+                f"error: {_log_source}=- sends log output to stdout, which "
+                "--json reserves for its JSON output. Use a file path or "
+                "/dev/stderr instead.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
     # A missing required positional normally makes argparse print the entire
     # serve help (dozens of expert flags) before its one actionable error.
     # Keep the positional optional at parse time so this first-run mistake gets
@@ -13788,9 +14263,8 @@ def main():
     try:
         from rapid_mlx._banner import render_banner, should_show_banner
 
-        _no_banner = getattr(args, "no_banner", False) or (
-            os.environ.get("RAPID_MLX_NO_BANNER", "").strip().lower()
-            in {"1", "true", "yes"}
+        _no_banner = getattr(args, "no_banner", False) or env_truthy(
+            "RAPID_MLX_NO_BANNER"
         )
         if should_show_banner(
             command=getattr(args, "command", None),
@@ -13828,6 +14302,12 @@ def main():
                 lazy_load=bool(getattr(args, "lazy_load", False)),
             )
             attempted(selected_model, load_policy=policy)
+    else:
+        # Bare ``rapid-mlx``: report the launch without ever printing the
+        # disclosure from here (see ``_start_quiet_lifecycle``).
+        _start_quiet_lifecycle(
+            "bare", no_telemetry=bool(getattr(args, "no_telemetry", False))
+        )
 
     # First-run auto-select: ``chat`` / ``run`` invoked with no model arg.
     # Resolve the starter alias HERE — before the alias→path resolution below —
@@ -14102,8 +14582,7 @@ def main():
         # without touching the HF API. ``confirm_or_abort`` re-checks
         # both internally; we mirror them here so we can skip the size
         # estimate as well.
-        _env_val = os.environ.get("RAPID_MLX_AUTO_PULL", "").strip().lower()
-        _auto_yes = _env_val in {"1", "true", "yes"}
+        _auto_yes = env_truthy("RAPID_MLX_AUTO_PULL")
         _interactive = sys.stdin.isatty()
         if not _auto_yes and _interactive:
             from rapid_mlx._download_gate import (

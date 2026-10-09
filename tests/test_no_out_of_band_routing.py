@@ -418,6 +418,12 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # eviction activity. Pure capacity knob — never selects a model,
         # parser, or routing tier.
         "RAPID_MLX_PREFIX_CACHE_MAX_BYTES",
+        # Free-disk reserve (bytes) the prefix-cache persist must leave on
+        # the volume; ``0`` disables the check. Read by
+        # ``MemoryAwarePrefixCache.save_to_disk``, which skips entries whose
+        # write would cross it. Pure disk-safety knob — never selects a
+        # model, parser, or routing tier.
+        "RAPID_MLX_PREFIX_CACHE_MIN_FREE_DISK_BYTES",
         # Sandbox root for the KV cache export/import HTTP API (issue #476).
         # Default ``~/.cache/rapid-mlx/cache_exports/``. All caller-supplied
         # paths to ``/v1/cache/{export,import,info}`` must resolve inside
@@ -624,6 +630,12 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # rapid_mlx/cli.py's banner gate (--no-banner flag is the primary
         # mechanism; the env var exists for non-interactive launchers).
         "RAPID_MLX_NO_BANNER",
+        # Disk-write and logging preferences: keep optional caches off disk
+        # and choose the log level and destination. None selects a model,
+        # parser, tier, or engine route.
+        "RAPID_MLX_DISABLE_DISK_CACHES",
+        "RAPID_MLX_LOG_LEVEL",
+        "RAPID_MLX_LOG_FILE",
     }
 )
 

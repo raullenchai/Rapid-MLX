@@ -62,15 +62,15 @@ enum CUASidebarStatus: Equatable {
 
     var title: String {
         switch self {
-        case .running: "Running"
-        case .awaitingApproval: "Approval"
+        case .running: String(localized: "Running")
+        case .awaitingApproval: String(localized: "Approval")
         }
     }
 
     var accessibilityValue: String {
         switch self {
-        case .running: "Task running"
-        case .awaitingApproval: "Approval needed"
+        case .running: String(localized: "Task running")
+        case .awaitingApproval: String(localized: "Approval needed")
         }
     }
 }
@@ -279,28 +279,28 @@ struct SidebarView: View {
         VStack(alignment: .leading, spacing: 1) {
             brandLockup
             row(
-                title: "New Chat",
+                title: String(localized: "New Chat"),
                 systemImage: "square.and.pencil",
                 isSelected: false,
                 action: onNewChat
             )
             .accessibilityIdentifier("Sidebar.NewChat")
             row(
-                title: "Images",
+                title: String(localized: "Images"),
                 systemImage: "photo",
                 isSelected: selection == .images,
                 action: { selection = .images }
             )
             .accessibilityIdentifier("Sidebar.Images")
             row(
-                title: "Audio",
+                title: String(localized: "Audio"),
                 systemImage: "waveform",
                 isSelected: selection == .audio,
                 action: { selection = .audio }
             )
             .accessibilityIdentifier("Sidebar.Audio")
             row(
-                title: "Agent",
+                title: String(localized: "Agent"),
                 systemImage: "network",
                 isSelected: selection == .launch,
                 action: { selection = .launch }
@@ -319,7 +319,7 @@ struct SidebarView: View {
                     )
                 } else {
                     row(
-                        title: "Computer Use",
+                        title: String(localized: "Computer Use"),
                         systemImage: "macwindow.on.rectangle",
                         isSelected: selection == .computerUse,
                         action: { selection = .computerUse }
@@ -333,14 +333,14 @@ struct SidebarView: View {
             // opt-in previews read as a distinct, still-being-validated set.
             // The header appears only when at least one is enabled.
             if videoGenerationEnabled || benchmarkEnabled || shareComputeEnabled {
-                SectionHeader("Experimental")
+                SectionHeader(String(localized: "Experimental"))
                     .padding(.horizontal, RapidTheme.Space.sm)
                     .padding(.top, RapidTheme.Space.lg)
                     .padding(.bottom, RapidTheme.Space.xs)
                     .accessibilityIdentifier("Sidebar.ExperimentalHeader")
                 if videoGenerationEnabled {
                     row(
-                        title: "Video",
+                        title: String(localized: "Video"),
                         systemImage: "film",
                         isSelected: selection == .video,
                         action: { selection = .video }
@@ -349,7 +349,7 @@ struct SidebarView: View {
                 }
                 if benchmarkEnabled {
                     row(
-                        title: "Benchmark",
+                        title: String(localized: "Benchmark"),
                         systemImage: "gauge.with.dots.needle.50percent",
                         isSelected: selection == .benchmark,
                         action: { selection = .benchmark }
@@ -358,7 +358,7 @@ struct SidebarView: View {
                 }
                 if shareComputeEnabled {
                     row(
-                        title: shareComputeActive ? "Share Compute · On" : "Share Compute",
+                        title: shareComputeActive ? String(localized: "Share Compute · On") : String(localized: "Share Compute"),
                         systemImage: "bolt.horizontal.circle",
                         isSelected: selection == .shareCompute,
                         action: { selection = .shareCompute }
@@ -464,7 +464,7 @@ struct SidebarView: View {
         // treatment above — the dialog's job here is to say what will happen
         // to the conversations, which is the only thing the user is unsure of.
         .confirmationDialog(
-            pendingFolderDeletion.map { "Delete “\($0.name)”?" } ?? "Delete folder?",
+            pendingFolderDeletion.map { String(localized: "Delete “\($0.name)”?") } ?? String(localized: "Delete folder?"),
             isPresented: Binding(
                 get: { pendingFolderDeletion != nil },
                 set: { if !$0 { pendingFolderDeletion = nil } }
@@ -529,8 +529,8 @@ struct SidebarView: View {
 
     private var folderPromptTitle: String {
         switch folderPrompt {
-        case .rename: return "Rename Folder"
-        case .create, .none: return "New Folder"
+        case .rename: return String(localized: "Rename Folder")
+        case .create, .none: return String(localized: "New Folder")
         }
     }
 
@@ -974,9 +974,9 @@ struct SidebarView: View {
         case .stopped:
             nil
         case .busy:
-            "A request is still using the models. Stop it, then try again."
+            String(localized: "A request is still using the models. Stop it, then try again.")
         case .unavailable:
-            "Rapid couldn't confirm that the models were idle. Wait a moment, then try again."
+            String(localized: "Rapid couldn't confirm that the models were idle. Wait a moment, then try again.")
         }
     }
 
@@ -994,9 +994,9 @@ struct SidebarView: View {
         hasActiveResponse: Bool,
         enabledLabel: String
     ) -> String {
-        if isOperating { return "Unloading models…" }
+        if isOperating { return String(localized: "Unloading models…") }
         if hasActiveResponse {
-            return "Stop the active response before unloading models"
+            return String(localized: "Stop the active response before unloading models")
         }
         return enabledLabel
     }
@@ -1005,8 +1005,10 @@ struct SidebarView: View {
         modelCount: Int,
         memoryUsedBytes: UInt64
     ) -> String {
-        let subject = modelCount == 1 ? "model" : "all models"
-        return "Unload \(subject) and free \(formatBytes(memoryUsedBytes))"
+        let freed = formatBytes(memoryUsedBytes)
+        return modelCount == 1
+            ? String(localized: "Unload model and free \(freed)")
+            : String(localized: "Unload all models and free \(freed)")
     }
 
     nonisolated static func memorySummary(usedBytes: UInt64, limitBytes: UInt64) -> String {
@@ -1060,9 +1062,9 @@ struct SidebarView: View {
     /// MODEL (re-downloadable, and already gated) a conversation delete is
     /// irreversible, so this always fronts a confirmation.
     nonisolated static func deleteConfirmationTitle(for conversation: ChatConversation?) -> String {
-        guard let conversation else { return "Delete this conversation?" }
+        guard let conversation else { return String(localized: "Delete this conversation?") }
         let title = conversation.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        return title.isEmpty ? "Delete this conversation?" : "Delete “\(title)”?"
+        return title.isEmpty ? String(localized: "Delete this conversation?") : String(localized: "Delete “\(title)”?")
     }
 
     /// The history list split into dated sections, newest first.
@@ -1168,11 +1170,11 @@ struct SidebarView: View {
         }
 
         return [
-            ("Pinned", pinned),
-            ("Today", today),
-            ("Yesterday", yesterday),
-            ("Previous 7 Days", week),
-            ("Older", older),
+            (String(localized: "Pinned"), pinned),
+            (String(localized: "Today"), today),
+            (String(localized: "Yesterday"), yesterday),
+            (String(localized: "Previous 7 Days"), week),
+            (String(localized: "Older"), older),
         ]
         .filter { !$0.1.isEmpty }
         .map { HistorySection(title: $0.0, conversations: $0.1) }
@@ -1399,7 +1401,7 @@ struct SidebarView: View {
                 HStack(spacing: RapidTheme.Space.xs) {
                     Image(systemName: showArchived ? "chevron.down" : "chevron.right")
                         .font(.system(size: 9, weight: .semibold))
-                    SectionHeader("Archived (\(archived.count))")
+                    SectionHeader(String(localized: "Archived (\(archived.count))"))
                 }
                 .contentShape(Rectangle())
             }
@@ -1491,7 +1493,7 @@ struct SidebarView: View {
             if showsPin || conv.isPinned {
                 QuietIconButton(
                     symbol: conv.isPinned ? "pin.slash" : "pin",
-                    label: conv.isPinned ? "Unpin conversation" : "Pin conversation",
+                    label: conv.isPinned ? String(localized: "Unpin conversation") : String(localized: "Pin conversation"),
                     size: RapidTheme.ControlHeight.mini
                 ) {
                     // Same reasoning as the menu's Pin: a pin moves the row
@@ -1592,7 +1594,7 @@ struct SidebarView: View {
                 chat.setConversationPinned(conv.id, !conv.isPinned)
             } label: {
                 Label(
-                    conv.isPinned ? "Unpin" : "Pin",
+                    conv.isPinned ? String(localized: "Unpin") : String(localized: "Pin"),
                     systemImage: conv.isPinned ? "pin.slash" : "pin"
                 )
             }
@@ -1602,7 +1604,7 @@ struct SidebarView: View {
                 chat.setConversationArchived(conv.id, !conv.isArchived)
             } label: {
                 Label(
-                    conv.isArchived ? "Unarchive" : "Archive",
+                    conv.isArchived ? String(localized: "Unarchive") : String(localized: "Archive"),
                     systemImage: conv.isArchived ? "tray.and.arrow.up" : "archivebox"
                 )
             }
@@ -1842,7 +1844,7 @@ private struct CUASidebarRow: View {
         }
         .accessibilityLabel("Computer Use")
         .accessibilityValue(
-            CUASidebarStatus(phase: viewModel.phase)?.accessibilityValue ?? "Idle"
+            CUASidebarStatus(phase: viewModel.phase)?.accessibilityValue ?? String(localized: "Idle")
         )
         .accessibilityIdentifier("Sidebar.ComputerUse")
     }

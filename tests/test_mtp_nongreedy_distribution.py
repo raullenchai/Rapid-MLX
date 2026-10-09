@@ -138,6 +138,9 @@ class _FixedDistributionModel:
         self._target_logits = mx.log(mx.array(target_probs))
         self._draft_logits = mx.log(mx.array(draft_probs))
         self.layers = []
+        self._backbone_rows = {}
+        self._hidden_rows = {}
+        self._draft_rows = {}
 
     @staticmethod
     def _tile(row: mx.array, batch: int, steps: int) -> mx.array:
@@ -152,17 +155,52 @@ class _FixedDistributionModel:
         n_confirmed: int = 0,
     ):
         batch, steps = inputs.shape
-        logits = self._tile(self._target_logits, batch, steps)
+        shape = (batch, steps)
+        # These outputs depend only on shape. Reuse their fixed tensors,
+        # but return fresh array wrappers so caller writes cannot change the
+        # distributions or hidden states returned by a later forward.
+        if shape not in self._backbone_rows:
+            self._backbone_rows[shape] = self._tile(self._target_logits, batch, steps)
+        logits = mx.array(self._backbone_rows[shape])
         if return_hidden:
-            return logits, mx.zeros((batch, steps, self.hidden_size))
+            if shape not in self._hidden_rows:
+                self._hidden_rows[shape] = mx.zeros((batch, steps, self.hidden_size))
+            return logits, mx.array(self._hidden_rows[shape])
         return logits
 
     def mtp_forward(self, hidden, next_token_ids, mtp_cache):
         batch, steps = next_token_ids.shape
-        return self._tile(self._draft_logits, batch, steps)
+        shape = (batch, steps)
+        if shape not in self._draft_rows:
+            self._draft_rows[shape] = self._tile(self._draft_logits, batch, steps)
+        return mx.array(self._draft_rows[shape])
 
     def make_mtp_cache(self):
         return []
+
+
+@pytest.mark.parametrize("shape", [(1, 1), (1, 4), (2, 3)])
+def test_fixed_model_outputs_ignore_input_values_and_caller_writes(shape):
+    model = _FixedDistributionModel(_TARGET, _DRAFT)
+    inputs = mx.zeros(shape, dtype=mx.uint32)
+    changed_inputs = mx.ones(shape, dtype=mx.uint32)
+    target = model._tile(mx.log(mx.array(_TARGET)), *shape)
+    draft = model._tile(mx.log(mx.array(_DRAFT)), *shape)
+
+    logits, hidden = model(inputs, return_hidden=True)
+    draft_logits = model.mtp_forward(hidden, inputs, [])
+    logits[0, 0, 0] = 42.0
+    hidden[0, 0, 0] = 42.0
+    draft_logits[0, 0, 0] = 42.0
+
+    next_logits, next_hidden = model(changed_inputs, return_hidden=True)
+    assert mx.array_equal(next_logits, target)
+    assert mx.array_equal(next_hidden, mx.zeros((*shape, model.hidden_size)))
+    assert mx.array_equal(model.mtp_forward(next_hidden, changed_inputs, []), draft)
+
+    plain_logits = model(inputs)
+    plain_logits[0, 0, 0] = 42.0
+    assert mx.array_equal(model(changed_inputs), target)
 
 
 def _run_stream(

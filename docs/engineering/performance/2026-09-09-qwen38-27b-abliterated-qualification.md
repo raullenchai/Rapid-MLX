@@ -31,6 +31,14 @@ The standard Hugging Face cache was checked before download. `rapid-mlx pull`
 fetched 18 files under `oQ4e/` and did not fetch the repository's sibling
 quantizations or `drafter/` directory.
 
+The source repository above was later removed upstream. The alias now pulls
+`windowsxp811203/Qwen3.8-27B-Abliterated-MLX-oQ4e-mtp` (revision
+`b3ee408b27ed931a8202aabe3cd04608244e9b2f`), where the publisher moved this
+build. Its four weight shards carry the same LFS SHA-256 values, and its
+config, tokenizer, processor and template files carry the same git blob ids, as
+the `oQ4e/` files qualified here; only the README differs. The results below
+therefore apply unchanged.
+
 ## Rapid-MLX product-path results
 
 All requests used `temperature: 0`. These are smoke and operational

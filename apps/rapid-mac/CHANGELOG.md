@@ -17,6 +17,27 @@ can actually understand.
 
 ## [Unreleased]
 
+## [0.15.7] — 2026-10-07
+
+Rapid-MLX 0.15.7 adds native text and code embeddings, improves local agent setup, and strengthens Desktop and inference reliability.
+
+### Highlights
+
+- **EmbeddingGemma 2 text/code embeddings**: serve normalized 768-dimensional vectors through `/v1/embeddings`, with standard 4-bit and BF16 aliases, optional smaller dimensions, and an explicit 8192-token limit. This release supports text/code inputs; images, audio and video are unsupported. ([#4279](https://github.com/raullenchai/Rapid-MLX/pull/4279))
+- **More reliable agent setup**: Continue and Cline configuration is written where their clients read it; keyed Continue connections preserve the configured server credential. Qwen Code previews redact retained secrets while keeping the saved configuration intact. ([#4257](https://github.com/raullenchai/Rapid-MLX/pull/4257), [#4274](https://github.com/raullenchai/Rapid-MLX/pull/4274), [#4275](https://github.com/raullenchai/Rapid-MLX/pull/4275))
+- **Warmer coding-agent turns**: prompt reuse avoids repeated full-prompt tokenization; MTP scheduling and reproducibility receive further fixes. Improvements depend on the model, hardware and workload. ([#4214](https://github.com/raullenchai/Rapid-MLX/pull/4214), [#4221](https://github.com/raullenchai/Rapid-MLX/pull/4221), [#4238](https://github.com/raullenchai/Rapid-MLX/pull/4238))
+- **Desktop polish**: broader Simplified Chinese coverage, clearer timeout handling and more reliable saved Codex model identity. ([#4147](https://github.com/raullenchai/Rapid-MLX/pull/4147), [#4146](https://github.com/raullenchai/Rapid-MLX/pull/4146), [#4249](https://github.com/raullenchai/Rapid-MLX/pull/4249))
+- **Server controls and request timing**: `--disable-disk-caches` disables optional disk-cache writes while preserving in-memory reuse; `--log-file` redirects server logs. Chat and Responses can expose request-scoped time to first token and mean token interval. ([#4272](https://github.com/raullenchai/Rapid-MLX/pull/4272), [#4151](https://github.com/raullenchai/Rapid-MLX/pull/4151))
+- LTX-2.5 video extension jobs and model mirror/prefix-cache reliability fixes. Computer use remains experimental.
+
+### Model catalog
+
+- `qwopus-27b-8bit` is retired because its upstream repository is unavailable; use `qwopus-27b-4bit`.
+- `qwen3.8-27b-abliterated-4bit` follows the publisher’s relocated oQ4e build.
+
+### Fixed
+- Simplified Chinese now covers the sidebar, the chat home screen and message box, the Settings categories and panels, Model Management, and the model picker, which previously stayed in English when macOS was set to Chinese. Experimental tabs (Benchmark, Share Compute, Computer Use, Video) are not yet fully translated.
+
 ## [0.15.6] — 2026-10-04
 
 Rapid-MLX 0.15.6 adds a simpler interactive first run and improves reliability for long prompts, local agents, custom models, shared caches, and long-running servers.
@@ -4227,7 +4248,8 @@ Older versions: see the
 [GitHub Releases page](https://github.com/machinefi/rapid-desktop/releases)
 for auto-generated notes against earlier tags.
 
-[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.15.6...HEAD
+[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.15.7...HEAD
+[0.15.7]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.15.6...rapid-mac-v0.15.7
 [0.15.6]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.15.5...rapid-mac-v0.15.6
 [0.15.5]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.15.4...rapid-mac-v0.15.5
 [0.15.4]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.15.3...rapid-mac-v0.15.4

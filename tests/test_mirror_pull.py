@@ -90,17 +90,43 @@ def _catalog_payload(
     }
 
 
-def _mk_sibling(rfilename: str, size: int, lfs_sha256: str | None = None):
+def _git_oid(body: bytes) -> str:
+    """Git blob id (what HF lists as ``blob_id``) of ``body``."""
+    import hashlib
+
+    return hashlib.sha1(
+        f"blob {len(body)}\0".encode() + body, usedforsecurity=False
+    ).hexdigest()
+
+
+def _x_blob_id(size: int) -> str:
+    """Git blob id of ``b"x" * size``, the body most routes here serve."""
+    return _git_oid(b"x" * size)
+
+
+def _mk_sibling(
+    rfilename: str,
+    size: int,
+    lfs_sha256: str | None = None,
+    blob_id: str | None = None,
+):
     """Build a minimal HF sibling object — mimics ``RepoSibling``.
 
     ``lfs_sha256`` is the SHA-256 of the file's bytes when HF tracks it
     via LFS (only LFS-tracked files expose this). When set, the mirror
     module uses it to validate downloaded bytes (codex round-5 BLOCKING
     #1).
+
+    ``blob_id`` is HF's git blob id; every non-LFS mirror object must match
+    it. It defaults to the id of ``b"x" * size``, the body this file's
+    routes serve unless a test says otherwise.
     """
     s = MagicMock()
     s.rfilename = rfilename
     s.size = size
+    if blob_id is None and isinstance(size, int):
+        blob_id = _x_blob_id(size)
+    s.blob_id = blob_id
     if lfs_sha256 is not None:
         lfs = MagicMock()
         lfs.sha256 = lfs_sha256
@@ -113,8 +139,9 @@ def _mk_sibling(rfilename: str, size: int, lfs_sha256: str | None = None):
 def _mk_model_info(sha: str, files: list[tuple]):
     """Build a fake ``ModelInfo``.
 
-    ``files`` is a list of ``(rfilename, size)`` or
-    ``(rfilename, size, lfs_sha256)``.
+    ``files`` is a list of ``(rfilename, size)``,
+    ``(rfilename, size, lfs_sha256)`` or
+    ``(rfilename, size, lfs_sha256, blob_id)``.
     """
     info = MagicMock()
     info.sha = sha
@@ -123,9 +150,14 @@ def _mk_model_info(sha: str, files: list[tuple]):
         if len(f) == 2:
             name, size = f
             siblings.append(_mk_sibling(name, size))
-        else:
+        elif len(f) == 3:
             name, size, lfs_sha = f
             siblings.append(_mk_sibling(name, size, lfs_sha256=lfs_sha))
+        else:
+            name, size, lfs_sha, blob_id = f
+            siblings.append(
+                _mk_sibling(name, size, lfs_sha256=lfs_sha, blob_id=blob_id)
+            )
     info.siblings = siblings
     return info
 
@@ -519,7 +551,7 @@ def test_custom_mirror_without_catalog_uses_direct_layout(
     )
     router.add(
         "https://custom.example.com/mlx-community/Qwen3-0.6B-4bit/model.safetensors",
-        _FakeResponse(200, b"y" * 200),
+        _FakeResponse(200, b"x" * 200),
     )
 
     monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://custom.example.com")
@@ -538,7 +570,7 @@ def test_custom_mirror_without_catalog_uses_direct_layout(
     assert hf_mock.call_count == 0
     snap = tmp_path / "models--mlx-community--Qwen3-0.6B-4bit" / "snapshots" / revision
     assert (snap / "config.json").read_bytes() == b"x" * 100
-    assert (snap / "model.safetensors").read_bytes() == b"y" * 200
+    assert (snap / "model.safetensors").read_bytes() == b"x" * 200
 
 
 # ---------------------------------------------------------------------------
@@ -554,9 +586,10 @@ def test_env_disable_skips_r2_entirely(
     revision = "ffff" * 10
     files = [("config.json", 100)]
 
-    # Empty env value means "force HF" — production code returns False
-    # from download_with_mirror_fallback before touching the network.
+    # Empty env value means "force HF" while retaining the verified
+    # per-file downloader and its stable resume sidecars.
     monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "")
+    monkeypatch.setattr(_mirror, "_hf_resumable_one", lambda *args: False)
 
     router = _UrlRouter()
     # No routes registered — any HTTP call would AssertionError.
@@ -570,11 +603,180 @@ def test_env_disable_skips_r2_entirely(
     ):
         result = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
 
-    # When the mirror is disabled, the function bails early so the caller
-    # falls through to snapshot_download. No HF or R2 calls were made.
-    assert result is False
+    assert result is True
     assert router.requests == []
-    assert hf_mock.call_count == 0
+    assert hf_mock.call_count == 1
+
+
+def test_hf_resumes_mirror_partial_with_checked_range(tmp_path: Path):
+    """Changing source reuses the same per-file prefix and verifies the blob."""
+    import hashlib
+
+    filename = "model.safetensors"
+    body = b"a" * 400 + b"b" * 600
+    repo_root = tmp_path / "models--owner--repo"
+    sidecar = repo_root / ".rapid-mlx-mirror"
+    sidecar.mkdir(parents=True)
+    part = sidecar / f"{_mirror._sidecar_key_for(filename)}.part"
+    part.write_bytes(body[:400])
+    target = repo_root / "snapshots" / ("a" * 40) / filename
+    location = "https://cdn.example.test/model.safetensors"
+    router = _UrlRouter()
+    router.add(
+        location,
+        _FakeResponse(
+            206,
+            body[400:],
+            headers={"Content-Range": "bytes 400-999/1000"},
+        ),
+    )
+    with (
+        patch("huggingface_hub.file_download.get_hf_file_metadata") as metadata,
+        patch("urllib.request.urlopen", side_effect=router),
+    ):
+        metadata.return_value.location = location
+        ok = _mirror._hf_resumable_one(
+            "owner/repo",
+            filename,
+            "a" * 40,
+            target,
+            len(body),
+            hashlib.sha256(body).hexdigest(),
+            None,
+            sidecar,
+            repo_root,
+            None,
+        )
+
+    assert ok
+    assert target.read_bytes() == body
+    assert router.requests[0]["headers"]["Range"] == "bytes=400-"
+    assert not part.exists()
+
+
+def test_hf_only_pull_uses_existing_part_instead_of_restarting(
+    tmp_path: Path, monkeypatch
+):
+    """The CLI's HF source choice must use the resumable pull path."""
+    import hashlib
+
+    repo_id = "owner/repo"
+    filename = "model.safetensors"
+    revision = "a" * 40
+    body = b"a" * 400 + b"b" * 600
+    part = _sidecar_part_path(tmp_path, repo_id, filename)
+    part.parent.mkdir(parents=True)
+    part.write_bytes(body[:400])
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "")
+    location = "https://cdn.example.test/model.safetensors"
+    router = _UrlRouter()
+    router.add(
+        location,
+        _FakeResponse(
+            206,
+            body[400:],
+            headers={"Content-Range": "bytes 400-999/1000"},
+        ),
+    )
+    credited: list[int] = []
+    original_add = _mirror._ProgressTracker.add
+
+    def record_credit(tracker, delta):
+        credited.append(delta)
+        original_add(tracker, delta)
+
+    with (
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(
+                revision, [(filename, len(body), hashlib.sha256(body).hexdigest())]
+            ),
+        ),
+        patch("huggingface_hub.file_download.get_hf_file_metadata") as metadata,
+        patch("huggingface_hub.hf_hub_download") as hub_download,
+        patch("urllib.request.urlopen", side_effect=router),
+        patch.object(_mirror._ProgressTracker, "add", record_credit),
+    ):
+        metadata.return_value.location = location
+        result = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    assert result
+    assert not hub_download.called
+    assert router.requests[0]["headers"]["Range"] == "bytes=400-"
+    assert sum(credited) == len(body)
+    target = tmp_path / "models--owner--repo" / "snapshots" / revision / filename
+    assert target.read_bytes() == body
+
+
+def test_hf_resumable_falls_back_when_metadata_cannot_prove_a_file(tmp_path: Path):
+    import httpx
+
+    repo_root = tmp_path / "models--owner--repo"
+    target = repo_root / "snapshots" / ("a" * 40) / "config.json"
+    args = (
+        "owner/repo",
+        "config.json",
+        "a" * 40,
+        target,
+        100,
+        None,
+        _git_oid(b"x" * 100),
+        repo_root / ".rapid-mlx-mirror",
+        repo_root,
+        None,
+    )
+    assert not _mirror._hf_resumable_one(
+        args[0],
+        args[1],
+        args[2],
+        args[3],
+        None,
+        None,
+        None,
+        args[7],
+        args[8],
+        args[9],
+    )
+    with patch("huggingface_hub.file_download.get_hf_file_metadata") as metadata:
+        metadata.side_effect = OSError("unavailable")
+        assert not _mirror._hf_resumable_one(*args)
+        metadata.side_effect = httpx.ReadTimeout("metadata timed out")
+        assert not _mirror._hf_resumable_one(*args)
+        metadata.side_effect = None
+        metadata.return_value.location = "http://unsafe.example.test/file"
+        assert not _mirror._hf_resumable_one(*args)
+
+
+def test_hf_resumable_keeps_partial_after_transport_error(tmp_path: Path):
+    filename = "model.safetensors"
+    repo_root = tmp_path / "models--owner--repo"
+    sidecar = repo_root / ".rapid-mlx-mirror"
+    part = sidecar / f"{_mirror._sidecar_key_for(filename)}.part"
+    part.parent.mkdir(parents=True)
+    part.write_bytes(b"a" * 40)
+    target = repo_root / "snapshots" / ("a" * 40) / filename
+    location = "https://cdn.example.test/model.safetensors"
+    router = _UrlRouter()
+    router.add(location, urllib.error.URLError("connection reset"))
+    with (
+        patch("huggingface_hub.file_download.get_hf_file_metadata") as metadata,
+        patch("urllib.request.urlopen", side_effect=router),
+    ):
+        metadata.return_value.location = location
+        assert not _mirror._hf_resumable_one(
+            "owner/repo",
+            filename,
+            "a" * 40,
+            target,
+            100,
+            "a" * 64,
+            None,
+            sidecar,
+            repo_root,
+            None,
+        )
+    assert part.read_bytes() == b"a" * 40
+    assert router.requests[0]["headers"]["Range"] == "bytes=40-"
 
 
 # ---------------------------------------------------------------------------
@@ -652,7 +854,8 @@ def test_resume_sends_range_header_for_partial_part_file(
     repo_id = "mlx-community/Qwen3-0.6B-4bit"
     revision = "cafe" * 10
     # Single 200-byte file. We'll pre-create a 50-byte .part on disk.
-    files = [("model.safetensors", 200)]
+    # The blob id covers the whole resumed file: prefix + suffix.
+    files = [("model.safetensors", 200, None, _git_oid(b"a" * 50 + b"b" * 150))]
     catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
 
     # Pre-stage the partial file at the sidecar temp path the
@@ -1212,7 +1415,10 @@ def test_part_tempfile_does_not_collide_with_dot_part_repo_asset(
     # legitimate assets — pathological but valid. If our temp file
     # were ``foo.bin`` + ``.part``, the two workers would race over
     # the same temp path.
-    files = [("foo.bin", 100), ("foo.bin.part", 50)]
+    files = [
+        ("foo.bin", 100, None, _git_oid(b"X" * 100)),
+        ("foo.bin.part", 50, None, _git_oid(b"Y" * 50)),
+    ]
     catalog = _catalog_payload([("weird-repo", repo_id, "mirrored")])
 
     router = _UrlRouter()
@@ -1614,7 +1820,12 @@ def test_r2_empty_response_without_expected_size_falls_back_to_hf(
     # ``model.safetensors.index.json`` — picked deliberately to match
     # the user-reported regression filename. HF's ``model_info`` doesn't
     # expose a size for it (passed as None here).
-    files = [("model.safetensors.index.json", None), ("config.json", 100)]
+    # Its blob id is listed, so the mirror IS tried and its empty body must
+    # be refused on the no-size guard (not merely skipped for lack of proof).
+    files = [
+        ("model.safetensors.index.json", None, None, _git_oid(b'{"metadata":{}}')),
+        ("config.json", 100),
+    ]
     catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
 
     router = _UrlRouter()
@@ -1682,6 +1893,9 @@ def test_r2_empty_response_without_expected_size_falls_back_to_hf(
     # And the real bytes landed on disk.
     snap = tmp_path / "models--mlx-community--Qwen3-0.6B-4bit" / "snapshots" / revision
     assert (snap / "model.safetensors.index.json").read_bytes() == b'{"metadata":{}}'
+    assert any(
+        r["url"].endswith("/model.safetensors.index.json") for r in router.requests
+    ), "the mirror must have been tried (and refused) for the index.json"
 
 
 def test_r2_empty_response_with_expected_size_still_falls_back_via_size_check(
@@ -1877,10 +2091,12 @@ def test_custom_mirror_catalog_4xx_uses_direct_layout(
 # ---------------------------------------------------------------------------
 
 
-def test_non_default_revision_skips_mirror_entirely(
+def test_moving_non_default_revision_skips_mirror_entirely(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
+    """A branch or tag name can move, so only an exact commit SHA may use the
+    mirror (see ``test_mirror_pinned_revision.py``); anything else bails."""
     repo_id = "mlx-community/Qwen3-0.6B-4bit"
 
     router = _UrlRouter()
@@ -1893,7 +2109,7 @@ def test_non_default_revision_skips_mirror_entirely(
         patch("huggingface_hub.hf_hub_download") as hf_mock,
     ):
         ok = _mirror.download_with_mirror_fallback(
-            repo_id, cache_dir=tmp_path, revision="abcd" * 10
+            repo_id, cache_dir=tmp_path, revision="release-2026"
         )
 
     assert ok is False
@@ -2224,7 +2440,7 @@ def test_cached_symlink_escaping_repo_root_is_rejected(
     """
     repo_id = "mlx-community/Qwen3-0.6B-4bit"
     revision = "1234" * 10
-    files = [("config.json", 100)]
+    files = [("config.json", 100, None, _git_oid(b"R" * 100))]
     catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
 
     # Outside-the-repo file with the same expected size.
@@ -2264,8 +2480,8 @@ def test_cached_symlink_escaping_repo_root_is_rejected(
 
     assert ok
     # The symlink was dropped — the file at the path is now the real
-    # bytes from R2, NOT the outside payload.
-    assert symlink_path.is_symlink() is False
+    # bytes from R2 in the repo's blob store, NOT the outside payload.
+    assert symlink_path.resolve().parent == (snap_dir.parent.parent / "blobs").resolve()
     assert symlink_path.read_bytes() == real_bytes
     # Outside file is untouched (we deleted the symlink, not the
     # target).
@@ -2359,7 +2575,7 @@ def test_sidecar_dir_holds_part_and_lock_not_snapshot(
 ):
     repo_id = "mlx-community/Qwen3-0.6B-4bit"
     revision = "5a1d" * 10
-    files = [("model.safetensors", 200)]
+    files = [("model.safetensors", 200, None, _git_oid(b"X" * 200))]
     catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
 
     snap = tmp_path / "models--mlx-community--Qwen3-0.6B-4bit" / "snapshots" / revision
@@ -2426,7 +2642,7 @@ def test_sidecar_key_collision_safe_with_hidden_repo_files(
         _FakeResponse(200, json.dumps(catalog).encode()),
     )
     payload = b"legit-asset"  # 11 bytes — fix expected size to match
-    files = [(".foo.rapid-mlx-mirror.part", len(payload))]
+    files = [(".foo.rapid-mlx-mirror.part", len(payload), None, _git_oid(payload))]
     router.add(
         "https://models.rapidmlx.com/mlx-community/Hidden-Asset/.foo.rapid-mlx-mirror.part",
         _FakeResponse(200, payload),
@@ -2475,7 +2691,8 @@ def test_cached_symlink_to_refs_main_is_rejected(
 ):
     repo_id = "mlx-community/Qwen3-0.6B-4bit"
     revision = "ab12" * 10  # 40 ASCII chars
-    files = [("config.json", 40)]  # SAME size as the ref file's bytes
+    # SAME size as the ref file's bytes.
+    files = [("config.json", 40, None, _git_oid(b"R" * 40))]
     catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
 
     repo_root = tmp_path / "models--mlx-community--Qwen3-0.6B-4bit"
@@ -2514,8 +2731,8 @@ def test_cached_symlink_to_refs_main_is_rejected(
 
     assert ok
     # The intra-cache symlink was rejected (not under blobs/) and the
-    # real bytes were re-downloaded from R2.
-    assert sym.is_symlink() is False
+    # real bytes were re-downloaded from R2 into the blob store.
+    assert sym.resolve().parent == (repo_root / "blobs").resolve()
     assert sym.read_bytes() == real_bytes
     # ``refs/main`` itself was untouched until our final pin.
     assert hf_mock.call_count == 0

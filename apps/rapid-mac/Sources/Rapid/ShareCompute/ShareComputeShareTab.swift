@@ -63,7 +63,7 @@ struct ShareComputeRelayStatusBar: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     ShareComputeEyebrow(
-                        text: "QuickSilver relay",
+                        text: String(localized: "QuickSilver relay"),
                         tone: RapidTheme.bandInkSecondary,
                         size: 11
                     )
@@ -234,7 +234,7 @@ struct ShareComputeShareTab: View {
             HStack(spacing: 9) {
                 // Paper: 11pt on the desktop board, 10pt narrow.
                 ShareComputeEyebrow(
-                    text: "Model to serve",
+                    text: String(localized: "Model to serve"),
                     tone: RapidTheme.bandInkSecondary,
                     size: isNarrow ? 10 : 11
                 )

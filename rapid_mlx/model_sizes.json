@@ -4,13 +4,14 @@
     "Anes1032/Wan2.2-I2V-A14B-mlx-q8": 42681013381,
     "Anes1032/Wan2.2-TI2V-5B-mlx-q8": 19580244943,
     "Jackrong/MLX-Qwopus3.5-27B-v3-4bit": 15153228040,
-    "Jackrong/MLX-Qwopus3.5-27B-v3-8bit": null,
     "Jackrong/MLX-Qwopus3.5-9B-v3-4bit": 5058235850,
     "LiquidAI/LFM2.5-2.6B-MLX": 1601103345,
     "MrMofer/ltx-2.5-mlx-q8": 67695751883,
     "OsaurusAI/Qwen-Image-Edit-mflux-q8": 37472689129,
     "Qwen/Qwen-Image-2.1": 33131596301,
     "Runpod/FLUX.2-klein-4B-mflux-4bit": 4619695783,
+    "TensorFold/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit": 18544210829,
+    "TensorFold/Qwen3.8-Flash-Next-MLX-4bit-MTP": 113233012767,
     "Vontra/DeepSeek-V4-Flash-0731-MXFP4-MLX": 167094577743,
     "Vontra/GLM-5.3-Flash-MLX-4bit-MTP": 181741731388,
     "Vontra/MiMo-V2.6-Flash-RL-MLX-4bit-MTP": 171652934411,
@@ -160,6 +161,8 @@
     "mlx-community/chatterbox-turbo-fp16": 2987618173,
     "mlx-community/diffusiongemma-26B-A4B-it-4bit": 16575453264,
     "mlx-community/diffusiongemma-26B-A4B-it-8bit": 28004961995,
+    "mlx-community/embeddinggemma-2-4bit": 1130720875,
+    "mlx-community/embeddinggemma-2-bf16": 1521217601,
     "mlx-community/embeddinggemma-300m-6bit": 289365128,
     "mlx-community/embeddinggemma-300m-8bit": 366239122,
     "mlx-community/gemma-3-12b-it-qat-4bit": 8068024886,
@@ -242,6 +245,6 @@
     "unsloth/Qwen3.6-27B-UD-MLX-4bit": 26210992727,
     "unsloth/Qwen3.6-27B-UD-MLX-6bit": 30522606211,
     "unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit": 21655301364,
-    "windowsxp811203/Qwen3.8-27B-Abliterated-MLX-MTP": 16998733375
+    "windowsxp811203/Qwen3.8-27B-Abliterated-MLX-oQ4e-mtp": 16998733375
   }
 }

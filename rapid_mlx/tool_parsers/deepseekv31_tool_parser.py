@@ -38,7 +38,6 @@ parallel calls.
 """
 
 import logging
-import re
 import uuid
 from collections.abc import Sequence
 from typing import Any
@@ -79,25 +78,8 @@ class DeepSeekV31ToolParser(ToolParser):
 
     def __init__(self, tokenizer=None):
         super().__init__(tokenizer)
-
-        self.current_tool_name_sent: bool = False
-        self.streamed_args_for_tool: list[str] = []
-
-        # V3.1 streaming regexes — capture the ``NAME<sep>ARGS`` skeleton
-        # in the open block as the model streams in.
-        self.stream_tool_call_portion_regex = re.compile(
-            r"(?P<function_name>.*)<｜tool▁sep｜>(?P<function_arguments>.*)",
-            re.DOTALL,
-        )
-        self.stream_tool_call_name_regex = re.compile(
-            r"(?P<function_name>.*)<｜tool▁sep｜>"
-        )
-
-        # Token IDs for streaming (graceful fallback if absent)
-        self.tool_calls_start_token_id = self.vocab.get(self.TOOL_CALLS_START)
-        self.tool_calls_end_token_id = self.vocab.get(self.TOOL_CALLS_END)
-        self.tool_call_start_token_id = self.vocab.get(self.TOOL_CALL_START)
-        self.tool_call_end_token_id = self.vocab.get(self.TOOL_CALL_END)
+        self._streamed_call_count = 0
+        self._streamed_header_count = 0
 
     # -----------------------------------------------------------------
     # Block-wise scanner.
@@ -240,8 +222,21 @@ class DeepSeekV31ToolParser(ToolParser):
         )
 
     # -----------------------------------------------------------------
-    # Streaming (V3.1 delta machine — unchanged from original).
+    # Streaming. Completed blocks are emitted with their final argument
+    # bytes; a split control token is never copied into arguments.
     # -----------------------------------------------------------------
+    @classmethod
+    def _safe_content_prefix(cls, text: str) -> str:
+        marker = cls.TOOL_CALLS_START
+        hold = max(
+            (n for n in range(1, len(marker)) if text.endswith(marker[:n])),
+            default=0,
+        )
+        return text[: len(text) - hold] if hold else text
+
+    def flush_held_content(self, full_text: str) -> str:
+        return full_text[len(self._safe_content_prefix(full_text)) :]
+
     def extract_tool_calls_streaming(
         self,
         previous_text: str,
@@ -253,176 +248,77 @@ class DeepSeekV31ToolParser(ToolParser):
         request: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         if not previous_text:
-            self.current_tool_name_sent = False
-            self.streamed_args_for_tool = []
-            self.current_tool_id = -1
-            self.prev_tool_call_arr = []
+            self._streamed_call_count = 0
+            self._streamed_header_count = 0
 
-        current_token_ids = current_token_ids or []
-        previous_token_ids = previous_token_ids or []
-        delta_token_ids = delta_token_ids or []
+        if self.TOOL_CALLS_START not in current_text:
+            current_safe = self._safe_content_prefix(current_text)
+            previous_safe = self._safe_content_prefix(previous_text)
+            content = current_safe[len(previous_safe) :]
+            return {"content": content} if content else None
 
-        has_tool_start = (
-            self.tool_calls_start_token_id is not None
-            and self.tool_calls_start_token_id in current_token_ids
-        ) or self.TOOL_CALLS_START in current_text
-
-        if not has_tool_start:
-            return {"content": delta_text}
-
-        delta_text = delta_text.replace(self.TOOL_CALLS_START, "").replace(
-            self.TOOL_CALLS_END, ""
-        )
-
-        try:
-            prev_tool_start_count = previous_text.count(self.TOOL_CALL_START)
-            prev_tool_end_count = previous_text.count(self.TOOL_CALL_END)
-            cur_tool_start_count = current_text.count(self.TOOL_CALL_START)
-            cur_tool_end_count = current_text.count(self.TOOL_CALL_END)
-
-            tool_call_portion = None
-
-            if (
-                cur_tool_start_count == cur_tool_end_count
-                and prev_tool_end_count == cur_tool_end_count
-                and self.TOOL_CALL_END not in delta_text
-            ):
-                return {"content": delta_text}
-
-            if self.TOOL_CALL_END in delta_text:
-                full_text = current_text
-                tool_call_portion = (
-                    full_text.split(self.TOOL_CALL_START)[-1]
-                    .split(self.TOOL_CALL_END)[0]
-                    .rstrip()
+        result = self.extract_tool_calls(current_text, request)
+        count = len(result.tool_calls) if result.tools_called else 0
+        already = getattr(self, "_streamed_call_count", 0)
+        calls = []
+        for index, call in enumerate(result.tool_calls[already:], start=already):
+            if index < self._streamed_header_count:
+                calls.append(
+                    {"index": index, "function": {"arguments": call["arguments"]}}
                 )
-                delta_text = delta_text.split(self.TOOL_CALL_END)[0].rstrip()
-
-            if (
-                cur_tool_start_count > cur_tool_end_count
-                and cur_tool_start_count > prev_tool_start_count
-            ):
-                if len(delta_text) > 1:
-                    tool_call_portion = current_text.split(self.TOOL_CALL_START)[-1]
-                else:
-                    tool_call_portion = None
-
-                self.current_tool_id += 1
-                self.current_tool_name_sent = False
-                self.streamed_args_for_tool.append("")
-
-            elif (
-                cur_tool_start_count > cur_tool_end_count
-                and cur_tool_start_count == prev_tool_start_count
-            ):
-                tool_call_portion = current_text.split(self.TOOL_CALL_START)[-1]
-
-            elif (
-                cur_tool_start_count == cur_tool_end_count
-                and cur_tool_end_count >= prev_tool_end_count
-            ):
-                if not self.prev_tool_call_arr or self.current_tool_id >= len(
-                    self.prev_tool_call_arr
-                ):
-                    return None
-                diff = self.prev_tool_call_arr[self.current_tool_id].get("arguments")
-                if diff and '"}' in delta_text:
-                    end_loc = delta_text.rindex('"}')
-                    diff = delta_text[:end_loc] + '"}'
-                    self.streamed_args_for_tool[self.current_tool_id] += diff
-                    return {
-                        "tool_calls": [
-                            {
-                                "index": self.current_tool_id,
-                                "function": {"arguments": diff},
-                            }
-                        ]
-                    }
-                return None
             else:
-                text = delta_text.replace(self.TOOL_CALL_START, "").replace(
-                    self.TOOL_CALL_END, ""
+                calls.append(
+                    {
+                        "index": index,
+                        "id": call["id"],
+                        "type": "function",
+                        "function": {
+                            "name": call["name"],
+                            "arguments": call["arguments"],
+                        },
+                    }
                 )
-                return {"content": text} if text else None
+        self._streamed_call_count = count
 
-            current_tool_call: dict = {}
-            if tool_call_portion:
-                m = self.stream_tool_call_portion_regex.match(tool_call_portion)
-                if m:
-                    current_tool_call["name"] = m.group("function_name")
-                    current_tool_call["arguments"] = m.group("function_arguments")
-                else:
-                    m2 = self.stream_tool_call_name_regex.match(tool_call_portion)
-                    if m2:
-                        current_tool_call["name"] = m2.group("function_name")
-                        current_tool_call["arguments"] = ""
-                    else:
-                        return None
-
-            if not self.current_tool_name_sent:
-                if not current_tool_call:
-                    return None
-                func_name = current_tool_call.get("name")
-                if func_name:
-                    self.current_tool_name_sent = True
-                    return {
-                        "tool_calls": [
-                            {
-                                "index": self.current_tool_id,
-                                "id": _generate_tool_id(),
-                                "type": "function",
-                                "function": {"name": func_name, "arguments": ""},
-                            }
-                        ]
-                    }
-                return None
-
-            if tool_call_portion is None:
-                return None
-
-            if len(self.prev_tool_call_arr) <= self.current_tool_id:
-                self.prev_tool_call_arr.append({})
-
-            prev_arguments = self.prev_tool_call_arr[self.current_tool_id].get(
-                "arguments"
-            )
-            cur_arguments = current_tool_call.get("arguments")
-
-            delta = None
-            if not cur_arguments and not prev_arguments:
-                delta = None
-            elif cur_arguments and not prev_arguments:
-                delta = {
-                    "tool_calls": [
-                        {
-                            "index": self.current_tool_id,
-                            "function": {"arguments": cur_arguments},
-                        }
-                    ]
-                }
-                self.streamed_args_for_tool[self.current_tool_id] = cur_arguments
-            elif cur_arguments and prev_arguments:
-                if len(cur_arguments) > len(
-                    prev_arguments
-                ) and cur_arguments.startswith(prev_arguments):
-                    diff = cur_arguments[len(prev_arguments) :]
-                    delta = {
-                        "tool_calls": [
-                            {
-                                "index": self.current_tool_id,
-                                "function": {"arguments": diff},
-                            }
-                        ]
-                    }
-                    self.streamed_args_for_tool[self.current_tool_id] = cur_arguments
-
-            if self.current_tool_id == len(self.prev_tool_call_arr) - 1:
-                self.prev_tool_call_arr[self.current_tool_id] = current_tool_call
-            else:
-                self.prev_tool_call_arr.append(current_tool_call)
-
-            return delta
-
-        except Exception:
-            logger.exception("Error trying to handle streaming tool call.")
+        # Anchor an unfinished call as soon as its name is known. The service
+        # has a 64 KiB limit for text held before the first tool delta; a
+        # complete but larger JSON body must not be released as prose.
+        bounds = self._envelope_bounds(current_text)
+        if bounds is not None and self.TOOL_CALLS_END not in current_text[bounds[0] :]:
+            position, inner_end = bounds
+            while position < inner_end:
+                opener = current_text.find(self.TOOL_CALL_START, position, inner_end)
+                if opener < 0:
+                    break
+                name_start = opener + len(self.TOOL_CALL_START)
+                closer = current_text.find(self.TOOL_CALL_END, name_start, inner_end)
+                if closer >= 0:
+                    position = closer + len(self.TOOL_CALL_END)
+                    continue
+                # This is the first unfinished structural block, so any
+                # opener inside its JSON body is argument text, not a name.
+                if self._streamed_header_count <= count:
+                    separator = current_text.find(self.TOOL_SEP, name_start, inner_end)
+                    if separator >= 0:
+                        name = current_text[name_start:separator].strip()
+                        if name:
+                            calls.append(
+                                {
+                                    "index": count,
+                                    "id": _generate_tool_id(),
+                                    "type": "function",
+                                    "function": {"name": name, "arguments": ""},
+                                }
+                            )
+                            self._streamed_header_count = count + 1
+                break
+        if not calls:
             return None
+        output: dict[str, Any] = {"tool_calls": calls}
+        if already == 0:
+            prefix = current_text[: current_text.find(self.TOOL_CALLS_START)]
+            previous_safe = self._safe_content_prefix(previous_text)
+            content = prefix[len(previous_safe) :]
+            if content:
+                output["content"] = content
+        return output

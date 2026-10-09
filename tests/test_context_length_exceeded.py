@@ -743,6 +743,47 @@ def test_serial_inference_uses_the_same_explicit_window():
         reset_config()
 
 
+def test_serial_inference_can_enforce_the_model_window_without_a_flag():
+    from fastapi import HTTPException
+
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.service.helpers import enforce_rendered_context_length
+
+    reset_config()
+    try:
+        model = _StubModel(args=_StubArgs(max_position_embeddings=512))
+        tokenizer = _StubTokenizer(chars_per_token=4)
+        # Off by default: no flag, no opt-in, nothing is counted.
+        assert enforce_rendered_context_length(model, tokenizer, "x" * 4096, 9) == 9
+        assert (
+            enforce_rendered_context_length(
+                model, tokenizer, "x" * 200, 10_000_000, model_window=True
+            )
+            == 462
+        )
+        with pytest.raises(HTTPException) as excinfo:
+            enforce_rendered_context_length(
+                model, tokenizer, "x" * 4096, 1, model_window=True
+            )
+        assert excinfo.value.detail["error"]["code"] == "context_length_exceeded"
+        # A prompt that cannot be counted is only fatal for an explicit window.
+        assert (
+            enforce_rendered_context_length(
+                model, object(), "prompt", 10, model_window=True
+            )
+            == 10
+        )
+        # ... and the reply is still capped at the model's window.
+        assert (
+            enforce_rendered_context_length(
+                model, object(), "prompt", 10_000_000, model_window=True
+            )
+            == 512
+        )
+    finally:
+        reset_config()
+
+
 def test_serial_inference_rejects_unaccountable_prompt():
     from fastapi import HTTPException
 
@@ -981,11 +1022,12 @@ def test_enforce_over_cap_names_the_remedy_for_a_native_window():
     assert err["code"] == "context_length_exceeded"
     assert "reduce the length of the messages" in err["message"]
     assert "--context-length" not in err["message"]  # native window: no flag
-    assert err["message"] == (
+    assert err["message"].startswith(
         "This model's maximum context length is 2048 tokens. However, your "
         "prompt contains 3000 tokens, leaving no room for generation. "
         "Please reduce the length of the messages."
-    )  # byte-identical to origin/main
+    )  # origin/main's classifier-compatible lead
+    assert "Start a new session or compact" in err["message"]
 
 
 def test_enforce_over_cap_attributes_operator_window_to_the_flag():

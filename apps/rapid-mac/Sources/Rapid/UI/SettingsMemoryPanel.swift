@@ -13,8 +13,8 @@ struct SettingsMemoryPanel: View {
         @Bindable var store = memoryStore
         VStack(alignment: .leading, spacing: RapidTheme.Space.xl) {
             SectionHeader(
-                "Memory",
-                subtitle: "The assistant learns your preferences across conversations. It never sends data off this Mac.",
+                String(localized: "Memory"),
+                subtitle: String(localized: "The assistant learns your preferences across conversations. It never sends data off this Mac."),
                 emphasis: .page
             )
 
@@ -35,7 +35,9 @@ struct SettingsMemoryPanel: View {
 
             if memoryStore.isEnabled && !memoryStore.entries.isEmpty {
                 HStack {
-                    Text("\(memoryStore.entries.count) saved memor\(memoryStore.entries.count == 1 ? "y" : "ies")")
+                    Text(memoryStore.entries.count == 1
+                        ? String(localized: "1 saved memory")
+                        : String(localized: "\(memoryStore.entries.count) saved memories"))
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                     Spacer()

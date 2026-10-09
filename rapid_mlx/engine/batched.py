@@ -26,7 +26,7 @@ from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, replace
 from typing import Any
 
-from ..api.errors import GuidedGenerationCancelledError
+from ..api.errors import GuidedGenerationCancelledError, GuidedTokenLimitError
 from ..api.tool_calling import convert_tools_for_template
 from ..api.utils import (
     clean_output_text,
@@ -36,6 +36,7 @@ from ..api.utils import (
 )
 from ..output_router import Channel, OutputRouter
 from ..prompt_host_cache import PromptHostCache
+from ..prompt_token_reuse import added_token_markers, encode_sharing_head
 from ..utils.chat_template import apply_chat_template as shared_apply_chat_template
 from .base import BaseEngine, GenerationOutput
 
@@ -2598,6 +2599,23 @@ class BatchedEngine(BaseEngine):
             return [*prompt_ids, *suffix_ids], suffix_ids
         return prompt + "".join(_HARMONY_NO_THINKING_SUFFIX_TOKENS), suffix_ids
 
+    def encode_prompt_text(self, prompt: str) -> list[int] | None:
+        """Tokenize a rendered prompt exactly as the text scheduler will.
+
+        Delegates to the scheduler's host-cached encoder so every caller that
+        tokenizes the same rendered prompt for one request (context-length
+        guard, prefix-boundary probe, admission) shares a single encode.
+        Returns ``None`` when there is no text scheduler; callers then keep
+        their own tokenizer call unchanged.
+        """
+        scheduler = getattr(
+            getattr(getattr(self, "_engine", None), "engine", None), "scheduler", None
+        )
+        encode = getattr(scheduler, "_encode_prompt_string", None)
+        if callable(encode):
+            return list(encode(prompt))
+        return None
+
     def build_prompt(
         self,
         messages: list[dict[str, Any]],
@@ -3034,6 +3052,7 @@ class BatchedEngine(BaseEngine):
             matched_stop=getattr(output, "matched_stop", None),
             spec_decode_metrics=getattr(output, "spec_decode_metrics", None),
             prompt_compression=getattr(output, "prompt_compression", None),
+            timing_metrics=getattr(output, "timing_metrics", None),
         )
 
     async def stream_generate(
@@ -3188,6 +3207,7 @@ class BatchedEngine(BaseEngine):
                     # stop string for the Anthropic adapter.
                     matched_stop=getattr(output, "matched_stop", None),
                     spec_decode_metrics=getattr(output, "spec_decode_metrics", None),
+                    timing_metrics=getattr(output, "timing_metrics", None),
                 )
             return
 
@@ -3293,6 +3313,7 @@ class BatchedEngine(BaseEngine):
                     matched_stop=getattr(output, "matched_stop", None),
                     spec_decode_metrics=getattr(output, "spec_decode_metrics", None),
                     prompt_compression=getattr(output, "prompt_compression", None),
+                    timing_metrics=getattr(output, "timing_metrics", None),
                 )
         finally:
             # Best-effort defensive abort. Codex r2 P1 #2 concern: this
@@ -3585,11 +3606,39 @@ class BatchedEngine(BaseEngine):
             if hasattr(tokenizer, "tokenizer"):
                 tokenizer = tokenizer.tokenizer
 
-            real_tokens = (
-                list(real_prompt)
-                if isinstance(real_prompt, list)
-                else tokenizer.encode(real_prompt)
-            )
+            # The scheduler tokenizes this exact string next; going through
+            # its host-cached encoder lets that call (and the route's
+            # context-length count before it) reuse one encode.
+            real_text: str | None
+            if isinstance(real_prompt, str):
+                real_text = real_prompt
+                encoded = self.encode_prompt_text(real_prompt)
+                real_tokens = (
+                    encoded if encoded is not None else tokenizer.encode(real_prompt)
+                )
+            else:
+                real_text = None
+                real_tokens = list(real_prompt)
+            markers = () if real_text is None else added_token_markers(tokenizer)
+
+            def encode_variant(text: str) -> list[int]:
+                # Variants share all but their last message or two with the
+                # real prompt; re-encode only the differing tail when that
+                # is provably equivalent, else encode in full as before.
+                reused = (
+                    None
+                    if real_text is None
+                    else encode_sharing_head(
+                        real_text,
+                        real_tokens,
+                        text,
+                        encode_tail=lambda tail: tokenizer.encode(
+                            tail, add_special_tokens=False
+                        ),
+                        markers=markers,
+                    )
+                )
+                return reused if reused is not None else tokenizer.encode(text)
 
             if transient_message_start is not None:
                 future_prompt = self._apply_chat_template(
@@ -3605,7 +3654,7 @@ class BatchedEngine(BaseEngine):
                     enable_thinking=enable_thinking,
                     chat_template_kwargs=chat_template_kwargs,
                 )
-                future_tokens = tokenizer.encode(future_prompt)
+                future_tokens = encode_variant(future_prompt)
                 transient_lcp = 0
                 for real_token, future_token in zip(real_tokens, future_tokens):
                     if real_token != future_token:
@@ -3634,8 +3683,8 @@ class BatchedEngine(BaseEngine):
                 chat_template_kwargs=chat_template_kwargs,
             )
 
-            stable_tokens = tokenizer.encode(stable_prompt)
-            next_turn_tokens = tokenizer.encode(next_turn_prompt)
+            stable_tokens = encode_variant(stable_prompt)
+            next_turn_tokens = encode_variant(next_turn_prompt)
             stable_lcp = 0
             for real_token, stable_token in zip(real_tokens, stable_tokens):
                 if real_token != stable_token:
@@ -3670,7 +3719,7 @@ class BatchedEngine(BaseEngine):
                 chat_template_kwargs=chat_template_kwargs,
             )
 
-            dummy_tokens = tokenizer.encode(dummy_prompt)
+            dummy_tokens = encode_variant(dummy_prompt)
 
             # Find LCP — the point where the two diverge is the boundary
             lcp = 0
@@ -3960,6 +4009,7 @@ class BatchedEngine(BaseEngine):
             matched_stop=source.matched_stop,
             spec_decode_metrics=source.spec_decode_metrics,
             prompt_compression=source.prompt_compression,
+            timing_metrics=source.timing_metrics if finished else None,
         )
 
     def _routed_finish_sentinel(self, source: GenerationOutput) -> GenerationOutput:
@@ -3980,6 +4030,7 @@ class BatchedEngine(BaseEngine):
             matched_stop=source.matched_stop,
             spec_decode_metrics=source.spec_decode_metrics,
             prompt_compression=source.prompt_compression,
+            timing_metrics=source.timing_metrics,
         )
 
     def _finalize_output_router(
@@ -4115,6 +4166,7 @@ class BatchedEngine(BaseEngine):
                         routed_outputs[-1],
                         finished=True,
                         finish_reason=output.finish_reason,
+                        timing_metrics=output.timing_metrics,
                     )
                 else:
                     routed_outputs.append(finalized)
@@ -4908,13 +4960,11 @@ class BatchedEngine(BaseEngine):
                 temperature=temperature,
                 should_abort=should_abort,
             )
-        except GuidedGenerationCancelledError:
+        except (GuidedGenerationCancelledError, GuidedTokenLimitError):
             raise
         except Exception as e:
-            # ``generate_json`` already degrades every failure — compile-reject
-            # (structural validity is settled at the route boundary) and
-            # transient guided failure alike — to ``None``. This stays only as a
-            # last-resort guard for a wiring failure in the setup above.
+            # ``generate_json`` degrades operational decode failures to
+            # ``None``. This remains a guard for generator setup failures.
             logger.error(f"Guided generation error: {e}")
             return None
 

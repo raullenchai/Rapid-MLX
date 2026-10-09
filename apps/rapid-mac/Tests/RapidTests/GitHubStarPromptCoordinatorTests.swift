@@ -250,6 +250,31 @@ struct GitHubStarPromptCoordinatorTests {
         #expect(clock.now - start < .seconds(3))
     }
 
+    @Test("A timeout stays a timeout when the killed child's exit wins the task group")
+    func ghStarTimeoutKeepsCauseWhenExitWins() async throws {
+        let executable = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rapid-star-timeout-race-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: executable) }
+        try Data("#!/bin/sh\nexec /bin/sleep 30\n".utf8).write(to: executable)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: executable.path
+        )
+
+        await #expect(throws: GitHubStarCLIError.timedOut) {
+            try await GitHubStarCLI.star(
+                GitHubCommunity.repositoryURL,
+                executableURL: executable,
+                timeout: .milliseconds(100),
+                afterTimeoutSignal: {
+                    // Keep the timeout task from winning by returning first;
+                    // the real process-exit waiter must publish its result.
+                    try? await Task.sleep(for: .milliseconds(50))
+                }
+            )
+        }
+    }
+
     @Test("Cancelling a gh star request terminates and reaps its child")
     func ghStarCancellationKillsHungChild() async throws {
         let directory = FileManager.default.temporaryDirectory

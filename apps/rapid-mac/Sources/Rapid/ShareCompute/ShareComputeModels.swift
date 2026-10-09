@@ -35,25 +35,25 @@ struct ShareComputeModel: Identifiable, Hashable, Sendable {
             catalogID: "qwen3.8-27b",
             alias: "qwen3.8-27b-4bit",
             title: "Qwen3.8 27B · 4-bit",
-            detail: "Balanced capacity and memory use"
+            detail: String(localized: "Balanced capacity and memory use")
         ),
         .init(
             catalogID: "qwen3.6-35b",
             alias: "qwen3.6-35b",
             title: "Qwen3.6 35B",
-            detail: "Higher-capacity pool model"
+            detail: String(localized: "Higher-capacity pool model")
         ),
         .init(
             catalogID: "nemotron-3.5-lightning",
             alias: "nemotron-3.5-lightning-30b-4bit",
             title: "Nemotron 3.5 Lightning 30B · 4-bit",
-            detail: "Fast reasoning-focused model"
+            detail: String(localized: "Fast reasoning-focused model")
         ),
         .init(
             catalogID: "glm-5.3-flash",
             alias: "glm5.3-flash-4bit",
             title: "GLM 5.3 Flash · 4-bit",
-            detail: "Highest pool demand · needs 192 GB+ unified memory",
+            detail: String(localized: "Highest pool demand · needs 192 GB+ unified memory"),
             minMemoryGB: 192
         ),
     ]

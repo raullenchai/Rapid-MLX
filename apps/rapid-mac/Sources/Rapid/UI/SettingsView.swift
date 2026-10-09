@@ -112,15 +112,15 @@ struct SettingsView: View {
         var id: String { rawValue }
         var title: String {
             switch self {
-            case .modelManagement: return "Model Management"
-            case .instructions: return "System Prompt"
-            case .memory: return "Memory"
-            case .tools: return "Tools"
-            case .performance: return "Performance"
-            case .experimentalFeatures: return "Experimental"
-            case .appearance: return "Appearance"
-            case .privacy: return "Privacy"
-            case .app: return "App"
+            case .modelManagement: return String(localized: "Model Management")
+            case .instructions: return String(localized: "System Prompt")
+            case .memory: return String(localized: "Memory")
+            case .tools: return String(localized: "Tools")
+            case .performance: return String(localized: "Performance")
+            case .experimentalFeatures: return String(localized: "Experimental")
+            case .appearance: return String(localized: "Appearance")
+            case .privacy: return String(localized: "Privacy")
+            case .app: return String(localized: "App")
             #if DEBUG
             case .developer: return "Developer"
             #endif
@@ -517,15 +517,15 @@ struct SettingsView: View {
         @Bindable var mcpConfig = mcpConfig
         return VStack(alignment: .leading, spacing: RapidTheme.Space.xl) {
             SectionHeader(
-                "Experimental",
-                subtitle: "Opt in to features that are still being validated across supported Macs.",
+                String(localized: "Experimental"),
+                subtitle: String(localized: "Opt in to features that are still being validated across supported Macs."),
                 emphasis: .page
             )
             SettingsSection {
                 Toggle(isOn: $videoGenerationEnabled) {
                     SettingsRowLabel(
-                        title: "Enable Video Generation",
-                        description: "Adds the Video tab; requires Apple silicon and typically 24 GB+ of unified memory, with no downloads or activity until you choose a model."
+                        title: String(localized: "Enable Video Generation"),
+                        description: String(localized: "Adds the Video tab; requires Apple silicon and typically 24 GB+ of unified memory, with no downloads or activity until you choose a model.")
                     )
                 }
                 .toggleStyle(TrailingSettingsToggleStyle())
@@ -533,8 +533,8 @@ struct SettingsView: View {
                 SettingsRowDivider()
                 Toggle(isOn: $computerUseEnabled) {
                     SettingsRowLabel(
-                        title: "Enable Computer Use",
-                        description: "Adds the Computer Use tab; Rapid acts only on a task you choose and previews consequential actions for your approval."
+                        title: String(localized: "Enable Computer Use"),
+                        description: String(localized: "Adds the Computer Use tab; Rapid acts only on a task you choose and previews consequential actions for your approval.")
                     )
                 }
                 .toggleStyle(TrailingSettingsToggleStyle())
@@ -542,8 +542,8 @@ struct SettingsView: View {
                 SettingsRowDivider()
                 Toggle(isOn: $communityBenchmarkEnabled) {
                     SettingsRowLabel(
-                        title: "Enable Benchmark",
-                        description: "Adds the Benchmark tab for measuring models on this Mac. Nothing runs until you start a benchmark."
+                        title: String(localized: "Enable Benchmark"),
+                        description: String(localized: "Adds the Benchmark tab for measuring models on this Mac. Nothing runs until you start a benchmark.")
                     )
                 }
                 .toggleStyle(TrailingSettingsToggleStyle())
@@ -551,8 +551,8 @@ struct SettingsView: View {
                 SettingsRowDivider()
                 Toggle(isOn: $shareComputeEnabled) {
                     SettingsRowLabel(
-                        title: "Enable Share Compute",
-                        description: "Adds the Share Compute tab for contributing this Mac to QuickSilver. Nothing connects, downloads, or runs until you explicitly start sharing."
+                        title: String(localized: "Enable Share Compute"),
+                        description: String(localized: "Adds the Share Compute tab for contributing this Mac to QuickSilver. Nothing connects, downloads, or runs until you explicitly start sharing.")
                     )
                 }
                 .toggleStyle(TrailingSettingsToggleStyle())
@@ -563,8 +563,8 @@ struct SettingsView: View {
                 SettingsRowDivider()
                 Toggle(isOn: $mcpConfig.isEnabled) {
                     SettingsRowLabel(
-                        title: "Enable MCP Connectors",
-                        description: "Adds tools and data from MCP servers you configure. Useful for tasks that need external context or actions; it does not improve the model itself and may add latency. Off by default—connector tools ask for approval unless you explicitly allow them."
+                        title: String(localized: "Enable MCP Connectors"),
+                        description: String(localized: "Adds tools and data from MCP servers you configure. Useful for tasks that need external context or actions; it does not improve the model itself and may add latency. Off by default—connector tools ask for approval unless you explicitly allow them.")
                     )
                 }
                 .toggleStyle(TrailingSettingsToggleStyle())
@@ -583,19 +583,19 @@ struct SettingsView: View {
         @Bindable var config = customInstructions
         return VStack(alignment: .leading, spacing: RapidTheme.Space.xl) {
             SectionHeader(
-                "System Prompt",
-                subtitle: "Sent as a system message with every conversation. Conversation prompts can override it.",
+                String(localized: "System Prompt"),
+                subtitle: String(localized: "Sent as a system message with every conversation. Conversation prompts can override it."),
                 emphasis: .page
             )
             InstructionEditorSection(
-                "Global default",
-                subtitle: "Used when a conversation has no conflicting prompt. Stored only on this Mac.",
+                String(localized: "Global default"),
+                subtitle: String(localized: "Used when a conversation has no conflicting prompt. Stored only on this Mac."),
                 clearEnabled: CustomInstructionsConfig.normalized(config.global) != nil,
                 onClear: { config.global = "" }
             ) {
                 InstructionTextEditor(
                     text: $config.global,
-                    placeholder: "For example: Answer concisely, use plain language, and include code examples when useful.",
+                    placeholder: String(localized: "For example: Answer concisely, use plain language, and include code examples when useful."),
                     height: 172,
                     accessibilityIdentifier: "Settings.Instructions.GlobalEditor"
                 )
@@ -616,8 +616,8 @@ struct SettingsView: View {
         @Bindable var a = appearance
         return VStack(alignment: .leading, spacing: RapidTheme.Space.xl) {
             SectionHeader(
-                "Appearance",
-                subtitle: "Override the system theme. Auto follows your macOS setting; Light and Dark force the app to stay there regardless of system changes.",
+                String(localized: "Appearance"),
+                subtitle: String(localized: "Override the system theme. Auto follows your macOS setting; Light and Dark force the app to stay there regardless of system changes."),
                 emphasis: .page
             )
             SettingsSection {
@@ -640,16 +640,16 @@ struct SettingsView: View {
     private var privacyPanel: some View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.xl) {
             SectionHeader(
-                "Privacy",
-                subtitle: "Rapid-MLX is local-first. Prompts, attachments, and model responses never leave your Mac. Anonymous metadata telemetry is on by default; turn it off here, with rapid-mlx telemetry off, or at https://rapidmlx.com/docs/telemetry.",
+                String(localized: "Privacy"),
+                subtitle: String(localized: "Rapid-MLX is local-first. Prompts, attachments, and model responses never leave your Mac. Anonymous metadata telemetry is on by default; turn it off here, with rapid-mlx telemetry off, or at https://rapidmlx.com/docs/telemetry."),
                 emphasis: .page
             )
 
             SettingsSection {
             Toggle(isOn: telemetryEnabledBinding) {
                 SettingsRowLabel(
-                    title: "Send anonymous usage data",
-                    description: "Versions, Mac hardware tier, public model and feature names, coarse performance, redacted crash diagnostics, and error categories. For each first successful text chat reply, dictation, or generated image, only the milestone name and “Desktop” are sent. This version does not send a vision-reply milestone. Rapid sends these metadata-only events: the app's to rapidmlx.com's telemetry service, the bundled engine's to PostHog Cloud (US)—never your IP or a per-person profile; the app's collector keeps only a coarse country code. Never prompts, responses, attachments, keys, account details, or unredacted user paths."
+                    title: String(localized: "Send anonymous usage data"),
+                    description: String(localized: "Versions, Mac hardware tier, public model and feature names, coarse performance, redacted crash diagnostics, and error categories. For each first successful text chat reply, dictation, or generated image, only the milestone name and “Desktop” are sent. This version does not send a vision-reply milestone. Rapid sends these metadata-only events: the app's to rapidmlx.com's telemetry service, the bundled engine's to PostHog Cloud (US)—never your IP or a per-person profile; the app's collector keeps only a coarse country code. Never prompts, responses, attachments, keys, account details, or unredacted user paths.")
                 )
             }
             .toggleStyle(TrailingSettingsToggleStyle())
@@ -689,8 +689,8 @@ struct SettingsView: View {
             SettingsRowDivider()
 
             SettingsRowLabel(
-                title: "Where the data goes",
-                description: "telemetry.rapidmlx.com — a Cloudflare Worker that strips client IPs before writing to storage. Source is open at github.com/raullenchai/rapidmlx.com under telemetry-worker/."
+                title: String(localized: "Where the data goes"),
+                description: String(localized: "telemetry.rapidmlx.com — a Cloudflare Worker that strips client IPs before writing to storage. Source is open at github.com/raullenchai/rapidmlx.com under telemetry-worker/.")
             )
             }
 
@@ -790,12 +790,12 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.xl) {
             SectionHeader(
                 "Rapid-MLX",
-                subtitle: "Self-update for Rapid-MLX. New releases bundle the latest models, performance improvements, and bug fixes.",
+                subtitle: String(localized: "Self-update for Rapid-MLX. New releases bundle the latest models, performance improvements, and bug fixes."),
                 emphasis: .page
             )
-            SettingsSection("Version") {
+            SettingsSection(String(localized: "Version")) {
                 versionRow(
-                    label: "Installed",
+                    label: String(localized: "Installed"),
                     value: "v\(appUpdater.currentVersion)",
                     monospaced: true
                 )
@@ -814,22 +814,22 @@ struct SettingsView: View {
                    !UpdateChecker.isNewer(appUpdater.currentVersion, than: release.version) {
                     SettingsRowDivider()
                     versionRow(
-                        label: "Latest release",
+                        label: String(localized: "Latest release"),
                         value: "v\(release.version)",
                         monospaced: true
                     )
                 }
             }
 
-            SettingsSection("Updates") {
+            SettingsSection(String(localized: "Updates")) {
                 Toggle(isOn: automaticUpdateBinding) {
                     Text("Automatically download updates")
                 }
                 .accessibilityIdentifier("Settings.App.AutomaticUpdatesToggle")
                     .disabled(!sparkleUpdater.isEnabled)
                     .help(sparkleUpdater.isEnabled
-                          ? "Downloaded updates are installed when Rapid-MLX quits."
-                          : "Automatic updates are enabled in signed release builds.")
+                          ? String(localized: "Downloaded updates are installed when Rapid-MLX quits.")
+                          : String(localized: "Automatic updates are enabled in signed release builds."))
                 SettingsRowDivider()
                 appUpdateActionRow
                 if let release = appUpdater.availableUpdate,
@@ -840,7 +840,7 @@ struct SettingsView: View {
             }
             if let err = appUpdater.lastError {
                 InlineNotice(
-                    message: "Last check failed: \(err)",
+                    message: String(localized: "Last check failed: \(err)"),
                     tone: .warning
                 )
             }
@@ -866,8 +866,8 @@ struct SettingsView: View {
     @ViewBuilder
     private var setupSection: some View {
         SettingsSection(
-            "Setup",
-            subtitle: "Run the guided model setup again. Your settings, conversations, downloaded models, and telemetry choice stay untouched."
+            String(localized: "Setup"),
+            subtitle: String(localized: "Run the guided model setup again. Your settings, conversations, downloaded models, and telemetry choice stay untouched.")
         ) {
             HStack {
                 Spacer(minLength: 0)
@@ -897,8 +897,8 @@ struct SettingsView: View {
         // moves into the section subtitle (where every other panel puts
         // it) and the button keeps its exact original label.
         SettingsSection(
-            "Diagnostics",
-            subtitle: "Save a support report to share if something goes wrong. Includes your app version, Mac model, and recent logs — no prompts, files, or personal data."
+            String(localized: "Diagnostics"),
+            subtitle: String(localized: "Save a support report to share if something goes wrong. Includes your app version, Mac model, and recent logs — no prompts, files, or personal data.")
         ) {
             HStack {
                 Button {
@@ -921,13 +921,13 @@ struct SettingsView: View {
     @ViewBuilder
     private var dockVisibilitySection: some View {
         SettingsSection(
-            "Window",
-            subtitle: "Choose what happens when you close the main window. Rapid-MLX keeps running in the menu bar either way — this only affects whether the Dock icon stays visible."
+            String(localized: "Window"),
+            subtitle: String(localized: "Choose what happens when you close the main window. Rapid-MLX keeps running in the menu bar either way — this only affects whether the Dock icon stays visible.")
         ) {
             Toggle(isOn: hideDockOnCloseBinding) {
                 SettingsRowLabel(
-                    title: "Hide Dock icon when closing window",
-                    description: "On close, Rapid-MLX stays available from the menu bar. Turn off to keep the Dock icon visible; disabling takes effect immediately."
+                    title: String(localized: "Hide Dock icon when closing window"),
+                    description: String(localized: "On close, Rapid-MLX stays available from the menu bar. Turn off to keep the Dock icon visible; disabling takes effect immediately.")
                 )
             }
             .toggleStyle(TrailingSettingsToggleStyle())
@@ -1078,7 +1078,7 @@ struct SettingsView: View {
                 statusLine(
                     symbol: "arrow.up.circle.fill",
                     tint: RapidTheme.statusWorking,
-                    text: "Update available — v\(version)",
+                    text: String(localized: "Update available — v\(version)"),
                     emphasised: true,
                     identifier: "Settings.App.UpdateHeadline"
                 )
@@ -1131,7 +1131,7 @@ struct SettingsView: View {
                 statusLine(
                     symbol: "checkmark.circle.fill",
                     tint: RapidTheme.statusReady,
-                    text: "Up to date — v\(version) is the latest release.",
+                    text: String(localized: "Up to date — v\(version) is the latest release."),
                     identifier: "Settings.App.UpToDate"
                 )
                 Spacer(minLength: RapidTheme.Space.sm)
@@ -1152,7 +1152,7 @@ struct SettingsView: View {
                 statusLine(
                     symbol: "checkmark.circle",
                     tint: RapidTheme.textSecondary,
-                    text: "Up to date — v\(current).",
+                    text: String(localized: "Up to date — v\(current)."),
                     identifier: "Settings.App.AheadOfManifest"
                 )
                 Spacer(minLength: RapidTheme.Space.sm)
@@ -1166,8 +1166,8 @@ struct SettingsView: View {
                     symbol: "questionmark.circle",
                     tint: RapidTheme.textSecondary,
                     text: reason == nil
-                        ? "Update status unknown — press Check for updates."
-                        : "Update status unknown — last check failed.",
+                        ? String(localized: "Update status unknown — press Check for updates.")
+                        : String(localized: "Update status unknown — last check failed."),
                     secondary: true,
                     identifier: "Settings.App.Unknown"
                 )
@@ -1246,7 +1246,7 @@ struct SettingsView: View {
     /// without starting an update.
     private func appReleaseNotesPanel(notes: String) -> some View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
-            SectionHeader("Release notes")
+            SectionHeader(String(localized: "Release notes"))
             ScrollView(.vertical, showsIndicators: true) {
                 Text(notes)
                     .scaledSystemFont(12)
@@ -1325,7 +1325,7 @@ private struct QuickstartBackButton: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> NSButton {
-        let button = NSButton(title: "Back to setup", target: context.coordinator, action: #selector(Coordinator.invoke(_:)))
+        let button = NSButton(title: String(localized: "Back to setup"), target: context.coordinator, action: #selector(Coordinator.invoke(_:)))
         button.bezelStyle = .rounded
         button.image = NSImage(systemSymbolName: "chevron.left", accessibilityDescription: nil)
         button.imagePosition = .imageLeading

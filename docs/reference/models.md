@@ -96,7 +96,7 @@ installed source runtime. Install the exact qualified revision before selecting
 the profile:
 
 ```bash
-python -m pip install "tensorfold @ git+https://github.com/ashhart/TensorFold.git@9cd52ab4daba68ddd09be89be8f23ad43175e821"
+python -m pip install "tensorfold @ git+https://github.com/ashhart/TensorFold.git@cb2ebf0540f42604e2759b2ddef497861e928248"
 ```
 
 This dependency remains an explicit opt-in because it is not available as an
@@ -112,7 +112,7 @@ there is no separate draft-model download. The ordinary
 Install the exact qualified runtime, then select the dedicated alias:
 
 ```bash
-python -m pip install "tensorfold @ git+https://github.com/ashhart/TensorFold.git@c4646171139ee8a3c38103eaa1699dad226ec12b"
+python -m pip install "tensorfold @ git+https://github.com/ashhart/TensorFold.git@cb2ebf0540f42604e2759b2ddef497861e928248"
 rapid-mlx serve glm5.3-flash-tensorfold
 ```
 
@@ -123,6 +123,87 @@ the target and runtime revisions and refuses incompatible artifacts at startup.
 The dedicated alias enables its accelerated backend by default on compatible
 systems. Pass `--no-spec-decode` to opt out; Rapid then uses the normal GLM
 serving path and reports that mode rather than advertising TensorFold as active.
+
+### Experimental Nemotron 3.5 and Qwen3.8 Flash Next accelerated profiles
+
+Two more experimental, text-only profiles run on the same TensorFold runtime.
+Both use the MTP head published with the checkpoint, so there is no separate
+draft-model download, and both leave the ordinary alias untouched.
+
+| Profile | Minimum memory | Ordinary alias |
+|---|---|---|
+| `nemotron-3.5-lightning-tensorfold` | 48 GB | `nemotron-3.5-lightning-30b-4bit` |
+| `qwen3.8-flash-next-tensorfold` | 192 GB | `qwen3.8-flash-next-4bit` |
+
+```bash
+python -m pip install "tensorfold @ git+https://github.com/ashhart/TensorFold.git@cb2ebf0540f42604e2759b2ddef497861e928248"
+rapid-mlx serve nemotron-3.5-lightning-tensorfold
+```
+
+The limits match the GLM profile above: streaming and non-streaming text chat
+work, while tools, images, grammar constraints, and general batching fail
+explicitly. Each profile pins its target and runtime revisions and refuses
+other artifacts at startup. `--no-spec-decode` returns the Nemotron profile to
+the normal serving path. The Flash Next checkpoint loads only in TensorFold,
+so that flag exits with a pointer to `qwen3.8-flash-next-4bit` instead.
+Measurements are in the
+[qualification record](../engineering/performance/2026-10-06-tensorfold-family-profiles-qualification.md).
+
+### Experimental Ternary Bonsai 2 accelerated profile
+
+`bonsai2-27b-tensorfold` is an experimental, text-only profile that pairs
+`prism-ml/Ternary-Bonsai-2-27B-mlx-2bit` with the `z-lab/Qwen3.8-27B-DFlash2`
+draft model on the same TensorFold runtime. It requires 96 GB of unified
+memory and was measured only on an M3 Ultra; on an M4 Pro the same pairing was
+slower than `bonsai2-27b-2bit`, so the floor keeps smaller Macs on the
+ordinary alias.
+
+```bash
+python -m pip install "tensorfold @ git+https://github.com/ashhart/TensorFold.git@cb2ebf0540f42604e2759b2ddef497861e928248"
+rapid-mlx serve bonsai2-27b-tensorfold
+```
+
+Tools, images, grammar constraints, and general batching fail explicitly. The
+alias has no ordinary mode of its own: `--no-spec-decode` exits with a pointer
+to `bonsai2-27b-2bit`, which keeps image input and tool calling. Measurements
+are in the
+[qualification record](../engineering/performance/2026-10-06-tensorfold-bonsai2-qualification.md).
+
+### Experimental Gemma 4 26B accelerated profile
+
+`gemma-4-26b-tensorfold` is an experimental, text-only profile that serves
+`mlx-community/gemma-4-26b-a4b-it-4bit` on the same TensorFold runtime. It
+needs no draft model: the gain comes from TensorFold's Gemma kernels, with its
+suffix lookup as the only speculation. It requires 48 GB of unified memory.
+
+```bash
+python -m pip install "tensorfold @ git+https://github.com/ashhart/TensorFold.git@cb2ebf0540f42604e2759b2ddef497861e928248"
+rapid-mlx serve gemma-4-26b-tensorfold
+```
+
+Tools, images, grammar constraints, and general batching fail explicitly; use
+`gemma-4-26b-4bit` for those. `--no-spec-decode` serves the same checkpoint
+through Rapid's ordinary text engine. Measurements are in the
+[qualification record](../engineering/performance/2026-10-06-tensorfold-gemma4-qualification.md).
+
+### Experimental DeepSeek V4 Flash accelerated profile
+
+`deepseek-v4-flash-tensorfold` is an experimental, text-only profile that
+serves `mlx-community/DeepSeek-V4-Flash-4bit` on the same TensorFold runtime,
+drafting with DeepSeek's DSpark head from
+`TensorFold/DeepSeek-V4-Flash-DSpark-MLX` (a separate download of about
+10 GiB). The weights stay wired at about 151 GiB, so it requires a 256 GB Mac
+and was measured only on an M3 Ultra.
+
+```bash
+python -m pip install "tensorfold @ git+https://github.com/ashhart/TensorFold.git@cb2ebf0540f42604e2759b2ddef497861e928248"
+rapid-mlx serve deepseek-v4-flash-tensorfold
+```
+
+Tools, images, grammar constraints, and general batching fail explicitly; use
+`deepseek-v4-flash-4bit` for tool calling. `--no-spec-decode` serves the same
+checkpoint through Rapid's ordinary text engine. Measurements are in the
+[qualification record](../engineering/performance/2026-10-07-tensorfold-deepseek-v4-flash-qualification.md).
 
 ### Experimental Chat candidate: NeoHorse 1 9B
 
@@ -171,10 +252,9 @@ decoding remains disabled pending separate evidence.
 
 ### Experimental research model: Qwen3.8 27B Abliterated
 
-`qwen3.8-27b-abliterated-4bit` serves the `oQ4e/` Apple-Silicon build of
-[`windowsxp811203/Qwen3.8-27B-Abliterated-MLX-MTP`](https://huggingface.co/windowsxp811203/Qwen3.8-27B-Abliterated-MLX-MTP).
-The alias downloads only that 16.99 GB checkpoint rather than every build in
-the multi-quant repository. It supports text and image input and is deliberately
+`qwen3.8-27b-abliterated-4bit` serves the oQ4e Apple-Silicon build
+[`windowsxp811203/Qwen3.8-27B-Abliterated-MLX-oQ4e-mtp`](https://huggingface.co/windowsxp811203/Qwen3.8-27B-Abliterated-MLX-oQ4e-mtp),
+a 16.99 GB checkpoint. It supports text and image input and is deliberately
 not a Smart/Fast default.
 
 ```bash

@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import base64
 import ipaddress
-import os
 import re
 import sys
 from typing import Literal
@@ -31,6 +30,7 @@ from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.concurrency import run_in_threadpool
 
+from .._env import env_truthy
 from ..computer_use.errors import ComputerUseError
 from ..config import get_config
 from ..cua import service as cua_service
@@ -432,12 +432,7 @@ MAX_OBSERVATION_PNG_BYTES = 4 * 1024 * 1024
 
 def _screenshots_enabled() -> bool:
     """Screenshots are sensitive and require an explicit server opt-in."""
-    return os.getenv("RAPID_MLX_CUA_EXPOSE_SCREENSHOTS", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    return env_truthy("RAPID_MLX_CUA_EXPOSE_SCREENSHOTS")
 
 
 def _service() -> cua_service.CUAService:

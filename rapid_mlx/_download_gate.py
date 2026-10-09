@@ -49,6 +49,8 @@ import subprocess
 import sys
 import threading
 
+from ._env import env_truthy
+
 # File suffixes that contribute to "model weight + tokenizer" footprint.
 # Anything outside this set (e.g. ``.gitattributes``, ``README.md``) is a
 # rounding error and is excluded so the prompt size matches what the user
@@ -119,11 +121,26 @@ class ExternalCacheProbeError(RuntimeError):
     path: str
 
     def user_message(self) -> str:
+        app = {
+            "Apple_Terminal": "Terminal",
+            "iTerm.app": "iTerm",
+            "vscode": "Visual Studio Code",
+            "WarpTerminal": "Warp",
+        }.get(os.environ.get("TERM_PROGRAM", ""), "the app that launched this command")
+        reason = (
+            "Access was denied."
+            if isinstance(self, CacheProbePermissionError)
+            else "The read timed out; check that the volume is connected and responsive."
+        )
         return (
             "Rapid-MLX cannot read the Hugging Face cache on the external "
-            f"volume ({self.path}). Grant this terminal or app access to that "
-            "volume in System Settings → Privacy & Security → Files & Folders, "
-            "then retry."
+            f"volume ({self.path}). {reason}\n"
+            "  If macOS is blocking volume access:\n"
+            "  1. Open System Settings → Privacy & Security → Files & Folders:\n"
+            "     open 'x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders'\n"
+            f"  2. Under {app}, enable Removable Volumes (or accept the Allow prompt).\n"
+            "  3. Run the same rapid-mlx command again in that app.\n"
+            "  Keep the existing cache; this error does not mean the model needs downloading."
         )
 
 
@@ -2163,8 +2180,7 @@ def confirm_or_abort(
     ``sys.exit(1)``. EOF on stdin is treated as Enter (proceed).
     """
     # Env override always wins.
-    env_val = os.environ.get(auto_yes_env, "").strip().lower()
-    if env_val in {"1", "true", "yes"}:
+    if env_truthy(auto_yes_env):
         return True
 
     # Non-interactive: never block; we already burned the user's time

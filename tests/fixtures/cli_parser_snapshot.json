@@ -64,6 +64,21 @@
    "type": null
   },
   {
+   "class": "argparse._StoreTrueAction",
+   "completer": null,
+   "const": true,
+   "default": false,
+   "dest": "disable_version_check",
+   "help": "Do not check for a newer Rapid-MLX release. Top-level only (place it before the subcommand); equivalent to RAPID_MLX_DISABLE_VERSION_CHECK=1 and passed on to servers that chat, start and share launch.",
+   "metavar": null,
+   "nargs": 0,
+   "option_strings": [
+    "--disable-version-check"
+   ],
+   "required": false,
+   "type": null
+  },
+  {
    "choices_help": {
     "agents": "List, configure, and test agent integrations",
     "alias": "Manage user-owned model aliases",
@@ -2120,6 +2135,36 @@
        ],
        "required": false,
        "type": null
+      },
+      {
+       "class": "argparse._StoreTrueAction",
+       "completer": null,
+       "const": true,
+       "default": false,
+       "dest": "disable_disk_caches",
+       "help": "Write no optional caches to disk: no prefix-cache snapshot at shutdown or idle unload (and none loaded at startup), no KV checkpoints, no vision prefix-cache disk tier. Takes precedence over --kv-disk-checkpoint-interval and APC_DISK_ENABLED. Also set by RAPID_MLX_DISABLE_DISK_CACHES=1.",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "--disable-disk-caches"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": null,
+       "dest": "log_file",
+       "help": "Send all server output (logs, tracebacks, native-library messages) to TARGET instead of stderr: a file path (appended), '-' for stdout, /dev/stderr, or /dev/null to discard it. Default: $RAPID_MLX_LOG_FILE, else stderr.",
+       "metavar": "TARGET",
+       "nargs": null,
+       "option_strings": [
+        "--log-file"
+       ],
+       "required": false,
+       "type": null
       }
      ],
      "allow_abbrev": false,
@@ -2152,7 +2197,9 @@
         "response_timeout",
         "mcp_config",
         "mcp_max_rounds",
-        "disable_prefix_cache"
+        "disable_prefix_cache",
+        "disable_disk_caches",
+        "log_file"
        ],
        "title": "options"
       }
@@ -3355,7 +3402,7 @@
        "const": true,
        "default": false,
        "dest": "request",
-       "help": "If the pre-download check refuses a public Hugging Face model (unsupported architecture or GGUF/.bin-only), file a support request without asking. Sends only the repo id, architecture, format and Rapid-MLX version.",
+       "help": "If the pre-download check refuses a public Hugging Face model (unsupported architecture or GGUF/.bin-only), file a support request without asking. Sends only the repo id, architecture, format, failure class and Rapid-MLX version.",
        "metavar": null,
        "nargs": 0,
        "option_strings": [
@@ -3789,6 +3836,36 @@
        ],
        "required": false,
        "type": null
+      },
+      {
+       "class": "argparse._StoreTrueAction",
+       "completer": null,
+       "const": true,
+       "default": false,
+       "dest": "disable_disk_caches",
+       "help": "Write no optional caches to disk: no prefix-cache snapshot at shutdown or idle unload (and none loaded at startup), no KV checkpoints, no vision prefix-cache disk tier. Takes precedence over --kv-disk-checkpoint-interval and APC_DISK_ENABLED. Also set by RAPID_MLX_DISABLE_DISK_CACHES=1.",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "--disable-disk-caches"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": null,
+       "dest": "log_file",
+       "help": "Send all server output (logs, tracebacks, native-library messages) to TARGET instead of stderr: a file path (appended), '-' for stdout, /dev/stderr, or /dev/null to discard it. Default: $RAPID_MLX_LOG_FILE, else stderr.",
+       "metavar": "TARGET",
+       "nargs": null,
+       "option_strings": [
+        "--log-file"
+       ],
+       "required": false,
+       "type": null
       }
      ],
      "allow_abbrev": false,
@@ -3821,7 +3898,9 @@
         "response_timeout",
         "mcp_config",
         "mcp_max_rounds",
-        "disable_prefix_cache"
+        "disable_prefix_cache",
+        "disable_disk_caches",
+        "log_file"
        ],
        "title": "options"
       }
@@ -3960,7 +4039,7 @@
        "const": true,
        "default": false,
        "dest": "request",
-       "help": "If the pre-download check refuses a public Hugging Face model (unsupported architecture or GGUF/.bin-only), file a support request without asking. Sends only the repo id, architecture, format and Rapid-MLX version.",
+       "help": "If the pre-download check refuses a public Hugging Face model (unsupported architecture or GGUF/.bin-only), file a support request without asking. Sends only the repo id, architecture, format, failure class and Rapid-MLX version.",
        "metavar": null,
        "nargs": 0,
        "option_strings": [
@@ -4069,9 +4148,9 @@
        "class": "argparse._StoreAction",
        "completer": null,
        "const": null,
-       "default": "INFO",
+       "default": null,
        "dest": "log_level",
-       "help": "Log level for Python logging and uvicorn (case-insensitive)",
+       "help": "Log level for Python logging and uvicorn (case-insensitive). Default: $RAPID_MLX_LOG_LEVEL, else INFO.",
        "metavar": null,
        "nargs": null,
        "option_strings": [
@@ -4079,6 +4158,21 @@
        ],
        "required": false,
        "type": "rapid_mlx.cli_parser._log_level_choice"
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": null,
+       "dest": "log_file",
+       "help": "Send all server output (logs, tracebacks, native-library messages) to TARGET instead of stderr: a file path (appended), '-' for stdout, /dev/stderr, or /dev/null to discard it. Default: $RAPID_MLX_LOG_FILE, else stderr.",
+       "metavar": "TARGET",
+       "nargs": null,
+       "option_strings": [
+        "--log-file"
+       ],
+       "required": false,
+       "type": null
       },
       {
        "class": "argparse._StoreAction",
@@ -4175,6 +4269,21 @@
        "type": "builtins.int"
       },
       {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": 1024,
+       "dest": "shared_prefix_wait_tokens",
+       "help": "A request sharing at least N uncached prompt tokens with a request that is still prefilling waits for that prompt state instead of recomputing it (default: 1024). 0 disables the wait.",
+       "metavar": "N",
+       "nargs": null,
+       "option_strings": [
+        "--shared-prefix-wait-tokens"
+       ],
+       "required": false,
+       "type": "builtins.int"
+      },
+      {
        "class": "argparse._StoreTrueAction",
        "completer": null,
        "const": true,
@@ -4195,11 +4304,26 @@
        "const": true,
        "default": false,
        "dest": "disable_prefix_cache",
-       "help": "Disable prefix caching",
+       "help": "Disable prefix caching (in memory, and its on-disk snapshot written at shutdown)",
        "metavar": null,
        "nargs": 0,
        "option_strings": [
         "--disable-prefix-cache"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreTrueAction",
+       "completer": null,
+       "const": true,
+       "default": false,
+       "dest": "disable_disk_caches",
+       "help": "Write no optional caches to disk: no prefix-cache snapshot at shutdown or idle unload (and none loaded at startup), no KV checkpoints, no vision prefix-cache disk tier. Takes precedence over --kv-disk-checkpoint-interval and APC_DISK_ENABLED. Also set by RAPID_MLX_DISABLE_DISK_CACHES=1.",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "--disable-disk-caches"
        ],
        "required": false,
        "type": null
@@ -4585,7 +4709,7 @@
        "const": null,
        "default": null,
        "dest": "speculative_config",
-       "help": "vLLM-style speculative decoding JSON config. This frontend parses method/model/num_speculative_tokens now. DFlash requires the rapid-mlx[dflash] extra and is available with '{\"method\":\"dflash\"}', DDTree with '{\"method\":\"ddtree\"}', and MTP with '{\"method\":\"mtp\",\"num_speculative_tokens\":3,\"disable_auto_k\":false,\"continuous_batching\":false,\"allow_dynamic_membership\":false}'. Continuous self-MTP and dynamic membership are default-off. SuffixDecoding is an explicit, workload-specific flag for high prompt/output-overlap traffic and is available with '{\"method\":\"suffix\",\"num_speculative_tokens\":8}'.",
+       "help": "vLLM-style speculative decoding JSON config. This frontend parses method/model/num_speculative_tokens now. DFlash ships in the base install and is available with '{\"method\":\"dflash\"}', DDTree with '{\"method\":\"ddtree\"}', and MTP with '{\"method\":\"mtp\",\"num_speculative_tokens\":3,\"disable_auto_k\":false,\"continuous_batching\":false,\"allow_dynamic_membership\":false}'. Continuous self-MTP and dynamic membership are default-off. SuffixDecoding is an explicit, workload-specific flag for high prompt/output-overlap traffic and is available with '{\"method\":\"suffix\",\"num_speculative_tokens\":8}'.",
        "metavar": null,
        "nargs": null,
        "option_strings": [
@@ -6024,14 +6148,17 @@
         "video_output_dir",
         "listen_fd",
         "log_level",
+        "log_file",
         "max_num_seqs",
         "max_concurrent_requests",
         "prefill_batch_size",
         "completion_batch_size",
         "scheduling_policy",
         "scheduling_max_deferrals",
+        "shared_prefix_wait_tokens",
         "enable_prefix_cache",
         "disable_prefix_cache",
+        "disable_disk_caches",
         "prefix_cache_size",
         "cache_memory_mb",
         "cache_memory_percent",
@@ -7629,6 +7756,36 @@
        "completer": null,
        "const": true,
        "default": false,
+       "dest": "disable_disk_caches",
+       "help": "Write no optional caches to disk: no prefix-cache snapshot at shutdown or idle unload (and none loaded at startup), no KV checkpoints, no vision prefix-cache disk tier. Takes precedence over --kv-disk-checkpoint-interval and APC_DISK_ENABLED. Also set by RAPID_MLX_DISABLE_DISK_CACHES=1.",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "--disable-disk-caches"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": null,
+       "dest": "log_file",
+       "help": "Send all server output (logs, tracebacks, native-library messages) to TARGET instead of stderr: a file path (appended), '-' for stdout, /dev/stderr, or /dev/null to discard it. Default: $RAPID_MLX_LOG_FILE, else stderr.",
+       "metavar": "TARGET",
+       "nargs": null,
+       "option_strings": [
+        "--log-file"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreTrueAction",
+       "completer": null,
+       "const": true,
+       "default": false,
        "dest": "quicksilver",
        "help": "Serve the model to the QuickSilver compute pool instead of publishing a public share URL. First run registers the node with a QuickSilver provider key (qsppk-…) and caches the server-minted node credential; later runs are cache-only.",
        "metavar": null,
@@ -7764,7 +7921,7 @@
      "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
      "defaults": {},
      "description": "Start rapid-mlx serve and open a public Cloudflare-fronted URL on rapidmlx.com so you can use the model from a different device — or share it with a friend. Press Ctrl-C to stop.",
-     "epilog": "serve-flag passthrough:\n  Anything after a literal `--` is forwarded verbatim to the\n  `rapid-mlx serve` that share spawns, so every serve flag works\n  over the tunnel without share re-declaring it. Spec-decode is\n  off by default; opt in per share like this:\n\n    rapid-mlx share hy3-preview-4bit -- \\\n        --force-spec-decode --speculative-config '{\"method\":\"mtp\"}'\n\n  (`--host` / `--api-key` / `--port` / `--listen-fd` /\n  `--log-level` are owned by share and rejected if forwarded.)",
+     "epilog": "serve-flag passthrough:\n  Anything after a literal `--` is forwarded verbatim to the\n  `rapid-mlx serve` that share spawns, so every serve flag works\n  over the tunnel without share re-declaring it. Spec-decode is\n  off by default; opt in per share like this:\n\n    rapid-mlx share hy3-preview-4bit -- \\\n        --force-spec-decode --speculative-config '{\"method\":\"mtp\"}'\n\n  (`--host` / `--api-key` / `--port` / `--listen-fd` /\n  `--log-level` / `--log-file` are owned by share and rejected\n  if forwarded.)",
      "formatter_class": "argparse.RawDescriptionHelpFormatter",
      "groups": [
       {
@@ -7783,6 +7940,8 @@
         "cors_origins",
         "rate_limit",
         "chat_frontend",
+        "disable_disk_caches",
+        "log_file",
         "quicksilver",
         "provider_key",
         "provider_key_stdin",
@@ -7949,6 +8108,36 @@
        ],
        "required": false,
        "type": "builtins.int"
+      },
+      {
+       "class": "argparse._StoreTrueAction",
+       "completer": null,
+       "const": true,
+       "default": false,
+       "dest": "disable_disk_caches",
+       "help": "Write no optional caches to disk: no prefix-cache snapshot at shutdown or idle unload (and none loaded at startup), no KV checkpoints, no vision prefix-cache disk tier. Takes precedence over --kv-disk-checkpoint-interval and APC_DISK_ENABLED. Also set by RAPID_MLX_DISABLE_DISK_CACHES=1.",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "--disable-disk-caches"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": null,
+       "dest": "log_file",
+       "help": "Send all server output (logs, tracebacks, native-library messages) to TARGET instead of stderr: a file path (appended), '-' for stdout, /dev/stderr, or /dev/null to discard it. Default: $RAPID_MLX_LOG_FILE, else stderr.",
+       "metavar": "TARGET",
+       "nargs": null,
+       "option_strings": [
+        "--log-file"
+       ],
+       "required": false,
+       "type": null
       }
      ],
      "allow_abbrev": true,
@@ -7976,7 +8165,9 @@
         "dry_run",
         "yes",
         "no_setup",
-        "ready_timeout"
+        "ready_timeout",
+        "disable_disk_caches",
+        "log_file"
        ],
        "title": "options"
       }
@@ -8008,7 +8199,7 @@
        "const": null,
        "default": "convaiinnovations/laya",
        "dest": "model",
-       "help": "Laya model id/path, CLM public name, or clef/clef-flash",
+       "help": "Laya model id/path, CLM public name, clef/clef-flash, clef-mlx/clef-flash-mlx (native MLX), or decider-2b; the native Clef and Decider backends also take a local checkpoint directory",
        "metavar": null,
        "nargs": "?",
        "option_strings": [],
@@ -8019,7 +8210,9 @@
         "auto",
         "laya",
         "clm",
-        "clef"
+        "clef",
+        "clef-mlx",
+        "decider"
        ],
        "class": "argparse._StoreAction",
        "completer": null,
@@ -8111,7 +8304,7 @@
        "const": null,
        "default": "gpu",
        "dest": "device",
-       "help": "MLX device for Laya/CLM; Metal/MPS device for Clef",
+       "help": "MLX device for Laya/CLM/Decider; Metal/MPS device for Clef",
        "metavar": null,
        "nargs": null,
        "option_strings": [
@@ -8905,7 +9098,8 @@
     "help",
     "version",
     "no_telemetry",
-    "no_banner"
+    "no_banner",
+    "disable_version_check"
    ],
    "title": "options"
   }

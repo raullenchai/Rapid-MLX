@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Your Orders – ValueMart</title>
+<style>
+  body { margin: 0; font: 15px/1.45 -apple-system, Helvetica, Arial, sans-serif; background: #f2f4f7; color: #1d2733; }
+  header { background: #0b5bd3; color: #fff; display: flex; align-items: center; gap: 24px; padding: 12px 28px; }
+  header .logo { font-weight: 800; font-size: 22px; }
+  header input { flex: 1; max-width: 520px; padding: 9px 14px; border-radius: 20px; border: 0; }
+  header nav { margin-left: auto; display: flex; gap: 18px; }
+  header a { color: #fff; text-decoration: none; }
+  .promo { background: #ffc220; padding: 8px 28px; font-weight: 600; }
+  main { max-width: 980px; margin: 24px auto; padding: 0 20px; }
+  .order { background: #fff; border-radius: 10px; padding: 18px 22px; margin-bottom: 16px; box-shadow: 0 1px 2px #0002; }
+  .order h2 { font-size: 16px; margin: 0 0 4px; }
+  .meta { color: #5b6675; font-size: 13px; }
+  .item { display: flex; justify-content: space-between; border-top: 1px solid #e6e9ee; padding: 10px 0; }
+  .status { color: #1a7f37; font-weight: 600; }
+  .order button { margin-right: 8px; padding: 7px 14px; border-radius: 18px; border: 1px solid #0b5bd3; background: #fff; color: #0b5bd3; cursor: pointer; }
+  #launcher { position: fixed; right: 26px; bottom: 26px; width: 58px; height: 58px; border-radius: 50%; border: 0; background: #0b5bd3; color: #fff; font-size: 26px; cursor: pointer; box-shadow: 0 3px 10px #0005; }
+  #widget { position: fixed; right: 26px; bottom: 96px; width: 380px; height: 560px; border: 0; border-radius: 12px; box-shadow: 0 6px 24px #0006; display: none; background: #fff; }
+  #survey { position: fixed; inset: 0; background: #0007; display: none; align-items: center; justify-content: center; }
+  #survey .box { background: #fff; padding: 24px; border-radius: 10px; width: 360px; }
+</style>
+<script src="/common.js"></script>
+</head>
+<body>
+<header>
+  <span class="logo">ValueMart</span>
+  <input type="search" placeholder="Search everything at ValueMart online and in store" aria-label="Search">
+  <nav><a href="#">Reorder</a><a href="#">Account</a><a href="#">Cart (0)</a></nav>
+</header>
+<div class="promo">Free shipping on orders over $35 · Ends Sunday</div>
+<main>
+  <h1>Your orders</h1>
+  <p class="meta">Signed in as Alex Rivera</p>
+  <div id="orders"></div>
+</main>
+<button id="launcher" aria-label="Chat with us">💬</button>
+<iframe id="widget" title="ValueMart support chat" src="about:blank"></iframe>
+<div id="survey" role="dialog" aria-label="Quick survey">
+  <div class="box">
+    <h2>How's your shopping experience today?</h2>
+    <p>Take a 2-minute survey and help us improve.</p>
+    <button id="survey-yes">Take survey</button>
+    <button id="survey-no">No thanks</button>
+  </div>
+</div>
+<script src="data.js"></script>
+<script>
+Mock.start(() => {
+  const box = document.getElementById("orders");
+  for (const o of ORDERS) {
+    const div = document.createElement("section");
+    div.className = "order";
+    div.innerHTML = `<h2>Order # ${o.id}</h2>
+      <div class="meta">Placed ${o.placed} · Total ${Mock.money(o.items.reduce((s, i) => s + i.price * i.qty, 0))} · Paid with ${o.card}</div>
+      <div class="meta status">${o.status}</div>`;
+    for (const it of o.items) {
+      div.innerHTML += `<div class="item"><span>${it.name}${it.qty > 1 ? " × " + it.qty : ""}</span><span>${Mock.money(it.price * it.qty)}</span></div>`;
+    }
+    div.innerHTML += `<button>Start a return</button><button>Track package</button><button>Buy it again</button>`;
+    div.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => {
+      Mock.log("mart", "order_button", { order: o.id, button: b.textContent });
+      if (b.textContent === "Start a return" && !div.querySelector(".notice")) {
+        div.insertAdjacentHTML("beforeend", `<p class="notice meta">Online returns aren't available for this order. Please contact us through Chat with us.</p>`);
+      }
+    }));
+    box.appendChild(div);
+  }
+  const widget = document.getElementById("widget");
+  document.getElementById("launcher").addEventListener("click", () => {
+    if (widget.style.display !== "block") {
+      if (widget.src === "about:blank") widget.src = "chat.html";
+      widget.style.display = "block";
+      Mock.log("mart", "chat_opened");
+    } else {
+      widget.style.display = "none";
+    }
+  });
+  // A survey interrupts once, a few seconds after the page loads.
+  if (!Mock.get("mart.survey", false)) {
+    setTimeout(() => { document.getElementById("survey").style.display = "flex"; }, 4000);
+  }
+  for (const id of ["survey-yes", "survey-no"]) {
+    document.getElementById(id).addEventListener("click", () => {
+      Mock.set("mart.survey", true);
+      document.getElementById("survey").style.display = "none";
+      Mock.log("mart", "survey", { choice: id });
+    });
+  }
+  Mock.log("mart", "page", { page: "orders" });
+});
+</script>
+</body>
+</html>

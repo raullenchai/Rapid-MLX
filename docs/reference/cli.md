@@ -30,6 +30,33 @@
 
 Run `rapid-mlx <cmd> --help` for the full flag list of any subcommand.
 
+## Global options
+
+These go before the subcommand, e.g. `rapid-mlx --disable-version-check serve qwen3.5-4b-4bit`.
+
+| Option | Description | Environment equivalent |
+|--------|-------------|------------------------|
+| `--disable-version-check` | Do not check for a newer Rapid-MLX release. Servers started by `chat`, `start`, and `share` inherit the setting. | `RAPID_MLX_DISABLE_VERSION_CHECK=1` |
+| `--no-telemetry` | Disable anonymous usage telemetry for this run | `RAPID_MLX_TELEMETRY=0` |
+| `--no-banner` | Do not print the launch banner | `RAPID_MLX_NO_BANNER=1` |
+| `--version`, `-V` | Print the version and exit | |
+
+## Disk writes
+
+On a personal Mac, these options control what `serve` writes to the SSD
+beyond the model download itself:
+
+| What is written | When | How to turn it off |
+|-----------------|------|--------------------|
+| Prefix-cache snapshot in `~/.cache/rapid-mlx/prefix_cache/` (KV tensors for every cached prompt; the whole snapshot is rewritten each time) | Each server shutdown, including the end of a `chat` session, and each `--idle-unload-seconds` unload | `--disable-disk-caches`, or `--disable-prefix-cache` (also turns off the in-memory cache) |
+| KV checkpoints in `~/.cache/rapid-mlx/kv_checkpoints/` (the whole KV cache, written every N tokens for every request; nothing reads them back) | Only with `--kv-disk-checkpoint-interval N` > 0 | Off by default; `--disable-disk-caches` overrules an interval |
+| Vision prefix-cache disk tier in `~/.cache/mlx-vlm/apc/` | Only when `APC_DISK_ENABLED=1` is set | Off by default; `--disable-disk-caches` overrules it |
+| Server log output | Continuously | `--log-file /dev/null`, or a path on a RAM disk |
+
+`--disable-disk-caches` is checked by each of these caches directly; the other
+settings keep their values, and the server logs at startup which explicit
+settings it overrules.
+
 ## `rapid-mlx telemetry`
 
 Telemetry is anonymous, metadata-only, and on by default beginning with
@@ -219,7 +246,8 @@ are the argparse defaults from `rapid_mlx/cli.py`.
 | `--port` | Server port; when omitted, selects the first free port in 8000–8009; an explicit port never falls back | First free in 8000–8009 |
 | `--host` | Server host (loopback-only by default; pass `0.0.0.0` to expose on LAN — review the auth posture first) | 127.0.0.1 |
 | `--listen-fd` | File descriptor of a pre-bound listening socket (3-1023) for socket activation (launchd/systemd/parent-process supervision). When set, `--host`/`--port` are ignored for binding. Native MTP, DSpark K4, DFlash, and DDTree reject this option with rc 2. | None |
-| `--log-level` | Log level for Python logging and uvicorn (`DEBUG`, `INFO`, `WARNING`, `ERROR`; case-insensitive) | INFO |
+| `--log-level` | Log level for Python logging and uvicorn (`DEBUG`, `INFO`, `WARNING`, `ERROR`; case-insensitive). Falls back to `RAPID_MLX_LOG_LEVEL`. | INFO |
+| `--log-file` | Send all server output (logs, tracebacks, native-library messages) to a file (appended), `-` for stdout, `/dev/stderr`, or `/dev/null` to discard it. Falls back to `RAPID_MLX_LOG_FILE`. | stderr |
 | `--served-model-name` | Model name reported by the API; when unset the `model` argument is used | None |
 | `--watchdog-ppid` | Self-terminate when the parent process with this PID dies (defeats orphaned sidecars). Falls back to `RAPID_MLX_WATCHDOG_PPID`; 0 / unset disables. | None (disabled) |
 | `--yes` / `-y` | Assume yes in interactive or non-interactive sessions, such as when installing a missing optional extra | off |
@@ -246,6 +274,7 @@ are the argparse defaults from `rapid_mlx/cli.py`.
 | `--scheduling-policy` | Prompt-slot admission order: `fcfs`, or opt-in `shortest_validated_tail` to favor cache-hot/short prompts under contention | `fcfs` |
 | `--scheduling-max-deferrals` | Compatible grants that may pass over one request before `shortest_validated_tail` forces it through in FIFO order | 8 |
 | `--prefill-step-size` | Chunk size for prompt prefill processing; larger values use more memory but can improve prefill throughput | 2048 |
+| `--shared-prefix-wait-tokens` | A request sharing at least this many uncached prompt tokens with a request that is still prefilling waits for that prompt state instead of recomputing it (applies to `fcfs` admission with the memory-aware prefix cache); `0` disables | 1024 |
 | `--stream-interval` | Tokens to batch before streaming (1 = smooth, higher = throughput) | 1 |
 | `--gpu-memory-utilization` | Fraction of device memory for the Metal allocation limit and admission cap (0.0-1.0). Advanced override — by default the budget is sized automatically to the loaded model (measured weights + headroom, 0.90–0.97 of the device working-set budget) | auto |
 
@@ -254,7 +283,8 @@ are the argparse defaults from `rapid_mlx/cli.py`.
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--enable-prefix-cache` | Enable prefix caching for repeated prompts | enabled |
-| `--disable-prefix-cache` | Disable prefix caching | off |
+| `--disable-prefix-cache` | Disable prefix caching, in memory and its on-disk snapshot written at shutdown | off |
+| `--disable-disk-caches` | Write no optional caches to disk: no prefix-cache snapshot (none is loaded at startup either), no KV checkpoints, no vision prefix-cache disk tier. Takes precedence over `--kv-disk-checkpoint-interval`, `APC_DISK_ENABLED`, and `RAPID_MLX_PREFIX_CACHE_AUTOLOAD`. Falls back to `RAPID_MLX_DISABLE_DISK_CACHES`. | off |
 | `--prefix-cache-index` | Prefix-cache lookup index: `radix` (token trie, surfaces dedup-bytes-saved on `/metrics`) or `hash` (legacy bisect path) | radix |
 | `--prefix-cache-size` | Max entries in the prefix cache (legacy entry-count mode only) | 100 |
 | `--cache-memory-mb` | Cache memory limit in MB | Auto (~20% of RAM) |
@@ -281,7 +311,7 @@ are the argparse defaults from `rapid_mlx/cli.py`.
 | `--kv-cache-turboquant` | TurboQuant KV-cache compression (experimental). Bare flag = `v4` (V-only 3-4 bit Lloyd-Max, K in FP16); `k8v4` = K 8-bit Walsh-Hadamard + V 4-bit mix (~4.6x KV compression on dense models); `none` = explicit off-switch overriding alias-driven auto-resolution. Mutually exclusive with `--kv-cache-quantization`. | None (alias-driven) |
 | `--kv-cache-turboquant-bits` | V-side bit width for TurboQuant (3 or 4); ignored in `k8v4` mode (V pinned to 4-bit) | Auto by head_dim (3-bit for >=96, 4-bit for 64) |
 | `--kv-cache-turboquant-group-size` | Group size for TurboQuant V-side quantization | 32 |
-| `--kv-disk-checkpoint-interval` | Token interval at which the scheduler snapshots KV state to `~/.cache/rapid-mlx/kv_checkpoints/`. 0 disables. Write-only today and each snapshot blocks decode for O(context) — enable only for external tooling that consumes the files. Disk cap via `RAPID_MLX_KV_CHECKPOINT_MAX_BYTES`. | 0 (disabled) |
+| `--kv-disk-checkpoint-interval` | Token interval at which the scheduler snapshots KV state to `~/.cache/rapid-mlx/kv_checkpoints/`. 0 disables. Each snapshot writes the whole KV cache of every running request (gigabytes at long context) and nothing reads the files back; each snapshot also blocks decode for O(context) — enable only for external tooling that consumes the files. Disk cap via `RAPID_MLX_KV_CHECKPOINT_MAX_BYTES`. Overruled by `--disable-disk-caches`. | 0 (disabled) |
 | `--metal-cap-kv-bytes-per-token` | Override the per-token KV-cache size (bytes) the admission gate projects. Set when running a quantized KV cache so long prompts are not spuriously 503'd; under-setting risks the OOM cliff the gate prevents. 0 auto-derives an architecture-aware fp16 figure. | 0 (auto) |
 
 #### Model loading, residency, and modalities
@@ -354,7 +384,7 @@ binary auto-routing decision has a force-on and force-off pair.
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--embedding-model` | Pre-load an embedding model at startup (requires `pip install 'rapid-mlx[embeddings]'`) | None |
+| `--embedding-model` | Pre-load an embedding model at startup (`[embeddings]` for legacy models, the base install's vision runtime for native EmbeddingGemma 2) | None |
 | `--embedding-max-length` | Max input length (tokens) for the embedding model; `auto` derives it from the model's declared maximum, or pass a positive integer for a lower operational ceiling. Inputs above the limit follow `--embedding-overflow-policy` (never truncated silently). | auto |
 | `--embedding-overflow-policy` | Overflow handling: `truncate` (discards the tail, logs a warning, increments the `rapid_mlx_embedding_truncations_total` metric) or `error` (HTTP 400 with observed and allowed token counts) | truncate |
 
@@ -455,7 +485,7 @@ rapid-mlx serve qwen3.5-9b-4bit --use-paged-cache --port 8000
 # With MCP tools
 rapid-mlx serve qwen3.5-9b-4bit --mcp-config mcp.json
 
-# Multimodal (vision) model — requires the [vision] extra
+# Multimodal (vision) model — the vision runtime ships with the base install
 rapid-mlx serve gemma-4-26b-4bit --mllm
 
 # Reasoning model — parser is auto-detected, but you can pin it
@@ -468,7 +498,7 @@ rapid-mlx serve deepseek-r1-8b-4bit --reasoning-parser deepseek_r1
 rapid-mlx serve devstral-24b-4bit --enable-auto-tool-choice --tool-call-parser mistral
 
 # DFlash speculative decoding (single-user, curated aliases only).
-# Requires rapid-mlx[dflash]; OpenAI tools and opt-in thinking are supported.
+# The DFlash runtime ships with the base install; OpenAI tools and opt-in thinking are supported.
 rapid-mlx serve qwen3.5-27b-8bit --speculative-config '{"method":"dflash"}' --port 8000
 
 # Muse-Glimmer 30B 8-bit uses its revision-pinned published assistant.
@@ -618,6 +648,8 @@ rapid-mlx chat [model] [options]
 | `--mcp-config` | Load MCP tools into this chat agent | *(none)* |
 | `--mcp-max-rounds` | Maximum tool-call rounds per turn when `--mcp-config` is set; multi-step tasks may need more | 8 |
 | `--disable-prefix-cache` | Disable reusable on-disk prefix caching for a server spawned by `chat` | off |
+| `--disable-disk-caches` | Pass `--disable-disk-caches` to the server spawned by `chat` | off |
+| `--log-file` | Where the spawned server writes its output (see `serve --log-file`); without it, `chat` keeps the server output in a temporary log file. `-` prints it into the chat session. | temporary log file |
 
 > The REPL defaults to `--no-think` because reasoning models (Qwen3.5, etc.)
 > otherwise leak raw chain-of-thought and can loop until `max-tokens`. Pass
@@ -675,7 +707,8 @@ into a single foreground verb.
 ```bash
 rapid-mlx start [profile] [--model MODEL] [--port PORT] [--host HOST]
                 [--no-download] [--dry-run] [--yes] [--no-setup]
-                [--ready-timeout SECONDS]
+                [--ready-timeout SECONDS] [--disable-disk-caches]
+                [--log-file TARGET]
 ```
 
 ### Options
@@ -691,6 +724,8 @@ rapid-mlx start [profile] [--model MODEL] [--port PORT] [--host HOST]
 | `--yes`, `-y` | Skip the confirmation prompt before downloading / writing config. | off |
 | `--no-setup` | Do not write agent configuration after the server is ready; only print instructions. | off |
 | `--ready-timeout` | Seconds to wait for the spawned server to become ready. | `600` |
+| `--disable-disk-caches` | Pass `--disable-disk-caches` to the server. | off |
+| `--log-file` | Where the server writes its output (see `serve --log-file`). | stderr |
 
 ### Behavior
 
@@ -711,7 +746,7 @@ rapid-mlx start [profile] [--model MODEL] [--port PORT] [--host HOST]
   with a clear message.
 - **Setup.** After the endpoint is healthy, `start` prints the agent's
   connection instructions and, for the first-class profiles (`claude-code`,
-  `continue`, `deepseek-harness`), applies the same previewed/backed-up
+  `continue`, `deepseek-harness`, `pi`, `qwen-code`), applies the same previewed/backed-up
   atomic config changes as `rapid-mlx agents <name> --setup`. `--no-setup`
   prints instructions only.
 
@@ -758,12 +793,18 @@ rapid-mlx service uninstall [--dry-run]
 - Additional `serve` options must follow a `--` separator, for example
   `-- --max-num-seqs 4`. Bind overrides and secret-bearing options are
   rejected; use the service command's own `--host` and `--port` flags.
+- `-- --log-file PATH` and `-- --disable-disk-caches` work like on `serve`.
+  The log path must be absolute and outside `/Volumes` (external disks and
+  RAM disks are mounted after launchd starts the service), and `install`
+  requires its directory to exist. `-` and `/dev/stderr` keep the output in
+  the service logs.
 - `status` reports launchd registration, PID and owner, the declared model
   and bind, endpoint (`/livez`/`/readyz`) health, model lifecycle/residency,
   idle policy, recent load/unload outcome, and log paths. `--json` keeps the
   lifecycle keys present with `null` values when querying an older server.
 - `logs` tails the daemon's stdout/stderr logs (`--follow` streams across
-  KeepAlive restarts).
+  KeepAlive restarts). With `--log-file` configured, it notes where the
+  server output goes instead.
 - `restart` kickstarts the daemon and waits for readiness.
 - `apply` and `upgrade` transiently disable lazy loading and require both
   endpoint readiness and model residency before committing; a model-load
@@ -789,6 +830,9 @@ flag always wins over its env-var fallback when both are set.
 | `RAPID_MLX_SSE_KEEPALIVE_SECONDS` | 20 | Interval for SSE keepalive comment lines during silent prefill (defeats proxy idle timeouts). 0 disables the heartbeat. |
 | `RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS` | 15 | Max idle seconds between request-body chunks (slowloris defense); exceeded connections get HTTP 408. 0 disables. |
 | `RAPID_MLX_IDLE_CACHE_CLEAR_SECONDS` | 0 (disabled) | Fallback for `--idle-cache-clear-seconds`: clear reusable KV state after this many idle seconds, keeping model weights loaded. An explicit CLI value (including 0) wins. |
+| `RAPID_MLX_DISABLE_DISK_CACHES` | unset | `1` / `true` / `yes` / `on` / `enable` / `enabled` has the effect of `--disable-disk-caches` for every server, including those started by `chat`, `start`, and `share` |
+| `RAPID_MLX_LOG_FILE` | unset (stderr) | Fallback for `--log-file`. Commands run with `--json` reject `-`, because stdout carries their JSON output. |
+| `RAPID_MLX_LOG_LEVEL` | unset (INFO) | Fallback for `serve --log-level`. When set, `chat` and `share` no longer force their own level on the server they start. |
 | `RAPID_MLX_WATCHDOG_PPID` | unset (disabled) | Fallback for `--watchdog-ppid`: self-terminate when the parent with this PID dies |
 | `RAPID_MLX_TELEMETRY` | unset (reporting defaults on) | Telemetry kill switch: `0` / `false` / `no` / `off` / empty force-disables telemetry regardless of stored consent. Truthy values do not force-enable. |
 | `DO_NOT_TRACK` | unset | Cross-tool opt-out convention: `1` / `true` force-disables telemetry regardless of stored consent (other values are ignored). Same precedence as `RAPID_MLX_TELEMETRY=0`; `rapid-mlx telemetry status` reports it as the reason. |
@@ -796,6 +840,7 @@ flag always wins over its env-var fallback when both are set.
 | `RAPID_MLX_KV_CHECKPOINT_MAX_BYTES` | 21474836480 (20 GiB) | Disk cap for `~/.cache/rapid-mlx/kv_checkpoints/` when `--kv-disk-checkpoint-interval` is enabled; oldest files evicted first. Read at scan time, so it can change without a restart. |
 | `RAPID_MLX_PREFIX_CACHE_AUTOLOAD` | on (`1`) | Automatic lifespan restore from disk at startup and save to disk at shutdown. Set to `0` / `false` / `no` / `off` to skip both; existing on-disk files are preserved, and explicit cache import/export remains available. |
 | `RAPID_MLX_PREFIX_CACHE_MAX_BYTES` | unset (heuristic) | Hard byte cap on prefix-cache memory (positive integer). Unset, blank, or invalid values fall back to the heuristic limit (logged once). |
+| `RAPID_MLX_PREFIX_CACHE_MIN_FREE_DISK_BYTES` | `5368709120` (5 GiB) | Free disk space the prefix-cache persist (shutdown save and `/v1/cache/export`) aims to leave on the volume. Free space is read before each entry and entries whose write would cross the reserve are skipped with a warning; the check is best effort, since other writers can use the space while an entry is being written. `0` disables the check; other invalid values fall back to the default. |
 | `RAPID_MLX_MAX_GENERATION_TOKENS` | unset (no ceiling) | Opt-in hard ceiling on per-request `max_tokens`; requests above it are rejected at validation. Invalid or non-positive values are treated as unset. Read per request. |
 | `RAPID_MLX_STRICT_JSON_SCHEMA` | enabled | Strict post-generate `json_schema` enforcement; set `0`/`off`/`false`/`no`/`disable`/`disabled` to fall back to legacy prompt-injection-only behavior |
 | `RAPID_MLX_CONSTRAIN_TOOLS` | on (`1`) | Grammar-constrained tool calling; see the [configuration reference](configuration.md#environment-variables) for the full contract |
@@ -804,7 +849,7 @@ flag always wins over its env-var fallback when both are set.
 | `RAPID_MLX_MODEL_MIRROR` | `https://models.rapidmlx.com` | Model download mirror base URL; set to an empty string to force downloads from Hugging Face |
 | `RAPID_MLX_EXTRA_MODEL_ROOTS` | unset | Extra local directories to resolve models from, separated by `os.pathsep` (`:` on macOS/Linux), or a JSON array of paths |
 | `RAPID_MLX_DEFAULT_MODEL` | `qwen3.5-4b-4bit` | Default model alias used by `rapid-mlx launch` when `--model` is not given |
-| `RAPID_MLX_DISABLE_VERSION_CHECK` | unset | Set to any non-empty value to skip new-version checks, including the passive `serve` startup-log notice |
+| `RAPID_MLX_DISABLE_VERSION_CHECK` | unset | Any non-empty value other than `0` / `false` / `no` / `off` / `disable` / `disabled` skips new-version checks, including the passive `serve` startup-log notice. Same as the global `--disable-version-check` flag. |
 | `RAPID_MLX_TRUST_REMOTE_CODE` | unset | Set `0`/`false`/`no`/`off` to force `trust_remote_code=False` process-wide for tokenizer loading |
 | `RAPID_MLX_TEST_MODEL` | unset | Model for tests (legacy `VLLM_MLX_TEST_MODEL` still honored) |
 | `HF_TOKEN` | unset | HuggingFace token for gated/private repos |

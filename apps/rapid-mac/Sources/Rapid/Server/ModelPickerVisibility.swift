@@ -360,9 +360,9 @@ enum ModelPickerVisibility {
     static func qualityStickerSuffix(for bucket: QualityBucket) -> String? {
         switch bucket {
         case .tiny:
-            return "· tiny"
+            return String(localized: "· tiny")
         case .small:
-            return "· small"
+            return String(localized: "· small")
         case .midOrLarger:
             return nil
         }
@@ -392,7 +392,7 @@ enum ModelPickerVisibility {
             // tooltip copy moved with it. Pinned to the same string
             // in ``ModelPickerVisibilityTests`` so a copy churn that
             // re-introduces the old inclusive wording trips the gate.
-            return "Models smaller than 3B may contradict themselves in multi-turn chat. Good for testing or single-shot Q&A. Try qwen3.5-4b or larger for serious use."
+            return String(localized: "Models smaller than 3B may contradict themselves in multi-turn chat. Good for testing or single-shot Q&A. Try qwen3.5-4b or larger for serious use.")
         case .midOrLarger:
             return nil
         }

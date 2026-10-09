@@ -46,6 +46,12 @@ def test_emitted_constraints_are_stable_and_complete(constraints) -> None:
         "pyobjc-framework-Cocoa==12.2.2",
         "pyobjc-framework-CoreText==12.2.2",
         "pyobjc-framework-Quartz==12.2.2",
+        "torch==2.14.1",
+        "torchvision==0.29.1",
+        "opencv-python==4.14.0.94",
+        "matplotlib==3.11.2",
+        "imageio==2.38.0",
+        "imageio-ffmpeg==0.6.0",
     ]
 
 

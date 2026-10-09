@@ -2438,7 +2438,7 @@ def test_video_artifact_probe_returns_worker_validation_error(tmp_path: Path) ->
     artifact.write_bytes(b"not-an-mp4")
 
     with pytest.raises(
-        RuntimeError, match=r"invalid MP4 artifact|requires rapid-mlx\[video\]"
+        RuntimeError, match=r"invalid MP4 artifact|validation requires ffmpeg"
     ):
         local_runner._probe_video_artifact(str(artifact), timeout_s=10)
 
@@ -4370,7 +4370,7 @@ def test_video_probe_without_imageio_or_ffmpeg_explains_required_extra(
     monkeypatch.delenv("FFMPEG_BINARY", raising=False)
     monkeypatch.setattr(local_runner.shutil, "which", lambda name: None)
 
-    with pytest.raises(RuntimeError, match=r"validation requires rapid-mlx\[video\]"):
+    with pytest.raises(RuntimeError, match=r"validation requires ffmpeg"):
         local_runner._probe_video_artifact_unbounded("clip.mp4")
 
 

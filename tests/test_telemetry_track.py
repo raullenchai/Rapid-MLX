@@ -524,7 +524,7 @@ def test_cli_lifecycle_exclusions(monkeypatch, command):
         posthog_sender, "install_atexit", lambda: calls.append("atexit")
     )
     monkeypatch.setattr(
-        track_module, "_emit_app_opened", lambda surface: calls.append(surface)
+        track_module, "_emit_app_opened", lambda surface, *_: calls.append(surface)
     )
     monkeypatch.setattr(
         consent_runtime, "detect_role", lambda: ProcessRole.HEADLESS_CLI
@@ -592,7 +592,7 @@ def test_cli_lifecycle_installs_exit_hook_and_emits(monkeypatch, command, surfac
         posthog_sender, "install_atexit", lambda: calls.append("atexit")
     )
     monkeypatch.setattr(
-        track_module, "_emit_app_opened", lambda value: calls.append(value)
+        track_module, "_emit_app_opened", lambda value, *_: calls.append(value)
     )
     cli._start_v2_lifecycle(command)
     assert calls == ["atexit", surface]
@@ -605,7 +605,7 @@ def test_cli_lifecycle_failure_cannot_escape(monkeypatch):
     monkeypatch.setattr(
         track_module,
         "start_lifecycle",
-        lambda surface: (_ for _ in ()).throw(RuntimeError("lifecycle failed")),
+        lambda surface, *_: (_ for _ in ()).throw(RuntimeError("lifecycle failed")),
     )
     cli._start_v2_lifecycle("models")
 
@@ -622,7 +622,7 @@ def test_cli_main_starts_lifecycle_after_consent(monkeypatch, capsys):
         consent_runtime, "detect_role", lambda: ProcessRole.HEADLESS_CLI
     )
     monkeypatch.setattr(
-        track_module, "start_lifecycle", lambda surface: calls.append(surface)
+        track_module, "start_lifecycle", lambda surface, *_: calls.append(surface)
     )
     monkeypatch.setattr(sys, "argv", ["rapid-mlx", "models", "--json"])
     cli.main()
@@ -650,7 +650,7 @@ def test_desktop_lifecycle_stays_suppressed_after_context_resolution(monkeypatch
         posthog_sender, "install_atexit", lambda: calls.append("atexit")
     )
     monkeypatch.setattr(
-        track_module, "_emit_app_opened", lambda surface: calls.append(surface)
+        track_module, "_emit_app_opened", lambda surface, *_: calls.append(surface)
     )
     track_module.start_lifecycle("server")
     assert [item["event"] for item in sender.items] == ["active_day"]
@@ -1010,7 +1010,7 @@ if os.environ.get("RAPID_MLX_TEST_PREFLIGHT_EXIT") == "1":
         version_info=_PinnedVersion((3, 11)), stderr=sys.stderr
     )
     video_lane._default_video_runtime_requirements = lambda _model: [
-        "the `rapid-mlx[video]` Python extra"
+        "the mlx-video runtime"
     ]
     video_lane._resolve_ffmpeg = lambda: "/usr/bin/ffmpeg"
 
@@ -1871,7 +1871,7 @@ def test_server_module_entrypoint_starts_shared_v2_lifecycle(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["rapid_mlx.server", "--port", str(port)])
     monkeypatch.setattr(consent_runtime, "startup", lambda **kwargs: None)
     monkeypatch.setattr(
-        track_module, "start_lifecycle", lambda surface: calls.append(surface)
+        track_module, "start_lifecycle", lambda surface, *_: calls.append(surface)
     )
     monkeypatch.setattr(
         current_cli,
@@ -1919,3 +1919,59 @@ def test_ci_kill_switch_is_checked_live_by_default_sender(monkeypatch):
     assert sender._accepted == 1
     sender.flush(1.0)
     assert posts == []
+
+
+# ----------------------------------------------------------------------
+# app_opened ``command`` (closed top-level CLI entry point)
+# ----------------------------------------------------------------------
+def test_app_opened_props_are_closed():
+    assert track_module._app_opened_props(None) == {}
+    assert track_module._app_opened_props("chat") == {"command": "chat"}
+    assert track_module._app_opened_props("bare") == {"command": "bare"}
+    assert track_module._app_opened_props("not-a-command") == {"command": "other"}
+
+
+def test_app_opened_props_fail_closed_on_registry_error(monkeypatch):
+    monkeypatch.setattr(
+        track_module.registry,
+        "load_registry",
+        lambda: (_ for _ in ()).throw(RuntimeError("registry unreadable")),
+    )
+    assert track_module._app_opened_props("chat") == {}
+
+
+@pytest.mark.parametrize(
+    ("command", "surface"), [("chat", "cli"), ("serve", "server"), ("run", "cli")]
+)
+def test_lifecycle_command_reaches_captured_app_opened(monkeypatch, command, surface):
+    sender = inject_sender(monkeypatch)
+    monkeypatch.setattr(consent_runtime, "upload_allowed", lambda: True)
+    monkeypatch.setattr(
+        consent_runtime, "detect_role", lambda: ProcessRole.HEADLESS_CLI
+    )
+    cli._start_v2_lifecycle(command)
+    [item] = sender.items
+    assert item["event"] == "app_opened"
+    assert item["properties"]["command"] == command
+    assert item["properties"]["surface"] == surface
+
+
+def test_lifecycle_without_command_keeps_app_opened_bare_of_it(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    monkeypatch.setattr(consent_runtime, "upload_allowed", lambda: True)
+    monkeypatch.setattr(
+        consent_runtime, "detect_role", lambda: ProcessRole.HEADLESS_CLI
+    )
+    track_module.start_lifecycle("server")
+    [item] = sender.items
+    assert "command" not in item["properties"]
+
+
+def test_lifecycle_command_respects_opt_out(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    monkeypatch.setattr(consent_runtime, "upload_allowed", lambda: False)
+    monkeypatch.setattr(
+        consent_runtime, "detect_role", lambda: ProcessRole.HEADLESS_CLI
+    )
+    cli._start_v2_lifecycle("chat")
+    assert sender.items == []

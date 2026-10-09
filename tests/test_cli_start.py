@@ -221,6 +221,7 @@ def test_spawn_foreground_child_env(monkeypatch):
     import os
     import subprocess as real_subprocess
 
+    monkeypatch.delenv("RAPID_MLX_LOG_FILE", raising=False)
     args = _make_args()
     captured = {}
 
@@ -249,6 +250,43 @@ def test_spawn_foreground_child_env(monkeypatch):
     ]
     assert captured["env"]["RAPID_MLX_CHAT_SPAWN"] == "1"
     assert captured["env"]["RAPID_MLX_WATCHDOG_PPID"] == str(os.getpid())
+    assert "--disable-disk-caches" not in captured["cmd"]
+    assert "RAPID_MLX_LOG_FILE" not in captured["env"]
+
+
+def test_spawn_foreground_forwards_disk_caches_and_log_target(monkeypatch):
+    """``--disable-disk-caches`` reaches the serve argv; the validated
+    ``--log-file`` target reaches the serve child via its environment."""
+    import subprocess as real_subprocess
+
+    monkeypatch.delenv("RAPID_MLX_LOG_FILE", raising=False)
+    args = _make_args(disable_disk_caches=True, _log_target="/dev/null")
+    captured = {}
+
+    def fake_popen(cmd, **kw):
+        captured["cmd"] = cmd
+        captured["env"] = kw.get("env")
+        return object()
+
+    monkeypatch.setattr(real_subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(run_cli, "subprocess", real_subprocess)
+
+    run_cli._spawn_foreground_serve("qwen3.5-9b-4bit", args)
+    assert "--disable-disk-caches" in captured["cmd"]
+    assert captured["env"]["RAPID_MLX_LOG_FILE"] == "/dev/null"
+
+
+def test_start_rejects_unusable_log_file_before_any_work(monkeypatch, tmp_path, capsys):
+    """An invalid ``--log-file`` exits 2 before profile/model resolution."""
+    monkeypatch.delenv("RAPID_MLX_LOG_FILE", raising=False)
+    monkeypatch.setattr(
+        run_cli,
+        "_select_model",
+        lambda **_kw: pytest.fail("model resolution must not run"),
+    )
+    args = _make_args(log_file=str(tmp_path / "missing" / "server.log"))
+    assert run_cli.start_command(args) == 2
+    assert "does not exist" in capsys.readouterr().err
 
 
 def test_spawn_foreground_serve_forwards_auto_selection(monkeypatch):
