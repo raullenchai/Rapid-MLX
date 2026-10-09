@@ -1,46 +1,37 @@
 # OpenCode
 
-Point [OpenCode](https://github.com/sst/opencode) at a local rapid-mlx
-server. OpenCode is a Claude-Code-like terminal coding agent that speaks the
-**OpenAI-compatible chat completions API** (`POST /v1/chat/completions`) via
-the `@ai-sdk/openai-compatible` provider.
+[OpenCode](https://github.com/anomalyco/opencode) can use a local rapid-mlx
+model through its OpenAI-compatible chat completions endpoint. OpenCode 1.x
+and 2.x use different custom-provider config keys; `rapid-mlx agents
+opencode --setup` writes both into `~/.config/opencode/opencode.json`.
 
-Verified via wire smoke against Qwen 3.6, Gemma 4, and gpt-oss in the Tier-1
-agent matrix (`tests/integrations/test_agents_matrix.py::TestOpenCode`). See
-the [support matrix](matrix.md) for the current per-family status.
-
-## How OpenCode reaches rapid-mlx
-
-| Item | Value |
-|---|---|
-| Wire | `POST /v1/chat/completions` (OpenAI-compatible) |
-| Base URL | `http://localhost:8000/v1` |
-| Config file | `~/.config/opencode/opencode.json` (or `./opencode.json`) |
-| Auto-setup | `rapid-mlx agents opencode --setup` |
-
-## TL;DR
+## Setup
 
 ```bash
-# 1. Install OpenCode
-brew install sst/tap/opencode   # or: npm install -g opencode-ai
+# OpenCode 2.x (current package); for 1.x use: npm install -g opencode-ai@1
+npm install -g @opencode/cli@2
 
-# 2. Start rapid-mlx
-rapid-mlx serve qwen3.6-35b-4bit --port 8000
-
-# 3. Point OpenCode at the local server
-rapid-mlx agents opencode --setup    # writes ~/.config/opencode/opencode.json
-
-# 4. Run OpenCode
-opencode
-
-# or one headless task (verified: 1.18.34)
-opencode run "summarize this workspace"
+rapid-mlx serve qwen3.5-4b-4bit --port 8000
+# In another terminal:
+rapid-mlx agents opencode --setup --yes
+opencode models
+opencode run "Use the shell tool to run pwd and report the directory."
 ```
 
-## Manual config
+OpenCode 2.x uses `opencode serve --service` as a persistent background
+service. Its TUI, desktop, web, and `opencode run` clients may connect to an
+already-running service. If setup changes the provider but `opencode models`
+does not show it, run `opencode service restart`, then `opencode models`.
+`rapid-mlx agents opencode --test` runs 2.x with `--standalone`, which starts
+a private server for each headless test and closes it afterward. The 1.x test
+path continues to use `opencode run`.
 
-`rapid-mlx agents opencode --setup` writes this `~/.config/opencode/opencode.json`.
-Substitute your alias for `{model_id}`:
+## Config file
+
+The global file is `~/.config/opencode/opencode.json`; a project can also
+provide `opencode.json`. The generated file has these two provider entries
+for the same model. Setup substitutes the actual model ID and context limit
+reported by the running rapid-mlx server.
 
 ```json
 {
@@ -53,77 +44,43 @@ Substitute your alias for `{model_id}`:
         "baseURL": "http://localhost:8000/v1",
         "apiKey": "not-needed"
       },
+      "models": {"qwen3.5-4b-4bit": {}}
+    }
+  },
+  "providers": {
+    "rapid-mlx": {
+      "package": "@opencode/ai/providers/openai-compatible",
+      "name": "Rapid-MLX",
+      "settings": {
+        "baseURL": "http://localhost:8000/v1",
+        "apiKey": "not-needed"
+      },
       "models": {
-        "qwen3.6-35b-4bit": {}
+        "qwen3.5-4b-4bit": {
+          "name": "qwen3.5-4b-4bit",
+          "limit": {"context": 32768, "output": 8192},
+          "capabilities": {"tools": true, "input": ["text"], "output": ["text"]}
+        }
       }
     }
   },
-  "model": "rapid-mlx/qwen3.6-35b-4bit"
+  "model": "rapid-mlx/qwen3.5-4b-4bit"
 }
 ```
 
-## Per-family setup
-
-Swap the `serve` alias and the `models` / `model` entries. The parser is
-auto-detected from the alias; the parser column documents what the matrix
-test exercises.
-
-### Qwen 3.6
-
-```bash
-rapid-mlx serve qwen3.6-35b-4bit --port 8000   # ~20 GB
-# smaller: qwen3.6-27b-4bit
-```
-
-```json
-{ "models": { "qwen3.6-35b-4bit": {} }, "model": "rapid-mlx/qwen3.6-35b-4bit" }
-```
-
-- tool-call parser: `qwen3_coder_xml` · reasoning parser: `qwen3`
-- matrix cell: **PASS** ✅
-
-### Gemma 4
-
-```bash
-rapid-mlx serve gemma-4-12b-4bit --port 8000   # ~7 GB at 4-bit
-# larger: gemma-4-26b-4bit
-```
-
-```json
-{ "models": { "gemma-4-12b-4bit": {} }, "model": "rapid-mlx/gemma-4-12b-4bit" }
-```
-
-- tool-call parser: `gemma4` · reasoning parser: `gemma4`
-- matrix cell: **PASS** ✅
-
-### gpt-oss
-
-```bash
-rapid-mlx serve gpt-oss-20b --port 8000        # ~11 GB (MXFP4-Q8)
-# larger: gpt-oss-120b
-```
-
-```json
-{ "models": { "gpt-oss-20b": {} }, "model": "rapid-mlx/gpt-oss-20b" }
-```
-
-- tool-call parser: `harmony` · reasoning parser: `harmony`
-- matrix cell: **PASS** ✅
+The singular `provider` entry is for 1.x. The plural `providers` entry is
+the native 2.x form. Both versions can read this combined file. If your
+rapid-mlx server requires an API key, setup uses `{env:RAPID_MLX_API_KEY}`
+instead of `not-needed`; export that variable before launching OpenCode.
 
 ## Troubleshooting
 
-- **First run prompts for an Anthropic API key** — choose "skip". Rapid-mlx
-  supplies the model through the OpenAI-compatible provider above.
-- **Config template doesn't load** — the OpenCode config schema shifts
-  across versions. Run `opencode --help` and check
-  `~/.config/opencode/opencode.json` against the docs at opencode.ai.
-- **OpenCode is interactive-only** — no, it isn't: `opencode run '<prompt>'`
-  is the headless one-shot mode (verified against 1.18.34, T1–T6), and
-  `opencode run --continue '<prompt>'` appends to the last session in the
-  cwd. `rapid-mlx agents opencode --test` drives it through that path.
+- If `opencode models` omits the model after setup, restart the 2.x service
+  with `opencode service restart`. Check the loaded config with
+  `opencode debug config`.
+- If the model is listed but requests fail, confirm rapid-mlx is running and
+  `baseURL` ends in `/v1`.
+- For one 2.x task without the persistent service, use
+  `opencode run --standalone "your prompt"`. On 1.x use `opencode run`.
 
-## See also
-
-- [Agent support matrix](matrix.md)
-- [AI client compatibility](../guides/ai-clients.md) · [Tool calling](../guides/tool-calling.md)
-- [Server setup](../guides/server.md)
+See the [agent support matrix](matrix.md) and [server setup](../guides/server.md).

@@ -1488,6 +1488,25 @@ class AgentTestRunner:
             return shutil.which(binary) is not None
         return os.path.exists(os.path.expanduser(binary))
 
+    def _opencode_query_cmd(self, query_cmd: str) -> str:
+        """Use a private 2.x server so a test cannot leave a service behind."""
+        version = self.agent_version
+        if version is None:
+            binary = self.profile.testing.binary or "opencode"
+            try:
+                version = subprocess.run(
+                    [binary, "--version"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=True,
+                ).stdout.strip()
+            except (OSError, subprocess.SubprocessError):
+                return query_cmd
+        if re.search(r"\bv?2\.\d+", version):
+            return query_cmd.replace("opencode run ", "opencode run --standalone ", 1)
+        return query_cmd
+
     def build_test_plan(self) -> list[str]:
         """Build the list of test names that will run for this profile."""
         tests = ["plain_chat"]
@@ -1714,6 +1733,8 @@ class AgentTestRunner:
             query_cmd = testing.query_cmd.replace(
                 "{model_id}", shlex.quote(self.model_id)
             )
+            if self.profile.name == "opencode":
+                query_cmd = self._opencode_query_cmd(query_cmd)
             # No shared workspace here on purpose: each _test_e2e_* opens
             # its own, so one invocation's leftovers cannot become the
             # next one's starting condition.
