@@ -11,8 +11,8 @@ claim would not be human-authorized:
   * the environment must exist with exactly one ``required_reviewers`` rule;
   * its reviewers must be EXACTLY one user, the expected reviewer login;
   * ``prevent_self_review`` must be false (a truthful owner-approval contract);
-  * the deployment-branch policy must be exactly one branch policy ``{name:
-    main, type: branch}`` (deployments may only be requested from main);
+  * deployment branch policies must exactly match the caller's explicit,
+    nonempty allowlist and every entry must be a named branch policy;
   * ``can_admins_bypass`` must be exactly false (GitHub supports disabling admin
     bypass); missing or true fails closed so a claim never rides an admin who
     could approve without a required-reviewer approval.
@@ -57,7 +57,7 @@ def read_back(
     policy_json: Path,
     expected_reviewer: str = EXPECTED_REVIEWER,
     expected_env_name: str = EXPECTED_ENV_NAME,
-    expected_branch: str = EXPECTED_BRANCH,
+    expected_branches: Sequence[str] = (EXPECTED_BRANCH,),
 ) -> list[str]:
     """Verify the environment; return evidence lines or raise EnvironmentGateError."""
 
@@ -126,28 +126,39 @@ def read_back(
             f"protected_branches=false, got {dbp!r}"
         )
 
-    # Branch policy list: exactly one branch policy {name: main, type: branch}.
+    # Branch policy list must exactly match the explicitly expected branch policies.
     policies = _load(policy_json)
-    if policies.get("total_count") != 1:
+    expected = tuple(expected_branches)
+    if not expected or len(set(expected)) != len(expected):
         raise EnvironmentGateError(
-            f"deployment-branch-policy total_count must be 1, got {policies.get('total_count')!r}"
+            f"expected branches must be nonempty and unique, got {expected!r}"
+        )
+    if policies.get("total_count") != len(expected):
+        raise EnvironmentGateError(
+            f"deployment-branch-policy total_count must be {len(expected)}, got {policies.get('total_count')!r}"
         )
     branches = policies.get("branch_policies")
-    if not isinstance(branches, list) or len(branches) != 1:
+    if not isinstance(branches, list) or len(branches) != len(expected):
         raise EnvironmentGateError(
-            f"deployment-branch-policy must list exactly one branch policy, got {branches!r}"
+            f"deployment-branch-policy must list exactly {len(expected)} branch policies, got {branches!r}"
         )
-    policy = branches[0]
-    if (
-        not isinstance(policy, dict)
-        or policy.get("name") != expected_branch
-        or policy.get("type") != "branch"
-    ):
+    actual = []
+    for policy in branches:
+        if (
+            not isinstance(policy, dict)
+            or policy.get("type") != "branch"
+            or not isinstance(policy.get("name"), str)
+        ):
+            raise EnvironmentGateError(
+                f"deployment policies must be exactly named branch policies, got {policy!r}"
+            )
+        actual.append(policy["name"])
+    if set(actual) != set(expected) or len(actual) != len(set(actual)):
         raise EnvironmentGateError(
-            f"deployment policy must be exactly {{name: {expected_branch!r}, type: branch}}, got {policy!r}"
+            f"deployment policies must be exactly {sorted(expected)!r}, got {sorted(actual)!r}"
         )
     evidence.append(
-        f"deployment branch policy: exactly one branch policy {expected_branch!r} (type branch); "
+        f"deployment branch policies: exactly {sorted(expected)!r} (type branch); "
         "custom_branch_policies=true, protected_branches=false"
     )
 
@@ -176,7 +187,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--policy-json", type=Path, required=True)
     parser.add_argument("--expected-reviewer", default=EXPECTED_REVIEWER)
     parser.add_argument("--expected-env-name", default=EXPECTED_ENV_NAME)
-    parser.add_argument("--expected-branch", default=EXPECTED_BRANCH)
+    parser.add_argument("--expected-branch", action="append", dest="expected_branches")
     return parser
 
 
@@ -188,7 +199,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             policy_json=args.policy_json,
             expected_reviewer=args.expected_reviewer,
             expected_env_name=args.expected_env_name,
-            expected_branch=args.expected_branch,
+            expected_branches=args.expected_branches or (EXPECTED_BRANCH,),
         )
     except EnvironmentGateError as exc:
         print(f"release environment: {exc}", file=sys.stderr)

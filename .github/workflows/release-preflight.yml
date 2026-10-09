@@ -38,6 +38,11 @@ on:
         description: "Exact 40-character bump PR head SHA"
         required: true
         type: string
+      target_branch:
+        description: "Exact PR base: main (default) or release/0.16.0"
+        required: false
+        default: "main"
+        type: string
 
 permissions:
   contents: read
@@ -70,6 +75,7 @@ jobs:
           REPO: ${{ github.repository }}
           DISPATCH_SHA: ${{ github.sha }}
           GH_TOKEN: ${{ github.token }}
+          TARGET_BRANCH: ${{ inputs.target_branch }}
         run: |
           set -euo pipefail
           if ! [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]; then
@@ -83,10 +89,15 @@ jobs:
           BASE_REF=$(jq -r '.base.ref' "$PR_JSON")
           HEAD_REPO=$(jq -r '.head.repo.full_name' "$PR_JSON")
           HEAD_SHA=$(jq -r '.head.sha' "$PR_JSON")
+          BASE_SHA=$(jq -r '.base.sha' "$PR_JSON")
+          PR_COMMITS=$(jq -r '.commits' "$PR_JSON")
           TITLE=$(jq -r '.title' "$PR_JSON")
 
-          if [ "$PR_STATE" != "open" ] || [ "$BASE_REF" != "main" ] || [ "$HEAD_REPO" != "$REPO" ]; then
-            echo "::error::PR #$PR_NUMBER must be open, target main, and originate in $REPO (state=$PR_STATE base=$BASE_REF head_repo=$HEAD_REPO)." >&2
+          if [ "$TARGET_BRANCH" != "main" ] && [ "$TARGET_BRANCH" != "release/0.16.0" ]; then
+            echo "::error::target_branch must be main or exact release/0.16.0." >&2; exit 1
+          fi
+          if [ "$PR_STATE" != "open" ] || [ "$BASE_REF" != "$TARGET_BRANCH" ] || [ "$HEAD_REPO" != "$REPO" ]; then
+            echo "::error::PR #$PR_NUMBER must be open, target $TARGET_BRANCH, and originate in $REPO (state=$PR_STATE base=$BASE_REF head_repo=$HEAD_REPO)." >&2
             exit 1
           fi
           if [ "$EXPECTED_SHA" != "$HEAD_SHA" ] || [ "$DISPATCH_SHA" != "$HEAD_SHA" ]; then
@@ -98,6 +109,16 @@ jobs:
             echo "::error::PR #$PR_NUMBER title must be exactly 'chore: bump version to X.Y.Z[-rcN]'." >&2
             exit 1
           }
+          if [ "$TARGET_BRANCH" = "release/0.16.0" ]; then
+            LIVE_BASE_SHA=$(gh api "repos/${REPO}/git/ref/heads/release/0.16.0" --jq '.object.sha')
+            if [ "$BASE_SHA" != "$LIVE_BASE_SHA" ] || [ "$PR_COMMITS" != "1" ]; then
+              echo "::error::Frozen bump must contain exactly one commit on the current release/0.16.0 head (base=$BASE_SHA live=$LIVE_BASE_SHA commits=$PR_COMMITS)." >&2
+              exit 1
+            fi
+            python3 scripts/check_release_source_ref.py \
+              --source-ref refs/heads/release/0.16.0 --live-sha "$HEAD_SHA" \
+              --accepted-sha "$HEAD_SHA" --release-sha "$HEAD_SHA" --version "$VERSION"
+          fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "title=$TITLE" >> "$GITHUB_OUTPUT"
           echo "Bound release pre-flight to PR #$PR_NUMBER at $HEAD_SHA (v$VERSION)."
@@ -202,6 +223,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
+          TARGET_BRANCH: ${{ inputs.target_branch }}
         run: |
           set -euo pipefail
 
@@ -230,10 +252,15 @@ jobs:
           # raullenchai, prevent_self_review=false, exactly one branch policy
           # {name: main, type: branch}, and can_admins_bypass exactly false
           # (admin bypass must be disabled; true or missing fails closed).
+          EXPECTED_BRANCH_ARGS=(--expected-branch main)
+          if [ "$TARGET_BRANCH" = "release/0.16.0" ]; then
+            EXPECTED_BRANCH_ARGS+=(--expected-branch release/0.16.0)
+          fi
           python3 scripts/check_release_environment.py \
             --environment-json "$RUNNER_TEMP/pf3-env.json" \
             --policy-json "$RUNNER_TEMP/pf3-policy.json" \
             --expected-env-name "$ENV_NAME" \
+            "${EXPECTED_BRANCH_ARGS[@]}" \
             | tee "$GITHUB_STEP_SUMMARY"
           echo "PF3_OK=1"
 
