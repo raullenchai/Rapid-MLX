@@ -1,0 +1,33 @@
+{
+  "duration_s": 1800.1,
+  "server_pid": 89919,
+  "model": "qwen3.5-4b-4bit",
+  "totals": {
+    "probe_errors": 0,
+    "reconnects": 20,
+    "tool": 33,
+    "requests": 183,
+    "successes": 183,
+    "stream": 60,
+    "nonstream": 61,
+    "disconnect": 14,
+    "disconnects": 14,
+    "long_prompt": 8,
+    "cancel": 7,
+    "cancellations": 7,
+    "session_rotations": 8
+  },
+  "load_total_start_end": [
+    6,
+    12
+  ],
+  "unload_total_start_end": [
+    6,
+    12
+  ],
+  "expected_idle_cycles": 6,
+  "completed_idle_cycles": 6,
+  "completed_reload_checks": 5,
+  "passed": true,
+  "failure": null
+}

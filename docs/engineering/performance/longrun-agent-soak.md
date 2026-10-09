@@ -39,7 +39,7 @@ is a failed soak.
 ## Background service mode
 
 `--daemon` gives each worker its own HTTP client and growing chat history. The
-history rotates after `--session-max-turns` successful attempts to bound a
+history rotates after `--session-max-turns` request attempts to bound a
 24-hour run; each new session starts with its own system prompt. The client
 reconnects after `--reconnect-every` requests. All workers send during each
 `--burst-seconds` window and stop during `--idle-seconds`. Use the primary-model
@@ -114,3 +114,22 @@ No hang or leak reproduced in this Qwen3.5 text-lane workload. The tested
 symptoms look resolved on current `main` for this workload; the original
 hybrid Qwen3.6 and Gemma 4 MLLM issue configurations still need their own
 model- and hardware-matched qualification. No server fix was needed here.
+
+## 2026-10-08 background service validation
+
+The 30-minute mac-mini validation used six clients, 120-second bursts,
+180-second idle gaps, and a 30-second server idle TTL on
+`mlx-community/Qwen3.5-4B-MLX-4bit`. See the [summary](daemon-soak-2026-10-08-summary.json)
+and [minute samples](daemon-soak-2026-10-08.csv). The harness passed with 183
+successful requests and zero request, probe, or telemetry errors. It completed
+six idle unload cycles and checked five subsequent reloads. The requests
+included 33 required tool calls, 14 stream disconnects, seven cancellations,
+20 client reconnects, and eight session rotations.
+
+The six settled idle RSS samples were 1,544.9, 1,897.7, 2,089.9, 1,348.8,
+1,743.8, and 2,134.1 MB; the last was 589.2 MB above the first, under the
+1,024 MB growth guard. Open files stayed at 200 in every settled idle sample,
+and threads rose from 28 to 33, under the ten-thread guard. The highest sampled
+process RSS was 4,489.4 MB; the highest reported Metal peak was 9.36 GB.
+This 30-minute result qualifies the harness for a detached 24-hour run; the
+24-hour verdict is pending.
