@@ -508,6 +508,24 @@ class Soak:
         del self.events[: len(events)]
         print(json.dumps(row), flush=True)
         self.totals["probe_errors"] += 2 - row["health_ok"] - row["models_ok"]
+        if (
+            self.args.daemon
+            and row["model_loaded"] is True
+            and (row["metal_active_gb"] is None or row["metal_cache_gb"] is None)
+        ):
+            # Health and status are separate requests; TTL can unload between
+            # them. A second health read distinguishes a real missing status
+            # field from that normal lifecycle transition.
+            response = await self.client.get(self.args.url + "/health", timeout=10)
+            response.raise_for_status()
+            lifecycle = response.json().get("model_lifecycle") or {}
+            row["model_loaded"] = lifecycle.get("model_loaded", "")
+            row["model_load_total"] = lifecycle.get("load_total", "")
+            row["model_unload_total"] = lifecycle.get("unload_total", "")
+            if isinstance(row["model_load_total"], int):
+                self.last_load_total = row["model_load_total"]
+            if isinstance(row["model_unload_total"], int):
+                self.last_unload_total = row["model_unload_total"]
         if self.args.daemon and (
             not isinstance(row["model_loaded"], bool)
             or not isinstance(row["model_load_total"], int)
@@ -521,7 +539,12 @@ class Soak:
             raise RuntimeError(f"Metal telemetry unavailable: {status_error}")
         if row["rss_mb"] > self.args.max_rss_mb:
             raise RuntimeError(f"RSS budget exceeded: {row['rss_mb']} MB")
-        if row["model_loaded"] is False and self.args.daemon:
+        cycle = self.args.burst_seconds + self.args.idle_seconds
+        phase = (time.monotonic() - self.start) % cycle
+        settled_idle = (
+            self.args.daemon and self.args.burst_seconds <= phase < cycle - 15
+        )
+        if row["model_loaded"] is False and settled_idle:
             if self.unloaded_baseline is None:
                 self.unloaded_baseline = row
             for field, limit in (
