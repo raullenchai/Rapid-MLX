@@ -552,8 +552,8 @@ class Soak:
             raise RuntimeError(f"RSS budget exceeded: {row['rss_mb']} MB")
         cycle = self.args.burst_seconds + self.args.idle_seconds
         phase = (time.monotonic() - self.start) % cycle
-        settled_idle = self.args.daemon and (
-            idle_probe or self.args.burst_seconds <= phase < cycle - 15
+        settled_idle = self.args.daemon and self.args.burst_seconds <= phase < (
+            cycle if idle_probe else cycle - 15
         )
         if row["model_loaded"] is False and settled_idle:
             if self.unloaded_baseline is None:
@@ -748,12 +748,12 @@ def main():
         <= 0
     ):
         parser.error("daemon timing and session options must be positive")
-    if (
-        args.daemon
-        and args.idle_seconds < args.timeout + args.expected_ttl_seconds + 30
+    ttl_monitor_interval = min(60, max(1, args.expected_ttl_seconds / 4))
+    if args.daemon and args.idle_seconds < (
+        args.timeout + args.expected_ttl_seconds + ttl_monitor_interval + 10
     ):
         parser.error(
-            "idle-seconds must cover the request deadline, idle TTL, and a 30-second monitor margin"
+            "idle-seconds must cover the request deadline, idle TTL, monitor interval, and ten-second probe lead"
         )
     if args.daemon and (
         args.burst_seconds < 60 or (args.burst_seconds + args.idle_seconds) % 60 != 0

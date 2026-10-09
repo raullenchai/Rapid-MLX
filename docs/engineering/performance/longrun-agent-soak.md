@@ -44,9 +44,9 @@ history rotates after `--session-max-turns` successful attempts to bound a
 reconnects after `--reconnect-every` requests. All workers send during each
 `--burst-seconds` window and stop during `--idle-seconds`. Use the primary-model
 `--idle-unload-seconds` serve flag and pass the same value to the harness as
-`--expected-ttl-seconds`. The idle window must also cover the request deadline
-and 30 seconds for the server's TTL monitor, so an in-flight request started at
-the end of a burst cannot consume the whole idle gap.
+`--expected-ttl-seconds`. The idle window must also cover the request deadline,
+the server's TTL monitor interval, and the ten-second early probe, so a request
+started at the end of a burst cannot consume the whole idle gap.
 The verdict requires one observed unload per complete idle cycle and a reload
 before each subsequent burst, plus reconnects, session rotations, completed
 answers, correct tool arguments, and the existing cancellation, disconnect,
