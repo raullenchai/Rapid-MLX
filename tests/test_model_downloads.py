@@ -384,6 +384,25 @@ def test_audio_engines_refuse_before_loading(monkeypatch, cli):
         TTSEngine("acme/tts-uncached").load()
 
 
+def test_audio_route_preserves_download_policy_error(monkeypatch):
+    from rapid_mlx.routes import audio
+
+    async def refuse(*_args, **_kwargs):
+        raise ModelDownloadsDisabledError("acme/whisper", "flag")
+
+    monkeypatch.setattr(audio, "_stream_upload_to_tempfile", refuse)
+    with pytest.raises(ModelDownloadsDisabledError):
+        asyncio.run(
+            audio._run_stt_request(
+                object(),
+                "whisper",
+                None,
+                "json",
+                "transcribe",
+            )
+        )
+
+
 def test_music_weights_come_only_from_the_cache(monkeypatch, tmp_path):
     from rapid_mlx.audio import music
 
