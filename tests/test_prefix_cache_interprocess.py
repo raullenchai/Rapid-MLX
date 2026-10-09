@@ -167,3 +167,36 @@ def test_shutdown_save_holds_lock_through_radix_commit(
 
     assert writes == [(cache_dir, budget > 0)]
     assert radix == ([cache_dir] if saved else [])
+
+
+@pytest.mark.parametrize("loaded", [0, 1])
+def test_startup_load_holds_lock_through_radix_restore(tmp_path, monkeypatch, loaded):
+    """Recovery and radix restore must see one settled cache snapshot."""
+    cache_dir = str(tmp_path / "model")
+    reads = []
+    radix = []
+
+    def assert_locked():
+        with open(cache_dir + ".txlock") as lock_file, pytest.raises(BlockingIOError):
+            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    class Engine:
+        def load_cache_from_disk(self, path, protected_import=False):
+            assert_locked()
+            reads.append((path, protected_import))
+            return loaded
+
+    def restore_radix(engine, path):
+        assert_locked()
+        radix.append(path)
+
+    monkeypatch.setattr(
+        runtime_cache, "get_config", lambda: SimpleNamespace(engine=Engine())
+    )
+    monkeypatch.setattr(runtime_cache, "get_cache_dir", lambda: cache_dir)
+    monkeypatch.setattr(runtime_cache, "_load_radix_index_after_cache", restore_radix)
+
+    runtime_cache.load_prefix_cache_from_disk()
+
+    assert reads == [(cache_dir, False)]
+    assert radix == [cache_dir]
