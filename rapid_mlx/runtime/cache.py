@@ -47,11 +47,12 @@ _PREFIX_CACHE_NAMESPACE_VERSION = 2
 
 
 @contextmanager
-def _exclusive_save_lock(cache_dir: str):
-    """Keep two servers from writing the same fixed ``.new``/``.old`` paths.
+def _exclusive_cache_lock(cache_dir: str, *, blocking: bool):
+    """Protect shared ``.new``/``.old`` paths across automatic load and save.
 
-    Shutdown has a short grace period, so a contending server skips its
-    best-effort save instead of waiting behind another process's flush.
+    Shutdown has a short grace period, so a contending save skips rather than
+    waiting behind another process. Startup loads wait because crash recovery
+    can rename or remove a staging directory and should see a settled save.
     The lockfile is a permanent sibling: unlinking it would split flock users
     across different inodes.
     """
@@ -60,7 +61,7 @@ def _exclusive_save_lock(cache_dir: str):
     fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
     try:
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fd, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
         except BlockingIOError:
             logger.warning(
                 "[cache_persist] another server is saving %s; skipping this shutdown save",
@@ -115,12 +116,13 @@ def load_prefix_cache_from_disk() -> None:
         # ``hybrid_reuse_max_entries`` cap. ``protected_import=False`` makes
         # reloaded non-trimmable entries obey the retention bound at commit;
         # only the EXPLICIT ``POST /v1/cache/import`` (#476) pins its entries.
-        loaded = cfg.engine.load_cache_from_disk(d, protected_import=False)
-        if loaded > 0:
-            logger.debug(f"[lifespan] Loaded {loaded} prefix cache entries")
-        else:
-            logger.debug("[lifespan] No prefix cache entries found on disk")
-        _load_radix_index_after_cache(cfg.engine, d)
+        with _exclusive_cache_lock(d, blocking=True):
+            loaded = cfg.engine.load_cache_from_disk(d, protected_import=False)
+            if loaded > 0:
+                logger.debug(f"[lifespan] Loaded {loaded} prefix cache entries")
+            else:
+                logger.debug("[lifespan] No prefix cache entries found on disk")
+            _load_radix_index_after_cache(cfg.engine, d)
     except Exception as e:
         logger.warning(f"[lifespan] Failed to load cache from disk: {e}", exc_info=True)
 
@@ -235,7 +237,7 @@ def save_prefix_cache_to_disk(budget_sec: float | None = None) -> None:
         budget_sec = _shutdown_budget_sec()
     try:
         d = get_cache_dir()
-        with _exclusive_save_lock(d) as acquired:
+        with _exclusive_cache_lock(d, blocking=False) as acquired:
             if not acquired:
                 return
             should_abort = _make_should_abort(budget_sec) if budget_sec > 0 else None

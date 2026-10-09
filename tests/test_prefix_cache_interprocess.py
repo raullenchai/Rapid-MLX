@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import multiprocessing
 import shutil
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -31,6 +32,21 @@ def _save_worker(cache_dir, name, entered, release, outcome):
     runtime_cache.get_cache_dir = lambda: cache_dir
     runtime_cache.save_prefix_cache_to_disk(budget_sec=0)
     outcome.put(saved[0] if saved else None)
+
+
+def _load_worker(cache_dir, ready, entered):
+    from rapid_mlx.runtime import cache as runtime_cache
+
+    class Engine:
+        def load_cache_from_disk(self, path, protected_import=False):
+            entered.set()
+            shutil.rmtree(path + ".new", ignore_errors=True)
+            return 0
+
+    runtime_cache.get_config = lambda: SimpleNamespace(engine=Engine())
+    runtime_cache.get_cache_dir = lambda: cache_dir
+    ready.set()
+    runtime_cache.load_prefix_cache_from_disk()
 
 
 def test_concurrent_shutdown_saves_do_not_clobber_staging(tmp_path):
@@ -70,3 +86,41 @@ def test_concurrent_shutdown_saves_do_not_clobber_staging(tmp_path):
     assert second_outcome.get(timeout=2) is None
     assert not second_entered.is_set()
     assert (Path(cache_dir + ".new") / "first").read_text() == "first"
+
+
+def test_startup_load_waits_for_shutdown_save(tmp_path):
+    """Crash recovery on startup must not clear an active writer's stage."""
+    context = multiprocessing.get_context("spawn")
+    cache_dir = str(tmp_path / "model")
+    save_entered = context.Event()
+    load_ready = context.Event()
+    load_entered = context.Event()
+    release_save = context.Event()
+    outcome = context.Queue()
+    saver = context.Process(
+        target=_save_worker,
+        args=(cache_dir, "first", save_entered, release_save, outcome),
+    )
+    loader = context.Process(
+        target=_load_worker, args=(cache_dir, load_ready, load_entered)
+    )
+    try:
+        saver.start()
+        assert save_entered.wait(10)
+        loader.start()
+        assert load_ready.wait(10)
+        time.sleep(0.5)
+        assert not load_entered.is_set()
+    finally:
+        release_save.set()
+        saver.join(10)
+        if loader.pid:
+            loader.join(10)
+        for process in (saver, loader):
+            if process.pid and process.is_alive():
+                process.terminate()
+                process.join(10)
+
+    assert saver.exitcode == loader.exitcode == 0
+    assert outcome.get(timeout=2) is True
+    assert load_entered.is_set()
