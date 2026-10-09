@@ -23,6 +23,7 @@ FROZEN_ALLOWED_PATHS = {
     "tests/test_check_main_head.py",
     "tests/test_check_release_environment.py",
     "tests/test_check_release_source_ref.py",
+    "tests/test_ci_lane_promotion.py",
     "tests/release/test_desktop_release_promotion.sh",
     "docs/development/releasing.md",
     "pyproject.toml",
