@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import runpy
 import selectors
 import signal
@@ -1451,7 +1452,9 @@ def test_sigterm_exits_promptly_with_one_partial_report(tmp_path):
         )
         blocked = threading.Event()
         def block_probe(*_args):
-            os.write(2, b"PROBE_READY\\n")
+            # One pipe write can be prefetched by a text wrapper. Keep a line
+            # before readiness to prove the parent consumes raw pipe bytes.
+            os.write(2, b"PROBE_PROGRESS\\nPROBE_READY\\n")
             blocked.wait()
         module._probe_with_metadata = block_probe
         raise SystemExit(module.main([
@@ -1464,26 +1467,31 @@ def test_sigterm_exits_promptly_with_one_partial_report(tmp_path):
         [sys.executable, "-c", child],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
     )
     assert proc.stderr is not None
     selector = selectors.DefaultSelector()
     selector.register(proc.stderr, selectors.EVENT_READ)
-    before = []
-    while not any("PROBE_READY" in line for line in before):
-        assert selector.select(timeout=5), "subprocess did not start its probe"
-        line = proc.stderr.readline()
-        assert line, f"subprocess exited before readiness: {''.join(before)}"
-        before.append(line)
-    proc.send_signal(signal.SIGTERM)
+    before = bytearray()
     try:
-        returncode = proc.wait(timeout=2)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait(timeout=2)
-        pytest.fail("SIGTERM waited for the blocked executor")
-    remainder = proc.stderr.read()
-    error = "".join(before) + remainder
+        while b"PROBE_READY\n" not in before:
+            assert selector.select(timeout=5), "subprocess did not start its probe"
+            chunk = os.read(proc.stderr.fileno(), 4096)
+            assert chunk, (
+                f"subprocess exited before readiness: {before.decode(errors='replace')}"
+            )
+            before.extend(chunk)
+        proc.send_signal(signal.SIGTERM)
+        try:
+            returncode = proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pytest.fail("SIGTERM waited for the blocked executor")
+        remainder = proc.stderr.read()
+    finally:
+        selector.close()
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=2)
+    error = (bytes(before) + remainder).decode(errors="replace")
     assert returncode == 124
     assert error.count("PARTIAL REPORT") == 1
     assert "partial-alias" in error
