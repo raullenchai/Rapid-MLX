@@ -59,6 +59,10 @@ FIELDS = (
     "metal_peak_gb",
     "running",
     "waiting",
+    "model_loaded",
+    "model_load_total",
+    "model_unload_total",
+    "model_idle_ttl_s",
 )
 
 
@@ -121,6 +125,15 @@ class Soak:
         )
         self.writer.writeheader()
         self.totals = Counter()
+        self.first_load_total = None
+        self.first_unload_total = None
+        self.last_load_total = None
+        self.last_unload_total = None
+        self.unloaded_baseline = None
+        self.last_idle_unload = None
+        self.last_burst_load = None
+        self.completed_idle_cycles = 0
+        self.completed_reload_checks = 0
         self.client = httpx.AsyncClient(
             timeout=httpx.Timeout(args.timeout),
             limits=httpx.Limits(max_connections=args.concurrency + 4),
@@ -164,7 +177,7 @@ class Soak:
             )
             self.errors.flush()
 
-    async def request(self, worker):
+    async def request(self, worker, session=None, client=None):
         sequence = self.sequence
         self.sequence += 1
         kind = (
@@ -196,12 +209,15 @@ class Soak:
                     "Summarize how to release a cached resource after a request.",
                 )
             )
+        messages = (
+            list(session)
+            if session is not None
+            else [{"role": "system", "content": SHARED_PREFIX}]
+        )
+        messages.append({"role": "user", "content": prompt})
         payload = {
             "model": self.args.model,
-            "messages": [
-                {"role": "system", "content": SHARED_PREFIX},
-                {"role": "user", "content": prompt},
-            ],
+            "messages": messages,
             "max_tokens": 512 if kind in {"disconnect", "cancel"} else 80,
             "temperature": 0,
             "stream": kind in {"stream", "disconnect", "cancel", "long_prompt"},
@@ -211,46 +227,55 @@ class Soak:
             payload["tool_choice"] = "required"
         started = time.monotonic()
         try:
-            disconnected, cancelled, stage, error = await asyncio.wait_for(
-                self.send(kind, payload), timeout=self.args.timeout
+            disconnected, cancelled, stage, error, reply = await asyncio.wait_for(
+                self.send(kind, payload, client or self.client),
+                timeout=self.args.timeout,
             )
         except TimeoutError:
-            disconnected, cancelled, stage, error = (
+            disconnected, cancelled, stage, error, reply = (
                 False,
                 False,
                 "deadline",
                 "request deadline exceeded",
+                None,
             )
         except httpx.HTTPStatusError as exc:
-            disconnected, cancelled, stage, error = (
+            disconnected, cancelled, stage, error, reply = (
                 False,
                 False,
                 "http",
                 f"HTTP {exc.response.status_code}: {exc.response.text[:240]}",
+                None,
             )
         except Exception as exc:
-            disconnected, cancelled, stage, error = (
+            disconnected, cancelled, stage, error, reply = (
                 False,
                 False,
                 "request",
                 f"{type(exc).__name__}: {str(exc)[:240]}",
+                None,
             )
         self.record(
             kind, started, worker, sequence, stage, error, disconnected, cancelled
         )
+        if session is not None and not error and reply is not None:
+            session.append(messages[-1])
+            session.extend(reply if isinstance(reply, list) else [reply])
 
-    async def send(self, kind, payload):
+    async def send(self, kind, payload, client):
         disconnected = False
         cancelled = False
         requested_cancel = False
         stage = "initial"
         error = None
+        reply = None
         try:
             if payload["stream"]:
                 chunks = 0
                 done = False
                 finished = False
-                async with self.client.stream(
+                content = []
+                async with client.stream(
                     "POST", self.args.url + "/v1/chat/completions", json=payload
                 ) as response:
                     if response.status_code >= 400:
@@ -279,6 +304,10 @@ class Soak:
                                     choice.get("finish_reason") is not None
                                     for choice in item["choices"]
                                 )
+                                for choice in item["choices"]:
+                                    part = (choice.get("delta") or {}).get("content")
+                                    if isinstance(part, str):
+                                        content.append(part)
                                 chunks += 1
                         if kind == "disconnect" and chunks >= 3:
                             disconnected = True
@@ -293,20 +322,41 @@ class Soak:
                     error = "cancel stream ended before 3 chunks"
                 elif not disconnected and not (done and finished):
                     error = "stream missing completion marker"
+                elif not disconnected and kind != "cancel":
+                    if not "".join(content).strip():
+                        error = "empty stream answer"
+                    else:
+                        reply = {"role": "assistant", "content": "".join(content)}
             else:
-                response = await self.client.post(
+                response = await client.post(
                     self.args.url + "/v1/chat/completions", json=payload
                 )
                 response.raise_for_status()
                 body = response.json()
                 if not body.get("choices"):
                     error = "no choices"
+                elif (
+                    kind != "tool"
+                    and not (body["choices"][0]["message"].get("content") or "").strip()
+                ):
+                    error = "empty answer"
                 elif kind == "tool" and not body["choices"][0]["message"].get(
                     "tool_calls"
                 ):
                     error = "required tool call absent"
                 elif kind == "tool":
                     assistant = body["choices"][0]["message"]
+                    if any(
+                        call.get("function", {}).get("name") != "lookup_symbol"
+                        for call in assistant["tool_calls"]
+                    ):
+                        raise ValueError("unexpected tool name")
+                    if any(
+                        json.loads(call["function"]["arguments"]).get("name")
+                        != "parse_request"
+                        for call in assistant["tool_calls"]
+                    ):
+                        raise ValueError("incorrect tool arguments")
                     replies = [
                         {
                             "role": "tool",
@@ -322,12 +372,21 @@ class Soak:
                         "max_tokens": 40,
                     }
                     stage = "tool_followup"
-                    followup_response = await self.client.post(
+                    followup_response = await client.post(
                         self.args.url + "/v1/chat/completions", json=followup
                     )
                     followup_response.raise_for_status()
-                    if not followup_response.json().get("choices"):
+                    followup_choices = followup_response.json().get("choices")
+                    if not followup_choices:
                         error = "tool follow-up has no choices"
+                    elif not (
+                        followup_choices[0]["message"].get("content") or ""
+                    ).strip():
+                        error = "empty tool follow-up answer"
+                    else:
+                        reply = [assistant, *replies, followup_choices[0]["message"]]
+                else:
+                    reply = body["choices"][0]["message"]
         except asyncio.CancelledError:
             if kind == "cancel" and requested_cancel:
                 cancelled = True
@@ -337,12 +396,52 @@ class Soak:
             error = f"HTTP {exc.response.status_code}: {exc.response.text[:240]}"
         except Exception as exc:
             error = f"{type(exc).__name__}: {str(exc)[:240]}"
-        return disconnected, cancelled, stage, error
+        return disconnected, cancelled, stage, error, reply
 
     async def worker(self, index):
+        if self.args.daemon:
+            await self.daemon_worker(index)
+            return
         while time.monotonic() < self.stop:
             await self.request(index)
             await asyncio.sleep(self.args.pause)
+
+    async def daemon_worker(self, index):
+        session = [{"role": "system", "content": SHARED_PREFIX + f" Session {index}."}]
+        turns = 0
+        requests = 0
+        client = None
+        try:
+            while time.monotonic() < self.stop:
+                cycle = self.args.burst_seconds + self.args.idle_seconds
+                phase = (time.monotonic() - self.start) % cycle
+                if phase >= self.args.burst_seconds:
+                    await asyncio.sleep(
+                        min(self.stop - time.monotonic(), cycle - phase)
+                    )
+                    continue
+                if client is None or requests % self.args.reconnect_every == 0:
+                    if client is not None:
+                        await client.aclose()
+                    client = httpx.AsyncClient(timeout=httpx.Timeout(self.args.timeout))
+                    self.totals["reconnects"] += int(requests > 0)
+                await self.request(index, session, client)
+                requests += 1
+                turns += 1
+                if turns >= self.args.session_max_turns:
+                    session = [
+                        {
+                            "role": "system",
+                            "content": SHARED_PREFIX
+                            + f" Session {index}, continuation {requests}.",
+                        }
+                    ]
+                    turns = 0
+                    self.totals["session_rotations"] += 1
+                await asyncio.sleep(self.args.pause)
+        finally:
+            if client is not None:
+                await client.aclose()
 
     def event_row(self, minute, events):
         elapsed = round(time.monotonic() - self.start, 1)
@@ -367,13 +466,33 @@ class Soak:
         )
         return row
 
-    async def sample(self, minute):
+    def record_lifecycle(self, row, lifecycle):
+        row["model_loaded"] = lifecycle.get("model_loaded", "")
+        row["model_load_total"] = lifecycle.get("load_total", "")
+        row["model_unload_total"] = lifecycle.get("unload_total", "")
+        row["model_idle_ttl_s"] = lifecycle.get("idle_unload_seconds", "")
+        if isinstance(row["model_load_total"], int):
+            if self.first_load_total is None:
+                self.first_load_total = row["model_load_total"]
+            self.last_load_total = row["model_load_total"]
+        if isinstance(row["model_unload_total"], int):
+            if self.first_unload_total is None:
+                self.first_unload_total = row["model_unload_total"]
+            self.last_unload_total = row["model_unload_total"]
+            if self.last_idle_unload is None:
+                self.last_idle_unload = row["model_unload_total"]
+
+    async def sample(self, minute, *, idle_probe=False, burst_probe=False):
         events = self.events[:]
         row = self.event_row(minute, events)
         for path, key in (("/health", "health_ok"), ("/v1/models", "models_ok")):
             try:
                 response = await self.client.get(self.args.url + path, timeout=10)
                 row[key] = int(response.status_code == 200)
+                if path == "/health" and row[key]:
+                    self.record_lifecycle(
+                        row, response.json().get("model_lifecycle") or {}
+                    )
             except httpx.HTTPError:
                 row[key] = 0
         try:
@@ -402,16 +521,68 @@ class Soak:
         print(json.dumps(row), flush=True)
         self.totals["probe_errors"] += 2 - row["health_ok"] - row["models_ok"]
         if (
-            status_error
-            or row["metal_active_gb"] is None
-            or row["metal_cache_gb"] is None
+            self.args.daemon
+            and row["model_loaded"] is True
+            and (row["metal_active_gb"] is None or row["metal_cache_gb"] is None)
+        ):
+            # Health and status are separate requests; TTL can unload between
+            # them. A second health read distinguishes a real missing status
+            # field from that normal lifecycle transition.
+            response = await self.client.get(self.args.url + "/health", timeout=10)
+            response.raise_for_status()
+            self.record_lifecycle(row, response.json().get("model_lifecycle") or {})
+        if self.args.daemon and (
+            not isinstance(row["model_loaded"], bool)
+            or not isinstance(row["model_load_total"], int)
+            or not isinstance(row["model_unload_total"], int)
+            or not isinstance(row["model_idle_ttl_s"], (int, float))
+        ):
+            raise RuntimeError("model lifecycle telemetry unavailable")
+        if (
+            self.args.daemon
+            and abs(row["model_idle_ttl_s"] - self.args.expected_ttl_seconds) > 0.001
+        ):
+            raise RuntimeError("server idle TTL differs from expected TTL")
+        if status_error or (
+            row["model_loaded"] is not False
+            and (row["metal_active_gb"] is None or row["metal_cache_gb"] is None)
         ):
             raise RuntimeError(f"Metal telemetry unavailable: {status_error}")
         if row["rss_mb"] > self.args.max_rss_mb:
             raise RuntimeError(f"RSS budget exceeded: {row['rss_mb']} MB")
-        metal_total = row["metal_active_gb"] + row["metal_cache_gb"]
-        if metal_total > self.args.max_metal_gb:
-            raise RuntimeError(f"Metal budget exceeded: {metal_total} GB")
+        cycle = self.args.burst_seconds + self.args.idle_seconds
+        phase = (time.monotonic() - self.start) % cycle
+        settled_idle = self.args.daemon and self.args.burst_seconds <= phase < (
+            cycle if idle_probe else cycle - 15
+        )
+        if row["model_loaded"] is False and settled_idle:
+            if self.unloaded_baseline is None:
+                self.unloaded_baseline = row
+            for field, limit in (
+                ("rss_mb", self.args.max_idle_rss_growth_mb),
+                ("threads", self.args.max_idle_thread_growth),
+                ("open_files", self.args.max_idle_file_growth),
+            ):
+                growth = row[field] - self.unloaded_baseline[field]
+                if growth > limit:
+                    raise RuntimeError(f"unloaded {field} drift exceeded: {growth}")
+        elif row["metal_active_gb"] is not None and row["metal_cache_gb"] is not None:
+            metal_total = row["metal_active_gb"] + row["metal_cache_gb"]
+            if metal_total > self.args.max_metal_gb:
+                raise RuntimeError(f"Metal budget exceeded: {metal_total} GB")
+        if idle_probe:
+            if row["model_loaded"] is not False:
+                raise RuntimeError("model still loaded at end of idle window")
+            if row["model_unload_total"] <= self.last_idle_unload:
+                raise RuntimeError("model did not unload in this idle cycle")
+            self.last_idle_unload = row["model_unload_total"]
+            self.completed_idle_cycles += 1
+        if burst_probe:
+            if self.last_burst_load is not None:
+                if row["model_load_total"] <= self.last_burst_load:
+                    raise RuntimeError("model did not reload for this burst")
+                self.completed_reload_checks += 1
+            self.last_burst_load = row["model_load_total"]
 
     async def run(self):
         workers = []
@@ -425,11 +596,33 @@ class Soak:
                 for i in range(self.args.concurrency)
             ]
             minute = 1
+            cycle_minutes = int((self.args.burst_seconds + self.args.idle_seconds) / 60)
             while time.monotonic() < self.stop:
                 await asyncio.sleep(
                     max(0, min(self.stop, self.start + minute * 60) - time.monotonic())
                 )
-                await self.sample(minute)
+                await self.sample(
+                    minute,
+                    burst_probe=(
+                        self.args.daemon
+                        and minute % cycle_minutes == 1
+                        and minute * 60 < self.args.duration
+                    ),
+                )
+                if (
+                    self.args.daemon
+                    and (minute + 1) % cycle_minutes == 0
+                    and (minute + 1) * 60 <= self.args.duration
+                ):
+                    await asyncio.sleep(
+                        max(
+                            0,
+                            self.start + (minute + 1) * 60 - 10 - time.monotonic(),
+                        )
+                    )
+                    await self.sample(
+                        f"idle-{(minute + 1) // cycle_minutes}", idle_probe=True
+                    )
                 minute += 1
             await asyncio.wait_for(
                 asyncio.gather(*workers),
@@ -458,6 +651,9 @@ class Soak:
                 "disconnect",
                 "cancel",
             )
+            expected_idle_cycles = int(
+                self.args.duration // (self.args.burst_seconds + self.args.idle_seconds)
+            )
             passed = (
                 failure is None
                 and finished_normally
@@ -468,6 +664,19 @@ class Soak:
                 and all(self.totals[kind] > 0 for kind in required)
                 and self.totals["disconnects"] > 0
                 and self.totals["cancellations"] > 0
+                and (
+                    not self.args.daemon
+                    or (
+                        self.last_load_total is not None
+                        and self.last_unload_total is not None
+                        and self.completed_reload_checks
+                        >= max(0, expected_idle_cycles - 1)
+                        and self.completed_idle_cycles >= expected_idle_cycles
+                        and self.unloaded_baseline is not None
+                        and self.totals["reconnects"] > 0
+                        and self.totals["session_rotations"] > 0
+                    )
+                )
             )
             (self.args.output / "summary.json").write_text(
                 json.dumps(
@@ -476,6 +685,19 @@ class Soak:
                         "server_pid": self.args.pid,
                         "model": self.args.model,
                         "totals": dict(self.totals),
+                        "load_total_start_end": [
+                            self.first_load_total,
+                            self.last_load_total,
+                        ],
+                        "unload_total_start_end": [
+                            self.first_unload_total,
+                            self.last_unload_total,
+                        ],
+                        "expected_idle_cycles": expected_idle_cycles
+                        if self.args.daemon
+                        else None,
+                        "completed_idle_cycles": self.completed_idle_cycles,
+                        "completed_reload_checks": self.completed_reload_checks,
                         "passed": passed,
                         "failure": str(failure) if failure else None,
                     },
@@ -502,9 +724,43 @@ def main():
     parser.add_argument("--max-metal-gb", type=float, default=12)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--daemon", action="store_true")
+    parser.add_argument("--burst-seconds", type=float, default=120)
+    parser.add_argument("--idle-seconds", type=float, default=180)
+    parser.add_argument("--expected-ttl-seconds", type=float, default=30)
+    parser.add_argument("--reconnect-every", type=int, default=8)
+    parser.add_argument("--session-max-turns", type=int, default=16)
+    parser.add_argument("--max-idle-rss-growth-mb", type=float, default=1024)
+    parser.add_argument("--max-idle-thread-growth", type=int, default=10)
+    parser.add_argument("--max-idle-file-growth", type=int, default=50)
     args = parser.parse_args()
     if args.duration <= 0 or args.timeout <= 0 or args.concurrency <= 0:
         parser.error("duration, timeout, and concurrency must be positive")
+    if (
+        args.daemon
+        and min(
+            args.burst_seconds,
+            args.idle_seconds,
+            args.expected_ttl_seconds,
+            args.reconnect_every,
+            args.session_max_turns,
+        )
+        <= 0
+    ):
+        parser.error("daemon timing and session options must be positive")
+    ttl_monitor_interval = min(60, max(1, args.expected_ttl_seconds / 4))
+    if args.daemon and args.idle_seconds < (
+        args.timeout + args.expected_ttl_seconds + ttl_monitor_interval + 10
+    ):
+        parser.error(
+            "idle-seconds must cover the request deadline, idle TTL, monitor interval, and ten-second probe lead"
+        )
+    if args.daemon and (
+        args.burst_seconds < 60 or (args.burst_seconds + args.idle_seconds) % 60 != 0
+    ):
+        parser.error(
+            "daemon bursts must be at least 60 seconds and cycles must align to minutes"
+        )
     args.output.mkdir(parents=True, exist_ok=True)
     asyncio.run(Soak(args).run())
 
