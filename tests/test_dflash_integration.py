@@ -3528,7 +3528,10 @@ def test_dflash_admission_reserved_before_body_parse(monkeypatch) -> None:
     assert response.json()["error"]["code"] == "at_capacity"
 
 
-def test_dflash_slow_prompt_render_is_charged_against_deadline(monkeypatch) -> None:
+@pytest.mark.parametrize("setup_delay", [0.0, 0.1], ids=["immediate", "delayed-setup"])
+def test_dflash_slow_prompt_render_is_charged_against_deadline(
+    monkeypatch, setup_delay
+) -> None:
     """codex round-4 #4: prompt rendering time is charged against the request
     ``timeout``, and rendering is offloaded off the event loop.
 
@@ -3556,8 +3559,43 @@ def test_dflash_slow_prompt_render_is_charged_against_deadline(monkeypatch) -> N
 
     render_may_finish = threading.Event()
     render_started = threading.Event()
+    render_clock_started = [None]
+
+    # This case requires an already-running render, not a request whose budget
+    # expired during setup or thread scheduling. Start only the endpoint's test
+    # clock when rendering enters; asyncio's real timeout remains 0.05 seconds.
+    import asyncio as real_asyncio
+
+    class RenderClockLoop:
+        def __init__(self, loop):
+            self.loop = loop
+
+        def __getattr__(self, name):
+            return getattr(self.loop, name)
+
+        def time(self):
+            started = render_clock_started[0]
+            return 0.0 if started is None else time.monotonic() - started
+
+    class RenderClockAsyncio:
+        def __getattr__(self, name):
+            return getattr(real_asyncio, name)
+
+        def get_running_loop(self):
+            return RenderClockLoop(real_asyncio.get_running_loop())
+
+    monkeypatch.setattr(srv, "asyncio", RenderClockAsyncio())
+
+    resolve_thinking = srv._resolve_serial_thinking
+
+    def _delayed_setup(*args, **kwargs):
+        time.sleep(setup_delay)
+        return resolve_thinking(*args, **kwargs)
+
+    monkeypatch.setattr(srv, "_resolve_serial_thinking", _delayed_setup)
 
     def _slow_render(*_args, **_kwargs) -> str:
+        render_clock_started[0] = time.monotonic()
         render_started.set()
         render_may_finish.wait(timeout=5)
         return "rendered"

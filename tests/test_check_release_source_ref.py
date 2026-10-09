@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 from scripts import check_release_source_ref as mod
 
@@ -231,6 +232,37 @@ def test_frozen_policy_history_passes_in_hermetic_git_repo(tmp_path, monkeypatch
         repo=str(repo),
     )
     assert frozen in "\n".join(evidence)
+
+    # Reproduce the hosted depth-one checkout: the frozen ancestor is absent.
+    shallow = tmp_path / "shallow"
+    subprocess.run(
+        ["git", "clone", "-q", "--depth=1", repo.as_uri(), str(shallow)], check=True
+    )
+    with pytest.raises(mod.ReleaseSourceError, match="not an ancestor"):
+        mod.check_source(
+            source_ref=mod.FROZEN_REF,
+            live_sha=head,
+            accepted_sha=head,
+            release_sha=head,
+            version=mod.FROZEN_VERSION,
+            repo=str(shallow),
+        )
+    workflow = yaml.safe_load((ROOT / ".github/workflows/auto-release.yml").read_text())
+    checkout = workflow["jobs"]["detect"]["steps"][0]
+    depth = checkout.get("with", {}).get("fetch-depth", 1)
+    configured = tmp_path / "configured"
+    args = ["git", "clone", "-q"]
+    if depth:
+        args.append(f"--depth={depth}")
+    subprocess.run([*args, repo.as_uri(), str(configured)], check=True)
+    assert mod.check_source(
+        source_ref=mod.FROZEN_REF,
+        live_sha=head,
+        accepted_sha=head,
+        release_sha=head,
+        version=mod.FROZEN_VERSION,
+        repo=str(configured),
+    )
 
 
 def test_workflows_pin_only_exact_frozen_route():
