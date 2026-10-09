@@ -128,6 +128,7 @@ class Soak:
         self.first_unload_total = None
         self.last_load_total = None
         self.last_unload_total = None
+        self.unloaded_baseline = None
         self.client = httpx.AsyncClient(
             timeout=httpx.Timeout(args.timeout),
             limits=httpx.Limits(max_connections=args.concurrency + 4),
@@ -345,6 +346,12 @@ class Soak:
                         for call in assistant["tool_calls"]
                     ):
                         raise ValueError("unexpected tool name")
+                    if any(
+                        json.loads(call["function"]["arguments"]).get("name")
+                        != "parse_request"
+                        for call in assistant["tool_calls"]
+                    ):
+                        raise ValueError("incorrect tool arguments")
                     replies = [
                         {
                             "role": "tool",
@@ -501,17 +508,34 @@ class Soak:
         del self.events[: len(events)]
         print(json.dumps(row), flush=True)
         self.totals["probe_errors"] += 2 - row["health_ok"] - row["models_ok"]
-        if (
-            status_error
-            or row["metal_active_gb"] is None
-            or row["metal_cache_gb"] is None
+        if self.args.daemon and (
+            not isinstance(row["model_loaded"], bool)
+            or not isinstance(row["model_load_total"], int)
+            or not isinstance(row["model_unload_total"], int)
+        ):
+            raise RuntimeError("model lifecycle telemetry unavailable")
+        if status_error or (
+            row["model_loaded"] is not False
+            and (row["metal_active_gb"] is None or row["metal_cache_gb"] is None)
         ):
             raise RuntimeError(f"Metal telemetry unavailable: {status_error}")
         if row["rss_mb"] > self.args.max_rss_mb:
             raise RuntimeError(f"RSS budget exceeded: {row['rss_mb']} MB")
-        metal_total = row["metal_active_gb"] + row["metal_cache_gb"]
-        if metal_total > self.args.max_metal_gb:
-            raise RuntimeError(f"Metal budget exceeded: {metal_total} GB")
+        if row["model_loaded"] is False and self.args.daemon:
+            if self.unloaded_baseline is None:
+                self.unloaded_baseline = row
+            for field, limit in (
+                ("rss_mb", self.args.max_idle_rss_growth_mb),
+                ("threads", self.args.max_idle_thread_growth),
+                ("open_files", self.args.max_idle_file_growth),
+            ):
+                growth = row[field] - self.unloaded_baseline[field]
+                if growth > limit:
+                    raise RuntimeError(f"unloaded {field} drift exceeded: {growth}")
+        elif row["metal_active_gb"] is not None and row["metal_cache_gb"] is not None:
+            metal_total = row["metal_active_gb"] + row["metal_cache_gb"]
+            if metal_total > self.args.max_metal_gb:
+                raise RuntimeError(f"Metal budget exceeded: {metal_total} GB")
 
     async def run(self):
         workers = []
@@ -558,6 +582,9 @@ class Soak:
                 "disconnect",
                 "cancel",
             )
+            expected_idle_cycles = int(
+                self.args.duration // (self.args.burst_seconds + self.args.idle_seconds)
+            )
             passed = (
                 failure is None
                 and finished_normally
@@ -573,8 +600,11 @@ class Soak:
                     or (
                         self.last_load_total is not None
                         and self.last_unload_total is not None
-                        and self.last_load_total > self.first_load_total
-                        and self.last_unload_total > self.first_unload_total
+                        and self.last_load_total - self.first_load_total
+                        >= max(0, expected_idle_cycles - 1)
+                        and self.last_unload_total - self.first_unload_total
+                        >= expected_idle_cycles
+                        and self.unloaded_baseline is not None
                         and self.totals["reconnects"] > 0
                         and self.totals["session_rotations"] > 0
                     )
@@ -595,6 +625,9 @@ class Soak:
                             self.first_unload_total,
                             self.last_unload_total,
                         ],
+                        "expected_idle_cycles": expected_idle_cycles
+                        if self.args.daemon
+                        else None,
                         "passed": passed,
                         "failure": str(failure) if failure else None,
                     },
@@ -623,9 +656,13 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--daemon", action="store_true")
     parser.add_argument("--burst-seconds", type=float, default=120)
-    parser.add_argument("--idle-seconds", type=float, default=120)
+    parser.add_argument("--idle-seconds", type=float, default=180)
+    parser.add_argument("--expected-ttl-seconds", type=float, default=30)
     parser.add_argument("--reconnect-every", type=int, default=8)
     parser.add_argument("--session-max-turns", type=int, default=16)
+    parser.add_argument("--max-idle-rss-growth-mb", type=float, default=1024)
+    parser.add_argument("--max-idle-thread-growth", type=int, default=10)
+    parser.add_argument("--max-idle-file-growth", type=int, default=50)
     args = parser.parse_args()
     if args.duration <= 0 or args.timeout <= 0 or args.concurrency <= 0:
         parser.error("duration, timeout, and concurrency must be positive")
@@ -634,12 +671,20 @@ def main():
         and min(
             args.burst_seconds,
             args.idle_seconds,
+            args.expected_ttl_seconds,
             args.reconnect_every,
             args.session_max_turns,
         )
         <= 0
     ):
         parser.error("daemon timing and session options must be positive")
+    if (
+        args.daemon
+        and args.idle_seconds < args.timeout + args.expected_ttl_seconds + 30
+    ):
+        parser.error(
+            "idle-seconds must cover the request deadline, idle TTL, and a 30-second monitor margin"
+        )
     args.output.mkdir(parents=True, exist_ok=True)
     asyncio.run(Soak(args).run())
 

@@ -43,10 +43,15 @@ history rotates after `--session-max-turns` successful attempts to bound a
 24-hour run; each new session starts with its own system prompt. The client
 reconnects after `--reconnect-every` requests. All workers send during each
 `--burst-seconds` window and stop during `--idle-seconds`. Use the primary-model
-`--idle-unload-seconds` serve flag with an idle window longer than that TTL.
-The verdict requires observed lifecycle load and unload counter increases,
-reconnects, session rotations, completed answers, required tool calls, and the
-existing cancellation, disconnect, probe, and resource checks.
+`--idle-unload-seconds` serve flag and pass the same value to the harness as
+`--expected-ttl-seconds`. The idle window must also cover the request deadline
+and 30 seconds for the server's TTL monitor, so an in-flight request started at
+the end of a burst cannot consume the whole idle gap.
+The verdict requires one observed unload and reload for every complete idle
+cycle, reconnects, session rotations, completed answers, correct tool arguments,
+and the existing cancellation, disconnect, probe, and resource checks. During
+standby the server has no Metal telemetry; the harness checks RSS, threads, and
+open files against the first unloaded sample instead.
 
 ```sh
 rapid-mlx serve mlx-community/Qwen3.5-4B-MLX-4bit \
@@ -57,7 +62,7 @@ rapid-mlx serve mlx-community/Qwen3.5-4B-MLX-4bit \
 python scripts/longrun_agent_soak.py \
   --daemon --url http://127.0.0.1:18620 --model qwen3.5-4b-4bit \
   --pid SERVER_PID --duration 86400 --concurrency 6 \
-  --burst-seconds 120 --idle-seconds 120 \
+  --burst-seconds 120 --idle-seconds 180 --expected-ttl-seconds 30 \
   --output /path/to/run-24h
 ```
 
