@@ -184,6 +184,10 @@ def test_confidence_and_noul_calibration_follow_the_release_formulas():
     assert noul_probability(0.5) == pytest.approx(0.5)
     expected = 1 / (1 + math.exp(-math.log(0.9 / 0.1) / NOUL_TEMPERATURE))
     assert noul_probability(0.9) == pytest.approx(expected)
+    # Golden values from the release helper's formula with its MLX settings
+    # (READOUT_NOUL_T=1.829074, READOUT_NOUL_BIAS=0): logit / T, not logit * T.
+    assert noul_probability(0.9) == pytest.approx(0.768752, abs=1e-6)
+    assert noul_probability(0.2) == pytest.approx(0.319098, abs=1e-6)
     # A saturated readout is clipped before the logit, so it stays finite.
     assert noul_probability(1.0) == pytest.approx(noul_probability(1 - 1e-4))
     assert noul_probability(0.0) == pytest.approx(noul_probability(1e-4))

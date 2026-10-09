@@ -35,6 +35,8 @@ LETTERS = [chr(code) for code in range(ord("A"), ord("Z") + 1)] + [
     chr(code) for code in range(ord("a"), ord("z") + 1)
 ]
 READOUT_TEMPERATURE = 0.85
+# Yes/no calibration of the MLX release (READOUT_NOUL_T, bias 0): the yes/no
+# log-odds are divided by this temperature, as in the release helper.
 NOUL_TEMPERATURE = 1.829074
 NOUL_CLIP = 1e-4
 SCORE_SUFFIX = " Rate along the ordered levels below (lowest first)."
