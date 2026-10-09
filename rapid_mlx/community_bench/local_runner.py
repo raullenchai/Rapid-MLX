@@ -140,7 +140,11 @@ def _failure_code(error: Exception) -> str:
         return "runtime_oom"
     if "unsupported" in message:
         return "unsupported_task"
-    if "timeout" in message or "timed out" in message:
+    if (
+        isinstance(error, (TimeoutError, asyncio.TimeoutError))
+        or "timeout" in message
+        or "timed out" in message
+    ):
         return "timeout"
     if "model" in message and ("invalid" in message or "not found" in message):
         return "invalid_model"
@@ -987,14 +991,13 @@ class _ServingBenchmarkAdapter:
                 completed = True
                 return
 
-            loop = asyncio.get_running_loop()
-            deadline = loop.time() + timeout
+            # Match AsyncEngineCore: bound each wait for output, not the
+            # total round. A healthy long decode can take over 180 seconds.
             while True:
                 try:
-                    remaining = deadline - loop.time()
-                    if remaining <= 0:
+                    if timeout <= 0:
                         raise asyncio.TimeoutError
-                    output = await asyncio.wait_for(anext(stream), timeout=remaining)
+                    output = await asyncio.wait_for(anext(stream), timeout=timeout)
                 except StopAsyncIteration:
                     completed = True
                     return

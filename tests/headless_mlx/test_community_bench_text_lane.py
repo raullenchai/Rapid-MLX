@@ -172,7 +172,7 @@ def test_serving_adapter_tolerates_stream_close_error() -> None:
     assert events == ["close"]
 
 
-def test_serving_adapter_timeout_is_total_request_budget() -> None:
+def test_serving_adapter_timeout_aborts_stalled_stream() -> None:
     from rapid_mlx.engine.base import GenerationOutput
     from rapid_mlx.request import SamplingParams
 
@@ -185,9 +185,8 @@ def test_serving_adapter_timeout_is_total_request_budget() -> None:
 
         async def stream_generate(self, _prompt, **_kwargs):
             try:
-                for token in (7, 8):
-                    await asyncio.sleep(0.03)
-                    yield GenerationOutput(text="a", new_text="a", tokens=[token])
+                yield GenerationOutput(text="a", new_text="a", tokens=[7])
+                await asyncio.Event().wait()
             finally:
                 events.append("closed")
 
@@ -201,6 +200,37 @@ def test_serving_adapter_timeout_is_total_request_budget() -> None:
         asyncio.run(exercise())
     assert any(event.startswith("abort:") for event in events)
     assert "closed" in events
+
+
+def test_serving_adapter_allows_progress_beyond_timeout(monkeypatch) -> None:
+    """A healthy long round may exceed 180s while each output arrives in time."""
+    from rapid_mlx.engine.base import GenerationOutput
+    from rapid_mlx.request import SamplingParams
+
+    clock = [0.0]
+    budgets = []
+
+    class Engine:
+        async def stream_generate(self, _prompt, **_kwargs):
+            for token in (7, 8, 9):
+                clock[0] += 100.0
+                yield GenerationOutput(text="a", new_text="a", tokens=[token])
+
+    async def wait_for(awaitable, timeout):
+        budgets.append(timeout)
+        return await awaitable
+
+    async def exercise():
+        loop = asyncio.get_running_loop()
+        monkeypatch.setattr(loop, "time", lambda: clock[0])
+        monkeypatch.setattr(local_runner.asyncio, "wait_for", wait_for)
+        adapter = local_runner._ServingBenchmarkAdapter(Engine())
+        request_id = await adapter.add_request([1], SamplingParams(max_tokens=3))
+        return [out async for out in adapter.stream_outputs(request_id, timeout=180)]
+
+    outputs = asyncio.run(exercise())
+    assert outputs[-1].output_token_ids == [7, 8, 9]
+    assert budgets == [180] * 4  # Includes consuming EOF for normal cleanup.
 
 
 def test_serving_adapter_rejects_unsupported_token_stop_ids() -> None:
