@@ -38,6 +38,33 @@ def _fail(*_args, **_kwargs):
     raise AssertionError("must not be called")
 
 
+def _install_optional_runtime_stubs(monkeypatch, *, mlx=False, mlx_lm=False):
+    """Install only the import surface needed to reach download-policy gates."""
+    if mlx:
+        mlx_package = ModuleType("mlx")
+        mlx_package.__path__ = []
+        mlx_core = ModuleType("mlx.core")
+        mlx_core.bfloat16 = object()
+        mlx_core.float16 = object()
+        mlx_core.float32 = object()
+        mlx_nn = ModuleType("mlx.nn")
+        mlx_nn.Module = object
+        mlx_package.core = mlx_core
+        mlx_package.nn = mlx_nn
+        monkeypatch.setitem(sys.modules, "mlx", mlx_package)
+        monkeypatch.setitem(sys.modules, "mlx.core", mlx_core)
+        monkeypatch.setitem(sys.modules, "mlx.nn", mlx_nn)
+    if mlx_lm:
+        mlx_lm_package = ModuleType("mlx_lm")
+        mlx_lm_package.__path__ = []
+        mlx_lm_utils = ModuleType("mlx_lm.utils")
+        mlx_lm_utils.load_model = _fail
+        mlx_lm_utils.load_tokenizer = _fail
+        mlx_lm_package.utils = mlx_lm_utils
+        monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm_package)
+        monkeypatch.setitem(sys.modules, "mlx_lm.utils", mlx_lm_utils)
+
+
 def test_downloads_allowed_by_default(monkeypatch, cli):
     monkeypatch.setattr(cli, "_cache_runnability", _fail)
     assert model_downloads.source() is None
@@ -483,21 +510,25 @@ def test_anthropic_download_policy_error_keeps_anthropic_envelope():
 
 
 def test_gemma_remote_loader_stops_at_download_policy(monkeypatch):
-    from rapid_mlx.models import gemma4_text
-
-    model_downloads.configure(True)
-    monkeypatch.setattr(
-        model_downloads,
-        "snapshot_download",
-        lambda _model: model_downloads.check(_model),
-    )
-    monkeypatch.setitem(
-        sys.modules, "mlx_lm.utils", SimpleNamespace(load_tokenizer=_fail)
-    )
-    with pytest.raises(ModelDownloadsDisabledError):
-        gemma4_text._load_gemma4_text_impl(
-            "acme/uncached", resolve_classes=_fail, default_model_type="gemma4"
+    _install_optional_runtime_stubs(monkeypatch, mlx=True, mlx_lm=True)
+    models_package = ModuleType("rapid_mlx.models")
+    models_package.__path__ = [str(Path(__file__).parents[1] / "rapid_mlx" / "models")]
+    monkeypatch.setitem(sys.modules, "rapid_mlx.models", models_package)
+    monkeypatch.delitem(sys.modules, "rapid_mlx.models.gemma4_text", raising=False)
+    try:
+        gemma4_text = importlib.import_module("rapid_mlx.models.gemma4_text")
+        model_downloads.configure(True)
+        monkeypatch.setattr(
+            model_downloads,
+            "snapshot_download",
+            lambda _model: model_downloads.check(_model),
         )
+        with pytest.raises(ModelDownloadsDisabledError):
+            gemma4_text._load_gemma4_text_impl(
+                "acme/uncached", resolve_classes=_fail, default_model_type="gemma4"
+            )
+    finally:
+        sys.modules.pop("rapid_mlx.models.gemma4_text", None)
 
 
 def test_pinned_hy3_sidecar_stops_at_download_policy(monkeypatch):
@@ -580,6 +611,8 @@ def test_video_tokenizer_and_model_fallbacks_fail_before_network(monkeypatch):
 )
 def test_tokenizer_remote_boundaries_use_policy(monkeypatch, target, args):
     model_downloads.configure(True)
+    if target.endswith(("_load_strict_false", "_load_with_tokenizer_fallback")):
+        _install_optional_runtime_stubs(monkeypatch, mlx_lm=True)
     function = getattr(
         importlib.import_module(target.rsplit(".", 1)[0]), target.rsplit(".", 1)[1]
     )
