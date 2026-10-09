@@ -12,8 +12,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from rapid_mlx.agents import get_profile, load_profiles
 from rapid_mlx.agents.adapter import get_setup_instructions, setup_agent_config
+from rapid_mlx.agents.opencode_config import reconcile
 from rapid_mlx.agents.opencode_version import installed_version
 from rapid_mlx.agents.testing import (
     E2E_FIRST_LINE_TOKEN,
@@ -109,6 +112,10 @@ def test_opencode_upgrade_keeps_legacy_models_and_options(tmp_path, monkeypatch)
         "id": "upstream-extra-model",
         "tool_call": False,
         "limit": {"context": 16384, "output": 4096},
+        "options": {"timeout": 5000},
+        "headers": {"X-Local": "yes"},
+        "status": "deprecated",
+        "modalities": {"input": ["text"], "output": ["text"]},
     }
     path.write_text(json.dumps(old))
 
@@ -117,8 +124,11 @@ def test_opencode_upgrade_keeps_legacy_models_and_options(tmp_path, monkeypatch)
     assert native["settings"]["timeout"] == 600000
     assert native["models"]["extra-model"] == {
         "modelID": "upstream-extra-model",
-        "capabilities": {"tools": False},
+        "capabilities": {"tools": False, "input": ["text"], "output": ["text"]},
         "limit": {"context": 16384, "output": 4096},
+        "settings": {"timeout": 5000},
+        "headers": {"X-Local": "yes"},
+        "disabled": True,
     }
     assert "new-model" in native["models"]
 
@@ -138,6 +148,31 @@ def test_opencode_downgrade_reports_other_native_providers(tmp_path, monkeypatch
     )
     assert "OpenCode 1.x cannot read" in message
     assert path.read_text() == original
+
+
+@pytest.mark.parametrize("legacy_model", ["invalid", {"cost": {"input": 1}}])
+def test_opencode_upgrade_reports_models_needing_manual_migration(
+    tmp_path, monkeypatch, legacy_model
+):
+    profile = get_profile("opencode")
+    assert profile is not None
+    monkeypatch.setenv("HOME", str(tmp_path))
+    setup_agent_config(profile, model_id="old-model", agent_version="1.18.35")
+    path = tmp_path / ".config/opencode/opencode.json"
+    config = json.loads(path.read_text())
+    config["provider"]["rapid-mlx"]["models"]["extra-model"] = legacy_model
+    original = json.dumps(config)
+    path.write_text(original)
+    message = setup_agent_config(profile, model_id="new-model", agent_version="2.0.26")
+    assert "Cannot migrate legacy OpenCode model 'extra-model'" in message
+    assert path.read_text() == original
+
+
+def test_opencode_reconcile_leaves_unrelated_provider_config_intact():
+    no_legacy = {"providers": {"other": {}}}
+    no_rapid_mlx = {"provider": {"other": {}}, "providers": {"other": {}}}
+    assert reconcile(no_legacy, "2.0.26") == no_legacy
+    assert reconcile(no_rapid_mlx, "2.0.26") == no_rapid_mlx
 
 
 def test_opencode_instructions_detect_old_major():
