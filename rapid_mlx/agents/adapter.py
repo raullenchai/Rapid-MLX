@@ -339,19 +339,18 @@ def setup_agent_config(
                 "Fix or remove it manually, then re-run --setup."
             )
 
-        if (
-            profile.name == "opencode"
-            and agent_version
-            and agent_version.startswith("1.")
-        ):
+        if profile.name == "opencode":
             import json
 
-            merged = json.loads(merged_text)
-            native = merged.get("providers")
-            if isinstance(native, dict) and "rapid-mlx" in native:
-                del native["rapid-mlx"]
-                if not native:
-                    del merged["providers"]
+            from .opencode_config import reconcile
+
+            try:
+                before = json.loads(merged_text)
+                merged = reconcile(json.loads(merged_text), agent_version)
+            except ValueError as exc:
+                track_failure("config_invalid")
+                return str(exc)
+            if merged != before:
                 merged_text = json.dumps(merged, indent=2, ensure_ascii=False) + "\n"
 
         if dry_run:
@@ -777,6 +776,11 @@ def get_setup_instructions(
             model_id = detected_model
         if context_length is None and detected_ctx is not None:
             context_length = detected_ctx
+
+    if profile.name == "opencode" and agent_version is None:
+        from .opencode_version import installed_version
+
+        agent_version = installed_version()
 
     cfg = profile.get_config_for_version(agent_version)
     rendered = profile.render_config(

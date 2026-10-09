@@ -13,7 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from rapid_mlx.agents import get_profile, load_profiles
-from rapid_mlx.agents.adapter import setup_agent_config
+from rapid_mlx.agents.adapter import get_setup_instructions, setup_agent_config
 from rapid_mlx.agents.opencode_version import installed_version
 from rapid_mlx.agents.testing import (
     E2E_FIRST_LINE_TOKEN,
@@ -94,6 +94,61 @@ def test_opencode_setup_replaces_own_v2_config_when_using_v1(tmp_path, monkeypat
     assert "providers" not in config
     assert config["provider"]["rapid-mlx"]["options"]["apiKey"] == "not-needed"
     assert config["user_setting"] == "preserved"
+
+
+def test_opencode_upgrade_keeps_legacy_models_and_options(tmp_path, monkeypatch):
+    profile = get_profile("opencode")
+    assert profile is not None
+    monkeypatch.setenv("HOME", str(tmp_path))
+    setup_agent_config(profile, model_id="old-model", agent_version="1.18.35")
+    path = tmp_path / ".config/opencode/opencode.json"
+    old = json.loads(path.read_text())
+    old_provider = old["provider"]["rapid-mlx"]
+    old_provider["options"]["timeout"] = 600000
+    old_provider["models"]["extra-model"] = {
+        "id": "upstream-extra-model",
+        "tool_call": False,
+        "limit": {"context": 16384, "output": 4096},
+    }
+    path.write_text(json.dumps(old))
+
+    setup_agent_config(profile, model_id="new-model", agent_version="2.0.26")
+    native = json.loads(path.read_text())["providers"]["rapid-mlx"]
+    assert native["settings"]["timeout"] == 600000
+    assert native["models"]["extra-model"] == {
+        "modelID": "upstream-extra-model",
+        "capabilities": {"tools": False},
+        "limit": {"context": 16384, "output": 4096},
+    }
+    assert "new-model" in native["models"]
+
+
+def test_opencode_downgrade_reports_other_native_providers(tmp_path, monkeypatch):
+    profile = get_profile("opencode")
+    assert profile is not None
+    monkeypatch.setenv("HOME", str(tmp_path))
+    setup_agent_config(profile, model_id="local-model", agent_version="2.0.26")
+    path = tmp_path / ".config/opencode/opencode.json"
+    config = json.loads(path.read_text())
+    config["providers"]["other"] = {"models": {"other-model": {}}}
+    original = json.dumps(config)
+    path.write_text(original)
+    message = setup_agent_config(
+        profile, model_id="local-model", agent_version="1.2.27"
+    )
+    assert "OpenCode 1.x cannot read" in message
+    assert path.read_text() == original
+
+
+def test_opencode_instructions_detect_old_major():
+    profile = get_profile("opencode")
+    assert profile is not None
+    with patch(
+        "rapid_mlx.agents.opencode_version.installed_version", return_value="1.2.27"
+    ):
+        guide = get_setup_instructions(profile, model_id="local-model")
+    assert '"provider"' in guide
+    assert '"providers"' not in guide
 
 
 def test_opencode_version_detection_parses_major_from_start():

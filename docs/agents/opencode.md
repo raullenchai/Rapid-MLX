@@ -74,6 +74,11 @@ context limit reported by the running rapid-mlx server.
 
 The singular `provider` entry is for 1.x. The plural `providers` entry is
 the native 2.x form. Re-run setup after changing OpenCode major versions.
+On upgrade, setup carries existing rapid-mlx model entries and provider
+settings such as timeouts into the native 2.x entry. If a legacy model uses
+fields that need manual conversion, setup reports that and leaves the file
+unchanged. On downgrade to an older 1.x, other native `providers` entries
+must be migrated or removed before setup can produce a valid 1.x file.
 If the CLI is not on `PATH`, pass `--agent-version 1.18.35` or
 `--agent-version 2.0.26` to select the intended shape. If your
 rapid-mlx server requires an API key, setup uses `{env:RAPID_MLX_API_KEY}`
