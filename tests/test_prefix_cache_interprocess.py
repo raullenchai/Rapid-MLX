@@ -8,6 +8,8 @@ import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from rapid_mlx.runtime import cache as runtime_cache
 
 
@@ -130,3 +132,38 @@ def test_busy_shutdown_save_skips_without_touching_cache(tmp_path, monkeypatch):
         fcntl.flock(lock_file, fcntl.LOCK_EX)
         runtime_cache.save_prefix_cache_to_disk(budget_sec=0)
     assert calls == []
+
+
+@pytest.mark.parametrize("saved,budget", [(True, 1.0), (False, 0)])
+def test_shutdown_save_holds_lock_through_radix_commit(
+    tmp_path, monkeypatch, saved, budget
+):
+    """The cache writer and its radix commit share one transaction lock."""
+    cache_dir = str(tmp_path / "model")
+    writes = []
+    radix = []
+
+    def assert_locked():
+        with open(cache_dir + ".txlock") as lock_file, pytest.raises(BlockingIOError):
+            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    class Engine:
+        def save_cache_to_disk(self, path, should_abort=None):
+            assert_locked()
+            writes.append((path, callable(should_abort)))
+            return saved
+
+    def save_radix(engine, path):
+        assert_locked()
+        radix.append(path)
+
+    monkeypatch.setattr(
+        runtime_cache, "get_config", lambda: SimpleNamespace(engine=Engine())
+    )
+    monkeypatch.setattr(runtime_cache, "get_cache_dir", lambda: cache_dir)
+    monkeypatch.setattr(runtime_cache, "_save_radix_index_after_cache", save_radix)
+
+    runtime_cache.save_prefix_cache_to_disk(budget_sec=budget)
+
+    assert writes == [(cache_dir, budget > 0)]
+    assert radix == ([cache_dir] if saved else [])
