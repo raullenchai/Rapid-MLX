@@ -663,7 +663,7 @@ def test_workflows_fail_closed_and_never_execute_candidate_code():
     assert "github.event_name == 'push'" in str(engine_evidence["if"])
     assert "refs/heads/main" in str(engine_evidence["if"])
     assert engine_jobs["changes"]["needs"] == "queue-tree-evidence"
-    assert str(engine_jobs["changes"]["if"]) == "always()"
+    assert str(engine_jobs["changes"]["if"]) == "${{ !cancelled() }}"
     for name in (
         "lint",
         "engine-contracts",
@@ -672,10 +672,12 @@ def test_workflows_fail_closed_and_never_execute_candidate_code():
         "test-apple-silicon",
         "l1-smoke",
     ):
-        assert "always()" in str(engine_jobs[name]["if"])
+        assert "!cancelled()" in str(engine_jobs[name]["if"])
+        assert "always()" not in str(engine_jobs[name]["if"])
         assert "reuse_ci != 'true'" in str(engine_jobs[name]["if"])
     for name in ("merge-lane-no-mac", "merge-lane-mac", "mlx-bound-guard"):
-        assert "always()" in str(engine_jobs[name]["if"])
+        assert "!cancelled()" in str(engine_jobs[name]["if"])
+        assert "always()" not in str(engine_jobs[name]["if"])
         assert "needs.changes.result == 'success'" in str(engine_jobs[name]["if"])
     aggregate_script = next(
         step["run"]
@@ -694,7 +696,8 @@ def test_workflows_fail_closed_and_never_execute_candidate_code():
         if step.get("name") == "Revalidate source runs and jobs"
     )
     assert engine_download["continue-on-error"] is True
-    assert str(engine_validate["if"]).startswith("always()")
+    assert "!cancelled()" in str(engine_validate["if"])
+    assert "always()" not in str(engine_validate["if"])
     assert "--scope ci" in engine_validate["run"]
     assert (
         '--source-run-id "${{ steps.discover.outputs.source_run_id }}"'

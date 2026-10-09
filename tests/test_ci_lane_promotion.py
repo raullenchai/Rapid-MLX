@@ -375,7 +375,7 @@ def test_engine_jobs_follow_fail_closed_engine_classification():
         job = _job(ENGINE_WORKFLOW, job_name)
         assert job["needs"] == "changes"
         assert _condition(ENGINE_WORKFLOW, job_name) == (
-            "always() && needs.changes.result == 'success' && "
+            "!cancelled() && needs.changes.result == 'success' && "
             "needs.changes.outputs.engine == 'true' && "
             "needs.changes.outputs.reuse_ci != 'true'"
         )
@@ -383,7 +383,7 @@ def test_engine_jobs_follow_fail_closed_engine_classification():
     bound_guard = _job(ENGINE_WORKFLOW, "mlx-bound-guard")
     assert bound_guard["needs"] == "changes"
     assert _condition(ENGINE_WORKFLOW, "mlx-bound-guard") == (
-        "always() && needs.changes.result == 'success' && "
+        "!cancelled() && needs.changes.result == 'success' && "
         "github.event_name == 'pull_request' && "
         "needs.changes.outputs.engine == 'true' && "
         "needs.changes.outputs.reuse_ci != 'true'"
