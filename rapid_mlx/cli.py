@@ -6991,6 +6991,7 @@ def serve_command(args):
         scheduling_policy=args.scheduling_policy,
         scheduling_max_deferrals=args.scheduling_max_deferrals,
         shared_prefix_wait_tokens=args.shared_prefix_wait_tokens,
+        decode_stall_target_ms=args.decode_stall_target_ms,
         enable_prefix_cache=_effective_runtime_values.enable_prefix_cache,
         prefix_cache_size=args.prefix_cache_size,
         # R15-P1 (task #303): radix-tree prefix-cache index.

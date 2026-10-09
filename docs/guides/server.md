@@ -76,6 +76,7 @@ flag visible in `rapid-mlx serve --help`, grouped by category — lives in the
 | `--completion-batch-size` | Completion batch size | 32 |
 | `--prefill-step-size` | Chunk size for prompt prefill processing | 2048 |
 | `--shared-prefix-wait-tokens` | A request sharing at least this many uncached prompt tokens with a request that is still prefilling waits for that prompt state instead of recomputing it; `0` disables | 1024 |
+| `--decode-stall-target-ms` | Target wait between a decoding request's tokens while another prompt prefills; `0` disables | 500 |
 | `--gpu-memory-utilization` | Fraction of device memory for the Metal allocation limit (0.0-1.0); advanced override of the automatic per-model budget | auto |
 | `--context-length` | Operator-selected per-request window in tokens (prompt plus output), up to the model's declared limit; requests still need to fit available memory | auto |
 
