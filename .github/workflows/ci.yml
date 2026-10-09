@@ -1061,6 +1061,7 @@ jobs:
             tests/test_legacy_prefix_cache_flag_warnings.py \
             tests/test_system_one_server.py \
             tests/test_system_one_clef.py \
+            tests/test_system_one_clef_mlx.py \
             tests/test_system_one_decider.py \
             tests/test_system_one_convert_clm.py \
             tests/test_module_import_smoke.py \
