@@ -62,12 +62,11 @@ streaming:
 
 testing:
   binary: opencode
-  # `opencode run '<prompt>'` is the headless one-shot mode (verified
-  # 2026-10-02, opencode 1.18.34: T1–T6 + follow-up pass). `--continue`
-  # appends to the last session in the cwd.
+  # `opencode run '<prompt>'` is headless in both 1.x and 2.x. The test
+  # runner adds `--standalone` for 2.x so it leaves no background service.
   query_cmd: "opencode run '{query}'"
   query_timeout: 120
-  install_cmd: "brew install sst/tap/opencode  # or: npm install -g opencode-ai"
+  install_cmd: "npm install -g @opencode/cli@2  # 1.x: npm install -g opencode-ai@1"
 
 versions:
   # Early 1.x releases reject unknown top-level keys such as `providers`.
@@ -99,6 +98,6 @@ capabilities:
   streaming: true
 
 known_issues:
-  - "Config schema may need updating across OpenCode versions — if this template doesn't load, run `opencode --help` and check `~/.config/opencode/opencode.json` against the docs at opencode.ai."
-  - "First run of OpenCode may prompt for an Anthropic API key — choose 'skip' since rapid-mlx is providing the model via the openai-compat provider."
-  - "Follow-ups in headless mode: `opencode run --continue '<query>'` reuses the last session in the cwd (verified)."
+  - "OpenCode 2.x may show no models on the first `opencode models` call after service startup; repeat the command. If the model remains absent after setup, run `opencode service restart`."
+  - "After changing OpenCode major versions, re-run setup so 1.x receives only its supported `provider` key."
+  - "Follow-ups in headless mode: `opencode run --continue '<query>'` reuses the last session in the cwd (verified on 1.x)."
