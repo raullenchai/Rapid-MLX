@@ -265,10 +265,11 @@ class OpenJevScorer:
             mx.eval(logits, [entry.state for entry in cache])
         return logits
 
-    def _new_cache(self) -> list:
+    def _new_cache(self) -> list[Any]:
         from mlx_lm.models.cache import make_prompt_cache
 
-        return make_prompt_cache(self._model)
+        cache: list[Any] = make_prompt_cache(self._model)
+        return cache
 
     def _readout(
         self, ids: list[int], count: int, shared: tuple[list[int], list] | None
