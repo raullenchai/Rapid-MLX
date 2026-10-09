@@ -235,10 +235,10 @@ struct DownloadManagerTests {
         #expect(job.completedCacheGeneration == mgr.cacheGeneration)
     }
 
-    @Test("Non-zero exit → failed status with a generic message (raw stderr is never surfaced)")
+    @Test("Exhausted transient exits show a generic failure without raw stderr")
     func failedExitUsesGenericMessage() {
         let mgr = DownloadManager()
-        _ = mgr._testingSeedJob(alias: "qwen3.6-27b")
+        _ = mgr._testingSeedJob(alias: "qwen3.6-27b", retryAttempt: 3)
         // Raw child stderr (engine name, Python tracebacks, HTTP codes)
         // is logged for support but MUST NOT reach the user-facing
         // failure message.
@@ -253,6 +253,21 @@ struct DownloadManagerTests {
         } else {
             Issue.record("Expected .failed, got \(String(describing: job?.status))")
         }
+    }
+
+    @Test("A transient exit waits to reconnect and can be cancelled")
+    func transientExitCanBeCancelled() {
+        let mgr = DownloadManager()
+        let job = mgr._testingSeedJob(alias: "qwen3.6-27b")
+        mgr._testingIngestStderr(alias: "qwen3.6-27b", line: "ConnectionResetError: peer reset")
+        mgr._testingFinish(alias: "qwen3.6-27b", status: 1, reason: .exit)
+        #expect(job.status == .running)
+        #expect(job.retryDelaySeconds == 2)
+        #expect(job.isStalled)
+
+        mgr.cancelDownload(alias: "qwen3.6-27b")
+        #expect(job.status == .cancelled)
+        #expect(job.failureKind == .downloadCancelled)
     }
 
     @Test("Failed exit with empty stderr falls back to a generic retry message (no raw status code)")
@@ -365,6 +380,53 @@ struct DownloadManagerTests {
             lastProgressAt: now.addingTimeInterval(-10),
             now: now
         ))
+    }
+
+    @Test("Repeated transfer ticks with no new bytes do not hide a stall")
+    func repeatedTicksDoNotAdvanceWatchdog() {
+        let old = DownloadProgress.Phase.downloading(
+            file: "model.safetensors", done: "1.0G", total: "3.0G",
+            percent: 33, speed: "0MB/s", eta: "02:00"
+        )
+        let repeated = DownloadProgress.Phase.downloading(
+            file: "model.safetensors", done: "1.0G", total: "3.0G",
+            percent: 33, speed: "0MB/s", eta: "03:00"
+        )
+        #expect(!DownloadManager.advanced(
+            from: old, oldBytes: 1_000, to: repeated, newBytes: 1_000
+        ))
+        #expect(DownloadManager.advanced(
+            from: old, oldBytes: 1_000, to: repeated, newBytes: 1_001
+        ))
+        let fallback = DownloadProgress.Phase.downloading(
+            file: "model.safetensors", done: "1.1G", total: "3.0G",
+            percent: 37, speed: "1MB/s", eta: "02:00"
+        )
+        #expect(DownloadManager.advanced(
+            from: old, oldBytes: 1_000, to: fallback, newBytes: 900
+        ))
+    }
+
+    @Test("Transient reconnects are bounded and permanent errors are excluded")
+    func automaticRetryPolicy() {
+        #expect((0...3).map(DownloadManager.retryDelay) == [2, 4, 8, nil])
+        #expect(DownloadManager.isTransientDownloadError("ConnectionResetError: connection reset"))
+        #expect(DownloadManager.isTransientDownloadError("nodename nor servname provided"))
+        #expect(DownloadManager.isTransientDownloadError("HTTP Error 500: Internal Server Error"))
+        #expect(!DownloadManager.isTransientDownloadError("OSError: No space left on device"))
+    }
+
+    @Test("Explicit switch from HF can restore mirror after a parent opt-out")
+    func explicitMirrorSwitch() {
+        var env = ["RAPID_MLX_MODEL_MIRROR": ""]
+        #expect(DownloadManager.effectiveDownloadSource(.mirror, env: env) == .huggingFace)
+        #expect(DownloadManager.effectiveDownloadSource(
+            .mirror, env: env, forceMirror: true
+        ) == .mirror)
+        DownloadManager.applyDownloadSource(.mirror, env: &env)
+        #expect(env["RAPID_MLX_MODEL_MIRROR"] == "")
+        DownloadManager.applyDownloadSource(.mirror, env: &env, forceMirror: true)
+        #expect(env["RAPID_MLX_MODEL_MIRROR"] == "https://models.rapidmlx.com")
     }
 
     // MARK: - Cache generation

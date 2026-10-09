@@ -11,6 +11,16 @@ import Testing
 @MainActor
 @Suite("DownloadProgress parser")
 struct DownloadProgressTests {
+    @Test("Per-file pull announces the active file before its first byte")
+    func currentFileAnnouncement() {
+        let progress = DownloadProgress()
+        #expect(progress.ingest("Pulling owner/repo (Hugging Face)"))
+        #expect(progress.ingest("  [current] model-00001.safetensors"))
+        #expect(progress.currentFile == "model-00001.safetensors")
+        progress.reset()
+        #expect(progress.currentFile == nil)
+    }
+
     @Test("Outer 'Fetching N files' tqdm tick parses to .fetching")
     func fetchingLine() {
         let progress = DownloadProgress()

@@ -56,6 +56,15 @@ class GuidedGenerationCancelledError(Exception):
         self.lifecycle_task = lifecycle_task
 
 
+class GuidedTokenLimitError(Exception):
+    """Constrained decoding ended before the grammar accepted its output."""
+
+    def __init__(self, prompt_tokens: int, completion_tokens: int) -> None:
+        super().__init__("Guided generation exhausted its token budget")
+        self.prompt_tokens = prompt_tokens
+        self.completion_tokens = completion_tokens
+
+
 def guided_schema_compile_error_detail(
     exc: BaseException,
     param: str | None = None,

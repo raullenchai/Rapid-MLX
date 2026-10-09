@@ -5044,6 +5044,15 @@ def _resolve_system_one_backend(model: str, requested: str) -> str:
         return "clm"
     if model_key in {"clef", "clef-flash", "cloudflare/clef", "cloudflare/clef-flash"}:
         return "clef"
+    if model_key in {
+        "clef-mlx",
+        "clef-flash-mlx",
+        "nativ-community/clef-mlx-mxfp4",
+        "nativ-community/clef-flash-mlx-mxfp4",
+    }:
+        return "clef-mlx"
+    if model_key in {"decider-2b", "nativ-community/decider-2b"}:
+        return "decider"
     return "laya"
 
 
@@ -5054,7 +5063,9 @@ def system_one_command(args) -> None:
     from rapid_mlx._uvicorn import run_uvicorn
     from rapid_mlx.system_one.backends import (
         ClefBackend,
+        ClefMLXBackend,
         CLMBackend,
+        DeciderBackend,
         DecisionBackend,
         LayaBackend,
     )
@@ -5093,6 +5104,10 @@ def system_one_command(args) -> None:
         )
     elif backend_name == "clef":
         backend = ClefBackend(args.model, device=args.device)
+    elif backend_name == "clef-mlx":
+        backend = ClefMLXBackend(args.model, device=args.device)
+    elif backend_name == "decider":
+        backend = DeciderBackend(args.model, device=args.device)
     else:
         backend = LayaBackend(
             args.model,
@@ -7000,6 +7015,7 @@ def serve_command(args):
         completion_batch_size=args.completion_batch_size,
         scheduling_policy=args.scheduling_policy,
         scheduling_max_deferrals=args.scheduling_max_deferrals,
+        shared_prefix_wait_tokens=args.shared_prefix_wait_tokens,
         enable_prefix_cache=_effective_runtime_values.enable_prefix_cache,
         prefix_cache_size=args.prefix_cache_size,
         # R15-P1 (task #303): radix-tree prefix-cache index.

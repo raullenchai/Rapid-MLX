@@ -20,8 +20,9 @@ def fixture(monkeypatch, mapped=False):
     client = _configured_client()
     client.responses[f"repos/{REPO}/pulls"][0]["base"]["sha"] = MAIN
     client.commit = lambda sha: {
+        "sha": sha,
+        "message": "Merge of #77",
         "tree": {"sha": client.trees.get(sha, TREE)},
-        "commit": {"message": "Merge of #77"},
         "parents": [{"sha": MAIN}, {"sha": TRUSTED}],
     }
     client.responses[f"repos/{REPO}/pulls/77"] = {
@@ -118,13 +119,15 @@ def test_ordered_two_source_identity(monkeypatch):
     }
     commits = {
         CANDIDATE: {
+            "sha": CANDIDATE,
+            "message": "Merge of #88",
             "tree": {"sha": TREE},
-            "commit": {"message": "Merge of #88"},
             "parents": [{"sha": middle}, {"sha": source_two}],
         },
         middle: {
+            "sha": middle,
+            "message": "Merge of #77",
             "tree": {"sha": "2" * 40},
-            "commit": {"message": "Merge of #77"},
             "parents": [{"sha": MAIN}, {"sha": TRUSTED}],
         },
     }
@@ -143,6 +146,23 @@ def test_ordered_two_source_identity(monkeypatch):
         {"number": 77, "head_sha": TRUSTED},
         {"number": 88, "head_sha": source_two},
     ]
+
+
+def test_pull_commit_message_shape_cannot_substitute_for_git_database_message(
+    monkeypatch,
+):
+    client, _ = fixture(monkeypatch)
+    client.commit = lambda sha: {
+        "sha": sha,
+        "tree": {"sha": client.trees.get(sha, TREE)},
+        "commit": {"message": "Merge of #77"},
+        "parents": [{"sha": MAIN}, {"sha": TRUSTED}],
+    }
+
+    result = qualify.qualify_candidate(client, 20, TRUSTED)
+
+    assert not result["qualified"]
+    assert result["reason"] == "candidate has malformed integration lineage"
 
 
 def test_actual_queue_metadata_archive_is_exact_attempt(monkeypatch):
@@ -278,9 +298,32 @@ def test_mandatory_linux_coverage_enrolls_candidate_controllers():
         "--cov=scripts.ci_candidate_admission",
         "--cov=scripts.ci_candidate_execution",
         "--cov=scripts.ci_candidate_rollout",
+        "--cov=scripts.sidecar_macho_inventory",
+        "--cov=scripts.pr_validate.steps.stress_e2e_bench",
     }
     assert required <= set(run.split())
     assert "--cov=rapid_mlx" in run
+    assert (
+        Path(".github/workflows/ci.yml")
+        .read_text()
+        .count("--cov=scripts.pr_validate.steps.stress_e2e_bench")
+        == 1
+    )
+    assert (
+        Path(".github/workflows/ci.yml")
+        .read_text()
+        .count("--cov=scripts.sidecar_macho_inventory")
+        == 1
+    )
+    apple_steps = workflow["jobs"]["test-apple-silicon"]["steps"]
+    assert all(
+        "--cov=scripts.pr_validate.steps.stress_e2e_bench" not in step.get("run", "")
+        for step in apple_steps
+    )
+    assert all(
+        "--cov=scripts.sidecar_macho_inventory" not in step.get("run", "")
+        for step in apple_steps
+    )
 
 
 @pytest.mark.parametrize(

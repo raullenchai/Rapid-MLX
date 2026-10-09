@@ -95,6 +95,11 @@ final class DownloadManager {
         let hfPath: String?
         let totalBytes: Int64?
         let source: DownloadSource
+        let forceMirror: Bool
+        /// Number of automatic reconnects already attempted for this pull.
+        let retryAttempt: Int
+        fileprivate(set) var retryDelaySeconds: Int?
+        fileprivate(set) var isStalled = false
         fileprivate(set) var failureKind: FailureDiagnosis.Kind?
         /// Live handle to the HF cache-directory byte monitor, when
         /// one is running for this job. ``nil`` when the alias's HF
@@ -127,7 +132,9 @@ final class DownloadManager {
             alias: String,
             hfPath: String? = nil,
             totalBytes: Int64? = nil,
-            source: DownloadSource = .mirror
+            source: DownloadSource = .mirror,
+            forceMirror: Bool = false,
+            retryAttempt: Int = 0
         ) {
             self.id = alias
             self.alias = alias
@@ -137,6 +144,9 @@ final class DownloadManager {
             self.hfPath = hfPath
             self.totalBytes = totalBytes
             self.source = source
+            self.forceMirror = forceMirror
+            self.retryAttempt = retryAttempt
+            self.retryDelaySeconds = nil
             self.failureKind = nil
             self.byteMonitor = nil
             self.lastProgressAt = Date()
@@ -191,6 +201,7 @@ final class DownloadManager {
     private var cancellingProcesses: [String: Process] = [:]
     private var stalledProcesses: [String: Process] = [:]
     private var stallWatchdogs: [String: Task<Void, Never>] = [:]
+    private var retryTasks: [String: Task<Void, Never>] = [:]
     private let cancellationTracker = DownloadCancellationTracker()
     private var stdoutPipes: [String: Pipe] = [:]
     private var stderrPipes: [String: Pipe] = [:]
@@ -204,6 +215,57 @@ final class DownloadManager {
     /// Two minutes without a progress tick or byte growth is long enough to
     /// distinguish a dead network path from an ordinary slow shard.
     nonisolated static let downloadStallWindow: TimeInterval = 120
+    nonisolated static let stalledNoticeWindow: TimeInterval = 30
+    nonisolated static let maxAutomaticRetries = 3
+
+    nonisolated static func retryDelay(after attempt: Int) -> Int? {
+        guard attempt < maxAutomaticRetries else { return nil }
+        return 2 << attempt
+    }
+
+    nonisolated static func isTransientDownloadError(_ output: String) -> Bool {
+        let value = output.lowercased()
+        return ["timed out", "timeout", "connection reset", "connectionreseterror",
+                "connection aborted", "connection refused", "connectionerror",
+                "connection error", "network is unreachable", "name resolution",
+                "name or service not known", "nodename nor servname",
+                "temporary failure", "incomplete read", "incompleteread",
+                "unexpected_eof", "remote disconnected", "remotedisconnected",
+                "service unavailable", "internal server error", "bad gateway",
+                "gateway timeout", "http 429", "http 500",
+                "http 502", "http 503", "http 504", " 429 ", " 502 ",
+                " 500 ", " 503 ", " 504 "].contains { value.contains($0) }
+    }
+
+    nonisolated static func advanced(
+        from oldPhase: DownloadProgress.Phase,
+        oldBytes: Int64?,
+        to newPhase: DownloadProgress.Phase,
+        newBytes: Int64?
+    ) -> Bool {
+        if let newBytes, newBytes > (oldBytes ?? 0) { return true }
+        // HF fallback can start a fresh per-file transfer after the mirror
+        // removes a bad partial. Its tqdm bar may advance while the aggregate
+        // disk count is still below the old peak.
+        if case .downloading(let newFile, let newDone, _, _, _, _) = newPhase {
+            if case .downloading(let oldFile, let oldDone, _, _, _, _) = oldPhase {
+                if newFile != oldFile || newDone != oldDone { return true }
+            } else {
+                return true
+            }
+        }
+        // Repeated redraws with unchanged counters cannot hide a stall.
+        if oldBytes != nil || newBytes != nil { return false }
+        switch (oldPhase, newPhase) {
+        case (.fetching(let oldDone, _, _), .fetching(let newDone, _, _)):
+            return newDone > oldDone
+        case (.downloading(let oldFile, let oldDone, _, _, _, _),
+              .downloading(let newFile, let newDone, _, _, _, _)):
+            return newFile != oldFile || newDone != oldDone
+        default:
+            return oldPhase != newPhase
+        }
+    }
 
     nonisolated static func isStalled(
         lastProgressAt: Date,
@@ -309,7 +371,9 @@ final class DownloadManager {
         alias: String,
         hfPath: String? = nil,
         totalBytes: Int64? = nil,
-        source: DownloadSource = .mirror
+        source: DownloadSource = .mirror,
+        forceMirror: Bool = false,
+        retryAttempt: Int = 0
     ) -> Bool {
         let trimmed = alias.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
@@ -323,6 +387,11 @@ final class DownloadManager {
             return false
         }
         if isDownloading(trimmed) { return false }
+        let effectiveSource = Self.effectiveDownloadSource(
+            source,
+            env: ProcessInfo.processInfo.environment,
+            forceMirror: forceMirror
+        )
         let binaryResolution = Self.resolveBinaryForStart(
             cached: binaryPath,
             shouldRelocate: resolvesBinaryAtStart,
@@ -332,7 +401,10 @@ final class DownloadManager {
             // Record a synthetic failed job so the picker UI can
             // surface "binary not found" inline instead of silently
             // doing nothing.
-            let job = Job(alias: trimmed, hfPath: hfPath, totalBytes: totalBytes, source: source)
+            let job = Job(
+                alias: trimmed, hfPath: hfPath, totalBytes: totalBytes,
+                source: effectiveSource
+            )
             job.failureKind = .downloadFailed
             job.status = .failed(message: binaryResolution.failureMessage)
             jobs[trimmed] = job
@@ -343,7 +415,10 @@ final class DownloadManager {
             binaryPath = binary
         }
 
-        let job = Job(alias: trimmed, hfPath: hfPath, totalBytes: totalBytes, source: source)
+        let job = Job(
+            alias: trimmed, hfPath: hfPath, totalBytes: totalBytes,
+            source: effectiveSource, forceMirror: forceMirror, retryAttempt: retryAttempt
+        )
         jobs[trimmed] = job
         stderrTails[trimmed] = []
 
@@ -355,7 +430,9 @@ final class DownloadManager {
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
         process.standardInput = FileHandle.nullDevice
-        process.environment = augmentedEnv(for: binary, source: source)
+        process.environment = augmentedEnv(
+            for: binary, source: effectiveSource, forceMirror: forceMirror
+        )
 
         // tqdm refreshes via \r when stderr is not a TTY (same shape
         // ServerManager parses). Split on both separators.
@@ -451,11 +528,21 @@ final class DownloadManager {
                 // compilation can legitimately be quiet for minutes and is
                 // covered by ServerManager's separate startup watchdog.
                 if case .warmingUp = job.progress.phase { return }
-                if let bytes = job.progress.bytesDownloaded,
-                   bytes != job.lastObservedBytes {
+                if let bytes = job.progress.bytesDownloaded {
+                    if bytes > (job.lastObservedBytes ?? 0) {
+                        job.lastProgressAt = Date()
+                        job.isStalled = false
+                    }
+                    // A mirror miss can replace a large partial with a fresh
+                    // HF transfer. Follow the new counter so its next bytes
+                    // count as progress below the old high-water mark.
                     job.lastObservedBytes = bytes
-                    job.lastProgressAt = Date()
                 }
+                job.isStalled = Self.isStalled(
+                    lastProgressAt: job.lastProgressAt,
+                    now: Date(),
+                    window: Self.stalledNoticeWindow
+                )
                 guard Self.isStalled(
                     lastProgressAt: job.lastProgressAt,
                     now: Date()
@@ -463,10 +550,6 @@ final class DownloadManager {
                     continue
                 }
                 self.stalledProcesses[alias] = process
-                job.failureKind = .downloadFailed
-                job.status = .failed(
-                    message: "The download stopped making progress. Check your network and try again — saved partial data will be reused."
-                )
                 process.terminate()
                 let deadline = Date().addingTimeInterval(2)
                 while process.isRunning && Date() < deadline {
@@ -496,12 +579,16 @@ final class DownloadManager {
         let hfPath = previous.hfPath
         let totalBytes = previous.totalBytes
         let nextSource = source ?? previous.source
+        let forceMirror = nextSource == .mirror
+            && (previous.source == .huggingFace || previous.forceMirror)
+        retryTasks.removeValue(forKey: trimmed)?.cancel()
         dismissJob(alias: trimmed)
         return startDownload(
             alias: trimmed,
             hfPath: hfPath,
             totalBytes: totalBytes,
-            source: nextSource
+            source: nextSource,
+            forceMirror: forceMirror
         )
     }
 
@@ -563,6 +650,11 @@ final class DownloadManager {
     /// job's status flips to ``.cancelled`` via ``handleExit``.
     func cancelDownload(alias: String) {
         let trimmed = alias.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let retryTask = retryTasks.removeValue(forKey: trimmed) {
+            retryTask.cancel()
+            if let job = jobs[trimmed] { markCancelled(job) }
+            return
+        }
         guard let process = processes[trimmed] else { return }
         guard process.isRunning else { return }
         // #19 cancel-race: flag the exact Process object BEFORE
@@ -603,6 +695,7 @@ final class DownloadManager {
         let trimmed = alias.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let job = jobs[trimmed] else { return }
         if case .running = job.status { return }
+        retryTasks.removeValue(forKey: trimmed)?.cancel()
         jobs.removeValue(forKey: trimmed)
         stderrTails.removeValue(forKey: trimmed)
     }
@@ -624,6 +717,8 @@ final class DownloadManager {
     /// already gone.
     func beginShutdown() {
         if shutdownSignalledAt == nil { shutdownSignalledAt = Date() }
+        for task in retryTasks.values { task.cancel() }
+        retryTasks.removeAll()
         for (_, process) in processes where process.isRunning {
             process.terminate()
         }
@@ -671,8 +766,16 @@ final class DownloadManager {
     private func ingestLines(alias: String, lines: [String], isStderr: Bool) {
         guard let job = jobs[alias] else { return }
         for line in lines {
+            let oldPhase = job.progress.phase
+            let oldBytes = job.progress.bytesDownloaded
             let consumed = job.progress.ingest(line)
-            if consumed { job.lastProgressAt = Date() }
+            if consumed && Self.advanced(
+                from: oldPhase, oldBytes: oldBytes,
+                to: job.progress.phase, newBytes: job.progress.bytesDownloaded
+            ) {
+                job.lastProgressAt = Date()
+                job.isStalled = false
+            }
             if isStderr && !consumed {
                 var tail = stderrTails[alias] ?? []
                 // Scrub before storage — the stderr tail feeds the
@@ -703,13 +806,19 @@ final class DownloadManager {
         // Drain readability handlers so ARC can free the pipes.
         cleanupProcessBookkeeping(alias: alias, process: process)
 
-        if stalledProcesses.removeValue(forKey: alias) === process {
-            // The watchdog already installed the actionable retry state.
+        if wasCancelling {
+            stalledProcesses.removeValue(forKey: alias)
+            markCancelled(job)
             return
         }
 
-        if wasCancelling {
-            markCancelled(job)
+        if stalledProcesses.removeValue(forKey: alias) === process {
+            if !scheduleAutomaticRetry(job: job, alias: alias) {
+                job.failureKind = .downloadFailed
+                job.status = .failed(
+                    message: "The download stopped making progress. Check your network and try again."
+                )
+            }
             return
         }
 
@@ -722,6 +831,10 @@ final class DownloadManager {
             job.completedCacheGeneration = cacheGeneration
             job.status = .completed
         case .exit:
+            if scheduleAutomaticRetry(
+                job: job, alias: alias,
+                transient: Self.isTransientDownloadError((stderrTails[alias] ?? []).joined(separator: " "))
+            ) { return }
             recordFailure(job: job, alias: alias, signal: false)
         case .uncaughtSignal:
             recordFailure(job: job, alias: alias, signal: true)
@@ -731,6 +844,35 @@ final class DownloadManager {
                 message: FailureDiagnoser.diagnosis(for: .downloadFailed).message
             )
         }
+    }
+
+    /// Keep the job running while a bounded backoff is pending so onboarding
+    /// does not enter its terminal recovery screen between attempts.
+    private func scheduleAutomaticRetry(
+        job: Job,
+        alias: String,
+        transient: Bool = true
+    ) -> Bool {
+        guard transient, let delay = Self.retryDelay(after: job.retryAttempt) else {
+            return false
+        }
+        job.retryDelaySeconds = delay
+        job.isStalled = true
+        let originalID = job.instanceID
+        retryTasks[alias]?.cancel()
+        retryTasks[alias] = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled, let self,
+                  self.jobs[alias]?.instanceID == originalID else { return }
+            self.retryTasks.removeValue(forKey: alias)
+            self.jobs.removeValue(forKey: alias)
+            _ = self.startDownload(
+                alias: alias, hfPath: job.hfPath, totalBytes: job.totalBytes,
+                source: job.source, forceMirror: job.forceMirror,
+                retryAttempt: job.retryAttempt + 1
+            )
+        }
+        return true
     }
 
     /// Flip a job to ``Status/cancelled`` and say so in ``Job/failureKind``.
@@ -774,7 +916,11 @@ final class DownloadManager {
         }
     }
 
-    private func augmentedEnv(for binary: URL, source: DownloadSource) -> [String: String] {
+    private func augmentedEnv(
+        for binary: URL,
+        source: DownloadSource,
+        forceMirror: Bool
+    ) -> [String: String] {
         var env = ProcessInfo.processInfo.environment
         let existingPath = env["PATH"] ?? ""
         let augmented = [
@@ -787,7 +933,7 @@ final class DownloadManager {
         ].filter { !$0.isEmpty }.joined(separator: ":")
         env["PATH"] = augmented
         DownloadManager.applyXetConcurrencyCaps(env: &env)
-        DownloadManager.applyDownloadSource(source, env: &env)
+        DownloadManager.applyDownloadSource(source, env: &env, forceMirror: forceMirror)
         DownloadManager.applyModelsFolderOverride(env: &env)
         return EngineProcessEnvironment.sidecar(env)
     }
@@ -903,14 +1049,32 @@ final class DownloadManager {
     /// retry, but never mutates the parent process or stored preferences.
     nonisolated static func applyDownloadSource(
         _ source: DownloadSource,
-        env: inout [String: String]
+        env: inout [String: String],
+        forceMirror: Bool = false
     ) {
         switch source {
         case .mirror:
-            applyModelMirror(env: &env)
+            if forceMirror && env["RAPID_MLX_MODEL_MIRROR", default: ""].isEmpty {
+                env["RAPID_MLX_MODEL_MIRROR"] = "https://models.rapidmlx.com"
+            } else {
+                applyModelMirror(env: &env)
+            }
         case .huggingFace:
             env["RAPID_MLX_MODEL_MIRROR"] = ""
         }
+    }
+
+    /// A parent-shell mirror opt-out already sends the default pull to HF.
+    /// Keep the job label in sync so its source toggle actually selects R2.
+    nonisolated static func effectiveDownloadSource(
+        _ requested: DownloadSource,
+        env: [String: String],
+        forceMirror: Bool = false
+    ) -> DownloadSource {
+        if requested == .mirror && !forceMirror && env["RAPID_MLX_MODEL_MIRROR"] == "" {
+            return .huggingFace
+        }
+        return requested
     }
 
     private func cleanupProcessBookkeeping(alias: String, process: Process) {
@@ -1000,13 +1164,15 @@ final class DownloadManager {
         alias: String,
         hfPath: String? = nil,
         totalBytes: Int64? = nil,
-        source: DownloadSource = .mirror
+        source: DownloadSource = .mirror,
+        retryAttempt: Int = 0
     ) -> Job {
         let job = Job(
             alias: alias,
             hfPath: hfPath,
             totalBytes: totalBytes,
-            source: source
+            source: source,
+            retryAttempt: retryAttempt
         )
         jobs[alias] = job
         stderrTails[alias] = []

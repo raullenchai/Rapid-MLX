@@ -278,6 +278,273 @@ class ClefBackend:
         ]
 
 
+class ClefMLXBackend:
+    """Cloudflare Clef typed decisions on native MLX, without the Torch runtime.
+
+    Serves the prepared, quantized MLX conversions of the Clef release. The
+    joint schema head and prompt are the release's own, so answers keep the
+    Clef wire shape; only the arithmetic runs on MLX.
+    """
+
+    _MODELS = {
+        "clef-mlx": (
+            "nativ-community/clef-MLX-MXFP4",
+            "b94c97b0d0b80fdda6d7d36c745d289890d1c4e1",
+        ),
+        "clef-flash-mlx": (
+            "nativ-community/clef-flash-MLX-MXFP4",
+            "63a0d4df0213be9843968151609e05c2f6683870",
+        ),
+    }
+
+    def __init__(self, model: str, *, device: str = "gpu") -> None:
+        import importlib.util
+
+        if device not in {"gpu", "cpu"}:
+            raise ValueError("Clef device must be 'gpu' or 'cpu'")
+        local = Path(model).expanduser()
+        repos = {repo.lower(): name for name, (repo, _) in self._MODELS.items()}
+        selected = repos.get(model.lower(), model.lower())
+        # A published name always means the pinned release, even when a
+        # directory of the same name sits in the working directory.
+        named = selected in self._MODELS
+        if not named and not local.is_dir():
+            raise ValueError(
+                f"unknown native Clef model {model!r}; choose "
+                f"{', '.join(self._MODELS)} or a local checkpoint directory"
+            )
+        if importlib.util.find_spec("mlx_vlm") is None:
+            raise RuntimeError(
+                "native Clef requires the vision runtime: "
+                "pip install 'rapid-mlx[vision]'"
+            )
+        if named:
+            from rapid_mlx._mirror import pinned_snapshot_download
+
+            self.default_model = selected
+            self.repo_id, revision = self._MODELS[selected]
+            path = pinned_snapshot_download(self.repo_id, revision)
+        else:
+            # A local directory serves other prepared conversions (8-bit, NVFP4).
+            path = str(local)
+            self.default_model = local.name
+            self.repo_id = str(local)
+
+        import mlx.core as mx
+
+        from .clef_mlx import ClefScorer, load_clef
+
+        mx.set_default_device(mx.gpu if device == "gpu" else mx.cpu)
+        self._scorer = ClefScorer(*load_clef(path))
+        self._lock = threading.Lock()
+
+    def _check(self, model: str, temperature: float) -> None:
+        if model not in (self.default_model, self.repo_id):
+            raise KeyError(f"unknown model {model!r}; available: {self.default_model}")
+        if temperature != 1.0:
+            raise ValueError(
+                "Clef uses checkpoint calibration and requires temperature=1"
+            )
+
+    def answer(
+        self, state: Any, questions: dict[str, Question], model: str, temperature: float
+    ) -> dict:
+        return self.answer_media(state, questions, model, temperature, None, None)
+
+    def answer_media(
+        self,
+        state: Any,
+        questions: dict[str, Question],
+        model: str,
+        temperature: float,
+        images: list[str] | None,
+        videos: list[list[str]] | None,
+    ) -> dict:
+        self._check(model, temperature)
+
+        from rapid_mlx.clef.media import decode_media
+
+        from .clef_mlx import clef_answer
+
+        specs = {
+            key: value.model_dump(exclude_none=True) for key, value in questions.items()
+        }
+        with self._lock:
+            # Decode only after acquiring the model lock. Otherwise every
+            # queued request can hold an expanded RGB copy while it waits.
+            decoded_images, decoded_videos = (
+                decode_media(images, videos) if images or videos else (None, None)
+            )
+            scored, tokens = self._scorer.score(
+                state, specs, decoded_images, decoded_videos
+            )
+        return {
+            "model": self.default_model,
+            "answers": {
+                key: clef_answer(specs[key], probabilities)
+                for key, probabilities in scored.items()
+            },
+            "usage": {
+                "billing_units": len(questions),
+                "input_tokens": tokens,
+                "output_tokens": 0,
+            },
+        }
+
+    def rank(
+        self,
+        context: Any,
+        question: str | None,
+        answers: list[str],
+        model: str,
+        temperature: float,
+    ) -> list[dict]:
+        self._check(model, temperature)
+        request = {
+            "type": "choice",
+            "instructions": question or "Choose the best answer.",
+            "criteria": {str(index): value for index, value in enumerate(answers)},
+        }
+        # Rank from the unrounded head probabilities so near-ties keep their
+        # true order instead of falling back to candidate insertion order.
+        with self._lock:
+            scored, _ = self._scorer.score(context, {"rank": request})
+        ordered = sorted(scored["rank"].items(), key=lambda item: -item[1])
+        return [
+            {"rank": rank + 1, "candidate": answers[int(index)], "prob": probability}
+            for rank, (index, probability) in enumerate(ordered)
+        ]
+
+    def models(self) -> list[dict]:
+        return [
+            {
+                "name": self.default_model,
+                "backend": "clef-mlx",
+                "hf_id": self.repo_id,
+                "description": "Cloudflare Clef typed decisions on native MLX",
+            }
+        ]
+
+
+class DeciderBackend:
+    """Decider typed decisions on the native MLX Qwen3.5 text backbone.
+
+    Decider reads the state and one question, then scores the answer labels at
+    the last position with the checkpoint's own per-type calibration. It does
+    not generate text, so it cannot be served as a chat model.
+    """
+
+    _MODELS = {
+        "decider-2b": (
+            "nativ-community/decider-2b",
+            "acbae4ecce4dbcc0aea8c5a501c9f54008458a70",
+        ),
+    }
+
+    def __init__(self, model: str, *, device: str = "gpu") -> None:
+        if device not in {"gpu", "cpu"}:
+            raise ValueError("Decider device must be 'gpu' or 'cpu'")
+        local = Path(model).expanduser()
+        selected = model.rsplit("/", 1)[-1].lower()
+        if local.is_dir():
+            # A local directory serves converted or fine-tuned checkpoints.
+            path = str(local)
+            self.default_model = local.name
+            self.repo_id = str(local)
+        elif selected in self._MODELS and model.lower() in {
+            selected,
+            self._MODELS[selected][0].lower(),
+        }:
+            # Match the CLI, which routes model names case-insensitively.
+            from rapid_mlx._mirror import pinned_snapshot_download
+
+            self.default_model = selected
+            self.repo_id, revision = self._MODELS[selected]
+            path = pinned_snapshot_download(self.repo_id, revision)
+        else:
+            raise ValueError(
+                f"unknown Decider model {model!r}; choose "
+                f"{', '.join(self._MODELS)} or a local checkpoint directory"
+            )
+
+        import mlx.core as mx
+
+        from .decider import DeciderScorer, load_decider
+
+        mx.set_default_device(mx.gpu if device == "gpu" else mx.cpu)
+        text_model, tokenizer, settings = load_decider(path)
+        self._scorer = DeciderScorer(text_model, tokenizer, settings)
+        self._lock = threading.Lock()
+
+    def _check(self, model: str, temperature: float) -> None:
+        if model not in (self.default_model, self.repo_id):
+            raise KeyError(f"unknown model {model!r}; available: {self.default_model}")
+        if temperature != 1.0:
+            raise ValueError(
+                "Decider uses checkpoint calibration and requires temperature=1"
+            )
+
+    def _score(self, state: Any, questions: dict[str, Question]):
+        with self._lock:
+            return self._scorer.score(state, questions)
+
+    def answer(
+        self, state: Any, questions: dict[str, Question], model: str, temperature: float
+    ) -> dict:
+        self._check(model, temperature)
+        scored, tokens = self._score(state, questions)
+        answers_out = {}
+        for question_id, (keys, probabilities) in scored.items():
+            answer = answer_from_probabilities(
+                questions[question_id], keys, probabilities
+            )
+            # Decider publishes the winning probability as its confidence.
+            if "confidence" in answer:
+                answer["confidence"] = max(probabilities)
+            answers_out[question_id] = answer
+        return {
+            "model": self.default_model,
+            "answers": answers_out,
+            "usage": {
+                "billing_units": len(questions),
+                "input_tokens": tokens,
+                "output_tokens": 0,
+            },
+        }
+
+    def rank(
+        self,
+        context: Any,
+        question: str | None,
+        answers: list[str],
+        model: str,
+        temperature: float,
+    ) -> list[dict]:
+        self._check(model, temperature)
+        request = Question(
+            type="choice",
+            instructions=question or "Choose the best answer.",
+            criteria={str(index): value for index, value in enumerate(answers)},
+        )
+        scored, _ = self._score(context, {"rank": request})
+        keys, probabilities = scored["rank"]
+        ordered = sorted(zip(keys, probabilities), key=lambda item: -item[1])
+        return [
+            {"rank": rank + 1, "candidate": answers[int(index)], "prob": probability}
+            for rank, (index, probability) in enumerate(ordered)
+        ]
+
+    def models(self) -> list[dict]:
+        return [
+            {
+                "name": self.default_model,
+                "backend": "decider-mlx",
+                "hf_id": self.repo_id,
+                "description": "Decider typed decisions on native MLX",
+            }
+        ]
+
+
 class _ProjectionHead:
     def __init__(self, config: dict[str, Any]):
         import mlx.nn as nn

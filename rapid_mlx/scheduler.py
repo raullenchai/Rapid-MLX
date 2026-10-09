@@ -207,6 +207,18 @@ class _RecurrentOutputChainError(RuntimeError):
     """
 
 
+def _common_prefix_len(a: list[int], b: list[int]) -> int:
+    """Length of the longest common prefix of two token lists."""
+    low, high = 0, min(len(a), len(b))
+    while low < high:
+        mid = (low + high + 1) // 2
+        if a[low:mid] == b[low:mid]:
+            low = mid
+        else:
+            high = mid - 1
+    return low
+
+
 def _pflash_compressed(request: Request) -> bool:
     """Whether PFlash replaced this request's prompt with a compressed
     subsequence. Used to gate every prefix-cache store/fetch site so the
@@ -645,7 +657,19 @@ class SchedulerConfig:
     # Appended to preserve the positional SchedulerConfig prefix.
     allow_context_overcommit: bool = False
 
+    # Shared-prefix wait: a request whose prompt shares at least this many
+    # not-yet-cached tokens with a request that is still prefilling waits for
+    # that request's prompt state instead of recomputing the shared part
+    # beside it. ``0`` disables the wait. Appended for positional callers.
+    shared_prefix_wait_tokens: int = 1024
+
     def __post_init__(self) -> None:
+        if (
+            isinstance(self.shared_prefix_wait_tokens, bool)
+            or not isinstance(self.shared_prefix_wait_tokens, int)
+            or self.shared_prefix_wait_tokens < 0
+        ):
+            raise ValueError("shared_prefix_wait_tokens must be an integer >= 0")
         if self.mllm_singleton_fastpath not in ("auto", "off"):
             raise ValueError(
                 "mllm_singleton_fastpath must be 'auto' or 'off', "
@@ -4539,6 +4563,7 @@ class Scheduler:
         self._last_adaptive_prefill_size = self.config.prefill_step_size
         self._adaptive_prefill_protected_chunks = 0
         self._adaptive_prefill_reduced_chunks = 0
+        self._shared_prefix_waits = 0
         # D-METAL-CAP: cached per-token KV-cache size for the
         # projection-based admission gate. Auto-derived from the
         # model config on first use (operator override via
@@ -8200,31 +8225,7 @@ class Scheduler:
                 request.cache_hit_type = "miss"
                 request.remaining_tokens = request.prompt_token_ids
         elif self.memory_aware_cache is not None:
-            # Use memory-aware prefix cache
-            import time as _time
-
-            _fetch_t0 = _time.monotonic()
-            cache, remaining = self.memory_aware_cache.fetch(request.prompt_token_ids)
-            _fetch_dt = _time.monotonic() - _fetch_t0
-            request.cache_hit_type = self.memory_aware_cache._last_match_type
-            if cache:
-                request.prompt_cache = cache
-                request.cached_tokens = len(request.prompt_token_ids) - len(remaining)
-                request.remaining_tokens = remaining
-                logger.info(
-                    f"[cache_fetch] request={request.request_id[:12]} HIT "
-                    f"prompt_tokens={len(request.prompt_token_ids)} "
-                    f"cached={request.cached_tokens} remaining={len(remaining)} "
-                    f"time={_fetch_dt:.3f}s"
-                )
-            else:
-                request.remaining_tokens = request.prompt_token_ids
-                logger.info(
-                    f"[cache_fetch] request={request.request_id[:12]} MISS "
-                    f"prompt_tokens={len(request.prompt_token_ids)} "
-                    f"time={_fetch_dt:.3f}s entries={len(self.memory_aware_cache._entries)}"
-                )
-            self._reclaim_prefix_cache_for_prefill(request)
+            self._fetch_memory_aware_prefix(request)
         elif self.prefix_cache is not None:
             # Use legacy prefix cache
             cache, remaining = self.prefix_cache.fetch_cache(request.prompt_token_ids)
@@ -8270,6 +8271,37 @@ class Scheduler:
         logger.debug(
             f"Added request {request.request_id} with {request.num_prompt_tokens} prompt tokens"
         )
+
+    def _fetch_memory_aware_prefix(self, request: Request) -> None:
+        """Look the request's prompt up in the memory-aware prefix cache."""
+        import time as _time
+
+        store: Any = self.memory_aware_cache
+        prompt: list[int] = request.prompt_token_ids or []
+        _fetch_t0 = _time.monotonic()
+        cache, remaining = store.fetch(prompt)
+        _fetch_dt = _time.monotonic() - _fetch_t0
+        request.cache_hit_type = store._last_match_type
+        if cache:
+            request.prompt_cache = cache
+            request.cached_tokens = len(prompt) - len(remaining)
+            request.remaining_tokens = remaining
+            logger.info(
+                f"[cache_fetch] request={request.request_id[:12]} HIT "
+                f"prompt_tokens={len(prompt)} "
+                f"cached={request.cached_tokens} remaining={len(remaining)} "
+                f"time={_fetch_dt:.3f}s"
+            )
+        else:
+            request.prompt_cache = None
+            request.cached_tokens = 0
+            request.remaining_tokens = prompt
+            logger.info(
+                f"[cache_fetch] request={request.request_id[:12]} MISS "
+                f"prompt_tokens={len(prompt)} "
+                f"time={_fetch_dt:.3f}s entries={len(store._entries)}"
+            )
+        self._reclaim_prefix_cache_for_prefill(request)
 
     def _commit_request(self, request: Request) -> None:
         """Atomically publish a request to lifecycle truth and the run queue."""
@@ -9137,6 +9169,78 @@ class Scheduler:
             return 1
         return self.config.max_num_seqs
 
+    def _prefill_leader_for(self, request: Request) -> Request | None:
+        """A running request whose prompt state this one should wait for.
+
+        Two prompts that share a long prefix and prefill side by side each
+        pay for the shared part, and a prefill batch costs about the sum of
+        its rows. Holding the later one until the earlier one stores its
+        prompt state lets it resume from that state instead. The hold is
+        taken only when it cannot lose: the tokens it saves must cover the
+        extra prompt the earlier request still has to process.
+        """
+        min_tokens = getattr(self.config, "shared_prefix_wait_tokens", 0) or 0
+        prompt = request.prompt_token_ids or []
+        if (
+            min_tokens <= 0
+            or getattr(self, "memory_aware_cache", None) is None
+            or not prompt
+            or _pflash_compressed(request)
+            or request.prefix_wait_done
+        ):
+            return None
+        own_work = (
+            len(prompt)
+            if request.remaining_tokens is None
+            else len(request.remaining_tokens)
+        )
+        cached = len(prompt) - own_work
+        for leader in self.running.values():
+            leader_prompt = leader.prompt_token_ids or []
+            if (
+                leader.num_output_tokens > 0
+                or not leader_prompt
+                or _pflash_compressed(leader)
+            ):
+                continue
+            gain = _common_prefix_len(prompt, leader_prompt) - cached
+            leader_work = (
+                len(leader_prompt)
+                if leader.remaining_tokens is None
+                else len(leader.remaining_tokens)
+            )
+            if gain >= min_tokens and gain > leader_work - own_work:
+                return leader
+        return None
+
+    def _pop_waiting_for_admission(self) -> Request | None:
+        """Next waiting request in arrival order that is not held behind a
+        running prefill of the same prefix (see ``_prefill_leader_for``).
+
+        A held request follows the one request it was held for: it is
+        released when that request emits its first token (its prompt state
+        is stored just before) or leaves, and is never held again.
+        """
+        for request in self.waiting:
+            if request.prefix_wait_leader is not None:
+                leader = self.running.get(request.prefix_wait_leader)
+                if leader is not None and leader.num_output_tokens == 0:
+                    continue
+                request.prefix_wait_leader = None
+                request.prefix_wait_done = True
+                self._fetch_memory_aware_prefix(request)
+            else:
+                leader = self._prefill_leader_for(request)
+                if leader is not None:
+                    request.prefix_wait_leader = leader.request_id
+                    self._shared_prefix_waits = (
+                        getattr(self, "_shared_prefix_waits", 0) + 1
+                    )
+                    continue
+            self.waiting.remove(request)
+            return request
+        return None
+
     def _schedule_waiting(self) -> list[Request]:
         """
         Move requests from waiting queue to running.
@@ -9164,7 +9268,10 @@ class Scheduler:
                     break
                 request, selection_forced = selection
             else:
-                request = self.waiting.popleft()
+                popped = self._pop_waiting_for_admission()
+                if popped is None:
+                    break
+                request = popped
                 selection_forced = False
 
             # Ensure we have a batch generator. The False return means
@@ -11192,6 +11299,7 @@ class Scheduler:
             "adaptive_prefill_reduced_chunks": getattr(
                 self, "_adaptive_prefill_reduced_chunks", 0
             ),
+            "shared_prefix_waits": getattr(self, "_shared_prefix_waits", 0),
         }
         # R15-P1 (task #296): disk-backed KV checkpoint counters.
         # Folded straight from the module-level ``disk_kv_checkpoint``

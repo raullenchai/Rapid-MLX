@@ -330,10 +330,16 @@ def _add_system_one_parser(
         "model",
         nargs="?",
         default="convaiinnovations/laya",
-        help="Laya model id/path, CLM public name, or clef/clef-flash",
+        help=(
+            "Laya model id/path, CLM public name, clef/clef-flash, "
+            "clef-mlx/clef-flash-mlx (native MLX), or decider-2b; the native "
+            "Clef and Decider backends also take a local checkpoint directory"
+        ),
     )
     system_one_parser.add_argument(
-        "--backend", choices=("auto", "laya", "clm", "clef"), default="auto"
+        "--backend",
+        choices=("auto", "laya", "clm", "clef", "clef-mlx", "decider"),
+        default="auto",
     )
     system_one_parser.add_argument("--host", default="127.0.0.1")
     system_one_parser.add_argument("--port", type=_port_arg, default=None)
@@ -348,7 +354,7 @@ def _add_system_one_parser(
         "--device",
         choices=("gpu", "cpu"),
         default="gpu",
-        help="MLX device for Laya/CLM; Metal/MPS device for Clef",
+        help="MLX device for Laya/CLM/Decider; Metal/MPS device for Clef",
     )
     system_one_parser.add_argument(
         "--dtype",
@@ -655,6 +661,17 @@ def _add_serve_parser(
         help=(
             "Maximum compatible prompt-slot grants that may pass over a request "
             "under shortest_validated_tail before it is forced FIFO (default: 8)."
+        ),
+    )
+    serve_parser.add_argument(
+        "--shared-prefix-wait-tokens",
+        type=int,
+        default=1024,
+        metavar="N",
+        help=(
+            "A request sharing at least N uncached prompt tokens with a "
+            "request that is still prefilling waits for that prompt state "
+            "instead of recomputing it (default: 1024). 0 disables the wait."
         ),
     )
     serve_parser.add_argument(

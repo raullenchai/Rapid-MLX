@@ -4301,6 +4301,21 @@
        "type": "builtins.int"
       },
       {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": 1024,
+       "dest": "shared_prefix_wait_tokens",
+       "help": "A request sharing at least N uncached prompt tokens with a request that is still prefilling waits for that prompt state instead of recomputing it (default: 1024). 0 disables the wait.",
+       "metavar": "N",
+       "nargs": null,
+       "option_strings": [
+        "--shared-prefix-wait-tokens"
+       ],
+       "required": false,
+       "type": "builtins.int"
+      },
+      {
        "class": "argparse._StoreTrueAction",
        "completer": null,
        "const": true,
@@ -6187,6 +6202,7 @@
         "completion_batch_size",
         "scheduling_policy",
         "scheduling_max_deferrals",
+        "shared_prefix_wait_tokens",
         "enable_prefix_cache",
         "disable_prefix_cache",
         "disable_disk_caches",
@@ -8263,7 +8279,7 @@
        "const": null,
        "default": "convaiinnovations/laya",
        "dest": "model",
-       "help": "Laya model id/path, CLM public name, or clef/clef-flash",
+       "help": "Laya model id/path, CLM public name, clef/clef-flash, clef-mlx/clef-flash-mlx (native MLX), or decider-2b; the native Clef and Decider backends also take a local checkpoint directory",
        "metavar": null,
        "nargs": "?",
        "option_strings": [],
@@ -8274,7 +8290,9 @@
         "auto",
         "laya",
         "clm",
-        "clef"
+        "clef",
+        "clef-mlx",
+        "decider"
        ],
        "class": "argparse._StoreAction",
        "completer": null,
@@ -8366,7 +8384,7 @@
        "const": null,
        "default": "gpu",
        "dest": "device",
-       "help": "MLX device for Laya/CLM; Metal/MPS device for Clef",
+       "help": "MLX device for Laya/CLM/Decider; Metal/MPS device for Clef",
        "metavar": null,
        "nargs": null,
        "option_strings": [
