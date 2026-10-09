@@ -36,6 +36,31 @@ are process limits,
 not a host-wide memory admission controller. A run that reaches either guard
 is a failed soak.
 
+## Background service mode
+
+`--daemon` gives each worker its own HTTP client and growing chat history. The
+history rotates after `--session-max-turns` successful attempts to bound a
+24-hour run; each new session starts with its own system prompt. The client
+reconnects after `--reconnect-every` requests. All workers send during each
+`--burst-seconds` window and stop during `--idle-seconds`. Use the primary-model
+`--idle-unload-seconds` serve flag with an idle window longer than that TTL.
+The verdict requires observed lifecycle load and unload counter increases,
+reconnects, session rotations, completed answers, required tool calls, and the
+existing cancellation, disconnect, probe, and resource checks.
+
+```sh
+rapid-mlx serve mlx-community/Qwen3.5-4B-MLX-4bit \
+  --host 127.0.0.1 --port 18620 --served-model-name qwen3.5-4b-4bit \
+  --max-num-seqs 6 --cache-memory-mb 1024 \
+  --gpu-memory-utilization 0.35 --enable-prefix-cache --no-thinking --no-mllm \
+  --idle-unload-seconds 30
+python scripts/longrun_agent_soak.py \
+  --daemon --url http://127.0.0.1:18620 --model qwen3.5-4b-4bit \
+  --pid SERVER_PID --duration 86400 --concurrency 6 \
+  --burst-seconds 120 --idle-seconds 120 \
+  --output /path/to/run-24h
+```
+
 Qwen3.5-4B's default multimodal lane serializes ArraysCache requests, so this
 command uses `--no-mllm` to exercise concurrent text scheduling. It cannot
 validate the Gemma 4 MLLM failure in [#3303](https://github.com/raullenchai/Rapid-MLX/issues/3303)
