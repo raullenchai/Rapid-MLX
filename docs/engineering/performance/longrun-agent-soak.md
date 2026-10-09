@@ -47,11 +47,12 @@ reconnects after `--reconnect-every` requests. All workers send during each
 `--expected-ttl-seconds`. The idle window must also cover the request deadline
 and 30 seconds for the server's TTL monitor, so an in-flight request started at
 the end of a burst cannot consume the whole idle gap.
-The verdict requires one observed unload and reload for every complete idle
-cycle, reconnects, session rotations, completed answers, correct tool arguments,
-and the existing cancellation, disconnect, probe, and resource checks. During
-standby the server has no Metal telemetry; the harness checks RSS, threads, and
-open files against the first unloaded sample instead.
+The verdict requires one observed unload per complete idle cycle and a reload
+before each subsequent burst, plus reconnects, session rotations, completed
+answers, correct tool arguments, and the existing cancellation, disconnect,
+probe, and resource checks. During standby the server has no Metal telemetry;
+the harness checks RSS, threads, and open files against the first settled
+unloaded sample instead.
 
 ```sh
 rapid-mlx serve mlx-community/Qwen3.5-4B-MLX-4bit \
