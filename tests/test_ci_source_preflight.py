@@ -101,22 +101,26 @@ def test_cli_snapshot_historical_unions_use_source_preflight_only(paths):
     assert len(json.loads(promoted.as_outputs()["test_matrix"])["include"]) == 9
 
 
-def test_cli_snapshot_fixture_has_one_cpu_consumer_and_one_shard():
+def test_cli_snapshot_fixture_has_two_cpu_consumers_each_in_one_shard():
     fixture_read = "SNAPSHOT.read_text()"
     consumers = [
         path.relative_to(ROOT).as_posix()
         for path in (ROOT / "tests").rglob("test_*.py")
         if path.name != Path(__file__).name and fixture_read in path.read_text()
     ]
-    assert consumers == ["tests/test_cli_parser_snapshot.py"]
+    assert sorted(consumers) == [
+        "tests/test_cli_parser_snapshot.py",
+        "tests/test_serve_command_characterization.py",
+    ]
 
     shards = partition(discover(ROOT, "ordinary"), 3)
-    selected = [
-        index
-        for index, shard in enumerate(shards, 1)
-        if any(item.path == consumers[0] for item in shard)
-    ]
-    assert len(selected) == 1
+    for consumer in consumers:
+        selected = [
+            index
+            for index, shard in enumerate(shards, 1)
+            if any(item.path == consumer for item in shard)
+        ]
+        assert len(selected) == 1
 
 
 @pytest.mark.parametrize(
