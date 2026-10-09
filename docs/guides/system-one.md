@@ -77,6 +77,41 @@ weights cached, and held about 4.3 GB of memory. Four questions over the same
 state took 0.2 s at 200 input tokens, 1.1 s at 1,300, 4.9 s at 5,200 and 22 s
 at 21,000. Other Mac sizes are unmeasured.
 
+## OpenJev
+
+OpenJev is a 27B Qwen3.8 chat model fine-tuned for typed decisions. For each
+question it reads which option letter the model would answer first, then
+applies the release's calibration. It does not generate text. Rapid runs the
+published MLX conversion on native MLX with no extra install.
+
+> **License.** The OpenJev weights are CC BY-NC 4.0: non-commercial use only.
+> Rapid does not redistribute them; the first start downloads them from
+> Hugging Face under that license. Commercial use needs a licence from the
+> OpenJev authors. The server prints this notice at startup and reports
+> `"license": "CC-BY-NC-4.0"` at `/v1/models`.
+
+```bash
+rapid-mlx system-one openjev --port 8700
+# Another conversion of the same model, such as a 4-bit build:
+rapid-mlx system-one /path/to/openjev-mlx --backend openjev --port 8700
+```
+
+The first start downloads the pinned `openjev/openjev-MLX` weights (27 GB,
+8-bit). That conversion carries the language model only, so OpenJev here is
+text-only: requests with `images` or `videos` receive HTTP 422. So does a
+`state.screenshot` or `state.image` that the release would read as an image:
+a `data:image` URL, or a string longer than 2,000 characters (raw base64).
+Any other value in those fields is state text, as in the release.
+
+On one M3 Ultra Mac the server was ready 5 seconds after launch with the
+weights cached, and held about 27 GB of memory, 33 GB at peak. Four questions
+over the same state took 1.3 s for a one-line state, 1.8 s at 240 state
+tokens, 4.8 s at 1,200 and 17 s at 5,000. Other Mac sizes are unmeasured. On
+six test cases with 14 questions, Rapid sent the model the same tokens as the
+OpenJev release helper and picked the same answer for every question;
+probabilities agreed within 0.004, apart from one undecided `score` level
+that differed by 0.02 (see the limits below).
+
 ## Cloudflare Clef
 
 Clef is a joint-schema decision model. `clef-flash` uses a 9B Qwen3.5
@@ -210,6 +245,14 @@ nesting-depth protection.
   normalized, as the checkpoint was calibrated. State longer than 32,768
   tokens is truncated. Every question is one full forward pass over the state,
   so latency grows with both state length and question count.
+- OpenJev requires `temperature=1` as well and is text-only. Each question
+  is its own readout; a list of more than 52 options is read in groups, plus
+  one readout over the group winners. The state shared by a request's
+  questions is read once. The model's output numbers are coarse, so reusing
+  that shared state can move an undecided probability by about 0.02 compared
+  with reading each question from scratch; the chosen answer was unchanged in
+  every case tested. One readout is limited to 32,768 tokens; a longer prompt
+  receives HTTP 422 rather than being truncated.
 - Clef also requires `temperature=1` for checkpoint calibration. Its input
   encoder follows Cloudflare's 16,384-token default and may truncate a long
   state to leave room for the schema.

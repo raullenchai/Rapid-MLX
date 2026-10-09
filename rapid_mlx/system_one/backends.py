@@ -447,21 +447,23 @@ class DeciderBackend:
             raise ValueError("Decider device must be 'gpu' or 'cpu'")
         local = Path(model).expanduser()
         selected = model.rsplit("/", 1)[-1].lower()
-        if local.is_dir():
-            # A local directory serves converted or fine-tuned checkpoints.
-            path = str(local)
-            self.default_model = local.name
-            self.repo_id = str(local)
-        elif selected in self._MODELS and model.lower() in {
+        if selected in self._MODELS and model.lower() in {
             selected,
             self._MODELS[selected][0].lower(),
         }:
-            # Match the CLI, which routes model names case-insensitively.
+            # Match the CLI, which routes model names case-insensitively. A
+            # published name always means the pinned release, even when a
+            # directory of the same name sits in the working directory.
             from rapid_mlx._mirror import pinned_snapshot_download
 
             self.default_model = selected
             self.repo_id, revision = self._MODELS[selected]
             path = pinned_snapshot_download(self.repo_id, revision)
+        elif local.is_dir():
+            # A local directory serves converted or fine-tuned checkpoints.
+            path = str(local)
+            self.default_model = local.name
+            self.repo_id = str(local)
         else:
             raise ValueError(
                 f"unknown Decider model {model!r}; choose "
@@ -542,6 +544,129 @@ class DeciderBackend:
                 "backend": "decider-mlx",
                 "hf_id": self.repo_id,
                 "description": "Decider typed decisions on native MLX",
+            }
+        ]
+
+
+class OpenJevBackend:
+    """OpenJev typed decisions on the native MLX Qwen3.8 text model.
+
+    OpenJev reads the option letters at the first output position of a chat
+    prompt and applies the release calibration. The published MLX conversion
+    has no vision tower, so this backend takes text and JSON state only.
+
+    The weights are licensed CC BY-NC 4.0: non-commercial use only.
+    """
+
+    LICENSE_NOTICE = (
+        "OpenJev weights are licensed CC BY-NC 4.0 (non-commercial use only); "
+        "commercial use needs a licence from the OpenJev authors."
+    )
+    _MODELS = {
+        "openjev": (
+            "openjev/openjev-MLX",
+            "a9dcc20aa827a6c7eae478f6ebb3b255bb135451",
+        ),
+    }
+
+    def __init__(self, model: str, *, device: str = "gpu") -> None:
+        if device not in {"gpu", "cpu"}:
+            raise ValueError("OpenJev device must be 'gpu' or 'cpu'")
+        local = Path(model).expanduser()
+        repos = {repo.lower(): name for name, (repo, _) in self._MODELS.items()}
+        selected = repos.get(model.lower(), model.lower())
+        if selected in self._MODELS:
+            # A published name always means the pinned release, even when a
+            # directory of the same name sits in the working directory.
+            from rapid_mlx._mirror import pinned_snapshot_download
+
+            self.default_model = selected
+            self.repo_id, revision = self._MODELS[selected]
+            path = pinned_snapshot_download(self.repo_id, revision)
+        elif local.is_dir():
+            # A local directory serves other conversions, such as a 4-bit build.
+            # /v1/models reports its name, not where it sits on this machine.
+            path = str(local)
+            self.default_model = local.name
+            self.repo_id = local.name
+        else:
+            raise ValueError(
+                f"unknown OpenJev model {model!r}; choose "
+                f"{', '.join(self._MODELS)} or a local checkpoint directory"
+            )
+
+        import mlx.core as mx
+
+        from .openjev import OpenJevScorer, load_openjev
+
+        mx.set_default_device(mx.gpu if device == "gpu" else mx.cpu)
+        self._scorer = OpenJevScorer(*load_openjev(path))
+        self._lock = threading.Lock()
+
+    def _check(self, model: str, temperature: float) -> None:
+        if model not in (self.default_model, self.repo_id):
+            raise KeyError(f"unknown model {model!r}; available: {self.default_model}")
+        if temperature != 1.0:
+            raise ValueError(
+                "OpenJev uses release calibration and requires temperature=1"
+            )
+
+    def _score(self, state: Any, questions: dict[str, Question]):
+        with self._lock:
+            return self._scorer.score(state, questions)
+
+    def answer(
+        self, state: Any, questions: dict[str, Question], model: str, temperature: float
+    ) -> dict:
+        from .openjev import openjev_answer
+
+        self._check(model, temperature)
+        scored, tokens = self._score(state, questions)
+        return {
+            "model": self.default_model,
+            "answers": {
+                question_id: openjev_answer(
+                    questions[question_id], options, probabilities
+                )
+                for question_id, (options, probabilities) in scored.items()
+            },
+            "usage": {
+                "billing_units": len(questions),
+                "input_tokens": tokens,
+                "output_tokens": 0,
+            },
+        }
+
+    def rank(
+        self,
+        context: Any,
+        question: str | None,
+        answers: list[str],
+        model: str,
+        temperature: float,
+    ) -> list[dict]:
+        self._check(model, temperature)
+        request = Question(
+            type="choice",
+            instructions=question or "Choose the best answer.",
+            criteria={str(index): value for index, value in enumerate(answers)},
+        )
+        scored, _ = self._score(context, {"rank": request})
+        options, probabilities = scored["rank"]
+        ordered = sorted(zip(options, probabilities), key=lambda item: -item[1])
+        return [
+            {"rank": rank + 1, "candidate": answers[int(key)], "prob": probability}
+            for rank, ((key, _), probability) in enumerate(ordered)
+        ]
+
+    def models(self) -> list[dict]:
+        return [
+            {
+                "name": self.default_model,
+                "backend": "openjev-mlx",
+                "hf_id": self.repo_id,
+                "license": "CC-BY-NC-4.0",
+                "description": "OpenJev typed decisions on native MLX (text only)",
             }
         ]
 
