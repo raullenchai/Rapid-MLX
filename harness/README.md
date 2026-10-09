@@ -80,10 +80,20 @@ medians of `Qwen3.5-35B-A3B-8bit` span 2.4%, while a single gate run on the
 same commit with macOS's animated desktop decoding video on the GPU came out
 +37%. Close other GPU consumers before capturing, and check
 `bench-ab-<model>.json` when one is emitted: a flagged bench is settled by a
-counterbalanced A/B against the base ref measured in the same session, and that
-artifact records both arms' captures, their `capture_spread_pct`, and the
-resulting delta. A wide spread means the number is not usable, whichever
-direction it points.
+fixed 20-round counterbalanced A/B against the base ref measured in the same
+session. Ten complete ABBA blocks each contribute a mean log PR/base ratio.
+For cold and warm separately, the artifact records every capture, all block
+effects, and the one-sided 95% Student-t bounds. The PR is cleared only when
+both upper bounds are within their existing regression limits. A lower bound
+above a limit is a confirmed regression; an interval that crosses a limit is
+inconclusive and blocks the step.
+
+The fixed budget prevents optional stopping, and ABBA pairing cancels a linear
+within-block time trend. The inference still assumes the ten block effects are
+independent and reasonably t-distributed. Strong serial correlation or a
+nonlinear order effect can violate that assumption, so the result is a gate
+decision under this protocol, not a general performance guarantee. Do not
+clear a run with fewer blocks, discard captures, or rerun until it passes.
 
 There is deliberately no `--update-baselines` command. Automatically replacing
 the comparison point after every run would turn a real regression into the new

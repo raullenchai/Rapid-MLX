@@ -793,6 +793,7 @@ jobs:
             --cov=scripts.ci_candidate_execution \
             --cov=scripts.ci_candidate_rollout \
             --cov=scripts.sidecar_macho_inventory \
+            --cov=scripts.pr_validate.steps.stress_e2e_bench \
             --cov-report=term-missing
 
           # These lifecycle contracts install inert MLX modules before import.
