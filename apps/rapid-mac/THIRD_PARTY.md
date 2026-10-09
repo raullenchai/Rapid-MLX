@@ -253,6 +253,7 @@ The largest and most self-contained components:
 | Gemma 4 model classes | https://github.com/Blaizzy/mlx-vlm (v0.6.3) | MIT | `rapid_mlx/models/gemma4_vendored/` |
 | Decider typed-decision scoring, adapted | https://github.com/Blaizzy/mlx-vlm (`fdd94f3`) | MIT | `rapid_mlx/system_one/decider.py` (license and provenance in the file header) |
 | Native MLX Clef head and prompt, adapted | https://github.com/Blaizzy/mlx-vlm (`fdd94f3`) | MIT | `rapid_mlx/system_one/clef_mlx.py` (license and provenance in the file header) |
+| OpenJev prompt, letter readout and calibration, reimplemented | https://github.com/jundot/omlx (`79f4488`, PR #4315); https://huggingface.co/openjev/openjev (`helper/shim.py`, `1c341f6`) | Apache-2.0 | `rapid_mlx/system_one/openjev.py` |
 | Hunyuan 3 model class | https://github.com/ml-explore/mlx-lm (PR #1211) | MIT | `rapid_mlx/models/hy_v3.py` |
 | DeepSeek V4 model classes | https://github.com/ml-explore/mlx-lm (`_ds4` branch, © Apple Inc.) | MIT | `rapid_mlx/models/deepseek_v4.py`, `deepseek_v4_cache.py`, `deepseek_v4_hyper_connection.py`, `deepseek_v4_switch.py` |
 | Stable Diffusion 3.5 Large MLX runtime | https://github.com/argmaxinc/DiffusionKit (`498e5db`) | MIT | `rapid_mlx/image/sd35_runtime/` (`LICENSE`, `NOTICE`) |

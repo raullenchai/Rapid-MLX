@@ -445,10 +445,15 @@ def test_decider_backend_resolves_pinned_alias_and_local_directory(
     assert loaded[0] == (
         "/snap/nativ-community/decider-2b@acbae4ecce4dbcc0aea8c5a501c9f54008458a70"
     )
+    # A same-named directory in the working directory does not shadow it.
+    (tmp_path / "decider-2b").mkdir()
+    monkeypatch.chdir(tmp_path)
+    assert DeciderBackend("decider-2b").repo_id == "nativ-community/decider-2b"
+    assert DeciderBackend("./decider-2b").default_model == "decider-2b"
     local = DeciderBackend(str(tmp_path), device="cpu")
     assert local.default_model == tmp_path.name
     assert loaded[-1] == str(tmp_path)
-    assert devices == [mx.gpu, mx.gpu, mx.gpu, mx.cpu]
+    assert devices == [mx.gpu] * 5 + [mx.cpu]
 
     with pytest.raises(ValueError, match="unknown Decider model"):
         DeciderBackend("someone/decider-2b")
