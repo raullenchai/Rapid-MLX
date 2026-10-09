@@ -172,6 +172,31 @@ chore: bump version to X.Y.Z
 
 ## Pre-release validation gauntlet
 
+### One-release frozen source mode (0.16.0 only)
+
+The normal production route remains `main`. For the frozen 0.16.0 release only,
+the same full release workflow also accepts the exact
+`release/0.16.0` branch when its history descends linearly from
+`837d6d6234936f6886caf1edff9f5d01eaee1330` and contains only the reviewed
+release-policy and version-metadata paths. The version bump PR must target the
+current head of that branch and contain exactly one commit. Preflight and the
+production workflow re-read the live branch before the approval boundary and
+again immediately before tagging; any drift stops the release.
+
+Before using this route, add an exact `release/0.16.0` branch deployment policy
+to the `rapid-mac-tag` protected environment. Keep the existing exact `main`
+policy, sole required reviewer, `prevent_self_review=false`, and
+`can_admins_bypass=false`. Do not use a wildcard. The checker requires exactly
+those two branch policies during this release. Remove the added branch policy
+after the published release and rollback checks are complete, restoring the
+normal main-only environment contract.
+
+After the frozen bump PR and `release-preflight.yml` complete successfully,
+dispatch `auto-release.yml` from `release/0.16.0` with only
+`frozen_release_version=0.16.0`. This mode does not accept `force_version`,
+`retry_version`, or `dry_run`, and it retains Tier-1, signed candidate, full CI,
+release-evidence, notarization, and protected approval gates.
+
 ### The boundary
 
 Every gate falls on one side of a single hard rule: **does the gate require running model inference (`rapid-mlx serve` + a real model load)?**

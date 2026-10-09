@@ -4,25 +4,32 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
-import sys
-from pathlib import Path
 
 import pytest
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent
-_SCRIPT = _REPO_ROOT / "scripts" / "check_release_environment.py"
+from scripts import check_release_environment
 
 
 @pytest.fixture(scope="module")
 def checker():
-    spec = importlib.util.spec_from_file_location("check_release_environment", _SCRIPT)
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+    return check_release_environment
+
+
+def test_parser_accepts_explicit_branch_allowlist(checker):
+    args = checker._parser().parse_args(
+        [
+            "--environment-json",
+            "env.json",
+            "--policy-json",
+            "policies.json",
+            "--expected-branch",
+            "main",
+            "--expected-branch",
+            "release/0.16.0",
+        ]
+    )
+    assert args.expected_branches == ["main", "release/0.16.0"]
 
 
 def _env(
@@ -265,3 +272,25 @@ def test_wrong_env_name_fails(checker, tmp_path):
     pol = _write(tmp_path, _policy(), "policy.json")
     with pytest.raises(checker.EnvironmentGateError, match="rapid-mac-tag"):
         checker.read_back(env_json=env, policy_json=pol)
+
+
+def test_main_and_frozen_release_branches_pass(checker, tmp_path):
+    env = _write(tmp_path, _env(), "env.json")
+    pol = _write(
+        tmp_path,
+        _policy(branches=(("main", "branch"), ("release/0.16.0", "branch"))),
+        "policy.json",
+    )
+    evidence = checker.read_back(
+        env_json=env, policy_json=pol, expected_branches=("main", "release/0.16.0")
+    )
+    assert "release/0.16.0" in "\n".join(evidence)
+
+
+def test_frozen_policy_missing_fails(checker, tmp_path):
+    env = _write(tmp_path, _env(), "env.json")
+    pol = _write(tmp_path, _policy(), "policy.json")
+    with pytest.raises(checker.EnvironmentGateError, match="total_count"):
+        checker.read_back(
+            env_json=env, policy_json=pol, expected_branches=("main", "release/0.16.0")
+        )

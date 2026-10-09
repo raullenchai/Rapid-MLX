@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, release/0.16.0]
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
@@ -794,6 +794,8 @@ jobs:
             --cov=scripts.ci_candidate_rollout \
             --cov=scripts.sidecar_macho_inventory \
             --cov=scripts.pr_validate.steps.stress_e2e_bench \
+            --cov=scripts.check_release_source_ref \
+            --cov=scripts.check_release_environment \
             --cov-report=term-missing
 
           # These lifecycle contracts install inert MLX modules before import.
