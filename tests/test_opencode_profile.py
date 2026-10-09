@@ -64,9 +64,13 @@ def test_opencode_test_runner_uses_private_server_for_v2():
         run.return_value = SimpleNamespace(stdout="opencode v2.0.26\n")
         runner = AgentTestRunner(profile, model_id="local-model")
         assert runner._opencode_query_cmd("opencode run '{query}'") == (
-            "opencode run --standalone '{query}'"
+            "opencode run --standalone --format json '{query}'"
         )
         run.return_value = SimpleNamespace(stdout="1.18.35\n")
+        assert runner._opencode_query_cmd("opencode run '{query}'") == (
+            "opencode run '{query}'"
+        )
+        run.side_effect = FileNotFoundError("opencode")
         assert runner._opencode_query_cmd("opencode run '{query}'") == (
             "opencode run '{query}'"
         )

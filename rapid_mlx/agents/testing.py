@@ -1504,7 +1504,9 @@ class AgentTestRunner:
             except (OSError, subprocess.SubprocessError):
                 return query_cmd
         if re.search(r"\bv?2\.\d+", version):
-            return query_cmd.replace("opencode run ", "opencode run --standalone ", 1)
+            return query_cmd.replace(
+                "opencode run ", "opencode run --standalone --format json ", 1
+            )
         return query_cmd
 
     def build_test_plan(self) -> list[str]:
