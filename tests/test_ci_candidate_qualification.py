@@ -299,9 +299,16 @@ def test_mandatory_linux_coverage_enrolls_candidate_controllers():
         "--cov=scripts.ci_candidate_execution",
         "--cov=scripts.ci_candidate_rollout",
         "--cov=scripts.sidecar_macho_inventory",
+        "--cov=scripts.pr_validate.steps.stress_e2e_bench",
     }
     assert required <= set(run.split())
     assert "--cov=rapid_mlx" in run
+    assert (
+        Path(".github/workflows/ci.yml")
+        .read_text()
+        .count("--cov=scripts.pr_validate.steps.stress_e2e_bench")
+        == 1
+    )
     assert (
         Path(".github/workflows/ci.yml")
         .read_text()
@@ -309,6 +316,10 @@ def test_mandatory_linux_coverage_enrolls_candidate_controllers():
         == 1
     )
     apple_steps = workflow["jobs"]["test-apple-silicon"]["steps"]
+    assert all(
+        "--cov=scripts.pr_validate.steps.stress_e2e_bench" not in step.get("run", "")
+        for step in apple_steps
+    )
     assert all(
         "--cov=scripts.sidecar_macho_inventory" not in step.get("run", "")
         for step in apple_steps
