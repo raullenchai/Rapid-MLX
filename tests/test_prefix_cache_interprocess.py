@@ -99,8 +99,9 @@ def test_startup_load_skips_active_shutdown_save(tmp_path, monkeypatch):
             writes.append(path)
             return False
 
+    engine = Engine()
     monkeypatch.setattr(
-        runtime_cache, "get_config", lambda: SimpleNamespace(engine=Engine())
+        runtime_cache, "get_config", lambda: SimpleNamespace(engine=engine)
     )
     monkeypatch.setattr(runtime_cache, "get_cache_dir", lambda: cache_dir)
     try:
