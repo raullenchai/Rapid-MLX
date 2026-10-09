@@ -1630,7 +1630,7 @@ def _prefetch_config_for_degrade_probe(model_ref: str) -> None:
         return
     _DEGRADE_CONFIG_PREFETCHED.add(model_ref)
     try:
-        from huggingface_hub import hf_hub_download
+        from rapid_mlx.model_downloads import hf_hub_download
 
         call_with_deadline(
             hf_hub_download,

@@ -210,7 +210,10 @@ def _resolve_indextts_snapshot(model_name: str) -> Path:
     local. Try the cache first; reach for the network only when the cache cannot
     satisfy the load, so a cold or partial checkpoint still pulls as before.
     """
-    from huggingface_hub import snapshot_download
+    from rapid_mlx.model_downloads import (
+        ModelDownloadsDisabledError,
+        snapshot_download,
+    )
 
     try:
         cached = Path(
@@ -220,6 +223,8 @@ def _resolve_indextts_snapshot(model_name: str) -> Path:
                 local_files_only=True,
             )
         )
+    except ModelDownloadsDisabledError:
+        raise
     except Exception:
         cached = None
     if cached is not None and _cached_snapshot_holds_indextts(cached):

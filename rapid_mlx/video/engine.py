@@ -210,8 +210,8 @@ class VideoGenerationEngine:
             return self._pipeline
         try:
             import mlx.core as mx  # noqa: F401
-            from huggingface_hub import snapshot_download
 
+            from rapid_mlx.model_downloads import snapshot_download
             from videox_fun_mlx.models.cogvideox_transformer3d import (
                 CogVideoXTransformer3DModel,
             )

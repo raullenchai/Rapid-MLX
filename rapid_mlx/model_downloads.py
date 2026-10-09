@@ -10,6 +10,7 @@ way to provision models and is not affected.
 from __future__ import annotations
 
 import os
+from typing import Any
 
 from ._env import env_truthy
 
@@ -70,3 +71,33 @@ def require_local(model: str) -> None:
     if cli._cache_runnability(model) is True:
         return
     check(model)
+
+
+def snapshot_download(repo_id: str, **kwargs: Any) -> str:
+    """Resolve a snapshot without permitting a network fallback when disabled."""
+    from huggingface_hub import snapshot_download as hub_snapshot_download
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    if not disabled():
+        return str(hub_snapshot_download(repo_id, **kwargs))
+    local_kwargs = dict(kwargs)
+    local_kwargs["local_files_only"] = True
+    try:
+        return str(hub_snapshot_download(repo_id, **local_kwargs))
+    except LocalEntryNotFoundError:
+        raise ModelDownloadsDisabledError(repo_id, source() or FLAG) from None
+
+
+def hf_hub_download(repo_id: str, filename: str, **kwargs: Any) -> str:
+    """Resolve one Hub file locally when downloads are disabled."""
+    from huggingface_hub import hf_hub_download as hub_file_download
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    if not disabled():
+        return str(hub_file_download(repo_id, filename, **kwargs))
+    local_kwargs = dict(kwargs)
+    local_kwargs["local_files_only"] = True
+    try:
+        return str(hub_file_download(repo_id, filename, **local_kwargs))
+    except LocalEntryNotFoundError:
+        raise ModelDownloadsDisabledError(repo_id, source() or FLAG) from None

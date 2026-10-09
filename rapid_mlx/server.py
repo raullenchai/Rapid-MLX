@@ -2121,7 +2121,7 @@ def _prefetch_config_for_text_lane_guard(model_ref: str) -> None:
     if os.path.exists(model_ref) or hub_offline_mode_active():
         return
     try:
-        from huggingface_hub import hf_hub_download
+        from rapid_mlx.model_downloads import hf_hub_download
 
         hf_hub_download(model_ref, "config.json")
     except Exception:  # noqa: BLE001 — best-effort probe, never fatal

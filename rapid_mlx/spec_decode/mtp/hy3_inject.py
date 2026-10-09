@@ -106,10 +106,15 @@ def _resolve_sidecar_file(
     # supplied sidecar carries no revision, so local paths still resolve there.
     if revision is not None:
         try:
-            from huggingface_hub import snapshot_download
+            from rapid_mlx.model_downloads import (
+                ModelDownloadsDisabledError,
+                snapshot_download,
+            )
 
             local = snapshot_download(repo_id=str(mtp_sidecar), revision=revision)
             return _find_mtp_weights_file(Path(local))
+        except ModelDownloadsDisabledError:
+            raise
         except Exception as exc:  # pragma: no cover — network failure path
             logger.warning(
                 "[mtp.inject.hy3] could not resolve pinned sidecar %r@%s: %s",
@@ -124,10 +129,15 @@ def _resolve_sidecar_file(
     if path.is_dir():
         return _find_mtp_weights_file(path)
     try:
-        from huggingface_hub import snapshot_download
+        from rapid_mlx.model_downloads import (
+            ModelDownloadsDisabledError,
+            snapshot_download,
+        )
 
         local = snapshot_download(repo_id=str(mtp_sidecar), revision=revision)
         return _find_mtp_weights_file(Path(local))
+    except ModelDownloadsDisabledError:
+        raise
     except Exception as exc:  # pragma: no cover — network failure path
         logger.warning(
             "[mtp.inject.hy3] could not resolve sidecar %r: %s", mtp_sidecar, exc

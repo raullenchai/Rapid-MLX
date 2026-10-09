@@ -3,6 +3,7 @@
 import asyncio
 import importlib
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 
 import huggingface_hub
@@ -132,6 +133,177 @@ def test_pinned_download_refuses_a_missing_snapshot(monkeypatch):
     monkeypatch.setattr(_mirror, "download_with_mirror_fallback", _fail)
     with pytest.raises(ModelDownloadsDisabledError):
         _mirror.pinned_snapshot_download("acme/model", _REVISION)
+
+
+def test_policy_snapshot_resolver_forces_local_only_and_fails_closed(monkeypatch):
+    model_downloads.configure(True)
+    calls = []
+
+    def missing(repo_id, **kwargs):
+        calls.append((repo_id, kwargs))
+        raise LocalEntryNotFoundError("not cached")
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", missing)
+    with pytest.raises(ModelDownloadsDisabledError):
+        model_downloads.snapshot_download("acme/sidecar", allow_patterns=["*.json"])
+    assert calls == [
+        (
+            "acme/sidecar",
+            {"allow_patterns": ["*.json"], "local_files_only": True},
+        )
+    ]
+
+
+def test_policy_file_resolver_forces_local_only_and_fails_closed(monkeypatch):
+    model_downloads.configure(True)
+    calls = []
+
+    def missing(repo_id, filename, **kwargs):
+        calls.append((repo_id, filename, kwargs))
+        raise LocalEntryNotFoundError("not cached")
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", missing)
+    with pytest.raises(ModelDownloadsDisabledError):
+        model_downloads.hf_hub_download("acme/model", "config.json")
+    assert calls == [("acme/model", "config.json", {"local_files_only": True})]
+
+
+def test_policy_resolvers_preserve_default_online_behavior(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        huggingface_hub,
+        "snapshot_download",
+        lambda repo_id, **kwargs: calls.append((repo_id, kwargs)) or "/snapshot",
+    )
+    monkeypatch.setattr(
+        huggingface_hub,
+        "hf_hub_download",
+        lambda repo_id, filename, **kwargs: (
+            calls.append((repo_id, filename, kwargs)) or "/file"
+        ),
+    )
+
+    assert model_downloads.snapshot_download("acme/model", revision="main") == (
+        "/snapshot"
+    )
+    assert model_downloads.hf_hub_download("acme/model", "config.json") == "/file"
+    assert calls == [
+        ("acme/model", {"revision": "main"}),
+        ("acme/model", "config.json", {}),
+    ]
+
+
+def test_policy_resolvers_allow_complete_local_cache(monkeypatch):
+    model_downloads.configure(True)
+
+    def snapshot(_repo_id, **kwargs):
+        assert kwargs == {"local_files_only": True}
+        return "/snapshot"
+
+    def file(_repo_id, _filename, **kwargs):
+        assert kwargs == {"local_files_only": True}
+        return "/file"
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", snapshot)
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", file)
+    assert model_downloads.snapshot_download("acme/model") == "/snapshot"
+    assert model_downloads.hf_hub_download("acme/model", "config.json") == "/file"
+
+
+def test_ddtree_draft_cache_miss_cannot_download(monkeypatch):
+    from rapid_mlx.speculative.ddtree.runtime import _resolve_model_path
+
+    model_downloads.configure(True)
+
+    def missing(_repo_id, **kwargs):
+        assert kwargs == {"local_files_only": True}
+        raise LocalEntryNotFoundError("not cached")
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", missing)
+    with pytest.raises(ModelDownloadsDisabledError):
+        _resolve_model_path("acme/uncached-draft")
+
+
+def test_indextts_partial_cache_cannot_retry_online(monkeypatch):
+    from rapid_mlx.audio.tts import _resolve_indextts_snapshot
+
+    model_downloads.configure(True)
+    calls = []
+
+    def missing(repo_id, **kwargs):
+        calls.append((repo_id, kwargs))
+        raise LocalEntryNotFoundError("partial cache")
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", missing)
+    with pytest.raises(ModelDownloadsDisabledError):
+        _resolve_indextts_snapshot("acme/partial-indextts")
+    assert calls == [
+        (
+            "acme/partial-indextts",
+            {
+                "allow_patterns": [
+                    "config.json",
+                    "tokenizer.model",
+                    "*.safetensors",
+                    "*.safetensors.index.json",
+                ],
+                "local_files_only": True,
+            },
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    "resolver",
+    [
+        "rapid_mlx.spec_decode.mtp.gemma4_inject._resolve_sidecar_dir",
+        "rapid_mlx.spec_decode.mtp.hy3_inject._resolve_sidecar_file",
+        "rapid_mlx.spec_decode.mtp.qwen3_5_inject._resolve_sidecar_file",
+    ],
+)
+def test_remote_mtp_sidecars_propagate_download_policy(monkeypatch, resolver):
+    module_name, function_name = resolver.rsplit(".", 1)
+    function = getattr(importlib.import_module(module_name), function_name)
+    model_downloads.configure(True)
+
+    def missing(_repo_id, **kwargs):
+        assert kwargs.get("local_files_only") is True
+        raise LocalEntryNotFoundError("not cached")
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", missing)
+    with pytest.raises(ModelDownloadsDisabledError):
+        function("acme/uncached-sidecar")
+
+
+def test_server_reachable_hub_boundaries_use_the_policy_resolvers():
+    root = Path(__file__).parents[1] / "rapid_mlx"
+    direct_imports = {}
+    for path in root.rglob("*.py"):
+        text = path.read_text()
+        names = {
+            name
+            for name in ("snapshot_download", "hf_hub_download")
+            if f"from huggingface_hub import {name}" in text
+        }
+        if names:
+            direct_imports[str(path.relative_to(root))] = names
+
+    assert direct_imports == {
+        # Central policy implementation.
+        "model_downloads.py": {"snapshot_download", "hf_hub_download"},
+        # Mirror internals are reached through pinned_snapshot_download's policy
+        # guard or the explicit pull command.
+        "_mirror.py": {"snapshot_download", "hf_hub_download"},
+        # Explicit provisioning/import flows remain exempt by contract.
+        "cli.py": {"snapshot_download"},
+        "byom/imports.py": {"snapshot_download"},
+        "byom/preflight.py": {"hf_hub_download"},
+        # Music performs a per-file cache proof before this call.
+        "audio/music.py": {"hf_hub_download"},
+        # The server backend resolves the pinned release to a local path before
+        # entering the integrity-pinned vendored loader.
+        "clef/vendor/joint_schema_model.py": {"snapshot_download"},
+    }
 
 
 def test_prefetch_refuses_an_uncached_model_before_any_network_access(
