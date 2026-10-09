@@ -64,4 +64,32 @@ struct ModelDownloadEndpointPreferenceTests {
         let serve = ServerManager.serveEnvironmentAdditions(bearer: "", ambient: ["HF_ENDPOINT": "https://ambient.example"])
         #expect(serve["HF_ENDPOINT"] == "https://ambient.example")
     }
+    @MainActor
+    @Test(arguments: ["https://original.example", ""], ["https://new-mirror.example", ""])
+    func automaticReconnectRetainsEndpoint(_ initial: String, _ edited: String) async throws {
+        let name = "rapid.tests.endpoint.retry.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        defer { defaults.removePersistentDomain(forName: name) }
+        ModelDownloadEndpointPreference.save(initial, defaults: defaults)
+        let manager = DownloadManager(endpointPreference: {
+            ModelDownloadEndpointPreference.storedEndpoint(defaults: defaults)
+        })
+        let original = manager._testingSeedJob(alias: "qwen3.6-27b", source: .huggingFace)
+        manager._testingIngestStderr(alias: original.alias, line: "ConnectionResetError: peer reset")
+        manager._testingFinish(alias: original.alias, status: 1, reason: .exit)
+        #expect(original.retryDelaySeconds == 2)
+        ModelDownloadEndpointPreference.save(edited, defaults: defaults)
+        for _ in 0..<80 {
+            if manager.job(for: original.alias)?.instanceID != original.instanceID { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let reconnected = try #require(manager.job(for: original.alias))
+        #expect(reconnected.instanceID != original.instanceID)
+        #expect(reconnected.downloadEndpoint == (initial.isEmpty ? nil : initial))
+        // With no test binary, reconnect ends in a synthetic failure. A user
+        // retry is a new attempt and should use the newly saved setting.
+        _ = manager.retryDownload(alias: original.alias)
+        #expect(manager.job(for: original.alias)?.downloadEndpoint == (edited.isEmpty ? nil : edited))
+    }
+
 }

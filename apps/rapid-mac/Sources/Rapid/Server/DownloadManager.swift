@@ -96,6 +96,8 @@ final class DownloadManager {
         let totalBytes: Int64?
         let source: DownloadSource
         let forceMirror: Bool
+        /// Snapshot retained across automatic reconnects.
+        let downloadEndpoint: String?
         /// Number of automatic reconnects already attempted for this pull.
         let retryAttempt: Int
         fileprivate(set) var retryDelaySeconds: Int?
@@ -134,7 +136,8 @@ final class DownloadManager {
             totalBytes: Int64? = nil,
             source: DownloadSource = .mirror,
             forceMirror: Bool = false,
-            retryAttempt: Int = 0
+            retryAttempt: Int = 0,
+            downloadEndpoint: String? = nil
         ) {
             self.id = alias
             self.alias = alias
@@ -146,6 +149,7 @@ final class DownloadManager {
             self.source = source
             self.forceMirror = forceMirror
             self.retryAttempt = retryAttempt
+            self.downloadEndpoint = downloadEndpoint
             self.retryDelaySeconds = nil
             self.failureKind = nil
             self.byteMonitor = nil
@@ -194,6 +198,7 @@ final class DownloadManager {
     private var binaryPath: URL?
     private let resolvesBinaryAtStart: Bool
     private let binaryLocator: () -> URL?
+    private let endpointPreference: () -> String?
     private let settlementSleep: @MainActor () async throws -> Void
     private var shutdownSignalledAt: Date?
 
@@ -277,10 +282,15 @@ final class DownloadManager {
 
     // MARK: - Construction
 
-    init(binaryPath: URL?, binaryLocator: @escaping () -> URL? = ServerLocator.find) {
+    init(
+        binaryPath: URL?,
+        binaryLocator: @escaping () -> URL? = ServerLocator.find,
+        endpointPreference: @escaping () -> String? = { ModelDownloadEndpointPreference.storedEndpoint() }
+    ) {
         self.binaryPath = binaryPath
         self.resolvesBinaryAtStart = true
         self.binaryLocator = binaryLocator
+        self.endpointPreference = endpointPreference
         self.settlementSleep = {
             try await Task.sleep(nanoseconds: 250_000_000)
         }
@@ -291,6 +301,7 @@ final class DownloadManager {
     /// job, ingest synthetic tqdm lines via ``_testingIngest``, and
     /// finalize via ``_testingFinish``.
     internal init(
+        endpointPreference: @escaping () -> String? = { ModelDownloadEndpointPreference.storedEndpoint() },
         settlementSleep: @escaping @MainActor () async throws -> Void = {
             try await Task.sleep(nanoseconds: 250_000_000)
         }
@@ -298,6 +309,7 @@ final class DownloadManager {
         self.binaryPath = nil
         self.resolvesBinaryAtStart = false
         self.binaryLocator = { nil }
+        self.endpointPreference = endpointPreference
         self.settlementSleep = settlementSleep
     }
 
@@ -373,7 +385,8 @@ final class DownloadManager {
         totalBytes: Int64? = nil,
         source: DownloadSource = .mirror,
         forceMirror: Bool = false,
-        retryAttempt: Int = 0
+        retryAttempt: Int = 0,
+        retryingJob: Job? = nil
     ) -> Bool {
         let trimmed = alias.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
@@ -387,9 +400,15 @@ final class DownloadManager {
             return false
         }
         if isDownloading(trimmed) { return false }
+        let downloadEndpoint: String?
+        if let retryingJob {
+            downloadEndpoint = retryingJob.downloadEndpoint
+        } else {
+            downloadEndpoint = endpointPreference()
+        }
         var downloadEnvironment = ProcessInfo.processInfo.environment
         ModelDownloadEndpointPreference.apply(
-            ModelDownloadEndpointPreference.storedEndpoint(), env: &downloadEnvironment
+            downloadEndpoint, env: &downloadEnvironment
         )
         let effectiveSource = Self.effectiveDownloadSource(
             source,
@@ -407,7 +426,7 @@ final class DownloadManager {
             // doing nothing.
             let job = Job(
                 alias: trimmed, hfPath: hfPath, totalBytes: totalBytes,
-                source: effectiveSource
+                source: effectiveSource, downloadEndpoint: downloadEndpoint
             )
             job.failureKind = .downloadFailed
             job.status = .failed(message: binaryResolution.failureMessage)
@@ -421,7 +440,8 @@ final class DownloadManager {
 
         let job = Job(
             alias: trimmed, hfPath: hfPath, totalBytes: totalBytes,
-            source: effectiveSource, forceMirror: forceMirror, retryAttempt: retryAttempt
+            source: effectiveSource, forceMirror: forceMirror, retryAttempt: retryAttempt,
+            downloadEndpoint: downloadEndpoint
         )
         jobs[trimmed] = job
         stderrTails[trimmed] = []
@@ -435,7 +455,8 @@ final class DownloadManager {
         process.standardError = stderrPipe
         process.standardInput = FileHandle.nullDevice
         process.environment = augmentedEnv(
-            for: binary, source: effectiveSource, forceMirror: forceMirror
+            for: binary, source: effectiveSource, forceMirror: forceMirror,
+            downloadEndpoint: downloadEndpoint
         )
 
         // tqdm refreshes via \r when stderr is not a TTY (same shape
@@ -873,7 +894,7 @@ final class DownloadManager {
             _ = self.startDownload(
                 alias: alias, hfPath: job.hfPath, totalBytes: job.totalBytes,
                 source: job.source, forceMirror: job.forceMirror,
-                retryAttempt: job.retryAttempt + 1
+                retryAttempt: job.retryAttempt + 1, retryingJob: job
             )
         }
         return true
@@ -923,7 +944,8 @@ final class DownloadManager {
     private func augmentedEnv(
         for binary: URL,
         source: DownloadSource,
-        forceMirror: Bool
+        forceMirror: Bool,
+        downloadEndpoint: String?
     ) -> [String: String] {
         var env = ProcessInfo.processInfo.environment
         let existingPath = env["PATH"] ?? ""
@@ -938,7 +960,7 @@ final class DownloadManager {
         env["PATH"] = augmented
         DownloadManager.applyXetConcurrencyCaps(env: &env)
         ModelDownloadEndpointPreference.apply(
-            ModelDownloadEndpointPreference.storedEndpoint(), env: &env
+            downloadEndpoint, env: &env
         )
         DownloadManager.applyDownloadSource(source, env: &env, forceMirror: forceMirror)
         DownloadManager.applyModelsFolderOverride(env: &env)
@@ -1179,7 +1201,8 @@ final class DownloadManager {
             hfPath: hfPath,
             totalBytes: totalBytes,
             source: source,
-            retryAttempt: retryAttempt
+            retryAttempt: retryAttempt,
+            downloadEndpoint: endpointPreference()
         )
         jobs[alias] = job
         stderrTails[alias] = []
