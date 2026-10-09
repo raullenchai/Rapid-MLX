@@ -190,19 +190,47 @@ def test_frozen_bump_rejects_release_authority_change(monkeypatch):
         )
 
 
-def test_frozen_current_policy_tree_passes():
-    head = subprocess.check_output(
-        ["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True
+def test_frozen_policy_history_passes_in_hermetic_git_repo(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.name", "Release Test"], check=True
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email", "release@example.invalid"],
+        check=True,
+    )
+    (repo / "README.md").write_text("frozen product\n")
+    subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-qm", "frozen product"], check=True
+    )
+    frozen = subprocess.check_output(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True
     ).strip()
+    policy = repo / "docs" / "development" / "releasing.md"
+    policy.parent.mkdir(parents=True)
+    policy.write_text("frozen release policy\n")
+    subprocess.run(
+        ["git", "-C", str(repo), "add", str(policy.relative_to(repo))], check=True
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-qm", "release policy"], check=True
+    )
+    head = subprocess.check_output(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True
+    ).strip()
+    monkeypatch.setattr(mod, "FROZEN_PRODUCT_SHA", frozen)
     evidence = mod.check_source(
         source_ref=mod.FROZEN_REF,
         live_sha=head,
         accepted_sha=head,
         release_sha=head,
         version=mod.FROZEN_VERSION,
-        repo=str(ROOT),
+        repo=str(repo),
     )
-    assert mod.FROZEN_PRODUCT_SHA in "\n".join(evidence)
+    assert frozen in "\n".join(evidence)
 
 
 def test_workflows_pin_only_exact_frozen_route():
