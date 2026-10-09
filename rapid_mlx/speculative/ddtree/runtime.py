@@ -239,7 +239,7 @@ def _resolve_model_path(path_or_repo: str) -> Path:
     path = Path(path_or_repo).expanduser()
     if path.exists():
         return path
-    from huggingface_hub import snapshot_download
+    from rapid_mlx.model_downloads import snapshot_download
 
     return Path(snapshot_download(path_or_repo))
 

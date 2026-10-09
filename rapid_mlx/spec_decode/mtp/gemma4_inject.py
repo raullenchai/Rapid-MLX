@@ -229,10 +229,15 @@ def _resolve_sidecar_dir(mtp_sidecar: str | Path) -> Path | None:
 
     # Treat as HF repo id.
     try:
-        from huggingface_hub import snapshot_download
+        from rapid_mlx.model_downloads import (
+            ModelDownloadsDisabledError,
+            snapshot_download,
+        )
 
         local = snapshot_download(repo_id=str(mtp_sidecar))
         return Path(local)
+    except ModelDownloadsDisabledError:
+        raise
     except Exception as exc:  # pragma: no cover — network path
         logger.warning(
             "[mtp.inject.gemma4] could not resolve sidecar repo %r: %s",

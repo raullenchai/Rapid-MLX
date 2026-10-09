@@ -516,6 +516,7 @@ flag always wins over its env-var fallback when both are set.
 | `RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS` | 15 | Max idle seconds between request-body chunks (slowloris defense); exceeded connections get HTTP 408. 0 disables. |
 | `RAPID_MLX_IDLE_CACHE_CLEAR_SECONDS` | 0 (disabled) | Fallback for `--idle-cache-clear-seconds`: clear reusable KV state after this many idle seconds, keeping model weights loaded. An explicit CLI value (including 0) wins. |
 | `RAPID_MLX_DISABLE_DISK_CACHES` | unset | `1` / `true` / `yes` / `on` / `enable` / `enabled` has the effect of `serve --disable-disk-caches` for every server, including those started by `chat`, `start`, and `share` |
+| `RAPID_MLX_DISABLE_MODEL_DOWNLOADS` | unset | `1` / `true` / `yes` / `on` / `enable` / `enabled` has the effect of `serve --disable-model-downloads` for every command and server except `pull` |
 | `RAPID_MLX_LOG_FILE` | unset (stderr) | Fallback for `--log-file`. Commands run with `--json` reject `-`, because stdout carries their JSON output. |
 | `RAPID_MLX_LOG_LEVEL` | unset (INFO) | Fallback for `serve --log-level`. When set, `chat` and `share` no longer force their own level on the server they start. |
 | `RAPID_MLX_WATCHDOG_PPID` | unset (disabled) | Fallback for `--watchdog-ppid`: self-terminate when the parent with this PID dies |

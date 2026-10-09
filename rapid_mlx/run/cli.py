@@ -47,6 +47,7 @@ def register(subparsers) -> None:
     from rapid_mlx._completion import alias_completer  # noqa: PLC0415
     from rapid_mlx.cli_parser import (  # noqa: PLC0415
         _add_disable_disk_caches_arg,
+        _add_disable_model_downloads_arg,
         _add_log_file_arg,
         _port_arg,
     )
@@ -124,6 +125,7 @@ def register(subparsers) -> None:
         help="Seconds to wait for the spawned server to become ready (default: 600)",
     )
     _add_disable_disk_caches_arg(parser)
+    _add_disable_model_downloads_arg(parser)
     _add_log_file_arg(parser)
 
 
@@ -151,10 +153,13 @@ def start_command(args) -> int:
         _print_unknown_agent(profile_name)
         return 1
 
+    from rapid_mlx import model_downloads
+
+    no_download = args.no_download or model_downloads.disabled()
     resolved_model = _select_model(
         explicit=args.model,
         profile=profile,
-        no_download=args.no_download,
+        no_download=no_download,
     )
     if resolved_model is None:
         return 1
@@ -182,9 +187,7 @@ def start_command(args) -> int:
             return _attach_and_configure(base_url, served_model, profile, args)
         return 0
 
-    if not _confirm_download(
-        resolved_model, no_download=args.no_download, yes=args.yes
-    ):
+    if not _confirm_download(resolved_model, no_download=no_download, yes=args.yes):
         return 1
 
     try:
@@ -418,6 +421,8 @@ def _spawn_foreground_serve(model: str, args) -> subprocess.Popen:
     ]
     if getattr(args, "disable_disk_caches", False):
         cmd.append("--disable-disk-caches")
+    if getattr(args, "disable_model_downloads", False):
+        cmd.append("--disable-model-downloads")
     child_env = os.environ.copy()
     log_target = getattr(args, "_log_target", None)
     if log_target is not None:

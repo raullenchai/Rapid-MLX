@@ -153,7 +153,7 @@ def _read_model_config(model_path: str | Path) -> dict | None:
     config_path = p / "config.json" if p.is_dir() else None
     if config_path is None or not config_path.exists():
         try:
-            from huggingface_hub import hf_hub_download
+            from rapid_mlx.model_downloads import hf_hub_download
 
             config_path = Path(
                 hf_hub_download(repo_id=str(model_path), filename="config.json")
@@ -763,7 +763,7 @@ def _load_gemma4_text_impl(
 
     p = Path(model_path)
     if not p.is_dir():
-        from huggingface_hub import snapshot_download
+        from rapid_mlx.model_downloads import snapshot_download
 
         p = Path(snapshot_download(str(model_path)))
 

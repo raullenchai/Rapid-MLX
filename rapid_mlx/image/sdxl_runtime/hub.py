@@ -36,7 +36,7 @@ def resolve(
         return Path(path_or_repo_id)
 
     try:
-        from huggingface_hub import snapshot_download
+        from rapid_mlx.model_downloads import snapshot_download
     except ImportError as exc:  # pragma: no cover - exercised only without extra
         raise ImportError(_INSTALL_HINT) from exc
 

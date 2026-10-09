@@ -2341,6 +2341,19 @@ def _refuse_offline_uncached(model_name: str) -> None:
     )
 
 
+def _refuse_model_download(model_name: str) -> None:
+    """Exit(1) because ``model_name`` is not cached and downloads are disabled."""
+    from rapid_mlx import model_downloads
+
+    print(
+        f"\n  Error: {model_name} is not cached and model downloads are "
+        f"disabled by {model_downloads.source()}.\n"
+        f"  Download it with `rapid-mlx pull {model_name}`, then try again.\n",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+
 def _claim_hub_guidance_render() -> bool:
     """Claim the process-wide right to print Hub network guidance."""
     global _hub_guidance_rendered
@@ -2553,6 +2566,11 @@ def _ensure_model_downloaded(
     # TimeoutError / disk-space exits: refuse before server initialization.
     if _offline_hub_mode_active() and cachedness is False:
         _refuse_offline_uncached(model_name)
+
+    from rapid_mlx import model_downloads
+
+    if model_downloads.disabled():
+        _refuse_model_download(model_name)
 
     # Disk-space gate + mirror pull. Both the disk probe (HF ``model_info``)
     # and the mirror's own metadata + ``/api/models`` catalog round-trips run
@@ -4767,7 +4785,7 @@ def _prefetch_config_for_lane_guard(hf_path: str) -> None:
     if hub_offline_mode_active():
         return
     try:
-        from huggingface_hub import hf_hub_download
+        from rapid_mlx.model_downloads import hf_hub_download
 
         hf_hub_download(hf_path, "config.json")
     except Exception:  # noqa: BLE001 - best-effort probe, never fatal
@@ -5557,6 +5575,13 @@ def serve_command(args):
             and _cache_runnability(audio_entry.hf_id) is False
         ):
             _refuse_offline_uncached(audio_entry.hf_id)
+        from rapid_mlx import model_downloads
+
+        if (
+            model_downloads.disabled()
+            and _cache_runnability(audio_entry.hf_id) is not True
+        ):
+            _refuse_model_download(audio_entry.hf_id)
     if audio_entry is not None:
         # Audio loads on demand, so resolve its listener immediately before
         # dispatch. Offline uncached aliases have already failed above.
@@ -11063,6 +11088,7 @@ def _spawn_chat_server(
     disable_prefix_cache: bool = False,
     context_length: int | None = None,
     disable_disk_caches: bool = False,
+    disable_model_downloads: bool = False,
     log_target: str | None = None,
 ) -> tuple[object, str]:
     """Spawn a `serve` subprocess on an ephemeral port for chat REPL use.
@@ -11126,6 +11152,8 @@ def _spawn_chat_server(
         cmd.append("--disable-prefix-cache")
     if disable_disk_caches:
         cmd.append("--disable-disk-caches")
+    if disable_model_downloads:
+        cmd.append("--disable-model-downloads")
     if context_length is not None:
         cmd.extend(["--context-length", str(context_length)])
     log = open(log_path, "w") if log_target is None else None  # noqa: SIM115 — kept open for proc lifetime
@@ -11893,6 +11921,8 @@ def chat_command(args):
     server_spawn_kwargs: dict[str, Any] = {}
     if getattr(args, "disable_disk_caches", False):
         server_spawn_kwargs["disable_disk_caches"] = True
+    if getattr(args, "disable_model_downloads", False):
+        server_spawn_kwargs["disable_model_downloads"] = True
     if server_log_target is not None:
         server_spawn_kwargs["log_target"] = server_log_target
     # Tracks every spawned server (initial + every /model candidate) so
@@ -14191,6 +14221,9 @@ def main():
                 flag, no_telemetry=_argv_disables_telemetry(sys.argv[1:])
             )
         raise
+    from rapid_mlx import model_downloads
+
+    model_downloads.configure(getattr(args, "disable_model_downloads", False))
     if getattr(args, "disable_version_check", False):
         # The environment carries the opt-out to every server this command starts.
         os.environ["RAPID_MLX_DISABLE_VERSION_CHECK"] = "1"
@@ -14637,6 +14670,13 @@ def main():
                     and not _is_wane_exempt
                 ):
                     _refuse_offline_uncached(args.model)
+                if (
+                    args.command != "pull"
+                    and model_downloads.disabled()
+                    and _cache_runnability(args.model) is not True
+                    and not _is_wane_exempt
+                ):
+                    _refuse_model_download(args.model)
                 # The size estimate is a silent HF ``model_info`` round-trip
                 # (up to 5s). Cover it with a "Resolving…" spinner so the
                 # first-run cold start doesn't read as a hang here — the same

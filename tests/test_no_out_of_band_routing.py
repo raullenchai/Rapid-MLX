@@ -636,6 +636,9 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         "RAPID_MLX_DISABLE_DISK_CACHES",
         "RAPID_MLX_LOG_LEVEL",
         "RAPID_MLX_LOG_FILE",
+        # Fallback for --disable-model-downloads; refuses uncached models and
+        # selects no model, parser, tier, or route.
+        "RAPID_MLX_DISABLE_MODEL_DOWNLOADS",
     }
 )
 

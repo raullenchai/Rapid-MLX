@@ -63,6 +63,20 @@ def _add_disable_disk_caches_arg(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_disable_model_downloads_arg(parser: argparse.ArgumentParser) -> None:
+    """Register ``--disable-model-downloads`` (serve and the commands that spawn it)."""
+    parser.add_argument(
+        "--disable-model-downloads",
+        action="store_true",
+        help=(
+            "Never download a model: serve only models that are already on "
+            "disk and reject requests for any other model. Provision models "
+            "with 'rapid-mlx pull'. Also set by "
+            "RAPID_MLX_DISABLE_MODEL_DOWNLOADS=1."
+        ),
+    )
+
+
 def _add_log_file_arg(parser: argparse.ArgumentParser) -> None:
     """Register ``--log-file`` (serve and the commands that spawn it)."""
     parser.add_argument(
@@ -686,6 +700,7 @@ def _add_serve_parser(
         ),
     )
     _add_disable_disk_caches_arg(serve_parser)
+    _add_disable_model_downloads_arg(serve_parser)
     serve_parser.add_argument(
         "--prefix-cache-size",
         type=int,
@@ -2519,6 +2534,7 @@ def _add_chat_parser(
         ),
     )
     _add_disable_disk_caches_arg(chat_parser)
+    _add_disable_model_downloads_arg(chat_parser)
     _add_log_file_arg(chat_parser)
 
 

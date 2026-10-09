@@ -369,8 +369,9 @@ def _load_json(
         # not. Never reinterpret its filesystem path as a Hub repo ID.
         return None
     try:
-        from huggingface_hub import hf_hub_download
         from huggingface_hub.errors import EntryNotFoundError
+
+        from rapid_mlx.model_downloads import hf_hub_download
 
         downloaded = hf_hub_download(str(model_path), filename, **options)
         return _read_json_object(Path(downloaded))

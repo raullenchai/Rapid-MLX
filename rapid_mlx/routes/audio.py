@@ -33,6 +33,7 @@ from starlette.responses import PlainTextResponse, Response
 
 from ..api.models import AudioMusicRequest, AudioSpeechRequest
 from ..middleware.auth import verify_api_key
+from ..model_downloads import ModelDownloadsDisabledError
 from ._async_utils import run_to_completion
 
 logger = logging.getLogger(__name__)
@@ -1599,7 +1600,7 @@ async def _run_stt_request(
             status_code=503,
             detail="mlx-audio not installed. Install with: pip install mlx-audio",
         )
-    except HTTPException:
+    except (HTTPException, ModelDownloadsDisabledError):
         # Preserve our own status codes (e.g. 413 for oversized uploads,
         # 404 for unknown STT alias) instead of downgrading them to 500
         # via the catch-all below.
@@ -2212,7 +2213,7 @@ async def _run_alignment_request(
             status_code=503,
             detail="mlx-audio not installed. Install with: pip install mlx-audio",
         )
-    except HTTPException:
+    except (HTTPException, ModelDownloadsDisabledError):
         raise
     except Exception as e:
         # ONE handler, classified inside — deliberately not a chain of
@@ -3487,7 +3488,7 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
             headers=headers,
         )
 
-    except HTTPException:
+    except (HTTPException, ModelDownloadsDisabledError):
         # Preserve probe-emitted 503 (and any other explicit status)
         # rather than collapsing into the generic 500 catch-all below.
         raise
@@ -3783,7 +3784,7 @@ async def create_music(request: AudioMusicRequest = Body(...)):
             },
         )
 
-    except HTTPException:
+    except (HTTPException, ModelDownloadsDisabledError):
         raise
     except ImportError as e:
         from rapid_mlx.runtime.optional_runtime import optional_extra_install_hint

@@ -378,10 +378,15 @@ def _resolve_sidecar_file(mtp_sidecar: str | Path) -> Path | None:
 
     # Treat as HF repo id.
     try:
-        from huggingface_hub import snapshot_download
+        from rapid_mlx.model_downloads import (
+            ModelDownloadsDisabledError,
+            snapshot_download,
+        )
 
         local = snapshot_download(repo_id=str(mtp_sidecar))
         return _find_mtp_weights_file(Path(local))
+    except ModelDownloadsDisabledError:
+        raise
     except Exception as exc:  # pragma: no cover — network failure path
         logger.warning(
             "[mtp.inject] could not resolve sidecar %r: %s",
