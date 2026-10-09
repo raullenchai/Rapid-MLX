@@ -387,9 +387,13 @@ final class DownloadManager {
             return false
         }
         if isDownloading(trimmed) { return false }
+        var downloadEnvironment = ProcessInfo.processInfo.environment
+        ModelDownloadEndpointPreference.apply(
+            ModelDownloadEndpointPreference.storedEndpoint(), env: &downloadEnvironment
+        )
         let effectiveSource = Self.effectiveDownloadSource(
             source,
-            env: ProcessInfo.processInfo.environment,
+            env: downloadEnvironment,
             forceMirror: forceMirror
         )
         let binaryResolution = Self.resolveBinaryForStart(
@@ -933,6 +937,9 @@ final class DownloadManager {
         ].filter { !$0.isEmpty }.joined(separator: ":")
         env["PATH"] = augmented
         DownloadManager.applyXetConcurrencyCaps(env: &env)
+        ModelDownloadEndpointPreference.apply(
+            ModelDownloadEndpointPreference.storedEndpoint(), env: &env
+        )
         DownloadManager.applyDownloadSource(source, env: &env, forceMirror: forceMirror)
         DownloadManager.applyModelsFolderOverride(env: &env)
         return EngineProcessEnvironment.sidecar(env)
