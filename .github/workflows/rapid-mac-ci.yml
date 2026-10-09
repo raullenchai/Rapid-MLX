@@ -26,7 +26,7 @@ name: rapid-mac CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, release/0.16.0]
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]

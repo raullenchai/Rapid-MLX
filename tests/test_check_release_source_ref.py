@@ -209,6 +209,7 @@ def test_workflows_pin_only_exact_frozen_route():
     auto = (ROOT / ".github/workflows/auto-release.yml").read_text()
     pre = (ROOT / ".github/workflows/release-preflight.yml").read_text()
     ci = (ROOT / ".github/workflows/ci.yml").read_text()
+    desktop = (ROOT / ".github/workflows/rapid-mac-ci.yml").read_text()
     assert "refs/heads/release/0.16.0" in auto
     assert 'FROZEN_RELEASE_VERSION" != "0.16.0"' in auto
     assert auto.count("check_release_source_ref.py") >= 3
@@ -221,3 +222,9 @@ def test_workflows_pin_only_exact_frozen_route():
     assert 'TARGET_BRANCH" = "release/0.16.0"' in pre
     assert "--cov=scripts.check_release_source_ref" in ci
     assert "--cov=scripts.check_release_environment" in ci
+    assert "branches: [main, release/0.16.0]" in ci
+    assert "branches: [main, release/0.16.0]" in desktop
+    assert "github.event_name == 'push' && github.ref == 'refs/heads/main'" in ci
+    assert "needs.changes.outputs.reuse_ci != 'true'" in ci
+    assert "  tests:" in ci
+    assert "  desktop-tests:" in desktop
