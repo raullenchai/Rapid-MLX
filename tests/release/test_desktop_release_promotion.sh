@@ -22,6 +22,7 @@ AUTO_RELEASE="$REPO_ROOT/.github/workflows/auto-release.yml"
 RAPID_RELEASE="$REPO_ROOT/.github/workflows/rapid-mac-release.yml"
 ACTION="$REPO_ROOT/.github/actions/desktop-releasable/action.yml"
 CHECK_MAIN_HEAD="$REPO_ROOT/scripts/check_main_head.py"
+CHECK_RELEASE_SOURCE="$REPO_ROOT/scripts/check_release_source_ref.py"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
@@ -89,16 +90,19 @@ echo "== 2. live main head must equal validated candidate (TOCTOU) =="
 # release-prep re-resolves refs/heads/main and requires main == accepted ==
 # release; the protected tag job re-queries immediately before claiming.
 PREP=$(sed -n '/name: Verify the live main head still equals/,/name: Release-blocker evidence/p' "$AUTO_RELEASE")
-contains "$PREP" 'git/ref/heads/main' "release-prep resolves the live main head"
-contains "$PREP" 'check_main_head.py' "release-prep uses the structured main-head gate"
+contains "$PREP" 'git/ref/heads/${SOURCE_BRANCH}' "release-prep resolves the selected live source head"
+contains "$PREP" 'check_release_source_ref.py' "release-prep uses the structured source-ref gate"
+contains "$(cat "$AUTO_RELEASE")" 'SOURCE_BRANCH="release/0.16.0"' "frozen route selects only the exact release branch"
+contains "$(cat "$AUTO_RELEASE")" 'SOURCE_BRANCH="main"' "ordinary dispatch routes retain main"
 contains "$PREP" '--accepted-sha "$ACCEPTED_SHA"' "release-prep binds accepted SHA to main head"
 contains "$PREP" '--release-sha "$RELEASE_SHA"' "release-prep binds release SHA to main head"
 contains "$PREP" 'tee main-head-evidence.txt' "pre-approval evidence is captured"
 
 REQUERY=$(sed -n '/name: Re-query live main head immediately before tag/,/name: Tag the desktop app/p' "$AUTO_RELEASE")
-contains "$REQUERY" 'git/ref/heads/main' "tag job re-resolves main head immediately before tag"
-contains "$REQUERY" 'check_main_head.py' "tag job reuses the same main-head gate"
-contains "$REQUERY" '--main-sha "$MAIN_SHA"' "tag job passes the freshly resolved head"
+contains "$REQUERY" 'git/ref/heads/${SOURCE_BRANCH}' "tag job re-resolves the selected source immediately before tag"
+contains "$REQUERY" 'check_release_source_ref.py' "tag job reuses the same source-ref gate"
+contains "$REQUERY" '--live-sha "$LIVE_SHA"' "tag job passes the freshly resolved head"
+contains "$REQUERY" '--accepted-sha "$ACCEPTED_SHA"' "tag job binds the accepted candidate"
 lacks "$AUTO_RELEASE" 'TAG_APPROVED: "true"' "no self-asserted approval boolean anywhere"
 
 # Offline behaviour of the gate itself: unchanged head passes, head advanced
@@ -117,6 +121,12 @@ if python3 "$CHECK_MAIN_HEAD" --main-sha "short" --accepted-sha "$A" --release-s
   bad "malformed main SHA fails closed"
 else
   ok "malformed main SHA fails closed"
+fi
+if python3 "$CHECK_RELEASE_SOURCE" --source-ref refs/heads/release/0.16.0 \
+  --live-sha "$B" --accepted-sha "$A" --release-sha "$A" --version 0.16.0 >/dev/null 2>&1; then
+  bad "stale frozen release head fails closed"
+else
+  ok "stale frozen release head fails closed"
 fi
 
 # ---------------------------------------------------------------------------
@@ -409,8 +419,10 @@ RETRY_BLOCK=$(sed -n '/retry_version:$/,/force_version:$/p' "$AUTO_RELEASE")
 contains "$RETRY_BLOCK" "NORMAL retry" "retry_version input is a NORMAL (non-emergency) route"
 contains "$RETRY_BLOCK" "Mutually exclusive with force_version" "retry_version documented as mutually exclusive with force_version"
 DISPATCH=$(sed -n '/--- Manual workflow_dispatch/,/# --- Normal push path/p' "$AUTO_RELEASE")
-contains "$DISPATCH" 'if [ -n "$FORCE_VERSION" ] && [ -n "$RETRY_VERSION" ]' \
-  "dispatch refuses passing BOTH force_version and retry_version"
+contains "$DISPATCH" 'for value in "$FORCE_VERSION" "$RETRY_VERSION" "$FROZEN_RELEASE_VERSION"' \
+  "dispatch counts all three production routes"
+contains "$DISPATCH" 'if [ "$ROUTE_COUNT" -gt 1 ]' \
+  "dispatch refuses every multi-route combination"
 contains "$DISPATCH" 'Forced/retry release must be dispatched on main' \
   "retry requires dispatch on refs/heads/main"
 contains "$DISPATCH" 'retry_version $VERSION != pyproject.toml' \
