@@ -797,6 +797,8 @@ jobs:
             --cov=scripts.check_release_source_ref \
             --cov=scripts.check_release_environment \
             --cov=scripts.upload_release_r2 \
+            --cov=scripts.release_prepare \
+            --cov=scripts.release_control \
             --cov-report=term-missing
 
           # These lifecycle contracts install inert MLX modules before import.
