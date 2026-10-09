@@ -296,6 +296,25 @@ final class UpdateChecker {
         }
     }
 
+    /// Hermetic current-version manifest for updater GUI journeys. Both keys
+    /// are required; ordinary launches always keep the production fetcher.
+    nonisolated static func goldenCurrentVersionRelease(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        currentVersion: String = UpdateChecker.bundleVersion()
+    ) -> Release? {
+        guard environment["RAPID_GUI_GOLDEN_MODE"] == "1",
+              environment["RAPID_GUI_UPDATE_CURRENT_FIXTURE"] == "1" else { return nil }
+        return Release(
+            schemaVersion: 1,
+            version: currentVersion,
+            tagName: "rapid-mac-v\(currentVersion)",
+            htmlURL: "https://rapidmlx.com/desktop",
+            notes: "Golden-flow current-version fixture.",
+            publishedAt: "2026-10-09T00:00:00Z",
+            dmgURL: nil
+        )
+    }
+
     /// Production fetcher — Worker-primary with an R2 fallback.
     ///
     /// Tries the versioned Worker endpoint first (so the poll is

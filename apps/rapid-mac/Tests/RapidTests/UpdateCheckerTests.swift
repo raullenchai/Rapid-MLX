@@ -722,3 +722,37 @@ struct UpdateCheckerTests {
         return UserDefaults(suiteName: suite)!
     }
 }
+
+@MainActor
+@Suite("Golden updater fixture isolation")
+struct GoldenUpdaterFixtureTests {
+    @Test("Both fixture keys must be explicit", arguments: [
+        [:],
+        ["RAPID_GUI_GOLDEN_MODE": "1"],
+        ["RAPID_GUI_UPDATE_CURRENT_FIXTURE": "1"],
+        ["RAPID_GUI_GOLDEN_MODE": "0", "RAPID_GUI_UPDATE_CURRENT_FIXTURE": "1"],
+        ["RAPID_GUI_GOLDEN_MODE": "1", "RAPID_GUI_UPDATE_CURRENT_FIXTURE": "true"],
+    ])
+    func productionRemainsUnchanged(environment: [String: String]) {
+        #expect(UpdateChecker.goldenCurrentVersionRelease(
+            environment: environment, currentVersion: "0.15.7"
+        ) == nil)
+    }
+
+    @Test("An older main build remains up to date against its isolated manifest",
+          arguments: ["0.15.7", "0.16.0", "0.16.1"])
+    func isolatedCurrentVersion(version: String) async throws {
+        let release = try #require(UpdateChecker.goldenCurrentVersionRelease(
+            environment: ["RAPID_GUI_GOLDEN_MODE": "1", "RAPID_GUI_UPDATE_CURRENT_FIXTURE": "1"],
+            currentVersion: version
+        ))
+        #expect(release.version == version)
+        #expect(release.tagName == "rapid-mac-v\(version)")
+        let checker = UpdateChecker(
+            currentVersion: version, fetcher: { release }, checksEnabled: { true }
+        )
+        _ = await checker.check()
+        #expect(checker.latest?.version == version)
+        #expect(checker.availableUpdate == nil)
+    }
+}

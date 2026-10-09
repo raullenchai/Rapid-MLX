@@ -101,6 +101,7 @@ def test_xcui_runner_launches_production_bundle_with_fake_sidecar():
     assert harness.count('"CFFIXED_USER_HOME": testHome.path') == 1
     assert '"RAPID_BIN"' in harness
     assert "fake-rapid-mlx.sh" in harness
+    assert '"RAPIDMLX_NO_UPDATE_CHECK": "1"' in harness
     assert 'appendingPathComponent(".rapid-golden-fake.json")' in harness
     assert 'config["FAKE_EVENT_LOG"] = eventLog.path' in harness
     assert 'sidecarAlias: "fake-image-alias"' in source
