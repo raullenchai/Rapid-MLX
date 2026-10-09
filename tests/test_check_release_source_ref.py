@@ -158,7 +158,11 @@ def test_module_entrypoint_rejects_bad_sha(monkeypatch):
         )
 
 
-def test_frozen_bump_rejects_release_authority_change(monkeypatch):
+@pytest.mark.parametrize(
+    "changed_path",
+    [".github/workflows/auto-release.yml", "scripts/upload_release_r2.py"],
+)
+def test_frozen_bump_rejects_release_authority_change(monkeypatch, changed_path):
     monkeypatch.setattr(
         mod.subprocess,
         "run",
@@ -170,13 +174,13 @@ def test_frozen_bump_rejects_release_authority_change(monkeypatch):
         if "--min-parents=2" in joined:
             return ""
         if f"{mod.FROZEN_PRODUCT_SHA}..{A}" in joined and "diff --name-only" in joined:
-            return ".github/workflows/auto-release.yml\n"
+            return changed_path + "\n"
         if f"{B}..{A}" in joined:
-            return ".github/workflows/auto-release.yml\n"
+            return changed_path + "\n"
         if "rev-list" in joined:
             return A + "\n"
         if "diff-tree" in joined:
-            return ".github/workflows/auto-release.yml\n"
+            return changed_path + "\n"
         raise AssertionError(command)
 
     monkeypatch.setattr(mod.subprocess, "check_output", output)
@@ -189,6 +193,40 @@ def test_frozen_bump_rejects_release_authority_change(monkeypatch):
             version=mod.FROZEN_VERSION,
             bump_base_sha=B,
         )
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ".github/workflows/rapid-mac-release.yml",
+        "scripts/upload_release_r2.py",
+        "tests/test_upload_release_r2.py",
+        "apps/rapid-mac/Tests/RapidTests/ReleaseManifestWorkflowTests.swift",
+    ],
+)
+def test_exact_multipart_repair_paths_are_valid_policy_history(monkeypatch, path):
+    monkeypatch.setattr(
+        mod.subprocess, "run", lambda *_a, **_k: type("R", (), {"returncode": 0})()
+    )
+
+    def output(command, **kwargs):
+        joined = " ".join(command)
+        if "--min-parents=2" in joined:
+            return ""
+        if "diff --name-only" in joined or "diff-tree" in joined:
+            return path + "\n"
+        if "rev-list" in joined:
+            return A + "\n"
+        raise AssertionError(command)
+
+    monkeypatch.setattr(mod.subprocess, "check_output", output)
+    assert mod.check_source(
+        source_ref=mod.FROZEN_REF,
+        live_sha=A,
+        accepted_sha=A,
+        release_sha=A,
+        version=mod.FROZEN_VERSION,
+    )
 
 
 def test_frozen_policy_history_passes_in_hermetic_git_repo(tmp_path, monkeypatch):
