@@ -317,13 +317,14 @@ def _add_system_one_parser(
         nargs="?",
         default="convaiinnovations/laya",
         help=(
-            "Laya model id/path, CLM public name, clef/clef-flash, or "
-            "decider-2b / a local Decider checkpoint directory"
+            "Laya model id/path, CLM public name, clef/clef-flash, "
+            "clef-mlx/clef-flash-mlx (native MLX), or decider-2b; the native "
+            "Clef and Decider backends also take a local checkpoint directory"
         ),
     )
     system_one_parser.add_argument(
         "--backend",
-        choices=("auto", "laya", "clm", "clef", "decider"),
+        choices=("auto", "laya", "clm", "clef", "clef-mlx", "decider"),
         default="auto",
     )
     system_one_parser.add_argument("--host", default="127.0.0.1")

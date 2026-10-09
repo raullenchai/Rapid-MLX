@@ -5026,6 +5026,13 @@ def _resolve_system_one_backend(model: str, requested: str) -> str:
         return "clm"
     if model_key in {"clef", "clef-flash", "cloudflare/clef", "cloudflare/clef-flash"}:
         return "clef"
+    if model_key in {
+        "clef-mlx",
+        "clef-flash-mlx",
+        "nativ-community/clef-mlx-mxfp4",
+        "nativ-community/clef-flash-mlx-mxfp4",
+    }:
+        return "clef-mlx"
     if model_key in {"decider-2b", "nativ-community/decider-2b"}:
         return "decider"
     return "laya"
@@ -5038,6 +5045,7 @@ def system_one_command(args) -> None:
     from rapid_mlx._uvicorn import run_uvicorn
     from rapid_mlx.system_one.backends import (
         ClefBackend,
+        ClefMLXBackend,
         CLMBackend,
         DeciderBackend,
         DecisionBackend,
@@ -5078,6 +5086,8 @@ def system_one_command(args) -> None:
         )
     elif backend_name == "clef":
         backend = ClefBackend(args.model, device=args.device)
+    elif backend_name == "clef-mlx":
+        backend = ClefMLXBackend(args.model, device=args.device)
     elif backend_name == "decider":
         backend = DeciderBackend(args.model, device=args.device)
     else:
