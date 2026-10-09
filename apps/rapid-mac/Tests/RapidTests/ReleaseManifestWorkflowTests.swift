@@ -77,7 +77,7 @@ struct ReleaseManifestWorkflowTests {
         )
         let branch = job[branchStart.lowerBound..<branchEnd.upperBound]
         #expect(branch.contains("exit 1"))
-        let firstUpload = try #require(job.range(of: "r2 object put"))
+        let firstUpload = try #require(job.range(of: "python3 scripts/upload_release_r2.py"))
         #expect(branchEnd.upperBound < firstUpload.lowerBound)
         #expect(job.contains(#"[[ "$R2_BUCKET" == "rapid-desktop-dist" ]]"#))
         #expect(job.contains(#"[[ "$CDN_BASE" == "https://dl.rapidmlx.com" ]]"#))
@@ -93,7 +93,7 @@ struct ReleaseManifestWorkflowTests {
         #expect(workflow.contains("dmg_sha256: $dmg_sha256, dmg_size: $dmg_size"))
         #expect(!workflow.contains("sidecar_url:"))
 
-        let dmgUpload = try #require(mirrorJob.range(of: "r2 object put \"${R2_BUCKET}/${VERSIONED_KEY}\""))
+        let dmgUpload = try #require(mirrorJob.range(of: #"python3 scripts/upload_release_r2.py "$DMG" "$R2_BUCKET" "$VERSIONED_KEY""#))
         #expect(mirrorJob[dmgUpload.upperBound...].contains("name: rapid-mac-update-manifest"))
 
         // Only pointer publication is serialized, and every run is queued —
@@ -151,7 +151,7 @@ struct ReleaseManifestWorkflowTests {
         #expect(wfac.contains("must exceed ${PREVIOUS_TAG} build"))
 
         let zipUpload = try #require(
-            mirrorJob.range(of: #"r2 object put "${R2_BUCKET}/${SPARKLE_KEY}""#)
+            mirrorJob.range(of: #"python3 scripts/upload_release_r2.py "$SPARKLE_ZIP" "$R2_BUCKET" "$SPARKLE_KEY""#)
         )
         let appcastStaged = try #require(
             mirrorJob.range(of: "name: rapid-mac-sparkle-appcast")
