@@ -113,6 +113,10 @@ class StateCheckpoints:
     def nbytes(self) -> int:
         return sum(_array_bytes(a) for _, arrays in self._items for a in arrays)
 
+    def arrays(self) -> tuple[Any, ...]:
+        """Every checkpointed array, in position order (for memory accounting)."""
+        return tuple(a for _, arrays in self._items for a in arrays)
+
     def arrays_at(self, position: int) -> tuple[Any, ...] | None:
         for p, arrays in self._items:
             if p == position:

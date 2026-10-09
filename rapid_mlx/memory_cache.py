@@ -1140,6 +1140,40 @@ def _state_memory(state: Any) -> int:
     return _array_memory(state)
 
 
+def _flatten_state(state: Any) -> list[Any]:
+    if state is None:
+        return []
+    if isinstance(state, (list, tuple)):
+        return [a for s in state for a in _flatten_state(s)]
+    return [state]
+
+
+def _shared_state_arrays(cache: list[Any]) -> tuple[tuple[tuple[Any, int], ...], int]:
+    """Recurrent-state arrays of ``cache`` that other entries may also hold.
+
+    MLX arrays are immutable, so the recurrent state of a hybrid layer and
+    its checkpoints are held by reference: an entry stored at a later
+    position of the same prompt carries the very same checkpoint arrays, and
+    an entry's own state can be one of its checkpoints. Returns the distinct
+    ``(array, bytes)`` pairs and the bytes :func:`estimate_kv_cache_memory`
+    charged for all their occurrences, so the cache ledger can charge each
+    array once however many entries hold it.
+    """
+    distinct: dict[int, tuple[Any, int]] = {}
+    charged = 0
+    for layer, holder in zip(cache, collect_checkpoints(cache), strict=True):
+        if not is_recurrent_layer(layer):
+            continue
+        arrays = _flatten_state(layer.state)
+        if holder is not None:
+            arrays.extend(holder.arrays())
+        for arr in arrays:
+            size = _array_memory(arr)
+            charged += size
+            distinct.setdefault(id(arr), (arr, size))
+    return tuple(distinct.values()), charged
+
+
 def estimate_kv_cache_memory(cache: list[Any]) -> int:
     """
     Estimate memory usage of a KV cache in bytes.
@@ -1468,6 +1502,16 @@ class _CacheEntry:
     # or token depth, this remains meaningful after a fetch, context truncation,
     # and process restart.
     message_boundary_sequence: int = 0
+    # Distinct recurrent-state arrays this entry holds by reference, and the
+    # part of ``memory_bytes`` charged for them. ``memory_bytes`` stays the
+    # entry's standalone size; the cache ledger charges each shared array once.
+    shared_arrays: tuple[tuple[Any, int], ...] = ()
+    shared_bytes: int = 0
+
+    def __post_init__(self) -> None:
+        if not self.shared_arrays:
+            self.shared_arrays, shared_bytes = _shared_state_arrays(self.cache)
+            self.shared_bytes = min(shared_bytes, self.memory_bytes)
 
     @classmethod
     def create(
@@ -2151,6 +2195,9 @@ class MemoryAwarePrefixCache:
         # Memory tracking
         self._max_memory = self._config.compute_memory_limit()
         self._current_memory = 0
+        # id(array) -> [holders, bytes, array]: recurrent-state arrays held by
+        # resident entries. The array reference keeps the id from being reused.
+        self._shared_refs: dict[int, list[Any]] = {}
 
         # Statistics
         self._stats = CacheStats(max_memory_bytes=self._max_memory)
@@ -2694,7 +2741,7 @@ class MemoryAwarePrefixCache:
                                 f"[radix] remove failed for {len(key)} tokens: {exc}"
                             )
                     old = self._entries.pop(key)
-                    self._current_memory -= old.memory_bytes
+                    self._ledger_remove(old)
                     self._stats.evictions += 1
                     logger.debug(
                         f"[prefix_evict] removed {len(key)} tokens, "
@@ -2707,7 +2754,7 @@ class MemoryAwarePrefixCache:
 
             # Evict until we have room
             while (
-                self._current_memory + entry.memory_bytes > self._max_memory
+                self._current_memory + self._ledger_cost(entry) > self._max_memory
                 or len(self._entries) >= self._config.max_entries
             ) and self._entries:
                 self._evict_lru()
@@ -2719,7 +2766,7 @@ class MemoryAwarePrefixCache:
                 self._message_boundary_sequence += 1
                 entry.message_boundary_sequence = self._message_boundary_sequence
             self._entries[tokens_key] = entry
-            self._current_memory += entry.memory_bytes
+            self._ledger_add(entry)
             bisect.insort(self._sorted_keys, tokens_key)
             self._stats.entry_count = len(self._entries)
             self._stats.current_memory_bytes = self._current_memory
@@ -2756,6 +2803,40 @@ class MemoryAwarePrefixCache:
         if idx < len(self._sorted_keys) and self._sorted_keys[idx] == key:
             self._sorted_keys.pop(idx)
 
+    def _ledger_cost(self, entry: _CacheEntry) -> int:
+        """Bytes storing ``entry`` adds: arrays a resident entry already
+        holds are not charged again. Caller must hold ``self._lock``."""
+        refs = self._shared_refs
+        return (
+            entry.memory_bytes
+            - entry.shared_bytes
+            + sum(size for arr, size in entry.shared_arrays if id(arr) not in refs)
+        )
+
+    def _ledger_add(self, entry: _CacheEntry) -> None:
+        """Charge ``entry`` to the ledger. Caller must hold ``self._lock``."""
+        self._current_memory += self._ledger_cost(entry)
+        for arr, size in entry.shared_arrays:
+            ref = self._shared_refs.get(id(arr))
+            if ref is None:
+                self._shared_refs[id(arr)] = [1, size, arr]
+            else:
+                ref[0] += 1
+
+    def _ledger_remove(self, entry: _CacheEntry) -> None:
+        """Release ``entry`` from the ledger; an array another resident entry
+        still holds stays charged. Caller must hold ``self._lock``."""
+        freed = entry.memory_bytes - entry.shared_bytes
+        for arr, size in entry.shared_arrays:
+            ref = self._shared_refs.get(id(arr))
+            if ref is None:
+                continue
+            ref[0] -= 1
+            if ref[0] <= 0:
+                del self._shared_refs[id(arr)]
+                freed += size
+        self._current_memory -= freed
+
     def _evict_lru(self) -> None:
         """Evict the least recently used entry.
 
@@ -2784,7 +2865,7 @@ class MemoryAwarePrefixCache:
                     f"[radix] {reason} remove failed for {len(tokens_key)} tokens: {exc}"
                 )
         entry = self._entries.pop(tokens_key)
-        self._current_memory -= entry.memory_bytes
+        self._ledger_remove(entry)
         self._stats.evictions += 1
         self._stats.entry_count = len(self._entries)
         self._stats.current_memory_bytes = self._current_memory
@@ -2877,7 +2958,7 @@ class MemoryAwarePrefixCache:
                         f"[radix] explicit-remove failed for {len(tokens_key)} tokens: {exc}"
                     )
             entry = self._entries.pop(tokens_key)
-            self._current_memory -= entry.memory_bytes
+            self._ledger_remove(entry)
             self._stats.entry_count = len(self._entries)
             self._stats.current_memory_bytes = self._current_memory
         return True
@@ -2908,6 +2989,7 @@ class MemoryAwarePrefixCache:
                 except Exception as exc:  # pragma: no cover — defensive
                     logger.warning(f"[radix] clear failed: {exc}")
             self._current_memory = 0
+            self._shared_refs.clear()
             previous = self._stats
             if reset_stats:
                 self._stats = CacheStats(
@@ -4354,6 +4436,7 @@ class MemoryAwarePrefixCache:
                     list(self._sorted_keys),
                     self._current_memory,
                     self._stats,
+                    {key: list(ref) for key, ref in self._shared_refs.items()},
                 )
                 self._entries.clear()
                 self._sorted_keys.clear()
@@ -4363,6 +4446,7 @@ class MemoryAwarePrefixCache:
                     except Exception as exc:  # pragma: no cover — defensive
                         logger.warning(f"[radix] clear failed: {exc}")
                 self._current_memory = 0
+                self._shared_refs.clear()
                 self._stats = CacheStats(
                     max_memory_bytes=self._max_memory,
                     load_skipped=self._stats.load_skipped,
@@ -4388,7 +4472,7 @@ class MemoryAwarePrefixCache:
                 # memory`` and ``_sorted_keys`` never double-count or duplicate.
                 existing = self._entries.get(tokens_key)
                 if existing is not None:
-                    self._current_memory -= existing.memory_bytes
+                    self._ledger_remove(existing)
                     idx = bisect.bisect_left(self._sorted_keys, tokens_key)
                     if (
                         idx < len(self._sorted_keys)
@@ -4402,7 +4486,7 @@ class MemoryAwarePrefixCache:
                             pass
 
                 self._entries[tokens_key] = entry
-                self._current_memory += entry.memory_bytes
+                self._ledger_add(entry)
                 bisect.insort(self._sorted_keys, tokens_key)
                 # #1100 codex round 4 (#3): keep the radix lookup index in sync
                 # with ``_entries``. The replace path clears the radix above and
@@ -4440,11 +4524,13 @@ class MemoryAwarePrefixCache:
                                 _snap_sorted,
                                 _snap_mem,
                                 _snap_stats,
+                                _snap_shared_refs,
                             ) = replace_snapshot
                             self._entries.clear()
                             self._entries.update(_snap_entries)
                             self._sorted_keys[:] = _snap_sorted
                             self._current_memory = _snap_mem
+                            self._shared_refs = _snap_shared_refs
                             self._stats = _snap_stats
                             if self._radix_index is not None:
                                 try:
@@ -4466,8 +4552,8 @@ class MemoryAwarePrefixCache:
                                 len(self._entries),
                             )
                             return 0
-                        self._entries.pop(tokens_key, None)
-                        self._current_memory -= entry.memory_bytes
+                        if self._entries.pop(tokens_key, None) is not None:
+                            self._ledger_remove(entry)
                         idx = bisect.bisect_left(self._sorted_keys, tokens_key)
                         if (
                             idx < len(self._sorted_keys)
