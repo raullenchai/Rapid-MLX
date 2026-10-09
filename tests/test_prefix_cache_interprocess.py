@@ -8,6 +8,8 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+from rapid_mlx.runtime import cache as runtime_cache
+
 
 def _save_worker(cache_dir, name, entered, release, outcome):
     from rapid_mlx.runtime import cache as runtime_cache
@@ -124,3 +126,20 @@ def test_startup_load_waits_for_shutdown_save(tmp_path):
     assert saver.exitcode == loader.exitcode == 0
     assert outcome.get(timeout=2) is True
     assert load_entered.is_set()
+
+
+def test_busy_shutdown_save_skips_without_touching_cache(tmp_path, monkeypatch):
+    """A second shutdown must leave the active writer's stage alone."""
+    cache_dir = str(tmp_path / "model")
+
+    class Engine:
+        def save_cache_to_disk(self, path, should_abort=None):
+            raise AssertionError("contending save entered the cache writer")
+
+    monkeypatch.setattr(
+        runtime_cache, "get_config", lambda: SimpleNamespace(engine=Engine())
+    )
+    monkeypatch.setattr(runtime_cache, "get_cache_dir", lambda: cache_dir)
+    with runtime_cache._exclusive_cache_lock(cache_dir, blocking=False) as acquired:
+        assert acquired
+        runtime_cache.save_prefix_cache_to_disk(budget_sec=0)
