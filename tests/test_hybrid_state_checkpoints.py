@@ -521,6 +521,157 @@ class TestMemoryCacheSnap:
             plain
         ) + checkpoint_bytes(with_ckpt)
 
+    @staticmethod
+    def _sharing_entries():
+        """Two entries of one prompt: the later one holds the earlier one's
+        checkpoint arrays by reference, and its state is its newest checkpoint."""
+        first = TestMemoryCacheSnap._entry(4096, (2048,))
+        holder = layer_checkpoints(first[1])
+        second = TestMemoryCacheSnap._entry(6000, ())
+        setattr(
+            second[1],
+            CHECKPOINT_ATTR,
+            holder.with_checkpoint(6000, second[1].cache, max_count=4, stride=1),
+        )
+        return first, second
+
+    def test_ledger_charges_an_array_shared_by_entries_once(self):
+        from rapid_mlx.memory_cache import estimate_kv_cache_memory
+
+        cache = self._cache()
+        first, second = self._sharing_entries()
+        checkpoint = checkpoint_bytes(first)
+        tokens = list(range(1000, 7000))
+
+        assert cache.store(tokens[:4096], first, evict_prefixes=False)
+        assert cache._current_memory == estimate_kv_cache_memory(first)
+        assert cache.store(tokens, second, evict_prefixes=False)
+
+        # second: the 2048 checkpoint is first's, and its 6000 checkpoint is
+        # its own state, so both are charged once instead of twice.
+        standalone = estimate_kv_cache_memory(first) + estimate_kv_cache_memory(second)
+        assert cache._current_memory == standalone - 2 * checkpoint
+        assert cache.get_stats()["current_memory_mb"] == round(
+            cache._current_memory / 2**20, 2
+        )
+
+    def test_ledger_keeps_a_shared_array_charged_until_its_last_holder_leaves(self):
+        from rapid_mlx.memory_cache import estimate_kv_cache_memory
+
+        cache = self._cache()
+        first, second = self._sharing_entries()
+        tokens = list(range(1000, 7000))
+        assert cache.store(tokens[:4096], first, evict_prefixes=False)
+        assert cache.store(tokens, second, evict_prefixes=False)
+
+        assert cache.remove(tokens[:4096])
+        assert cache._current_memory == estimate_kv_cache_memory(
+            second
+        ) - checkpoint_bytes(first)
+        assert cache.remove(tokens)
+        assert cache._current_memory == 0
+        assert cache._shared_refs == {}
+
+    def test_clear_releases_every_shared_array(self):
+        cache = self._cache()
+        first, second = self._sharing_entries()
+        tokens = list(range(1000, 7000))
+        assert cache.store(tokens[:4096], first, evict_prefixes=False)
+        assert cache.store(tokens, second, evict_prefixes=False)
+        assert cache._shared_refs
+
+        cache.clear()
+
+        assert cache._current_memory == 0
+        assert cache._shared_refs == {}
+
+    @staticmethod
+    def _assert_ledger_exact(cache):
+        private = sum(e.memory_bytes - e.shared_bytes for e in cache._entries.values())
+        shared = sum(ref[1] for ref in cache._shared_refs.values())
+        assert cache._current_memory == private + shared
+
+    def test_prefix_eviction_releases_the_evicted_entry(self):
+        from rapid_mlx.memory_cache import estimate_kv_cache_memory
+
+        cache = self._cache()
+        first, second = self._sharing_entries()
+        tokens = list(range(1000, 7000))
+        assert cache.store(tokens[:4096], first)
+        assert cache.store(tokens, second)  # evicts its strict prefix
+
+        assert list(cache._entries) == [tuple(tokens)]
+        # only second's own state/checkpoint duplicate is left uncharged
+        assert cache._current_memory == estimate_kv_cache_memory(
+            second
+        ) - checkpoint_bytes(first)
+        self._assert_ledger_exact(cache)
+
+    def test_disk_load_keeps_the_ledger_exact(self, tmp_path):
+        tokens = list(range(1000, 7000))
+        source = self._cache()
+        first, second = self._sharing_entries()
+        assert source.store(tokens[:4096], first, evict_prefixes=False)
+        assert source.store(tokens, second, evict_prefixes=False)
+        assert source.save_to_disk(str(tmp_path))
+
+        replaced = self._cache()
+        stray = self._entry(64, (16,))
+        assert replaced.store(list(range(64)), stray)
+        assert replaced.load_from_disk(str(tmp_path), replace=True) == 2
+        assert set(replaced._entries) == {tuple(tokens[:4096]), tuple(tokens)}
+        self._assert_ledger_exact(replaced)
+
+        class _HidesLiveKeys(type(replaced._entries)):
+            """Lets the merge commit meet a key that is already live."""
+
+            def __contains__(self, key):
+                return False
+
+        merged = self._cache()
+        live_first, _ = self._sharing_entries()
+        assert merged.store(tokens[:4096], live_first, evict_prefixes=False)
+        merged._entries = _HidesLiveKeys(merged._entries)
+        assert merged.load_from_disk(str(tmp_path)) == 2
+        assert len(merged._entries) == 2
+        self._assert_ledger_exact(merged)
+
+    def test_shared_arrays_let_a_later_entry_fit_the_budget(self):
+        from rapid_mlx.memory_cache import (
+            MemoryAwarePrefixCache,
+            MemoryCacheConfig,
+            estimate_kv_cache_memory,
+        )
+
+        first, second = self._sharing_entries()
+        standalone = estimate_kv_cache_memory(first) + estimate_kv_cache_memory(second)
+        cache = MemoryAwarePrefixCache(
+            MagicMock(), MemoryCacheConfig(max_entries=16, hybrid_reuse_max_entries=4)
+        )
+        cache._max_memory = standalone - 1
+        tokens = list(range(1000, 7000))
+
+        assert cache.store(tokens[:4096], first, evict_prefixes=False)
+        assert cache.store(tokens, second, evict_prefixes=False)
+
+        assert len(cache._entries) == 2
+        assert cache.get_stats()["evictions"] == 0
+
+    def test_ledger_ignores_unsized_state_and_unknown_arrays(self):
+        from rapid_mlx.memory_cache import _CacheEntry, _shared_state_arrays
+
+        entry_cache = self._entry(64, (16,))
+        entry_cache[1].cache[1] = None
+        arrays, charged = _shared_state_arrays(entry_cache)
+        assert len(arrays) == 3
+        assert charged == sum(size for _, size in arrays)
+
+        cache = self._cache()
+        stray = _CacheEntry.create(list(range(64)), entry_cache)
+        cache._current_memory = stray.memory_bytes
+        cache._ledger_remove(stray)  # never added: nothing shared to release
+        assert cache._current_memory == stray.shared_bytes
+
 
 # ---------------------------------------------------------------------------
 # Scheduler glue
