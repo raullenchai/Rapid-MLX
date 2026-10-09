@@ -234,12 +234,24 @@ def test_opencode_query_pwd_matches_throwaway_workspace(tmp_path, monkeypatch):
     assert run.call_args.kwargs["env"]["PWD"] == str(tmp_path)
 
 
-def test_opencode_file_read_names_the_disposable_file():
+def test_opencode_v2_file_read_names_the_disposable_file():
     def answer(binary, query_cmd, query, timeout, cwd, env_overrides):
         path = Path(cwd, "pyproject.toml")
         assert binary == "opencode"
         assert str(path) in query
         assert path.read_text().startswith(E2E_FIRST_LINE_TOKEN)
+        return E2E_FIRST_LINE_TOKEN, None
+
+    with patch("rapid_mlx.agents.testing._agent_query", side_effect=answer):
+        result = _test_e2e_file_read(
+            "opencode", "opencode run --standalone '{query}'", 120
+        )
+    assert result.status == TestStatus.PASS
+
+
+def test_opencode_v1_file_read_keeps_relative_path():
+    def answer(binary, query_cmd, query, timeout, cwd, env_overrides):
+        assert query.startswith("Read pyproject.toml and copy")
         return E2E_FIRST_LINE_TOKEN, None
 
     with patch("rapid_mlx.agents.testing._agent_query", side_effect=answer):

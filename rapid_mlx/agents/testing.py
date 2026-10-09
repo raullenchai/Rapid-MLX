@@ -1321,7 +1321,7 @@ def _test_e2e_file_read(
                 "Read "
                 + (
                     str(Path(workdir, "pyproject.toml"))
-                    if Path(binary).name == "opencode"
+                    if Path(binary).name == "opencode" and " --standalone " in query_cmd
                     else "pyproject.toml"
                 )
                 + " and copy its first physical line exactly, "
