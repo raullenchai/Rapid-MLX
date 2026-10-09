@@ -17,11 +17,10 @@ The shape that survived review:
   the baselines were captured with, so nothing is biased by a change of
   sampling protocol;
 * a flag is not a verdict. It defers to `_bench_ab_against_base`, which
-  measures both arms **here, now**, **interleaved** (base/PR/base/PR, so
-  drift cannot land on one arm), **symmetric** (same protocol, same prompt
-  sets, same fresh-server lifecycle, same aggregation), and **spread-checked
-  on both arms** — an inflated BASE is as dangerous as an inflated PR,
-  because it becomes the denominator and waives a real regression.
+  measures both arms **here, now**, in ten complete ABBA blocks. Each block
+  contributes a paired log PR/base effect. A PR is cleared only when the
+  one-sided 95% Student-t upper bound is within the existing regression
+  limit; definite regressions fail and overlapping uncertainty declines.
 
 These tests drive the real orchestration with the server context and the
 HTTP call stubbed. Stubbing `_bench_ab_against_base` itself would leave them
@@ -33,9 +32,12 @@ from __future__ import annotations
 
 import contextlib
 import json
+import math
 import pathlib
 import sys
 import types
+
+import pytest
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
@@ -179,15 +181,27 @@ def test_the_ab_shares_one_round_loop():
 
 
 def test_both_arms_are_measured_every_round(monkeypatch, tmp_path):
-    _, order, _ = _harness(monkeypatch, tmp_path, [(250, 400)] * 2, [(251, 401)] * 2)
-    assert len(order) == 4, order
-    assert sorted(order[:2]) == ["base", "pr"], order
-    assert sorted(order[2:]) == ["base", "pr"], order
+    _, order, _ = _harness(
+        monkeypatch,
+        tmp_path,
+        [(250, 400)] * seb.AB_ROUNDS,
+        [(251, 401)] * seb.AB_ROUNDS,
+    )
+    assert len(order) == 2 * seb.AB_ROUNDS, order
+    assert all(
+        sorted(order[offset : offset + 2]) == ["base", "pr"]
+        for offset in range(0, len(order), 2)
+    ), order
 
 
 def test_a_regression_survives_the_ab(monkeypatch, tmp_path):
     """Both arms quiet, PR consistently slower — that is the PR's doing."""
-    result, _, _ = _harness(monkeypatch, tmp_path, [(250, 400)] * 2, [(350, 400)] * 2)
+    result, _, _ = _harness(
+        monkeypatch,
+        tmp_path,
+        [(250, 400)] * seb.AB_ROUNDS,
+        [(350, 400)] * seb.AB_ROUNDS,
+    )
     assert result["status"] == "fail", result
     assert "regression confirmed" in result["summary"], result["summary"]
 
@@ -199,60 +213,72 @@ def test_steady_contention_cancels(monkeypatch, tmp_path):
     never changes. Only measuring the base ref under the same conditions
     does.
     """
-    result, _, _ = _harness(monkeypatch, tmp_path, [(349, 559)] * 2, [(350, 560)] * 2)
-    assert result["status"] == "pass", result
-    assert "not this PR" in result["summary"], result["summary"]
-
-
-def test_a_noisy_base_warm_arm_cannot_waive_a_regression(monkeypatch, tmp_path):
-    """An inflated base WARM is the denominator — as dangerous as a noisy PR arm.
-
-    Warm is the authoritative metric (see #2118): a noisy warm capture on either
-    arm means the machine is not quiet enough to trust the steady-state number,
-    so the A/B declines rather than risk waiving a regression through an inflated
-    denominator.
-    """
     result, _, _ = _harness(
-        monkeypatch, tmp_path, [(250, 560), (250, 400)], [(250, 400)] * 2
-    )
-    assert result["status"] == "skip", result
-    assert "not quiet enough" in result["summary"], result["summary"]
-    assert "base_warm" in result["summary"], result["summary"]
-
-
-def test_a_noisy_pr_warm_arm_also_declines(monkeypatch, tmp_path):
-    result, _, _ = _harness(
-        monkeypatch, tmp_path, [(250, 400)] * 2, [(250, 560), (250, 400)]
-    )
-    assert result["status"] == "skip", result
-    assert "pr_warm" in result["summary"], result["summary"]
-
-
-def test_cold_noise_alone_is_advisory_not_inconclusive(monkeypatch, tmp_path):
-    """#2118: cold-start spread is intrinsic on the large-model matrix (page-cache
-    eviction + Metal kernel compile), so a noisy cold spread with a quiet warm
-    capture no longer forces INCONCLUSIVE. The warm A/B decides; cold is advisory.
-    """
-    result, _, _ = _harness(
-        monkeypatch, tmp_path, [(250, 400), (600, 400)], [(250, 400), (600, 400)]
+        monkeypatch,
+        tmp_path,
+        [(349, 559)] * seb.AB_ROUNDS,
+        [(350, 560)] * seb.AB_ROUNDS,
     )
     assert result["status"] == "pass", result
     assert "not this PR" in result["summary"], result["summary"]
-    assert "advisory" in result["summary"], result["summary"]
-    assert "verdict on warm" in result["summary"], result["summary"]
+
+
+def test_one_transient_base_burst_does_not_make_drift_permanently_inconclusive(
+    monkeypatch, tmp_path
+):
+    """One early base burst is retained but does not dominate ten paired blocks."""
+    result, _, _ = _harness(
+        monkeypatch,
+        tmp_path,
+        [(250, 560), *([(250, 400)] * (seb.AB_ROUNDS - 1))],
+        [(250, 400)] * seb.AB_ROUNDS,
+    )
+    assert result["status"] == "pass", result
+
+
+def test_one_transient_pr_burst_is_retained_without_becoming_a_false_regression(
+    monkeypatch, tmp_path
+):
+    result, _, _ = _harness(
+        monkeypatch,
+        tmp_path,
+        [(250, 400)] * seb.AB_ROUNDS,
+        [(250, 560), *([(250, 400)] * (seb.AB_ROUNDS - 1))],
+    )
+    assert result["status"] == "pass", result
+
+
+def test_cold_uncertainty_is_not_silently_dropped(monkeypatch, tmp_path):
+    cold_uncertain = [
+        ((250, 400) if block % 2 == 0 else (600, 400))
+        for block in range(seb.AB_BLOCKS)
+        for _ in range(2)
+    ]
+    result, _, _ = _harness(
+        monkeypatch,
+        tmp_path,
+        [(400, 400)] * seb.AB_ROUNDS,
+        cold_uncertain,
+    )
+    assert result["status"] == "skip", result
+    assert "uncertainty" in result["summary"], result["summary"]
 
 
 def test_a_warm_regression_survives_cold_noise(monkeypatch, tmp_path):
-    """Cold noise must not waive a real WARM regression. With cold noisy on both
-    arms but warm quiet and clearly slower on the PR, the gate still fails — the
-    cold delta is merely demoted to advisory, not the verdict.
-    """
+    """Uncertain cold evidence cannot waive a definite warm regression."""
+    cold_uncertain = [
+        ((250, 500) if block % 2 == 0 else (600, 500))
+        for block in range(seb.AB_BLOCKS)
+        for _ in range(2)
+    ]
     result, _, _ = _harness(
-        monkeypatch, tmp_path, [(250, 400), (600, 400)], [(250, 500), (600, 500)]
+        monkeypatch,
+        tmp_path,
+        [(400, 400)] * seb.AB_ROUNDS,
+        cold_uncertain,
     )
     assert result["status"] == "fail", result
     assert "regression confirmed" in result["summary"], result["summary"]
-    assert "advisory" in result["summary"], result["summary"]
 
 
 def test_both_arms_see_matched_prompt_sets(monkeypatch, tmp_path):
@@ -261,19 +287,30 @@ def test_both_arms_see_matched_prompt_sets(monkeypatch, tmp_path):
     A different prompt set per arm would compare two different workloads and
     call the difference a regression.
     """
-    _, _, seen = _harness(monkeypatch, tmp_path, [(250, 400)] * 2, [(250, 400)] * 2)
+    _, _, seen = _harness(
+        monkeypatch,
+        tmp_path,
+        [(250, 400)] * seb.AB_ROUNDS,
+        [(250, 400)] * seb.AB_ROUNDS,
+    )
     cold = [p for p in seen if p.startswith("Cold prompt")]
-    assert len(cold) == 20, len(cold)
-    assert len(set(cold)) == 10, sorted(set(cold))
+    assert len(cold) == 5 * 2 * seb.AB_ROUNDS, len(cold)
+    assert len(set(cold)) == 5 * seb.AB_ROUNDS, sorted(set(cold))
     assert all(cold.count(p) == 2 for p in set(cold))
 
 
 def test_rounds_use_different_cold_prompts(monkeypatch, tmp_path):
     """Round 2 must not be able to hit round 1's prefix cache."""
-    _, _, seen = _harness(monkeypatch, tmp_path, [(250, 400)] * 2, [(250, 400)] * 2)
+    _, _, seen = _harness(
+        monkeypatch,
+        tmp_path,
+        [(250, 400)] * seb.AB_ROUNDS,
+        [(250, 400)] * seb.AB_ROUNDS,
+    )
     cold = {p for p in seen if p.startswith("Cold prompt")}
     assert any(p.startswith("Cold prompt #0.") for p in cold)
     assert any(p.startswith("Cold prompt #1.") for p in cold)
+    assert any(p.startswith("Cold prompt #0.19 ") for p in cold)
 
 
 def test_cleanup_failure_does_not_replace_the_verdict(monkeypatch, tmp_path):
@@ -285,7 +322,11 @@ def test_cleanup_failure_does_not_replace_the_verdict(monkeypatch, tmp_path):
         return types.SimpleNamespace(returncode=0)
 
     result, _, _ = _harness(
-        monkeypatch, tmp_path, [(250, 400)] * 2, [(250, 400)] * 2, git_run=flaky
+        monkeypatch,
+        tmp_path,
+        [(250, 400)] * seb.AB_ROUNDS,
+        [(250, 400)] * seb.AB_ROUNDS,
+        git_run=flaky,
     )
     assert result["status"] == "pass", result
     assert "could not run" not in result["summary"], result["summary"]
@@ -316,27 +357,154 @@ def test_arm_order_is_counterbalanced_across_rounds(monkeypatch, tmp_path):
     is consistent, so the spread check sees nothing, and it reads as a
     regression.
     """
-    _, order, _ = _harness(monkeypatch, tmp_path, [(250, 400)] * 2, [(250, 400)] * 2)
-    assert order == ["base", "pr", "pr", "base"], order
-    assert order.count("base") == order.count("pr") == 2
-    # Each arm goes first exactly once.
-    assert {order[0], order[2]} == {"base", "pr"}
+    _, order, _ = _harness(
+        monkeypatch,
+        tmp_path,
+        [(250, 400)] * seb.AB_ROUNDS,
+        [(250, 400)] * seb.AB_ROUNDS,
+    )
+    assert order == ["base", "pr", "pr", "base"] * seb.AB_BLOCKS, order
+    assert order.count("base") == order.count("pr") == seb.AB_ROUNDS
 
 
 def test_the_ab_writes_the_artifact_the_docs_promise(monkeypatch, tmp_path):
     """`harness/README.md` tells people to read the spreads — so emit them."""
-    result, _, _ = _harness(monkeypatch, tmp_path, [(250, 400)] * 2, [(350, 400)] * 2)
+    result, _, _ = _harness(
+        monkeypatch,
+        tmp_path,
+        [(250, 400)] * seb.AB_ROUNDS,
+        [(350, 400)] * seb.AB_ROUNDS,
+    )
     path = pathlib.Path(result["artifact"])
     assert path.exists(), result
     data = json.loads(path.read_text())
-    assert set(data["capture_spread_pct"]) == {
-        "base_cold",
-        "base_warm",
-        "pr_cold",
-        "pr_warm",
+    assert data["rounds"] == 20
+    assert data["blocks"] == 10
+    assert len(data["base_captures"]) == len(data["pr_captures"]) == 20
+    assert set(data["paired_decisions"]) == {"cold", "warm"}
+    assert len(data["paired_decisions"]["cold"]["block_log_ratios"]) == 10
+
+
+def test_retained_real_aa_and_ab_captures_clear_without_threshold_tuning():
+    fixture = json.loads(
+        (REPO_ROOT / "tests/fixtures/stress_ab_retained_metrics.json").read_text()
+    )
+    assert fixture["harness_head"] == "167bd27c4b4e36213c5412b33a9adfd1563784f9"
+    assert (
+        fixture["harness_blob_stress_e2e_bench"]
+        == "68c3681c684276aaf6fe30bcb80fdd80738d4d41"
+    )
+    expected_upper = {
+        "aa_base167_n20": {"cold": 3.8884, "warm": 4.4623},
+        "ab_4338_f38fbd716_n20": {"cold": 3.9024, "warm": 4.1780},
     }
-    assert len(data["base_captures"]) == len(data["pr_captures"]) == 2
-    assert "delta_pct" in data
+    for name, run in fixture["runs"].items():
+        assert len(run["captures"]) == 40
+        assert [(row["round"], row["arm"]) for row in run["captures"]] == [
+            pair
+            for block in range(10)
+            for pair in (
+                (block * 2, "A"),
+                (block * 2, "B"),
+                (block * 2 + 1, "B"),
+                (block * 2 + 1, "A"),
+            )
+        ]
+        for metric in ("cold", "warm"):
+            base = [
+                row[f"{metric}_ms_median"]
+                for row in run["captures"]
+                if row["arm"] == "A"
+            ]
+            pr = [
+                row[f"{metric}_ms_median"]
+                for row in run["captures"]
+                if row["arm"] == "B"
+            ]
+            decision = seb._paired_metric_decision(base, pr, 5.0)
+            assert decision["status"] == "pass", (name, metric, decision)
+            assert decision["upper_pct"] == pytest.approx(
+                expected_upper[name][metric], abs=0.0001
+            )
+
+
+def test_fixed_abba_blocks_cancel_linear_log_drift_and_first_boot_order_effect():
+    base = []
+    pr = []
+    for block in range(seb.AB_BLOCKS):
+        # ABBA positions 0 and 3 belong to base; 1 and 2 belong to PR.
+        # Linear log-time drift has the same within-block mean for both arms.
+        values = [
+            400 * math.exp(0.01 * (4 * block + position)) for position in range(4)
+        ]
+        base.extend((values[0], values[3]))
+        pr.extend((values[1], values[2]))
+    decision = seb._paired_metric_decision(base, pr, 5.0)
+    assert decision["status"] == "pass"
+    assert decision["mean_pct"] == pytest.approx(0.0, abs=1e-10)
+
+
+@pytest.mark.parametrize("regression_pct", [5.01, 8.0])
+def test_constant_regression_above_the_existing_limit_definitely_fails(
+    regression_pct,
+):
+    base = [400.0] * seb.AB_ROUNDS
+    pr = [400.0 * (1 + regression_pct / 100)] * seb.AB_ROUNDS
+    decision = seb._paired_metric_decision(base, pr, 5.0)
+    assert decision["status"] == "fail"
+    assert decision["lower_pct"] > 5.0
+
+
+def test_constant_equality_at_the_limit_is_accepted_by_the_reviewed_boundary():
+    base = [400.0] * seb.AB_ROUNDS
+    pr = [420.0] * seb.AB_ROUNDS
+    decision = seb._paired_metric_decision(base, pr, 5.0)
+    assert decision["status"] == "pass"
+    assert decision["upper_pct"] == pytest.approx(5.0)
+
+
+def test_overlap_is_uncertainty_not_a_positive_result():
+    base = [400.0] * seb.AB_ROUNDS
+    pr = [420.0 if block != 0 else 440.0 for block in range(seb.AB_ROUNDS)]
+    decision = seb._paired_metric_decision(base, pr, 5.0)
+    assert decision["status"] == "skip"
+    assert decision["lower_pct"] <= 5.0 < decision["upper_pct"]
+
+
+@pytest.mark.parametrize(
+    ("base", "pr", "message"),
+    [
+        ([400.0] * 19, [400.0] * 20, "exactly 20"),
+        ([400.0] * 20, [400.0] * 19, "exactly 20"),
+        ([400.0] * 19 + [0.0], [400.0] * 20, "finite and positive"),
+        ([400.0] * 20, [400.0] * 19 + [float("nan")], "finite and positive"),
+        ([400.0] * 20, [400.0] * 19 + [float("inf")], "finite and positive"),
+    ],
+)
+def test_invalid_or_incomplete_measurements_fail_closed(base, pr, message):
+    with pytest.raises(ValueError, match=message):
+        seb._paired_metric_decision(base, pr, 5.0)
+
+
+@pytest.mark.parametrize("threshold", [-0.01, float("nan"), float("inf")])
+def test_invalid_thresholds_fail_closed(threshold):
+    with pytest.raises(ValueError, match="finite and nonnegative"):
+        seb._paired_metric_decision(
+            [400.0] * seb.AB_ROUNDS, [400.0] * seb.AB_ROUNDS, threshold
+        )
+
+
+def test_collector_retains_all_captures_when_a_measurement_is_invalid(
+    monkeypatch, tmp_path
+):
+    pr = [(250, 400)] * seb.AB_ROUNDS
+    pr[0] = (250, float("nan"))
+    result, _, _ = _harness(monkeypatch, tmp_path, [(250, 400)] * seb.AB_ROUNDS, pr)
+    assert result["status"] == "fail"
+    artifact = json.loads(pathlib.Path(result["artifact"]).read_text())
+    assert len(artifact["base_captures"]) == len(artifact["pr_captures"]) == 20
+    assert artifact["paired_decisions"] == {}
+    assert "finite and positive" in artifact["measurement_error"]
 
 
 # --- review round 4: assert the STEP's outcome, not its source ----------
