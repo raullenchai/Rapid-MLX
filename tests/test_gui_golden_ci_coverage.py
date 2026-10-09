@@ -400,3 +400,47 @@ def test_updater_journeys_opt_into_their_existing_fetch_path():
             if flow == "update-busy"
             else "RAPID_GUI_UPDATE_CURRENT_FIXTURE=1"
         ) in part
+
+
+def test_update_card_geometry_guard_rejects_overlap_and_missing_evidence(tmp_path):
+    source = HARNESS.read_text()
+    function = source.split("assert_update_does_not_cover_readiness() {", 1)[1].split(
+        "\n}\n", 1
+    )[0]
+    script = (
+        'die() { echo "$*" >&2; exit 1; }\n'
+        + "assert_update_does_not_cover_readiness() {"
+        + function
+        + '\n}\nassert_update_does_not_cover_readiness "$TREE"\n'
+    )
+    card = {"x": 100, "y": 100, "width": 200, "height": 100}
+    cases = [
+        ({"x": 150, "y": 150, "width": 50, "height": 30}, False),
+        ({"x": 150, "y": 70, "width": 50, "height": 30}, True),
+        ({"x": 310, "y": 150, "width": 50, "height": 30}, True),
+        ({"x": 150, "y": 150, "width": 0, "height": 30}, False),
+        (None, False),
+    ]
+    for action, expected in cases:
+        elements = [{"identifier": "UpdateCard", "bounds": card}]
+        if action is not None:
+            elements.append({"identifier": "Readiness.Action", "bounds": action})
+        tree = tmp_path / "tree.json"
+        tree.write_text(json.dumps({"data": {"ui_elements": elements}}))
+        result = subprocess.run(
+            ["bash", "-euo", "pipefail", "-c", script],
+            env={**os.environ, "TREE": str(tree)},
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert (result.returncode == 0) is expected, result.stderr
+
+
+def test_busy_update_journey_requires_unobscured_model_start():
+    flow = HARNESS.read_text().split("flow_update_busy() {", 1)[1].split("\n}", 1)[0]
+    assert flow.index("assert_update_does_not_cover_readiness") < flow.index(
+        "    start_model\n"
+    )
+    assert 'assert_fake_server_starts "$OUT/fake-events.jsonl" 1 "$FAKE_ALIAS"' in flow
+    assert 'wait_identifier UpdateCard "$OUT/update-card-after-start.json"' in flow
