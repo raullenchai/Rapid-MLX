@@ -239,6 +239,9 @@ final class RapidUITestHarness {
             "RAPID_XCUI_DROP_EVENT_FILE": dropEventFile.path,
             "RAPID_DESKTOP_PORT": String(reservedPort.port),
             "RAPID_DESKTOP_NO_PORT_SWEEP": "1",
+            // A live release card can cover Readiness.Action and intercept
+            // the native click. These journeys test attachments, not updates.
+            "RAPIDMLX_NO_UPDATE_CHECK": "1",
         ].merging(fakeSettings) { _, fixture in fixture }
         reservationTransferred = true
     }
