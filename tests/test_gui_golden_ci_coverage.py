@@ -336,3 +336,67 @@ def test_golden_job_builds_the_release_ui_surface():
     assert build_steps[0].get("env", {}).get("RAPID_BUILD_CONFIG") == "release"
     assert build_steps[0].get("env", {}).get("SKIP_SIDECAR") == "1"
     assert "gui-app-build" in workflow["jobs"]["gui-golden-flows"]["needs"]
+
+
+def test_persona_update_isolation_is_applied_to_launch_and_relaunch(tmp_path):
+    """Run the real launcher with a tiny owned child instead of a GUI app."""
+    source = HARNESS.read_text()
+    function = source[
+        source.index("launch_persona_app() {") : source.index("\nstart_persona() {")
+    ]
+    persona = tmp_path / "persona"
+    persona.mkdir()
+    capture = tmp_path / "update-policy"
+    launch = persona / "launch.sh"
+    launch.write_text(
+        '#!/bin/sh\nprintf "%s" "$RAPIDMLX_NO_UPDATE_CHECK" > "$ENV_CAPTURE"\nsleep 10\n'
+    )
+    launch.chmod(0o755)
+    for mode in ("truncate", "append"):
+        for override in (False, True):
+            capture.unlink(missing_ok=True)
+            script = (
+                function
+                + """
+trap 'if [[ -n "${APP_PID:-}" ]]; then kill -- "-$APP_PID" 2>/dev/null || true; wait "$APP_PID" 2>/dev/null || true; fi' EXIT
+launch_persona_app "$MODE"
+for _ in {1..40}; do [[ -f "$ENV_CAPTURE" ]] && exit 0; sleep 0.05; done
+exit 1
+"""
+            )
+            prefix = (
+                "PERSONA_ENV=(RAPIDMLX_NO_UPDATE_CHECK=0)\n"
+                if override
+                else "PERSONA_ENV=()\n"
+            )
+            result = subprocess.run(
+                ["bash", "-euo", "pipefail", "-c", prefix + script],
+                env={
+                    **os.environ,
+                    "PERSONA": str(persona),
+                    "OUT": str(tmp_path),
+                    "ROOT": str(ROOT / "apps/rapid-mac"),
+                    "ENV_CAPTURE": str(capture),
+                    "MODE": mode,
+                },
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            assert result.returncode == 0, result.stdout + result.stderr
+            assert capture.read_text() == ("0" if override else "1")
+
+
+def test_updater_journeys_opt_into_their_existing_fetch_path():
+    source = HARNESS.read_text()
+    for flow in ("update-state", "update-busy", "no-dead-controls"):
+        part = source.split(f"flow_{flow.replace('-', '_')}() {{", 1)[1].split(
+            "\n}", 1
+        )[0]
+        assert "RAPIDMLX_NO_UPDATE_CHECK=0" in part
+        assert "RAPID_GUI_GOLDEN_MODE=1" in part
+        assert (
+            "RAPID_GUI_UPDATE_BUSY_FIXTURE=1"
+            if flow == "update-busy"
+            else "RAPID_GUI_UPDATE_CURRENT_FIXTURE=1"
+        ) in part

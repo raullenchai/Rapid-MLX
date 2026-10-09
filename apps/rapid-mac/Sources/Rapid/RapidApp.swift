@@ -335,6 +335,8 @@ struct RapidApp: App {
                     dmgURL: "https://dl.rapidmlx.com/rapid-mac-v99.0.0.dmg"
                 )
             }
+        } else if let release = UpdateChecker.goldenCurrentVersionRelease() {
+            updateFetcher = { release }
         } else {
             updateFetcher = nil
         }

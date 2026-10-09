@@ -815,6 +815,7 @@ launch_persona_app() {
     shift
     if [[ "$log_mode" == "append" ]]; then
         env RAPID_BIN="$ROOT/scripts/fake-rapid-mlx.sh" \
+            RAPIDMLX_NO_UPDATE_CHECK=1 \
             DOGFOOD_WORKING_SET_GB=0.1 \
             FAKE_EVENT_LOG="$OUT/fake-events.jsonl" \
             "${PERSONA_ENV[@]+"${PERSONA_ENV[@]}"}" \
@@ -823,6 +824,7 @@ launch_persona_app() {
             "$PERSONA/launch.sh" "$@" >> "$OUT/app.log" 2>&1 &
     else
         env RAPID_BIN="$ROOT/scripts/fake-rapid-mlx.sh" \
+            RAPIDMLX_NO_UPDATE_CHECK=1 \
             DOGFOOD_WORKING_SET_GB=0.1 \
             FAKE_EVENT_LOG="$OUT/fake-events.jsonl" \
             "${PERSONA_ENV[@]+"${PERSONA_ENV[@]}"}" \
@@ -2927,12 +2929,11 @@ flow_low_memory_choice() {
 flow_update_state() {
     # Settings > App must name the version the app actually IS.
     #
-    # This is the cheap end of a real failure: the update manifest the app
-    # falls back on (dl.rapidmlx.com/latest.json) sat at 0.11.0 for four
-    # releases (#1612). Anything consuming a stale manifest reports a version
-    # that disagrees with CFBundleShortVersionString, and this assertion
-    # catches exactly that mismatch without needing network state.
-    start_persona update-state
+    # Assert the running version comes from CFBundleShortVersionString and
+    # drive the real checker/UI with this bundle's fixed manifest. A newer
+    # published release must not change the state during an unrelated CI run.
+    start_persona update-state RAPID_GUI_GOLDEN_MODE=1 \
+        RAPID_GUI_UPDATE_CURRENT_FIXTURE=1 RAPIDMLX_NO_UPDATE_CHECK=0 DO_NOT_TRACK=0
     dismiss_first_run
     open_settings
     see_main "$OUT/update-settings.json"
@@ -3003,7 +3004,7 @@ flow_update_state() {
 flow_update_busy() {
     start_persona update-busy \
         RAPID_GUI_GOLDEN_MODE=1 \
-        RAPID_GUI_UPDATE_BUSY_FIXTURE=1
+        RAPID_GUI_UPDATE_BUSY_FIXTURE=1 RAPIDMLX_NO_UPDATE_CHECK=0 DO_NOT_TRACK=0
     dismiss_first_run
     open_settings
     see_main "$OUT/settings.json"
@@ -3125,6 +3126,8 @@ flow_no_dead_controls() {
     # switch for this persona and point it at the loopback sink instead.
     start_telemetry_sink "$OUT_ROOT/no-dead-controls"
     start_persona no-dead-controls \
+        RAPID_GUI_GOLDEN_MODE=1 RAPID_GUI_UPDATE_CURRENT_FIXTURE=1 \
+        RAPIDMLX_NO_UPDATE_CHECK=0 DO_NOT_TRACK=0 \
         "${TELEMETRY_SINK_ENV[@]}" \
         RAPID_MLX_TELEMETRY_ENDPOINT="http://127.0.0.1:$TELEMETRY_SINK_PORT/v1/events"
     dismiss_first_run
