@@ -16,6 +16,7 @@ assert SPEC.loader
 sys.modules[SPEC.name] = mod
 SPEC.loader.exec_module(mod)
 A = "a" * 40
+B = "b" * 40
 
 
 def test_main_compatibility():
@@ -57,6 +58,39 @@ def test_stale_head_fails_before_git():
         )
 
 
+def test_frozen_bump_rejects_release_authority_change(monkeypatch):
+    monkeypatch.setattr(
+        mod.subprocess,
+        "run",
+        lambda *args, **kwargs: type("R", (), {"returncode": 0})(),
+    )
+
+    def output(command, **kwargs):
+        joined = " ".join(command)
+        if "--min-parents=2" in joined:
+            return ""
+        if f"{mod.FROZEN_PRODUCT_SHA}..{A}" in joined and "diff --name-only" in joined:
+            return ".github/workflows/auto-release.yml\n"
+        if f"{B}..{A}" in joined:
+            return ".github/workflows/auto-release.yml\n"
+        if "rev-list" in joined:
+            return A + "\n"
+        if "diff-tree" in joined:
+            return ".github/workflows/auto-release.yml\n"
+        raise AssertionError(command)
+
+    monkeypatch.setattr(mod.subprocess, "check_output", output)
+    with pytest.raises(mod.ReleaseSourceError, match="metadata"):
+        mod.check_source(
+            source_ref=mod.FROZEN_REF,
+            live_sha=A,
+            accepted_sha=A,
+            release_sha=A,
+            version=mod.FROZEN_VERSION,
+            bump_base_sha=B,
+        )
+
+
 def test_frozen_current_policy_tree_passes():
     head = subprocess.check_output(
         ["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True
@@ -82,5 +116,6 @@ def test_workflows_pin_only_exact_frozen_route():
     assert 'TARGET_BRANCH" != "release/0.16.0"' in pre
     assert 'PR_COMMITS" != "1"' in pre
     assert "git/ref/heads/release/0.16.0" in pre
+    assert '--bump-base-sha "$BASE_SHA"' in pre
     assert "check_release_source_ref.py" in pre
     assert 'TARGET_BRANCH" = "release/0.16.0"' in pre

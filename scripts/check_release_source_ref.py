@@ -28,6 +28,13 @@ FROZEN_ALLOWED_PATHS = {
     "docs/release-notes/v0.16.0.md",
     "docs/release-notes/unreleased.md",
 }
+FROZEN_METADATA_PATHS = {
+    "pyproject.toml",
+    "apps/rapid-mac/Resources/Info.plist",
+    "apps/rapid-mac/CHANGELOG.md",
+    "docs/release-notes/v0.16.0.md",
+    "docs/release-notes/unreleased.md",
+}
 
 
 class ReleaseSourceError(Exception):
@@ -47,6 +54,7 @@ def check_source(
     release_sha: str,
     version: str,
     repo: str = ".",
+    bump_base_sha: str | None = None,
 ) -> list[str]:
     for label, value in (
         ("live", live_sha),
@@ -108,6 +116,29 @@ def check_source(
             "frozen release contains non-policy/non-metadata changes: "
             + ", ".join(disallowed)
         )
+    if bump_base_sha is not None:
+        _sha(bump_base_sha, "bump base")
+        bump_paths = subprocess.check_output(
+            [
+                "git",
+                "-C",
+                repo,
+                "diff",
+                "--name-only",
+                f"{bump_base_sha}..{release_sha}",
+            ],
+            text=True,
+        ).splitlines()
+        disallowed_bump_paths = sorted(set(bump_paths) - FROZEN_METADATA_PATHS)
+        if not bump_paths or disallowed_bump_paths:
+            got = (
+                ", ".join(disallowed_bump_paths)
+                if disallowed_bump_paths
+                else "no changes"
+            )
+            raise ReleaseSourceError(
+                f"frozen bump must change only version/release-note metadata; got: {got}"
+            )
     commits = subprocess.check_output(
         ["git", "-C", repo, "rev-list", f"{FROZEN_PRODUCT_SHA}..{release_sha}"],
         text=True,
@@ -147,6 +178,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--release-sha", required=True)
     p.add_argument("--version", required=True)
     p.add_argument("--repo", default=".")
+    p.add_argument("--bump-base-sha")
     a = p.parse_args(argv)
     try:
         print(
@@ -158,6 +190,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     release_sha=a.release_sha,
                     version=a.version,
                     repo=a.repo,
+                    bump_base_sha=a.bump_base_sha,
                 )
             )
         )

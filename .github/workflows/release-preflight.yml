@@ -117,7 +117,8 @@ jobs:
             fi
             python3 scripts/check_release_source_ref.py \
               --source-ref refs/heads/release/0.16.0 --live-sha "$HEAD_SHA" \
-              --accepted-sha "$HEAD_SHA" --release-sha "$HEAD_SHA" --version "$VERSION"
+              --accepted-sha "$HEAD_SHA" --release-sha "$HEAD_SHA" --version "$VERSION" \
+              --bump-base-sha "$BASE_SHA"
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "title=$TITLE" >> "$GITHUB_OUTPUT"
