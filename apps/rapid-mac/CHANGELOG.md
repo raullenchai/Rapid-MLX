@@ -17,6 +17,33 @@ can actually understand.
 
 ## [Unreleased]
 
+## [0.16.0] — 2026-10-09
+
+Rapid-MLX 0.16.0 expands packaged multimodal and typed-decision workflows and improves model management, agent sessions, shared-prefix handling, and release reliability.
+
+### Added
+
+- The base package includes supported vision, image-generation, and video-generation runtime dependencies and the documented video workflow. Model weights and per-model capability guards still apply.
+- System One adds native MLX Decider and Clef answer/rank backends. Clef supports its validated media inputs. OpenJev adds text-only typed answers and ranking; its published weights are CC BY-NC 4.0 and restricted to non-commercial use.
+- Experimental accelerated profiles cover Bonsai 2 27B, Gemma 4 26B, and DeepSeek V4 Flash under their pinned runtime, model, hardware, and capability guards.
+- Operators can prevent automatic missing model-artifact downloads through the CLI, environment, or configuration while preserving cached models and explicit pull. BYOM metadata checks may still access the Hub; general offline operation remains a separate setting. This includes Kenny Niehage's contribution from #4290, adopted in #4387.
+- Agent setup supports the current OpenCode provider and service flow and can finish while the local server is stopped.
+
+### Changed
+
+- Accelerated profile requests preserve conversation boundaries and follow-up state, apply supported sampling controls, keep thinking-disabled answers in content, and reject unservable requests with actionable client errors.
+- Shared-prefix scheduling coordinates matching in-flight prefills, records exact divergence boundaries, persists prefix state safely across processes, and gives streaming requests a bounded opportunity to advance during another long prefill. No universal performance gain is claimed.
+- Streamed tool-call arguments retain the same JSON bytes as buffered responses, and agent-facing context-limit errors follow each supported protocol.
+- Recommendation cards retain tiers, footprints, capabilities, and caveats without unsupported legacy speed projections.
+- Pinned cached snapshots can load offline, and support-request consent failures identify their failure class.
+
+### Fixed
+
+- First-run model downloads resume after interruption and show recoverable readiness states.
+- Desktop attachment retry keeps destination acknowledgement; experimental pages add Simplified Chinese localization; catalog probes are terminated and reaped during quit and re-onboarding.
+- The signed package inventories, signs, and verifies every bundled Mach-O executable before notarization.
+- Long-running agent soak, cross-protocol streaming, conversion preflight, release sampling, candidate lineage, source preflight, cancellation, and stress-decision contracts received fail-closed regression coverage.
+
 ## [0.15.7] — 2026-10-07
 
 Rapid-MLX 0.15.7 adds native text and code embeddings, improves local agent setup, and strengthens Desktop and inference reliability.
@@ -4248,7 +4275,8 @@ Older versions: see the
 [GitHub Releases page](https://github.com/machinefi/rapid-desktop/releases)
 for auto-generated notes against earlier tags.
 
-[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.15.7...HEAD
+[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.0...HEAD
+[0.16.0]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.15.7...rapid-mac-v0.16.0
 [0.15.7]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.15.6...rapid-mac-v0.15.7
 [0.15.6]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.15.5...rapid-mac-v0.15.6
 [0.15.5]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.15.4...rapid-mac-v0.15.5
