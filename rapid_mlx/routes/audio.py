@@ -1425,6 +1425,59 @@ def _audio_decode_error_envelope(exc: Exception) -> HTTPException:
     )
 
 
+_AUDIO_UPLOAD_SUFFIXES = frozenset(
+    {
+        ".wav",
+        ".mp3",
+        ".mpga",
+        ".flac",
+        ".m4a",
+        ".m4b",
+        ".mp4",
+        ".aac",
+        ".ogg",
+        ".opus",
+        ".webm",
+        ".caf",
+    }
+)
+_AUDIO_UPLOAD_MIME_SUFFIXES = {
+    "audio/wav": ".wav",
+    "audio/x-wav": ".wav",
+    "audio/mpeg": ".mp3",
+    "audio/mp3": ".mp3",
+    "audio/flac": ".flac",
+    "audio/x-flac": ".flac",
+    "audio/mp4": ".mp4",
+    "video/mp4": ".mp4",
+    "audio/m4a": ".m4a",
+    "audio/x-m4a": ".m4a",
+    "audio/aac": ".aac",
+    "audio/ogg": ".ogg",
+    "application/ogg": ".ogg",
+    "audio/opus": ".opus",
+    "audio/webm": ".webm",
+    "video/webm": ".webm",
+    "audio/caf": ".caf",
+    "audio/x-caf": ".caf",
+}
+
+
+def _audio_upload_suffix(file: UploadFile) -> str:
+    """Keep container hints for mlx-audio's extension-based decoder selection.
+
+    Use only an allowlisted extension, never the client-supplied path. Browser
+    blobs may have no extension; their MIME type supplies the hint instead.
+    Unknown metadata keeps the historical WAV fallback and decode-error handling.
+    """
+    suffix = os.path.splitext(getattr(file, "filename", None) or "")[1].lower()
+    if suffix in _AUDIO_UPLOAD_SUFFIXES:
+        return suffix
+    content_type = getattr(file, "content_type", None) or ""
+    mime_type = content_type.split(";", 1)[0].strip().lower()
+    return _AUDIO_UPLOAD_MIME_SUFFIXES.get(mime_type, ".wav")
+
+
 async def _stream_upload_to_tempfile(file: UploadFile, tmp) -> None:
     """Copy `file` into the open temp-file `tmp`, enforcing the size cap as
     we go. Raises HTTPException(413) the moment the cap is exceeded.
@@ -1528,7 +1581,9 @@ async def _run_stt_request(
         # Content-Length cannot force model load or import — they will hit
         # the streaming cap inside _stream_upload_to_tempfile() and get a
         # 413 long before the STTEngine block below runs.
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+        with tempfile.NamedTemporaryFile(
+            delete=False, suffix=_audio_upload_suffix(file)
+        ) as tmp:
             tmp_path = tmp.name
             await _stream_upload_to_tempfile(file, tmp)
 
@@ -2110,7 +2165,9 @@ async def _run_alignment_request(
 
     tmp_path: str | None = None
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+        with tempfile.NamedTemporaryFile(
+            delete=False, suffix=_audio_upload_suffix(file)
+        ) as tmp:
             tmp_path = tmp.name
             await _stream_upload_to_tempfile(file, tmp)
 
