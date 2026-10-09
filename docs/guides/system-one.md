@@ -98,8 +98,10 @@ rapid-mlx system-one /path/to/openjev-mlx --backend openjev --port 8700
 
 The first start downloads the pinned `openjev/openjev-MLX` weights (27 GB,
 8-bit). That conversion carries the language model only, so OpenJev here is
-text-only: requests with `images` or `videos`, or with an image in
-`state.screenshot` or `state.image`, receive HTTP 422.
+text-only: requests with `images` or `videos` receive HTTP 422. So does a
+`state.screenshot` or `state.image` that the release would read as an image:
+a `data:image` URL, or a string longer than 2,000 characters (raw base64).
+Any other value in those fields is state text, as in the release.
 
 On one M3 Ultra Mac the server was ready 5 seconds after launch with the
 weights cached, and held about 27 GB of memory, 33 GB at peak. Four questions

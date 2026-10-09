@@ -38,7 +38,9 @@ READOUT_TEMPERATURE = 0.85
 NOUL_TEMPERATURE = 1.829074
 NOUL_CLIP = 1e-4
 SCORE_SUFFIX = " Rate along the ordered levels below (lowest first)."
-# Longer strings in state.screenshot / state.image are raw base64 images.
+# The release reads state.screenshot / state.image as an image in exactly two
+# cases: a ``data:image`` URL, or a string longer than this (raw base64). Any
+# other value is ordinary state text there, and stays text here.
 _RAW_IMAGE_MIN_CHARS = 2000
 # Tokens per forward pass while reading a long prompt, to bound peak memory.
 _PREFILL_CHUNK = 2048
