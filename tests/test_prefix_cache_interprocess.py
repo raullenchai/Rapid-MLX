@@ -198,8 +198,10 @@ def test_startup_load_holds_lock_through_radix_restore(tmp_path, monkeypatch, lo
         assert_locked()
         radix.append(path)
 
+    engine = Engine()
+    setattr(engine, runtime_cache._AUTO_LOAD_SKIPPED_ATTR, True)
     monkeypatch.setattr(
-        runtime_cache, "get_config", lambda: SimpleNamespace(engine=Engine())
+        runtime_cache, "get_config", lambda: SimpleNamespace(engine=engine)
     )
     monkeypatch.setattr(runtime_cache, "get_cache_dir", lambda: cache_dir)
     monkeypatch.setattr(runtime_cache, "_load_radix_index_after_cache", restore_radix)
@@ -208,3 +210,4 @@ def test_startup_load_holds_lock_through_radix_restore(tmp_path, monkeypatch, lo
 
     assert reads == [(cache_dir, False)]
     assert radix == [cache_dir]
+    assert getattr(engine, runtime_cache._AUTO_LOAD_SKIPPED_ATTR) is False
